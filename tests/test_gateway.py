@@ -415,3 +415,18 @@ def test_batched_code_blocks_warn_only_first_ran(monkeypatch, tmp_path):
         if m["role"] == "user" and "only the FIRST" in m["content"]
     ]
     assert warnings, "batched-cell warning was not fed back to the model"
+
+
+def test_effective_api_key_ignores_persisted_placeholder(tmp_path):
+    # a stub persisted to settings before the config-level filter existed
+    # (e.g. activating a profile seeded with `your-api-key-here`) must not
+    # make the UI banner report a configured key
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+
+    store.set_setting("llm_api_key", "your-api-key-here")
+    assert runner.effective_api_key() == "test-key"  # falls back to cfg
+
+    store.set_setting("llm_api_key", "sk-real")
+    assert runner.effective_api_key() == "sk-real"

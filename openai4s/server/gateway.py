@@ -1857,10 +1857,15 @@ class SessionRunner:
 
     # -- run one user message ---------------------------------------------
     def effective_api_key(self) -> str:
-        """The API key actually in effect (runtime settings override → cfg)."""
+        """The API key actually in effect (runtime settings override → cfg).
+
+        Placeholder stubs persisted before the config-level filter existed
+        (e.g. a seeded profile activated with `your-api-key-here`) are ignored
+        so the UI banner matches what `_llm_cfg` actually sends.
+        """
         try:
             v = self.store.get_setting("llm_api_key")
-            if v:
+            if v and not is_placeholder_api_key(v):
                 return v
         except Exception:  # noqa: BLE001
             pass
@@ -5089,8 +5094,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 "provider": p.get("provider") or "",
                 "base_url": p.get("base_url") or "",
                 "model": p.get("model") or "",
-                "has_api_key": bool((p.get("api_key") or "").strip())
-                and not is_placeholder_api_key(p.get("api_key")),
+                # is_placeholder_api_key treats empty/whitespace as placeholder
+                # too, so this alone covers "no key" and "template stub".
+                "has_api_key": not is_placeholder_api_key(p.get("api_key")),
             }
 
         def _model_profiles_payload(self) -> dict:

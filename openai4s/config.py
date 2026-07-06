@@ -53,8 +53,15 @@ _load_dotenv()
 # stub for a configured secret. NOTE: deliberately excludes test values like
 # "test-key" — those are used by the offline test suite (tests/conftest.py).
 _PLACEHOLDER_API_KEYS = {
-    "your-api-key-here", "your_api_key_here", "your-api-key", "your_api_key",
-    "your-key-here", "your_key_here", "placeholder", "changeme", "replace-me",
+    "your-api-key-here",
+    "your_api_key_here",
+    "your-api-key",
+    "your_api_key",
+    "your-key-here",
+    "your_key_here",
+    "placeholder",
+    "changeme",
+    "replace-me",
 }
 
 
@@ -131,6 +138,14 @@ class LLMConfig:
         )
         self.model = _resolve(self.model, f"OPENAI4S_{p}_MODEL", "OPENAI4S_LLM_MODEL")
 
+        # Drop obvious placeholder stubs (e.g. a .env copied verbatim from
+        # .env.example) so they aren't mistaken for a real key downstream
+        # (has_api_key, profile seeding, effective_api_key, ...). Must run
+        # BEFORE the native-env fallback so a stubbed .env doesn't shadow a
+        # real OPENAI_API_KEY / ANTHROPIC_API_KEY the user already exported.
+        if self.api_key and is_placeholder_api_key(self.api_key):
+            self.api_key = ""
+
         # Last-resort: fall back to each provider's conventional native env var
         # (so a user who already has OPENAI_API_KEY / ANTHROPIC_API_KEY set — e.g.
         # for the reference demo — gets a working agent with zero extra config).
@@ -139,12 +154,6 @@ class LLMConfig:
                 if os.environ.get(native):
                     self.api_key = os.environ[native]
                     break
-
-        # Drop obvious placeholder stubs (e.g. a .env copied verbatim from
-        # .env.example) so they aren't mistaken for a real key downstream
-        # (has_api_key, profile seeding, effective_api_key, ...).
-        if self.api_key and is_placeholder_api_key(self.api_key):
-            self.api_key = ""
 
         # Fill provider built-in defaults so base_url/model are always concrete
         # (status pages, turn logs, etc. read cfg.llm.model directly). Lazy
