@@ -415,3 +415,87 @@ def test_batched_code_blocks_warn_only_first_ran(monkeypatch, tmp_path):
         if m["role"] == "user" and "only the FIRST" in m["content"]
     ]
     assert warnings, "batched-cell warning was not fed back to the model"
+
+
+def test_effective_api_key_ignores_persisted_placeholder(tmp_path):
+    # a stub persisted to settings before the config-level filter existed
+    # (e.g. activating a profile seeded with `your-api-key-here`) must not
+    # make the UI banner report a configured key
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+
+    store.set_setting("llm_api_key", "your-api-key-here")
+    assert runner.effective_api_key() == "test-key"  # falls back to cfg
+
+    store.set_setting("llm_api_key", "sk-real")
+    assert runner.effective_api_key() == "sk-real"
+
+
+def test_llm_cfg_ignores_persisted_placeholder_runtime_key(tmp_path):
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+
+    store.set_setting("llm_api_key", "your-api-key-here")
+    assert runner.effective_api_key() == "test-key"
+    assert runner._llm_cfg().api_key == "test-key"
+
+
+def test_model_profile_mask_and_seed_ignore_placeholder_keys(tmp_path):
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    store = get_store(cfg.db_path)
+
+    assert not handler._mask_profile({"api_key": "your-api-key-here"})["has_api_key"]
+    assert handler._mask_profile({"api_key": "sk-real"})["has_api_key"]
+
+    store.set_setting("llm_api_key", "your-api-key-here")
+    handler._model_profiles_payload()
+    profiles = store.list_model_profiles()
+    ark_keys = [p.get("api_key") for p in profiles if p.get("provider") == "ark"]
+    assert ark_keys
+    assert "your-api-key-here" not in ark_keys
+    assert set(ark_keys) == {"test-key"}
+
+
+def test_model_profile_activate_moves_to_front_and_sanitizes_key(tmp_path):
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    store = get_store(cfg.db_path)
+    store.set_model_profiles(
+        [
+            {
+                "id": "mp-a",
+                "name": "A",
+                "provider": "ark",
+                "base_url": "",
+                "model": "glm-5.2",
+                "api_key": "sk-a",
+            },
+            {
+                "id": "mp-b",
+                "name": "B",
+                "provider": "ark",
+                "base_url": "",
+                "model": "kimi-k2.6",
+                "api_key": "your-api-key-here",
+            },
+        ]
+    )
+    replies = []
+    handler._query = lambda: {}
+    handler._body = lambda: {}
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+
+    handler._api("POST", "/model-profiles/mp-b/activate")
+
+    assert replies[-1][0] == 200
+    assert replies[-1][1]["active_id"] == "mp-b"
+    assert [p["id"] for p in store.list_model_profiles()] == ["mp-b", "mp-a"]
+    assert store.get_setting("active_model_profile") == "mp-b"
+    assert store.get_setting("llm_api_key") == ""

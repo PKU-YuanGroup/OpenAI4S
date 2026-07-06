@@ -47,6 +47,30 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 
+# Obvious template stubs copied verbatim from .env.example — never a real key.
+# Filtering these means cfg.llm.api_key (and everything derived from it:
+# effective_api_key, profile seeding, has_api_key) can never mistake a template
+# stub for a configured secret. NOTE: deliberately excludes test values like
+# "test-key" — those are used by the offline test suite (tests/conftest.py).
+_PLACEHOLDER_API_KEYS = {
+    "your-api-key-here",
+    "your_api_key_here",
+    "your-api-key",
+    "your_api_key",
+    "your-key-here",
+    "your_key_here",
+    "placeholder",
+    "changeme",
+    "replace-me",
+}
+
+
+def is_placeholder_api_key(k: str | None) -> bool:
+    """True if `k` is empty or an obvious template placeholder, not a real key."""
+    k = (k or "").strip().lower()
+    return (not k) or k in _PLACEHOLDER_API_KEYS
+
+
 def _default_data_dir() -> Path:
     env = os.environ.get("OPENAI4S_DATA_DIR")
     if env:
@@ -73,7 +97,7 @@ class LLMConfig:
     and ``model`` are left empty by default — ``llm.chat`` fills in the
     provider's built-in defaults — but can be overridden per provider.
 
-    Env-var resolution (checked in order, first non-empty wins):
+    Env-var resolution (checked in order, first non-placeholder value wins for keys):
         api_key  -> OPENAI4S_<PROVIDER>_API_KEY then OPENAI4S_LLM_API_KEY
         base_url -> OPENAI4S_<PROVIDER>_BASE_URL then OPENAI4S_LLM_BASE_URL
         model    -> OPENAI4S_<PROVIDER>_MODEL then OPENAI4S_LLM_MODEL
@@ -106,7 +130,18 @@ class LLMConfig:
                 return field_val
             return os.environ.get(specific) or os.environ.get(generic, "")
 
-        self.api_key = _resolve(
+        def _resolve_api_key(field_val: str, specific: str, generic: str) -> str:
+            for raw in (
+                field_val,
+                os.environ.get(specific, ""),
+                os.environ.get(generic, ""),
+            ):
+                val = (raw or "").strip()
+                if not is_placeholder_api_key(val):
+                    return val
+            return ""
+
+        self.api_key = _resolve_api_key(
             self.api_key, f"OPENAI4S_{p}_API_KEY", "OPENAI4S_LLM_API_KEY"
         )
         self.base_url = _resolve(
@@ -119,8 +154,9 @@ class LLMConfig:
         # for the reference demo — gets a working agent with zero extra config).
         if not self.api_key:
             for native in _NATIVE_KEY_ENV.get(self.provider.strip().lower(), ()):
-                if os.environ.get(native):
-                    self.api_key = os.environ[native]
+                val = (os.environ.get(native) or "").strip()
+                if not is_placeholder_api_key(val):
+                    self.api_key = val
                     break
 
         # Fill provider built-in defaults so base_url/model are always concrete
