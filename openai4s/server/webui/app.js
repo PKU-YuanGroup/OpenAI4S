@@ -127,6 +127,8 @@ Object.assign(I18N.zh, {
   "annot.comment.plural": " 条评论",
   "annot.comment.singular": " 条评论",
   "annot.deleted": "已删除标注",
+  "annot.discard.title": "取消待发送评论",
+  "annot.discarded": "已取消待发送评论",
   "annot.draft.placeholder": "添加标注…",
   "annot.list.head": "待发送标注 · {0}",
   "annot.noSession": "请先打开一个会话",
@@ -697,6 +699,8 @@ Object.assign(I18N.en, {
   "annot.comment.plural": " comments",
   "annot.comment.singular": " comment",
   "annot.deleted": "Annotation deleted",
+  "annot.discard.title": "Cancel pending comments",
+  "annot.discarded": "Pending comments cancelled",
   "annot.draft.placeholder": "Add annotation…",
   "annot.list.head": "Pending annotations · {0}",
   "annot.noSession": "Please open a session first",
@@ -2443,6 +2447,7 @@ async function send(text, opts) {
   S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true);
   $("#composer").value = ""; grow();
   const annIds = anns.map(x => x.id);
+  if (annIds.length) { setLocalAnnotationStatus(annIds, "sent"); refreshAllStages(); updateAnnotBadge(); }
   sub(S.currentId);  // guarantee this client is subscribed BEFORE the POST spawns the
                      // turn thread. On the FIRST turn opened via newSession(), S.currentId
                      // is already set so the block above is skipped and openConversation's
@@ -2452,10 +2457,17 @@ async function send(text, opts) {
                      // false once the blocking POST returns). Idempotent set add.
   try {
     await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, model: S.defaultModel, plan: planNow, explore: exploreNow, annotation_ids: annIds }) });
-    // annotations are now folded into the turn server-side → flip them to "sent"
+    // The optimistic status above clears the badge immediately; reload once the turn POST finishes to reconcile with the server.
     if (annIds.length) { try { await loadAnnotations(S.currentId); } catch {} refreshAllStages(); updateAnnotBadge(); }
   }
-  catch (e) { hint(t("toast.sendFailed", e.message), true); }
+  catch (e) {
+    if (annIds.length) {
+      try { await loadAnnotations(S.currentId); }
+      catch { setLocalAnnotationStatus(annIds, "open"); }
+      refreshAllStages(); updateAnnotBadge();
+    }
+    hint(t("toast.sendFailed", e.message), true);
+  }
   if (S.running) turnDone("completed");
   loadSessions();
 }
@@ -2695,6 +2707,26 @@ function renderArtifactBody(body, a) {
 /* ---------- image annotations (figure review → message → remote edit) ---------- */
 function annotationsFor(artifactId) { return (S.annotations || []).filter(x => x.artifact_id === artifactId); }
 function openAnnotations() { return (S.annotations || []).filter(x => x.status === "open"); }
+function annotationId(an) { return an && (an.id || an.annotation_id); }
+function setLocalAnnotationStatus(ids, status) {
+  const wanted = new Set((ids || []).filter(Boolean));
+  if (!wanted.size) return;
+  S.annotations = (S.annotations || []).map(an => wanted.has(annotationId(an)) ? { ...an, status } : an);
+}
+async function deleteAnnotations(ids) {
+  const wanted = [...new Set((ids || []).filter(Boolean))];
+  if (!wanted.length) return;
+  const results = await Promise.allSettled(wanted.map(id => api(`/annotations/${id}`, { method: "DELETE" }).then(() => id)));
+  const deleted = results.filter(r => r.status === "fulfilled").map(r => r.value);
+  if (deleted.length) {
+    const gone = new Set(deleted);
+    S.annotations = (S.annotations || []).filter(an => !gone.has(annotationId(an)));
+    refreshAllStages();
+    updateAnnotBadge();
+  }
+  const failed = results.find(r => r.status === "rejected");
+  if (failed) throw failed.reason || new Error("delete failed");
+}
 async function loadAnnotations(fid) {
   let res = {}; try { res = await api(`/frames/${fid}/annotations`); } catch { res = {}; }
   if (fid !== S.currentId) return;
@@ -2888,7 +2920,7 @@ function openPinPop(stage, a, an) {
   foot.appendChild(el("div", "annot-foot-l"));
   const del = el("button", "annot-btn ghost danger", t("common.delete")); del.onclick = async () => {
     del.disabled = true;
-    try { await api(`/annotations/${an.id}`, { method: "DELETE" }); S.annotations = (S.annotations || []).filter(x => x.id !== an.id); closeAnnotPop(); refreshAllStages(); updateAnnotBadge(); hint(t("annot.deleted")); }
+    try { await deleteAnnotations([annotationId(an)]); closeAnnotPop(); hint(t("annot.deleted")); }
     catch (e) { del.disabled = false; hint(t("toast.deleteFailed", e.message), true); }
   };
   const close = el("button", "annot-btn solid", t("common.close")); close.onclick = () => closeAnnotPop();
@@ -2902,10 +2934,26 @@ function updateAnnotBadge() {
   const open = openAnnotations();
   if (!open.length) { bar.classList.add("hidden"); bar.innerHTML = ""; return; }
   bar.classList.remove("hidden"); bar.innerHTML = "";
-  const chip = el("button", "annot-chip"); chip.appendChild(iconEl("message-square", 14));
-  chip.appendChild(el("span", null, " " + open.length + (open.length === 1 ? " comment" : " comments")));
-  chip.title = t("annot.chip.title");
-  chip.onclick = (e) => { e.stopPropagation(); toggleAnnotList(chip); };
+  const chip = el("span", "annot-chip");
+  const main = el("button", "annot-chip-main"); main.appendChild(iconEl("message-square", 14));
+  main.appendChild(el("span", null, " " + open.length + (open.length === 1 ? " comment" : " comments")));
+  main.title = t("annot.chip.title");
+  main.onclick = (e) => { e.stopPropagation(); toggleAnnotList(chip); };
+  const cancel = el("button", "annot-chip-x"); cancel.innerHTML = icon("x", 13); cancel.title = t("annot.discard.title");
+  cancel.onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    cancel.disabled = true;
+    try {
+      await deleteAnnotations(openAnnotations().map(annotationId));
+      closeAnnotPop();
+      const p = $("#annot-list-pop"); if (p) p.remove();
+      hint(t("annot.discarded"));
+    } catch (err) {
+      cancel.disabled = false;
+      hint(t("annot.remove.err", err.message), true);
+    }
+  };
+  chip.appendChild(main); chip.appendChild(cancel);
   bar.appendChild(chip);
 }
 function toggleAnnotList(anchor) {
@@ -2922,12 +2970,12 @@ function toggleAnnotList(anchor) {
     row.appendChild(el("div", "annot-list-body", an.body || ""));
     const acts = el("div", "annot-list-acts");
     const openBtn = el("button", "annot-mini", t("common.view")); openBtn.onclick = () => { pop.remove(); const art = (S.artifacts || []).find(x => x.id === an.artifact_id); if (art) openViewer(art); };
-    const rm = el("button", "annot-mini danger", t("btn.remove")); rm.onclick = async () => { try { await api(`/annotations/${an.id}`, { method: "DELETE" }); S.annotations = (S.annotations || []).filter(x => x.id !== an.id); refreshAllStages(); updateAnnotBadge(); pop.remove(); toggleAnnotList(anchor); } catch (e) { hint(t("annot.remove.err", e.message), true); } };
+    const rm = el("button", "annot-mini danger", t("btn.remove")); rm.onclick = async () => { try { await deleteAnnotations([annotationId(an)]); pop.remove(); if (openAnnotations().length && anchor.parentElement) toggleAnnotList(anchor); } catch (e) { hint(t("annot.remove.err", e.message), true); } };
     acts.appendChild(openBtn); acts.appendChild(rm); row.appendChild(acts);
     pop.appendChild(row);
   });
   anchor.parentElement.appendChild(pop);
-  setTimeout(() => document.addEventListener("mousedown", function h(ev) { if (!pop.contains(ev.target) && ev.target !== anchor) { pop.remove(); document.removeEventListener("mousedown", h); } }), 0);
+  setTimeout(() => document.addEventListener("mousedown", function h(ev) { if (!pop.contains(ev.target) && !anchor.contains(ev.target)) { pop.remove(); document.removeEventListener("mousedown", h); } }), 0);
 }
 
 /* Fullscreen: center modal. */
