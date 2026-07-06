@@ -1,8 +1,10 @@
 <div align="center">
 
-<img src="readme-gifs-hd/openai4s_penta.gif" alt="OpenAI4S · 面向科研的开源 AI" width="480"/>
+<img src="readme-gifs-hd/openai4s_penta.gif" alt="OpenAI4S · 面向科学家的开源 AI" width="480"/>
 
-### 面向科研的开源 AI
+### 面向科学家的开源 AI
+
+## 💸 9.9 元豆包 API 复刻 Claude Science
 
 **一个开源的「代码即行动」(Code-as-Action) 科研智能体。**<br/>
 <sub>模型的动作空间是一个图灵完备的持久内核 —— **而不是**一份固定的工具清单。</sub>
@@ -180,7 +182,7 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
   author = {OpenAI4S contributors},
   year   = {2026},
   url    = {https://github.com/PKU-YuanGroup/OpenAI4S},
-  note   = {Open AI for Science —— 对 Code-as-Action 范式的纯标准库开源复现}
+  note   = {Open AI for Scientist —— 对 Code-as-Action 范式的纯标准库开源复现}
 }
 ```
 

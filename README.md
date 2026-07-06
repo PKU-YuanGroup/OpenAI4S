@@ -1,8 +1,10 @@
 <div align="center">
 
-<img src="readme-gifs-hd/openai4s_penta.gif" alt="OpenAI4S · Open AI for Science" width="480"/>
+<img src="readme-gifs-hd/openai4s_penta.gif" alt="OpenAI4S · Open AI for Scientist" width="480"/>
 
-### Open AI for Science
+### Open AI for Scientist
+
+## 💸 Replicating Claude Science in two cuts or less
 
 **An open-source, _Code-as-Action_ scientific research agent.**<br/>
 <sub>The model's action space is a Turing-complete kernel — **not** a fixed tool schema.</sub>
@@ -180,7 +182,7 @@ Released under the **MIT License** — see [`LICENSE`](LICENSE).
   author = {OpenAI4S contributors},
   year   = {2026},
   url    = {https://github.com/PKU-YuanGroup/OpenAI4S},
-  note   = {Open AI for Science — a pure-stdlib reproduction of the Code-as-Action paradigm}
+  note   = {Open AI for Scientist — a pure-stdlib reproduction of the Code-as-Action paradigm}
 }
 ```
 
