@@ -3961,6 +3961,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 store.set_setting("llm_model", str(prof.get("model") or "").strip())
                 store.set_setting("llm_api_key", str(prof.get("api_key") or "").strip())
                 store.set_setting("active_model_profile", prof["id"])
+                # Promote the newly-active profile to the top of the list so the
+                # configured APIs display it first (others shift down). In-place
+                # under the store lock; a no-op if it's already #1.
+                _pid = prof["id"]
+
+                def _to_front(ps):
+                    i = next((k for k, p in enumerate(ps) if p.get("id") == _pid), -1)
+                    if i > 0:
+                        ps.insert(0, ps.pop(i))
+
+                store.mutate_model_profiles(_to_front)
                 # Track the EFFECTIVE model id so the header selector matches what
                 # requests actually use: profile model → provider default → cfg.
                 _default_model["id"] = (

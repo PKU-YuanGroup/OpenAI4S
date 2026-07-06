@@ -4099,7 +4099,7 @@ async function custModels(c) {
   const profs = data.profiles || [];
   if (!profs.length) { c.appendChild(el("div", "dock-empty", t("cust.models.empty2"))); return; }
   profs.forEach(p => {
-    const row = el("div", "cust-row"); const info = el("div", "info");
+    const row = el("div", "cust-row prof-row"); const info = el("div", "info");
     const nm = el("div", "nm"); nm.appendChild(el("span", null, p.name || p.id));
     const isActive = p.id === data.active_id;
     if (isActive) { nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", t("cust.models.activePill"))); }
@@ -4107,7 +4107,7 @@ async function custModels(c) {
     const bits = []; if (p.provider) bits.push(p.provider); if (p.model) bits.push(p.model); bits.push(p.has_api_key ? t("cust.models.hasKey") : t("cust.models.noKey"));
     info.appendChild(el("div", "ds", bits.join(" · ") + (p.base_url ? "  ·  " + p.base_url : "")));
     row.appendChild(info);
-    if (!isActive) { const use = el("button", "outline-btn small", t("cust.models.setActive")); use.onclick = async () => { use.disabled = true; try { await api(`/model-profiles/${p.id}/activate`, { method: "POST" }); hint(t("toast.models.switched", (p.name || p.id))); S.defaultModel = p.model || S.defaultModel; await loadModels(); refreshKeyBanner(); custTab("models"); } catch (e) { use.disabled = false; hint(t("toast.switchFailed", e.message), true); } }; row.appendChild(use); }
+    if (!isActive) { const use = el("button", "outline-btn small", t("cust.models.setActive")); use.onclick = async () => { use.disabled = true; try { await api(`/model-profiles/${p.id}/activate`, { method: "POST" }); hint(t("toast.models.switched", (p.name || p.id))); S.defaultModel = p.model || S.defaultModel; await loadModels(); refreshKeyBanner(); custTab("models"); } catch (e) { use.disabled = false; hint(t("toast.switchFailed", e.message), true); } }; row.appendChild(use); } else { row.appendChild(el("div", "col-spacer")); }
     const edit = el("button", "outline-btn small", t("common.edit")); edit.onclick = () => startEdit(p); row.appendChild(edit);
     const del = el("button", "icon-ghost"); del.title = t("common.delete"); del.appendChild(iconEl("trash-2", 14)); del.onclick = async () => { if (!confirm(t("model.delete.confirm", (p.name || p.id)))) return; try { await api(`/model-profiles/${p.id}`, { method: "DELETE" }); hint(t("toast.deleted")); if (isActive) { refreshKeyBanner(); await loadModels(); } custTab("models"); } catch (e) { hint(t("toast.deleteFailed", e.message), true); } }; row.appendChild(del);
     c.appendChild(row);
