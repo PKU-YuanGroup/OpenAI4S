@@ -2462,8 +2462,11 @@ async function send(text, opts) {
   }
   catch (e) {
     if (annIds.length) {
-      try { await loadAnnotations(S.currentId); }
-      catch { setLocalAnnotationStatus(annIds, "open"); }
+      // POST failed → annotations were never consumed server-side. Reconcile with the server
+      // if reachable; if that reload also fails, revert the optimistic "sent" flip locally so
+      // the pending comments stay visible for a retry instead of vanishing from the composer.
+      const reloaded = await loadAnnotations(S.currentId);
+      if (!reloaded) setLocalAnnotationStatus(annIds, "open");
       refreshAllStages(); updateAnnotBadge();
     }
     hint(t("toast.sendFailed", e.message), true);
@@ -2728,10 +2731,11 @@ async function deleteAnnotations(ids) {
   if (failed) throw failed.reason || new Error("delete failed");
 }
 async function loadAnnotations(fid) {
-  let res = {}; try { res = await api(`/frames/${fid}/annotations`); } catch { res = {}; }
-  if (fid !== S.currentId) return;
+  let res; try { res = await api(`/frames/${fid}/annotations`); } catch { return false; }
+  if (fid !== S.currentId) return true;
   S.annotations = (res && res.annotations) || [];
   updateAnnotBadge();
+  return true;
 }
 /* Render an image the user can pin comments onto, with zoom + pan. Used by the
    dock viewer AND the fullscreen modal. Zoom is WIDTH-BASED (the image element
@@ -2963,10 +2967,10 @@ function toggleAnnotList(anchor) {
   pop.appendChild(el("div", "annot-list-head", t("annot.list.head", open.length)));
   open.forEach(an => {
     const row = el("div", "annot-list-row");
-    const t = el("div", "annot-list-t");
-    t.appendChild(el("span", "annot-list-pin", String(an.number)));
-    t.appendChild(el("span", "annot-list-file", an.artifact_name || "artifact"));
-    row.appendChild(t);
+    const trow = el("div", "annot-list-t");   // do NOT shadow the global i18n t() used below
+    trow.appendChild(el("span", "annot-list-pin", String(an.number)));
+    trow.appendChild(el("span", "annot-list-file", an.artifact_name || "artifact"));
+    row.appendChild(trow);
     row.appendChild(el("div", "annot-list-body", an.body || ""));
     const acts = el("div", "annot-list-acts");
     const openBtn = el("button", "annot-mini", t("common.view")); openBtn.onclick = () => { pop.remove(); const art = (S.artifacts || []).find(x => x.id === an.artifact_id); if (art) openViewer(art); };
