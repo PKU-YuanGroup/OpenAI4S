@@ -133,11 +133,15 @@ It is deliberately kept under the legacy name `openai4s_compute_provider` for
 **backward compatibility** — existing imports, the `byoc:` skills, and packaging
 metadata all reference it. The refactor plan
 ([`docs/refactor-plan.md`](refactor-plan.md), section E, **Option 4**) chooses
-to keep this package import-compatible and, in a *later* PR, add an
-`openai4s_worker_runtime` alias that re-exports the same symbols. **That alias
-does not exist yet** — today the only import path is
-`openai4s_compute_provider`. The name says "compute provider"; the reality is a
-worker runtime shared by every provider kind that stages and runs code.
+to keep this package import-compatible and add an `openai4s_worker_runtime`
+alias that re-exports the same symbols. **That alias now exists** (PR 09):
+`openai4s_worker_runtime/__init__.py` is a pure re-export of the public
+contract — every public symbol is the identical object under both names, the
+private submodules stay in the primary package, and the runnable entrypoint
+remains `python -m openai4s_compute_provider`. New code may prefer the alias
+name; every existing `openai4s_compute_provider` import keeps working. The
+legacy name says "compute provider"; the reality is a worker runtime shared by
+every provider kind that stages and runs code.
 
 Because the worker runtime is the layer that actually executes untrusted-ish
 provider shims, its secret-scrubbing guarantees are described in one place and
@@ -172,7 +176,10 @@ transport.
 
 - `openai4s_compute_provider` stays importable under that exact name; the worker
   runtime is described truthfully here and in `docs/security.md`, and is only
-  *named* a "compute provider" for compatibility.
+  *named* a "compute provider" for compatibility. The `openai4s_worker_runtime`
+  alias re-exports the same public symbols under the accurate name;
+  `tests/test_worker_runtime_alias.py` pins the two names to the identical
+  contract.
 - The provider strings `byoc:<id>` and `ssh:<alias>` are stable; a future
   provider-`kind` taxonomy will be introduced *alongside* them via
   compatibility adapters, not by breaking these strings.
@@ -200,8 +207,10 @@ transport.
 Subsequent roadmap PRs (see [`docs/refactor-plan.md`](refactor-plan.md),
 section G) build on this taxonomy:
 
-- **PR 09** — add an `openai4s_worker_runtime` alias package that re-exports the
-  worker runtime, keeping `openai4s_compute_provider` primary and import-compatible.
+- **PR 09** (done) — added the `openai4s_worker_runtime` alias package that
+  re-exports the worker runtime, keeping `openai4s_compute_provider` primary
+  and import-compatible (compatibility pinned by
+  `tests/test_worker_runtime_alias.py`).
 - Later PRs — introduce explicit provider `kind` fields (`compute`,
   `model_endpoint`, `lab`) and move trusted provider lifecycle under
   `openai4s/platforms/*` with the legacy skill/provider entrypoints forwarding.

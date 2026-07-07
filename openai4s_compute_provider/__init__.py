@@ -27,6 +27,11 @@ Layout:
 
 Stdlib-only. Provider shims (the only files that import a third-party SDK)
 live in ``skills/remote-compute-<id>/provider.py``.
+
+Naming: despite the package name, this is really a *worker runtime* (see
+``docs/package-architecture.md``). The alias package
+``openai4s_worker_runtime`` re-exports the same public symbols under that more
+accurate name; this package stays primary and import-compatible.
 """
 from __future__ import annotations
 
