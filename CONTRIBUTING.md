@@ -42,6 +42,10 @@ policy. The technical conventions live in [`CLAUDE.md`](CLAUDE.md) /
 External PRs should target `main` (or a specific, announced `next` branch
 during a coordinated integration window — never anything else).
 
+Branch names are enforced by the `branch-name` CI job on every PR:
+`^(main|next|(feat|fix|docs|test|refactor|chore|ui|harness|science|release|hotfix)/[a-z0-9][a-z0-9._-]{1,80})$`
+(lowercase, 2–81 chars after the slash; Dependabot branches are exempt).
+
 ## Before opening a PR
 
 Run locally and make sure everything is green:
