@@ -143,6 +143,8 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 
 OpenAI4S 是一个让 **Code-as-Action** 范式保持开源的社区项目。
 
+提 PR 前请先阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) —— 它定义了分支命名、PR 检查清单([`.github/pull_request_template.md`](.github/pull_request_template.md))、代码所有权([`.github/CODEOWNERS`](.github/CODEOWNERS))、评审与发布政策,以及离线测试政策。
+
 ### 开发环境配置
 
 需要 **Python ≥ 3.10** 与 [**uv**](https://docs.astral.sh/uv/)。

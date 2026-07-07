@@ -1,0 +1,48 @@
+# CODEOWNERS for OpenAI4S (github.com/PKU-YuanGroup/OpenAI4S)
+#
+# MAINTAINERS: the @openai4s-* handles below are PLACEHOLDERS, not real GitHub
+# accounts. Replace each one with the real personal GitHub username(s) of the
+# responsible maintainer(s) before enabling "Require review from Code Owners"
+# in branch protection. Do not use org teams here until an org team with the
+# right permissions actually exists.
+#
+# Later rules override earlier ones; the LAST matching rule wins.
+
+# ---- Default owner for everything not matched below -------------------------
+*                                   @openai4s-lead
+
+# ---- Runtime core: agent loop, kernel protocol, host API, store -------------
+/openai4s/agent/                    @openai4s-lead @openai4s-runtime-owner
+/openai4s/kernel/                   @openai4s-lead @openai4s-runtime-owner
+/openai4s/sdk/                      @openai4s-lead @openai4s-runtime-owner
+/openai4s/host_dispatch.py          @openai4s-lead @openai4s-runtime-owner @openai4s-security-owner
+/openai4s/store.py                  @openai4s-lead @openai4s-runtime-owner @openai4s-security-owner
+/openai4s/llm.py                    @openai4s-lead @openai4s-runtime-owner
+
+# ---- Security-sensitive paths: require the security owner -------------------
+/openai4s/security/                 @openai4s-lead @openai4s-security-owner
+/openai4s/permissions.py            @openai4s-lead @openai4s-security-owner
+/openai4s/egress.py                 @openai4s-lead @openai4s-security-owner
+/openai4s_compute_provider/         @openai4s-lead @openai4s-security-owner
+/docs/security.md                   @openai4s-lead @openai4s-security-owner
+
+# ---- Web app: gateway, REST/WebSocket API, frontend --------------------------
+/openai4s/server/                   @openai4s-lead @openai4s-web-owner
+
+# ---- Compute / platforms -----------------------------------------------------
+/openai4s/compute/                  @openai4s-lead @openai4s-platform-owner
+
+# ---- Science skills and kernel environments ----------------------------------
+/skills/                            @openai4s-lead @openai4s-science-owner
+/envs/                              @openai4s-lead @openai4s-science-owner
+/openai4s/skills_loader/            @openai4s-lead @openai4s-science-owner
+
+# ---- Tests -------------------------------------------------------------------
+/tests/                             @openai4s-lead @openai4s-runtime-owner
+
+# ---- Governance and CI: changes to the rules need the lead -------------------
+/.github/                           @openai4s-lead
+/CONTRIBUTING.md                    @openai4s-lead
+/CLAUDE.md                          @openai4s-lead
+/AGENTS.md                          @openai4s-lead
+/pyproject.toml                     @openai4s-lead
