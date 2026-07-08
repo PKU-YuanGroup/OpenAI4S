@@ -147,6 +147,12 @@ def _guess_ctype(name: str) -> str:
     return "application/octet-stream"
 
 
+def _sanitize_header_value(value: str) -> str:
+    """Remove CR/LF from an HTTP header value so a user-influenced value cannot
+    inject extra headers or split the response (CWE-113)."""
+    return str(value).replace("\r", "").replace("\n", "")
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -3740,11 +3746,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self, code: int, body: bytes, ctype: str, extra: dict | None = None
         ) -> None:
             self.send_response(code)
-            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Type", _sanitize_header_value(ctype))
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-cache")
             for k, v in (extra or {}).items():
-                self.send_header(k, v)
+                self.send_header(k, _sanitize_header_value(v))
             self.end_headers()
             if body:
                 self.wfile.write(body)
