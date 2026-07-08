@@ -1,5 +1,8 @@
 import base64
+import io
+import json
 import re
+import struct
 import threading
 import time
 from pathlib import Path
@@ -1022,3 +1025,185 @@ def test_upload_base64_decode_and_raw_fallback(tmp_path):
         {"filename": "c.bin", "content_base64": "%%% not base64 %%%", "frame_id": fid}
     )
     assert _bytes(res) == "%%% not base64 %%%".encode("utf-8")
+
+
+# --- hand-rolled WebSocket wire format (risk register: payload drift) -------
+def test_ws_encode_frame_length_ladder():
+    """RFC 6455 server frames: FIN|opcode first byte, then the 7-bit /
+    16-bit / 64-bit length ladder switching at exactly 126 and 65536 —
+    and server frames are NEVER masked (no 0x80 bit on byte 1)."""
+    small = gateway_mod._ws_encode(b"hello")
+    assert small[0] == 0x81  # FIN + text opcode
+    assert small[1] == 5  # 7-bit length, mask bit clear
+    assert small[2:] == b"hello"
+
+    edge = gateway_mod._ws_encode(b"x" * 126)
+    assert edge[1] == 126
+    assert edge[2:4] == struct.pack(">H", 126)
+    assert edge[4:] == b"x" * 126
+
+    big = gateway_mod._ws_encode(b"y" * 65536, opcode=0x2)
+    assert big[0] == 0x82  # FIN + binary opcode
+    assert big[1] == 127
+    assert big[2:10] == struct.pack(">Q", 65536)
+    assert len(big) == 10 + 65536
+
+
+def test_ws_read_frame_unmasks_and_roundtrips():
+    """_ws_read_frame unmasks client frames, passes opcodes through, returns
+    None on a truncated header, and round-trips every _ws_encode length
+    class — the encode/decode pair cannot drift apart silently."""
+    payload = b'{"type":"ping"}'
+    mask = bytes([0x12, 0x34, 0x56, 0x78])
+    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    frame = bytes([0x81, 0x80 | len(payload)]) + mask + masked
+    assert gateway_mod._ws_read_frame(io.BytesIO(frame)) == (0x1, payload)
+
+    # masked frame in the 16-bit length class
+    payload2 = b"z" * 300
+    masked2 = bytes(b ^ mask[i % 4] for i, b in enumerate(payload2))
+    frame2 = bytes([0x82, 0x80 | 126]) + struct.pack(">H", 300) + mask + masked2
+    assert gateway_mod._ws_read_frame(io.BytesIO(frame2)) == (0x2, payload2)
+
+    # unmasked server frames round-trip across all three length classes
+    for n in (0, 1, 125, 126, 65535, 65536):
+        enc = gateway_mod._ws_encode(b"a" * n)
+        assert gateway_mod._ws_read_frame(io.BytesIO(enc)) == (0x1, b"a" * n)
+
+    # control frame opcode passes through untouched
+    close = gateway_mod._ws_encode(b"", opcode=0x8)
+    assert gateway_mod._ws_read_frame(io.BytesIO(close)) == (0x8, b"")
+
+    # truncated header → None (connection treated as closed)
+    assert gateway_mod._ws_read_frame(io.BytesIO(b"")) is None
+    assert gateway_mod._ws_read_frame(io.BytesIO(b"\x81")) is None
+
+
+# --- raw-bytes artifact routes ----------------------------------------------
+def _bytes_handler(cfg, runner, hub=None):
+    """Handler with _send captured — bytes routes bypass _json entirely."""
+    handler_cls = gateway_mod.make_handler(cfg, hub or _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    sends = []
+    handler._send = lambda code, body, ctype, extra=None: sends.append(
+        (code, body, ctype)
+    )
+    handler._query = lambda: {}
+    handler._body = lambda: {}
+    return handler, sends
+
+
+def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
+    """GET /api/artifacts/{ident} resolution order: version_id →
+    artifact_id → filename. A version id serves ITS OWN historical bytes
+    (even when a file named like that id also exists), an artifact id serves
+    the latest bytes, Content-Type comes from the stored row, and an unknown
+    ident gets a JSON {"error": ...} 404 on this otherwise-bytes route."""
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler, sends = _bytes_handler(cfg, runner)
+
+    f = st.workspace / "table.csv"
+    f.write_text("v1")
+    rec1 = runner._register_file(st, f, "c1", lambda e: None)
+    f.write_text("v2-longer")
+    runner._register_file(st, f, "c2", lambda e: None)
+
+    # version_id → that version's own snapshot bytes + its stored content_type
+    handler._api("GET", f"/artifacts/{rec1['version_id']}")
+    code, body, ctype = sends[-1]
+    assert (code, body) == (200, b"v1")
+    assert ctype == store.version_meta(rec1["version_id"])["content_type"]
+
+    # artifact_id → the LATEST version's bytes (GET on a bare id is bytes,
+    # not JSON — only DELETE matches the JSON route above it)
+    handler._api("GET", f"/artifacts/{rec1['artifact_id']}")
+    assert sends[-1][:2] == (200, b"v2-longer")
+
+    # filename → artifact_by_filename fallback, serving the live path
+    handler._api("GET", "/artifacts/table.csv")
+    assert sends[-1][:2] == (200, b"v2-longer")
+
+    # ORDER: a registered artifact literally NAMED like rec1's version id
+    # must not shadow it — version_id resolution wins over filename
+    trap = st.workspace / rec1["version_id"]
+    trap.write_text("filename-shadow")
+    runner._register_file(st, trap, "c3", lambda e: None)
+    handler._api("GET", f"/artifacts/{rec1['version_id']}")
+    assert sends[-1][:2] == (200, b"v1")
+
+    # the wart: unknown ident answers this bytes route with a JSON envelope
+    handler._api("GET", "/artifacts/no-such-ident")
+    code, body, ctype = sends[-1]
+    assert code == 404
+    assert json.loads(body) == {"error": "artifact not found"}
+    assert ctype.startswith("application/json")
+
+
+def test_preview_route_forces_html_content_type(tmp_path):
+    """GET /preview/{ident} serves the same resolved bytes but ALWAYS stamps
+    text/html, whatever the stored content_type says."""
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler, sends = _bytes_handler(cfg, runner)
+    handler.headers = {}  # _route consults Origin/Cookie headers
+
+    f = st.workspace / "report.md"
+    f.write_text("# hi")
+    rec = runner._register_file(st, f, "c1", lambda e: None)
+
+    handler.path = f"/preview/{rec['artifact_id']}"
+    handler._route("GET")
+    code, body, ctype = sends[-1]
+    assert (code, body) == (200, b"# hi")
+    assert ctype == "text/html; charset=utf-8"
+
+
+def test_upload_without_frame_id_stores_file_but_never_broadcasts(tmp_path):
+    """POST /api/uploads with NO frame_id: the file lands under
+    data_dir/uploads, the artifact row has no root_frame_id, and no
+    artifact_created event is broadcast — only frame-scoped uploads notify."""
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    hub = _Hub()
+    handler_cls = gateway_mod.make_handler(cfg, hub, runner)
+    handler = object.__new__(handler_cls)
+
+    res = handler._upload(
+        {
+            "filename": "loose.bin",
+            "content_base64": base64.b64encode(b"data!").decode(),
+        }
+    )
+    assert res["id"] == res["artifact_id"] and res["filename"] == "loose.bin"
+    assert (cfg.data_dir / "uploads" / "loose.bin").read_bytes() == b"data!"
+
+    a = store.get_artifact(res["artifact_id"])
+    assert a["root_frame_id"] is None
+    assert a["is_user_upload"] == 1
+    assert [e for e in hub.events if e.get("type") == "artifact_created"] == []
+    # the sessionless artifact still resolves and serves by id
+    assert Path(store.resolve_artifact_path(res["artifact_id"])).read_bytes() == (
+        b"data!"
+    )
+
+
+def test_body_malformed_json_treated_as_empty_dict(tmp_path):
+    """_body() contract: an unparseable JSON body, an empty body, and a
+    missing Content-Length all collapse to {} — route handlers never see a
+    parse error and treat the request as field-less."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+
+    def _with(raw: bytes):
+        handler.headers = {"Content-Length": str(len(raw))}
+        handler.rfile = io.BytesIO(raw)
+        return handler._body()
+
+    assert _with(b'{"a": 1}') == {"a": 1}  # valid JSON parses
+    assert _with(b"this is not json") == {}  # malformed → {}
+    assert _with(b"{truncated") == {}
+    assert _with(b"") == {}  # Content-Length: 0 → {} without reading
+
+    handler.headers = {}  # no Content-Length header at all
+    handler.rfile = io.BytesIO(b'{"ignored": true}')
+    assert handler._body() == {}
