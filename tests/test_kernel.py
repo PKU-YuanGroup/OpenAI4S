@@ -1,5 +1,7 @@
 """Kernel tests: persistent namespace, print capture, error attribution,
 usage accounting, and host_call RPC round-trip (dispatcher stubbed)."""
+import threading
+
 import pytest
 
 from openai4s.kernel import Kernel
@@ -194,6 +196,128 @@ def test_restart_bumps_generation_and_resets_namespace():
         assert k.is_alive()
         r = k.execute("print('x' in globals())")
         assert r["stdout"].strip() == "False"
+
+
+# --- inner-RPC wire contracts (PR 06/PR 10 reviewers) -----------------------
+# 15MB wire cap, host_ack pre-response frames, bounded-discard desync
+# recovery, and the SIGINT interrupt contract. Extra pre-response frames are
+# injected through the manager's OWN _send/_service_host_call machinery —
+# the single-frame-reader loop and the host-call transaction stay intact.
+
+
+def test_host_call_wire_cap_rejects_oversized_payload():
+    """A host_call whose JSON frame exceeds the 15MB wire cap raises
+    ValueError IN the kernel before anything is written — the dispatcher never
+    sees the call and the channel stays usable for the next RPC."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        r = k.execute(
+            "big = 'x' * 15_000_001\n"
+            "try:\n"
+            "    host._call('ping', [big])\n"
+            "except ValueError as e:\n"
+            "    print('capped:', '15MB wire cap' in str(e))\n"
+            "print(host._call('ping', []))"
+        )
+        assert r["error"] is None
+        # if the frame had reached the wire, 'ping' would have succeeded and
+        # the 'capped:' line would be missing entirely
+        assert r["stdout"].splitlines() == ["capped: True", "pong"]
+
+
+def test_host_ack_and_bounded_discard_recovery():
+    """Pre-response frames the worker must survive: a correct-id host_ack is
+    skipped WITHOUT counting against the discard budget, and up to exactly
+    _DISCARD_BUDGET (8) out-of-order/garbage frames are discarded before the
+    id-matched response — the RPC still returns its data."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        orig = k._service_host_call
+
+        def noisy(frame):
+            # correct-id ack: the "keep waiting" signal, never a discard
+            k._send({"type": "host_ack", "id": frame["id"]})
+            # exactly 8 discardable frames = the full budget:
+            # 6 stale responses (id mismatch) + 1 non-JSON line + 1 non-dict
+            for i in range(6):
+                k._send({"type": "host_response", "id": f"stale-{i}", "data": "old"})
+            k._proc.stdin.write("this line is not json\n")
+            k._proc.stdin.flush()
+            k._send([1, 2, 3])
+            orig(frame)
+
+        k._service_host_call = noisy
+        r = k.execute("print(host._call('ping', []))")
+        assert r["error"] is None
+        assert r["stdout"].strip() == "pong"
+
+
+def test_host_call_desync_over_budget_raises_and_kernel_survives():
+    """One frame past the discard budget (9 mismatched frames, no real
+    response) makes host_call give up with a 'protocol desync' RuntimeError
+    instead of spinning forever — and the worker keeps serving afterwards."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        orig = k._service_host_call
+
+        def flood(frame):
+            for i in range(9):
+                k._send({"type": "host_response", "id": f"stale-{i}", "data": None})
+            # never send the real response — the worker must bail on its own
+
+        k._service_host_call = flood
+        r = k.execute(
+            "try:\n"
+            "    host._call('ping', [])\n"
+            "except RuntimeError as e:\n"
+            "    print('caught:', e)"
+        )
+        assert r["error"] is None
+        assert "host.ping: protocol desync" in r["stdout"]
+        # with a sane host again, the same worker answers the next RPC
+        k._service_host_call = orig
+        r2 = k.execute("print(host._call('ping', []))")
+        assert r2["stdout"].strip() == "pong"
+
+
+def test_sigint_interrupt_reports_interrupted_true_lineno_none():
+    """The host.exec_interrupt contract: a DELIVERED SIGINT ends the cell with
+    interrupted=True, error='Interrupted' and NO error_lineno — and the kernel
+    (with its namespace) survives the interrupt."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        k.execute("marker = 'still-here'")
+        started = threading.Event()
+        result = {}
+
+        def run():
+            result["r"] = k.execute(
+                "print('cell-started')\nimport time\ntime.sleep(30)",
+                on_chunk=lambda _text: started.set(),
+            )
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        # the first stdout chunk proves user code is executing (handler armed)
+        assert started.wait(15), "cell never produced its first stdout chunk"
+        k.interrupt()
+        t.join(timeout=15)
+        assert not t.is_alive(), "interrupt did not stop the cell"
+
+        r = result["r"]
+        assert r["interrupted"] is True
+        assert r["error"] == "Interrupted"
+        assert r["trace"]["error_lineno"] is None
+        assert k.is_alive()
+        assert k.execute("print(marker)")["stdout"].strip() == "still-here"
+
+
+def test_user_raised_keyboardinterrupt_is_normal_error_with_lineno():
+    """The contrast half of the SIGINT contract: user code raising
+    KeyboardInterrupt itself is a NORMAL error (interrupted=False) with a real
+    lineno — only a delivered signal sets interrupted=True."""
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        r = k.execute("x = 1\nraise KeyboardInterrupt('manual')")
+        assert r["interrupted"] is False
+        assert "KeyboardInterrupt" in r["error"]
+        assert r["trace"]["error_lineno"] == 2
+        assert k.is_alive()
 
 
 if __name__ == "__main__":
