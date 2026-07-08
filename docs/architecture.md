@@ -48,3 +48,13 @@ host.submit_output(...)                                              # the only 
 - **Context compaction** — older turns are summarized past a token threshold; raw slices archived to disk.
 
 The engine is **pure Python stdlib**: the kernel is a subprocess speaking a hardened JSON-per-line protocol, the LLM client speaks OpenAI / Anthropic / Gemini wires over `urllib`, and the daemon is `http.server` + a hand-rolled WebSocket — no framework, no third-party dependency in the core.
+
+## The hybrid ReAct tool surface
+
+Alongside Code-as-Action, a small **ReAct tool surface** ([`openai4s/tools/`](../openai4s/tools)) exposes the deterministic operations — `list` / `read` / `glob` / `grep` / `web` / `env` / `edit` / `write` / `bash` — as structured tool calls. The model invokes one by emitting a ` ```tool ` cell carrying a JSON call instead of Python; the call routes through the **same `HostDispatcher`** as `host.*`, so it inherits the permission broker, egress fence, injection screen, and step-card machinery. These are for cheap, side-effect-light steps (look at a file, grep the tree, fetch a page). **Real computation still flows through ` ```python ` cells** — the Turing-complete kernel, its persistent namespace, and mid-cell host RPC remain the path for anything that actually computes.
+
+## The Notebook as a read-only execution trace
+
+The web UI's right-hand Notebook is, by default, a **read-only execution trace** of the kernel: it renders each cell the agent ran with its stdout/stderr/artifacts, but there is **no user REPL** — arbitrary in-Notebook code entry is gated behind `OPENAI4S_NOTEBOOK_REPL` (see [Security](security.md)). Runtime segments in the trace are labeled by `kernel_id`: `python` for the default env, `python — struct` / `python — phylo` etc. when the agent switches conda env, so a single session's trace shows which environment each cell ran under.
+
+The selected conda env is **persisted per-session** in `frames.runtime_env` and **re-seeded on resume** — reopening a session restarts the kernel in the same env. Mind the persistence boundary: **workspace files persist** across a restart, but **in-memory Python variables do not** — a resumed (or restarted) kernel starts with a fresh namespace.

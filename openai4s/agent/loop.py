@@ -25,6 +25,7 @@ from openai4s.kernel import Kernel
 from openai4s.llm import chat
 from openai4s.security import classify_code, screen_trajectory
 from openai4s.skills_loader import SkillLoader
+from openai4s.tools import parse_tool_calls, render_tools_prompt, run_tool_calls
 
 _CODE_BLOCK = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
 
@@ -71,8 +72,9 @@ there is no other completion signal. After it succeeds you may add a one-line \
 prose summary, but do not emit further code blocks.
 
 Rules:
-- Exactly ONE python code block per reply while working. Keep cells small and \
-incremental. Think in prose before the code block.
+- Each working turn is EITHER a single python code cell OR one-or-more tool \
+calls (see the tool surface below) — never both in one reply. Keep cells small \
+and incremental. Think in prose before the code block.
 - If a cell errors, read the traceback in the Observation and fix it in the \
 next cell.
 """
@@ -167,6 +169,10 @@ class Agent:
             ctx = self._skill_loader.system_context()
             if ctx:
                 prompt = prompt + "\n\n" + ctx
+        try:
+            prompt = prompt + "\n\n" + render_tools_prompt()
+        except Exception:  # noqa: BLE001 — never let tool-prompt rendering break a run
+            pass
         return prompt
 
     def _pre_exec_gate(self, code: str, messages: list[dict]) -> str | None:
@@ -238,8 +244,24 @@ class Agent:
                 messages.append({"role": "assistant", "content": reply})
                 self._log(f"\n--- turn {turn} (assistant) ---\n{reply}")
 
+                # A working turn is EITHER a ```python cell OR one-or-more
+                # ```tool calls — code WINS when both appear, so a ```tool token
+                # merely quoted inside a code cell (e.g. writing docs about this
+                # syntax) never executes. Tool calls are only honored when the
+                # reply has no python cell.
                 code = _extract_code(reply)
                 if code is None:
+                    # ReAct tool surface: run any top-level ```tool calls
+                    # (deterministic ops routed through the dispatcher).
+                    tool_calls, tool_errors = parse_tool_calls(reply)
+                    if tool_calls or tool_errors:
+                        obs = run_tool_calls(self.dispatcher, tool_calls, tool_errors)
+                        transcript.append(Turn("observation", obs))
+                        messages.append({"role": "user", "content": obs})
+                        self._log(f"--- turn {turn} (tool results) ---\n{obs}")
+                        if self.dispatcher.last_output is not None:
+                            return self._finish(transcript, reply, "submitted")
+                        continue
                     # No action and no submitted output: nudge once and continue.
                     obs = (
                         "[system] No python code block found. Reply with a "

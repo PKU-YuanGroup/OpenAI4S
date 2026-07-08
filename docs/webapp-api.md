@@ -190,10 +190,22 @@ success response body. Serializer shapes are in §4.
 | `POST /frames/{fid}/kernel/stop` | → `{"ok":true,"state":"stopped"|"none","frame_id"}`. |
 | `POST /frames/{fid}/kernel/start` | → `{"ok":true,"state":"running","generation","frame_id",…}`. |
 | `POST /frames/{fid}/kernel/interrupt` | Best-effort SIGINT → always `{"ok":true}`. |
-| `GET /frames/{fid}/kernel` | Kernel status: `{frame_id,state("none"|"running"|"stopped"),alive,generation,turn_running,cell_count,manual_stop,env:{name,language,python_version,pending}}`. |
+| `GET /frames/{fid}/kernel` | Kernel status: `{frame_id,state("none"|"running"|"stopped"),alive,generation,turn_running,cell_count,manual_stop,repl_enabled,env:{name,language,python_version,pending}}`. `repl_enabled` mirrors `OPENAI4S_NOTEBOOK_REPL` (see below). |
 | `POST /frames/{fid}/kernel/install` | Body `{packages:[…]}` or `{package}` (+`restart`, default true) → pip-install report (`{ok,installed,…,restarted}`). |
 | `GET /frames/{fid}/environments` | `{"environments":[…],"current","default","pending"}`. |
 | `POST /frames/{fid}/kernel/env` | Body `{env}` (or `{name}`) — switches the kernel to a prebuilt env (restart) → `{"ok":true,"state","env","generation","language","python_version","frame_id"}`. |
+
+**Notebook REPL gate:** the Notebook is a **read-only execution trace** by
+default. The mutating `kernel/*` routes — `execute`, `env`, `restart`, `stop`,
+`start`, `interrupt`, `install` — return `403 {"error":…}` unless
+`OPENAI4S_NOTEBOOK_REPL` is set; only the read-only `GET
+/frames/{fid}/kernel` and `GET /frames/{fid}/execution-log` stay available.
+`GET /frames/{fid}/kernel` reports the current state in `repl_enabled`.
+
+**`kernel_id` runtime segment:** the `kernel_id` returned by the kernel and
+execution-log routes now carries the runtime segment — `python` for the
+default env, `python — struct` / `python — phylo` etc. when the agent has
+switched conda env — so per-cell rows label which environment they ran under.
 
 ### Artifacts
 

@@ -16,6 +16,42 @@ def _store(tmp_path):
     return get_store(cfg.db_path)
 
 
+# --- frames ------------------------------------------------------------------
+def test_frames_row_columns_and_runtime_env_roundtrip(tmp_path):
+    """The frames row shape an extraction must preserve (base schema + migration
+    columns), and the runtime_env pin the resumed-session env selection depends
+    on: a freshly created frame has it NULL, update_frame persists it."""
+    store = _store(tmp_path)
+    fid = store.new_frame(kind="turn", project_id="default")
+
+    row = store.get_frame(fid)
+    assert set(row) == {
+        "frame_id",
+        "parent_id",
+        "project_id",
+        "root_frame_id",
+        "kind",
+        "name",
+        "task_summary",
+        "model",
+        "effort",
+        "status",
+        "runtime_env",
+        "folder_id",
+        "depth",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "created_at",
+        "updated_at",
+    }
+    # a brand-new frame has no pinned runtime env yet
+    assert row["runtime_env"] is None
+
+    store.update_frame(fid, runtime_env="struct")
+    assert store.get_frame(fid)["runtime_env"] == "struct"
+
+
 # --- artifact_versions -------------------------------------------------------
 def test_save_artifact_return_shape_and_version_row_columns(tmp_path):
     store = _store(tmp_path)

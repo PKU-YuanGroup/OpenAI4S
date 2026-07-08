@@ -32,6 +32,12 @@ class ScriptedLLM:
         }
 
 
+def _tool_block(json_body: str) -> str:
+    """Build a fenced ```tool block the way tests build ```python cells:
+    three backticks + 'tool' + newline + the JSON + newline + three backticks."""
+    return "```" + "tool\n" + json_body + "\n" + "```"
+
+
 def test_code_as_action_cycle(monkeypatch):
     scripted = ScriptedLLM(
         [
@@ -100,6 +106,88 @@ def test_max_turns_stop(monkeypatch):
     agent = Agent(use_skills=False, allow_delegate=False, max_turns=3)
     result = agent.run("loop forever")
     assert result["stop_reason"] == "max_turns"
+
+
+# ---- ReAct tool surface (```tool) ----------------------------------------
+
+
+def test_react_tool_call_then_submit(monkeypatch):
+    """Happy ReAct path: a ```tool turn runs a read-only tool through the REAL
+    HostDispatcher (whose workspace is a per-test tmp dir), its result is fed
+    back as ONE '[Tool Results]' observation, and the loop CONTINUES to the next
+    turn (it does not nudge or end) until a later python cell submits output."""
+    scripted = ScriptedLLM(
+        [
+            # `list_dir` runs cleanly offline: the dispatcher auto-creates the
+            # workspace dir and lists it (empty here) — no network, no fixtures.
+            "Let me look around first.\n"
+            + _tool_block('{"name": "list_dir", "arguments": {"path": "."}}'),
+            "```python\nhost.submit_output({}, ['done'])\n```",
+        ]
+    )
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+
+    result = Agent(use_skills=False, allow_delegate=False, max_turns=4).run(
+        "list the workspace, then submit"
+    )
+
+    # completion still flows ONLY through host.submit_output
+    assert result["stop_reason"] == "submitted"
+    # the tool result came back as one observation Turn, tagged [Tool Results]
+    obs = [t["content"] for t in result["transcript"] if t["role"] == "observation"]
+    assert any(o.startswith("[Tool Results]") for o in obs)
+    assert any("[Tool: list_dir]" in o for o in obs)
+    # the tool observation was fed back and the loop continued (>=2 chat calls):
+    # it neither nudged nor ended on the tool turn.
+    assert len(scripted.calls) >= 2
+
+
+def test_react_malformed_tool_block_surfaces_error(monkeypatch):
+    """Malformed ReAct path: a ```tool block with invalid JSON is surfaced as a
+    '[Tool error]' observation (the loop does not crash), and a later python
+    cell still completes the task."""
+    scripted = ScriptedLLM(
+        [
+            _tool_block("{not valid json,}"),
+            "```python\nhost.submit_output({}, ['done'])\n```",
+        ]
+    )
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+
+    result = Agent(use_skills=False, allow_delegate=False, max_turns=4).run(
+        "bad tool, then submit"
+    )
+
+    assert result["stop_reason"] == "submitted"
+    obs = [t["content"] for t in result["transcript"] if t["role"] == "observation"]
+    # the parse error was fed back, not raised
+    assert any("[Tool error]" in o for o in obs)
+
+
+def test_code_cell_wins_over_embedded_tool_fence(monkeypatch):
+    """Fence-collision guard: a ```python cell whose body QUOTES a ```tool block
+    (e.g. writing docs about the tool syntax) runs the CELL — the embedded tool
+    is never executed and the turn is not hijacked into a tool turn."""
+    doc = (
+        "```python\n"
+        "readme = '''\nUsage example:\n"
+        + _tool_block('{"name": "bash", "arguments": {"command": "echo pwned"}}')
+        + "\n'''\nprint('wrote', len(readme), 'chars')\n"
+        "host.submit_output({}, ['documented'])\n"
+        "```"
+    )
+    scripted = ScriptedLLM([doc])
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+
+    result = Agent(use_skills=False, allow_delegate=False, max_turns=4).run(
+        "write the docs and submit"
+    )
+
+    assert result["stop_reason"] == "submitted"
+    obs = [t["content"] for t in result["transcript"] if t["role"] == "observation"]
+    # the embedded ```tool must NOT have been executed as a tool call
+    assert not any("[Tool Results]" in o for o in obs)
+    assert not any("[Tool: bash]" in o for o in obs)
 
 
 # ---- compaction ----------------------------------------------------------

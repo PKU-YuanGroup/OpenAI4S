@@ -45,6 +45,11 @@ from openai4s.kernel import Kernel
 from openai4s.llm import ARK_PLAN_MODELS, PROVIDERS, chat
 from openai4s.skills_loader import SkillLoader
 from openai4s.store import Store, get_store
+from openai4s.tools import MAX_TOOL_CALLS_PER_TURN as _MAX_TOOL_CALLS_PER_TURN
+from openai4s.tools import execute_tool_call as _execute_tool_call
+from openai4s.tools import finalize_tool_batch as _finalize_tool_batch
+from openai4s.tools import parse_tool_calls as _parse_tool_calls
+from openai4s.tools import render_tools_prompt as _render_tools_prompt
 
 os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure capture
 
@@ -1061,6 +1066,10 @@ class SessionRunner:
                 ctx += "\n\n" + OIO_BIOSECURITY_PROMPT
         except Exception:  # noqa: BLE001
             pass
+        try:
+            ctx += "\n\n" + _render_tools_prompt()
+        except Exception:  # noqa: BLE001
+            pass
         proj = self.store.get_project(st.project_id) if st.project_id else None
         if proj and (proj.get("context") or "").strip():
             ctx += "\n\nProject context:\n" + proj["context"].strip()
@@ -1223,13 +1232,40 @@ class SessionRunner:
         or non-Python env)."""
         from openai4s.kernel import environments as envmod
 
-        name = st.env_name or envmod.default_env_name()
+        name = (
+            st.env_name
+            or self._persisted_env(st.root_frame_id)
+            or envmod.default_env_name()
+        )
         env = envmod.get_environment(name)
         if env is None or env.interpreter is None:
-            env = envmod.get_environment("base")
-            name = "base"
+            # The requested env is not resolvable right now (e.g. conda envs not
+            # yet discovered after a restart). Run on base for THIS spawn but do
+            # NOT overwrite the stored pin — a later spawn, once the env is
+            # discoverable again, must still find the original selection.
+            st.env_name = "base"
+            return envmod.get_environment("base")
         st.env_name = name
+        self._persist_env(st.root_frame_id, name)
         return env
+
+    def _persisted_env(self, root_frame_id: str) -> "str | None":
+        """The runtime env this session last selected (frames.runtime_env), or None."""
+        try:
+            f = self.store.get_frame(root_frame_id) or {}
+            v = (f.get("runtime_env") or "").strip()
+            return v or None
+        except Exception:
+            return None
+
+    def _persist_env(self, root_frame_id: str, name: str) -> None:
+        """Remember the selected runtime env so a resumed session (new kernel,
+        same conversation) starts in it. Workspace files survive; in-memory
+        variables do not — this only pins the env, not the namespace."""
+        try:
+            self.store.update_frame(root_frame_id, runtime_env=name)
+        except Exception:
+            pass
 
     def _make_env_switch_sink(self, st: SessionState):
         """Return the dispatcher hook host.env.use() calls: record a requested
@@ -1468,6 +1504,7 @@ class SessionRunner:
             "cell_count": (st.cell_index if st else 0),
             "manual_stop": bool(st and st.kernel_manual_stop),
             "env": self._env_summary(st),
+            "repl_enabled": bool(self.cfg.notebook_repl),
         }
 
     def _env_summary(self, st: SessionState | None) -> dict:
@@ -1483,7 +1520,31 @@ class SessionRunner:
             "language": env.language if env else "python",
             "python_version": env.python_version() if env else None,
             "pending": (st.pending_env if st else None),
+            # Canonical cell-grouping label so the frontend labels live cells the
+            # SAME way the server labels persisted ones (it must not re-derive
+            # from `name`, which disagrees when OPENAI4S_DEFAULT_ENV is a non-base
+            # env — the default env always collapses to plain "python").
+            "kernel_id": self._env_label(name),
         }
+
+    @staticmethod
+    def _env_label(name: "str | None") -> str:
+        """Runtime segment label for an env name: 'python' for the default/base
+        env, 'python — <env>' for a switched prebuilt env. Groups Notebook cells."""
+        from openai4s.kernel import environments as envmod
+
+        name = (name or "").strip()
+        if not name or name in ("python", "base") or name == envmod.default_env_name():
+            return "python"
+        return f"python — {name}"
+
+    def _kernel_id(self, st: "SessionState | None") -> str:
+        """Runtime segment label for the cells a session's kernel runs."""
+        return self._env_label(getattr(st, "env_name", None))
+
+    def _kernel_language(self, st: "SessionState | None") -> str:
+        """Syntax language for a cell (the prebuilt envs all host a python kernel)."""
+        return "python"
 
     def stop_kernel(self, root_frame_id: str, project_id: str = "default") -> dict:
         """Shut the kernel process down (free its resources) but keep the session
@@ -2337,6 +2398,33 @@ class SessionRunner:
                     traceback.print_exc()
                 return
             if code is None:
+                # ReAct tool surface: run any top-level ```tool calls
+                # (deterministic ops through the dispatcher — same activity-step
+                # cards, permission gate and injection screen as a host cell
+                # call). A ```python cell WINS over tools, so a ```tool token
+                # merely quoted inside a code cell never executes; tools are only
+                # honored when the reply has no code cell.
+                tool_calls, tool_errors = _parse_tool_calls(reply)
+                if tool_calls or tool_errors:
+                    parts: list[str] = []
+                    for call in tool_calls[:_MAX_TOOL_CALLS_PER_TURN]:
+                        # Apply a queued env switch (host.env.use / the env_use
+                        # tool) before the call that depends on it — e.g. env_use
+                        # then bash — respawning the kernel into the new env, then
+                        # run against the (possibly rebuilt) dispatcher.
+                        if st.pending_env:
+                            self._apply_pending_env(st, emit)
+                        text, _ok = _execute_tool_call(st.dispatcher, call)
+                        parts.append(text)
+                    if st.pending_env:  # a trailing env_use → make it live onward
+                        self._apply_pending_env(st, emit)
+                    obs = _finalize_tool_batch(parts, len(tool_calls), tool_errors)
+                    st.messages.append({"role": "user", "content": obs})
+                    cells_run += 1
+                    stall_nudges = 0
+                    if st.dispatcher.last_output is not None:
+                        return
+                    continue
                 if st.dispatcher.last_output is not None:
                     return
                 if prose:
@@ -2621,8 +2709,8 @@ class SessionRunner:
                 cell_seq=idx,
                 cell_index=idx,
                 project_id=st.project_id,
-                kernel_id="python",
-                language="python",
+                kernel_id=self._kernel_id(st),
+                language=self._kernel_language(st),
                 figures=[],
                 files_written=[],
                 files_read=[],
@@ -2662,8 +2750,8 @@ class SessionRunner:
             cell_seq=idx,
             cell_index=idx,
             project_id=st.project_id,
-            kernel_id="python",
-            language="python",
+            kernel_id=self._kernel_id(st),
+            language=self._kernel_language(st),
             figures=figures,
             files_written=files_written,
             files_read=[],
@@ -2693,7 +2781,7 @@ class SessionRunner:
                 "Saving " + (files[0] if len(files) == 1 else f"{len(files)} artifacts")
             )
         )
-        step_input = {"files": files, "environment": "python"}
+        step_input = {"files": files, "environment": self._kernel_id(st)}
         step_output = {"artifacts": saved}
         summary = f"{len(saved)} artifact" + ("" if len(saved) == 1 else "s")
         sid = "s-" + uuid.uuid4().hex[:12]
@@ -3024,8 +3112,8 @@ class SessionRunner:
             return {
                 "cell": {
                     "cell_index": info["idx"],
-                    "kernel_id": "python",
-                    "language": "python",
+                    "kernel_id": self._kernel_id(st),
+                    "language": self._kernel_language(st),
                     "source": code,
                     "stdout": r.get("stdout") or "",
                     "stderr": r.get("stderr") or "",
@@ -4480,6 +4568,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/kernel/execute", sub)
             if m and method == "POST":
+                if not runner.cfg.notebook_repl:
+                    self._json(
+                        {
+                            "error": "notebook REPL is disabled; send a message to resume the agent"
+                        },
+                        403,
+                    )
+                    return
                 fid = m.group(1)
                 f = store.get_frame(fid) or {}
                 pid = f.get("project_id") or "default"
@@ -4488,6 +4584,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/kernel/restart", sub)
             if m and method == "POST":
+                if not runner.cfg.notebook_repl:
+                    self._json(
+                        {
+                            "error": "notebook REPL is disabled; send a message to resume the agent"
+                        },
+                        403,
+                    )
+                    return
                 fid = m.group(1)
                 f = store.get_frame(fid) or {}
                 pid = f.get("project_id") or "default"
@@ -4495,12 +4599,28 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/kernel/stop", sub)
             if m and method == "POST":
+                if not runner.cfg.notebook_repl:
+                    self._json(
+                        {
+                            "error": "notebook REPL is disabled; send a message to resume the agent"
+                        },
+                        403,
+                    )
+                    return
                 fid = m.group(1)
                 f = store.get_frame(fid) or {}
                 self._json(runner.stop_kernel(fid, f.get("project_id") or "default"))
                 return
             m = re.fullmatch(r"/frames/([^/]+)/kernel/interrupt", sub)
             if m and method == "POST":
+                if not runner.cfg.notebook_repl:
+                    self._json(
+                        {
+                            "error": "notebook REPL is disabled; send a message to resume the agent"
+                        },
+                        403,
+                    )
+                    return
                 st = runner._sessions.get(m.group(1))  # noqa: SLF001
                 if st and st.kernel is not None:
                     try:
@@ -4511,6 +4631,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/kernel/start", sub)
             if m and method == "POST":
+                if not runner.cfg.notebook_repl:
+                    self._json(
+                        {
+                            "error": "notebook REPL is disabled; send a message to resume the agent"
+                        },
+                        403,
+                    )
+                    return
                 fid = m.group(1)
                 f = store.get_frame(fid) or {}
                 self._json(runner.start_kernel(fid, f.get("project_id") or "default"))
@@ -4532,6 +4660,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/kernel/install", sub)
             if m and method == "POST":
+                # NOT gated by notebook_repl: prebuilt-env package install is a
+                # separate Customize → Compute affordance, not the code REPL, and
+                # the global /kernel/install route is ungated too.
                 fid = m.group(1)
                 f = store.get_frame(fid) or {}
                 pid = f.get("project_id") or "default"
@@ -4553,6 +4684,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/kernel/env", sub)
             if m and method == "POST":
+                if not runner.cfg.notebook_repl:
+                    self._json(
+                        {
+                            "error": "notebook REPL is disabled; send a message to resume the agent"
+                        },
+                        403,
+                    )
+                    return
                 fid = m.group(1)
                 f = store.get_frame(fid) or {}
                 pid = f.get("project_id") or "default"

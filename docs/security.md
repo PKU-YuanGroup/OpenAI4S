@@ -14,6 +14,12 @@ The daemon runs agent-authored code with **no OS-level sandbox** (no Seatbelt / 
 
 Additional enforcement: an opencode-style **permission broker** gates risk-bearing tools, a **secret-file guard** blocks `.env` / `*.key` / `id_rsa` from all file tools, and every file/shell op is **workspace-jailed**.
 
+### The Notebook REPL is off by default
+
+The web UI's right-hand Notebook is a **read-only execution trace** by default. The developer REPL — arbitrary kernel code execution from the right panel — is **disabled** and only comes back when you set `OPENAI4S_NOTEBOOK_REPL=1`. With it off, the mutating `kernel/*` routes (`execute`, `env`, `restart`, `stop`, `start`, `interrupt`, `install`) return `403`; the classifier note above about "your own Notebook cells" applies only once you have opted the REPL back in.
+
+ReAct **tool calls** — the deterministic `list` / `read` / `glob` / `grep` / `web` / `env` / `edit` / `write` / `bash` ops the model can invoke as ` ```tool ` JSON — route through the **same** `HostDispatcher` as `host.*` cell calls, so they pass the same permission broker, egress fence, injection screen, and pre-exec (dangerous-command) static gate. The ReAct surface adds no bypass around any of these layers.
+
 ### Secret reads and secret logs
 
 The agent can introspect its own SQLite store through the read-only `host.query`, so secret-bearing tables are **denylisted** and never reach it:

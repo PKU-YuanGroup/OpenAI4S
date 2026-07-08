@@ -1,5 +1,5 @@
 """Placeholder API-key filtering — is_placeholder_api_key + LLMConfig.__post_init__."""
-from openai4s.config import LLMConfig, is_placeholder_api_key
+from openai4s.config import Config, LLMConfig, is_placeholder_api_key
 
 
 def test_is_placeholder_api_key_matches_template_stubs():
@@ -40,6 +40,21 @@ def test_placeholder_explicit_key_falls_through_to_env(monkeypatch):
         LLMConfig(provider="ark", api_key="your-api-key-here").api_key
         == "sk-real-generic"
     )
+
+
+def test_notebook_repl_flag_defaults_off_and_reads_env(monkeypatch):
+    # the in-Notebook developer REPL is read-only (off) by default
+    monkeypatch.delenv("OPENAI4S_NOTEBOOK_REPL", raising=False)
+    assert Config().notebook_repl is False
+
+    monkeypatch.setenv("OPENAI4S_NOTEBOOK_REPL", "1")
+    assert Config().notebook_repl is True
+
+    # the shared _env_flag falsey vocabulary keeps it off
+    monkeypatch.setenv("OPENAI4S_NOTEBOOK_REPL", "0")
+    assert Config().notebook_repl is False
+    monkeypatch.setenv("OPENAI4S_NOTEBOOK_REPL", "off")
+    assert Config().notebook_repl is False
 
 
 def test_placeholder_env_does_not_shadow_native_key(monkeypatch):

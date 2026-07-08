@@ -455,6 +455,11 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .nb-repl-prompt{display:flex;align-items:baseline;gap:6px;margin-top:8px;font-family:var(--mono);font-size:12px}
 .nb-repl-prompt .pmt{color:var(--accent)}
 .nb-repl-prompt input{flex:1;border:0;outline:0;background:transparent;font:inherit;color:var(--text-400)}
+/* read-only Notebook status strip (replaces the REPL when repl_enabled is off) */
+.nb-status{border-top:.5px solid var(--border);margin-top:14px;padding-top:10px;font-size:12px}
+.nb-status-line{font-weight:500;color:var(--text-300)}
+.nb-status-line.ended{color:var(--muted,#888)}
+.nb-status-hint{margin-top:4px;font-size:11px;color:var(--muted,#888);line-height:1.5}
 
 /* Viewer */
 .viewer-head{display:flex;align-items:center;gap:8px;padding:12px 14px 8px}

@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS frames (
     model         TEXT,
     effort        TEXT,
     status        TEXT,               -- 'processing'|'done'|'failed'|'awaiting_user_response'
+    runtime_env   TEXT,
     depth         INTEGER NOT NULL DEFAULT 0,
     input_tokens  INTEGER,
     output_tokens INTEGER,
@@ -432,7 +433,11 @@ class Store:
 
     # --- migration (add columns missing from a pre-existing DB) -----------
     _MIGRATIONS = {
-        "frames": [("task_summary", "TEXT"), ("folder_id", "TEXT")],
+        "frames": [
+            ("task_summary", "TEXT"),
+            ("folder_id", "TEXT"),
+            ("runtime_env", "TEXT"),
+        ],
         "agents": [("system_prompt", "TEXT"), ("kind", "TEXT")],
         "artifact_versions": [("env_snapshot_id", "TEXT"), ("snapshot_path", "TEXT")],
         "env_snapshots": [("remote_json", "TEXT")],

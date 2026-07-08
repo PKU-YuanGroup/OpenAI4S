@@ -1207,3 +1207,169 @@ def test_body_malformed_json_treated_as_empty_dict(tmp_path):
     handler.headers = {}  # no Content-Length header at all
     handler.rfile = io.BytesIO(b'{"ignored": true}')
     assert handler._body() == {}
+
+
+# --- runtime-env labelling + resume (frames.runtime_env) ---------------------
+def test_kernel_id_labels_default_env_as_python_and_names_switches(tmp_path):
+    """Phase 1: _kernel_id groups Notebook cells under a runtime segment —
+    'python' for the default/base env, 'python — <env>' for a switched
+    prebuilt env. This is the kernel_id stamped on every logged cell."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    st = runner._state("f-kid", "default")
+
+    for default_like in (None, "python", "base"):
+        st.env_name = default_like
+        assert runner._kernel_id(st) == "python"
+
+    st.env_name = "struct"
+    assert runner._kernel_id(st) == "python — struct"
+    # the syntax language is always python across the prebuilt envs
+    assert runner._kernel_language(st) == "python"
+
+
+def test_persisted_env_roundtrip_and_resume_seeds_new_session(monkeypatch, tmp_path):
+    """Phase 2: the runtime env a session selected is pinned on
+    frames.runtime_env so a resumed session (fresh kernel, same conversation)
+    starts back in it. _persist_env writes it, _persisted_env reads it, and
+    _resolve_env seeds a brand-new SessionState from it."""
+    from openai4s.kernel import environments as envmod
+
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = runner.store
+    rid = store.new_frame(kind="turn", project_id="default", status="ready")
+
+    # nothing pinned yet
+    assert runner._persisted_env(rid) is None
+    assert store.get_frame(rid)["runtime_env"] is None
+
+    runner._persist_env(rid, "struct")
+    assert runner._persisted_env(rid) == "struct"
+    assert store.get_frame(rid)["runtime_env"] == "struct"
+
+    # a fresh session for the same conversation resolves back into the pinned
+    # env (kernel not spawned — _resolve_env only selects, it never launches)
+    fake_env = SimpleNamespace(name="struct", interpreter="/usr/bin/python3")
+    monkeypatch.setattr(
+        envmod, "get_environment", lambda name: fake_env if name == "struct" else None
+    )
+    st = gateway_mod.SessionState(rid, "default", runner.workspace_for(rid))
+    env = runner._resolve_env(st)
+    assert env is fake_env
+    assert st.env_name == "struct"
+
+
+# --- read-only Notebook: the REPL routes are gated by cfg.notebook_repl ------
+def test_notebook_repl_execute_route_gated_by_flag(monkeypatch, tmp_path):
+    """Phase 3: POST /frames/{fid}/kernel/execute is refused 403 when
+    cfg.notebook_repl is False (the default read-only Notebook) and never
+    reaches runner.run_repl; with the flag on it proceeds to run_repl."""
+    # disabled by default → 403 error envelope, run_repl short-circuited
+    cfg = _cfg(tmp_path)
+    assert cfg.notebook_repl is False
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    called = []
+    runner.run_repl = lambda *a, **k: called.append((a, k)) or {"ok": True}
+
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    replies = []
+    handler._query = lambda: {}
+    handler._body = lambda: {"code": "print(1)"}
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+
+    handler._api("POST", f"/frames/{fid}/kernel/execute")
+    assert replies[-1][0] == 403
+    assert "disabled" in replies[-1][1]["error"]
+    assert called == []  # the gate fired before the kernel path
+
+    # enabled (OPENAI4S_NOTEBOOK_REPL=1) → proceeds to runner.run_repl
+    monkeypatch.setenv("OPENAI4S_NOTEBOOK_REPL", "1")
+    cfg2 = _cfg(tmp_path)
+    assert cfg2.notebook_repl is True
+    runner2 = gateway_mod.SessionRunner(cfg2, _Hub())
+    sentinel = {"cell": {"cell_index": 1}}
+    hits = []
+    runner2.run_repl = (
+        lambda rfid, pid, code: hits.append((rfid, pid, code)) or sentinel
+    )
+
+    handler2 = object.__new__(gateway_mod.make_handler(cfg2, _Hub(), runner2))
+    replies2 = []
+    handler2._query = lambda: {}
+    handler2._body = lambda: {"code": "print(2)"}
+    handler2._json = lambda obj, code=200: replies2.append((code, obj))
+
+    handler2._api("POST", f"/frames/{fid}/kernel/execute")
+    assert hits == [(fid, "default", "print(2)")]
+    assert replies2[-1] == (200, sentinel)
+
+
+def test_resolve_env_does_not_clobber_pin_when_env_unresolvable(monkeypatch, tmp_path):
+    """Regression: a transiently-unresolvable pinned env must fall back to base
+    for THIS spawn WITHOUT overwriting frames.runtime_env — so a later spawn,
+    once the env is discoverable again, still resumes the original selection."""
+    from openai4s.kernel import environments as envmod
+
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = runner.store
+    rid = store.new_frame(kind="turn", project_id="default", status="ready")
+    runner._persist_env(rid, "struct")  # a valid prior selection
+
+    base_env = SimpleNamespace(name="base", interpreter="/usr/bin/python3")
+    # 'struct' momentarily undiscoverable (e.g. conda envs not yet scanned)
+    monkeypatch.setattr(
+        envmod, "get_environment", lambda name: base_env if name == "base" else None
+    )
+    st = gateway_mod.SessionState(rid, "default", runner.workspace_for(rid))
+    env = runner._resolve_env(st)
+
+    assert env is base_env
+    assert st.env_name == "base"  # runs on base for this spawn
+    assert store.get_frame(rid)["runtime_env"] == "struct"  # pin PRESERVED
+
+
+def test_env_summary_exposes_canonical_kernel_id(tmp_path):
+    """Regression: kernel_status.env carries a canonical kernel_id computed by
+    the SAME rule the server labels persisted cells with, so the frontend labels
+    live cells identically instead of re-deriving from the raw env name."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    st = runner._state("f-envsum", "default")
+
+    st.env_name = "python"
+    assert runner._env_summary(st)["kernel_id"] == "python"
+    st.env_name = "struct"
+    summary = runner._env_summary(st)
+    assert summary["name"] == "struct"
+    assert summary["kernel_id"] == "python — struct"  # matches _kernel_id(st)
+    assert runner._kernel_id(st) == summary["kernel_id"]
+
+
+def test_kernel_install_route_is_not_gated_by_notebook_repl(tmp_path):
+    """Regression: prebuilt-env package install (Customize → Compute) is a
+    separate affordance from the code REPL and must stay reachable in the
+    default read-only build — it must NOT return 403."""
+    cfg = _cfg(tmp_path)
+    assert cfg.notebook_repl is False
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    hits = []
+    runner.install_packages = lambda pkgs, **k: hits.append((pkgs, k)) or {
+        "ok": True,
+        "installed": pkgs,
+    }
+
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    replies = []
+    handler._query = lambda: {}
+    handler._body = lambda: {"packages": ["seaborn"]}
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+
+    handler._api("POST", f"/frames/{fid}/kernel/install")
+    assert replies[-1][0] == 200  # not 403
+    assert hits and hits[0][0] == ["seaborn"]

@@ -319,6 +319,11 @@ class Config:
     # replay: when true, the root agent records every host_call into a tape
     # so an exported notebook can be replayed offline.
     record_tape: bool = os.environ.get("OPENAI4S_RECORD_TAPE", "") not in ("", "0")
+    # read-only Notebook by default; set OPENAI4S_NOTEBOOK_REPL=1 to re-enable the
+    # in-Notebook developer REPL.
+    notebook_repl: bool = field(
+        default_factory=lambda: _env_flag("OPENAI4S_NOTEBOOK_REPL", False)
+    )
 
     def ensure_dirs(self) -> None:
         for sub in ("logs", "artifacts", "tool-results", "compaction-history"):

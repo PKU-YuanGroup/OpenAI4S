@@ -459,6 +459,9 @@ Object.assign(I18N.zh, {
   "nb.repl.interruptTitle": "中断执行",
   "nb.revive.startBtn": "▶ 启动内核",
   "nb.revive.text": "内核已停止 — 直接输入命令即可复活，或",
+  "nb.status.ended": "{0} · 已结束 — 仅供查看；该内核的内存命名空间已不存在。",
+  "nb.status.hint": "发送消息即可继续。你的下一条消息会在此环境中恢复运行 — 工作区文件保留；内存中的变量仅在内核存活时恢复。",
+  "nb.status.live": "运行中 · {0}",
   "nb.table.rowsHidden": "… {0} 行未显示",
   "notes.empty": "还没有笔记。",
   "notes.emptyNoProject": "在某个项目下可添加笔记。",
@@ -1031,6 +1034,9 @@ Object.assign(I18N.en, {
   "nb.repl.interruptTitle": "Interrupt execution",
   "nb.revive.startBtn": "▶ Start kernel",
   "nb.revive.text": "Kernel stopped — just type a command to revive it, or",
+  "nb.status.ended": "{0} · ended — view only; this kernel's in-memory namespace no longer exists.",
+  "nb.status.hint": "Send a message to continue. Your next message resumes in this environment — workspace files remain; in-memory variables are restored only while the kernel is alive.",
+  "nb.status.live": "Live · {0}",
   "nb.table.rowsHidden": "… {0} rows not shown",
   "notes.empty": "No notes yet.",
   "notes.emptyNoProject": "Notes can be added under a project.",
@@ -3252,7 +3258,7 @@ function nbLiveStart(tool, raw) {
   const isCode = codeTools.test(tool || "") || !TOOL_LABELS[tool || ""];
   if (!isCode) { S._liveCell = null; return; }
   const idx = ((raw || "").match(/cell\s+(\d+)/) || [])[1];
-  const cell = { cell_index: idx ? +idx : (S.liveCells ? S.liveCells.length : 0) + 1, kernel_id: "python", language: "python", source: "", stdout: "", stderr: "", status: "running", figures: [], live: true, _out: false };
+  const cell = { cell_index: idx ? +idx : (S.liveCells ? S.liveCells.length : 0) + 1, kernel_id: kernelIdFromEnv((_kc && _kc.st && _kc.st.env) || null), language: "python", source: "", stdout: "", stderr: "", status: "running", figures: [], live: true, _out: false };
   (S.liveCells = S.liveCells || []).push(cell); S._liveCell = cell; nbRender();
 }
 function nbLiveAppend(txt) {
@@ -3292,7 +3298,7 @@ async function kernelCtl(action) {
 const _kc = { id: null, st: null, stAt: 0, stBusy: false, envs: null, cur: null, envAt: 0, envBusy: false };
 function invalidateKernelCache() { _kc.id = null; _kc.st = null; _kc.stAt = 0; _kc.envs = null; _kc.cur = null; _kc.envAt = 0; }
 function _paintKernel(els, st) {
-  const { state, bStop, bStart, title, revive } = els || {};
+  const { state, bStop, bStart, title, revive, strip } = els || {};
   const label = st.turn_running ? t("dash.badge.running") : ({ running: t("nb.kernel.stateActive"), stopped: t("nb.kernel.stateStopped"), none: t("nb.kernel.stateNone") }[st.state] || st.state);
   if (state) {
     state.textContent = label + (st.generation ? t("nb.kernel.generation", st.generation) : "");
@@ -3307,6 +3313,17 @@ function _paintKernel(els, st) {
   if (bStart) bStart.disabled = st.alive;
   // Revive banner: only when the kernel is stopped/absent and no turn is running.
   if (revive) revive.classList.toggle("hidden", st.alive || st.turn_running);
+  if (strip) _paintStatusStrip(strip, st);
+}
+// Read-only Notebook status strip: a passive live/ended indicator + runtime
+// label (no inputs, no kernel-control buttons). Repainted by refreshKernelState.
+function _paintStatusStrip(strip, st) {
+  if (!strip || !strip.line) return;
+  const env = st.env || {};
+  const rt = kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
+  const alive = !!(st.turn_running || st.alive);
+  strip.line.textContent = alive ? t("nb.status.live", rt) : t("nb.status.ended", rt);
+  strip.line.className = "nb-status-line " + (alive ? "live" : "ended");
 }
 async function refreshKernelState(els, _b, _c) {
   // Back-compat: old callers passed (stateEl, bStop, bStart).
@@ -3369,6 +3386,19 @@ async function nbSwitchEnv(name, envSel) {
   invalidateKernelCache();  // env + generation changed — re-read state/env
   if (S.dock.open && S.activeTab === "notebook") renderNotebook();
 }
+// Display helpers for runtime-segment labels: the notebook groups cells by the
+// raw kernel_id (the filter/grouping value) but shows a friendly label —
+// "Python" or "Python — struct" — derived from it.
+function kernelLabel(k) { k = k || "python"; return k.replace(/^python\b/i, "Python"); }
+function kernelIdFromEnv(env) {  // stored kernel_id from a kernel-status env object
+  // Prefer the server's canonical label so live cells group under the SAME chip
+  // as reloaded ones (the server collapses the default env to "python" even when
+  // OPENAI4S_DEFAULT_ENV names a non-base env — re-deriving from name would not).
+  if (env && typeof env.kernel_id === "string" && env.kernel_id) return env.kernel_id;
+  const n = (env && env.name || "").trim();
+  if (!n || n === "python" || n === "base") return "python";
+  return "python — " + n;
+}
 function renderNotebook() {
   const nb = $("#dock-notebook"); if (!nb) return;
   // Live-follow: if the user is already parked near the bottom, keep the newest
@@ -3394,12 +3424,18 @@ function renderNotebook() {
   const kernels = []; entries.forEach(e => { const k = e.kernel_id || "python"; if (!kernels.includes(k)) kernels.push(k); });
   const chips = el("div", "kernel-chips");
   const mk = (k, label) => { const c = el("button", "kchip" + (((S.kernelFilter || null) === k) ? " on" : ""), label); c.onclick = () => { S.kernelFilter = k; renderNotebook(); }; return c; };
-  chips.appendChild(mk(null, "All")); kernels.forEach(k => chips.appendChild(mk(k, k)));
+  chips.appendChild(mk(null, "All")); kernels.forEach(k => chips.appendChild(mk(k, kernelLabel(k))));
   const badge = el("div", "nb-live-badge" + (S.running ? " live" : " idle")); badge.appendChild(el("span", "ld")); badge.appendChild(el("span", null, S.running ? "Live" : "Idle")); badge.appendChild(iconEl("chevron-down", 14)); chips.appendChild(badge);
   nb.appendChild(chips);
   let shown = entries; if (S.kernelFilter) shown = entries.filter(e => (e.kernel_id || "python") === S.kernelFilter);
   if (!shown.length) nb.appendChild(el("div", "dock-empty", t("nb.empty")));
   else shown.forEach(e => nb.appendChild(cellNode(e)));
+  // Read-only Notebook by default: the interactive REPL (input, env selector,
+  // stop/start/restart/interrupt) is built ONLY when the server explicitly
+  // enables it (developer flag repl_enabled). Otherwise render a passive,
+  // non-interactive status strip. refreshKernelState runs in BOTH branches.
+  const replEnabled = !!(_kc && _kc.st && _kc.st.repl_enabled);
+  if (replEnabled) {
   const repl = el("div", "nb-repl");
   const rh = el("div", "nb-repl-head");
   const title = el("span", "nb-kernel-title", "kernel"); rh.appendChild(title);
@@ -3444,6 +3480,17 @@ function renderNotebook() {
   inp.oninput = () => { S._replDraft = inp.value; };
   pr.appendChild(inp); pr.appendChild(stop); repl.appendChild(pr);
   nb.appendChild(repl);
+  } else {
+    // Passive status strip — no <input>, no <select>, no kernel-control buttons.
+    // Shows the runtime label, a live/ended indicator and a one-line resume hint.
+    // _paintStatusStrip (via refreshKernelState) keeps the indicator fresh.
+    const strip = el("div", "nb-status");
+    const sline = el("div", "nb-status-line", "…");
+    strip.appendChild(sline);
+    strip.appendChild(el("div", "nb-status-hint", t("nb.status.hint")));
+    refreshKernelState({ strip: { line: sline } });
+    nb.appendChild(strip);
+  }
   // Keep following the live output as new code/figures stream in.
   if (S.running && follow && body) requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
 }
