@@ -88,15 +88,15 @@ class JobManager:
             return {"error": "empty command"}
         kind = kind if kind in ("bash", "python") else "bash"
         # Confine the working directory to the jobs root: normalize a caller-supplied
-        # cwd and require the result to stay inside the root, so it cannot escape via
-        # ".." or an absolute path (no path injection).
-        root_dir = os.path.realpath(str(self.root))
+        # cwd and require it to share the root as a common path prefix, so it cannot
+        # escape via ".." traversal or an absolute path (no path injection).
+        base = os.path.realpath(str(self.root))
         if cwd:
-            wd = os.path.normpath(os.path.join(root_dir, cwd))
-            if wd != root_dir and not wd.startswith(root_dir + os.sep):
+            wd = os.path.normpath(os.path.join(base, cwd))
+            if os.path.commonpath((base, wd)) != base:
                 return {"error": "cwd escapes the jobs root"}
         else:
-            wd = root_dir
+            wd = base
         Path(wd).mkdir(parents=True, exist_ok=True)
         job = Job(kind, command, wd)
         with self._lock:
