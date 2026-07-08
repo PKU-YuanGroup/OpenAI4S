@@ -1817,11 +1817,17 @@ function stepBody(step) {
     const arts = out.artifacts || (out.filename ? [{ filename: out.filename, version_id: out.version_id }] : []);
     const files = (inp.files && inp.files.length ? inp.files : arts.map(a => a.filename)).filter(Boolean);
     const env = inp.environment || "python";
-    const kvRow = (label, valNode) => {
+    // Value rendered as text only — el() assigns textContent, never HTML, so an
+    // untrusted string (e.g. the environment label) can't inject markup. The
+    // pre-built files list uses the node variant instead.
+    const kvRow = (label, text) => {
       const r = el("div", "s-kv"); r.appendChild(el("span", "s-k", label));
-      const v = el("div", "s-v");
-      if (typeof valNode === "string") v.textContent = valNode; else v.appendChild(valNode);
-      r.appendChild(v); return r;
+      r.appendChild(el("div", "s-v", text == null ? "" : String(text)));
+      return r;
+    };
+    const kvNodeRow = (label, node) => {
+      const r = el("div", "s-kv"); r.appendChild(el("span", "s-k", label));
+      const v = el("div", "s-v"); v.appendChild(node); r.appendChild(v); return r;
     };
     // files rendered as a clickable JSON-style array (each opens the artifact)
     const fl = el("div", "s-files"); fl.appendChild(el("span", "s-brk", "["));
@@ -1835,7 +1841,7 @@ function stepBody(step) {
       fl.appendChild(line);
     });
     fl.appendChild(el("span", "s-brk", "]"));
-    box.appendChild(kvRow("files", fl));
+    box.appendChild(kvNodeRow("files", fl));
     box.appendChild(kvRow("environment", env));
     if (arts.length && (arts[0].artifact_id || arts[0].checksum)) {
       const wrap = el("div", "s-out");
