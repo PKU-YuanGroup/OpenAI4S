@@ -46,9 +46,12 @@ _DANGEROUS_PATTERNS: list[tuple[re.Pattern, str]] = [
     # recursive delete aimed at the filesystem root, home, or $HOME
     (
         re.compile(
-            r"\brm\b(?:\s+-{1,2}\w+)*\s+-{0,2}\w*[rR]\w*"  # rm ... a flag containing r/R
-            r"(?:\s+-{1,2}\w+)*"  # any further flags
-            r"\s+['\"]?(?:/|~|\$HOME|\$\{HOME\})['\"]?"  # target = /, ~, or $HOME
+            r"\brm\b"
+            # Require an actual recursive short/long option somewhere before
+            # the target, while allowing other GNU-style options around it.
+            r"(?=[^\n;|&]*\s(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive)(?:\s|$))"
+            r"(?:\s+(?:--|--[\w-]+(?:=[^\s;|&]+)?|-[\w-]+))*"
+            r"\s+['\"]?(?:/|~|\$HOME|\$\{HOME\})['\"]?"
             r"(?:\s|/|\*|;|&|\||$)"  # boundary (allow /*, trailing sep, or EOL)
         ),
         "recursive delete targeting '/', '~', or $HOME",
@@ -70,7 +73,8 @@ _DANGEROUS_PATTERNS: list[tuple[re.Pattern, str]] = [
     # world-writable permissions on the filesystem root
     (
         re.compile(
-            r"\bchmod\b\s+(?:-\w+\s+)*(?:0?777|a\+rwx|\+rwx)\s+['\"]?/(?:\s|['\"]|$)",
+            r"\bchmod\b\s+(?:-\w+\s+)*(?:0?777|a\+rwx|\+rwx)\s+"
+            r"(?:--\s+)?['\"]?/(?:\*|\s|['\"]|$)",
             re.IGNORECASE,
         ),
         "chmod 777 on '/'",
@@ -83,7 +87,8 @@ _DANGEROUS_PATTERNS: list[tuple[re.Pattern, str]] = [
     # piping a remote download straight into a shell interpreter
     (
         re.compile(
-            r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z|d|k|c|tc|fi|a)?sh\b",
+            r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?"
+            r"(?:(?:/usr)?/bin/)?(?:ba|z|d|k|c|tc|fi|a)?sh\b",
             re.IGNORECASE,
         ),
         "piping a downloaded script directly into a shell",
