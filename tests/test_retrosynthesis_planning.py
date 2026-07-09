@@ -1,4 +1,5 @@
 """Offline tests for the retrosynthesis_planning skill."""
+import importlib.util
 import json
 import re
 import sys
@@ -28,6 +29,7 @@ def _import_skill():
         collect_molecule_briefs,
         command_to_shell,
         normalize_routes,
+        parse_llm_annotations,
         rank_routes,
         render_route_tree_html,
     )
@@ -43,9 +45,33 @@ def _import_skill():
         "command_to_shell": command_to_shell,
         "collect_molecule_briefs": collect_molecule_briefs,
         "normalize_routes": normalize_routes,
+        "parse_llm_annotations": parse_llm_annotations,
         "rank_routes": rank_routes,
         "render_route_tree_html": render_route_tree_html,
     }
+
+
+def _graph_payload(html):
+    match = re.search(
+        r'<script type="application/json" id="andor-data">(.*?)</script>', html
+    )
+    assert match
+    return json.loads(match.group(1))["graph"]
+
+
+def _assert_no_duplicate_structure_uris(html):
+    """An `onerror` fallback is emitted only when it differs from its own primary.
+
+    Without RDKit the primary *is* the placeholder, so carrying a fallback would
+    embed the identical base64 payload twice on every molecule.
+    """
+    tags = re.findall(r"<(?:img|image)\b[^>]*?data-fallback-src[^>]*?>", html)
+    for tag in tags:
+        primary = re.search(r'(?:^|\s)(?:src|href)="([^"]+)"', tag).group(1)
+        fallback = re.search(r'data-fallback-src="([^"]+)"', tag).group(1)
+        assert fallback != primary, "fallback duplicates the primary structure URI"
+    if importlib.util.find_spec("rdkit") is None:
+        assert not tags, "without RDKit no fallback should be emitted at all"
 
 
 ROUTE_PAYLOAD = {
@@ -150,6 +176,19 @@ def test_aspirin_example_dashboard_is_documented():
     assert "phenolic O-acylation" in html
     assert "pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles" not in html
 
+    # The example is regenerated from committed source data, not hand-edited.
+    assert (skill_root / "examples" / "build_example.py").exists()
+    assert (skill_root / "examples" / "aspirin_routes.json").exists()
+    assert (skill_root / "examples" / "aspirin_annotations.json").exists()
+
+    # Regression lock: the target must not render with the 'unknown' color.
+    graph = _graph_payload(html)
+    target = next(
+        n for n in graph["nodes"] if n.get("smiles") == "CC(=O)Oc1ccccc1C(=O)O"
+    )
+    assert target["className"] == "target"
+    _assert_no_duplicate_structure_uris(html)
+
 
 def test_normalize_and_rank_routes():
     funcs = _import_skill()
@@ -204,7 +243,8 @@ def test_render_html_and_report():
     assert "--target: rgba(48, 117, 191, 0.09)" in html
     assert "structure-frame" in html
     assert "structure-well" in html
-    assert "data-fallback-src" in html
+    assert "data:image/svg+xml;base64" in html
+    _assert_no_duplicate_structure_uris(html)
     assert "pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles" not in html
     match = re.search(
         r'<script type="application/json" id="andor-data">(.*?)</script>', html
@@ -533,7 +573,7 @@ def test_complex_multistep_routes_keep_structures_visible():
     assert "Chemoselective bond-forming disconnection" in html
     assert "late-stage-intermediate" in html
     assert "data:image/svg+xml;base64" in html
-    assert "data-fallback-src" in html
+    _assert_no_duplicate_structure_uris(html)
     assert "0.0 Unrecognized" not in html
 
 
@@ -551,3 +591,133 @@ def test_build_aizynth_command_is_shell_safe():
     assert "aizynthcli" in command
     assert "--config" in command
     assert "'aspirin routes.json'" in shell or '"aspirin routes.json"' in shell
+
+
+# --- LLM response robustness -------------------------------------------------
+# host.llm has no JSON mode, so a conversation model routinely wraps its JSON in
+# prose or a mid-string fence. The dashboard must survive every one of these.
+
+CHATTY_JSON = '{"routes": {"1": {"route_strategy": "Recovered strategy."}}}'
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        CHATTY_JSON,
+        f"```json\n{CHATTY_JSON}\n```",
+        f"Sure! Here is the analysis:\n```json\n{CHATTY_JSON}\n```\nLet me know.",
+        f"Here you go: {CHATTY_JSON} — hope that helps!",
+    ],
+)
+def test_llm_annotations_survive_prose_wrapped_json(reply):
+    funcs = _import_skill()
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+
+    annotations = funcs["annotate_routes_with_llm"](ranked, lambda _: reply)
+    assert annotations["routes"]["1"]["route_strategy"] == "Recovered strategy."
+
+    html = funcs["render_route_tree_html"](ranked, llm=lambda _: reply)
+    assert "Recovered strategy." in html
+    assert "LLM Route Analysis" in html
+
+
+@pytest.mark.parametrize("reply", ["I cannot help with that.", ""])
+def test_llm_annotations_warn_and_degrade_when_unparseable(reply):
+    funcs = _import_skill()
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+
+    with pytest.warns(RuntimeWarning, match="not valid JSON"):
+        assert funcs["annotate_routes_with_llm"](ranked, lambda _: reply) == {}
+
+    with pytest.warns(RuntimeWarning, match="not valid JSON"):
+        html = funcs["render_route_tree_html"](ranked, llm=lambda _: reply)
+    # The renderer falls back to its own readout instead of losing the dashboard.
+    assert "Route Planning Readout" in html
+    assert "Route 1" in html
+
+
+@pytest.mark.parametrize("reply", ["null", "[1, 2]", '"a string"'])
+def test_llm_annotations_ignore_non_object_json(reply):
+    funcs = _import_skill()
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+
+    assert funcs["annotate_routes_with_llm"](ranked, lambda _: reply) == {}
+    html = funcs["render_route_tree_html"](ranked, llm=lambda _: reply)
+    assert "Route Planning Readout" in html
+
+
+def test_parse_llm_annotations_raises_when_no_json_present():
+    funcs = _import_skill()
+    with pytest.raises(ValueError):
+        funcs["parse_llm_annotations"]("there is no object here")
+
+
+# --- target identification ----------------------------------------------------
+
+
+def test_target_molecule_is_styled_as_target_in_knowledge_graph():
+    funcs = _import_skill()
+    target = "CC(=O)Oc1ccccc1C(=O)O"
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+    graph = _graph_payload(
+        funcs["render_route_tree_html"](ranked, target_smiles=target)
+    )
+
+    node = next(n for n in graph["nodes"] if n.get("smiles") == target)
+    assert node["meta"] == "target"
+    assert (
+        node["className"] == "target"
+    ), "target must use the target color, not 'unknown'"
+
+    # ...and the per-route SVG must agree with the knowledge graph.
+    html = funcs["render_route_tree_html"](ranked, target_smiles=target)
+    assert 'class="node target"' in html
+
+
+def test_target_is_identified_without_an_explicit_target_smiles():
+    funcs = _import_skill()
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+    graph = _graph_payload(funcs["render_route_tree_html"](ranked))
+
+    roots = [
+        n for n in graph["nodes"] if n["kind"] == "molecule" and n["meta"] == "target"
+    ]
+    assert len(roots) == 1
+
+
+def test_target_matches_a_non_canonical_smiles():
+    pytest.importorskip("rdkit")
+    funcs = _import_skill()
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+    # Same molecule as the tree root, written differently.
+    graph = _graph_payload(
+        funcs["render_route_tree_html"](ranked, target_smiles="OC(=O)c1ccccc1OC(C)=O")
+    )
+    node = next(
+        n for n in graph["nodes"] if n["kind"] == "molecule" and n["meta"] == "target"
+    )
+    assert node["className"] == "target"
+
+
+# --- payload hygiene ----------------------------------------------------------
+
+
+def test_graph_payload_escapes_html_delimiters():
+    funcs = _import_skill()
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+    hostile = {"routes": {"1": {"route_strategy": "<!--<script>alert(1)</script>-->"}}}
+    html = funcs["render_route_tree_html"](ranked, annotations=hostile)
+
+    raw = re.search(
+        r'<script type="application/json" id="andor-data">(.*?)</script>', html
+    ).group(1)
+    assert "<" not in raw and ">" not in raw
+    assert json.loads(raw)  # still valid JSON after escaping
+
+
+def test_molecule_briefs_warn_when_truncated():
+    funcs = _import_skill()
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+    with pytest.warns(RuntimeWarning, match="truncated"):
+        briefs = funcs["collect_molecule_briefs"](ranked, max_molecules=1)
+    assert len(briefs) == 1

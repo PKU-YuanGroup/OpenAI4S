@@ -1,0 +1,206 @@
+[
+  {
+    "type": "mol",
+    "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+    "in_stock": false,
+    "children": [
+      {
+        "type": "reaction",
+        "metadata": {
+          "classification": "0.0 Unrecognized",
+          "policy_name": "uspto",
+          "policy_probability": 0.726,
+          "template": "[C;D1;H3:2]-[C;H0;D3;+0:1](=[O;D1;H0:3])-[O;H0;D2;+0:4]-[c:5]>>C-C(=O)-O-[C;H0;D3;+0:1](-[C;D1;H3:2])=[O;D1;H0:3].[OH;D1;+0:4]-[c:5]",
+          "mapped_reaction_smiles": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[O:14][C:15]([CH3:16])=[O:17].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]"
+        },
+        "children": [
+          {
+            "type": "mol",
+            "smiles": "CC(=O)OC(C)=O",
+            "in_stock": true
+          },
+          {
+            "type": "mol",
+            "smiles": "O=C(O)c1ccccc1O",
+            "in_stock": true
+          }
+        ]
+      }
+    ],
+    "scores": {
+      "state score": 0.998,
+      "number of reactions": 1
+    },
+    "metadata": {
+      "created_at_iteration": 1,
+      "is_solved": true
+    }
+  },
+  {
+    "type": "mol",
+    "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+    "in_stock": false,
+    "children": [
+      {
+        "type": "reaction",
+        "metadata": {
+          "classification": "0.0 Unrecognized",
+          "policy_name": "uspto",
+          "policy_probability": 0.092,
+          "template": "[C:2]-[C;H0;D3;+0:1](=[O;D1;H0:3])-[O;H0;D2;+0:4]-[c:5]>>Cl-[C;H0;D3;+0:1](-[C:2])=[O;D1;H0:3].[OH;D1;+0:4]-[c:5]",
+          "mapped_reaction_smiles": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[Cl:14].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]"
+        },
+        "children": [
+          {
+            "type": "mol",
+            "smiles": "CC(=O)Cl",
+            "in_stock": true
+          },
+          {
+            "type": "mol",
+            "smiles": "O=C(O)c1ccccc1O",
+            "in_stock": true
+          }
+        ]
+      }
+    ],
+    "scores": {
+      "state score": 0.998,
+      "number of reactions": 1
+    },
+    "metadata": {
+      "created_at_iteration": 2,
+      "is_solved": true
+    }
+  },
+  {
+    "type": "mol",
+    "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+    "in_stock": false,
+    "children": [
+      {
+        "type": "reaction",
+        "metadata": {
+          "classification": "0.0 Unrecognized",
+          "policy_name": "uspto",
+          "policy_probability": 0.009,
+          "template": "[C:2]-[C;H0;D3;+0:1](=[O;H0;D1;+0:3])-[O;H0;D2;+0:4]-[c:5]>>O=[C;H0;D3;+0:1](-[C:2])-[OH;D1;+0:3].[OH;D1;+0:4]-[c:5]",
+          "mapped_reaction_smiles": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2]([OH:3])=[O:14].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]"
+        },
+        "children": [
+          {
+            "type": "mol",
+            "smiles": "CC(=O)O",
+            "in_stock": true
+          },
+          {
+            "type": "mol",
+            "smiles": "O=C(O)c1ccccc1O",
+            "in_stock": true
+          }
+        ]
+      }
+    ],
+    "scores": {
+      "state score": 0.998,
+      "number of reactions": 1
+    },
+    "metadata": {
+      "created_at_iteration": 3,
+      "is_solved": true
+    }
+  },
+  {
+    "type": "mol",
+    "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+    "in_stock": false,
+    "children": [
+      {
+        "type": "reaction",
+        "metadata": {
+          "classification": "0.0 Unrecognized",
+          "policy_name": "uspto",
+          "policy_probability": 0.001,
+          "template": "[C:7]-[O;H0;D2;+0:8]-[c;H0;D3;+0:1](:[c:2]):[c:3]-[C:4](=[O;D1;H0:5])-[O;D1;H1:6]>>F-[c;H0;D3;+0:1](:[c:2]):[c:3]-[C:4](=[O;D1;H0:5])-[O;D1;H1:6].[C:7]-[OH;D1;+0:8]",
+          "mapped_reaction_smiles": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[OH:4].[c:5]1([F:14])[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]"
+        },
+        "children": [
+          {
+            "type": "mol",
+            "smiles": "CC(=O)O",
+            "in_stock": true
+          },
+          {
+            "type": "mol",
+            "smiles": "O=C(O)c1ccccc1F",
+            "in_stock": true
+          }
+        ]
+      }
+    ],
+    "scores": {
+      "state score": 0.998,
+      "number of reactions": 1
+    },
+    "metadata": {
+      "created_at_iteration": 4,
+      "is_solved": true
+    }
+  },
+  {
+    "type": "mol",
+    "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+    "in_stock": false,
+    "children": [
+      {
+        "type": "reaction",
+        "metadata": {
+          "classification": "0.0 Unrecognized",
+          "policy_name": "uspto",
+          "policy_probability": 0.011,
+          "template": "[O;D1;H0:1]=[C:2](-[OH;D1;+0:3])-[c:4]1:[c:5]:[c:6]:[c:7]:[c:8]:[c:9]:1>>[O;D1;H0:1]=[C:2](-[O;H0;D2;+0:3]-C-c1:c:c:c:c:c:1)-[c:4]1:[c:5]:[c:6]:[c:7]:[c:8]:[c:9]:1",
+          "mapped_reaction_smiles": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[O:13][CH2:14][c:15]1[cH:16][cH:17][cH:18][cH:19][cH:20]1"
+        },
+        "children": [
+          {
+            "type": "mol",
+            "smiles": "CC(=O)Oc1ccccc1C(=O)OCc1ccccc1",
+            "in_stock": false,
+            "children": [
+              {
+                "type": "reaction",
+                "metadata": {
+                  "classification": "0.0 Unrecognized",
+                  "policy_name": "uspto",
+                  "policy_probability": 0.023,
+                  "template": "[C;D1;H3:2]-[C;H0;D3;+0:1](=[O;D1;H0:3])-[O;H0;D2;+0:4]-[c:5]>>C-C(=O)-O-[C;H0;D3;+0:1](-[C;D1;H3:2])=[O;D1;H0:3].[OH;D1;+0:4]-[c:5]",
+                  "mapped_reaction_smiles": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[O:13][CH2:14][c:15]1[cH:16][cH:17][cH:18][cH:19][cH:20]1>>[CH3:1][C:2](=[O:3])[O:21][C:22]([CH3:23])=[O:24].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[O:13][CH2:14][c:15]1[cH:16][cH:17][cH:18][cH:19][cH:20]1"
+                },
+                "children": [
+                  {
+                    "type": "mol",
+                    "smiles": "CC(=O)OC(C)=O",
+                    "in_stock": true
+                  },
+                  {
+                    "type": "mol",
+                    "smiles": "O=C(OCc1ccccc1)c1ccccc1O",
+                    "in_stock": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "scores": {
+      "state score": 0.994,
+      "number of reactions": 2
+    },
+    "metadata": {
+      "created_at_iteration": 5,
+      "is_solved": true
+    }
+  }
+]

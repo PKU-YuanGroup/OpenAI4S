@@ -1,0 +1,361 @@
+{
+  "routes": {
+    "1": {
+      "route_strategy": "Example LLM route analysis: the aspirin target is disconnected at the aryl acetate bond, reducing the plan to salicylic-acid-derived material plus an acetyl donor. Route 1 uses acetic anhydride; this is chemically plausible, but the export alone does not validate conditions, impurity profile, or scale-up behavior.",
+      "key_disconnections": [
+        "aryl acetate C(O)-O bond disconnection",
+        "salicylic acid phenol acylation in the forward direction"
+      ],
+      "reaction_sequence": [
+        "Confirm salicylic acid or the displayed salicylate precursor identity and availability.",
+        "Run the O-acylation with a literature-backed acetyl donor and monitor conversion by LCMS/HPLC.",
+        "Quench, isolate, and verify aspirin identity, residual salicylic acid, and hydrolysis level."
+      ],
+      "conditions_strategy": "screen acetic anhydride loading, weak base or acid catalysis, and aqueous quench timing.",
+      "yield_outlook": "A moderate-to-high step yield may be plausible for a simple phenolic acylation, but this example reports it as a planning estimate rather than an experimental fact.",
+      "route_risks": [
+        "hydrolysis of aspirin during workup or storage",
+        "incomplete O-acylation leaving salicylic acid impurity",
+        "acid chloride or anhydride handling, heat release, and corrosive byproducts"
+      ],
+      "recommended_next_steps": [
+        "search exact salicylic acid O-acylation precedent in SciFinder/Reaxys/internal ELN",
+        "check vendor, purity, and regulatory constraints for terminal precursors",
+        "run a small condition screen with HPLC assay before scale-up"
+      ],
+      "chemist_verdict": "go with verification: short and credible route, but conditions and analytical controls must be confirmed."
+    },
+    "2": {
+      "route_strategy": "Example LLM route analysis: the aspirin target is disconnected at the aryl acetate bond, reducing the plan to salicylic-acid-derived material plus an acetyl donor. Route 2 uses acetyl chloride; this is chemically plausible, but the export alone does not validate conditions, impurity profile, or scale-up behavior.",
+      "key_disconnections": [
+        "aryl acetate C(O)-O bond disconnection",
+        "salicylic acid phenol acylation in the forward direction"
+      ],
+      "reaction_sequence": [
+        "Confirm salicylic acid or the displayed salicylate precursor identity and availability.",
+        "Run the O-acylation with a literature-backed acetyl donor and monitor conversion by LCMS/HPLC.",
+        "Quench, isolate, and verify aspirin identity, residual salicylic acid, and hydrolysis level."
+      ],
+      "conditions_strategy": "control exotherm, HCl capture, and moisture exclusion if acetyl chloride is selected.",
+      "yield_outlook": "A moderate-to-high step yield may be plausible for a simple phenolic acylation, but this example reports it as a planning estimate rather than an experimental fact.",
+      "route_risks": [
+        "hydrolysis of aspirin during workup or storage",
+        "incomplete O-acylation leaving salicylic acid impurity",
+        "acid chloride or anhydride handling, heat release, and corrosive byproducts"
+      ],
+      "recommended_next_steps": [
+        "search exact salicylic acid O-acylation precedent in SciFinder/Reaxys/internal ELN",
+        "check vendor, purity, and regulatory constraints for terminal precursors",
+        "run a small condition screen with HPLC assay before scale-up"
+      ],
+      "chemist_verdict": "go with verification: short and credible route, but conditions and analytical controls must be confirmed."
+    },
+    "3": {
+      "route_strategy": "Example LLM route analysis: the aspirin target is disconnected at the aryl acetate bond, reducing the plan to salicylic-acid-derived material plus an acetyl donor. Route 3 uses acetic acid with activation or dehydrating conditions; this is chemically plausible, but the export alone does not validate conditions, impurity profile, or scale-up behavior.",
+      "key_disconnections": [
+        "aryl acetate C(O)-O bond disconnection",
+        "salicylic acid phenol acylation in the forward direction"
+      ],
+      "reaction_sequence": [
+        "Confirm salicylic acid or the displayed salicylate precursor identity and availability.",
+        "Run the O-acylation with a literature-backed acetyl donor and monitor conversion by LCMS/HPLC.",
+        "Quench, isolate, and verify aspirin identity, residual salicylic acid, and hydrolysis level."
+      ],
+      "conditions_strategy": "treat direct acetic-acid esterification as lower confidence unless activation precedent is available.",
+      "yield_outlook": "A moderate-to-high step yield may be plausible for a simple phenolic acylation, but this example reports it as a planning estimate rather than an experimental fact.",
+      "route_risks": [
+        "hydrolysis of aspirin during workup or storage",
+        "incomplete O-acylation leaving salicylic acid impurity",
+        "acid chloride or anhydride handling, heat release, and corrosive byproducts"
+      ],
+      "recommended_next_steps": [
+        "search exact salicylic acid O-acylation precedent in SciFinder/Reaxys/internal ELN",
+        "check vendor, purity, and regulatory constraints for terminal precursors",
+        "run a small condition screen with HPLC assay before scale-up"
+      ],
+      "chemist_verdict": "go with verification: short and credible route, but conditions and analytical controls must be confirmed."
+    },
+    "4": {
+      "route_strategy": "Example LLM route analysis: the aspirin target is disconnected at the aryl acetate bond, reducing the plan to salicylic-acid-derived material plus an acetyl donor. Route 4 uses acetic acid with activation or dehydrating conditions; this is chemically plausible, but the export alone does not validate conditions, impurity profile, or scale-up behavior.",
+      "key_disconnections": [
+        "aryl acetate C(O)-O bond disconnection",
+        "salicylic acid phenol acylation in the forward direction"
+      ],
+      "reaction_sequence": [
+        "Confirm salicylic acid or the displayed salicylate precursor identity and availability.",
+        "Run the O-acylation with a literature-backed acetyl donor and monitor conversion by LCMS/HPLC.",
+        "Quench, isolate, and verify aspirin identity, residual salicylic acid, and hydrolysis level."
+      ],
+      "conditions_strategy": "treat direct acetic-acid esterification as lower confidence unless activation precedent is available.",
+      "yield_outlook": "A moderate-to-high step yield may be plausible for a simple phenolic acylation, but this example reports it as a planning estimate rather than an experimental fact.",
+      "route_risks": [
+        "hydrolysis of aspirin during workup or storage",
+        "incomplete O-acylation leaving salicylic acid impurity",
+        "acid chloride or anhydride handling, heat release, and corrosive byproducts"
+      ],
+      "recommended_next_steps": [
+        "search exact salicylic acid O-acylation precedent in SciFinder/Reaxys/internal ELN",
+        "check vendor, purity, and regulatory constraints for terminal precursors",
+        "run a small condition screen with HPLC assay before scale-up"
+      ],
+      "chemist_verdict": "go with verification: short and credible route, but conditions and analytical controls must be confirmed."
+    },
+    "5": {
+      "route_strategy": "Example LLM route analysis: the aspirin target is disconnected at the aryl acetate bond, reducing the plan to salicylic-acid-derived material plus an acetyl donor. Route 5 uses acetic anhydride; this is chemically plausible, but the export alone does not validate conditions, impurity profile, or scale-up behavior.",
+      "key_disconnections": [
+        "aryl acetate C(O)-O bond disconnection",
+        "salicylic acid phenol acylation in the forward direction"
+      ],
+      "reaction_sequence": [
+        "Confirm salicylic acid or the displayed salicylate precursor identity and availability.",
+        "Run the O-acylation with a literature-backed acetyl donor and monitor conversion by LCMS/HPLC.",
+        "Quench, isolate, and verify aspirin identity, residual salicylic acid, and hydrolysis level."
+      ],
+      "conditions_strategy": "screen acetic anhydride loading, weak base or acid catalysis, and aqueous quench timing.",
+      "yield_outlook": "A moderate-to-high step yield may be plausible for a simple phenolic acylation, but this example reports it as a planning estimate rather than an experimental fact.",
+      "route_risks": [
+        "hydrolysis of aspirin during workup or storage",
+        "incomplete O-acylation leaving salicylic acid impurity",
+        "acid chloride or anhydride handling, heat release, and corrosive byproducts"
+      ],
+      "recommended_next_steps": [
+        "search exact salicylic acid O-acylation precedent in SciFinder/Reaxys/internal ELN",
+        "check vendor, purity, and regulatory constraints for terminal precursors",
+        "run a small condition screen with HPLC assay before scale-up"
+      ],
+      "chemist_verdict": "go with verification: short and credible route, but conditions and analytical controls must be confirmed."
+    }
+  },
+  "molecules": {
+    "CC(=O)Oc1ccccc1C(=O)O": {
+      "description": "Example LLM molecule brief: this is a target in the displayed aspirin route set. The stock status is not a terminal precursor; confirm identity, purity, and route-specific functional-group compatibility before execution."
+    },
+    "CC(=O)OC(C)=O": {
+      "description": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution."
+    },
+    "O=C(O)c1ccccc1O": {
+      "description": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution."
+    },
+    "CC(=O)Cl": {
+      "description": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution."
+    },
+    "CC(=O)O": {
+      "description": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution."
+    },
+    "O=C(O)c1ccccc1F": {
+      "description": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution."
+    },
+    "CC(=O)Oc1ccccc1C(=O)OCc1ccccc1": {
+      "description": "Example LLM molecule brief: this is a intermediate in the displayed aspirin route set. The stock status is not a terminal precursor; confirm identity, purity, and route-specific functional-group compatibility before execution."
+    },
+    "O=C(OCc1ccccc1)c1ccccc1O": {
+      "description": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution."
+    }
+  },
+  "reactions": {
+    "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[O:14][C:15]([CH3:16])=[O:17].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]": {
+      "reaction_type": "phenolic O-acylation / aryl acetate formation",
+      "description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.",
+      "mechanistic_rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.",
+      "bond_changes": [
+        "form aryl O-C(O)CH3 ester bond",
+        "consume phenolic O-H functionality"
+      ],
+      "suggested_conditions": {
+        "reagents": "acetic anhydride or acetyl chloride, selected by precedent",
+        "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety",
+        "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options",
+        "temperature": "0-25 C addition control, then ambient to mild heating if needed",
+        "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity",
+        "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"
+      },
+      "expected_yield_range": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details",
+      "yield_rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.",
+      "selectivity_risks": [
+        "competitive reaction or salt formation at the carboxylic acid",
+        "hydrolysis during aqueous handling",
+        "over-activation or side products if strongly activating reagents are used"
+      ],
+      "safety_notes": [
+        "acetyl chloride and acetic anhydride are corrosive and can release heat during quench",
+        "assess exotherm, ventilation, and acid-gas handling before scale-up"
+      ],
+      "validation_plan": [
+        "verify exact literature or internal precedent for salicylic acid acetylation",
+        "run LCMS/HPLC monitored microscale screen",
+        "define impurity controls for salicylic acid and hydrolysis products"
+      ],
+      "confidence": "medium"
+    },
+    "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[Cl:14].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]": {
+      "reaction_type": "phenolic O-acylation / aryl acetate formation",
+      "description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.",
+      "mechanistic_rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.",
+      "bond_changes": [
+        "form aryl O-C(O)CH3 ester bond",
+        "consume phenolic O-H functionality"
+      ],
+      "suggested_conditions": {
+        "reagents": "acetic anhydride or acetyl chloride, selected by precedent",
+        "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety",
+        "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options",
+        "temperature": "0-25 C addition control, then ambient to mild heating if needed",
+        "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity",
+        "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"
+      },
+      "expected_yield_range": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details",
+      "yield_rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.",
+      "selectivity_risks": [
+        "competitive reaction or salt formation at the carboxylic acid",
+        "hydrolysis during aqueous handling",
+        "over-activation or side products if strongly activating reagents are used"
+      ],
+      "safety_notes": [
+        "acetyl chloride and acetic anhydride are corrosive and can release heat during quench",
+        "assess exotherm, ventilation, and acid-gas handling before scale-up"
+      ],
+      "validation_plan": [
+        "verify exact literature or internal precedent for salicylic acid acetylation",
+        "run LCMS/HPLC monitored microscale screen",
+        "define impurity controls for salicylic acid and hydrolysis products"
+      ],
+      "confidence": "medium"
+    },
+    "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2]([OH:3])=[O:14].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]": {
+      "reaction_type": "phenolic O-acylation / aryl acetate formation",
+      "description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.",
+      "mechanistic_rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.",
+      "bond_changes": [
+        "form aryl O-C(O)CH3 ester bond",
+        "consume phenolic O-H functionality"
+      ],
+      "suggested_conditions": {
+        "reagents": "acetic anhydride or acetyl chloride, selected by precedent",
+        "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety",
+        "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options",
+        "temperature": "0-25 C addition control, then ambient to mild heating if needed",
+        "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity",
+        "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"
+      },
+      "expected_yield_range": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details",
+      "yield_rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.",
+      "selectivity_risks": [
+        "competitive reaction or salt formation at the carboxylic acid",
+        "hydrolysis during aqueous handling",
+        "over-activation or side products if strongly activating reagents are used"
+      ],
+      "safety_notes": [
+        "acetyl chloride and acetic anhydride are corrosive and can release heat during quench",
+        "assess exotherm, ventilation, and acid-gas handling before scale-up"
+      ],
+      "validation_plan": [
+        "verify exact literature or internal precedent for salicylic acid acetylation",
+        "run LCMS/HPLC monitored microscale screen",
+        "define impurity controls for salicylic acid and hydrolysis products"
+      ],
+      "confidence": "medium"
+    },
+    "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[OH:4].[c:5]1([F:14])[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]": {
+      "reaction_type": "phenolic O-acylation / aryl acetate formation",
+      "description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.",
+      "mechanistic_rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.",
+      "bond_changes": [
+        "form aryl O-C(O)CH3 ester bond",
+        "consume phenolic O-H functionality"
+      ],
+      "suggested_conditions": {
+        "reagents": "acetic anhydride or acetyl chloride, selected by precedent",
+        "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety",
+        "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options",
+        "temperature": "0-25 C addition control, then ambient to mild heating if needed",
+        "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity",
+        "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"
+      },
+      "expected_yield_range": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details",
+      "yield_rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.",
+      "selectivity_risks": [
+        "competitive reaction or salt formation at the carboxylic acid",
+        "hydrolysis during aqueous handling",
+        "over-activation or side products if strongly activating reagents are used"
+      ],
+      "safety_notes": [
+        "acetyl chloride and acetic anhydride are corrosive and can release heat during quench",
+        "assess exotherm, ventilation, and acid-gas handling before scale-up"
+      ],
+      "validation_plan": [
+        "verify exact literature or internal precedent for salicylic acid acetylation",
+        "run LCMS/HPLC monitored microscale screen",
+        "define impurity controls for salicylic acid and hydrolysis products"
+      ],
+      "confidence": "medium"
+    },
+    "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[O:13][CH2:14][c:15]1[cH:16][cH:17][cH:18][cH:19][cH:20]1": {
+      "reaction_type": "phenolic O-acylation / aryl acetate formation",
+      "description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.",
+      "mechanistic_rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.",
+      "bond_changes": [
+        "form aryl O-C(O)CH3 ester bond",
+        "consume phenolic O-H functionality"
+      ],
+      "suggested_conditions": {
+        "reagents": "acetic anhydride or acetyl chloride, selected by precedent",
+        "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety",
+        "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options",
+        "temperature": "0-25 C addition control, then ambient to mild heating if needed",
+        "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity",
+        "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"
+      },
+      "expected_yield_range": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details",
+      "yield_rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.",
+      "selectivity_risks": [
+        "competitive reaction or salt formation at the carboxylic acid",
+        "hydrolysis during aqueous handling",
+        "over-activation or side products if strongly activating reagents are used"
+      ],
+      "safety_notes": [
+        "acetyl chloride and acetic anhydride are corrosive and can release heat during quench",
+        "assess exotherm, ventilation, and acid-gas handling before scale-up"
+      ],
+      "validation_plan": [
+        "verify exact literature or internal precedent for salicylic acid acetylation",
+        "run LCMS/HPLC monitored microscale screen",
+        "define impurity controls for salicylic acid and hydrolysis products"
+      ],
+      "confidence": "medium"
+    },
+    "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[O:13][CH2:14][c:15]1[cH:16][cH:17][cH:18][cH:19][cH:20]1>>[CH3:1][C:2](=[O:3])[O:21][C:22]([CH3:23])=[O:24].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[O:13][CH2:14][c:15]1[cH:16][cH:17][cH:18][cH:19][cH:20]1": {
+      "reaction_type": "phenolic O-acylation / aryl acetate formation",
+      "description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.",
+      "mechanistic_rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.",
+      "bond_changes": [
+        "form aryl O-C(O)CH3 ester bond",
+        "consume phenolic O-H functionality"
+      ],
+      "suggested_conditions": {
+        "reagents": "acetic anhydride or acetyl chloride, selected by precedent",
+        "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety",
+        "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options",
+        "temperature": "0-25 C addition control, then ambient to mild heating if needed",
+        "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity",
+        "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"
+      },
+      "expected_yield_range": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details",
+      "yield_rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.",
+      "selectivity_risks": [
+        "competitive reaction or salt formation at the carboxylic acid",
+        "hydrolysis during aqueous handling",
+        "over-activation or side products if strongly activating reagents are used"
+      ],
+      "safety_notes": [
+        "acetyl chloride and acetic anhydride are corrosive and can release heat during quench",
+        "assess exotherm, ventilation, and acid-gas handling before scale-up"
+      ],
+      "validation_plan": [
+        "verify exact literature or internal precedent for salicylic acid acetylation",
+        "run LCMS/HPLC monitored microscale screen",
+        "define impurity controls for salicylic acid and hydrolysis products"
+      ],
+      "confidence": "medium"
+    }
+  }
+}

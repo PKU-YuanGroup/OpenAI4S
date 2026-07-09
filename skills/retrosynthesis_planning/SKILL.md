@@ -1,7 +1,7 @@
 ---
 name: retrosynthesis_planning
 description: industrial retrosynthesis planning pipeline for target SMILES; run AiZynthFinder, normalize route JSON, query route molecules, rank routes, render figure-style route dashboards, and write analyst reports with retrosynthetic rationale.
-origin: personal
+origin: openai4s
 category: chemistry
 ---
 # Skill: retrosynthesis planning
@@ -82,7 +82,6 @@ from retrosynthesis_planning.kernel import (
     build_markdown_report,
     build_molecule_structure_src,
     build_pubchem_query_url,
-    build_pubchem_structure_image_url,
     canonicalize_smiles,
     collect_molecule_briefs,
     command_to_shell,
@@ -153,6 +152,12 @@ annotate the displayed molecules and reactions before rendering the dashboard:
 annotations = annotate_routes_with_llm(ranked[:8], llm=host.llm, target_smiles=target)
 ```
 
+`annotate_routes_with_llm(...)` tolerates the usual conversation-model reply
+shapes: bare JSON, a fenced block, or JSON wrapped in prose. If no JSON can be
+recovered it warns and returns `{}`, and the dashboard falls back to its own
+"Route Planning Readout" instead of failing the render. Check the warning if a
+Route X card shows the readout rather than "LLM Route Analysis".
+
 The LLM must return a human-readable `reaction_type`, detailed reaction
 description, mechanistic rationale, bond changes, plausible conditions,
 expected yield range, yield rationale, selectivity risks, safety notes, and a
@@ -190,7 +195,8 @@ from the backend and state which graph source was used.
 Molecule structures are rendered with RDKit SVG when RDKit is installed in the
 kernel; otherwise the dashboard uses transparent local SVG placeholders. Do not
 use PubChem PNGs as in-dashboard molecule images; PubChem remains a query link
-for lookup only. Reaction conditions are not predicted by AiZynthFinder route
+for lookup only. (`build_pubchem_structure_image_url(...)` is still exported for
+external reports, but must not be embedded in the dashboard.) Reaction conditions are not predicted by AiZynthFinder route
 planning; label them as not predicted unless an external condition-prediction,
 literature lookup, or LLM hypothesis with explicit uncertainty provides
 evidence.
@@ -215,6 +221,17 @@ This skill includes an example dashboard generated from an aspirin route export:
 ```text
 skills/retrosynthesis_planning/examples/aspirin_retrosynthesis.html
 ```
+
+It is regenerated from committed source data rather than hand-edited:
+
+```bash
+uv run python skills/retrosynthesis_planning/examples/build_example.py
+```
+
+`aspirin_routes.json` holds the route trees and `aspirin_annotations.json` the
+deterministic demonstration annotations. **The committed dashboard was rendered
+without RDKit**, so its molecule images are the transparent placeholder SVG, not
+real depictions. Install RDKit before regenerating to get real structures.
 
 Open it directly in a browser, or serve the skill directory locally:
 

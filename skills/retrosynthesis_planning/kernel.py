@@ -7,12 +7,14 @@ HTML/Markdown artifacts for human review.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import html
 import json
 import math
 import re
 import shlex
+import warnings
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -492,6 +494,13 @@ def collect_molecule_briefs(
             item["smiles"],
         )
     )
+    if len(briefs) > max_molecules:
+        warnings.warn(
+            f"molecule briefs truncated to {max_molecules} of {len(briefs)} route "
+            "molecules; raise max_molecules to brief every displayed molecule",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return briefs[:max_molecules]
 
 
@@ -515,6 +524,12 @@ def build_pubchem_structure_image_url(
     )
 
 
+def _svg_data_uri(svg: str) -> str:
+    payload = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{payload}"
+
+
+@functools.lru_cache(maxsize=1024)
 def build_molecule_structure_src(
     smiles: str, width: int = 260, height: int = 180
 ) -> str:
@@ -527,11 +542,11 @@ def build_molecule_structure_src(
     """
     svg = _rdkit_molecule_svg(smiles, width=width, height=height)
     if svg:
-        payload = base64.b64encode(svg.encode("utf-8")).decode("ascii")
-        return f"data:image/svg+xml;base64,{payload}"
+        return _svg_data_uri(svg)
     return build_molecule_fallback_structure_src(smiles, width=width, height=height)
 
 
+@functools.lru_cache(maxsize=1024)
 def build_molecule_fallback_structure_src(
     smiles: str, width: int = 260, height: int = 180
 ) -> str:
@@ -557,29 +572,22 @@ def build_molecule_fallback_structure_src(
   <text x="{cx:.1f}" y="{h - 24:.1f}" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" font-weight="650" fill="#3d4b57">{label}</text>
   <text x="{cx:.1f}" y="{h - 8:.1f}" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="9" fill="#687482">structure renderer fallback</text>
 </svg>"""
-    payload = base64.b64encode(svg.encode("utf-8")).decode("ascii")
-    return f"data:image/svg+xml;base64,{payload}"
+    return _svg_data_uri(svg)
 
 
 def _molecule_structure_sources(
     smiles: str, width: int = 260, height: int = 180
 ) -> dict[str, str]:
-    return {
-        "primary": build_molecule_structure_src(smiles, width=width, height=height),
-        "fallback": build_molecule_fallback_structure_src(
-            smiles, width=width, height=height
-        ),
-    }
+    """Primary structure source, plus an `onerror` fallback only when it differs.
 
-
-def _should_use_structure_fallback(smiles: str) -> bool:
-    value = str(smiles or "").strip().lower()
-    if not value:
-        return True
-    invalid_markers = ("unknown", "intermediate", "molecule", "not available")
-    if any(marker in value for marker in invalid_markers):
-        return True
-    return False
+    `build_molecule_structure_src` already degrades to the placeholder when RDKit
+    is missing, so carrying the placeholder a second time would embed the same
+    base64 payload twice. The fallback is only meaningful as a safety net behind
+    a real RDKit depiction.
+    """
+    primary = build_molecule_structure_src(smiles, width=width, height=height)
+    fallback = build_molecule_fallback_structure_src(smiles, width=width, height=height)
+    return {"primary": primary, "fallback": "" if primary == fallback else fallback}
 
 
 def build_llm_annotation_prompt(
@@ -678,8 +686,41 @@ def build_llm_annotation_prompt(
     )
 
 
+def _first_json_object(text: str) -> str:
+    """Return the first balanced ``{...}`` block in `text`, ignoring braces in strings."""
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                return text[start : index + 1]
+    raise ValueError("no JSON object found in the LLM response")
+
+
 def parse_llm_annotations(raw: str | dict[str, Any]) -> dict[str, Any]:
-    """Parse an LLM annotation response, accepting raw JSON or fenced JSON text."""
+    """Parse an LLM annotation response, accepting raw JSON or fenced JSON text.
+
+    Conversation models routinely wrap JSON in prose ("Sure, here is...") or in a
+    fenced block that does not start at character zero, so a bare `json.loads` is
+    not enough. Raises `ValueError` when no JSON can be recovered.
+    """
     if isinstance(raw, dict):
         if any(key in raw for key in ("routes", "molecules", "reactions")):
             return raw
@@ -694,14 +735,13 @@ def parse_llm_annotations(raw: str | dict[str, Any]) -> dict[str, Any]:
                 return first["input"]
         return raw
     text = str(raw or "").strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return json.loads(text)
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return json.loads(_first_json_object(text))
 
 
 def annotate_routes_with_llm(
@@ -710,7 +750,11 @@ def annotate_routes_with_llm(
     target_smiles: str | None = None,
     max_routes: int = 8,
 ) -> dict[str, Any]:
-    """Call the configured conversation LLM and parse route annotations."""
+    """Call the configured conversation LLM and parse route annotations.
+
+    Never raises on a malformed model reply: an unparseable response warns and
+    yields `{}`, which the renderers degrade to their no-annotation readout.
+    """
     if llm is None:
         raise ValueError("llm callable is required, for example host.llm")
     prompt = build_llm_annotation_prompt(
@@ -718,9 +762,24 @@ def annotate_routes_with_llm(
     )
     try:
         raw = llm({"prompt": prompt, "max_tokens": 4096, "temperature": 0.2})
-    except TypeError:
-        raw = llm(prompt)
-    return parse_llm_annotations(raw)
+    except TypeError as dict_error:
+        # The callable may only accept a positional prompt. If it rejects that
+        # too, the original error is the honest one to surface.
+        try:
+            raw = llm(prompt)
+        except TypeError:
+            raise dict_error
+    try:
+        annotations = parse_llm_annotations(raw)
+    except (ValueError, TypeError) as error:
+        warnings.warn(
+            f"LLM annotation response was not valid JSON ({error}); "
+            "rendering without LLM annotations.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return {}
+    return annotations if isinstance(annotations, dict) else {}
 
 
 def _route_candidates(payload: Any) -> list[Any]:
@@ -868,18 +927,20 @@ def _render_molecule_briefs_panel(
         annotation = _annotation_for_molecule(annotations, str(brief["smiles"]))
         note = annotation or _molecule_panel_note(brief)
         structure_sources = _molecule_structure_sources(str(brief["smiles"]))
+        alt = f'alt="Structure of {html.escape(str(brief["smiles"]))}"'
+        img = f'<img class="mol-structure" src="{html.escape(structure_sources["primary"])}" '
+        if structure_sources["fallback"]:
+            img += (
+                f'data-fallback-src="{html.escape(structure_sources["fallback"])}" '
+                "onerror=\"this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');\" "
+            )
         cards.append(
             "\n".join(
                 [
                     '<article class="molecule-card">',
                     f"<h3><code>{html.escape(str(brief['smiles']))}</code></h3>",
                     '<div class="structure-frame">',
-                    (
-                        f'<img class="mol-structure" src="{html.escape(structure_sources["primary"])}" '
-                        f'data-fallback-src="{html.escape(structure_sources["fallback"])}" '
-                        "onerror=\"this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');\" "
-                        f'alt="Structure of {html.escape(str(brief["smiles"]))}">'
-                    ),
+                    img + alt + ">",
                     "</div>",
                     "<dl>",
                     f"<dt>Role</dt><dd>{html.escape(str(brief['role']))}</dd>",
@@ -913,7 +974,16 @@ def _render_interactive_andor_tree(
     payload = _interactive_andor_payload(
         routes, target_smiles=target_smiles, annotations=annotations
     )
-    data_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    # Escaping only "</" would still let a "<!--<script" sequence in LLM-authored
+    # annotation text push the parser into the double-escaped state, where the
+    # closing </script> no longer terminates the block. Escape < > & outright;
+    # in JSON these only ever occur inside strings, and JSON.parse restores them.
+    data_json = (
+        json.dumps(payload, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
     return "\n".join(
         [
             '<section class="panel andor-panel">',
@@ -982,37 +1052,41 @@ def _interactive_andor_payload(
         edges.setdefault((source, target), set()).add(str(route_rank))
 
     def molecule_node(
-        item: dict[str, Any], route_rank: Any, depth: int
+        item: dict[str, Any], route_rank: Any, depth: int, is_target: bool = False
     ) -> dict[str, Any]:
         smiles = _node_smiles(item) or _node_display_label(item)
-        class_name = _node_visual_class(item, depth, bool(_children(item)))
-        role = _molecule_role(item, depth, target_smiles or "")
+        # This walk starts the route tree at depth 1 (depth 0 is the synthetic
+        # root), so the target has to be flagged explicitly rather than by depth.
+        role = _molecule_role(item, depth, target_smiles or "", is_target=is_target)
+        class_name = _node_visual_class(
+            item, depth, bool(_children(item)), is_target=(role == "target")
+        )
         annotation = _annotation_for_molecule(annotations, smiles)
         structure_sources = _molecule_structure_sources(smiles, width=240, height=160)
-        return add_node(
-            {
-                "id": "mol:" + smiles,
-                "kind": "molecule",
-                "className": class_name,
-                "label": _short_label(smiles, 34),
-                "meta": role,
-                "smiles": smiles,
-                "structureSrc": structure_sources["primary"],
-                "structureFallbackSrc": structure_sources["fallback"],
-                "depth": depth,
-                "routes": [route_rank],
-                "details": {
-                    "Type": "Molecule",
-                    "Role": role,
-                    "SMILES": smiles,
-                    "Stock status": _stock_status_value(item),
-                    "Routes": str(route_rank),
-                    "Annotation": annotation
-                    or _molecule_detail_note(role, _stock_status_value(item)),
-                    "PubChem": build_pubchem_query_url(smiles),
-                },
-            }
-        )
+        node: dict[str, Any] = {
+            "id": "mol:" + smiles,
+            "kind": "molecule",
+            "className": class_name,
+            "label": _short_label(smiles, 34),
+            "meta": role,
+            "smiles": smiles,
+            "structureSrc": structure_sources["primary"],
+            "depth": depth,
+            "routes": [route_rank],
+            "details": {
+                "Type": "Molecule",
+                "Role": role,
+                "SMILES": smiles,
+                "Stock status": _stock_status_value(item),
+                "Routes": str(route_rank),
+                "Annotation": annotation
+                or _molecule_detail_note(role, _stock_status_value(item)),
+                "PubChem": build_pubchem_query_url(smiles),
+            },
+        }
+        if structure_sources["fallback"]:
+            node["structureFallbackSrc"] = structure_sources["fallback"]
+        return add_node(node)
 
     def reaction_node(
         item: dict[str, Any], parent_id: str, route_rank: Any, depth: int
@@ -1107,7 +1181,9 @@ def _interactive_andor_payload(
             }
         )
 
-    def walk(item: Any, parent_id: str, route_rank: Any, depth: int) -> None:
+    def walk(
+        item: Any, parent_id: str, route_rank: Any, depth: int, is_root: bool = False
+    ) -> None:
         if not isinstance(item, dict):
             return
         if _is_reaction_node(item):
@@ -1116,13 +1192,13 @@ def _interactive_andor_payload(
             for child in _children(item):
                 walk(child, rxn["id"], route_rank, depth + 1)
             return
-        mol = molecule_node(item, route_rank, depth)
+        mol = molecule_node(item, route_rank, depth, is_target=is_root)
         add_edge(parent_id, mol["id"], route_rank)
         for child in _children(item):
             walk(child, mol["id"], route_rank, depth + 1)
 
     for route in routes:
-        walk(route.get("tree"), root["id"], route.get("rank", "?"), 1)
+        walk(route.get("tree"), root["id"], route.get("rank", "?"), 1, is_root=True)
 
     return {
         "graph": {
@@ -1247,13 +1323,6 @@ def _annotation_record_for_molecule(
         if isinstance(item, (dict, str)):
             return item
     return {}
-
-
-def _annotation_for_reaction(
-    annotations: dict[str, Any], details: dict[str, Any]
-) -> str:
-    item = _annotation_record_for_reaction(annotations, details)
-    return _annotation_description(item)
 
 
 def _annotation_record_for_reaction(
@@ -1523,10 +1592,30 @@ def _iter_molecule_nodes(node: Any) -> Iterable[tuple[dict[str, Any], int]]:
     yield from walk(node, 0)
 
 
-def _molecule_role(node: dict[str, Any], depth: int, target_smiles: str) -> str:
+@functools.lru_cache(maxsize=4096)
+def _canonical_key(smiles: str) -> str:
+    """Canonical SMILES used for identity comparison; the raw string without RDKit."""
+    value = (smiles or "").strip()
+    if not value:
+        return ""
+    try:
+        from rdkit import Chem  # type: ignore
+    except ImportError:
+        return value
+    mol = Chem.MolFromSmiles(value)
+    if mol is None:
+        return value
+    return Chem.MolToSmiles(mol, canonical=True)
+
+
+def _molecule_role(
+    node: dict[str, Any], depth: int, target_smiles: str, is_target: bool = False
+) -> str:
     smiles = _node_smiles(node) or ""
     children = _children(node)
-    if depth == 0 or (target_smiles and smiles == target_smiles):
+    if is_target or depth == 0:
+        return "target"
+    if target_smiles and _canonical_key(smiles) == _canonical_key(target_smiles):
         return "target"
     if not children and (
         node.get("in_stock") or node.get("is_in_stock") or node.get("stock")
@@ -1809,10 +1898,13 @@ def _svg_node(item: dict[str, Any]) -> str:
             f'<rect class="structure-well" x="{item["x"] - 90:.1f}" y="{item["y"] - 50:.1f}" '
             'width="180" height="78" rx="6" />'
         )
-        image = (
-            f'<image href="{html.escape(str(item["structure_src"]))}" '
-            f'data-fallback-src="{fallback}" '
-            "onerror=\"this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');\" "
+        image = f'<image href="{html.escape(str(item["structure_src"]))}" '
+        if fallback:
+            image += (
+                f'data-fallback-src="{fallback}" '
+                "onerror=\"this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');\" "
+            )
+        image += (
             f'x="{item["x"] - 84:.1f}" y="{item["y"] - 49:.1f}" '
             'width="168" height="74" preserveAspectRatio="xMidYMid meet" />'
         )
@@ -1930,10 +2022,12 @@ def _node_meta_label(node: dict[str, Any], depth: int) -> str:
     return "intermediate"
 
 
-def _node_visual_class(node: dict[str, Any], depth: int, has_children: bool) -> str:
+def _node_visual_class(
+    node: dict[str, Any], depth: int, has_children: bool, is_target: bool = False
+) -> str:
     if _is_reaction_node(node):
         return "reaction"
-    if depth == 0:
+    if is_target or depth == 0:
         return "target"
     if node.get("in_stock") or node.get("is_in_stock") or node.get("stock"):
         return "stock"
@@ -2291,7 +2385,8 @@ _ANDOR_TREE_SCRIPT = r"""
   function showDetail(node) {
     clear(detail);
     const h = document.createElement("h3");
-    h.textContent = node.kind === "reaction" ? "Reaction node" : "Molecule node";
+    h.textContent = node.kind === "reaction" ? "Reaction node"
+      : (node.kind === "root" ? "Graph root" : "Molecule node");
     detail.appendChild(h);
     if (node.structureSrc) {
       const img = document.createElement("img");
