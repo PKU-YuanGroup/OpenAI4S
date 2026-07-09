@@ -1371,7 +1371,7 @@ function onEvent(m) {
   if (m.type === "replay_begin") { if (mine(fid)) { if (S.stream && S.stream.wrap) S.stream.wrap.remove(); S.stream = null; S.liveCells = []; S._liveCell = null; } }
   else if (m.type === "replay_end") { if (mine(fid)) down(); }
   else if (m.type === "text_reset") { if (mine(fid)) startStream(); }
-  else if (m.type === "text_chunk") { if (mine(fid)) feed(m.block_type || "text", m.chunk || ""); }
+  else if (m.type === "text_chunk") { if (mine(fid)) feed(m.block_type || "text", m.chunk || "", m); }
   else if (m.type === "step") { if (mine(fid)) addLiveStep(m); }
   else if (m.type === "step_update") { if (mine(fid)) updateLiveStep(m); }
   else if (m.type === "plan_ready") { if (mine(fid)) renderPlanCard(m.plan, m.status); }
@@ -1454,11 +1454,14 @@ function startStream() {
   S.liveCells = []; S._liveCell = null; down();
 }
 const ensure = () => { if (!S.stream) startStream(); return S.stream; };
-function feed(kind, chunk) {
+function feed(kind, chunk, event) {
   const st = ensure();
   if (kind === "tool") {
-    if (chunk.includes("⚙") || chunk.includes("◆")) {
-      const suba = chunk.includes("◆");
+    const cellHeader = !!(event && event.cell_index != null);
+    const subagentHeader = !cellHeader && chunk.startsWith("◆");
+    const legacyCellHeader = !cellHeader && !st.toolPre && chunk.startsWith("⚙");
+    if (cellHeader || subagentHeader || legacyCellHeader) {
+      const suba = subagentHeader;
       const raw = chunk.replace(/[⚙◆\n]/g, "").trim();
       const tm = raw.match(/^([a-z_]+)/); const tool = tm ? tm[1] : "";
       const label = suba ? raw : (TOOL_LABELS[tool] ? t(TOOL_LABELS[tool]) : raw);
@@ -1474,7 +1477,7 @@ function feed(kind, chunk) {
       st.wrap.appendChild(card); st.toolPre = pre; st.toolMeta = meta;
       if (!suba) { st.toolCard = card; card._demoted = false; }
       st.md = el("div", "md"); st.wrap.appendChild(st.md); st.text = "";
-      if (!suba) nbLiveStart(tool, raw);
+      if (!suba) nbLiveStart(tool, raw, event && event.kernel_id, event && event.cell_index, event && event.language);
     } else if (st.toolPre) {
       const add = chunk.replace(/^↳\s*/, "");
       st.toolPre.textContent += add;
@@ -3272,12 +3275,15 @@ async function loadExecutionLog(id) {
   renderNotebook();
 }
 const _NB_DIV = "----- output -----";
-function nbLiveStart(tool, raw) {
+function nbLiveStart(tool, raw, serverKernelId, serverCellIndex, serverLanguage) {
   const codeTools = /^(run_python|python|exec|run_bash|bash)/;
-  const isCode = codeTools.test(tool || "") || !TOOL_LABELS[tool || ""];
+  const isCode = serverCellIndex != null || codeTools.test(tool || "") || !TOOL_LABELS[tool || ""];
   if (!isCode) { S._liveCell = null; return; }
-  const idx = ((raw || "").match(/cell\s+(\d+)/) || [])[1];
-  const cell = { cell_index: idx ? +idx : (S.liveCells ? S.liveCells.length : 0) + 1, kernel_id: kernelIdFromEnv((_kc && _kc.st && _kc.st.env) || null), language: "python", source: "", stdout: "", stderr: "", status: "running", figures: [], live: true, _out: false };
+  const idx = serverCellIndex || ((raw || "").match(/cell\s+(\d+)/) || [])[1];
+  // The cell-start event carries the server's canonical runtime segment. The
+  // status-cache fallback is retained only for older daemons/replayed events.
+  const kernelId = serverKernelId || kernelIdFromEnv((_kc && _kc.st && _kc.st.env) || null);
+  const cell = { cell_index: idx ? +idx : (S.liveCells ? S.liveCells.length : 0) + 1, kernel_id: kernelId, language: serverLanguage || "python", source: "", stdout: "", stderr: "", status: "running", figures: [], live: true, _out: false };
   (S.liveCells = S.liveCells || []).push(cell); S._liveCell = cell; nbRender();
 }
 function nbLiveAppend(txt) {
@@ -3360,6 +3366,12 @@ async function refreshKernelState(els, _b, _c) {
   if (_kc.id !== sid) { _kc.id = sid; _kc.envs = null; }
   _kc.st = st; _kc.stAt = Date.now();
   _paintKernel(els, st);  // els may be stale (a newer render replaced it); harmless — the next render repaints from cache
+  // The first render happens before kernel status is known and therefore uses
+  // the passive strip. If this daemon explicitly enables the developer REPL,
+  // rebuild once now that `repl_enabled` is authoritative (and vice versa if a
+  // runtime/config reload disabled it).
+  const modeChanged = (!!st.repl_enabled && !!els.strip) || (!st.repl_enabled && !!els.state);
+  if (modeChanged && S.dock.open && S.activeTab === "notebook") requestAnimationFrame(renderNotebook);
 }
 
 async function nbPopulateEnvSelect(envSel) {

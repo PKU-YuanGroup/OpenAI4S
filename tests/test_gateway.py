@@ -1480,6 +1480,24 @@ def test_env_summary_exposes_canonical_kernel_id(tmp_path):
     assert runner._kernel_id(st) == summary["kernel_id"]
 
 
+def test_live_cell_start_event_carries_canonical_kernel_id(monkeypatch, tmp_path):
+    """Live cell labels come from the server event, not an async UI cache."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    fid = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    st = runner._state(fid, "default")
+    st.env_name = "struct"
+    events = []
+    monkeypatch.setattr(runner, "_safety_refusal", lambda *a, **k: "blocked")
+
+    runner._execute_and_log(st, "print('x')", "agent", events.append, stream=True)
+
+    start = next(e for e in events if e.get("chunk", "").startswith("⚙"))
+    assert start["cell_index"] == 1
+    assert start["kernel_id"] == "python — struct"
+    assert start["language"] == "python"
+
+
 def test_prose_streamer_hides_nested_tool_example_inside_python_cell():
     """Live prose and persisted prose use the same nesting-aware fence view."""
     inner = '```tool\n{"name": "list_dir", "arguments": {}}\n```\n'

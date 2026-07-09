@@ -2659,6 +2659,9 @@ class SessionRunner:
                     "frame_id": rid,
                     "block_type": "tool",
                     "chunk": f"⚙{title}\n",
+                    "cell_index": idx,
+                    "kernel_id": self._kernel_id(st),
+                    "language": self._kernel_language(st),
                 }
             )
             emit(
