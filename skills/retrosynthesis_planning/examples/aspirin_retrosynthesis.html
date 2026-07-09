@@ -1,0 +1,1243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Retrosynthesis route analysis for CC(=O)Oc1ccccc1C(=O)O</title>
+  <style>
+    :root {
+      --ink: #17212b;
+      --muted: #687482;
+      --line: #dce4ec;
+      --line-strong: #c4d0dc;
+      --panel: #ffffff;
+      --soft: #f5f8fa;
+      --paper: #fbfcfd;
+      --target: rgba(48, 117, 191, 0.09);
+      --target-stroke: #3075bf;
+      --reaction: rgba(211, 142, 45, 0.12);
+      --reaction-stroke: #b7791f;
+      --stock: rgba(49, 139, 93, 0.09);
+      --stock-stroke: #2f8b5d;
+      --missing: rgba(199, 74, 92, 0.09);
+      --missing-stroke: #c74a5c;
+      --unknown: rgba(105, 121, 138, 0.08);
+      --unknown-stroke: #69798a;
+      --accent: #2f6f8f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f5f7f9;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 28px; }
+    h1 { font-size: 28px; margin: 0 0 8px; }
+    h2 { font-size: 19px; margin: 0; }
+    h3 { font-size: 14px; margin: 18px 0 10px; color: #334155; }
+    code { background: rgba(47, 111, 143, 0.08); padding: 2px 5px; border-radius: 4px; }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); }
+    th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .hero { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 22px; box-shadow: 0 10px 28px rgba(23, 33, 43, 0.06); }
+    .subtitle { color: var(--muted); margin: 0; }
+    .note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 18px; }
+    .kpi { background: var(--soft); border-radius: 8px; padding: 14px; }
+    .kpi span { color: var(--muted); display: block; font-size: 12px; }
+    .kpi strong { display: block; font-size: 22px; margin-top: 2px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-top: 18px; overflow: hidden; }
+    .panel h2 { padding: 16px 18px; border-bottom: 1px solid var(--line); }
+    .route-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-top: 18px; }
+    .route-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .pill { border-radius: 999px; font-size: 12px; font-weight: 700; padding: 4px 10px; text-transform: uppercase; }
+    .pill.ok { background: var(--stock); color: #14532d; }
+    .pill.warn { background: var(--missing); color: #9f1239; }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 14px 0; }
+    .metrics div { background: var(--soft); border-radius: 8px; padding: 11px; }
+    .metrics span { color: var(--muted); display: block; font-size: 12px; }
+    .metrics strong { display: block; font-size: 18px; margin-top: 2px; }
+    .route-diagram { border: 1px solid var(--line); border-radius: 8px; background: #fbfcfe; overflow: auto; padding: 10px; }
+    .route-svg { display: block; min-width: 720px; width: 100%; height: auto; }
+    .route-analysis { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
+    .route-analysis h3 { margin-top: 0; color: #20313f; }
+    .analysis-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px 16px; margin: 0; }
+    .analysis-field { border-left: 3px solid rgba(47, 111, 143, 0.35); padding-left: 10px; min-width: 0; }
+    .analysis-field dt { color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; }
+    .analysis-field dd { margin: 4px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+    .analysis-field ul { margin: 0; padding-left: 17px; }
+    .analysis-field li { margin-bottom: 4px; }
+    .mini-kv { display: grid; grid-template-columns: minmax(86px, 0.34fr) 1fr; gap: 4px 9px; margin: 0; }
+    .mini-kv dt { color: var(--muted); text-transform: none; font-size: 12px; }
+    .mini-kv dd { margin: 0; }
+    .andor-panel { background: var(--panel); border-color: var(--line-strong); box-shadow: 0 20px 48px rgba(23, 33, 43, 0.11); }
+    .andor-panel h2 { color: #14202b; border-bottom-color: var(--line); background: #fbfcfd; letter-spacing: 0; }
+    .andor-shell { display: grid; grid-template-columns: minmax(0, 1fr) 380px; min-height: 740px; }
+    .andor-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); background: #f8fafb; }
+    .andor-toolbar button { border: 1px solid #bfd5e4; border-radius: 6px; background: rgba(255, 255, 255, 0.88); color: #25566f; cursor: pointer; font-weight: 650; padding: 7px 10px; }
+    .andor-toolbar button:hover { border-color: #6fa7c4; box-shadow: 0 0 0 2px rgba(111, 167, 196, 0.18); }
+    .andor-toolbar .note { color: var(--muted); }
+    .andor-canvas { background-color: #fbfcfd; background-image: radial-gradient(circle at center, rgba(47,111,143,0.08) 1px, transparent 1.6px); background-size: 24px 24px; overflow: hidden; position: relative; }
+    .andor-svg { display: block; width: 100%; height: 680px; cursor: grab; }
+    .andor-svg.dragging { cursor: grabbing; }
+    .andor-detail { border-left: 1px solid var(--line); background: #ffffff; color: var(--ink); padding: 18px; overflow: auto; }
+    .andor-detail h3 { margin: 0 0 12px; color: #14202b; font-size: 16px; }
+    .andor-detail dl { display: grid; grid-template-columns: 118px 1fr; gap: 8px 12px; font-size: 13px; }
+    .andor-detail dt { color: var(--muted); }
+    .andor-detail dd { margin: 0; overflow-wrap: anywhere; }
+    .andor-detail ul { margin: 0; padding-left: 17px; }
+    .andor-detail li { margin: 0 0 4px; }
+    .detail-kv { display: grid; grid-template-columns: minmax(82px, 0.38fr) 1fr; gap: 4px 9px; }
+    .detail-kv span:nth-child(odd) { color: var(--muted); }
+    .detail-kv span:nth-child(even) { color: var(--ink); }
+    .andor-detail img { display: block; width: 100%; max-height: 220px; object-fit: contain; border: 1px solid rgba(196, 208, 220, 0.55); border-radius: 8px; background: transparent; margin-bottom: 14px; }
+    .andor-detail a { color: #2563eb; }
+    .andor-node rect { stroke-width: 1.7; filter: drop-shadow(0 8px 16px rgba(23, 33, 43, 0.11)); }
+    .andor-node text { fill: #17212b; font-size: 12px; pointer-events: none; }
+    .andor-node .node-meta { fill: #65717c; font-size: 10px; text-transform: uppercase; }
+    .andor-node .node-kind { fill: #4d5b68; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; }
+    .andor-node .route-badge { fill: #ffffff; stroke: rgba(23, 33, 43, 0.18); stroke-width: 1; }
+    .andor-node .route-badge-text { fill: #4d5b68; font-size: 9px; font-weight: 700; }
+    .andor-node .structure-well { fill: rgba(255, 255, 255, 0.10); stroke: rgba(255, 255, 255, 0.30); stroke-width: 1; }
+    .andor-node image { opacity: 0.98; }
+    .andor-node.selected rect { stroke-width: 3; }
+    .andor-node.dimmed { opacity: 0.34; }
+    .andor-node.neighbor { opacity: 0.96; }
+    .andor-node.collapsed rect { stroke-dasharray: 5 3; }
+    .andor-node.target rect { fill: var(--target); stroke: var(--target-stroke); }
+    .andor-node.reaction rect { fill: var(--reaction); stroke: var(--reaction-stroke); }
+    .andor-node.stock rect { fill: var(--stock); stroke: var(--stock-stroke); }
+    .andor-node.missing rect { fill: var(--missing); stroke: var(--missing-stroke); }
+    .andor-node.unknown rect { fill: var(--unknown); stroke: var(--unknown-stroke); }
+    .andor-edge { fill: none; stroke: #9eabb8; stroke-width: 1.45; opacity: 0.56; marker-end: url(#andor-arrow); }
+    .andor-edge.active { stroke: var(--accent); opacity: 0.92; stroke-width: 2.2; }
+    .andor-edge.merged { stroke: #5b9f7d; opacity: 0.82; stroke-width: 1.8; }
+    .edge { fill: none; stroke: #94a3b8; stroke-width: 1.5; }
+    .node rect { stroke-width: 1.5; }
+    .node text { fill: #182026; font-size: 12px; }
+    .node .meta { fill: #64748b; font-size: 10px; text-transform: uppercase; }
+    .node .structure-well { fill: rgba(255, 255, 255, 0.10); stroke: rgba(255, 255, 255, 0.30); stroke-width: 1; }
+    .node image { background: transparent; opacity: 0.98; }
+    .target rect { fill: var(--target); stroke: var(--target-stroke); }
+    .reaction rect { fill: var(--reaction); stroke: var(--reaction-stroke); }
+    .stock rect { fill: var(--stock); stroke: var(--stock-stroke); }
+    .missing rect { fill: var(--missing); stroke: var(--missing-stroke); }
+    .unknown rect { fill: var(--unknown); stroke: var(--unknown-stroke); }
+    .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+    .legend .lg-target::before { background: var(--target); border: 1px solid var(--target-stroke); }
+    .legend .lg-reaction::before { background: var(--reaction); border: 1px solid var(--reaction-stroke); }
+    .legend .lg-stock::before { background: var(--stock); border: 1px solid var(--stock-stroke); }
+    .legend .lg-missing::before { background: var(--missing); border: 1px solid var(--missing-stroke); }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip { background: #eef6ff; border: 1px solid #bfdbfe; border-radius: 999px; padding: 5px 9px; font-size: 12px; }
+    .molecule-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; padding: 16px; }
+    .molecule-card { background: #fbfcfe; border: 1px solid var(--line); border-radius: 8px; padding: 13px; }
+    .molecule-card h3 { margin-top: 0; }
+    .structure-frame { display: grid; place-items: center; height: 158px; background: linear-gradient(180deg, rgba(255,255,255,0.14), rgba(245,248,250,0.24)); border: 1px solid rgba(226,232,240,0.62); border-radius: 6px; margin-bottom: 10px; overflow: hidden; }
+    .mol-structure { display: block; width: 100%; height: 150px; object-fit: contain; background: transparent; }
+    .structure-fallback { opacity: 0.92; }
+    .molecule-card dl { display: grid; grid-template-columns: 92px 1fr; gap: 5px 10px; margin: 0; font-size: 13px; }
+    .molecule-card dt { color: var(--muted); }
+    .molecule-card dd { margin: 0; overflow-wrap: anywhere; }
+    .muted, .empty { color: var(--muted); }
+    details { margin-top: 14px; }
+    summary { cursor: pointer; color: #334155; font-weight: 600; }
+    .tree, .tree ul { list-style: none; margin-left: 0; padding-left: 20px; }
+    .tree li { margin: 6px 0; }
+    .tag { color: var(--muted); font-size: 12px; margin-left: 4px; }
+    @media (max-width: 980px) {
+      .andor-shell { grid-template-columns: 1fr; }
+      .andor-detail { border-left: 0; border-top: 1px solid var(--line); }
+    }
+    @media (max-width: 720px) {
+      main { padding: 16px; }
+      h1 { font-size: 23px; }
+      th, td { padding: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Retrosynthesis route analysis for CC(=O)Oc1ccccc1C(=O)O</h1>
+      <p class="subtitle">Generated from normalized retrosynthesis route data. Predictions require expert chemical review.</p>
+      <p class="note">Visual style follows the bundled figure-style checklist: data-grounded labels, limited semantic colors, route-level claim consistency, and explicit uncertainty.</p>
+      <div class="kpis">
+        <div class="kpi"><span>Routes analyzed</span><strong>12</strong></div>
+        <div class="kpi"><span>Solved routes</span><strong>12</strong></div>
+        <div class="kpi"><span>Top score</span><strong>0.998</strong></div>
+        <div class="kpi"><span>Shortest solved route</span><strong>1</strong></div>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Route Ranking</h2>
+      <table>
+<thead><tr><th>Rank</th><th>Status</th><th>Score</th><th>Steps</th><th>Precursors</th><th>Starting materials</th></tr></thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><span class="pill ok">solved</span></td>
+<td>0.998</td>
+<td>1</td>
+<td>2</td>
+<td>CC(=O)OC(C)=O, O=C(O)c1ccccc1O</td>
+</tr>
+<tr>
+<td>2</td>
+<td><span class="pill ok">solved</span></td>
+<td>0.998</td>
+<td>1</td>
+<td>2</td>
+<td>CC(=O)Cl, O=C(O)c1ccccc1O</td>
+</tr>
+<tr>
+<td>3</td>
+<td><span class="pill ok">solved</span></td>
+<td>0.998</td>
+<td>1</td>
+<td>2</td>
+<td>CC(=O)O, O=C(O)c1ccccc1O</td>
+</tr>
+<tr>
+<td>4</td>
+<td><span class="pill ok">solved</span></td>
+<td>0.998</td>
+<td>1</td>
+<td>2</td>
+<td>CC(=O)O, O=C(O)c1ccccc1F</td>
+</tr>
+<tr>
+<td>5</td>
+<td><span class="pill ok">solved</span></td>
+<td>0.994</td>
+<td>2</td>
+<td>2</td>
+<td>CC(=O)OC(C)=O, O=C(OCc1ccccc1)c1ccccc1O</td>
+</tr>
+</tbody>
+</table>
+    </section>
+    <section class="panel andor-panel">
+<h2>Interactive Retrosynthesis Knowledge Graph</h2>
+<div class="andor-toolbar">
+<button type="button" id="andor-expand">Expand all</button>
+<button type="button" id="andor-collapse">Collapse reactions</button>
+<button type="button" id="andor-reset">Reset view</button>
+<span class="note">Merged molecule/reaction graph. Click a node for details and neighbor highlighting; double-click to collapse related descendants. Drag to pan; scroll to zoom.</span>
+</div>
+<div class="andor-shell">
+<div class="andor-canvas"><svg id="andor-svg" class="andor-svg" role="img" aria-label="Interactive retrosynthesis knowledge graph"></svg></div>
+<aside id="andor-detail" class="andor-detail"><h3>Node details</h3><p class="muted">Select a molecule or reaction node.</p></aside>
+</div>
+<script type="application/json" id="andor-data">{"graph": {"nodes": [{"id": "root", "kind": "root", "className": "target", "label": "CC(=O)Oc1ccccc1C(=O)O", "meta": "OR target root", "depth": 0, "routes": [1, 2, 3, 4, 5], "details": {"Type": "Merged retrosynthesis knowledge graph", "Target": "CC(=O)Oc1ccccc1C(=O)O", "Routes shown": "5", "Search graph note": "This knowledge-graph view merges identical molecule nodes and reaction hypotheses across AiZynthFinder exported route trees. It preserves AND-OR route semantics, while the complete internal MCTS visit graph still requires a backend checkpoint/search graph export."}}, {"id": "mol:CC(=O)Oc1ccccc1C(=O)O", "kind": "molecule", "className": "unknown", "label": "CC(=O)Oc1ccccc1C(=O)O", "meta": "target", "smiles": "CC(=O)Oc1ccccc1C(=O)O", "structureSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iMTIwLjAiIHk9IjE1Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==", "structureFallbackSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iMTIwLjAiIHk9IjE1Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==", "depth": 1, "routes": [1, 2, 3, 4, 5], "details": {"Type": "Molecule", "Role": "target", "SMILES": "CC(=O)Oc1ccccc1C(=O)O", "Stock status": "not a terminal precursor", "Routes": "1", "Annotation": "Example LLM molecule brief: this is a target in the displayed aspirin route set. The stock status is not a terminal precursor; confirm identity, purity, and route-specific functional-group compatibility before execution.", "PubChem": "https://pubchem.ncbi.nlm.nih.gov/#query=CC%28%3DO%29Oc1ccccc1C%28%3DO%29O"}}, {"id": "rxn:aff4119d986a695f", "kind": "reaction", "className": "reaction", "label": "phenolic O-acylation / aryl aceta...", "meta": "AND reaction | uspto p=0.726", "depth": 2, "routes": [1], "details": {"Type": "Reaction", "Reaction type": "phenolic O-acylation / aryl acetate formation", "Backend taxonomy": "No reliable backend taxonomy; use the LLM/SMARTS interpretation above.", "Policy": "uspto", "Policy probability": "0.726", "Template": "[C;D1;H3:2]-[C;H0;D3;+0:1](=[O;D1;H0:3])-[O;H0;D2;+0:4]-[c:5]>>C-C(=O)-O-[C;H0;D3;+0:1](-[C;D1;H3:2])=[O;D1;H0:3].[OH;D1;+0:4]-[c:5]", "Mapped reaction": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[O:14][C:15]([CH3:16])=[O:17].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]", "Conditions": "Not predicted in this AiZynthFinder route export.", "Condition caveat": "AiZynthFinder predicts disconnections, not validated lab conditions. Use literature, ELN/internal reaction DB, ASKCOS condition prediction, or manual chemist review.", "LLM confidence": "medium", "Reaction description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.", "Mechanistic rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.", "Bond changes": ["form aryl O-C(O)CH3 ester bond", "consume phenolic O-H functionality"], "Suggested conditions": {"reagents": "acetic anhydride or acetyl chloride, selected by precedent", "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety", "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options", "temperature": "0-25 C addition control, then ambient to mild heating if needed", "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity", "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"}, "Expected yield": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details", "Yield rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.", "Selectivity / risk": ["competitive reaction or salt formation at the carboxylic acid", "hydrolysis during aqueous handling", "over-activation or side products if strongly activating reagents are used"], "Safety notes": ["acetyl chloride and acetic anhydride are corrosive and can release heat during quench", "assess exotherm, ventilation, and acid-gas handling before scale-up"], "Validation plan": ["verify exact literature or internal precedent for salicylic acid acetylation", "run LCMS/HPLC monitored microscale screen", "define impurity controls for salicylic acid and hydrolysis products"], "Annotation key": "rxn:7891af2149486235", "Backend caveat": "The backend did not provide a reliable human-readable reaction-name taxonomy for this template. This does not mean the disconnection is invalid; inspect the SMARTS/mapped reaction and add an LLM/literature annotation."}}, {"id": "mol:CC(=O)OC(C)=O", "kind": "molecule", "className": "stock", "label": "CC(=O)OC(C)=O", "meta": "stock precursor", "smiles": "CC(=O)OC(C)=O", "structureSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPQyhDKT1PPC90ZXh0PgogIDx0ZXh0IHg9IjEyMC4wIiB5PSIxNTIuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzY4NzQ4MiI+c3RydWN0dXJlIHJlbmRlcmVyIGZhbGxiYWNrPC90ZXh0Pgo8L3N2Zz4=", "structureFallbackSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPQyhDKT1PPC90ZXh0PgogIDx0ZXh0IHg9IjEyMC4wIiB5PSIxNTIuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzY4NzQ4MiI+c3RydWN0dXJlIHJlbmRlcmVyIGZhbGxiYWNrPC90ZXh0Pgo8L3N2Zz4=", "depth": 3, "routes": [1, 5], "details": {"Type": "Molecule", "Role": "stock precursor", "SMILES": "CC(=O)OC(C)=O", "Stock status": "in stock", "Routes": "1", "Annotation": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.", "PubChem": "https://pubchem.ncbi.nlm.nih.gov/#query=CC%28%3DO%29OC%28C%29%3DO"}}, {"id": "mol:O=C(O)c1ccccc1O", "kind": "molecule", "className": "stock", "label": "O=C(O)c1ccccc1O", "meta": "stock precursor", "smiles": "O=C(O)c1ccccc1O", "structureSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iMTIwLjAiIHk9IjE1Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==", "structureFallbackSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iMTIwLjAiIHk9IjE1Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==", "depth": 3, "routes": [1, 2, 3], "details": {"Type": "Molecule", "Role": "stock precursor", "SMILES": "O=C(O)c1ccccc1O", "Stock status": "in stock", "Routes": "1", "Annotation": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.", "PubChem": "https://pubchem.ncbi.nlm.nih.gov/#query=O%3DC%28O%29c1ccccc1O"}}, {"id": "rxn:9b884e82f6601785", "kind": "reaction", "className": "reaction", "label": "phenolic O-acylation / aryl aceta...", "meta": "AND reaction | uspto p=0.092", "depth": 2, "routes": [2], "details": {"Type": "Reaction", "Reaction type": "phenolic O-acylation / aryl acetate formation", "Backend taxonomy": "No reliable backend taxonomy; use the LLM/SMARTS interpretation above.", "Policy": "uspto", "Policy probability": "0.092", "Template": "[C:2]-[C;H0;D3;+0:1](=[O;D1;H0:3])-[O;H0;D2;+0:4]-[c:5]>>Cl-[C;H0;D3;+0:1](-[C:2])=[O;D1;H0:3].[OH;D1;+0:4]-[c:5]", "Mapped reaction": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[Cl:14].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]", "Conditions": "Not predicted in this AiZynthFinder route export.", "Condition caveat": "AiZynthFinder predicts disconnections, not validated lab conditions. Use literature, ELN/internal reaction DB, ASKCOS condition prediction, or manual chemist review.", "LLM confidence": "medium", "Reaction description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.", "Mechanistic rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.", "Bond changes": ["form aryl O-C(O)CH3 ester bond", "consume phenolic O-H functionality"], "Suggested conditions": {"reagents": "acetic anhydride or acetyl chloride, selected by precedent", "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety", "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options", "temperature": "0-25 C addition control, then ambient to mild heating if needed", "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity", "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"}, "Expected yield": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details", "Yield rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.", "Selectivity / risk": ["competitive reaction or salt formation at the carboxylic acid", "hydrolysis during aqueous handling", "over-activation or side products if strongly activating reagents are used"], "Safety notes": ["acetyl chloride and acetic anhydride are corrosive and can release heat during quench", "assess exotherm, ventilation, and acid-gas handling before scale-up"], "Validation plan": ["verify exact literature or internal precedent for salicylic acid acetylation", "run LCMS/HPLC monitored microscale screen", "define impurity controls for salicylic acid and hydrolysis products"], "Annotation key": "rxn:1cf0f142bcc00023", "Backend caveat": "The backend did not provide a reliable human-readable reaction-name taxonomy for this template. This does not mean the disconnection is invalid; inspect the SMARTS/mapped reaction and add an LLM/literature annotation."}}, {"id": "mol:CC(=O)Cl", "kind": "molecule", "className": "stock", "label": "CC(=O)Cl", "meta": "stock precursor", "smiles": "CC(=O)Cl", "structureSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylDbDwvdGV4dD4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTUyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+", "structureFallbackSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylDbDwvdGV4dD4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTUyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+", "depth": 3, "routes": [2], "details": {"Type": "Molecule", "Role": "stock precursor", "SMILES": "CC(=O)Cl", "Stock status": "in stock", "Routes": "2", "Annotation": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.", "PubChem": "https://pubchem.ncbi.nlm.nih.gov/#query=CC%28%3DO%29Cl"}}, {"id": "rxn:719f3532eda241ff", "kind": "reaction", "className": "reaction", "label": "phenolic O-acylation / aryl aceta...", "meta": "AND reaction | uspto p=0.009", "depth": 2, "routes": [3], "details": {"Type": "Reaction", "Reaction type": "phenolic O-acylation / aryl acetate formation", "Backend taxonomy": "No reliable backend taxonomy; use the LLM/SMARTS interpretation above.", "Policy": "uspto", "Policy probability": "0.009", "Template": "[C:2]-[C;H0;D3;+0:1](=[O;H0;D1;+0:3])-[O;H0;D2;+0:4]-[c:5]>>O=[C;H0;D3;+0:1](-[C:2])-[OH;D1;+0:3].[OH;D1;+0:4]-[c:5]", "Mapped reaction": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2]([OH:3])=[O:14].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]", "Conditions": "Not predicted in this AiZynthFinder route export.", "Condition caveat": "AiZynthFinder predicts disconnections, not validated lab conditions. Use literature, ELN/internal reaction DB, ASKCOS condition prediction, or manual chemist review.", "LLM confidence": "medium", "Reaction description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.", "Mechanistic rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.", "Bond changes": ["form aryl O-C(O)CH3 ester bond", "consume phenolic O-H functionality"], "Suggested conditions": {"reagents": "acetic anhydride or acetyl chloride, selected by precedent", "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety", "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options", "temperature": "0-25 C addition control, then ambient to mild heating if needed", "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity", "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"}, "Expected yield": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details", "Yield rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.", "Selectivity / risk": ["competitive reaction or salt formation at the carboxylic acid", "hydrolysis during aqueous handling", "over-activation or side products if strongly activating reagents are used"], "Safety notes": ["acetyl chloride and acetic anhydride are corrosive and can release heat during quench", "assess exotherm, ventilation, and acid-gas handling before scale-up"], "Validation plan": ["verify exact literature or internal precedent for salicylic acid acetylation", "run LCMS/HPLC monitored microscale screen", "define impurity controls for salicylic acid and hydrolysis products"], "Annotation key": "rxn:0f65d720e22a14c4", "Backend caveat": "The backend did not provide a reliable human-readable reaction-name taxonomy for this template. This does not mean the disconnection is invalid; inspect the SMARTS/mapped reaction and add an LLM/literature annotation."}}, {"id": "mol:CC(=O)O", "kind": "molecule", "className": "stock", "label": "CC(=O)O", "meta": "stock precursor", "smiles": "CC(=O)O", "structureSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPPC90ZXh0PgogIDx0ZXh0IHg9IjEyMC4wIiB5PSIxNTIuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzY4NzQ4MiI+c3RydWN0dXJlIHJlbmRlcmVyIGZhbGxiYWNrPC90ZXh0Pgo8L3N2Zz4=", "structureFallbackSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPPC90ZXh0PgogIDx0ZXh0IHg9IjEyMC4wIiB5PSIxNTIuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzY4NzQ4MiI+c3RydWN0dXJlIHJlbmRlcmVyIGZhbGxiYWNrPC90ZXh0Pgo8L3N2Zz4=", "depth": 3, "routes": [3, 4], "details": {"Type": "Molecule", "Role": "stock precursor", "SMILES": "CC(=O)O", "Stock status": "in stock", "Routes": "3", "Annotation": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.", "PubChem": "https://pubchem.ncbi.nlm.nih.gov/#query=CC%28%3DO%29O"}}, {"id": "rxn:6cba281b4aabfb1e", "kind": "reaction", "className": "reaction", "label": "phenolic O-acylation / aryl aceta...", "meta": "AND reaction | uspto p=0.001", "depth": 2, "routes": [4], "details": {"Type": "Reaction", "Reaction type": "phenolic O-acylation / aryl acetate formation", "Backend taxonomy": "No reliable backend taxonomy; use the LLM/SMARTS interpretation above.", "Policy": "uspto", "Policy probability": "0.001", "Template": "[C:7]-[O;H0;D2;+0:8]-[c;H0;D3;+0:1](:[c:2]):[c:3]-[C:4](=[O;D1;H0:5])-[O;D1;H1:6]>>F-[c;H0;D3;+0:1](:[c:2]):[c:3]-[C:4](=[O;D1;H0:5])-[O;D1;H1:6].[C:7]-[OH;D1;+0:8]", "Mapped reaction": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[OH:4].[c:5]1([F:14])[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]", "Conditions": "Not predicted in this AiZynthFinder route export.", "Condition caveat": "AiZynthFinder predicts disconnections, not validated lab conditions. Use literature, ELN/internal reaction DB, ASKCOS condition prediction, or manual chemist review.", "LLM confidence": "medium", "Reaction description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.", "Mechanistic rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.", "Bond changes": ["form aryl O-C(O)CH3 ester bond", "consume phenolic O-H functionality"], "Suggested conditions": {"reagents": "acetic anhydride or acetyl chloride, selected by precedent", "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety", "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options", "temperature": "0-25 C addition control, then ambient to mild heating if needed", "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity", "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"}, "Expected yield": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details", "Yield rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.", "Selectivity / risk": ["competitive reaction or salt formation at the carboxylic acid", "hydrolysis during aqueous handling", "over-activation or side products if strongly activating reagents are used"], "Safety notes": ["acetyl chloride and acetic anhydride are corrosive and can release heat during quench", "assess exotherm, ventilation, and acid-gas handling before scale-up"], "Validation plan": ["verify exact literature or internal precedent for salicylic acid acetylation", "run LCMS/HPLC monitored microscale screen", "define impurity controls for salicylic acid and hydrolysis products"], "Annotation key": "rxn:b801bb31af74a9d6", "Backend caveat": "The backend did not provide a reliable human-readable reaction-name taxonomy for this template. This does not mean the disconnection is invalid; inspect the SMARTS/mapped reaction and add an LLM/literature annotation."}}, {"id": "mol:O=C(O)c1ccccc1F", "kind": "molecule", "className": "stock", "label": "O=C(O)c1ccccc1F", "meta": "stock precursor", "smiles": "O=C(O)c1ccccc1F", "structureSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMUY8L3RleHQ+CiAgPHRleHQgeD0iMTIwLjAiIHk9IjE1Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==", "structureFallbackSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMUY8L3RleHQ+CiAgPHRleHQgeD0iMTIwLjAiIHk9IjE1Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==", "depth": 3, "routes": [4], "details": {"Type": "Molecule", "Role": "stock precursor", "SMILES": "O=C(O)c1ccccc1F", "Stock status": "in stock", "Routes": "4", "Annotation": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.", "PubChem": "https://pubchem.ncbi.nlm.nih.gov/#query=O%3DC%28O%29c1ccccc1F"}}, {"id": "rxn:65c14baec33ad367", "kind": "reaction", "className": "reaction", "label": "phenolic O-acylation / aryl aceta...", "meta": "AND reaction | uspto p=0.011", "depth": 2, "routes": [5], "details": {"Type": "Reaction", "Reaction type": "phenolic O-acylation / aryl acetate formation", "Backend taxonomy": "No reliable backend taxonomy; use the LLM/SMARTS interpretation above.", "Policy": "uspto", "Policy probability": "0.011", "Template": "[O;D1;H0:1]=[C:2](-[OH;D1;+0:3])-[c:4]1:[c:5]:[c:6]:[c:7]:[c:8]:[c:9]:1>>[O;D1;H0:1]=[C:2](-[O;H0;D2;+0:3]-C-c1:c:c:c:c:c:1)-[c:4]1:[c:5]:[c:6]:[c:7]:[c:8]:[c:9]:1", "Mapped reaction": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[OH:13]>>[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[O:13][CH2:14][c:15]1[cH:16][cH:17][cH:18][cH:19][cH:20]1", "Conditions": "Not predicted in this AiZynthFinder route export.", "Condition caveat": "AiZynthFinder predicts disconnections, not validated lab conditions. Use literature, ELN/internal reaction DB, ASKCOS condition prediction, or manual chemist review.", "LLM confidence": "medium", "Reaction description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.", "Mechanistic rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.", "Bond changes": ["form aryl O-C(O)CH3 ester bond", "consume phenolic O-H functionality"], "Suggested conditions": {"reagents": "acetic anhydride or acetyl chloride, selected by precedent", "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety", "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options", "temperature": "0-25 C addition control, then ambient to mild heating if needed", "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity", "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"}, "Expected yield": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details", "Yield rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.", "Selectivity / risk": ["competitive reaction or salt formation at the carboxylic acid", "hydrolysis during aqueous handling", "over-activation or side products if strongly activating reagents are used"], "Safety notes": ["acetyl chloride and acetic anhydride are corrosive and can release heat during quench", "assess exotherm, ventilation, and acid-gas handling before scale-up"], "Validation plan": ["verify exact literature or internal precedent for salicylic acid acetylation", "run LCMS/HPLC monitored microscale screen", "define impurity controls for salicylic acid and hydrolysis products"], "Annotation key": "rxn:2078be278d934fce", "Backend caveat": "The backend did not provide a reliable human-readable reaction-name taxonomy for this template. This does not mean the disconnection is invalid; inspect the SMARTS/mapped reaction and add an LLM/literature annotation."}}, {"id": "mol:CC(=O)Oc1ccccc1C(=O)OCc1ccccc1", "kind": "molecule", "className": "unknown", "label": "CC(=O)Oc1ccccc1C(=O)OCc1ccccc1", "meta": "intermediate", "smiles": "CC(=O)Oc1ccccc1C(=O)OCc1ccccc1", "structureSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU9DYzFjY2NjYzE8L3RleHQ+CiAgPHRleHQgeD0iMTIwLjAiIHk9IjE1Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==", "structureFallbackSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU9DYzFjY2NjYzE8L3RleHQ+CiAgPHRleHQgeD0iMTIwLjAiIHk9IjE1Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==", "depth": 3, "routes": [5], "details": {"Type": "Molecule", "Role": "intermediate", "SMILES": "CC(=O)Oc1ccccc1C(=O)OCc1ccccc1", "Stock status": "not a terminal precursor", "Routes": "5", "Annotation": "Example LLM molecule brief: this is a intermediate in the displayed aspirin route set. The stock status is not a terminal precursor; confirm identity, purity, and route-specific functional-group compatibility before execution.", "PubChem": "https://pubchem.ncbi.nlm.nih.gov/#query=CC%28%3DO%29Oc1ccccc1C%28%3DO%29OCc1ccccc1"}}, {"id": "rxn:df25705e695ce6ee", "kind": "reaction", "className": "reaction", "label": "phenolic O-acylation / aryl aceta...", "meta": "AND reaction | uspto p=0.023", "depth": 4, "routes": [5], "details": {"Type": "Reaction", "Reaction type": "phenolic O-acylation / aryl acetate formation", "Backend taxonomy": "No reliable backend taxonomy; use the LLM/SMARTS interpretation above.", "Policy": "uspto", "Policy probability": "0.023", "Template": "[C;D1;H3:2]-[C;H0;D3;+0:1](=[O;D1;H0:3])-[O;H0;D2;+0:4]-[c:5]>>C-C(=O)-O-[C;H0;D3;+0:1](-[C;D1;H3:2])=[O;D1;H0:3].[OH;D1;+0:4]-[c:5]", "Mapped reaction": "[CH3:1][C:2](=[O:3])[O:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[O:13][CH2:14][c:15]1[cH:16][cH:17][cH:18][cH:19][cH:20]1>>[CH3:1][C:2](=[O:3])[O:21][C:22]([CH3:23])=[O:24].[OH:4][c:5]1[cH:6][cH:7][cH:8][cH:9][c:10]1[C:11](=[O:12])[O:13][CH2:14][c:15]1[cH:16][cH:17][cH:18][cH:19][cH:20]1", "Conditions": "Not predicted in this AiZynthFinder route export.", "Condition caveat": "AiZynthFinder predicts disconnections, not validated lab conditions. Use literature, ELN/internal reaction DB, ASKCOS condition prediction, or manual chemist review.", "LLM confidence": "medium", "Reaction description": "Example LLM reaction analysis: the retrosynthetic step cleaves aspirin into a salicylate phenol component and an acetyl donor. In the forward direction, the phenolic oxygen is acylated to form the aryl acetate; the carboxylic acid must remain compatible with the selected conditions.", "Mechanistic rationale": "A nucleophilic phenolic oxygen attacks an activated acetyl electrophile, followed by collapse of the tetrahedral intermediate or equivalent acyl-transfer step.", "Bond changes": ["form aryl O-C(O)CH3 ester bond", "consume phenolic O-H functionality"], "Suggested conditions": {"reagents": "acetic anhydride or acetyl chloride, selected by precedent", "solvent": "ethyl acetate, dichloromethane, or solvent-free/acid-catalyzed screen depending on scale and safety", "base_or_catalyst": "pyridine, triethylamine, DMAP, or acid catalysis as literature-supported options", "temperature": "0-25 C addition control, then ambient to mild heating if needed", "atmosphere": "dry air or nitrogen depending on acetyl donor moisture sensitivity", "workup": "controlled aqueous quench, acid/base wash as appropriate, HPLC purity check"}, "Expected yield": "planning estimate only: roughly 50-90% for precedent-rich simple O-acylations, subject to substrate and process details", "Yield rationale": "Aspirin-like O-acylations are well precedented, but route export does not include experimental conditions, impurity data, or scale information.", "Selectivity / risk": ["competitive reaction or salt formation at the carboxylic acid", "hydrolysis during aqueous handling", "over-activation or side products if strongly activating reagents are used"], "Safety notes": ["acetyl chloride and acetic anhydride are corrosive and can release heat during quench", "assess exotherm, ventilation, and acid-gas handling before scale-up"], "Validation plan": ["verify exact literature or internal precedent for salicylic acid acetylation", "run LCMS/HPLC monitored microscale screen", "define impurity controls for salicylic acid and hydrolysis products"], "Annotation key": "rxn:448c62200b07e2f1", "Backend caveat": "The backend did not provide a reliable human-readable reaction-name taxonomy for this template. This does not mean the disconnection is invalid; inspect the SMARTS/mapped reaction and add an LLM/literature annotation."}}, {"id": "mol:O=C(OCc1ccccc1)c1ccccc1O", "kind": "molecule", "className": "stock", "label": "O=C(OCc1ccccc1)c1ccccc1O", "meta": "stock precursor", "smiles": "O=C(OCc1ccccc1)c1ccccc1O", "structureSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoT0NjMWNjY2NjMSljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iMTIwLjAiIHk9IjE1Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==", "structureFallbackSrc": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDU4LjAgNzIuMCBMIDkwLjAgNDQuMCBMIDEyOC4wIDU4LjAgTCAxNjIuMCAzNC4wIiAvPgogICAgPHBhdGggZD0iTSA5MC4wIDQ0LjAgTCA5OC4wIDkwLjAgTCAxMzguMCAxMDAuMCBMIDE2OC4wIDc0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDEyOC4wIDU4LjAgTCAxNjguMCA3NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSI1OC4wIiBjeT0iNzIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjkwLjAiIGN5PSI0NC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTI4LjAiIGN5PSI1OC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iMTY4LjAiIGN5PSI3NC4wIiByPSI4IiAvPgogIDwvZz4KICA8dGV4dCB4PSIxMjAuMCIgeT0iMTM2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoT0NjMWNjY2NjMSljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iMTIwLjAiIHk9IjE1Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==", "depth": 5, "routes": [5], "details": {"Type": "Molecule", "Role": "stock precursor", "SMILES": "O=C(OCc1ccccc1)c1ccccc1O", "Stock status": "in stock", "Routes": "5", "Annotation": "Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.", "PubChem": "https://pubchem.ncbi.nlm.nih.gov/#query=O%3DC%28OCc1ccccc1%29c1ccccc1O"}}], "edges": [{"source": "root", "target": "mol:CC(=O)Oc1ccccc1C(=O)O", "routes": ["1", "2", "3", "4", "5"]}, {"source": "mol:CC(=O)Oc1ccccc1C(=O)O", "target": "rxn:aff4119d986a695f", "routes": ["1"]}, {"source": "rxn:aff4119d986a695f", "target": "mol:CC(=O)OC(C)=O", "routes": ["1"]}, {"source": "rxn:aff4119d986a695f", "target": "mol:O=C(O)c1ccccc1O", "routes": ["1"]}, {"source": "mol:CC(=O)Oc1ccccc1C(=O)O", "target": "rxn:9b884e82f6601785", "routes": ["2"]}, {"source": "rxn:9b884e82f6601785", "target": "mol:CC(=O)Cl", "routes": ["2"]}, {"source": "rxn:9b884e82f6601785", "target": "mol:O=C(O)c1ccccc1O", "routes": ["2"]}, {"source": "mol:CC(=O)Oc1ccccc1C(=O)O", "target": "rxn:719f3532eda241ff", "routes": ["3"]}, {"source": "rxn:719f3532eda241ff", "target": "mol:CC(=O)O", "routes": ["3"]}, {"source": "rxn:719f3532eda241ff", "target": "mol:O=C(O)c1ccccc1O", "routes": ["3"]}, {"source": "mol:CC(=O)Oc1ccccc1C(=O)O", "target": "rxn:6cba281b4aabfb1e", "routes": ["4"]}, {"source": "rxn:6cba281b4aabfb1e", "target": "mol:CC(=O)O", "routes": ["4"]}, {"source": "rxn:6cba281b4aabfb1e", "target": "mol:O=C(O)c1ccccc1F", "routes": ["4"]}, {"source": "mol:CC(=O)Oc1ccccc1C(=O)O", "target": "rxn:65c14baec33ad367", "routes": ["5"]}, {"source": "rxn:65c14baec33ad367", "target": "mol:CC(=O)Oc1ccccc1C(=O)OCc1ccccc1", "routes": ["5"]}, {"source": "mol:CC(=O)Oc1ccccc1C(=O)OCc1ccccc1", "target": "rxn:df25705e695ce6ee", "routes": ["5"]}, {"source": "rxn:df25705e695ce6ee", "target": "mol:CC(=O)OC(C)=O", "routes": ["5"]}, {"source": "rxn:df25705e695ce6ee", "target": "mol:O=C(OCc1ccccc1)c1ccccc1O", "routes": ["5"]}]}}</script>
+<script>
+(function () {
+  const dataEl = document.getElementById("andor-data");
+  const svg = document.getElementById("andor-svg");
+  const detail = document.getElementById("andor-detail");
+  if (!dataEl || !svg || !detail) return;
+
+  const ns = "http://www.w3.org/2000/svg";
+  const graph = JSON.parse(dataEl.textContent).graph;
+  const nodeById = new Map(graph.nodes.map(node => [node.id, node]));
+  const out = new Map();
+  const linked = new Map();
+  function addLinked(a, b) {
+    if (!linked.has(a)) linked.set(a, new Set());
+    linked.get(a).add(b);
+  }
+  graph.edges.forEach(edge => {
+    if (!out.has(edge.source)) out.set(edge.source, []);
+    out.get(edge.source).push(edge.target);
+    addLinked(edge.source, edge.target);
+    addLinked(edge.target, edge.source);
+  });
+  const collapsed = new Set();
+  let selectedId = "root";
+  const viewport = { width: 1180, height: 700 };
+  let view = null;
+  let dragging = false;
+  let lastPoint = null;
+
+  function clear(el) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+  }
+
+  function makeSvg(name, attrs) {
+    const el = document.createElementNS(ns, name);
+    Object.entries(attrs || {}).forEach(([key, value]) => el.setAttribute(key, value));
+    return el;
+  }
+
+  function textNode(x, y, text, cls) {
+    const t = makeSvg("text", { x, y, "text-anchor": "middle" });
+    if (cls) t.setAttribute("class", cls);
+    t.textContent = text;
+    return t;
+  }
+
+  function splitText(text, maxLen, maxLines) {
+    const clean = String(text || "").replace(/\s+/g, " ");
+    const chunks = [];
+    for (let idx = 0; idx < clean.length; idx += maxLen) chunks.push(clean.slice(idx, idx + maxLen));
+    if (!chunks.length) return [""];
+    if (chunks.length > maxLines) {
+      const kept = chunks.slice(0, maxLines);
+      kept[maxLines - 1] = kept[maxLines - 1].slice(0, Math.max(0, maxLen - 1)) + "…";
+      return kept;
+    }
+    return chunks;
+  }
+
+  function nodeSize(node) {
+    if (node.kind === "reaction") return { w: 238, h: 84 };
+    if (node.structureSrc) return { w: 252, h: 154 };
+    return { w: 238, h: 76 };
+  }
+
+  function hiddenIds() {
+    const hidden = new Set();
+    function hideChildren(id) {
+      (out.get(id) || []).forEach(child => {
+        if (!hidden.has(child)) {
+          hidden.add(child);
+          hideChildren(child);
+        }
+      });
+    }
+    collapsed.forEach(hideChildren);
+    return hidden;
+  }
+
+  function layout() {
+    const hidden = hiddenIds();
+    const nodes = graph.nodes.filter(node => !hidden.has(node.id));
+    const nodeIds = new Set(nodes.map(node => node.id));
+    const edges = graph.edges.filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+    const rings = new Map();
+    nodes.forEach(node => {
+      const depth = Number.isFinite(node.depth) ? node.depth : 0;
+      if (!rings.has(depth)) rings.set(depth, []);
+      rings.get(depth).push(node);
+    });
+    const ringEntries = Array.from(rings.entries()).sort((a, b) => a[0] - b[0]);
+    const maxDepth = Math.max(1, ...ringEntries.map(([depth]) => depth));
+    const maxCount = Math.max(1, ...ringEntries.map(([, ringNodes]) => ringNodes.length));
+    const ringGap = 172;
+    const radiusMax = 118 + maxDepth * ringGap;
+    const width = Math.max(1180, radiusMax * 2 + 430, maxCount * 120 + 520);
+    const height = Math.max(700, radiusMax * 2 + 260);
+    const centerX = width / 2;
+    const centerY = height / 2;
+    ringEntries.forEach(([depth, ringNodes]) => {
+      ringNodes.sort((a, b) => {
+        const routeA = Array.isArray(a.routes) ? a.routes.join(",") : "";
+        const routeB = Array.isArray(b.routes) ? b.routes.join(",") : "";
+        return `${routeA} ${a.kind} ${a.label}`.localeCompare(`${routeB} ${b.kind} ${b.label}`);
+      });
+      if (depth === 0) {
+        ringNodes.forEach(node => { node.x = centerX; node.y = centerY; });
+        return;
+      }
+      const radius = 112 + depth * ringGap;
+      const angleOffset = -Math.PI / 2 + depth * 0.34;
+      const step = (Math.PI * 2) / Math.max(1, ringNodes.length);
+      ringNodes.forEach((node, index) => {
+        const angle = angleOffset + index * step;
+        node.x = centerX + Math.cos(angle) * radius;
+        node.y = centerY + Math.sin(angle) * radius;
+      });
+    });
+    return { nodes, edges, width, height };
+  }
+
+  function draw() {
+    clear(svg);
+    const defs = makeSvg("defs", {});
+    const marker = makeSvg("marker", {
+      id: "andor-arrow",
+      viewBox: "0 0 10 10",
+      refX: 8,
+      refY: 5,
+      markerWidth: 5,
+      markerHeight: 5,
+      orient: "auto-start-reverse"
+    });
+    marker.appendChild(makeSvg("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#9eabb8", opacity: "0.72" }));
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+    const laid = layout();
+    if (!view) view = defaultView(laid);
+    svg.setAttribute("viewBox", `0 0 ${viewport.width} ${viewport.height}`);
+    const scene = makeSvg("g", { transform: `translate(${view.x},${view.y}) scale(${view.k})` });
+    svg.appendChild(scene);
+
+    const selectedNeighbors = linked.get(selectedId) || new Set();
+    laid.edges.forEach(edge => {
+      const from = nodeById.get(edge.source);
+      const to = nodeById.get(edge.target);
+      if (!from || !to) return;
+      const path = edgePath(from, to);
+      const active = edge.source === selectedId || edge.target === selectedId ||
+        (selectedNeighbors.has(edge.source) && selectedNeighbors.has(edge.target));
+      scene.appendChild(makeSvg("path", {
+        class: `andor-edge${edge.routes && edge.routes.length > 1 ? " merged" : ""}${active ? " active" : ""}`,
+        d: path
+      }));
+    });
+
+    laid.nodes.forEach(node => scene.appendChild(drawNode(node)));
+  }
+
+  function defaultView(laid) {
+    const scale = laid.nodes.length > 16 ? 0.82 : 0.94;
+    return {
+      x: viewport.width / 2 - (laid.width / 2) * scale,
+      y: viewport.height / 2 - (laid.height / 2) * scale,
+      k: scale
+    };
+  }
+
+  function edgePath(from, to) {
+    const fromSize = nodeSize(from);
+    const toSize = nodeSize(to);
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+    const startPad = Math.min(fromSize.w, fromSize.h) / 2 + 2;
+    const endPad = Math.min(toSize.w, toSize.h) / 2 + 8;
+    const x1 = from.x + (dx / distance) * startPad;
+    const y1 = from.y + (dy / distance) * startPad;
+    const x2 = to.x - (dx / distance) * endPad;
+    const y2 = to.y - (dy / distance) * endPad;
+    const curve = Math.min(90, distance * 0.14);
+    const cx = (x1 + x2) / 2 + (-dy / distance) * curve;
+    const cy = (y1 + y2) / 2 + (dx / distance) * curve;
+    return `M${x1},${y1} Q${cx},${cy} ${x2},${y2}`;
+  }
+
+  function drawNode(node) {
+    const size = nodeSize(node);
+    const selectedNeighbors = linked.get(selectedId) || new Set();
+    const related = node.id === selectedId || selectedNeighbors.has(node.id) || selectedId === "root";
+    const group = makeSvg("g", {
+      class: `andor-node ${node.className || "unknown"}${selectedId === node.id ? " selected" : ""}${related && node.id !== selectedId ? " neighbor" : ""}${!related ? " dimmed" : ""}${collapsed.has(node.id) ? " collapsed" : ""}`,
+      transform: `translate(${node.x - size.w / 2},${node.y - size.h / 2})`,
+      tabindex: "0"
+    });
+    group.appendChild(makeSvg("rect", { width: size.w, height: size.h, rx: 12 }));
+    const kind = node.kind === "reaction" ? "AND reaction" : (node.kind === "root" ? "OR root" : "molecule");
+    group.appendChild(textNode(54, 18, kind, "node-kind"));
+    const routeText = routeBadge(node);
+    if (routeText) {
+      const badgeWidth = Math.max(34, routeText.length * 6 + 16);
+      group.appendChild(makeSvg("rect", {
+        class: "route-badge",
+        x: size.w - badgeWidth - 12,
+        y: 8,
+        width: badgeWidth,
+        height: 20,
+        rx: 10
+      }));
+      group.appendChild(textNode(size.w - badgeWidth / 2 - 12, 22, routeText, "route-badge-text"));
+    }
+    if (node.structureSrc) {
+      group.appendChild(makeSvg("rect", {
+        class: "structure-well",
+        x: 22,
+        y: 30,
+        width: size.w - 44,
+        height: 76,
+        rx: 7
+      }));
+      const moleculeImage = makeSvg("image", {
+        href: node.structureSrc,
+        x: 26,
+        y: 28,
+        width: size.w - 52,
+        height: 78,
+        preserveAspectRatio: "xMidYMid meet"
+      });
+      if (node.structureFallbackSrc) moleculeImage.setAttribute("data-fallback-src", node.structureFallbackSrc);
+      moleculeImage.addEventListener("error", () => {
+        const fallback = moleculeImage.getAttribute("data-fallback-src");
+        if (fallback && moleculeImage.getAttribute("href") !== fallback) {
+          moleculeImage.setAttribute("href", fallback);
+          moleculeImage.classList.add("structure-fallback");
+        }
+      });
+      group.appendChild(moleculeImage);
+      splitText(node.label, 24, 2).forEach((line, idx) => group.appendChild(textNode(size.w / 2, 123 + idx * 13, line)));
+      group.appendChild(textNode(size.w / 2, size.h - 9, node.meta || "", "node-meta"));
+    } else {
+      splitText(node.label, 25, 2).forEach((line, idx) => group.appendChild(textNode(size.w / 2, 40 + idx * 14, line)));
+      group.appendChild(textNode(size.w / 2, size.h - 13, node.meta || "", "node-meta"));
+    }
+    const title = makeSvg("title", {});
+    title.textContent = node.label;
+    group.appendChild(title);
+    group.addEventListener("click", event => {
+      event.stopPropagation();
+      selectedId = node.id;
+      showDetail(node);
+      draw();
+    });
+    group.addEventListener("dblclick", event => {
+      event.stopPropagation();
+      if (collapsed.has(node.id)) collapsed.delete(node.id);
+      else collapsed.add(node.id);
+      draw();
+    });
+    return group;
+  }
+
+  function routeBadge(node) {
+    const routes = Array.isArray(node.routes) ? node.routes.filter(Boolean) : [];
+    if (!routes.length) return "";
+    if (node.kind === "root") return `${routes.length} routes`;
+    const shown = routes.slice(0, 2).join(",");
+    return `R${shown}${routes.length > 2 ? "+" : ""}`;
+  }
+
+  function showDetail(node) {
+    clear(detail);
+    const h = document.createElement("h3");
+    h.textContent = node.kind === "reaction" ? "Reaction node" : "Molecule node";
+    detail.appendChild(h);
+    if (node.structureSrc) {
+      const img = document.createElement("img");
+      img.src = node.structureSrc;
+      if (node.structureFallbackSrc) {
+        img.dataset.fallbackSrc = node.structureFallbackSrc;
+        img.addEventListener("error", () => {
+          if (img.dataset.fallbackSrc && img.src !== img.dataset.fallbackSrc) {
+            img.src = img.dataset.fallbackSrc;
+            img.classList.add("structure-fallback");
+          }
+        });
+      }
+      img.alt = `Structure of ${node.smiles || node.label}`;
+      detail.appendChild(img);
+    }
+    const dl = document.createElement("dl");
+    Object.entries(node.details || {}).forEach(([key, value]) => {
+      const dt = document.createElement("dt");
+      dt.textContent = key;
+      const dd = document.createElement("dd");
+      appendDetailValue(dd, value);
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    });
+    detail.appendChild(dl);
+    const p = document.createElement("p");
+    p.className = "note";
+    p.textContent = "This knowledge graph merges identical molecule nodes across displayed routes; reaction nodes represent route hypotheses and require literature or experimental validation.";
+    detail.appendChild(p);
+  }
+
+  function appendDetailValue(container, value) {
+    if (value == null || value === "") {
+      container.textContent = "n/a";
+      return;
+    }
+    if (Array.isArray(value)) {
+      const ul = document.createElement("ul");
+      value.forEach(item => {
+        const li = document.createElement("li");
+        appendDetailValue(li, item);
+        ul.appendChild(li);
+      });
+      container.appendChild(ul);
+      return;
+    }
+    if (typeof value === "object") {
+      const grid = document.createElement("div");
+      grid.className = "detail-kv";
+      Object.entries(value).forEach(([key, nested]) => {
+        const k = document.createElement("span");
+        k.textContent = key;
+        const v = document.createElement("span");
+        appendDetailValue(v, nested);
+        grid.appendChild(k);
+        grid.appendChild(v);
+      });
+      container.appendChild(grid);
+      return;
+    }
+    const text = String(value);
+    if (text.startsWith("http")) {
+      const a = document.createElement("a");
+      a.href = text;
+      a.textContent = text;
+      container.appendChild(a);
+      return;
+    }
+    container.textContent = text;
+  }
+
+  function resetView() {
+    view = null;
+    draw();
+  }
+
+  document.getElementById("andor-expand").addEventListener("click", () => { collapsed.clear(); draw(); });
+  document.getElementById("andor-collapse").addEventListener("click", () => {
+    collapsed.clear();
+    graph.nodes.forEach(node => { if (node.kind === "reaction") collapsed.add(node.id); });
+    draw();
+  });
+  document.getElementById("andor-reset").addEventListener("click", resetView);
+  svg.addEventListener("wheel", event => {
+    event.preventDefault();
+    if (!view) view = { x: 0, y: 0, k: 1 };
+    view.k = Math.max(0.25, Math.min(2.8, view.k * (event.deltaY < 0 ? 1.08 : 0.92)));
+    draw();
+  }, { passive: false });
+  svg.addEventListener("pointerdown", event => {
+    dragging = true;
+    lastPoint = { x: event.clientX, y: event.clientY };
+    svg.classList.add("dragging");
+    svg.setPointerCapture(event.pointerId);
+  });
+  svg.addEventListener("pointermove", event => {
+    if (!dragging || !lastPoint) return;
+    if (!view) view = { x: 0, y: 0, k: 1 };
+    view.x += event.clientX - lastPoint.x;
+    view.y += event.clientY - lastPoint.y;
+    lastPoint = { x: event.clientX, y: event.clientY };
+    draw();
+  });
+  svg.addEventListener("pointerup", event => {
+    dragging = false;
+    lastPoint = null;
+    svg.classList.remove("dragging");
+    try { svg.releasePointerCapture(event.pointerId); } catch (_) {}
+  });
+  showDetail(nodeById.get(selectedId) || graph.nodes[0]);
+  draw();
+})();
+</script>
+</section>
+    <section class="panel">
+<h2>Molecule Briefs</h2>
+<div class="molecule-grid">
+<article class="molecule-card">
+<h3><code>CC(=O)Oc1ccccc1C(=O)O</code></h3>
+<div class="structure-frame">
+<img class="mol-structure" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPkNDKD1PKU9jMWNjY2NjMUMoPU8pTzwvdGV4dD4KICA8dGV4dCB4PSIxMzAuMCIgeT0iMTcyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPkNDKD1PKU9jMWNjY2NjMUMoPU8pTzwvdGV4dD4KICA8dGV4dCB4PSIxMzAuMCIgeT0iMTcyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');" alt="Structure of CC(=O)Oc1ccccc1C(=O)O">
+</div>
+<dl>
+<dt>Role</dt><dd>target</dd>
+<dt>Routes</dt><dd>1, 2, 3, 4, 5</dd>
+<dt>Stock</dt><dd>not a terminal precursor</dd>
+<dt>Interpretation</dt><dd>Target molecule being disconnected into simpler purchasable or stock precursors.</dd>
+<dt>Annotation</dt><dd>Example LLM molecule brief: this is a target in the displayed aspirin route set. The stock status is not a terminal precursor; confirm identity, purity, and route-specific functional-group compatibility before execution.</dd>
+<dt>Query</dt><dd><a href="https://pubchem.ncbi.nlm.nih.gov/#query=CC%28%3DO%29Oc1ccccc1C%28%3DO%29O">PubChem</a></dd>
+</dl>
+</article>
+<article class="molecule-card">
+<h3><code>CC(=O)Oc1ccccc1C(=O)OCc1ccccc1</code></h3>
+<div class="structure-frame">
+<img class="mol-structure" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPkNDKD1PKU9jMWNjY2NjMUMoPU8pT0NjMWNjY2NjMTwvdGV4dD4KICA8dGV4dCB4PSIxMzAuMCIgeT0iMTcyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPkNDKD1PKU9jMWNjY2NjMUMoPU8pT0NjMWNjY2NjMTwvdGV4dD4KICA8dGV4dCB4PSIxMzAuMCIgeT0iMTcyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');" alt="Structure of CC(=O)Oc1ccccc1C(=O)OCc1ccccc1">
+</div>
+<dl>
+<dt>Role</dt><dd>intermediate</dd>
+<dt>Routes</dt><dd>5</dd>
+<dt>Stock</dt><dd>not a terminal precursor</dd>
+<dt>Interpretation</dt><dd>Predicted synthetic intermediate; inspect functional groups, stereochemistry, and whether downstream disconnections are plausible.</dd>
+<dt>Annotation</dt><dd>Example LLM molecule brief: this is a intermediate in the displayed aspirin route set. The stock status is not a terminal precursor; confirm identity, purity, and route-specific functional-group compatibility before execution.</dd>
+<dt>Query</dt><dd><a href="https://pubchem.ncbi.nlm.nih.gov/#query=CC%28%3DO%29Oc1ccccc1C%28%3DO%29OCc1ccccc1">PubChem</a></dd>
+</dl>
+</article>
+<article class="molecule-card">
+<h3><code>CC(=O)Cl</code></h3>
+<div class="structure-frame">
+<img class="mol-structure" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPkNDKD1PKUNsPC90ZXh0PgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNzIuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzY4NzQ4MiI+c3RydWN0dXJlIHJlbmRlcmVyIGZhbGxiYWNrPC90ZXh0Pgo8L3N2Zz4=" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPkNDKD1PKUNsPC90ZXh0PgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNzIuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzY4NzQ4MiI+c3RydWN0dXJlIHJlbmRlcmVyIGZhbGxiYWNrPC90ZXh0Pgo8L3N2Zz4=" onerror="this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');" alt="Structure of CC(=O)Cl">
+</div>
+<dl>
+<dt>Role</dt><dd>stock precursor</dd>
+<dt>Routes</dt><dd>2</dd>
+<dt>Stock</dt><dd>in stock</dd>
+<dt>Interpretation</dt><dd>Terminal precursor found in the selected stock database; verify vendor, purity, price, and regulatory constraints.</dd>
+<dt>Annotation</dt><dd>Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.</dd>
+<dt>Query</dt><dd><a href="https://pubchem.ncbi.nlm.nih.gov/#query=CC%28%3DO%29Cl">PubChem</a></dd>
+</dl>
+</article>
+<article class="molecule-card">
+<h3><code>CC(=O)O</code></h3>
+<div class="structure-frame">
+<img class="mol-structure" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPkNDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iMTMwLjAiIHk9IjE3Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPkNDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iMTMwLjAiIHk9IjE3Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" onerror="this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');" alt="Structure of CC(=O)O">
+</div>
+<dl>
+<dt>Role</dt><dd>stock precursor</dd>
+<dt>Routes</dt><dd>3, 4</dd>
+<dt>Stock</dt><dd>in stock</dd>
+<dt>Interpretation</dt><dd>Terminal precursor found in the selected stock database; verify vendor, purity, price, and regulatory constraints.</dd>
+<dt>Annotation</dt><dd>Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.</dd>
+<dt>Query</dt><dd><a href="https://pubchem.ncbi.nlm.nih.gov/#query=CC%28%3DO%29O">PubChem</a></dd>
+</dl>
+</article>
+<article class="molecule-card">
+<h3><code>CC(=O)OC(C)=O</code></h3>
+<div class="structure-frame">
+<img class="mol-structure" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPkNDKD1PKU9DKEMpPU88L3RleHQ+CiAgPHRleHQgeD0iMTMwLjAiIHk9IjE3Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPkNDKD1PKU9DKEMpPU88L3RleHQ+CiAgPHRleHQgeD0iMTMwLjAiIHk9IjE3Mi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" onerror="this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');" alt="Structure of CC(=O)OC(C)=O">
+</div>
+<dl>
+<dt>Role</dt><dd>stock precursor</dd>
+<dt>Routes</dt><dd>1, 5</dd>
+<dt>Stock</dt><dd>in stock</dd>
+<dt>Interpretation</dt><dd>Terminal precursor found in the selected stock database; verify vendor, purity, price, and regulatory constraints.</dd>
+<dt>Annotation</dt><dd>Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.</dd>
+<dt>Query</dt><dd><a href="https://pubchem.ncbi.nlm.nih.gov/#query=CC%28%3DO%29OC%28C%29%3DO">PubChem</a></dd>
+</dl>
+</article>
+<article class="molecule-card">
+<h3><code>O=C(O)c1ccccc1F</code></h3>
+<div class="structure-frame">
+<img class="mol-structure" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPk89QyhPKWMxY2NjY2MxRjwvdGV4dD4KICA8dGV4dCB4PSIxMzAuMCIgeT0iMTcyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPk89QyhPKWMxY2NjY2MxRjwvdGV4dD4KICA8dGV4dCB4PSIxMzAuMCIgeT0iMTcyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');" alt="Structure of O=C(O)c1ccccc1F">
+</div>
+<dl>
+<dt>Role</dt><dd>stock precursor</dd>
+<dt>Routes</dt><dd>4</dd>
+<dt>Stock</dt><dd>in stock</dd>
+<dt>Interpretation</dt><dd>Terminal precursor found in the selected stock database; verify vendor, purity, price, and regulatory constraints.</dd>
+<dt>Annotation</dt><dd>Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.</dd>
+<dt>Query</dt><dd><a href="https://pubchem.ncbi.nlm.nih.gov/#query=O%3DC%28O%29c1ccccc1F">PubChem</a></dd>
+</dl>
+</article>
+<article class="molecule-card">
+<h3><code>O=C(O)c1ccccc1O</code></h3>
+<div class="structure-frame">
+<img class="mol-structure" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPk89QyhPKWMxY2NjY2MxTzwvdGV4dD4KICA8dGV4dCB4PSIxMzAuMCIgeT0iMTcyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPk89QyhPKWMxY2NjY2MxTzwvdGV4dD4KICA8dGV4dCB4PSIxMzAuMCIgeT0iMTcyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');" alt="Structure of O=C(O)c1ccccc1O">
+</div>
+<dl>
+<dt>Role</dt><dd>stock precursor</dd>
+<dt>Routes</dt><dd>1, 2, 3</dd>
+<dt>Stock</dt><dd>in stock</dd>
+<dt>Interpretation</dt><dd>Terminal precursor found in the selected stock database; verify vendor, purity, price, and regulatory constraints.</dd>
+<dt>Annotation</dt><dd>Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.</dd>
+<dt>Query</dt><dd><a href="https://pubchem.ncbi.nlm.nih.gov/#query=O%3DC%28O%29c1ccccc1O">PubChem</a></dd>
+</dl>
+</article>
+<article class="molecule-card">
+<h3><code>O=C(OCc1ccccc1)c1ccccc1O</code></h3>
+<div class="structure-frame">
+<img class="mol-structure" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPk89QyhPQ2MxY2NjY2MxKWMxY2NjY2MxTzwvdGV4dD4KICA8dGV4dCB4PSIxMzAuMCIgeT0iMTcyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMjYwIDE4MCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDY4LjAgODIuMCBMIDEwMC4wIDU0LjAgTCAxMzguMCA2OC4wIEwgMTcyLjAgNDQuMCIgLz4KICAgIDxwYXRoIGQ9Ik0gMTAwLjAgNTQuMCBMIDEwOC4wIDEwMC4wIEwgMTQ4LjAgMTEwLjAgTCAxNzguMCA4NC4wIiAvPgogICAgPHBhdGggZD0iTSAxMzguMCA2OC4wIEwgMTc4LjAgODQuMCIgLz4KICA8L2c+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuOTUiPgogICAgPGNpcmNsZSBjeD0iNjguMCIgY3k9IjgyLjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMDAuMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjY4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxNzguMCIgY3k9Ijg0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjEzMC4wIiB5PSIxNTYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI2NTAiIGZpbGw9IiMzZDRiNTciPk89QyhPQ2MxY2NjY2MxKWMxY2NjY2MxTzwvdGV4dD4KICA8dGV4dCB4PSIxMzAuMCIgeT0iMTcyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');" alt="Structure of O=C(OCc1ccccc1)c1ccccc1O">
+</div>
+<dl>
+<dt>Role</dt><dd>stock precursor</dd>
+<dt>Routes</dt><dd>5</dd>
+<dt>Stock</dt><dd>in stock</dd>
+<dt>Interpretation</dt><dd>Terminal precursor found in the selected stock database; verify vendor, purity, price, and regulatory constraints.</dd>
+<dt>Annotation</dt><dd>Example LLM molecule brief: this is a stock precursor in the displayed aspirin route set. The stock status is in stock; confirm identity, purity, and route-specific functional-group compatibility before execution.</dd>
+<dt>Query</dt><dd><a href="https://pubchem.ncbi.nlm.nih.gov/#query=O%3DC%28OCc1ccccc1%29c1ccccc1O">PubChem</a></dd>
+</dl>
+</article>
+</div>
+</section>
+    <div class="legend">
+      <span class="lg-target">Target/intermediate</span>
+      <span class="lg-reaction">Reaction</span>
+      <span class="lg-stock">Stock precursor</span>
+      <span class="lg-missing">Not in stock</span>
+    </div>
+    <section class="route-card">
+<div class="route-head">
+<h2>Route 1</h2>
+<span class="pill ok">solved</span>
+</div>
+<div class="metrics">
+<div><span>Score</span><strong>0.998</strong></div>
+<div><span>Steps</span><strong>1</strong></div>
+<div><span>Stock precursors</span><strong>2</strong></div>
+</div>
+<div class="route-diagram">
+<svg class="route-svg" role="img" aria-label="Route 1 tree" viewBox="0 0 910 296" xmlns="http://www.w3.org/2000/svg">
+<g>
+<path class="edge" d="M555.0,156.0 C590.0,156.0 590.0,86.0 625.0,86.0" />
+<path class="edge" d="M555.0,156.0 C590.0,156.0 590.0,226.0 625.0,226.0" />
+<path class="edge" d="M255.0,156.0 C290.0,156.0 290.0,156.0 325.0,156.0" />
+<g class="node stock">
+<title>CC(=O)OC(C)=O</title>
+<rect x="625.0" y="27.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="650.0" y="36.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPQyhDKT1PPC90ZXh0PgogIDx0ZXh0IHg9IjkwLjAiIHk9IjExMi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPQyhDKT1PPC90ZXh0PgogIDx0ZXh0IHg9IjkwLjAiIHk9IjExMi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="656.0" y="37.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="740.0" y="123.0" text-anchor="middle">CC(=O)OC(C)=O</text>
+<text class="meta" x="740.0" y="136.0" text-anchor="middle">stock precursor</text>
+</g>
+<g class="node stock">
+<title>O=C(O)c1ccccc1O</title>
+<rect x="625.0" y="167.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="650.0" y="176.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="656.0" y="177.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="740.0" y="263.0" text-anchor="middle">O=C(O)c1ccccc1O</text>
+<text class="meta" x="740.0" y="276.0" text-anchor="middle">stock precursor</text>
+</g>
+<g class="node reaction">
+<title>reaction 40152</title>
+<rect x="325.0" y="125.0" width="230" height="62" rx="8" />
+
+
+<text x="440.0" y="150.0" text-anchor="middle">reaction 40152</text>
+<text class="meta" x="440.0" y="178.0" text-anchor="middle">uspto p=0.73</text>
+</g>
+<g class="node target">
+<title>CC(=O)Oc1ccccc1C(=O)O</title>
+<rect x="25.0" y="97.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="50.0" y="106.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="56.0" y="107.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="140.0" y="193.0" text-anchor="middle">CC(=O)Oc1ccccc1C(=O)O</text>
+<text class="meta" x="140.0" y="206.0" text-anchor="middle">target</text>
+</g>
+</g>
+</svg>
+</div>
+<section class="route-analysis">
+<h3>LLM Route Analysis</h3>
+<dl class="analysis-grid">
+<div class="analysis-field">
+<dt>Route strategy</dt>
+<dd>Example LLM route analysis: the aspirin target is disconnected at the aryl acetate bond, reducing the plan to salicylic-acid-derived material plus an acetyl donor. Route 1 uses acetic anhydride; this is chemically plausible, but the export alone does not validate conditions, impurity profile, or scale-up behavior.</dd>
+</div>
+<div class="analysis-field">
+<dt>Key disconnections</dt>
+<dd><ul><li>aryl acetate C(O)-O bond disconnection</li><li>salicylic acid phenol acylation in the forward direction</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Reaction sequence</dt>
+<dd><ul><li>Confirm salicylic acid or the displayed salicylate precursor identity and availability.</li><li>Run the O-acylation with a literature-backed acetyl donor and monitor conversion by LCMS/HPLC.</li><li>Quench, isolate, and verify aspirin identity, residual salicylic acid, and hydrolysis level.</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Conditions strategy</dt>
+<dd>screen acetic anhydride loading, weak base or acid catalysis, and aqueous quench timing.</dd>
+</div>
+<div class="analysis-field">
+<dt>Yield outlook</dt>
+<dd>A moderate-to-high step yield may be plausible for a simple phenolic acylation, but this example reports it as a planning estimate rather than an experimental fact.</dd>
+</div>
+<div class="analysis-field">
+<dt>Route risks</dt>
+<dd><ul><li>hydrolysis of aspirin during workup or storage</li><li>incomplete O-acylation leaving salicylic acid impurity</li><li>acid chloride or anhydride handling, heat release, and corrosive byproducts</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Recommended next steps</dt>
+<dd><ul><li>search exact salicylic acid O-acylation precedent in SciFinder/Reaxys/internal ELN</li><li>check vendor, purity, and regulatory constraints for terminal precursors</li><li>run a small condition screen with HPLC assay before scale-up</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Chemist verdict</dt>
+<dd>go with verification: short and credible route, but conditions and analytical controls must be confirmed.</dd>
+</div>
+</dl>
+</section>
+<h3>Starting materials</h3>
+<div class="chips"><span class="chip"><code>CC(=O)OC(C)=O</code></span><span class="chip"><code>O=C(O)c1ccccc1O</code></span></div>
+<details>
+<summary>Text outline</summary>
+<div class="tree"><code>CC(=O)Oc1ccccc1C(=O)O</code><span class="tag">molecule</span><ul><li><code>reaction 40152</code><span class="tag">reaction</span><ul><li><code>CC(=O)OC(C)=O</code><span class="tag">molecule stock</span></li><li><code>O=C(O)c1ccccc1O</code><span class="tag">molecule stock</span></li></ul></li></ul></div>
+</details>
+</section>
+<section class="route-card">
+<div class="route-head">
+<h2>Route 2</h2>
+<span class="pill ok">solved</span>
+</div>
+<div class="metrics">
+<div><span>Score</span><strong>0.998</strong></div>
+<div><span>Steps</span><strong>1</strong></div>
+<div><span>Stock precursors</span><strong>2</strong></div>
+</div>
+<div class="route-diagram">
+<svg class="route-svg" role="img" aria-label="Route 2 tree" viewBox="0 0 910 296" xmlns="http://www.w3.org/2000/svg">
+<g>
+<path class="edge" d="M555.0,156.0 C590.0,156.0 590.0,86.0 625.0,86.0" />
+<path class="edge" d="M555.0,156.0 C590.0,156.0 590.0,226.0 625.0,226.0" />
+<path class="edge" d="M255.0,156.0 C290.0,156.0 290.0,156.0 325.0,156.0" />
+<g class="node stock">
+<title>CC(=O)Cl</title>
+<rect x="625.0" y="27.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="650.0" y="36.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylDbDwvdGV4dD4KICA8dGV4dCB4PSI5MC4wIiB5PSIxMTIuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzY4NzQ4MiI+c3RydWN0dXJlIHJlbmRlcmVyIGZhbGxiYWNrPC90ZXh0Pgo8L3N2Zz4=" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylDbDwvdGV4dD4KICA8dGV4dCB4PSI5MC4wIiB5PSIxMTIuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ii1hcHBsZS1zeXN0ZW0sIEJsaW5rTWFjU3lzdGVtRm9udCwgU2Vnb2UgVUksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzY4NzQ4MiI+c3RydWN0dXJlIHJlbmRlcmVyIGZhbGxiYWNrPC90ZXh0Pgo8L3N2Zz4=" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="656.0" y="37.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="740.0" y="123.0" text-anchor="middle">CC(=O)Cl</text>
+<text class="meta" x="740.0" y="136.0" text-anchor="middle">stock precursor</text>
+</g>
+<g class="node stock">
+<title>O=C(O)c1ccccc1O</title>
+<rect x="625.0" y="167.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="650.0" y="176.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="656.0" y="177.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="740.0" y="263.0" text-anchor="middle">O=C(O)c1ccccc1O</text>
+<text class="meta" x="740.0" y="276.0" text-anchor="middle">stock precursor</text>
+</g>
+<g class="node reaction">
+<title>reaction 248</title>
+<rect x="325.0" y="125.0" width="230" height="62" rx="8" />
+
+
+<text x="440.0" y="150.0" text-anchor="middle">reaction 248</text>
+<text class="meta" x="440.0" y="178.0" text-anchor="middle">uspto p=0.09</text>
+</g>
+<g class="node target">
+<title>CC(=O)Oc1ccccc1C(=O)O</title>
+<rect x="25.0" y="97.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="50.0" y="106.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="56.0" y="107.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="140.0" y="193.0" text-anchor="middle">CC(=O)Oc1ccccc1C(=O)O</text>
+<text class="meta" x="140.0" y="206.0" text-anchor="middle">target</text>
+</g>
+</g>
+</svg>
+</div>
+<section class="route-analysis">
+<h3>LLM Route Analysis</h3>
+<dl class="analysis-grid">
+<div class="analysis-field">
+<dt>Route strategy</dt>
+<dd>Example LLM route analysis: the aspirin target is disconnected at the aryl acetate bond, reducing the plan to salicylic-acid-derived material plus an acetyl donor. Route 2 uses acetyl chloride; this is chemically plausible, but the export alone does not validate conditions, impurity profile, or scale-up behavior.</dd>
+</div>
+<div class="analysis-field">
+<dt>Key disconnections</dt>
+<dd><ul><li>aryl acetate C(O)-O bond disconnection</li><li>salicylic acid phenol acylation in the forward direction</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Reaction sequence</dt>
+<dd><ul><li>Confirm salicylic acid or the displayed salicylate precursor identity and availability.</li><li>Run the O-acylation with a literature-backed acetyl donor and monitor conversion by LCMS/HPLC.</li><li>Quench, isolate, and verify aspirin identity, residual salicylic acid, and hydrolysis level.</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Conditions strategy</dt>
+<dd>control exotherm, HCl capture, and moisture exclusion if acetyl chloride is selected.</dd>
+</div>
+<div class="analysis-field">
+<dt>Yield outlook</dt>
+<dd>A moderate-to-high step yield may be plausible for a simple phenolic acylation, but this example reports it as a planning estimate rather than an experimental fact.</dd>
+</div>
+<div class="analysis-field">
+<dt>Route risks</dt>
+<dd><ul><li>hydrolysis of aspirin during workup or storage</li><li>incomplete O-acylation leaving salicylic acid impurity</li><li>acid chloride or anhydride handling, heat release, and corrosive byproducts</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Recommended next steps</dt>
+<dd><ul><li>search exact salicylic acid O-acylation precedent in SciFinder/Reaxys/internal ELN</li><li>check vendor, purity, and regulatory constraints for terminal precursors</li><li>run a small condition screen with HPLC assay before scale-up</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Chemist verdict</dt>
+<dd>go with verification: short and credible route, but conditions and analytical controls must be confirmed.</dd>
+</div>
+</dl>
+</section>
+<h3>Starting materials</h3>
+<div class="chips"><span class="chip"><code>CC(=O)Cl</code></span><span class="chip"><code>O=C(O)c1ccccc1O</code></span></div>
+<details>
+<summary>Text outline</summary>
+<div class="tree"><code>CC(=O)Oc1ccccc1C(=O)O</code><span class="tag">molecule</span><ul><li><code>reaction 248</code><span class="tag">reaction</span><ul><li><code>CC(=O)Cl</code><span class="tag">molecule stock</span></li><li><code>O=C(O)c1ccccc1O</code><span class="tag">molecule stock</span></li></ul></li></ul></div>
+</details>
+</section>
+<section class="route-card">
+<div class="route-head">
+<h2>Route 3</h2>
+<span class="pill ok">solved</span>
+</div>
+<div class="metrics">
+<div><span>Score</span><strong>0.998</strong></div>
+<div><span>Steps</span><strong>1</strong></div>
+<div><span>Stock precursors</span><strong>2</strong></div>
+</div>
+<div class="route-diagram">
+<svg class="route-svg" role="img" aria-label="Route 3 tree" viewBox="0 0 910 296" xmlns="http://www.w3.org/2000/svg">
+<g>
+<path class="edge" d="M555.0,156.0 C590.0,156.0 590.0,86.0 625.0,86.0" />
+<path class="edge" d="M555.0,156.0 C590.0,156.0 590.0,226.0 625.0,226.0" />
+<path class="edge" d="M255.0,156.0 C290.0,156.0 290.0,156.0 325.0,156.0" />
+<g class="node stock">
+<title>CC(=O)O</title>
+<rect x="625.0" y="27.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="650.0" y="36.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPPC90ZXh0PgogIDx0ZXh0IHg9IjkwLjAiIHk9IjExMi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPPC90ZXh0PgogIDx0ZXh0IHg9IjkwLjAiIHk9IjExMi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="656.0" y="37.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="740.0" y="123.0" text-anchor="middle">CC(=O)O</text>
+<text class="meta" x="740.0" y="136.0" text-anchor="middle">stock precursor</text>
+</g>
+<g class="node stock">
+<title>O=C(O)c1ccccc1O</title>
+<rect x="625.0" y="167.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="650.0" y="176.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="656.0" y="177.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="740.0" y="263.0" text-anchor="middle">O=C(O)c1ccccc1O</text>
+<text class="meta" x="740.0" y="276.0" text-anchor="middle">stock precursor</text>
+</g>
+<g class="node reaction">
+<title>reaction 1607</title>
+<rect x="325.0" y="125.0" width="230" height="62" rx="8" />
+
+
+<text x="440.0" y="150.0" text-anchor="middle">reaction 1607</text>
+<text class="meta" x="440.0" y="178.0" text-anchor="middle">uspto p=0.01</text>
+</g>
+<g class="node target">
+<title>CC(=O)Oc1ccccc1C(=O)O</title>
+<rect x="25.0" y="97.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="50.0" y="106.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="56.0" y="107.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="140.0" y="193.0" text-anchor="middle">CC(=O)Oc1ccccc1C(=O)O</text>
+<text class="meta" x="140.0" y="206.0" text-anchor="middle">target</text>
+</g>
+</g>
+</svg>
+</div>
+<section class="route-analysis">
+<h3>LLM Route Analysis</h3>
+<dl class="analysis-grid">
+<div class="analysis-field">
+<dt>Route strategy</dt>
+<dd>Example LLM route analysis: the aspirin target is disconnected at the aryl acetate bond, reducing the plan to salicylic-acid-derived material plus an acetyl donor. Route 3 uses acetic acid with activation or dehydrating conditions; this is chemically plausible, but the export alone does not validate conditions, impurity profile, or scale-up behavior.</dd>
+</div>
+<div class="analysis-field">
+<dt>Key disconnections</dt>
+<dd><ul><li>aryl acetate C(O)-O bond disconnection</li><li>salicylic acid phenol acylation in the forward direction</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Reaction sequence</dt>
+<dd><ul><li>Confirm salicylic acid or the displayed salicylate precursor identity and availability.</li><li>Run the O-acylation with a literature-backed acetyl donor and monitor conversion by LCMS/HPLC.</li><li>Quench, isolate, and verify aspirin identity, residual salicylic acid, and hydrolysis level.</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Conditions strategy</dt>
+<dd>treat direct acetic-acid esterification as lower confidence unless activation precedent is available.</dd>
+</div>
+<div class="analysis-field">
+<dt>Yield outlook</dt>
+<dd>A moderate-to-high step yield may be plausible for a simple phenolic acylation, but this example reports it as a planning estimate rather than an experimental fact.</dd>
+</div>
+<div class="analysis-field">
+<dt>Route risks</dt>
+<dd><ul><li>hydrolysis of aspirin during workup or storage</li><li>incomplete O-acylation leaving salicylic acid impurity</li><li>acid chloride or anhydride handling, heat release, and corrosive byproducts</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Recommended next steps</dt>
+<dd><ul><li>search exact salicylic acid O-acylation precedent in SciFinder/Reaxys/internal ELN</li><li>check vendor, purity, and regulatory constraints for terminal precursors</li><li>run a small condition screen with HPLC assay before scale-up</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Chemist verdict</dt>
+<dd>go with verification: short and credible route, but conditions and analytical controls must be confirmed.</dd>
+</div>
+</dl>
+</section>
+<h3>Starting materials</h3>
+<div class="chips"><span class="chip"><code>CC(=O)O</code></span><span class="chip"><code>O=C(O)c1ccccc1O</code></span></div>
+<details>
+<summary>Text outline</summary>
+<div class="tree"><code>CC(=O)Oc1ccccc1C(=O)O</code><span class="tag">molecule</span><ul><li><code>reaction 1607</code><span class="tag">reaction</span><ul><li><code>CC(=O)O</code><span class="tag">molecule stock</span></li><li><code>O=C(O)c1ccccc1O</code><span class="tag">molecule stock</span></li></ul></li></ul></div>
+</details>
+</section>
+<section class="route-card">
+<div class="route-head">
+<h2>Route 4</h2>
+<span class="pill ok">solved</span>
+</div>
+<div class="metrics">
+<div><span>Score</span><strong>0.998</strong></div>
+<div><span>Steps</span><strong>1</strong></div>
+<div><span>Stock precursors</span><strong>2</strong></div>
+</div>
+<div class="route-diagram">
+<svg class="route-svg" role="img" aria-label="Route 4 tree" viewBox="0 0 910 296" xmlns="http://www.w3.org/2000/svg">
+<g>
+<path class="edge" d="M555.0,156.0 C590.0,156.0 590.0,86.0 625.0,86.0" />
+<path class="edge" d="M555.0,156.0 C590.0,156.0 590.0,226.0 625.0,226.0" />
+<path class="edge" d="M255.0,156.0 C290.0,156.0 290.0,156.0 325.0,156.0" />
+<g class="node stock">
+<title>CC(=O)O</title>
+<rect x="625.0" y="27.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="650.0" y="36.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPPC90ZXh0PgogIDx0ZXh0IHg9IjkwLjAiIHk9IjExMi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPPC90ZXh0PgogIDx0ZXh0IHg9IjkwLjAiIHk9IjExMi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="656.0" y="37.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="740.0" y="123.0" text-anchor="middle">CC(=O)O</text>
+<text class="meta" x="740.0" y="136.0" text-anchor="middle">stock precursor</text>
+</g>
+<g class="node stock">
+<title>O=C(O)c1ccccc1F</title>
+<rect x="625.0" y="167.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="650.0" y="176.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMUY8L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoTyljMWNjY2NjMUY8L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="656.0" y="177.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="740.0" y="263.0" text-anchor="middle">O=C(O)c1ccccc1F</text>
+<text class="meta" x="740.0" y="276.0" text-anchor="middle">stock precursor</text>
+</g>
+<g class="node reaction">
+<title>reaction 39514</title>
+<rect x="325.0" y="125.0" width="230" height="62" rx="8" />
+
+
+<text x="440.0" y="150.0" text-anchor="middle">reaction 39514</text>
+<text class="meta" x="440.0" y="178.0" text-anchor="middle">uspto p=0.00</text>
+</g>
+<g class="node target">
+<title>CC(=O)Oc1ccccc1C(=O)O</title>
+<rect x="25.0" y="97.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="50.0" y="106.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="56.0" y="107.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="140.0" y="193.0" text-anchor="middle">CC(=O)Oc1ccccc1C(=O)O</text>
+<text class="meta" x="140.0" y="206.0" text-anchor="middle">target</text>
+</g>
+</g>
+</svg>
+</div>
+<section class="route-analysis">
+<h3>LLM Route Analysis</h3>
+<dl class="analysis-grid">
+<div class="analysis-field">
+<dt>Route strategy</dt>
+<dd>Example LLM route analysis: the aspirin target is disconnected at the aryl acetate bond, reducing the plan to salicylic-acid-derived material plus an acetyl donor. Route 4 uses acetic acid with activation or dehydrating conditions; this is chemically plausible, but the export alone does not validate conditions, impurity profile, or scale-up behavior.</dd>
+</div>
+<div class="analysis-field">
+<dt>Key disconnections</dt>
+<dd><ul><li>aryl acetate C(O)-O bond disconnection</li><li>salicylic acid phenol acylation in the forward direction</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Reaction sequence</dt>
+<dd><ul><li>Confirm salicylic acid or the displayed salicylate precursor identity and availability.</li><li>Run the O-acylation with a literature-backed acetyl donor and monitor conversion by LCMS/HPLC.</li><li>Quench, isolate, and verify aspirin identity, residual salicylic acid, and hydrolysis level.</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Conditions strategy</dt>
+<dd>treat direct acetic-acid esterification as lower confidence unless activation precedent is available.</dd>
+</div>
+<div class="analysis-field">
+<dt>Yield outlook</dt>
+<dd>A moderate-to-high step yield may be plausible for a simple phenolic acylation, but this example reports it as a planning estimate rather than an experimental fact.</dd>
+</div>
+<div class="analysis-field">
+<dt>Route risks</dt>
+<dd><ul><li>hydrolysis of aspirin during workup or storage</li><li>incomplete O-acylation leaving salicylic acid impurity</li><li>acid chloride or anhydride handling, heat release, and corrosive byproducts</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Recommended next steps</dt>
+<dd><ul><li>search exact salicylic acid O-acylation precedent in SciFinder/Reaxys/internal ELN</li><li>check vendor, purity, and regulatory constraints for terminal precursors</li><li>run a small condition screen with HPLC assay before scale-up</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Chemist verdict</dt>
+<dd>go with verification: short and credible route, but conditions and analytical controls must be confirmed.</dd>
+</div>
+</dl>
+</section>
+<h3>Starting materials</h3>
+<div class="chips"><span class="chip"><code>CC(=O)O</code></span><span class="chip"><code>O=C(O)c1ccccc1F</code></span></div>
+<details>
+<summary>Text outline</summary>
+<div class="tree"><code>CC(=O)Oc1ccccc1C(=O)O</code><span class="tag">molecule</span><ul><li><code>reaction 39514</code><span class="tag">reaction</span><ul><li><code>CC(=O)O</code><span class="tag">molecule stock</span></li><li><code>O=C(O)c1ccccc1F</code><span class="tag">molecule stock</span></li></ul></li></ul></div>
+</details>
+</section>
+<section class="route-card">
+<div class="route-head">
+<h2>Route 5</h2>
+<span class="pill ok">solved</span>
+</div>
+<div class="metrics">
+<div><span>Score</span><strong>0.994</strong></div>
+<div><span>Steps</span><strong>2</strong></div>
+<div><span>Stock precursors</span><strong>2</strong></div>
+</div>
+<div class="route-diagram">
+<svg class="route-svg" role="img" aria-label="Route 5 tree" viewBox="0 0 1510 296" xmlns="http://www.w3.org/2000/svg">
+<g>
+<path class="edge" d="M1155.0,156.0 C1190.0,156.0 1190.0,86.0 1225.0,86.0" />
+<path class="edge" d="M1155.0,156.0 C1190.0,156.0 1190.0,226.0 1225.0,226.0" />
+<path class="edge" d="M855.0,156.0 C890.0,156.0 890.0,156.0 925.0,156.0" />
+<path class="edge" d="M555.0,156.0 C590.0,156.0 590.0,156.0 625.0,156.0" />
+<path class="edge" d="M255.0,156.0 C290.0,156.0 290.0,156.0 325.0,156.0" />
+<g class="node stock">
+<title>CC(=O)OC(C)=O</title>
+<rect x="1225.0" y="27.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="1250.0" y="36.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPQyhDKT1PPC90ZXh0PgogIDx0ZXh0IHg9IjkwLjAiIHk9IjExMi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPQyhDKT1PPC90ZXh0PgogIDx0ZXh0IHg9IjkwLjAiIHk9IjExMi4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCBTZWdvZSBVSSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjNjg3NDgyIj5zdHJ1Y3R1cmUgcmVuZGVyZXIgZmFsbGJhY2s8L3RleHQ+Cjwvc3ZnPg==" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="1256.0" y="37.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="1340.0" y="123.0" text-anchor="middle">CC(=O)OC(C)=O</text>
+<text class="meta" x="1340.0" y="136.0" text-anchor="middle">stock precursor</text>
+</g>
+<g class="node stock">
+<title>O=C(OCc1ccccc1)c1ccccc1O</title>
+<rect x="1225.0" y="167.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="1250.0" y="176.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoT0NjMWNjY2NjMSljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5PPUMoT0NjMWNjY2NjMSljMWNjY2NjMU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="1256.0" y="177.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="1340.0" y="263.0" text-anchor="middle">O=C(OCc1ccccc1)c1ccccc1O</text>
+<text class="meta" x="1340.0" y="276.0" text-anchor="middle">stock precursor</text>
+</g>
+<g class="node reaction">
+<title>reaction 40152</title>
+<rect x="925.0" y="125.0" width="230" height="62" rx="8" />
+
+
+<text x="1040.0" y="150.0" text-anchor="middle">reaction 40152</text>
+<text class="meta" x="1040.0" y="178.0" text-anchor="middle">uspto p=0.02</text>
+</g>
+<g class="node unknown">
+<title>CC(=O)Oc1ccccc1C(=O)OCc1ccccc1</title>
+<rect x="625.0" y="97.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="650.0" y="106.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU9DYzFjY2NjYzE8L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU9DYzFjY2NjYzE8L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="656.0" y="107.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="740.0" y="193.0" text-anchor="middle">CC(=O)Oc1ccccc1C(=O)OCc1</text>
+<text x="740.0" y="206.0" text-anchor="middle">ccccc1</text>
+<text class="meta" x="740.0" y="206.0" text-anchor="middle">intermediate</text>
+</g>
+<g class="node reaction">
+<title>reaction 29952</title>
+<rect x="325.0" y="125.0" width="230" height="62" rx="8" />
+
+
+<text x="440.0" y="150.0" text-anchor="middle">reaction 29952</text>
+<text class="meta" x="440.0" y="178.0" text-anchor="middle">uspto p=0.01</text>
+</g>
+<g class="node target">
+<title>CC(=O)Oc1ccccc1C(=O)O</title>
+<rect x="25.0" y="97.0" width="230" height="118" rx="8" />
+<rect class="structure-well" x="50.0" y="106.0" width="180" height="78" rx="6" />
+<image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" data-fallback-src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNWY2ZjdjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgb3BhY2l0eT0iMC44MiI+CiAgICA8cGF0aCBkPSJNIDI4LjAgNTIuMCBMIDYwLjAgMjQuMCBMIDk4LjAgMzguMCBMIDEzMi4wIDE0LjAiIC8+CiAgICA8cGF0aCBkPSJNIDYwLjAgMjQuMCBMIDY4LjAgNzAuMCBMIDEwOC4wIDgwLjAgTCAxMzguMCA1NC4wIiAvPgogICAgPHBhdGggZD0iTSA5OC4wIDM4LjAgTCAxMzguMCA1NC4wIiAvPgogIDwvZz4KICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1ZjZmN2MiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC45NSI+CiAgICA8Y2lyY2xlIGN4PSIyOC4wIiBjeT0iNTIuMCIgcj0iOCIgLz4KICAgIDxjaXJjbGUgY3g9IjYwLjAiIGN5PSIyNC4wIiByPSI4IiAvPgogICAgPGNpcmNsZSBjeD0iOTguMCIgY3k9IjM4LjAiIHI9IjgiIC8+CiAgICA8Y2lyY2xlIGN4PSIxMzguMCIgY3k9IjU0LjAiIHI9IjgiIC8+CiAgPC9nPgogIDx0ZXh0IHg9IjkwLjAiIHk9Ijk2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEzIiBmb250LXdlaWdodD0iNjUwIiBmaWxsPSIjM2Q0YjU3Ij5DQyg9TylPYzFjY2NjYzFDKD1PKU88L3RleHQ+CiAgPHRleHQgeD0iOTAuMCIgeT0iMTEyLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSItYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsIFNlZ29lIFVJLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjkiIGZpbGw9IiM2ODc0ODIiPnN0cnVjdHVyZSByZW5kZXJlciBmYWxsYmFjazwvdGV4dD4KPC9zdmc+" onerror="this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');" x="56.0" y="107.0" width="168" height="74" preserveAspectRatio="xMidYMid meet" />
+<text x="140.0" y="193.0" text-anchor="middle">CC(=O)Oc1ccccc1C(=O)O</text>
+<text class="meta" x="140.0" y="206.0" text-anchor="middle">target</text>
+</g>
+</g>
+</svg>
+</div>
+<section class="route-analysis">
+<h3>LLM Route Analysis</h3>
+<dl class="analysis-grid">
+<div class="analysis-field">
+<dt>Route strategy</dt>
+<dd>Example LLM route analysis: the aspirin target is disconnected at the aryl acetate bond, reducing the plan to salicylic-acid-derived material plus an acetyl donor. Route 5 uses acetic anhydride; this is chemically plausible, but the export alone does not validate conditions, impurity profile, or scale-up behavior.</dd>
+</div>
+<div class="analysis-field">
+<dt>Key disconnections</dt>
+<dd><ul><li>aryl acetate C(O)-O bond disconnection</li><li>salicylic acid phenol acylation in the forward direction</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Reaction sequence</dt>
+<dd><ul><li>Confirm salicylic acid or the displayed salicylate precursor identity and availability.</li><li>Run the O-acylation with a literature-backed acetyl donor and monitor conversion by LCMS/HPLC.</li><li>Quench, isolate, and verify aspirin identity, residual salicylic acid, and hydrolysis level.</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Conditions strategy</dt>
+<dd>screen acetic anhydride loading, weak base or acid catalysis, and aqueous quench timing.</dd>
+</div>
+<div class="analysis-field">
+<dt>Yield outlook</dt>
+<dd>A moderate-to-high step yield may be plausible for a simple phenolic acylation, but this example reports it as a planning estimate rather than an experimental fact.</dd>
+</div>
+<div class="analysis-field">
+<dt>Route risks</dt>
+<dd><ul><li>hydrolysis of aspirin during workup or storage</li><li>incomplete O-acylation leaving salicylic acid impurity</li><li>acid chloride or anhydride handling, heat release, and corrosive byproducts</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Recommended next steps</dt>
+<dd><ul><li>search exact salicylic acid O-acylation precedent in SciFinder/Reaxys/internal ELN</li><li>check vendor, purity, and regulatory constraints for terminal precursors</li><li>run a small condition screen with HPLC assay before scale-up</li></ul></dd>
+</div>
+<div class="analysis-field">
+<dt>Chemist verdict</dt>
+<dd>go with verification: short and credible route, but conditions and analytical controls must be confirmed.</dd>
+</div>
+</dl>
+</section>
+<h3>Starting materials</h3>
+<div class="chips"><span class="chip"><code>CC(=O)OC(C)=O</code></span><span class="chip"><code>O=C(OCc1ccccc1)c1ccccc1O</code></span></div>
+<details>
+<summary>Text outline</summary>
+<div class="tree"><code>CC(=O)Oc1ccccc1C(=O)O</code><span class="tag">molecule</span><ul><li><code>reaction 29952</code><span class="tag">reaction</span><ul><li><code>CC(=O)Oc1ccccc1C(=O)OCc1ccccc1</code><span class="tag">molecule</span><ul><li><code>reaction 40152</code><span class="tag">reaction</span><ul><li><code>CC(=O)OC(C)=O</code><span class="tag">molecule stock</span></li><li><code>O=C(OCc1ccccc1)c1ccccc1O</code><span class="tag">molecule stock</span></li></ul></li></ul></li></ul></li></ul></div>
+</details>
+</section>
+  </main>
+</body>
+</html>
