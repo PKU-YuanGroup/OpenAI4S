@@ -9,8 +9,10 @@ or dispatcher (a fake callable stands in).
 from openai4s.host_dispatch import HostDispatcher
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
+    MAX_TOOL_OBS_CHARS,
     REGISTRY,
     execute_tool_call,
+    format_tool_result,
     parse_tool_calls,
     render_tools_prompt,
     run_tool_calls,
@@ -85,6 +87,14 @@ def test_unclosed_tool_fence_is_an_error_and_never_executes():
     assert any("unclosed" in e for e in errors)
 
 
+def test_pathologically_nested_json_is_reported_not_raised():
+    """The parser's never-raises contract includes decoder recursion errors."""
+    body = "[" * 10_000 + "{}" + "]" * 10_000
+    calls, errors = parse_tool_calls(_tool_block(body))
+    assert calls == []
+    assert errors
+
+
 def test_tool_fence_nested_in_python_cell_is_not_parsed():
     """Fence-token collision guard: a ```tool block quoted INSIDE a ```python
     cell (e.g. the agent writing docs about this very syntax) must NOT be parsed
@@ -134,13 +144,21 @@ def test_run_tool_calls_caps_count_and_bounds_length():
 
     def disp(method, args):
         seen.append(method)
-        return {"entries": ["x"]}
+        return {"content": "x" * 100_000}
 
     calls = [{"name": "list_dir", "arguments": {}}] * (MAX_TOOL_CALLS_PER_TURN + 5)
     obs = run_tool_calls(disp, calls, [])
     assert len(seen) == MAX_TOOL_CALLS_PER_TURN  # extras not executed
     assert "were NOT run" in obs
-    assert len(obs) <= 60050  # MAX_TOOL_OBS_CHARS + truncation marker
+    assert "tool results truncated" in obs
+    assert len(obs) <= MAX_TOOL_OBS_CHARS
+
+
+def test_one_tool_result_respects_its_strict_output_limit():
+    tool = next(t for t in REGISTRY if t.name == "list_dir")
+    text = format_tool_result(tool, {"content": "x" * 100_000})
+    assert "truncated" in text
+    assert len(text) <= tool.output_limit
 
 
 # --- prompt rendering -------------------------------------------------------
@@ -199,3 +217,38 @@ def test_execute_reports_error_only_result_as_not_ok():
     obs, ok = execute_tool_call(disp, {"name": "list_dir", "arguments": {}})
     assert ok is False
     assert "boom" in obs
+
+
+def test_execute_bad_arguments_never_raises_or_dispatches():
+    seen = []
+
+    def disp(method, args):
+        seen.append((method, args))
+        return {"ok": True}
+
+    obs, ok = execute_tool_call(disp, {"name": "list_dir", "arguments": 7})
+    assert ok is False
+    assert "arguments" in obs
+    assert seen == []
+
+
+def test_execute_hostile_mapping_never_reraises_while_formatting_error():
+    class BadCall(dict):
+        def get(self, *args, **kwargs):
+            raise RuntimeError("bad mapping")
+
+    obs, ok = execute_tool_call(lambda *_: {"ok": True}, BadCall())
+    assert ok is False
+    assert "bad mapping" in obs
+
+
+def test_execute_huge_dispatch_error_respects_one_tool_limit():
+    tool = next(t for t in REGISTRY if t.name == "list_dir")
+
+    def disp(method, args):
+        raise RuntimeError("x" * 100_000)
+
+    obs, ok = execute_tool_call(disp, {"name": tool.name, "arguments": {}})
+    assert ok is False
+    assert "truncated" in obs
+    assert len(obs) <= tool.output_limit

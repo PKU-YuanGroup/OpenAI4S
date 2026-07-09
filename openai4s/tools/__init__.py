@@ -16,6 +16,7 @@ zero side effects. Wiring into the agent loops happens elsewhere.
 from openai4s.tools.base import Tool
 from openai4s.tools.registry import (
     MAX_TOOL_CALLS_PER_TURN,
+    MAX_TOOL_OBS_CHARS,
     REGISTRY,
     FencedBlock,
     all_tools,
@@ -47,4 +48,5 @@ __all__ = [
     "strip_fenced_blocks",
     "finalize_tool_batch",
     "MAX_TOOL_CALLS_PER_TURN",
+    "MAX_TOOL_OBS_CHARS",
 ]

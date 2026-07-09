@@ -202,7 +202,7 @@ def _parse_tool_body(body: str, calls: list[dict], errors: list[str]) -> None:
         return
     try:
         decoded = json.loads(body)
-    except (ValueError, TypeError) as e:
+    except Exception as e:  # noqa: BLE001 — decoder recursion is an observation
         errors.append(f"invalid JSON in ```tool block: {e}")
         return
     items = decoded if isinstance(decoded, list) else [decoded]
@@ -334,16 +334,25 @@ def _render_result_body(result: Any) -> str:
     return "\n".join(parts)
 
 
+def _truncate_with_marker(text: str, limit: int, marker: str) -> str:
+    """Truncate to a strict character limit while keeping a visible marker."""
+    if len(text) <= limit:
+        return text
+    if limit <= 0:
+        return ""
+    if len(marker) >= limit:
+        return marker[:limit]
+    return text[: limit - len(marker)] + marker
+
+
 def format_tool_result(tool: Tool, result: Any) -> str:
     """Produce a readable "[Tool: <name>]\\n<compact result>" string, bounded
     to `tool.output_limit` characters."""
     text = f"[Tool: {tool.name}]\n{_render_result_body(result)}"
-    if len(text) > tool.output_limit:
-        text = text[: tool.output_limit] + "\n… [truncated]"
-    return text
+    return _truncate_with_marker(text, tool.output_limit, "\n… [truncated]")
 
 
-def execute_tool_call(dispatcher: Any, call: dict) -> tuple[str, bool]:
+def execute_tool_call(dispatcher: Any, call: Any) -> tuple[str, bool]:
     """Run one parsed tool call through `dispatcher` and return
     (observation_text, ok).
 
@@ -355,32 +364,50 @@ def execute_tool_call(dispatcher: Any, call: dict) -> tuple[str, bool]:
     first and short-circuit without dispatching. Any exception is turned into
     an error observation — this never raises.
     """
-    name = call.get("name") if isinstance(call, dict) else None
-    tool = get_tool(name) if isinstance(name, str) else None
-    if tool is None:
-        return f"[Tool error] unknown tool: {name!r}", False
+    name: Any = "unknown"
+    tool: Tool | None = None
+    try:
+        if not isinstance(call, dict):
+            return "[Tool error] tool call must be a JSON object", False
+        raw_name = call.get("name")
+        name = raw_name if type(raw_name) is str else "unknown"
+        tool = get_tool(name)
+        if tool is None:
+            return f"[Tool error] unknown tool: {name!r}", False
 
-    spec = dict(call.get("arguments") or {})
-
-    if tool.dangerous and tool.host_method == "bash":
-        reason = precheck_command(spec.get("command", ""))
-        if reason:
+        raw_spec = call.get("arguments")
+        if raw_spec is None:
+            raw_spec = {}
+        if not isinstance(raw_spec, dict):
             return (
-                f"[Tool: {tool.name}] blocked by static safety precheck: {reason}",
+                f"[Tool error] {tool.name}: 'arguments' must be a JSON object",
                 False,
             )
-    if tool.host_method == "edit_file":
-        err = static_edit_precheck(spec)
-        if err:
-            return f"[Tool: {tool.name}] {err}", False
+        spec = dict(raw_spec)
 
-    try:
+        if tool.dangerous and tool.host_method == "bash":
+            reason = precheck_command(spec.get("command", ""))
+            if reason:
+                return (
+                    f"[Tool: {tool.name}] blocked by static safety precheck: {reason}",
+                    False,
+                )
+        if tool.host_method == "edit_file":
+            err = static_edit_precheck(spec)
+            if err:
+                return f"[Tool: {tool.name}] {err}", False
+
         result = dispatcher(tool.host_method, [spec])
+        ok = not (isinstance(result, dict) and set(result.keys()) == {"error"})
+        return format_tool_result(tool, result), ok
     except Exception as e:  # noqa: BLE001 — a tool error must not crash the loop
-        return f"[Tool error] {tool.name}: {e}", False
-
-    ok = not (isinstance(result, dict) and set(result.keys()) == {"error"})
-    return format_tool_result(tool, result), ok
+        try:
+            detail = str(e)
+        except Exception:  # noqa: BLE001 — even a broken exception is observable
+            detail = type(e).__name__
+        text = f"[Tool error] {name}: {detail}"
+        limit = tool.output_limit if tool is not None else 20_000
+        return _truncate_with_marker(text, limit, "\n… [truncated]"), False
 
 
 # --- batching --------------------------------------------------------------
@@ -396,19 +423,24 @@ MAX_TOOL_OBS_CHARS = 60000
 def finalize_tool_batch(parts: list[str], n_total: int, errors: list[str]) -> str:
     """Assemble a bounded "[Tool Results]" observation from result strings +
     parse errors, appending a skipped-calls note when the batch was capped."""
-    parts = list(parts)
+    notices: list[str] = []
     if n_total > MAX_TOOL_CALLS_PER_TURN:
-        parts.append(
+        notices.append(
             f"[Tool note] {n_total - MAX_TOOL_CALLS_PER_TURN} further tool "
             f"call(s) in this reply were NOT run — emit at most "
             f"{MAX_TOOL_CALLS_PER_TURN} tool calls per turn."
         )
     for err in errors:
-        parts.append(f"[Tool error] {err}")
-    obs = "[Tool Results]\n" + ("\n\n".join(parts) if parts else "(no tool output)")
-    if len(obs) > MAX_TOOL_OBS_CHARS:
-        obs = obs[:MAX_TOOL_OBS_CHARS] + "\n… [tool results truncated]"
-    return obs
+        notices.append(f"[Tool error] {err}")
+    # Control-plane notices come first so a large result cannot hide the fact
+    # that later calls were skipped or malformed.
+    sections = notices + list(parts)
+    obs = "[Tool Results]\n" + (
+        "\n\n".join(sections) if sections else "(no tool output)"
+    )
+    return _truncate_with_marker(
+        obs, MAX_TOOL_OBS_CHARS, "\n… [tool results truncated]"
+    )
 
 
 def run_tool_calls(dispatcher: Any, calls: list[dict], errors: list[str]) -> str:
