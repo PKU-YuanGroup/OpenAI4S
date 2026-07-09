@@ -197,9 +197,10 @@ success response body. Serializer shapes are in §4.
 
 **Notebook REPL gate:** the Notebook is a **read-only execution trace** by
 default. The mutating `kernel/*` routes — `execute`, `env`, `restart`, `stop`,
-`start`, `interrupt`, `install` — return `403 {"error":…}` unless
-`OPENAI4S_NOTEBOOK_REPL` is set; only the read-only `GET
-/frames/{fid}/kernel` and `GET /frames/{fid}/execution-log` stay available.
+`start`, `interrupt` — return `403 {"error":…}` unless
+`OPENAI4S_NOTEBOOK_REPL` is set. `kernel/install` is intentionally not gated:
+it backs Customize → Compute rather than arbitrary Notebook execution. The
+read-only `GET /frames/{fid}/kernel` and `GET /frames/{fid}/execution-log` stay available.
 `GET /frames/{fid}/kernel` reports the current state in `repl_enabled`.
 
 **`kernel_id` runtime segment:** the `kernel_id` returned by the kernel and

@@ -16,7 +16,7 @@ Additional enforcement: an opencode-style **permission broker** gates risk-beari
 
 ### The Notebook REPL is off by default
 
-The web UI's right-hand Notebook is a **read-only execution trace** by default. The developer REPL — arbitrary kernel code execution from the right panel — is **disabled** and only comes back when you set `OPENAI4S_NOTEBOOK_REPL=1`. With it off, the mutating `kernel/*` routes (`execute`, `env`, `restart`, `stop`, `start`, `interrupt`, `install`) return `403`; the classifier note above about "your own Notebook cells" applies only once you have opted the REPL back in.
+The web UI's right-hand Notebook is a **read-only execution trace** by default. The developer REPL — arbitrary kernel code execution from the right panel — is **disabled** and only comes back when you set `OPENAI4S_NOTEBOOK_REPL=1`. With it off, the mutating `kernel/*` routes (`execute`, `env`, `restart`, `stop`, `start`, `interrupt`) return `403`; the classifier note above about "your own Notebook cells" applies only once you have opted the REPL back in. `kernel/install` remains available because it backs Customize → Compute rather than the Notebook REPL.
 
 ReAct **tool calls** — the deterministic `list` / `read` / `glob` / `grep` / `web` / `env` / `edit` / `write` / `bash` ops the model can invoke as ` ```tool ` JSON — route through the **same** `HostDispatcher` as `host.*` cell calls, so they pass the same permission broker, egress fence, injection screen, and pre-exec (dangerous-command) static gate. The ReAct surface adds no bypass around any of these layers.
 

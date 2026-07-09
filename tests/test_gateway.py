@@ -1310,9 +1310,10 @@ def test_notebook_repl_execute_route_gated_by_flag(monkeypatch, tmp_path):
     handler._body = lambda: {"code": "print(1)"}
     handler._json = lambda obj, code=200: replies.append((code, obj))
 
-    handler._api("POST", f"/frames/{fid}/kernel/execute")
-    assert replies[-1][0] == 403
-    assert "disabled" in replies[-1][1]["error"]
+    for action in ("execute", "env", "restart", "stop", "start", "interrupt"):
+        handler._api("POST", f"/frames/{fid}/kernel/{action}")
+        assert replies[-1][0] == 403
+        assert "disabled" in replies[-1][1]["error"]
     assert called == []  # the gate fired before the kernel path
 
     # enabled (OPENAI4S_NOTEBOOK_REPL=1) → proceeds to runner.run_repl
