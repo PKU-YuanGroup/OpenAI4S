@@ -1350,16 +1350,117 @@ def test_resolve_env_does_not_clobber_pin_when_env_unresolvable(monkeypatch, tmp
     runner._persist_env(rid, "struct")  # a valid prior selection
 
     base_env = SimpleNamespace(name="base", interpreter="/usr/bin/python3")
+    struct_env = SimpleNamespace(name="struct", interpreter="/usr/bin/python3")
+    available = {"struct": False}
+
+    def get_environment(name):
+        if name == "base":
+            return base_env
+        if name == "struct" and available["struct"]:
+            return struct_env
+        return None
+
     # 'struct' momentarily undiscoverable (e.g. conda envs not yet scanned)
-    monkeypatch.setattr(
-        envmod, "get_environment", lambda name: base_env if name == "base" else None
-    )
+    monkeypatch.setattr(envmod, "get_environment", get_environment)
     st = gateway_mod.SessionState(rid, "default", runner.workspace_for(rid))
     env = runner._resolve_env(st)
 
     assert env is base_env
     assert st.env_name == "base"  # runs on base for this spawn
     assert store.get_frame(rid)["runtime_env"] == "struct"  # pin PRESERVED
+
+    # Retry the desired pin on a later spawn in this SAME SessionState. The
+    # active base fallback must never become the new desired environment.
+    available["struct"] = True
+    env = runner._resolve_env(st)
+    assert env is struct_env
+    assert st.env_name == "struct"
+    assert store.get_frame(rid)["runtime_env"] == "struct"
+
+
+def test_restart_respawns_when_active_env_is_only_a_pin_fallback(monkeypatch, tmp_path):
+    """Restart must re-resolve desired!=active instead of reusing base Python."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    st = runner._state("f-restart-pin", "default")
+    calls = []
+
+    class FallbackKernel:
+        generation = 1
+
+        def shutdown(self):
+            calls.append("shutdown")
+
+        def restart(self):
+            calls.append("restart")
+
+    st.kernel = FallbackKernel()
+    st.env_name = "base"
+    st.desired_env = "struct"
+
+    def spawn(state):
+        calls.append("spawn")
+        state.env_name = state.desired_env
+        state.kernel = SimpleNamespace(generation=2)
+
+    monkeypatch.setattr(runner, "_spawn_kernel", spawn)
+    result = runner.restart_kernel(st.root_frame_id, st.project_id)
+
+    assert calls == ["shutdown", "spawn"]
+    assert st.env_name == "struct"
+    assert result["generation"] == 2
+
+
+def test_tool_batch_applies_env_switch_before_following_bash(monkeypatch, tmp_path):
+    """env_use then bash in one reply must use the rebuilt dispatcher."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    st = runner._state("f-env-batch", "default")
+    st.messages = [{"role": "system", "content": "sys"}]
+    calls = []
+
+    class Dispatcher:
+        last_output = None
+
+        def __init__(self, label):
+            self.label = label
+
+        def __call__(self, method, args):
+            calls.append((self.label, method))
+            if method == "env_use":
+                st.pending_env = args[0]["name"]
+            return {"ok": True}
+
+    st.dispatcher = Dispatcher("old")
+    replies = iter(
+        [
+            '```tool\n{"name":"env_use","arguments":{"name":"struct"}}\n```\n'
+            '```tool\n{"name":"bash","arguments":{"command":"python -V"}}\n```',
+            "```python\nhost.submit_output({'ok': True}, ['done'])\n```",
+        ]
+    )
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        return {"content": next(replies), "usage": {}}
+
+    def apply_pending(state, emit):
+        calls.append(("apply", state.pending_env))
+        state.env_name = state.pending_env
+        state.pending_env = None
+        state.dispatcher = Dispatcher("new")
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(runner, "_apply_pending_env", apply_pending)
+
+    def fake_exec(state, code, origin, emit, stream=True):
+        state.dispatcher.last_output = {"output": {"ok": True}}
+        return {"result": {"stdout": "", "stderr": "", "error": None}}
+
+    monkeypatch.setattr(runner, "_execute_and_log", fake_exec)
+
+    runner._loop(st, lambda event: None, [])
+
+    assert calls == [("old", "env_use"), ("apply", "struct"), ("new", "bash")]
 
 
 def test_env_summary_exposes_canonical_kernel_id(tmp_path):

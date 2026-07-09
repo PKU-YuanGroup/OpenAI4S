@@ -415,11 +415,13 @@ class SessionState:
         # Explore mode: autonomous deep exploration — larger turn budget and the
         # turn only ends via host.submit_output (prose-only replies are nudged).
         self.explore: bool = False
-        # Which prebuilt environment the kernel runs in (resolved at spawn time
-        # to the default when None). `pending_env` is a switch the agent requested
-        # mid-turn (host.env.use); it is applied between cells so the agent never
-        # restarts the kernel out from under its own running cell.
+        # `env_name` is the environment the current kernel actually runs in;
+        # `desired_env` is the user's/agent's pinned selection. They differ only
+        # during a transient fallback to base when the pin cannot be resolved.
+        # `pending_env` is a switch requested mid-turn (host.env.use); it is
+        # applied between cells so the agent never restarts its running kernel.
         self.env_name: str | None = None
+        self.desired_env: str | None = None
         self.pending_env: str | None = None
 
 
@@ -1245,7 +1247,8 @@ class SessionRunner:
         from openai4s.kernel import environments as envmod
 
         name = (
-            st.env_name
+            st.desired_env
+            or st.env_name
             or self._persisted_env(st.root_frame_id)
             or envmod.default_env_name()
         )
@@ -1255,8 +1258,10 @@ class SessionRunner:
             # yet discovered after a restart). Run on base for THIS spawn but do
             # NOT overwrite the stored pin — a later spawn, once the env is
             # discoverable again, must still find the original selection.
+            st.desired_env = name
             st.env_name = "base"
             return envmod.get_environment("base")
+        st.desired_env = name
         st.env_name = name
         self._persist_env(st.root_frame_id, name)
         return env
@@ -1411,6 +1416,16 @@ class SessionRunner:
         with st.turn_lock:
             if st.kernel is None:
                 self._ensure_kernel(st)
+            elif st.desired_env and st.desired_env != st.env_name:
+                # The active kernel is a transient base fallback. A full spawn
+                # re-runs environment resolution so a recovered pinned env can
+                # finally take effect; Kernel.restart() would reuse base Python.
+                try:
+                    st.kernel.shutdown()
+                except Exception:  # noqa: BLE001 — respawn is the recovery path
+                    pass
+                st.kernel = None
+                self._spawn_kernel(st)
             else:
                 st.kernel.restart()
                 self._run_bootstrap(st)
@@ -1650,7 +1665,9 @@ class SessionRunner:
                 and st.kernel is not None
                 and st.kernel.is_alive()
             )
+            st.desired_env = env_name
             st.env_name = env_name
+            self._persist_env(root_frame_id, env_name)
             if not already:
                 # respawn into the new interpreter (fresh dispatcher + bootstrap)
                 if st.kernel is not None:
@@ -1688,12 +1705,16 @@ class SessionRunner:
         valid Python env."""
         target = st.pending_env
         st.pending_env = None
-        if not target or target == st.env_name:
+        if not target:
             return
         from openai4s.kernel import environments as envmod
 
         env = envmod.get_environment(target)
         if env is None or env.interpreter is None:
+            return
+        st.desired_env = target
+        if target == st.env_name:
+            self._persist_env(st.root_frame_id, target)
             return
         st.env_name = target
         if st.kernel is not None:
