@@ -77,6 +77,14 @@ def test_parse_unknown_tool_never_raises_and_is_visible():
     assert any("not_a_real_tool" in e for e in errors)
 
 
+def test_unclosed_tool_fence_is_an_error_and_never_executes():
+    """Streaming/incomplete model output must never become an action."""
+    reply = '```tool\n{"name": "list_dir", "arguments": {}}'
+    calls, errors = parse_tool_calls(reply)
+    assert calls == []
+    assert any("unclosed" in e for e in errors)
+
+
 def test_tool_fence_nested_in_python_cell_is_not_parsed():
     """Fence-token collision guard: a ```tool block quoted INSIDE a ```python
     cell (e.g. the agent writing docs about this very syntax) must NOT be parsed
@@ -108,6 +116,15 @@ def test_tool_fence_nested_in_other_fence_is_not_parsed():
     )
     calls, errors = parse_tool_calls(reply)
     assert calls == []
+
+
+def test_tool_fence_inside_longer_or_tilde_outer_fence_is_not_parsed():
+    """CommonMark outer fences also isolate a triple-backtick tool example."""
+    inner = _tool_block('{"name": "bash", "arguments": {"command": "echo pwned"}}')
+    for outer, info in ((_F + "`", "python"), ("~~~", "text")):
+        reply = outer + info + "\nquoted:\n" + inner + "\n" + outer
+        calls, errors = parse_tool_calls(reply)
+        assert calls == [] and errors == []
 
 
 def test_run_tool_calls_caps_count_and_bounds_length():

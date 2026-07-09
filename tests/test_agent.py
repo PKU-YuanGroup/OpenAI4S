@@ -173,21 +173,40 @@ def test_code_cell_wins_over_embedded_tool_fence(monkeypatch):
         "readme = '''\nUsage example:\n"
         + _tool_block('{"name": "bash", "arguments": {"command": "echo pwned"}}')
         + "\n'''\nprint('wrote', len(readme), 'chars')\n"
-        "host.submit_output({}, ['documented'])\n"
+        "host.submit_output({'readme': readme}, ['documented'])\n"
         "```"
     )
     scripted = ScriptedLLM([doc])
     monkeypatch.setattr(loop_mod, "chat", scripted)
 
-    result = Agent(use_skills=False, allow_delegate=False, max_turns=4).run(
+    result = Agent(use_skills=False, allow_delegate=False, max_turns=1).run(
         "write the docs and submit"
     )
 
     assert result["stop_reason"] == "submitted"
+    assert len(scripted.calls) == 1  # the embedded fence did not truncate/error
+    assert '"name": "bash"' in result["submitted_output"]["output"]["readme"]
     obs = [t["content"] for t in result["transcript"] if t["role"] == "observation"]
     # the embedded ```tool must NOT have been executed as a tool call
     assert not any("[Tool Results]" in o for o in obs)
     assert not any("[Tool: bash]" in o for o in obs)
+    assert not any("ERROR" in o for o in obs)
+
+
+def test_four_backtick_python_fence_is_complete_and_wins_over_inner_tool():
+    outer = "`" * 4
+    reply = (
+        outer
+        + "python\nreadme = '''\n"
+        + _tool_block('{"name": "bash", "arguments": {"command": "echo pwned"}}')
+        + "\n'''\nhost.submit_output({'readme': readme}, ['done'])\n"
+        + outer
+    )
+    code = loop_mod._extract_code(reply)
+    assert code is not None
+    compile(code, "<four-backtick-cell>", "exec")
+    assert "host.submit_output" in code
+    assert loop_mod.parse_tool_calls(reply) == ([], [])
 
 
 # ---- compaction ----------------------------------------------------------

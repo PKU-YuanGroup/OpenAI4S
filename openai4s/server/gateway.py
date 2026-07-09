@@ -48,8 +48,11 @@ from openai4s.store import Store, get_store
 from openai4s.tools import MAX_TOOL_CALLS_PER_TURN as _MAX_TOOL_CALLS_PER_TURN
 from openai4s.tools import execute_tool_call as _execute_tool_call
 from openai4s.tools import finalize_tool_batch as _finalize_tool_batch
+from openai4s.tools import parse_fence_delimiter as _parse_fence_delimiter
 from openai4s.tools import parse_tool_calls as _parse_tool_calls
 from openai4s.tools import render_tools_prompt as _render_tools_prompt
+from openai4s.tools import scan_fenced_blocks as _scan_fenced_blocks
+from openai4s.tools import strip_fenced_blocks as _strip_fenced_blocks
 
 os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure capture
 
@@ -810,46 +813,53 @@ _STALL_NUDGE = (
 
 
 class _ProseStreamer:
-    """Streams a model reply's narration (text OUTSIDE ``` fences) as live
-    text_chunk events, so prose appears token-by-token while the ```python code
-    stays out of the chat bubble (it becomes a tool/activity card instead)."""
+    """Streams narration outside top-level fences as live text chunks.
+
+    Complete lines are scanned with the same nesting rule as the authoritative
+    reply parser. Buffering the current line prevents a literal nested
+    ```tool example inside a Python string from leaking into the chat bubble.
+    """
 
     def __init__(self, emit, root_frame_id: str):
         self.emit = emit
         self.rid = root_frame_id
         self.acc = ""
-        self.sent = 0
-        self.in_code = False
+        self.line_buf = ""
+        self.fence_stack: list[tuple[str, int]] = []
         self.emitted_any = False
         self.emitted = ""  # exact prose text streamed so far (for reconciliation)
 
     def feed(self, delta: str) -> None:
         self.acc += delta
-        self._drain(final=False)
+        self._drain(delta)
 
-    def _drain(self, final: bool) -> None:
-        text = self.acc
-        # hold back a 3-char tail so a forming ``` fence isn't half-emitted
-        limit = len(text) if final else max(self.sent, len(text) - 3)
-        pos = self.sent
-        out = []
-        while pos < limit:
-            fence = text.find("```", pos)
-            if not self.in_code:
-                seg_end = fence if (fence != -1 and fence < limit) else limit
-                out.append(text[pos:seg_end])
-                if fence != -1 and fence < limit:
-                    self.in_code = True
-                    pos = fence + 3
+    def _drain(self, delta: str) -> None:
+        # A delimiter is meaningful only as a full line, so keep the current
+        # partial line buffered until another delta (or final reconciliation).
+        self.line_buf += delta
+        out: list[str] = []
+        while True:
+            newline = self.line_buf.find("\n")
+            if newline < 0:
+                break
+            line = self.line_buf[: newline + 1]
+            self.line_buf = self.line_buf[newline + 1 :]
+            delimiter = _parse_fence_delimiter(line)
+            if delimiter:
+                fence_char, fence_length, info = delimiter
+                if not self.fence_stack:
+                    self.fence_stack.append((fence_char, fence_length))
+                elif (
+                    fence_char != self.fence_stack[-1][0]
+                    or fence_length < self.fence_stack[-1][1]
+                ):
+                    pass  # literal nested delimiter; remain inside the outer fence
+                elif info:
+                    self.fence_stack.append((fence_char, fence_length))
                 else:
-                    pos = seg_end
-            else:
-                if fence != -1 and fence < limit:
-                    self.in_code = False
-                    pos = fence + 3
-                else:
-                    pos = limit  # still inside code; consume without emitting
-        self.sent = pos
+                    self.fence_stack.pop()
+            elif not self.fence_stack:
+                out.append(line)
         chunk = "".join(out)
         if chunk:
             self._emit_prose(chunk)
@@ -869,13 +879,10 @@ class _ProseStreamer:
         self.emitted_any = True
 
     def finalize(self) -> None:
-        self._drain(final=True)
         # Reconcile the live stream with EXACTLY the prose that gets persisted
-        # (all fenced blocks stripped). The live drain toggles on any ``` run, so
-        # a stray/odd fence in narration can strand trailing prose; recompute the
-        # authoritative prose and emit whatever suffix we haven't streamed yet, so
-        # the bubble never diverges from the reloaded message.
-        target = _ANY_FENCE_RE.sub("", self.acc)
+        # (all top-level fenced blocks stripped, including an incomplete final
+        # block). Emit the buffered last prose line, if any, as one suffix.
+        target = _strip_fenced_blocks(self.acc)
         if target.startswith(self.emitted) and len(target) > len(self.emitted):
             self._emit_prose(target[len(self.emitted) :])
 
@@ -2368,7 +2375,7 @@ class SessionRunner:
             code = _extract_code(reply)
             # strip ALL fenced blocks (matches what the streamer hides live), so
             # the persisted bubble equals the streamed prose and no code leaks in
-            prose = _ANY_FENCE_RE.sub("", reply).strip()
+            prose = _strip_fenced_blocks(reply).strip()
             if prose:
                 # Stamp the block with the moment it was produced (before this
                 # iteration's code runs and emits its steps) so a reopened session
@@ -2481,7 +2488,14 @@ class SessionRunner:
             # done and "concludes" the whole task after one cell — the
             # false-completion bug where a deliverable task ends with an empty
             # working dir because cells 2..N never ran.
-            if len(_CODE_BLOCK_RE.findall(reply)) > 1:
+            code_block_count = sum(
+                1
+                for block in _scan_fenced_blocks(reply)
+                if block.closed
+                and block.fence_char == "`"
+                and block.info in ("", "python", "py")
+            )
+            if code_block_count > 1:
                 obs += (
                     "\n[system] NOTE: only the FIRST ```python block in your "
                     "reply was executed — exactly ONE cell runs per step. The "
@@ -3130,12 +3144,6 @@ class SessionRunner:
                     "files_read": [],
                 }
             }
-
-
-_CODE_BLOCK_RE = re.compile(r"```(?:python|py)?\s*\n.*?```", re.DOTALL)
-# Any fenced block (bash/json/python/…) — matches exactly what _ProseStreamer
-# hides from the live stream, so the persisted prose can never diverge from it.
-_ANY_FENCE_RE = re.compile(r"```[\s\S]*?```")
 
 
 # --------------------------------------------------------------------------- #

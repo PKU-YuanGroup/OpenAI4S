@@ -1349,6 +1349,31 @@ def test_env_summary_exposes_canonical_kernel_id(tmp_path):
     assert runner._kernel_id(st) == summary["kernel_id"]
 
 
+def test_prose_streamer_hides_nested_tool_example_inside_python_cell():
+    """Live prose and persisted prose use the same nesting-aware fence view."""
+    inner = '```tool\n{"name": "list_dir", "arguments": {}}\n```\n'
+    for outer, info in (("```", "python"), ("````", "python"), ("~~~", "text")):
+        events = []
+        streamer = gateway_mod._ProseStreamer(events.append, "f-stream")
+        reply = (
+            "Before.\n"
+            + outer
+            + info
+            + "\nreadme = '''\n"
+            + inner
+            + "'''\nprint(readme)\n"
+            + outer
+            + "\nAfter."
+        )
+        for i in range(0, len(reply), 7):
+            streamer.feed(reply[i : i + 7])
+        streamer.finalize()
+
+        visible = "".join(e["chunk"] for e in events)
+        assert visible == "Before.\nAfter."
+        assert "list_dir" not in visible
+
+
 def test_kernel_install_route_is_not_gated_by_notebook_repl(tmp_path):
     """Regression: prebuilt-env package install (Customize → Compute) is a
     separate affordance from the code REPL and must stay reachable in the

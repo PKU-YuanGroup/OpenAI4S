@@ -14,7 +14,6 @@ inside the kernel manager.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -25,9 +24,12 @@ from openai4s.kernel import Kernel
 from openai4s.llm import chat
 from openai4s.security import classify_code, screen_trajectory
 from openai4s.skills_loader import SkillLoader
-from openai4s.tools import parse_tool_calls, render_tools_prompt, run_tool_calls
-
-_CODE_BLOCK = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
+from openai4s.tools import (
+    parse_tool_calls,
+    render_tools_prompt,
+    run_tool_calls,
+    scan_fenced_blocks,
+)
 
 SYSTEM_PROMPT = """\
 You are openai4s, an autonomous agent whose ONLY way to act on the world is \
@@ -313,8 +315,20 @@ class Agent:
 
 
 def _extract_code(text: str) -> str | None:
-    m = _CODE_BLOCK.search(text)
-    return m.group(1) if m else None
+    """Return the first complete top-level Python cell in a model reply.
+
+    The shared fence scanner preserves labelled fenced examples nested inside
+    the cell (notably a literal ```tool block in a triple-quoted README). An
+    incomplete outer fence is never executable.
+    """
+    for block in scan_fenced_blocks(text):
+        if (
+            block.closed
+            and block.fence_char == "`"
+            and block.info in ("", "python", "py")
+        ):
+            return block.body
+    return None
 
 
 def _gather_trajectory(messages: list[dict], current_code: str) -> tuple[str, str]:
