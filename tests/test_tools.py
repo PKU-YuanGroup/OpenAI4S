@@ -6,6 +6,8 @@ shape, the ```tool parse convention, the prompt rendering, the cheap static
 prechecks, and the dispatch/observation contract — all without a real kernel
 or dispatcher (a fake callable stands in).
 """
+import time
+
 from openai4s.host_dispatch import HostDispatcher
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
@@ -185,6 +187,17 @@ def test_bash_precheck_flags_catastrophe_but_passes_benign():
         assert precheck_command(command) is not None
     for command in ("ls -la", "rm -rf ./build", "chmod -R 755 ./public"):
         assert precheck_command(command) is None
+
+
+def test_bash_precheck_does_not_backtrack_exponentially():
+    """The precheck screens untrusted model output, so a hostile command must
+    not be able to hang the safety gate. A repeated `--` option once admitted
+    two parses per token (`--` vs `-` + `-`), making a failing match cost
+    O(2^n): 25 tokens took ~3s, 35 would take an hour."""
+    hostile = "rm -rf" + " --" * 40 + " x"
+    start = time.perf_counter()
+    assert precheck_command(hostile) is None  # no target → no match, worst case
+    assert time.perf_counter() - start < 1.0
 
 
 # --- execution through a fake dispatcher ------------------------------------

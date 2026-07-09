@@ -49,8 +49,11 @@ _DANGEROUS_PATTERNS: list[tuple[re.Pattern, str]] = [
             r"\brm\b"
             # Require an actual recursive short/long option somewhere before
             # the target, while allowing other GNU-style options around it.
-            r"(?=[^\n;|&]*\s(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive)(?:\s|$))"
-            r"(?:\s+(?:--|--[\w-]+(?:=[^\s;|&]+)?|-[\w-]+))*"
+            # Both the lookahead probe and the option run below admit exactly
+            # ONE parse per token, so a long option string cannot backtrack
+            # exponentially (a hostile `rm -rf -- -- -- … x` used to hang here).
+            r"(?=[^\n;|&]*\s(?:-[A-Za-z]*[rR]|--recursive\b))"
+            r"(?:\s+-[\w-]*(?:=[^\s;|&]+)?)*"
             r"\s+['\"]?(?:/|~|\$HOME|\$\{HOME\})['\"]?"
             r"(?:\s|/|\*|;|&|\||$)"  # boundary (allow /*, trailing sep, or EOL)
         ),
