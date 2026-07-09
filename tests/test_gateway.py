@@ -37,7 +37,7 @@ def _cfg(tmp_path):
     )
 
 
-def test_gateway_plain_answer_completes_without_code(monkeypatch, tmp_path):
+def test_gateway_plain_answer_is_nudged_until_structured_submit(monkeypatch, tmp_path):
     cfg = _cfg(tmp_path)
     hub = _Hub()
     runner = gateway_mod.SessionRunner(cfg, hub)
@@ -45,19 +45,32 @@ def test_gateway_plain_answer_completes_without_code(monkeypatch, tmp_path):
     fid = store.new_frame(kind="turn", project_id="default", status="ready")
     calls = []
 
+    replies = iter(
+        [
+            "Short answer.",
+            "```python\nhost.submit_output({'answer': 'Short answer.'}, ['done'])\n```",
+        ]
+    )
+
     def fake_chat(messages, cfg, on_delta=None, **kwargs):
         calls.append(messages)
+        content = next(replies)
         if on_delta:
-            on_delta("Short answer.")
-        return {"content": "Short answer.", "usage": {}}
+            on_delta(content)
+        return {"content": content, "usage": {}}
 
     def fake_ensure(st):
         st.dispatcher = SimpleNamespace(last_output=None)
         st.messages = [{"role": "system", "content": "sys"}]
         st.booted = True
 
+    def fake_exec(st, code, origin, emit, stream=True):
+        st.dispatcher.last_output = {"output": {"answer": "Short answer."}}
+        return {"result": {"stdout": "", "stderr": "", "error": None}}
+
     monkeypatch.setattr(gateway_mod, "chat", fake_chat)
     monkeypatch.setattr(runner, "_ensure_kernel", fake_ensure)
+    monkeypatch.setattr(runner, "_execute_and_log", fake_exec)
     # the background title-summary chat would also land in `calls` and race the
     # count; it is orthogonal to the plain-answer path under test
     monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
@@ -65,7 +78,12 @@ def test_gateway_plain_answer_completes_without_code(monkeypatch, tmp_path):
     result = runner.run_message(fid, "default", "What is OpenAI4S?")
 
     assert result["status"] == "completed"
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert any(
+        "Prose is not a completion signal" in m["content"]
+        for m in calls[1]
+        if m["role"] == "user"
+    )
     messages = store.list_messages(fid)
     assert [m["role"] for m in messages] == ["user", "assistant"]
     assert messages[-1]["content"] == "Short answer."
@@ -266,9 +284,10 @@ def test_save_artifact_atomic_and_delete_cleans_snapshots(tmp_path):
 
 def test_explore_mode_injects_protocol_and_nudges_prose_stalls(monkeypatch, tmp_path):
     """Explore mode: the protocol rides on the user message, and a prose-only
-    reply (no code, no submit_output) is pushed back on — bounded at 3 nudges —
-    instead of silently ending the turn."""
+    reply (no code, no submit_output) is pushed back on until the turn limit,
+    then fails instead of silently reporting completion."""
     cfg = _cfg(tmp_path)
+    cfg.explore_max_turns = 4
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     store = get_store(cfg.db_path)
     fid = store.new_frame(kind="turn", project_id="default", status="ready")
@@ -290,11 +309,12 @@ def test_explore_mode_injects_protocol_and_nudges_prose_stalls(monkeypatch, tmp_
 
     result = runner.run_message(fid, "default", "探索地球磁场如何演化", explore=True)
 
-    assert result["status"] == "completed"
+    assert result["status"] == "failed"
+    assert "without calling host.submit_output" in result["error"]
     # protocol appended to the in-conversation user message (not the stored one)
     assert "[EXPLORE MODE" in calls[0][-1]["content"]
     assert store.list_messages(fid)[0]["content"] == "探索地球磁场如何演化"
-    # 1 initial call + 3 bounded nudges, then the loop gives up gracefully
+    # 1 initial call + 3 visible nudges before the configured limit is reached.
     assert len(calls) == 4
     nudges = [
         m for m in calls[-1] if m["role"] == "user" and "Explore mode" in m["content"]
@@ -325,24 +345,27 @@ def test_explore_flag_passes_through_submit_message(tmp_path):
     assert seen["explore"] is True
 
 
-def test_midtask_prose_stall_is_gated_and_nudged(monkeypatch, tmp_path):
-    """Normal mode: after a code cell ran, a prose-only reply that concludes
-    nothing actionable gets a stall nudge (conclusion gate says NO) instead of
-    ending the turn half-done."""
+def test_midtask_prose_conclusion_still_requires_structured_submit(
+    monkeypatch, tmp_path
+):
+    """Even conclusive prose after real work is not a completion signal."""
     cfg = _cfg(tmp_path)
+    cfg.max_turns = 4
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     store = get_store(cfg.db_path)
     fid = store.new_frame(kind="turn", project_id="default", status="ready")
     replies = iter(
         [
             "Running step 1.\n```python\nprint('x')\n```",
-            "Now let me look into the data files.",  # stall (gate -> NO)
-            "Done: the answer is 42, analysis complete.",  # conclusion (gate -> YES)
+            "Now let me look into the data files.",
+            "Done: the answer is 42, analysis complete.",
+            "```python\nhost.submit_output({'answer': 42}, ['done'])\n```",
         ]
     )
-    gate_calls = []
+    chat_calls = []
 
     def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        chat_calls.append([dict(m) for m in messages])
         return {"content": next(replies), "usage": {}}
 
     def fake_ensure(st):
@@ -351,22 +374,27 @@ def test_midtask_prose_stall_is_gated_and_nudged(monkeypatch, tmp_path):
         st.booted = True
 
     def fake_exec(st, code, origin, emit, stream=True):
+        if "host.submit_output" in code:
+            st.dispatcher.last_output = {"output": {"answer": 42}}
         return {"result": {"stdout": "x\n", "stderr": "", "error": None}}
-
-    def fake_gate(prose, llm_cfg):
-        gate_calls.append(prose)
-        return "42" in prose  # first prose stalls, second concludes
 
     monkeypatch.setattr(gateway_mod, "chat", fake_chat)
     monkeypatch.setattr(runner, "_ensure_kernel", fake_ensure)
     monkeypatch.setattr(runner, "_execute_and_log", fake_exec)
-    monkeypatch.setattr(runner, "_prose_concludes", fake_gate)
     monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
 
     result = runner.run_message(fid, "default", "analyze something")
 
     assert result["status"] == "completed"
-    assert len(gate_calls) == 2  # gated both prose-only replies
+    assert len(chat_calls) == 4
+    assert (
+        sum(
+            "Prose is not a completion signal" in m["content"]
+            for m in chat_calls[-1]
+            if m["role"] == "user"
+        )
+        == 2
+    )
     msgs = store.list_messages(fid)
     assert "the answer is 42" in msgs[-1]["content"]
 
@@ -389,6 +417,8 @@ def test_batched_code_blocks_warn_only_first_ran(monkeypatch, tmp_path):
             "```python\nprint('b')\n```",
             # turn 1: with only the first cell actually run, the model tries to bail out
             "All done — everything succeeded.",
+            # prose cannot complete the task; the next turn submits structurally
+            "```python\nhost.submit_output({'ok': True}, ['done'])\n```",
         ]
     )
 
@@ -402,13 +432,13 @@ def test_batched_code_blocks_warn_only_first_ran(monkeypatch, tmp_path):
         st.booted = True
 
     def fake_exec(st, code, origin, emit, stream=True):
+        if "host.submit_output" in code:
+            st.dispatcher.last_output = {"output": {"ok": True}}
         return {"result": {"stdout": "a\n", "stderr": "", "error": None}}
 
     monkeypatch.setattr(gateway_mod, "chat", fake_chat)
     monkeypatch.setattr(runner, "_ensure_kernel", fake_ensure)
     monkeypatch.setattr(runner, "_execute_and_log", fake_exec)
-    # gate says "concludes" so, absent the warning, turn 1 would end the run
-    monkeypatch.setattr(runner, "_prose_concludes", lambda p, c: True)
     monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
 
     runner.run_message(fid, "default", "do a multi-step task")
@@ -697,7 +727,7 @@ def test_frame_update_status_literal_vocabulary(tmp_path):
     docs/webapp-api.md §3. Literal statuses in gateway.py emit sites are
     exactly {processing, titled, failed, success, updated}; the run_message
     terminal site emits a VARIABLE status ∈ {completed, failed, cancelled}
-    (asserted behaviorally by test_gateway_plain_answer_completes_without_code).
+    (asserted behaviorally by the structured-submit and max-turn tests above).
     If this fails, a status was added/removed — update docs/webapp-api.md."""
     src = Path(gateway_mod.__file__).read_text(encoding="utf-8")
     sites = list(re.finditer(r'"type": "frame_update"', src))

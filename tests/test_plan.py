@@ -190,10 +190,18 @@ def test_approve_runs_execution_and_marks_completed(monkeypatch, tmp_path):
     )
 
     def fake_chat(messages, cfg, on_delta=None, **kw):
-        return {"content": "Done executing.", "usage": {}}
+        return {
+            "content": "```python\nhost.submit_output({'ok': True}, ['done'])\n```",
+            "usage": {},
+        }
+
+    def fake_exec(st, code, origin, emit, stream=True):
+        st.dispatcher.last_output = {"output": {"ok": True}}
+        return {"result": {"stdout": "", "stderr": "", "error": None}}
 
     monkeypatch.setattr(gateway_mod, "chat", fake_chat)
     monkeypatch.setattr(runner, "_ensure_kernel", _fake_ensure)
+    monkeypatch.setattr(runner, "_execute_and_log", fake_exec)
 
     res = runner.run_plan_execution(fid, "default")
     assert res["status"] == "completed"

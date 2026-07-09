@@ -804,11 +804,10 @@ _EXPLORE_NUDGE = (
     "write report.md), then call host.submit_output(...)."
 )
 
-_STALL_NUDGE = (
-    "[system] You stopped mid-task without an actionable conclusion "
-    "and without calling host.submit_output(...). Continue with the "
-    "next ```python step, or finish properly with "
-    "host.submit_output(...)."
+_SUBMIT_NUDGE = (
+    "[system] Prose is not a completion signal. Continue with the next "
+    "```python step, or, if the task is complete, run one final ```python "
+    "cell that calls host.submit_output(...)."
 )
 
 
@@ -2235,7 +2234,21 @@ class SessionRunner:
             err_text: str | None = None
             try:
                 st.dispatcher.last_output = None
-                self._loop(st, emit, assistant_visible)
+                loop_reason = self._loop(st, emit, assistant_visible)
+                if loop_reason == "max_turns":
+                    status = "failed"
+                    err_text = (
+                        "Agent reached its configured turn limit without calling "
+                        "host.submit_output(...)."
+                    )
+                    emit(
+                        {
+                            "type": "text_chunk",
+                            "frame_id": root_frame_id,
+                            "block_type": "text",
+                            "chunk": "\n\n" + err_text + "\n",
+                        }
+                    )
             except Exception as e:  # noqa: BLE001
                 status = "failed"
                 err_text = self._friendly_error(e)
@@ -2323,39 +2336,15 @@ class SessionRunner:
             return text
         return text + "\n\n---\n(附:被引用的文件内容)\n\n" + "\n\n".join(blocks)
 
-    def _prose_concludes(self, prose: str, llm_cfg) -> bool:
-        """Anti-stall gate on a prose-only reply mid-task: does it assert an
-        actionable result/conclusion (safe to end the turn), or only narrate
-        process ("let me now check…" — the model stalled)? Uses the
-        `conclusion_gate` micro-prompt; FAILS OPEN (True → end the turn) so a
-        broken/slow gate can never trap a session in nudge loops."""
-        try:
-            from types import SimpleNamespace
-
-            from openai4s import prompts
-
-            verdict = prompts.render(
-                "conclusion_gate",
-                prose[-4000:],
-                SimpleNamespace(llm=llm_cfg),
-                max_tokens=8,
-                temperature=0.0,
-            )
-            return "YES" in (verdict or "").strip().upper()
-        except Exception:  # noqa: BLE001
-            return True
-
-    def _loop(self, st: SessionState, emit, assistant_visible: list[dict]) -> None:
+    def _loop(self, st: SessionState, emit, assistant_visible: list[dict]) -> str:
         rid = st.root_frame_id
         max_turns = self.cfg.max_turns or 12
         if st.explore:
             max_turns = max(max_turns, self.cfg.explore_max_turns or 0)
         llm_cfg = self._llm_cfg(st)  # resolve once per turn (not per iteration)
-        cells_run = 0  # code cells executed this user turn
-        stall_nudges = 0  # consecutive prose-only replies we pushed back on
         for _turn in range(max_turns):
             if st.cancel.is_set():
-                return
+                return "cancelled"
             if should_compact(st.messages, self.cfg):
                 st.messages = compact(
                     st.messages, self.cfg, archive_dir=self.cfg.compaction_dir
@@ -2409,7 +2398,7 @@ class SessionRunner:
                     self._finalize_plan(st, reply, prose, emit)
                 except Exception:  # noqa: BLE001 — never let plan capture break a turn
                     traceback.print_exc()
-                return
+                return "plan"
             if code is None:
                 # ReAct tool surface: run any top-level ```tool calls
                 # (deterministic ops through the dispatcher — same activity-step
@@ -2433,38 +2422,15 @@ class SessionRunner:
                         self._apply_pending_env(st, emit)
                     obs = _finalize_tool_batch(parts, len(tool_calls), tool_errors)
                     st.messages.append({"role": "user", "content": obs})
-                    cells_run += 1
-                    stall_nudges = 0
                     if st.dispatcher.last_output is not None:
-                        return
+                        return "submitted"
                     continue
                 if st.dispatcher.last_output is not None:
-                    return
+                    return "submitted"
                 if prose:
-                    # Explore mode: prose alone never ends the run — the contract
-                    # is host.submit_output. Push back (bounded, so a model that
-                    # simply won't comply can't ping-pong to max_turns).
-                    if st.explore and stall_nudges < 3:
-                        stall_nudges += 1
-                        st.messages.append({"role": "user", "content": _EXPLORE_NUDGE})
-                        continue
-                    # Mid-task stall guard: the turn already ran cells, then the
-                    # model stopped with prose that concludes nothing actionable
-                    # ("let me now check…"). Gate it and push back once or twice
-                    # instead of silently ending the turn half-done.
-                    if (
-                        not st.explore
-                        and cells_run > 0
-                        and stall_nudges < 2
-                        and not self._prose_concludes(prose, llm_cfg)
-                    ):
-                        stall_nudges += 1
-                        st.messages.append({"role": "user", "content": _STALL_NUDGE})
-                        continue
-                    # Conversation-only answers and plan-mode replies do not need
-                    # a code cell. Treat visible prose as a completed turn instead
-                    # of nudging until max_turns.
-                    return
+                    nudge = _EXPLORE_NUDGE if st.explore else _SUBMIT_NUDGE
+                    st.messages.append({"role": "user", "content": nudge})
+                    continue
                 nudge = (
                     "[system] No python code block found. Reply with a "
                     "```python block to act, and call host.submit_output(...) "
@@ -2477,8 +2443,6 @@ class SessionRunner:
             if st.pending_env:
                 self._apply_pending_env(st, emit)
             info = self._execute_and_log(st, code, "agent", emit, stream=True)
-            cells_run += 1
-            stall_nudges = 0  # real progress resets the stall counter
             obs = _format_observation(info["result"])
             # One cell runs per step: if the model batched SEVERAL ```python
             # blocks into this single reply, only the FIRST one just executed —
@@ -2506,7 +2470,8 @@ class SessionRunner:
                 )
             st.messages.append({"role": "user", "content": obs})
             if st.dispatcher.last_output is not None:
-                return
+                return "submitted"
+        return "max_turns"
 
     def _execute_with_watchdog(
         self, st: SessionState, code: str, origin: str, on_chunk

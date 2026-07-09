@@ -146,7 +146,7 @@ success response body. Serializer shapes are in §4.
 | `DELETE /frames/{fid}` | `{"ok":true}`. |
 | `GET /frames/{fid}/messages?from=&limit=` | `{"messages":[{role,content,created_at}…]}`. `from` (default 0) and `limit` (default 300) are real slice parameters here. |
 | `GET /frames/{fid}/steps` | `{"steps":[…]}` (persisted semantic steps). |
-| `POST /frames/{fid}/message` | Starts a turn. Body `{request}` (or `{input_data:{request}}`), optional `model`, `plan`, `explore`, `annotation_ids` (folds pinned image annotations into the prompt). With `wait:false` → `202 {"status":"accepted","frame_id","job_id"}`; default (`wait` omitted/true) **blocks until the turn ends** and returns the turn result `{"status","frame_id","error"?,"job_id"}` where status ∈ `completed|failed|cancelled`. Progress streams over the WebSocket either way. |
+| `POST /frames/{fid}/message` | Starts a turn. Body `{request}` (or `{input_data:{request}}`), optional `model`, `plan`, `explore`, `annotation_ids` (folds pinned image annotations into the prompt). With `wait:false` → `202 {"status":"accepted","frame_id","job_id"}`; default (`wait` omitted/true) **blocks until the turn ends** and returns the turn result `{"status","frame_id","error"?,"job_id"}` where status ∈ `completed|failed|cancelled`. Outside plan mode, only `host.submit_output(...)` completes successfully; exhausting the turn limit without it returns `failed`. Progress streams over the WebSocket either way. |
 | `POST /frames/{fid}/cancel` | `{"ok":true}` (idempotent). |
 | `GET /frames/{fid}/status` | `{"frame_id","running",kernel:{…kernel status…}}`. |
 | `POST /frames/{fid}/feedback` | Body `{key,rating}` → `{"ok":true}`. |
