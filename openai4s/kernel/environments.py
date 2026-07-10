@@ -73,7 +73,7 @@ _KNOWN_DESC = {
     "python": "通用数据科学：numpy / pandas / scipy / matplotlib / biopython 等",
     "struct": "结构生物学：biotite / biotraj，mmCIF/PDB 解析、坐标与接触分析",
     "phylo": "系统发育：真实的 MAFFT / IQ-TREE / trimAl / FastTree + biopython",
-    "r": "R 统计与绘图：tidyverse / ggplot2（经 host.bash 里的 Rscript 使用）",
+    "r": "R 统计与绘图：tidyverse / ggplot2（用 ```r 单元格在持久 R 内核中运行）",
     "base": "内置默认内核：启动即预装 numpy/pandas/scipy/matplotlib/联网栈",
 }
 

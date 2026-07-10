@@ -1,10 +1,12 @@
 """Code-as-Action outer loop.
 
-The agent's action space is Turing-complete Python, not a fixed tool schema.
+The agent's action space is Turing-complete code, not a fixed tool schema.
+The host executes exactly two kinds of instructions: ```python cells on the
+persistent Jupyter-style kernel and ```r cells on the persistent R kernel.
 Each turn:
-  1. Ask the model for the next step. It replies with prose + a ```python code
-     block (the "action").
-  2. Extract the code, run it in the persistent kernel.
+  1. Ask the model for the next step. It replies with prose + one fenced code
+     cell (the "action").
+  2. Extract the cell, run it in the matching persistent kernel.
   3. Feed stdout/stderr/error back as an observation.
   4. Repeat until the model calls host.submit_output(...) — completion is
      signalled through the structured host channel, NOT a text convention.
@@ -17,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from openai4s.agent.actions import NO_CODE_NUDGE, extract_action
 from openai4s.agent.compaction import compact, should_compact
 from openai4s.config import Config, get_config
 from openai4s.host_dispatch import HostDispatcher, build_dispatcher
@@ -33,14 +36,22 @@ from openai4s.tools import (
 
 SYSTEM_PROMPT = """\
 You are openai4s, an autonomous agent whose ONLY way to act on the world is \
-to WRITE AND RUN PYTHON CODE in a persistent Jupyter-like kernel.
+to WRITE AND RUN CODE in persistent kernels: a Jupyter-like PYTHON kernel and \
+an R kernel. The host executes nothing else on your behalf.
 
 How you work (Code-as-Action):
-- To take any action, reply with a single ```python code block. It runs in a \
-kernel whose namespace PERSISTS across turns (variables, imports, functions \
-stay alive). You then SEE its stdout/stderr as an Observation and continue.
-- Use `print(...)` to inspect values you need to reason about. Only what you \
-print comes back to you.
+- To take any action, reply with a single fenced code cell: a ```python cell \
+runs in the python kernel, an ```r cell runs in the R kernel. Each kernel's \
+namespace PERSISTS across turns (variables, imports, functions stay alive), \
+and the two namespaces are SEPARATE — exchange data through files in the \
+working directory. You then SEE the cell's stdout/stderr as an Observation \
+and continue.
+- Use `print(...)` (python) or `print()`/`cat()` (R) to inspect values you \
+need to reason about. Only what you print comes back to you.
+- Use ```r cells for statistics and plotting with the R stack (tidyverse, \
+ggplot2 — save plots to files with ggsave() so they are captured). The `host` \
+object below exists ONLY in python cells; control flow, host.* calls and \
+finishing happen in python.
 - A `host` object is preinjected. Key methods:
     host.llm(request) -> str|list      # sub-LLM; str/dict->one, list->parallel fan-out
     host.search_skills(query) -> list  # retrieve full recipes for relevant skills
@@ -55,7 +66,7 @@ print comes back to you.
 - You ALSO have an opencode-parity harness on `host`, callable from any cell:
     host.web_search(query) -> dict      # LIVE web search (facts, papers, datasets)
     host.web_fetch(url) -> dict         # download a page/API as markdown/text/json
-    host.bash(cmd) -> dict              # shell (curl/wget/git/pip); networking is ON
+    host.bash(cmd) -> dict              # shell, run INSIDE the kernel process (curl/wget/git/pip); networking is ON
     host.read_file/write_file/edit_file/glob/grep/list_dir   # workspace files
     host.remote_gpu_status() -> dict    # configured SSH GPU hosts + capabilities
     host.register_remote_capability(alias, capability, ...)  # verified remote service
@@ -74,9 +85,9 @@ there is no other completion signal. After it succeeds you may add a one-line \
 prose summary, but do not emit further code blocks.
 
 Rules:
-- Each working turn is EITHER a single python code cell OR one-or-more tool \
-calls (see the tool surface below) — never both in one reply. Keep cells small \
-and incremental. Think in prose before the code block.
+- Each working turn is EITHER a single code cell (```python or ```r) OR \
+one-or-more tool calls (see the tool surface below) — never both in one \
+reply. Keep cells small and incremental. Think in prose before the code block.
 - If a cell errors, read the traceback in the Observation and fix it in the \
 next cell.
 """
@@ -99,6 +110,10 @@ class Agent:
     frame_id: str | None = None  # this agent's frame in the store
     delegate_depth: int = 0  # 0 = root; children carry depth+1
     _recorder: object | None = field(default=None, repr=False)
+    # persistent R kernel for ```r cells — spawned lazily on first use,
+    # retargeted when host.env.use() picks an R-only env, shut down with the run
+    _r_kernel: object | None = field(default=None, repr=False)
+    _r_kernel_env: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.max_turns is None:
@@ -246,13 +261,13 @@ class Agent:
                 messages.append({"role": "assistant", "content": reply})
                 self._log(f"\n--- turn {turn} (assistant) ---\n{reply}")
 
-                # A working turn is EITHER a ```python cell OR one-or-more
-                # ```tool calls — code WINS when both appear, so a ```tool token
-                # merely quoted inside a code cell (e.g. writing docs about this
-                # syntax) never executes. Tool calls are only honored when the
-                # reply has no python cell.
-                code = _extract_code(reply)
-                if code is None:
+                # A working turn is EITHER a single code cell (```python or
+                # ```r) OR one-or-more ```tool calls — code WINS when both
+                # appear, so a ```tool token merely quoted inside a code cell
+                # (e.g. writing docs about this syntax) never executes. Tool
+                # calls are only honored when the reply has no code cell.
+                action = extract_action(reply)
+                if action is None:
                     # ReAct tool surface: run any top-level ```tool calls
                     # (deterministic ops routed through the dispatcher).
                     tool_calls, tool_errors = parse_tool_calls(reply)
@@ -265,26 +280,26 @@ class Agent:
                             return self._finish(transcript, reply, "submitted")
                         continue
                     # No action and no submitted output: nudge once and continue.
-                    obs = (
-                        "[system] No python code block found. Reply with a "
-                        "```python block to act, and call "
-                        "host.submit_output(...) when the task is done."
-                    )
+                    obs = NO_CODE_NUDGE
                     transcript.append(Turn("observation", obs))
                     messages.append({"role": "user", "content": obs})
                     continue
 
                 # Pre-exec safety gate (report Figure 4: the SAFE? diamond +
                 # biosecurity BLOCK). A refusal feeds an Observation back to the
-                # model instead of running the cell.
-                refusal = self._pre_exec_gate(code, messages)
+                # model instead of running the cell. Runs on BOTH languages —
+                # the gate is text-level and fail-open.
+                refusal = self._pre_exec_gate(action.code, messages)
                 if refusal is not None:
                     transcript.append(Turn("observation", refusal))
                     messages.append({"role": "user", "content": refusal})
                     self._log(f"--- turn {turn} (safety refusal) ---\n{refusal}")
                     continue
 
-                result = k.execute(code, origin="agent")
+                if action.language == "r":
+                    result = self._execute_r(action.code)
+                else:
+                    result = k.execute(action.code, origin="agent")
                 obs = _format_observation(result)
                 transcript.append(Turn("observation", obs))
                 messages.append({"role": "user", "content": obs})
@@ -296,10 +311,51 @@ class Agent:
                     return self._finish(transcript, reply, "submitted")
         return self._finish(transcript, None, "max_turns")
 
+    def _execute_r(self, code: str) -> dict:
+        """Run one ```r cell on the persistent R kernel, spawning it lazily.
+
+        The kernel is respawned when host.env.use() retargeted the R channel
+        (dispatcher.active_r_env changed) or the worker died. A missing R is a
+        soft error observation — the model can fall back to python — never a
+        crash of the run.
+        """
+        want_env = getattr(self.dispatcher, "active_r_env", None)
+        k = self._r_kernel
+        if k is not None and (not k.is_alive() or self._r_kernel_env != want_env):
+            self._shutdown_r_kernel()
+            k = None
+        if k is None:
+            from openai4s.kernel.environments import get_environment
+            from openai4s.kernel.r_kernel import spawn_r_kernel
+
+            try:
+                k = spawn_r_kernel(env=get_environment(want_env))
+            except Exception as e:  # noqa: BLE001 — soft-fail into the observation
+                return {"error": f"R kernel unavailable: {e}"}
+            self._r_kernel = k
+            self._r_kernel_env = want_env
+        try:
+            return k.execute(code, origin="agent")
+        except Exception as e:  # noqa: BLE001 — dead worker: drop it, soft-fail
+            self._shutdown_r_kernel()
+            return {"error": f"R kernel failed: {e}"}
+
+    def _shutdown_r_kernel(self) -> None:
+        k = self._r_kernel
+        self._r_kernel = None
+        self._r_kernel_env = None
+        if k is not None:
+            try:
+                k.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+
     def _finish(
         self, transcript: list[Turn], final_reply: str | None, reason: str
     ) -> dict:
         assert self.dispatcher is not None
+        # the R kernel (if any) lives run-scoped, like the python kernel
+        self._shutdown_r_kernel()
         # : persist the replay tape so the run can be re-played offline.
         if self._recorder is not None:
             try:

@@ -108,6 +108,89 @@ def test_max_turns_stop(monkeypatch):
     assert result["stop_reason"] == "max_turns"
 
 
+# ---- R execution channel (```r) -------------------------------------------
+
+
+class _FakeRKernel:
+    """Stands in for the persistent R kernel in loop tests (no R needed)."""
+
+    def __init__(self):
+        self.cells = []
+        self.down = False
+
+    def is_alive(self):
+        return not self.down
+
+    def execute(self, code, origin="agent", on_chunk=None):
+        self.cells.append(code)
+        return {
+            "stdout": "[1] 42\n",
+            "stderr": "",
+            "error": None,
+            "interrupted": False,
+            "trace": {"error_lineno": None, "error_call": None},
+            "usage": {},
+        }
+
+    def shutdown(self):
+        self.down = True
+
+
+def test_r_cell_routes_to_r_kernel_and_is_non_terminal(monkeypatch):
+    """An ```r cell runs on the (lazily spawned) R kernel, its observation is
+    fed back, and — R being an analysis channel with no host object — the task
+    still completes only through a python host.submit_output cell. The R
+    kernel is shut down with the run."""
+    import openai4s.kernel.r_kernel as rk_mod
+
+    fake = _FakeRKernel()
+    spawns = []
+
+    def fake_spawn(**kw):
+        spawns.append(kw)
+        return fake
+
+    monkeypatch.setattr(rk_mod, "spawn_r_kernel", fake_spawn)
+    scripted = ScriptedLLM(
+        [
+            "R first.\n```r\nx <- 42\nprint(x)\n```",
+            "```python\nhost.submit_output({'a': 1}, ['Analyzed in R'])\n```",
+        ]
+    )
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    result = Agent(use_skills=False, allow_delegate=False, max_turns=4).run("use R")
+
+    assert result["stop_reason"] == "submitted"
+    assert fake.cells == ["x <- 42\nprint(x)\n"]
+    assert len(spawns) == 1  # lazy: spawned exactly once, on first ```r cell
+    obs = [t["content"] for t in result["transcript"] if t["role"] == "observation"]
+    assert any("[1] 42" in o for o in obs)
+    assert fake.down  # run-scoped lifecycle
+
+
+def test_r_cell_without_r_soft_fails_into_observation(monkeypatch):
+    """No R interpreter -> the ```r cell yields an ERROR observation (never a
+    crash), and the model can fall back to python and still finish."""
+    import openai4s.kernel.r_kernel as rk_mod
+
+    def no_r(**kw):
+        raise RuntimeError("no R interpreter available: build the 'r' env")
+
+    monkeypatch.setattr(rk_mod, "spawn_r_kernel", no_r)
+    scripted = ScriptedLLM(
+        [
+            "```r\n1 + 1\n```",
+            "```python\nhost.submit_output({'a': 1}, ['Fell back to python'])\n```",
+        ]
+    )
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    result = Agent(use_skills=False, allow_delegate=False, max_turns=4).run("try R")
+
+    assert result["stop_reason"] == "submitted"
+    obs = [t["content"] for t in result["transcript"] if t["role"] == "observation"]
+    assert any("R kernel unavailable" in o for o in obs)
+
+
 # ---- ReAct tool surface (```tool) ----------------------------------------
 
 
