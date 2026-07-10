@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "single_response_submitted",
+  "tags": ["offline", "tier:pr", "baseline"],
+  "surface": "harness",
+  "task": "Return one deterministic response.",
+  "fixtures": {},
+  "provider_script": [
+    {
+      "response": {
+        "content": "deterministic result",
+        "finish_reason": "stop",
+        "usage": {
+          "input_tokens": 4,
+          "output_tokens": 2,
+          "known": true
+        }
+      },
+      "terminal_reason": "submitted"
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "submitted",
+    "model_attempts": 1,
+    "event_kinds": ["run_started", "model_started", "model_finished", "run_finished"],
+    "invariants": ["ordered_events", "one_run_terminal", "script_consumed"]
+  }
+}

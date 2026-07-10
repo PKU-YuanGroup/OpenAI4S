@@ -42,6 +42,119 @@ _VALID_MARKER_ID = re.compile(
 )
 
 
+_REMOTE_PROBE_BINARY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+_REMOTE_PROBE_FORBIDDEN = (";", "|", "&", "`", "$(", "\r", "\n", "\x00")
+
+
+def _reject_remote_probe_metacharacters(value: str, field: str) -> None:
+    """Reject syntax that could add shell operations to a verification probe."""
+    bad = next((token for token in _REMOTE_PROBE_FORBIDDEN if token in value), None)
+    if bad is not None:
+        label = {"\r": "CR", "\n": "LF", "\x00": "NUL"}.get(bad, bad)
+        raise ValueError(f"{field} contains forbidden shell syntax {label!r}")
+
+
+def _normalize_remote_capability_probe(spec: dict) -> tuple[dict, str]:
+    """Return a canonical probe and the single safe remote command it represents.
+
+    New callers use a structured ``probe``.  The legacy ``verify_command`` input
+    remains accepted only for the two historical probe grammars, and is parsed
+    and rebuilt rather than executed verbatim.  A script-only registration is a
+    structured ``path_exists`` probe by default.
+    """
+    import shlex as _shlex
+
+    has_structured = "probe" in spec and spec.get("probe") is not None
+    legacy_raw = spec.get("verify_command")
+    if legacy_raw is None:
+        legacy = ""
+    elif isinstance(legacy_raw, str):
+        legacy = legacy_raw.strip()
+    else:
+        raise ValueError("verify_command must be a string")
+
+    if has_structured and legacy:
+        raise ValueError("provide probe or verify_command, not both")
+
+    if has_structured:
+        raw = spec.get("probe")
+        if not isinstance(raw, dict):
+            raise ValueError("probe must be an object")
+        kind = raw.get("kind")
+        if kind == "path_exists":
+            expected = {"kind", "path"}
+            if set(raw) != expected:
+                raise ValueError("path_exists probe accepts exactly kind and path")
+            path = raw.get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise ValueError("path_exists probe requires a non-empty string path")
+            _reject_remote_probe_metacharacters(path, "probe.path")
+            probe = {"kind": "path_exists", "path": path}
+            return probe, f"test -e {_shlex.quote(path)}"
+        if kind == "executable_exists":
+            expected = {"kind", "binary"}
+            if set(raw) != expected:
+                raise ValueError(
+                    "executable_exists probe accepts exactly kind and binary"
+                )
+            binary = raw.get("binary")
+            if not isinstance(binary, str) or not _REMOTE_PROBE_BINARY.fullmatch(
+                binary
+            ):
+                raise ValueError(
+                    "executable_exists binary must be one plain executable name"
+                )
+            probe = {"kind": "executable_exists", "binary": binary}
+            return probe, f"which {binary}"
+        raise ValueError(f"unknown probe kind {kind!r}")
+
+    if legacy:
+        _reject_remote_probe_metacharacters(legacy, "verify_command")
+        try:
+            tokens = _shlex.split(legacy, posix=True)
+        except ValueError as exc:
+            raise ValueError(f"invalid verify_command quoting: {exc}") from exc
+        if len(tokens) == 3 and tokens[:2] == ["test", "-e"]:
+            path = tokens[2]
+            if not path.strip():
+                raise ValueError("legacy test probe requires a non-empty path")
+            _reject_remote_probe_metacharacters(path, "verify_command path")
+            # Pre-change verify_command was handed to the remote shell verbatim,
+            # so ~ and $VAR expanded there. The rebuilt command is quoted and
+            # never expands; reject rather than silently probe a literal path.
+            if path.startswith("~") or "$" in path:
+                raise ValueError(
+                    "verify_command path would no longer be shell-expanded; "
+                    "use an absolute path"
+                )
+            probe = {"kind": "path_exists", "path": path}
+            return probe, f"test -e {_shlex.quote(path)}"
+        if len(tokens) == 2 and tokens[0] == "which":
+            binary = tokens[1]
+            if not _REMOTE_PROBE_BINARY.fullmatch(binary):
+                raise ValueError(
+                    "legacy which probe requires one plain executable name"
+                )
+            probe = {"kind": "executable_exists", "binary": binary}
+            return probe, f"which {binary}"
+        raise ValueError(
+            "verify_command must be exactly 'test -e <path>' or 'which <binary>'"
+        )
+
+    script_raw = spec.get("script")
+    if script_raw is None:
+        script = ""
+    elif isinstance(script_raw, str):
+        script = script_raw.strip()
+    else:
+        raise ValueError("script must be a string")
+    if not script:
+        raise ValueError("provide probe, verify_command, or script")
+    _reject_remote_probe_metacharacters(script, "script")
+    probe = {"kind": "path_exists", "path": script}
+    return probe, f"test -e {_shlex.quote(script)}"
+
+
 # --------------------------------------------------------------------------- #
 #  Semantic "activity step" projection.
 #
@@ -159,6 +272,13 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     if method == "register_remote_capability":
         cap = a.get("capability") or a.get("cap") or "service"
         alias = a.get("alias") or "remote GPU"
+        # An invalid probe spec must not hide the attempt from the activity
+        # timeline (the dispatcher swallows projection errors); the handler
+        # re-validates and soft-fails, so project the rejected input as-is.
+        try:
+            probe, remote_cmd = _normalize_remote_capability_probe(a)
+        except ValueError:
+            probe, remote_cmd = None, None
         return (
             "compute",
             f"Registering {cap} on {alias}",
@@ -167,6 +287,8 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
                 "capability": cap,
                 "script": a.get("script"),
                 "engine": a.get("engine"),
+                "probe": probe,
+                "verification_command": remote_cmd,
             },
         )
     if method == "mcp_call":
@@ -239,9 +361,10 @@ Protocol:
    provision ProteinMPNN or another method, register it under a clear capability
    name such as `proteinmpnn`.
 4. Verify before registering. A capability must have either a verified script
-   path or a verification command that exits 0 on the remote host. Then call
+   path or a structured `path_exists` / `executable_exists` probe that exits 0
+   on the remote host. Then call
    `host.register_remote_capability(alias, capability, script=..., engine=...,
-   invoke=..., markers=..., verify_command=...)`.
+   invoke=..., markers=..., probe={"kind":"path_exists","path":...})`.
 5. If provisioning cannot be completed, return a concise blocking reason and the
    exact remote checks you ran. Never claim a model is configured until verified.
 """,
@@ -771,7 +894,6 @@ class HostDispatcher:
 
     def _m_register_remote_capability(self, spec: dict) -> dict:
         """Register a remote GPU service after verifying it exists remotely."""
-        import shlex as _shlex
         import subprocess as _sub
 
         from openai4s.compute import registry as _reg
@@ -779,7 +901,6 @@ class HostDispatcher:
         alias = str(spec.get("alias") or "").strip()
         cap = str(spec.get("capability") or spec.get("cap") or "").strip()
         script = str(spec.get("script") or "").strip()
-        verify_command = str(spec.get("verify_command") or "").strip()
         if not alias:
             return {"error": "register_remote_capability: alias is required"}
         if not cap:
@@ -788,13 +909,10 @@ class HostDispatcher:
             return {
                 "error": f"register_remote_capability: unknown remote GPU host {alias!r}"
             }
-        if not (script or verify_command):
-            return {
-                "error": "register_remote_capability: provide script or verify_command "
-                "so the service can be verified before registration"
-            }
-
-        remote_cmd = verify_command or f"test -e {_shlex.quote(script)}"
+        try:
+            probe, remote_cmd = _normalize_remote_capability_probe(spec)
+        except ValueError as exc:
+            return {"error": f"register_remote_capability: invalid probe: {exc}"}
         try:
             proc = _sub.run(
                 [
@@ -829,7 +947,8 @@ class HostDispatcher:
             "engine": spec.get("engine") or cap,
             "markers": spec.get("markers") or {},
             "notes": spec.get("notes") or "",
-            "verification": verify_command or f"test -e {script}",
+            "probe": probe,
+            "verification": remote_cmd,
         }
         _reg.set_capability(alias, cap, meta)
         return {

@@ -1,0 +1,446 @@
+{
+  "cases": [
+    {
+      "current_behavior": "CLI returns stop_reason=max_turns after the configured number of model turns.",
+      "desired_contract": "TerminalReason=max_turns remains explicit and later matches the gateway canonical RunOutcome.",
+      "id": "cli_max_turns",
+      "known_bug": false,
+      "trace": [
+        {
+          "event_id": "<event:1>",
+          "kind": "characterization_started",
+          "monotonic_ms": 0,
+          "parent_event_id": null,
+          "payload": {
+            "case_id": "cli_max_turns"
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 1,
+          "status": "running",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:2>",
+          "kind": "production_observed",
+          "monotonic_ms": 1,
+          "parent_event_id": "<event:1>",
+          "payload": {
+            "model_calls": 2,
+            "stop_reason": "max_turns",
+            "submitted_output": null,
+            "transcript_roles": [
+              "assistant",
+              "observation",
+              "assistant",
+              "observation"
+            ]
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 2,
+          "status": "ok",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:3>",
+          "kind": "characterization_finished",
+          "monotonic_ms": 2,
+          "parent_event_id": "<event:2>",
+          "payload": {
+            "captured": true
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 3,
+          "status": "terminal",
+          "turn_id": "<turn:1>"
+        }
+      ]
+    },
+    {
+      "current_behavior": "An HTTP 429 raises LLMError after one transport attempt even when Retry-After is present.",
+      "desired_contract": "Typed rate_limit errors honor Retry-After and retry within a cancellable source-aware budget before output is committed.",
+      "id": "rate_limit_single_attempt",
+      "known_bug": true,
+      "trace": [
+        {
+          "event_id": "<event:1>",
+          "kind": "characterization_started",
+          "monotonic_ms": 0,
+          "parent_event_id": null,
+          "payload": {
+            "case_id": "rate_limit_single_attempt"
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 1,
+          "status": "running",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:2>",
+          "kind": "production_observed",
+          "monotonic_ms": 1,
+          "parent_event_id": "<event:1>",
+          "payload": {
+            "attempts": 1,
+            "content": null,
+            "error_text": "LLM HTTP 429: {\"error\":\"rate limited\"}",
+            "error_type": "LLMError",
+            "retry_after_was_available": true
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 2,
+          "status": "ok",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:3>",
+          "kind": "characterization_finished",
+          "monotonic_ms": 2,
+          "parent_event_id": "<event:2>",
+          "payload": {
+            "captured": true
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 3,
+          "status": "terminal",
+          "turn_id": "<turn:1>"
+        }
+      ]
+    },
+    {
+      "current_behavior": "After one delta is emitted, a stream disconnect is surfaced as a hard error with no blocking fallback or duplicate delta.",
+      "desired_contract": "Preserve the no-transparent-replay commit boundary after any UI-visible delta.",
+      "id": "partial_sse_hard_failure",
+      "known_bug": false,
+      "trace": [
+        {
+          "event_id": "<event:1>",
+          "kind": "characterization_started",
+          "monotonic_ms": 0,
+          "parent_event_id": null,
+          "payload": {
+            "case_id": "partial_sse_hard_failure"
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 1,
+          "status": "running",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:2>",
+          "kind": "production_observed",
+          "monotonic_ms": 1,
+          "parent_event_id": "<event:1>",
+          "payload": {
+            "blocking_fallback_attempts": 0,
+            "deltas": [
+              "committed-delta"
+            ],
+            "error_text": "stream disconnected after committed delta",
+            "error_type": "LLMError",
+            "sse_attempts": 1
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 2,
+          "status": "ok",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:3>",
+          "kind": "characterization_finished",
+          "monotonic_ms": 2,
+          "parent_event_id": "<event:2>",
+          "payload": {
+            "captured": true
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 3,
+          "status": "terminal",
+          "turn_id": "<turn:1>"
+        }
+      ]
+    },
+    {
+      "current_behavior": "The compaction note is a mid-timeline system message that Anthropic and Gemini hoist into their initial system fields.",
+      "desired_contract": "Compile a typed compaction_summary at its timeline position; never merge it into initial policy or cache prefix.",
+      "id": "compaction_summary_provider_hoist",
+      "known_bug": true,
+      "trace": [
+        {
+          "event_id": "<event:1>",
+          "kind": "characterization_started",
+          "monotonic_ms": 0,
+          "parent_event_id": null,
+          "payload": {
+            "case_id": "compaction_summary_provider_hoist"
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 1,
+          "status": "running",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:2>",
+          "kind": "production_observed",
+          "monotonic_ms": 1,
+          "parent_event_id": "<event:1>",
+          "payload": {
+            "anthropic_message_roles": [
+              "user",
+              "assistant"
+            ],
+            "anthropic_summary_in_messages": false,
+            "anthropic_summary_in_top_level_system": true,
+            "compacted_roles": [
+              "system",
+              "user",
+              "system",
+              "assistant"
+            ],
+            "gemini_content_roles": [
+              "user",
+              "model"
+            ],
+            "gemini_summary_in_contents": false,
+            "gemini_summary_in_system_instruction": true
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 2,
+          "status": "ok",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:3>",
+          "kind": "characterization_finished",
+          "monotonic_ms": 2,
+          "parent_event_id": "<event:2>",
+          "payload": {
+            "captured": true
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 3,
+          "status": "terminal",
+          "turn_id": "<turn:1>"
+        }
+      ]
+    },
+    {
+      "current_behavior": "The model-view formatter preserves an entire 2,000,000-character observation with no content reference or omission marker.",
+      "desired_contract": "Apply per-result and aggregate model-view budgets, spilling full bytes to an authorized content reference before previewing.",
+      "id": "oversized_observation_unbudgeted",
+      "known_bug": true,
+      "trace": [
+        {
+          "event_id": "<event:1>",
+          "kind": "characterization_started",
+          "monotonic_ms": 0,
+          "parent_event_id": null,
+          "payload": {
+            "case_id": "oversized_observation_unbudgeted"
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 1,
+          "status": "running",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:2>",
+          "kind": "production_observed",
+          "monotonic_ms": 1,
+          "parent_event_id": "<event:1>",
+          "payload": {
+            "full_tail_preserved": true,
+            "has_content_ref": false,
+            "has_omission_marker": false,
+            "input_chars": 2000000,
+            "model_view_chars": 2000022
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 2,
+          "status": "ok",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:3>",
+          "kind": "characterization_finished",
+          "monotonic_ms": 2,
+          "parent_event_id": "<event:2>",
+          "payload": {
+            "captured": true
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 3,
+          "status": "terminal",
+          "turn_id": "<turn:1>"
+        }
+      ]
+    },
+    {
+      "current_behavior": "A headless effective ask is allowed, while a matching standing deny remains an absolute rejection.",
+      "desired_contract": "rules_only denies unresolved ask in headless mode while preserving standing deny as absolute.",
+      "id": "headless_ask_allows_deny_absolute",
+      "known_bug": true,
+      "trace": [
+        {
+          "event_id": "<event:1>",
+          "kind": "characterization_started",
+          "monotonic_ms": 0,
+          "parent_event_id": null,
+          "payload": {
+            "case_id": "headless_ask_allows_deny_absolute"
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 1,
+          "status": "running",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:2>",
+          "kind": "production_observed",
+          "monotonic_ms": 1,
+          "parent_event_id": "<event:1>",
+          "payload": {
+            "ask_effective_decision": "ask",
+            "deny_effective_decision": "deny",
+            "deny_message": "blocked by a standing 'deny' permission rule",
+            "headless_ask_allowed": true,
+            "headless_deny_allowed": false
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 2,
+          "status": "ok",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:3>",
+          "kind": "characterization_finished",
+          "monotonic_ms": 2,
+          "parent_event_id": "<event:2>",
+          "payload": {
+            "captured": true
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 3,
+          "status": "terminal",
+          "turn_id": "<turn:1>"
+        }
+      ]
+    },
+    {
+      "current_behavior": "mcp_tools calls the connector manager even when the connector row is disabled.",
+      "desired_contract": "Disabled or untrusted MCP connectors are zero-spawn and never enter connect/list/call.",
+      "id": "disabled_mcp_tools_connects",
+      "known_bug": true,
+      "trace": [
+        {
+          "event_id": "<event:1>",
+          "kind": "characterization_started",
+          "monotonic_ms": 0,
+          "parent_event_id": null,
+          "payload": {
+            "case_id": "disabled_mcp_tools_connects"
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 1,
+          "status": "running",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:2>",
+          "kind": "production_observed",
+          "monotonic_ms": 1,
+          "parent_event_id": "<event:1>",
+          "payload": {
+            "connector_enabled": false,
+            "manager_list_tools_calls": 1,
+            "result": {
+              "tools": []
+            }
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 2,
+          "status": "ok",
+          "turn_id": "<turn:1>"
+        },
+        {
+          "event_id": "<event:3>",
+          "kind": "characterization_finished",
+          "monotonic_ms": 2,
+          "parent_event_id": "<event:2>",
+          "payload": {
+            "captured": true
+          },
+          "phase": "characterization",
+          "root_frame_id": "<root_frame:1>",
+          "run_id": "<run:1>",
+          "schema_version": 1,
+          "seq": 3,
+          "status": "terminal",
+          "turn_id": "<turn:1>"
+        }
+      ]
+    }
+  ],
+  "kind": "r5_prechange_production_characterization",
+  "schema_version": 1,
+  "update_policy": "Known-bug traces are pre-change evidence, not permanent contracts. An intentional runtime fix must explicitly regenerate and review this golden."
+}

@@ -1332,12 +1332,23 @@ class _Host:
         invoke: str = "",
         markers: dict | None = None,
         notes: str = "",
+        probe: dict[str, str] | None = None,
         verify_command: str = "",
     ) -> dict:
         """Register a verified remote GPU service on an SSH host.
 
-        The dispatcher verifies `verify_command` remotely, or `test -e script`
-        when no explicit command is provided, before updating the registry.
+        Prefer a structured probe::
+
+            {"kind": "path_exists", "path": "/opt/service/run.sh"}
+            {"kind": "executable_exists", "binary": "service-cli"}
+
+        Paths are probed literally (quoted; no remote ``~``/``$VAR``
+        expansion), so pass absolute paths. Providing both ``probe`` and the
+        legacy ``verify_command`` is an error. With neither, ``script`` becomes
+        a ``path_exists`` probe; ``verify_command`` — accepted only as exactly
+        ``test -e <path>`` or ``which <binary>`` — takes precedence over
+        ``script`` for verification. The registry is updated only after the
+        probe exits 0.
         """
         return self._call(
             "register_remote_capability",
@@ -1350,6 +1361,7 @@ class _Host:
                     "invoke": invoke,
                     "markers": markers or {},
                     "notes": notes,
+                    "probe": probe,
                     "verify_command": verify_command,
                 }
             ],

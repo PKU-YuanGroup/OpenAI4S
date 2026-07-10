@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "scheduled_timeout",
+  "tags": ["offline", "tier:pr", "baseline"],
+  "surface": "harness",
+  "task": "Inject a deterministic timeout before the scripted provider call.",
+  "fixtures": {},
+  "provider_script": [
+    {
+      "response": {
+        "content": "must not be consumed",
+        "finish_reason": "stop",
+        "usage": {}
+      },
+      "terminal_reason": "submitted"
+    }
+  ],
+  "faults": [
+    {
+      "point": "before_model",
+      "occurrence": 1,
+      "kind": "timeout",
+      "message": "scheduled model timeout",
+      "retryable": true
+    }
+  ],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "model_error",
+    "model_attempts": 1,
+    "event_kinds": [
+      "run_started",
+      "model_started",
+      "fault_injected",
+      "model_finished",
+      "run_finished"
+    ],
+    "invariants": ["ordered_events", "one_run_terminal"]
+  }
+}

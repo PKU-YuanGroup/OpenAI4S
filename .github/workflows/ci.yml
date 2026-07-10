@@ -7,10 +7,11 @@
 #   - `permissions` is read-only (contents: read) for every job.
 #   - No secrets are referenced or injected anywhere in this workflow.
 #   - GitHub-hosted runners only — no self-hosted runners.
-#   - The test run is the default offline gate: pytest's addopts in
-#     pyproject.toml deselect the opt-in markers (external / network /
-#     live_llm / gpu / ssh / lab / docker / browser), so no live LLM,
-#     network, GPU, SSH, Docker, or lab dependency is exercised.
+#   - The default offline gate runs pytest plus deterministic `tier:pr`
+#     harness scenarios. Pytest's addopts deselect opt-in markers (external /
+#     network / live_llm / gpu / ssh / lab / docker / browser), and the harness
+#     CLI requires explicit offline eligibility, so neither path uses secrets or
+#     live LLM/network/GPU/SSH/Docker/browser/lab resources.
 #
 # Live/external test jobs, if ever added, belong in a separate manually
 # triggered workflow — never in this default PR gate.
@@ -80,9 +81,11 @@ jobs:
       - name: Install dev dependencies (same baseline as ./setup.sh)
         run: uv sync --locked --extra science
       - name: Byte-compile all first-party sources
-        run: uv run python -m compileall -q openai4s openai4s_compute_provider tests
+        run: uv run python -m compileall -q openai4s openai4s_compute_provider harness tests
       - name: Collect tests (strict markers, default deselection)
         run: uv run pytest --collect-only -q
       - name: Run the offline suite (no secrets, no network, no hardware)
         # addopts already passes -q; a second -q would suppress the summary line.
         run: uv run pytest
+      - name: Run deterministic harness contracts
+        run: uv run python -m harness.cli run --tier pr --offline

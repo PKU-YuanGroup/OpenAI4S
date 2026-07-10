@@ -23,6 +23,44 @@ policy. The technical conventions live in [`CLAUDE.md`](CLAUDE.md) /
    without API keys, tokens, or credentials of any kind, and must not run
    live LLM / network / GPU / SSH / lab jobs.
 
+## Harness invariants
+
+Harness changes must establish and preserve these project invariants. Until a
+target contract lands, an interim change must not weaken the portions already
+satisfied or claim that a known gap is enforced:
+
+1. Compaction may change only the model-view context and append its archive and
+   boundary records; it never rewrites execution, artifact, lineage, durable
+   event, or host-call-tape truth.
+2. Resume never replays a cell, tool, or remote job. A recovery probe is marked
+   `system_recovery`, calls no taped `host.*` method, and is not published as an
+   agent action.
+3. Hooks and convenience rules may only tighten permissions. A standing deny
+   is absolute.
+4. Every executed cell produces an observation, including interruption and
+   failure paths.
+5. Secret fields never enter durable audit/events/goldens/errors or an
+   unauthorized child process environment.
+6. Cells execute serially within a persistent kernel namespace.
+7. Each worker has at most one in-flight RPC transaction on its protocol
+   channel; separate workers may dispatch concurrently.
+8. Provenance failures never interrupt user code, and provenance never invents
+   a lineage edge.
+9. Artifact versions are append-only and immutable; rollback moves the latest
+   pointer rather than changing stored bytes.
+10. The egress fence remains read-fresh so a live policy toggle applies to the
+    next checked call.
+11. Every new Store table is reviewed for inclusion in `QUERY_DENYLIST`.
+12. Noninteractive permission behavior is a typed capability decision
+    (`deny`, `rules_only`, or `allow`); viewer presence is an answer channel,
+    never authorization.
+13. Every dispatcher `_m_*` method has an explicit capability specification;
+    unknown methods fail closed.
+14. Every side-effecting host action produces one canonical, redacted action
+    and outcome shared by approval, activity, and durable audit projections.
+15. Any SDK or skill that promises approval gating has contract tests for
+    interactive, noninteractive, and durable decision-linkage behavior.
+
 ## Branch naming
 
 | Prefix | Use for |
