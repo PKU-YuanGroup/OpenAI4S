@@ -1,13 +1,12 @@
-"""Outbound domain allowlist — the host-stamped network egress fence (report §5.1).
+"""Outbound domain allowlist — the host-stamped network egress fence.
 
-The Claude Science reverse-engineering report describes an OS-level sandbox whose
-network layer is an **outbound domain allowlist**: science APIs (NCBI, UniProt,
+The policy is an **outbound domain allowlist**: science APIs (NCBI, UniProt,
 RCSB, EBI, OpenAlex, CrossRef, arXiv), package indexes (PyPI, conda, CRAN,
 Bioconductor, npm) and data repositories (GEO, SRA, ENA, CELLxGENE) are reachable;
 everything else returns a proxy 403 and the agent must call
 ``request_network_access(domain=...)`` to widen the fence.
 
-openai4s does not ship the OS sandbox (Seatbelt/bubblewrap) — that is a
+openai4s does not ship an OS-level sandbox (Seatbelt/bubblewrap) — that is a
 separate, infra-heavy subsystem — so this module is a **best-effort, code-as-action
 fence** enforced at the host-tool boundary (``host.web_fetch`` / ``host.web_search``
 and, statically, ``host.bash``). It is:

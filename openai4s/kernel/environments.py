@@ -15,8 +15,7 @@ Discovery is cheap-ish and cached module-wide:
 
 Discovery roots, in priority order:
   1. ``OPENAI4S_ENV_ROOTS`` — ``:``-separated *envs* directories (override);
-  2. ``~/.claude-science/conda/envs`` — the reference daemon's prebuilt envs;
-  3. the usual conda/mamba install locations under ``$HOME``.
+  2. the usual conda/mamba install locations under ``$HOME``.
 
 A synthetic ``base`` environment (the daemon's own interpreter, ``sys.executable``,
 carrying the preinstalled stack from :mod:`openai4s.kernel.preinstall`) is
@@ -36,10 +35,9 @@ from pathlib import Path
 
 from openai4s import pkgscan
 
-# Envs that exist on disk but must never be offered as a user runtime
-# (the reference daemon's own MCP/runtime env, dotfiles, …). Extend via
-# OPENAI4S_ENV_HIDE (comma-separated names).
-_ALWAYS_HIDE = {"operon-mcp"}
+# Envs that exist on disk but must never be offered as a user runtime.
+# Populate via OPENAI4S_ENV_HIDE (comma-separated names).
+_ALWAYS_HIDE: set[str] = set()
 
 # Notable packages, in the order we surface them, used to auto-describe an env.
 _HIGHLIGHT = [
@@ -208,7 +206,6 @@ def _env_roots() -> list[Path]:
         if chunk.strip():
             add(Path(chunk.strip()))
     home = Path.home()
-    add(home / ".claude-science" / "conda" / "envs")
     for base in ("miniconda3", "miniforge3", "anaconda3", "mambaforge", "micromamba"):
         add(home / base / "envs")
     prefix = os.environ.get("CONDA_PREFIX")

@@ -483,7 +483,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
 
 
 def _install_audit_hook() -> None:
-    """Arm the in-kernel `_operon_audit` dlopen guard (report layer 3).
+    """Arm the in-kernel dlopen guard (defense layer 3).
 
     Runs inside THIS worker process — an audit hook only sees events raised in
     its own interpreter. Opt out with OPENAI4S_SAFETY_AUDIT_HOOK=0. Best-effort:

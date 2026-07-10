@@ -890,7 +890,7 @@ class _ProseStreamer:
 
 def _activity_title(code: str, idx: int) -> str:
     """Human-readable label for a code cell's activity card — the leading
-    `# comment`, else a generic fallow. Mirrors claude-science's activity lines."""
+    `# comment`, else a generic fallow."""
     for line in code.splitlines():
         s = line.strip()
         if s.startswith("#"):
@@ -1075,9 +1075,9 @@ class SessionRunner:
 
                 ctx += "\n\n" + _prompts.SECURITY_GENERAL
             if sec.biosecurity:
-                from openai4s.security.biosecurity import OIO_BIOSECURITY_PROMPT
+                from openai4s.security.biosecurity import BIOSECURITY_PROMPT
 
-                ctx += "\n\n" + OIO_BIOSECURITY_PROMPT
+                ctx += "\n\n" + BIOSECURITY_PROMPT
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -3411,7 +3411,7 @@ _CONNECTOR_DIRECTORY = [
 
 # Network egress groups shown in Customize → Network (the domains agent tools may
 # reach). This is the SAME canonical allowlist that openai4s.egress ENFORCES
-# when OPENAI4S_EGRESS=allowlist (report §5.1) — one source of truth for both
+# when OPENAI4S_EGRESS=allowlist — one source of truth for both
 # the display here and the fence in webtools/host.bash. The on/off master switch
 # for networking is OPENAI4S_ALLOW_NETWORK; the allowlist-vs-off egress mode is
 # OPENAI4S_EGRESS (default off → fail-open, unchanged behaviour).

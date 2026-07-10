@@ -1,10 +1,10 @@
 """Tests for the defense-in-depth safety layer (openai4s.security).
 
-Covers the four re-implemented report layers, all offline (LLM mocked):
-  * the pre-exec code-safety classifier (e6w): fast-path, static scan, llm mode;
-  * the in-kernel dlopen audit hook (_operon_audit): blocks writable-path loads;
-  * the prompt-injection detector (Mjz): static markers + annotation;
-  * the biosecurity screener (diO) + calibrated-accountability prompt (oiO);
+Covers the four layers, all offline (LLM mocked):
+  * the pre-exec code-safety classifier: fast-path, static scan, llm mode;
+  * the in-kernel dlopen audit hook: blocks writable-path loads;
+  * the prompt-injection detector: static markers + annotation;
+  * the biosecurity trajectory screener + calibrated-accountability prompt;
   * their integration into the agent loop and the config toggles.
 """
 import os
@@ -220,7 +220,7 @@ def test_bad_safety_mode_falls_back(monkeypatch):
     assert SecurityConfig().safety_mode == "heuristic"
 
 
-# --- in-kernel audit hook (_operon_audit) -------------------------------- #
+# --- in-kernel audit hook (the dlopen guard) ----------------------------- #
 
 _AUDIT_PROBE = r"""
 import os, sys, tempfile, ctypes

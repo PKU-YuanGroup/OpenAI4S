@@ -162,9 +162,9 @@ class Agent:
 
             extra.append(_prompts.SECURITY_GENERAL)
         if sec.biosecurity:
-            from openai4s.security.biosecurity import OIO_BIOSECURITY_PROMPT
+            from openai4s.security.biosecurity import BIOSECURITY_PROMPT
 
-            extra.append(OIO_BIOSECURITY_PROMPT)
+            extra.append(BIOSECURITY_PROMPT)
         if extra:
             prompt = prompt + "\n\n" + "\n\n".join(extra)
         if self._skill_loader is not None:
@@ -182,7 +182,7 @@ class Agent:
 
         Returns None to proceed, or an Observation string to feed back to the
         model INSTEAD of executing (the `SAFE?` / biosecurity BLOCK branches of
-        the report's outer loop). Never raises — a failure here fails open.
+        the outer loop). Never raises — a failure here fails open.
         """
         sec = self.cfg.security
         # Layer 2: code-safety classifier (report e6w).

@@ -160,7 +160,7 @@ def _normalize_remote_capability_probe(spec: dict) -> tuple[dict, str]:
 #
 #  Every visible host.* tool call is projected into a rich, typed step (search /
 #  plan / env / skill / bash / edit / …) that the web UI renders as a
-#  claude-science-style activity card — instead of the raw Python that made the
+#  rich activity card — instead of the raw Python that made the
 #  call. This is what turns "the agent only writes code" into "the agent plans,
 #  searches, sets up an environment, loads a skill, runs a shell command, edits a
 #  report and saves artifacts". Non-visible/internal methods (llm, capabilities,
@@ -335,7 +335,7 @@ GATEABLE_TOOLS = frozenset(
         "skills_edit",
         "skills_delete",
         "skills_publish",
-        # The egress escape hatch (report §5.1): widening the outbound allowlist is a
+        # The egress escape hatch: widening the outbound allowlist is a
         # user decision, so it routes through the permission broker like any other
         # risk-bearing tool. The agent cannot widen the fence unilaterally.
         "request_network_access",
@@ -1045,7 +1045,7 @@ class HostDispatcher:
         command = spec.get("command") or ""
         if not command.strip():
             return {"error": "bash: empty command"}
-        # Best-effort outbound-domain fence (report §5.1). No-op unless
+        # Best-effort outbound-domain fence. No-op unless
         # OPENAI4S_EGRESS=allowlist. Static scan of explicit http(s) URLs
         # (curl/wget/pip install <url>/git clone https://…); a blocked domain is
         # refused BEFORE the shell runs, with the proxy-403 soft error. This is
@@ -1513,7 +1513,7 @@ class HostDispatcher:
         }
 
     def _m_request_network_access(self, spec: dict) -> dict:
-        """Widen the outbound domain allowlist (report §5.1 escape hatch).
+        """Widen the outbound domain allowlist (the egress escape hatch).
 
         By the time this handler runs, the permission gate in ``__call__`` has
         already obtained user approval (or degraded to allow on a headless run) —

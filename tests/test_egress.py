@@ -1,4 +1,4 @@
-"""Tests for the outbound domain allowlist / network egress fence (report §5.1).
+"""Tests for the outbound domain allowlist / network egress fence.
 
 Covers the pure enforcement engine (mode gating, suffix matching, runtime
 grants, the host.bash static scan), the SecurityConfig surface, and the

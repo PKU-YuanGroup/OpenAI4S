@@ -6,10 +6,10 @@ with the Code-as-Action model — the agent still acts only by writing Python th
 runs in a persistent kernel; these layers wrap that execution, they do not
 replace it with a tool schema.
 
-    classifier ....... pre-exec code-safety gate (report constant `e6w`): a
+    classifier ....... pre-exec code-safety gate: a
                        static fast-path allowlist + optional LLM classifier over
                        7 attack classes; UNSAFE code is refused, not run.
-    audit_hook ....... in-kernel CPython audit hook (report `_operon_audit`):
+    audit_hook ....... in-kernel CPython audit hook (the dlopen guard):
                        blocks `ctypes.dlopen` of a shared library from an
                        agent-writable path (the classic "write .so then dlopen
                        to escape the OS sandbox" vector).

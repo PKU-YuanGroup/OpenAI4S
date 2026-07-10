@@ -114,7 +114,7 @@ def _http_get(
     from openai4s import egress
 
     for _hop in range(_max_redirects + 1):
-        # Host-stamped outbound domain allowlist (report §5.1). No-op unless
+        # Host-stamped outbound domain allowlist. No-op unless
         # OPENAI4S_EGRESS=allowlist; applied per hop so a public URL that
         # 30x-redirects to a non-allowlisted domain is still fenced. Checked
         # BEFORE the SSRF guard so a blocked domain short-circuits with a

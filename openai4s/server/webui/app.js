@@ -4658,7 +4658,7 @@ async function init() {
     // sidebar can always be brought back even if the expand icon is missed.
     if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "B")) { e.preventDefault(); setSidebar(!document.body.classList.contains("sidebar-collapsed")); }
   });
-  // Composer "Notebook" tray opens the live notebook panel (claude-science parity)
+  // Composer "Notebook" tray opens the live notebook panel
   const nbTray = $(".nb-tray");
   if (nbTray) nbTray.onclick = () => { if (S.dock.open && S.activeTab === "notebook") dockClose(); else setActiveTab("notebook"); };
   $("#jump-pill").onclick = () => down(true);

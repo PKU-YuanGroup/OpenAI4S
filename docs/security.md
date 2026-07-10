@@ -2,7 +2,7 @@
 
 > ⚠️ Read this before exposing the daemon beyond `localhost`.
 
-The daemon runs agent-authored code with **no OS-level sandbox** (no Seatbelt / bubblewrap) — `kernel/execute`, `compute/jobs`, and `host.bash` are equivalent to a shell on the host. This is fine for a single-user local tool bound to `127.0.0.1` (the default). On top of that, [`openai4s.security`](../openai4s/security) adds software layers reverse-engineered from Claude Science — all **opt-out via env**, all **fail-open** when no base model is set:
+The daemon runs agent-authored code with **no OS-level sandbox** (no Seatbelt / bubblewrap) — `kernel/execute`, `compute/jobs`, and `host.bash` are equivalent to a shell on the host. This is fine for a single-user local tool bound to `127.0.0.1` (the default). On top of that, [`openai4s.security`](../openai4s/security) adds defense-in-depth software layers — all **opt-out via env**, all **fail-open** when no base model is set:
 
 | layer | env (default) | what it does |
 |---|---|---|

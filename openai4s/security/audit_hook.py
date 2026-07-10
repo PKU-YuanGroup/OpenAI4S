@@ -1,13 +1,14 @@
-"""In-kernel CPython audit hook — report constant `_operon_audit`.
+"""In-kernel CPython audit hook: the dlopen guard.
 
-The third defense layer, and the one the report calls the most interesting: a
-`sys.addaudithook` that intercepts `ctypes.dlopen` and refuses to load a shared
-library from an agent-writable path. This closes the "write a malicious `.so`
-into the workspace, then `dlopen` it to run native code and escape the OS
-sandbox" vector — a load that the OS-level and code-classifier layers can miss.
+The third defense layer: a `sys.addaudithook` that intercepts `ctypes.dlopen`
+and refuses to load a shared library from an agent-writable path. This closes
+the "write a malicious `.so` into the workspace, then `dlopen` it to run native
+code and escape the OS sandbox" vector — a load that the OS-level and
+code-classifier layers can miss.
 
 This runs INSIDE the kernel worker process (it must — an audit hook only sees
-events raised in its own interpreter). Faithful to the original:
+events raised in its own interpreter). Three properties make the guard hard to
+defeat from inside a cell:
 
   * literal-path AND realpath are both checked. `posixpath.realpath` looks up
     `os.lstat`/`readlink`/`getcwd` at CALL time, so a cell that monkeypatches
@@ -127,7 +128,7 @@ def install(*, enabled: bool = True) -> bool:
 
     # Dependencies captured as keyword defaults AT DEF TIME — call-time lookups
     # in the (user-controllable) namespace cannot redirect them.
-    def _operon_audit(
+    def _dlopen_guard(
         event,
         args,
         *,
@@ -198,8 +199,8 @@ def install(*, enabled: bool = True) -> bool:
                     "environment / site-packages, not the workspace."
                 )
 
-    sys.addaudithook(_operon_audit)
+    sys.addaudithook(_dlopen_guard)
     sys._openai4s_audit_armed = True  # type: ignore[attr-defined]
     # Drop every Python-level handle so nothing can unload / rebind the hook.
-    del _operon_audit, _posix, _posixpath
+    del _dlopen_guard, _posix, _posixpath
     return True

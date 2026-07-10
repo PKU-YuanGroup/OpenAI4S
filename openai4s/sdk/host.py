@@ -1427,7 +1427,7 @@ class _Host:
         )
 
     def request_network_access(self, domain: str, *, reason: str | None = None) -> dict:
-        """Ask the user to widen the outbound domain allowlist (report §5.1).
+        """Ask the user to widen the outbound domain allowlist.
 
         When OPENAI4S_EGRESS=allowlist, host.web_fetch / host.bash to a domain
         outside the science / package-index / data-repo allowlist return a proxy
