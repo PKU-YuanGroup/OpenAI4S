@@ -838,12 +838,14 @@ class Store:
             )
             self._conn.commit()
 
-    def list_steps(self, frame_id: str, *, limit: int = 800) -> list[dict]:
+    def list_steps(
+        self, frame_id: str, *, start: int = 0, limit: int = 800
+    ) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT step_id,seq,kind,title,summary,input,output,status,created_at "
-                "FROM frame_steps WHERE frame_id=? ORDER BY seq ASC LIMIT ?",
-                (frame_id, limit),
+                "FROM frame_steps WHERE frame_id=? ORDER BY seq ASC LIMIT ? OFFSET ?",
+                (frame_id, limit, max(0, start)),
             ).fetchall()
         out = []
         for r in rows:
@@ -856,6 +858,13 @@ class Store:
                         pass
             out.append(d)
         return out
+
+    def step_count(self, frame_id: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM frame_steps WHERE frame_id=?", (frame_id,)
+            ).fetchone()
+        return row["n"] or 0
 
     # --- frame browse / detail / search --------------------------
     def browse_frames(

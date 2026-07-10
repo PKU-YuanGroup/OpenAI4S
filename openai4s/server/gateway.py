@@ -28,10 +28,12 @@ import re
 import shutil
 import struct
 import sys
+import tempfile
 import threading
 import time
 import traceback
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -43,6 +45,7 @@ from openai4s.config import Config, get_config, is_placeholder_api_key
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel
 from openai4s.llm import ARK_PLAN_MODELS, PROVIDERS, chat
+from openai4s.review import review_evidence
 from openai4s.skills_loader import SkillLoader
 from openai4s.store import Store, get_store
 from openai4s.tools import MAX_TOOL_CALLS_PER_TURN as _MAX_TOOL_CALLS_PER_TURN
@@ -320,6 +323,17 @@ class WSHub:
             self._live[rid] = {"events": [obj], "running": True}
             self._evict_live()
             return
+        if (
+            t == "frame_update"
+            and obj.get("status") == "processing"
+            and (buf is None or not buf.get("running"))
+        ):
+            # A manual Reviewer (or another activity without a text stream)
+            # starts after the prior turn's buffer has ended. Give it a fresh
+            # resume window so reconnecting clients can replay its step events.
+            self._live[rid] = {"events": [obj], "running": True}
+            self._evict_live()
+            return
         if buf is None:
             # a turn already in flight before we saw its reset (or a stray
             # event) — start buffering from here so late joiners still resume
@@ -346,6 +360,7 @@ class WSHub:
                 "failed",
                 "cancelled",
                 "success",
+                "ready",
             ):
                 buf["running"] = False
 
@@ -928,6 +943,8 @@ class SessionRunner:
         self.skills = SkillLoader(cfg=cfg)
         self._sessions: dict[str, SessionState] = {}
         self._jobs: dict[str, MessageJob] = {}
+        self._review_ops: dict[str, threading.Event] = {}
+        self._review_calls: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._ws_root = cfg.data_dir / "agent-workspaces"
         self._ws_root.mkdir(parents=True, exist_ok=True)
@@ -1220,6 +1237,13 @@ class SessionRunner:
         disp = st.dispatcher
         if disp is None:
             return
+        delegation_enabled = str(
+            self.store.get_setting(f"delegation:{st.root_frame_id}", "1") or "1"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not delegation_enabled:
+            disp._delegate_fn = None
+            disp.steer_fns = {}
+            return
         try:
             import dataclasses as _dc
 
@@ -1377,7 +1401,11 @@ class SessionRunner:
         return sink
 
     def cancel(self, root_frame_id: str) -> None:
-        st = self._sessions.get(root_frame_id)
+        with self._lock:
+            pending_review = self._review_ops.get(root_frame_id)
+            if pending_review is not None:
+                pending_review.set()
+            st = self._sessions.get(root_frame_id)
         if st is None:
             return
         st.cancel.set()
@@ -1801,6 +1829,132 @@ class SessionRunner:
         t.start()
         return job
 
+    def submit_review(self, root_frame_id: str, project_id: str) -> MessageJob:
+        """Run an on-demand Reviewer without adding a user/assistant message."""
+        job = MessageJob(f"review-job-{uuid.uuid4().hex[:12]}", root_frame_id)
+        operation_cancel = threading.Event()
+        with self._lock:
+            provider_call = self._review_calls.get(root_frame_id)
+            if root_frame_id in self._review_ops or (
+                provider_call is not None and not provider_call.is_set()
+            ):
+                raise GatewayError(409, "a previous review call is still finishing")
+            done = [
+                jid
+                for jid, existing in self._jobs.items()
+                if existing.done.is_set()
+                and (time.time() - (existing.finished_at or 0)) > 300
+            ]
+            for jid in done:
+                self._jobs.pop(jid, None)
+            self._review_ops[root_frame_id] = operation_cancel
+            self._jobs[job.job_id] = job
+
+        def _target() -> None:
+            emit = self.hub.emitter(root_frame_id)
+            frame_status = "ready"
+            job_result: dict | None = None
+            job_error: str | None = None
+            try:
+                st = self._state(root_frame_id, project_id)
+                with st.turn_lock:
+                    # Capture after acquiring the turn lock. If the user requested
+                    # a review while a turn was still running, that turn gets to
+                    # publish its real terminal status before we temporarily show
+                    # the Reviewer as processing.
+                    current_frame = self.store.get_frame(root_frame_id) or {}
+                    frame_status = str(current_frame.get("status") or "ready")
+                    if frame_status not in {
+                        "ready",
+                        "done",
+                        "failed",
+                        "cancelled",
+                        "completed",
+                        "success",
+                    }:
+                        # Acquiring the turn lock proves there is no active turn.
+                        # Repair a stale processing/running status left by a prior
+                        # daemon crash before temporarily showing the Reviewer.
+                        frame_status = "ready"
+                        self.store.update_frame(root_frame_id, status=frame_status)
+                    st.cancel.clear()
+                    if operation_cancel.is_set():
+                        st.cancel.set()
+                    emit(
+                        {
+                            "type": "frame_update",
+                            "frame_id": root_frame_id,
+                            "status": "processing",
+                        }
+                    )
+                    message_count = self.store.message_count(root_frame_id)
+                    messages = self.store.list_messages(
+                        root_frame_id, start=max(0, message_count - 1000), limit=1000
+                    )
+                    last_user = max(
+                        (i for i, m in enumerate(messages) if m.get("role") == "user"),
+                        default=-1,
+                    )
+                    user_text = (
+                        str(messages[last_user].get("content") or "")
+                        if last_user >= 0
+                        else ""
+                    )
+                    assistant_text = "\n\n".join(
+                        str(m.get("content") or "")
+                        for m in messages[last_user + 1 :]
+                        if m.get("role") == "assistant"
+                    ).strip()
+                    result = self._run_reviewer(
+                        st,
+                        emit,
+                        user_text=user_text,
+                        assistant_text=assistant_text,
+                        artifact_versions_before={},
+                        cell_count_before=0,
+                        step_count_before=0,
+                        mode="manual",
+                    )
+                    job_status = "cancelled" if st.cancel.is_set() else "completed"
+                    job_result = {
+                        "status": job_status,
+                        "frame_id": root_frame_id,
+                        "review": result,
+                    }
+            except Exception as exc:  # noqa: BLE001
+                job_error = str(exc)
+            finally:
+                try:
+                    emit(
+                        {
+                            "type": "frame_update",
+                            "frame_id": root_frame_id,
+                            "status": frame_status,
+                        }
+                    )
+                except Exception:
+                    pass
+                with self._lock:
+                    if self._review_ops.get(root_frame_id) is operation_cancel:
+                        self._review_ops.pop(root_frame_id, None)
+                job.finish(result=job_result, error=job_error)
+
+        thread = threading.Thread(
+            target=_target,
+            name=f"openai4s-review-{root_frame_id}",
+            daemon=True,
+        )
+        job.thread = thread
+        try:
+            thread.start()
+        except Exception:
+            with self._lock:
+                if self._review_ops.get(root_frame_id) is operation_cancel:
+                    self._review_ops.pop(root_frame_id, None)
+                self._jobs.pop(job.job_id, None)
+            raise
+        return job
+
     # -- capture figures + written files after a cell -> artifacts ---------
     def _snapshot(self, ws: Path) -> dict[str, int]:
         # Cloned repos / installed tool trees (a `git clone ProteinMPNN` dumping
@@ -2050,6 +2204,347 @@ class SessionRunner:
             )
         return f"**这一轮出错了。** {msg[:300]}"
 
+    def _auto_review_enabled(self, root_frame_id: str) -> bool:
+        value = self.store.get_setting(f"review:auto:{root_frame_id}")
+        if value is None:
+            value = self.store.get_setting("auto_review_enabled", "0")
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _review_llm_cfg(self, st: SessionState):
+        import dataclasses
+
+        cfg = self._llm_cfg(st)
+        local_model = self.store.get_setting(f"review:model:{st.root_frame_id}")
+        if local_model == "__agent__":
+            model = None
+        else:
+            model = local_model
+        if local_model is None and not model:
+            model = self.store.get_setting("reviewer_model")
+        overrides: dict = {"timeout_s": min(float(cfg.timeout_s), 45.0)}
+        model = (model or "").strip()
+        if model:
+            profile = next(
+                (
+                    p
+                    for p in self.store.list_model_profiles()
+                    if str(p.get("model") or "").strip() == model
+                ),
+                None,
+            )
+            provider = str((profile or {}).get("provider") or "").strip()
+            if not provider:
+                provider = next(
+                    (
+                        name
+                        for name, spec in PROVIDERS.items()
+                        if str(spec.get("model") or "").strip() == model
+                    ),
+                    "",
+                )
+            overrides["model"] = model
+            if provider and provider != cfg.provider:
+                overrides["provider"] = provider
+                overrides["base_url"] = str(
+                    (profile or {}).get("base_url") or ""
+                ).strip()
+                overrides["api_key"] = _clean_api_key((profile or {}).get("api_key"))
+            elif profile and profile.get("base_url"):
+                overrides["base_url"] = str(profile["base_url"]).strip()
+            if profile and _clean_api_key(profile.get("api_key")):
+                overrides["api_key"] = _clean_api_key(profile.get("api_key"))
+        try:
+            return dataclasses.replace(cfg, **overrides)
+        except Exception:  # noqa: BLE001
+            return cfg
+
+    @staticmethod
+    def _review_artifact_excerpt(artifact: dict) -> str | None:
+        path = artifact.get("path")
+        if not path or not Path(path).is_file():
+            return None
+        filename = str(artifact.get("filename") or path).lower()
+        content_type = str(artifact.get("content_type") or "").lower()
+        readable = (
+            content_type.startswith("text/")
+            or content_type
+            in {
+                "application/json",
+                "application/xml",
+                "application/javascript",
+            }
+            or filename.endswith((".md", ".txt", ".csv", ".tsv", ".json", ".py", ".r"))
+        )
+        if not readable:
+            return None
+        try:
+            data = Path(path).read_bytes()[:8_000]
+        except OSError:
+            return None
+        return data.decode("utf-8", errors="replace")
+
+    def _run_reviewer(
+        self,
+        st: SessionState,
+        emit,
+        *,
+        user_text: str,
+        assistant_text: str,
+        artifact_versions_before: dict[str, str | None],
+        cell_count_before: int,
+        step_count_before: int = 0,
+        mode: str = "auto",
+    ) -> dict | None:
+        """Persist and stream one constrained Reviewer step; never fail the turn."""
+        rid = st.root_frame_id
+        step_id = f"review-{uuid.uuid4().hex[:12]}"
+        cfg = self._review_llm_cfg(st)
+        self.store.add_step(
+            step_id=step_id,
+            frame_id=rid,
+            kind="review",
+            title="Reviewer",
+            input={"mode": mode, "model": cfg.model or None},
+            status="running",
+        )
+        emit(
+            {
+                "type": "step",
+                "frame_id": rid,
+                "step_id": step_id,
+                "kind": "review",
+                "title": "Reviewer",
+                "input": {"mode": mode, "model": cfg.model or None},
+                "status": "running",
+            }
+        )
+        try:
+            artifacts = self.store.list_artifacts({"root_frame_id": rid})
+            changed = []
+            changed_total = 0
+            for artifact in artifacts:
+                aid = artifact.get("artifact_id") or artifact.get("id")
+                if not aid:
+                    continue
+                latest = artifact.get("latest_version_id")
+                if (
+                    aid in artifact_versions_before
+                    and artifact_versions_before[aid] == latest
+                ):
+                    continue
+                changed_total += 1
+                if len(changed) >= 64:
+                    continue
+                resolved_path = artifact.get(
+                    "path"
+                ) or self.store.resolve_artifact_path(aid)
+                artifact_with_path = {**artifact, "path": resolved_path}
+                item = {
+                    "artifact_id": aid,
+                    "filename": artifact.get("filename"),
+                    "content_type": artifact.get("content_type"),
+                    "size_bytes": artifact.get("size_bytes"),
+                    "latest_version_id": latest,
+                    "exists": bool(resolved_path and Path(resolved_path).is_file()),
+                }
+                excerpt = (
+                    self._review_artifact_excerpt(artifact_with_path)
+                    if len(changed) < 12
+                    else None
+                )
+                if excerpt:
+                    item["excerpt"] = excerpt
+                changed.append(item)
+            cells = self.store.list_cells(rid)[cell_count_before:]
+            execution = []
+            for cell in cells[-24:]:
+                execution.append(
+                    {
+                        "cell_index": cell.get("cell_index"),
+                        "source": str(cell.get("code") or "")[:5_000],
+                        "stdout": str(cell.get("stdout") or "")[:4_000],
+                        "stderr": str(cell.get("stderr") or "")[:2_000],
+                        "error": str(cell.get("error") or "")[:2_000],
+                        "status": cell.get("status"),
+                        "files_written": cell.get("files_written") or [],
+                        "files_read": cell.get("files_read") or [],
+                    }
+                )
+            tool_evidence = []
+            tool_start = max(step_count_before, self.store.step_count(rid) - 200)
+            for step in self.store.list_steps(rid, start=tool_start, limit=200)[-32:]:
+                if step.get("kind") == "review":
+                    continue
+                tool_evidence.append(
+                    {
+                        "kind": step.get("kind"),
+                        "title": step.get("title"),
+                        "status": step.get("status"),
+                        "summary": step.get("summary"),
+                        "input": step.get("input"),
+                        "output": step.get("output"),
+                    }
+                )
+            evidence = {
+                "user_request": user_text[:16_000],
+                "final_answer": assistant_text[:24_000],
+                "submitted_output": getattr(
+                    getattr(st, "dispatcher", None), "last_output", None
+                ),
+                "execution": execution,
+                "tool_evidence": tool_evidence,
+                "changed_artifacts": changed,
+                "changed_artifact_count": changed_total,
+                "omitted_artifact_count": max(0, changed_total - len(changed)),
+            }
+            if st.cancel.is_set():
+                output = {
+                    "verdict": "cancelled",
+                    "provider_call": "not_started",
+                }
+                self.store.update_step(
+                    step_id,
+                    status="cancelled",
+                    output=output,
+                    summary="Review cancelled",
+                )
+                emit(
+                    {
+                        "type": "step_update",
+                        "frame_id": rid,
+                        "step_id": step_id,
+                        "status": "cancelled",
+                        "output": output,
+                        "summary": "Review cancelled",
+                    }
+                )
+                return None
+            review_done = threading.Event()
+            review_cancelled = threading.Event()
+            review_box: dict = {}
+            with self._lock:
+                previous = self._review_calls.get(rid)
+                if previous is not None and not previous.is_set():
+                    raise RuntimeError("a previous review call is still finishing")
+                self._review_calls[rid] = review_done
+
+            def invoke_review() -> None:
+                try:
+                    review_box["result"] = review_evidence(evidence, cfg)
+                except Exception as review_exc:  # noqa: BLE001
+                    review_box["error"] = review_exc
+                finally:
+                    review_done.set()
+                    with self._lock:
+                        if self._review_calls.get(rid) is review_done:
+                            self._review_calls.pop(rid, None)
+                    if review_cancelled.is_set():
+                        finished_output = {
+                            "verdict": "cancelled",
+                            "provider_call": "finished",
+                        }
+                        try:
+                            self.store.update_step(
+                                step_id,
+                                status="cancelled",
+                                output=finished_output,
+                                summary="Review cancelled",
+                            )
+                            emit(
+                                {
+                                    "type": "step_update",
+                                    "frame_id": rid,
+                                    "step_id": step_id,
+                                    "status": "cancelled",
+                                    "output": finished_output,
+                                    "summary": "Review cancelled",
+                                }
+                            )
+                        except Exception:  # noqa: BLE001 — cleanup is best-effort
+                            pass
+
+            threading.Thread(
+                target=invoke_review,
+                name=f"openai4s-review-call-{rid}",
+                daemon=True,
+            ).start()
+            while not review_done.wait(0.2):
+                if st.cancel.is_set():
+                    review_cancelled.set()
+                    output = {
+                        "verdict": "cancelled",
+                        "provider_call": "finishing",
+                    }
+                    self.store.update_step(
+                        step_id,
+                        status="cancelled",
+                        output=output,
+                        summary="Review cancelled · provider request finishing",
+                    )
+                    emit(
+                        {
+                            "type": "step_update",
+                            "frame_id": rid,
+                            "step_id": step_id,
+                            "status": "cancelled",
+                            "output": output,
+                            "summary": "Review cancelled · provider request finishing",
+                        }
+                    )
+                    return None
+            if review_box.get("error") is not None:
+                raise review_box["error"]
+            result = review_box["result"]
+            result["reviewed_artifacts"] = [a["artifact_id"] for a in changed]
+            usage = result.get("usage") or {}
+            self.store.add_frame_tokens(
+                rid,
+                input_tokens=usage.get("input_tokens", 0) or 0,
+                output_tokens=usage.get("output_tokens", 0) or 0,
+            )
+            summary = result.get("summary") or "No issues found"
+            self.store.update_step(
+                step_id, status="done", output=result, summary=summary
+            )
+            emit(
+                {
+                    "type": "step_update",
+                    "frame_id": rid,
+                    "step_id": step_id,
+                    "status": "done",
+                    "output": result,
+                    "summary": summary,
+                }
+            )
+            return result
+        except Exception as exc:  # noqa: BLE001 — review must not fail main work
+            output = {"error": str(exc)[:500], "verdict": "unavailable"}
+            self.store.update_step(
+                step_id,
+                status="error",
+                output=output,
+                summary="Review unavailable",
+            )
+            emit(
+                {
+                    "type": "step_update",
+                    "frame_id": rid,
+                    "step_id": step_id,
+                    "status": "error",
+                    "output": output,
+                    "summary": "Review unavailable",
+                }
+            )
+            return None
+
+    def review_call_inflight(self, root_frame_id: str) -> bool:
+        """Whether an uncancellable provider request is still winding down."""
+        with self._lock:
+            if root_frame_id in self._review_ops:
+                return True
+            call = self._review_calls.get(root_frame_id)
+            return bool(call is not None and not call.is_set())
+
     @staticmethod
     def _summarize_title(user_text: str, llm_cfg) -> str | None:
         """A short, descriptive session title distilled from the first message.
@@ -2249,10 +2744,19 @@ class SessionRunner:
                 else resolved
             )
             st.messages.append({"role": "user", "content": content})
+            auto_review = self._auto_review_enabled(root_frame_id)
+            artifact_versions_before = {
+                (a.get("artifact_id") or a.get("id")): a.get("latest_version_id")
+                for a in self.store.list_artifacts({"root_frame_id": root_frame_id})
+                if (a.get("artifact_id") or a.get("id"))
+            }
+            cell_count_before = self.store.cell_count(root_frame_id)
+            step_count_before = self.store.step_count(root_frame_id)
             emit({"type": "text_reset", "frame_id": root_frame_id})
             assistant_visible: list[dict] = []
             status = "completed"
             err_text: str | None = None
+            loop_reason: str | None = None
             try:
                 st.dispatcher.last_output = None
                 loop_reason = self._loop(st, emit, assistant_visible)
@@ -2322,6 +2826,26 @@ class SessionRunner:
                     content=tail,
                     frame_id=root_frame_id,
                 )
+            if (
+                auto_review
+                and status == "completed"
+                and loop_reason == "submitted"
+                and not st.plan
+            ):
+                assistant_text = "\n\n".join(
+                    str(blk.get("text") or "") for blk in assistant_visible
+                ).strip()
+                self._run_reviewer(
+                    st,
+                    emit,
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    artifact_versions_before=artifact_versions_before,
+                    cell_count_before=cell_count_before,
+                    step_count_before=step_count_before,
+                )
+                if st.cancel.is_set():
+                    status = "cancelled"
             self.store.update_frame(
                 root_frame_id, status=("done" if status == "completed" else status)
             )
@@ -3368,6 +3892,18 @@ _BUILTIN_AGENTS = [
         "description": "Planning agent (Plan mode). Investigates and proposes a "
         "step-by-step plan without executing changes.",
     },
+    {
+        "name": "REVIEWER",
+        "mode": "subagent",
+        "healthy": True,
+        "source": "bundled",
+        "supportsPlanMode": False,
+        "unrestricted": False,
+        "description": "Evidence-grounded reviewer. Checks a completed answer, "
+        "execution trace, and produced artifacts for unsupported claims, missing "
+        "deliverables, provenance gaps, and reproducibility risks without writing "
+        "files or calling tools.",
+    },
 ]
 
 # Connectors directory: ready-to-add MCP servers. The bundled "example" always
@@ -3920,6 +4456,30 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             self._send(200, body, ctype)
 
+        def _stream_file(
+            self, path: Path, ctype: str, extra: dict | None = None
+        ) -> None:
+            """Send a potentially large local file without loading it into RAM."""
+            try:
+                source = path.open("rb")
+                size = path.stat().st_size
+            except OSError:
+                self._json({"error": "not found"}, 404)
+                return
+            with source:
+                self.send_response(200)
+                self.send_header("Content-Type", _sanitize_header_value(ctype))
+                self.send_header("Content-Length", str(size))
+                self.send_header("Cache-Control", "no-cache")
+                for key, value in (extra or {}).items():
+                    self.send_header(key, _sanitize_header_value(value))
+                self.end_headers()
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+
         # ---- artifact bytes --------------------------------------------
         def _serve_artifact(self, ident: str, force_html: bool = False) -> None:
             path = store.resolve_artifact_path(ident)
@@ -3939,6 +4499,56 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if force_html:
                 ctype = "text/html; charset=utf-8"
             self._serve_file(Path(path), ctype)
+
+        def _serve_artifact_bundle(self, artifacts: list[dict], filename: str) -> None:
+            """Download a frame/project's current artifact versions as one zip."""
+            tmp = tempfile.NamedTemporaryFile(
+                prefix="openai4s-artifacts-", suffix=".zip", delete=False
+            )
+            tmp_path = Path(tmp.name)
+            tmp.close()
+            used: set[str] = set()
+            try:
+                with zipfile.ZipFile(
+                    tmp_path, "w", compression=zipfile.ZIP_DEFLATED
+                ) as zf:
+                    for artifact in artifacts:
+                        path = artifact.get("path") or store.resolve_artifact_path(
+                            artifact.get("artifact_id") or artifact.get("id") or ""
+                        )
+                        if not path or not Path(path).is_file():
+                            continue
+                        raw_name = str(
+                            artifact.get("filename") or Path(path).name
+                        ).replace("\\", "/")
+                        parts = [
+                            p for p in raw_name.split("/") if p not in ("", ".", "..")
+                        ]
+                        arcname = "/".join(parts) or Path(path).name
+                        if arcname in used:
+                            stem, suffix = os.path.splitext(arcname)
+                            n = 2
+                            while f"{stem}-{n}{suffix}" in used:
+                                n += 1
+                            arcname = f"{stem}-{n}{suffix}"
+                        used.add(arcname)
+                        try:
+                            zf.write(path, arcname)
+                        except OSError:
+                            continue
+                safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-")
+                if not safe_name.lower().endswith(".zip"):
+                    safe_name += ".zip"
+                self._stream_file(
+                    tmp_path,
+                    "application/zip",
+                    {"Content-Disposition": f'attachment; filename="{safe_name}"'},
+                )
+            finally:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
         # ---- REST API ---------------------------------------------------
         def _api(self, method: str, sub: str) -> None:
@@ -4354,9 +4964,69 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     }
                 )
                 return
+            m = re.fullmatch(r"/frames/([^/]+)/review-settings", sub)
+            if m and method in ("GET", "PUT", "PATCH"):
+                fid = m.group(1)
+                if not store.get_frame(fid):
+                    self._json({"error": "frame not found"}, 404)
+                    return
+                if method in ("PUT", "PATCH"):
+                    b = self._body()
+                    if "auto_review" in b:
+                        store.set_setting(
+                            f"review:auto:{fid}", "1" if b.get("auto_review") else "0"
+                        )
+                    if "reviewer_model" in b:
+                        reviewer_model = str(b.get("reviewer_model") or "").strip()
+                        store.set_setting(
+                            f"review:model:{fid}",
+                            reviewer_model or "__agent__",
+                        )
+                    if "delegation_enabled" in b:
+                        store.set_setting(
+                            f"delegation:{fid}",
+                            "1" if b.get("delegation_enabled") else "0",
+                        )
+                local_auto = store.get_setting(f"review:auto:{fid}")
+                local_model = store.get_setting(f"review:model:{fid}")
+                effective_model = (
+                    ""
+                    if local_model == "__agent__"
+                    else local_model or store.get_setting("reviewer_model") or ""
+                )
+                self._json(
+                    {
+                        "auto_review": runner._auto_review_enabled(fid),  # noqa: SLF001
+                        "reviewer_model": effective_model,
+                        "delegation_enabled": str(
+                            store.get_setting(f"delegation:{fid}", "1") or "1"
+                        ).lower()
+                        in {"1", "true", "yes", "on"},
+                        "inherits_auto_review": local_auto is None,
+                    }
+                )
+                return
             m = re.fullmatch(r"/frames/([^/]+)/steps", sub)
             if m and method == "GET":
                 self._json({"steps": store.list_steps(m.group(1))})
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/review", sub)
+            if m and method == "POST":
+                fid = m.group(1)
+                frame = store.get_frame(fid)
+                if not frame:
+                    self._json({"error": "frame not found"}, 404)
+                    return
+                if runner.review_call_inflight(fid):
+                    self._json(
+                        {"error": "a previous review call is still finishing"}, 409
+                    )
+                    return
+                job = runner.submit_review(fid, frame.get("project_id") or "default")
+                self._json(
+                    {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
+                    202,
+                )
                 return
             m = re.fullmatch(r"/frames/([^/]+)/message", sub)
             if m and method == "POST":
@@ -4554,6 +5224,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "DELETE":
                 store.delete_annotation(m.group(1))
                 self._json({"ok": True})
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/artifacts\.zip", sub)
+            if m and method == "GET":
+                fid = m.group(1)
+                self._serve_artifact_bundle(
+                    store.list_artifacts({"root_frame_id": fid}),
+                    f"session-{fid}-artifacts.zip",
+                )
+                return
+            m = re.fullmatch(r"/projects/([^/]+)/artifacts\.zip", sub)
+            if m and method == "GET":
+                pid = m.group(1)
+                self._serve_artifact_bundle(
+                    store.list_artifacts({"project_id": pid}),
+                    f"project-{pid}-artifacts.zip",
+                )
                 return
             m = re.fullmatch(r"/frames/([^/]+)/artifacts", sub)
             if m and method == "GET":

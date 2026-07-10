@@ -380,6 +380,9 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .form label{font-size:12px;color:var(--text-400);margin-top:6px}
 .form input,.form textarea{border:.5px solid var(--border-card);border-radius:9px;padding:9px;font:inherit;background:var(--panel);color:var(--ink)}
 .form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.form-actions-spacer{flex:1}
+.outline-btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,var(--border-btn))}
+.outline-btn.danger:hover{background:color-mix(in srgb,var(--danger) 8%,transparent)}
 
 /* ============ RIGHT DOCK ============ */
 .rightdock{width:var(--dock-w,680px);border-left:.5px solid var(--border);background:var(--bg);display:flex;flex-direction:column;height:100vh;min-width:0;position:relative}
@@ -422,6 +425,12 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .nbc-status.error,.nbc-status.timeout,.nbc-status.blocked,.nbc-status.interrupted{background:var(--danger-bg);color:var(--danger)}
 .nbc-status.running{background:hsl(14.8 63.1% 59.6%/.16);color:var(--clay-em)}
 .notebook-cell pre{margin:0;padding:12px;white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:13px;max-height:320px;overflow:auto}
+.nbc-disclosure{margin-top:6px;border-top:.5px solid var(--border)}
+.nbc-disclosure>summary{list-style:none;cursor:pointer;padding:7px 2px;color:var(--text-400);font-family:var(--mono);font-size:11px;user-select:none}
+.nbc-disclosure>summary::-webkit-details-marker{display:none}
+.nbc-disclosure>summary::before{content:"▸";display:inline-block;margin-right:4px;color:var(--text-200)}
+.nbc-disclosure[open]>summary::before{content:"▾"}
+.nbc-disclosure .nbc-out,.nbc-disclosure .nbc-err{margin-top:0}
 .nbc-out{background:var(--bg-000);border:.5px solid var(--border);border-radius:8px;color:var(--text-000);margin-top:6px}
 .nbc-err{background:#fbf1ee;border:.5px solid var(--border);border-radius:8px;color:var(--danger);margin-top:6px}
 .nbc-error{background:var(--danger-bg);border:.5px solid var(--danger);border-radius:8px;margin-top:6px;overflow:hidden}
@@ -529,7 +538,7 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .prov-msg-b{font-size:13px;line-height:1.5}
 
 /* context menu */
-.ctx-menu{position:fixed;z-index:80;background:var(--bg-000);border:.5px solid var(--border-btn);border-radius:var(--radius-card);box-shadow:var(--shadow-pop);padding:6px;min-width:180px}
+.ctx-menu{position:fixed;z-index:80;background:var(--bg-000);border:.5px solid var(--border-btn);border-radius:var(--radius-card);box-shadow:var(--shadow-pop);padding:6px;min-width:180px;max-height:calc(100vh - 16px);overflow-y:auto}
 .ctx-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:transparent;border:0;border-radius:8px;padding:6px 8px;font-size:14px;color:var(--text-000)}
 .ctx-item .ic{color:var(--text-200);display:inline-flex}
 .ctx-item:hover{background:var(--bg-200)}
@@ -978,6 +987,17 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .step-code{--k:var(--k-code)} .step-write{--k:var(--k-write)} .step-read{--k:var(--k-read)}
 .step-edit{--k:var(--k-edit)} .step-files{--k:var(--k-files)} .step-artifact{--k:var(--k-artifact)}
 .step-delegate{--k:var(--k-delegate)} .step-mcp{--k:var(--k-mcp)}
+.step-review{--k:var(--clay)}
+.step-review.review-pass{background:var(--bg-100)}
+.step-review.review-pass .s-chev{visibility:hidden}
+.step-review.review-issues{border-left-color:#b7791f}
+.review-issue{padding:9px 10px;border-radius:9px;background:var(--bg-200);display:flex;flex-direction:column;gap:5px}
+.review-issue-head{display:flex;align-items:center;gap:7px;color:var(--text-200)}
+.review-severity{font-size:10px;line-height:1;text-transform:uppercase;padding:3px 5px;border-radius:999px;background:#f4dfb8;color:#7a4d00}
+.review-issue.high .review-severity{background:var(--danger-bg);color:var(--danger)}
+.review-issue.low .review-severity{background:var(--success-bg);color:var(--success-text)}
+.review-detail{color:var(--text-200);line-height:1.45}
+.review-evidence{color:var(--text-400);font-size:12px;line-height:1.45}
 /* status still wins over the kind colour: running = muted, error = red rail+icon */
 .step.running .s-ic{color:var(--text-400)}
 .step.running{border-left-color:color-mix(in srgb,var(--text-400) 40%,var(--line))}

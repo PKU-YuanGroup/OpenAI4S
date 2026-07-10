@@ -8,6 +8,7 @@ const ICONS = {
   "plus": '<path d="M5 12h14"/><path d="M12 5v14"/>',
   "chevron-down": '<path d="m6 9 6 6 6-6"/>',
   "chevron-up": '<path d="m18 15-6-6-6 6"/>',
+  "chevron-right": '<path d="m9 18 6-6-6-6"/>',
   "arrow-left": '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
   "arrow-down": '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
   "x": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
@@ -32,6 +33,8 @@ const ICONS = {
   "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
   "mic": '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
   "notebook": '<path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M16 2v20"/>',
+  "folder": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+  "compass": '<circle cx="12" cy="12" r="10"/><path d="m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3Z"/>',
   "file": '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
   "file-text": '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
   "table": '<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>',
@@ -74,7 +77,7 @@ const api = async (p, o = {}) => {
   if (typeof p !== "string" || p[0] !== "/" || p[1] === "/") throw new Error("invalid api path");
   const r = await fetch("/api" + p, { headers: { "content-type": "application/json" }, ...o });
   const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch { j = t; }
-  if (!r.ok) throw new Error((j && j.detail) || ("HTTP " + r.status)); return j;
+  if (!r.ok) throw new Error((j && (j.error || j.detail)) || ("HTTP " + r.status)); return j;
 };
 const S = { projects: [], sessions: [], project: null, currentId: null, ws: null, stream: null, running: false, models: [], defaultModel: null, sandboxOrigin: "", planMode: false, exploreMode: false, planPending: false, planReady: null, planStatus: null, artifacts: [], dock: { open: false, tab: "notebook" }, openTabs: [], activeTab: "notebook", provMode: false, provSub: "code", cells: [], kernels: [], liveCells: [], _liveCell: null, dockArtifact: null, kernelFilter: null, _titleName: "", skillsCatalog: null, _menu: null, annotations: [], _annotDraft: null, filesScope: "frame", projectArtifacts: [], _projArtFor: null };
 const ac = { open: false, items: [], idx: 0, trigger: "", start: 0 };
@@ -174,6 +177,20 @@ Object.assign(I18N.zh, {
   "common.settings": "设置",
   "common.view": "查看",
   "composer.attach": "上传文件",
+  "composer.addToMessage": "添加到消息",
+  "composer.sessionOptions": "会话选项",
+  "composer.menu.attachFiles": "附加文件",
+  "composer.menu.contextUsage": "上下文用量",
+  "composer.menu.requestReview": "请求审核",
+  "composer.menu.saveAsSkill": "另存为技能",
+  "composer.menu.yourFiles": "你的文件",
+  "composer.option.autoReview": "自动审核",
+  "composer.option.compute": "计算环境",
+  "composer.option.delegation": "委派",
+  "composer.option.memory": "记忆",
+  "composer.option.reviewerModel": "Reviewer 模型",
+  "composer.option.sameModel": "跟随主模型",
+  "composer.option.specialist": "专家",
   "composer.model": "模型",
   "composer.placeholder": "输入任何内容 — @ 引用制品，# 引用会话，/ 使用技能，⌘K 搜索…",
   "composer.planMode": "计划模式",
@@ -431,6 +448,7 @@ Object.assign(I18N.zh, {
   "nb.badge.live": "Live",
   "nb.cell.statusOk": "ok",
   "nb.cell.statusRunning": "running",
+  "nb.kernel.shared": "与 Agent 共享",
   "nb.chips.all": "全部",
   "nb.empty": "运行任务后，这里会显示 Notebook 代码单元与输出。",
   "nb.env.placeholder": "环境…",
@@ -472,6 +490,7 @@ Object.assign(I18N.zh, {
   "palette.action.backHome": "返回主页",
   "palette.action.customize": "自定义",
   "palette.action.newProject": "新建项目",
+  "palette.action.search": "搜索",
   "palette.action.newSession": "新建会话",
   "palette.action.openNotebook": "打开 Notebook",
   "palette.empty": "没有匹配项",
@@ -524,7 +543,11 @@ Object.assign(I18N.zh, {
   "proj.delete.confirm": "确定删除该项目？此操作不可撤销。",
   "proj.fallbackName": "项目",
   "proj.menu.allProjects": "所有项目",
+  "proj.menu.downloadArtifacts": "下载产物",
+  "proj.menu.settings": "项目设置",
+  "proj.menu.newProject": "新建项目",
   "projModal.create": "创建",
+  "projModal.editTitle": "项目设置",
   "projModal.ctx.label": "智能体上下文",
   "projModal.ctx.placeholder": "包含在此项目每个智能体的提示词中",
   "projModal.desc.placeholder": "显示在项目列表中",
@@ -576,7 +599,10 @@ Object.assign(I18N.zh, {
   "session.newFolder": "＋ 文件夹",
   "session.untitled": "未命名会话",
   "sessionMenu.duplicate": "复制会话",
+  "sessionMenu.cancel": "取消任务",
+  "sessionMenu.downloadArtifacts": "下载产物",
   "sessionMenu.exportMarkdown": "导出为 Markdown",
+  "sessionMenu.viewNotebook": "查看 Notebook",
   "sessionMenu.moveToFolder": "移动到文件夹",
   "skill.bodyPlaceholder": "SKILL.md 正文（Markdown 配方：步骤、代码、注意事项…）",
   "skill.descPlaceholder": "一句话描述（用于技能检索）",
@@ -749,6 +775,20 @@ Object.assign(I18N.en, {
   "common.settings": "Settings",
   "common.view": "View",
   "composer.attach": "Upload file",
+  "composer.addToMessage": "Add to message",
+  "composer.sessionOptions": "Session options",
+  "composer.menu.attachFiles": "Attach files",
+  "composer.menu.contextUsage": "Context usage",
+  "composer.menu.requestReview": "Request review",
+  "composer.menu.saveAsSkill": "Save as skill",
+  "composer.menu.yourFiles": "Your files",
+  "composer.option.autoReview": "Auto-review",
+  "composer.option.compute": "Compute",
+  "composer.option.delegation": "Delegation",
+  "composer.option.memory": "Memory",
+  "composer.option.reviewerModel": "Reviewer model",
+  "composer.option.sameModel": "Same as agent",
+  "composer.option.specialist": "Specialist",
   "composer.model": "Model",
   "composer.placeholder": "Ask anything — @ for artifacts, # for sessions, / for skills, ⌘K to search…",
   "composer.planMode": "Plan mode",
@@ -1006,6 +1046,7 @@ Object.assign(I18N.en, {
   "nb.badge.live": "Live",
   "nb.cell.statusOk": "ok",
   "nb.cell.statusRunning": "running",
+  "nb.kernel.shared": "shared with the agent",
   "nb.chips.all": "All",
   "nb.empty": "After running a task, Notebook code cells and outputs will appear here.",
   "nb.env.placeholder": "Environment…",
@@ -1047,6 +1088,7 @@ Object.assign(I18N.en, {
   "palette.action.backHome": "Back to home",
   "palette.action.customize": "Customize",
   "palette.action.newProject": "New project",
+  "palette.action.search": "Search",
   "palette.action.newSession": "New session",
   "palette.action.openNotebook": "Open Notebook",
   "palette.empty": "No matches",
@@ -1099,7 +1141,11 @@ Object.assign(I18N.en, {
   "proj.delete.confirm": "Delete this project? This action cannot be undone.",
   "proj.fallbackName": "Project",
   "proj.menu.allProjects": "All projects",
+  "proj.menu.downloadArtifacts": "Download artifacts",
+  "proj.menu.settings": "Project settings",
+  "proj.menu.newProject": "New project",
   "projModal.create": "Create",
+  "projModal.editTitle": "Project settings",
   "projModal.ctx.label": "Agent Context",
   "projModal.ctx.placeholder": "Included in every agent's prompt for this project",
   "projModal.desc.placeholder": "Shown in the project list",
@@ -1151,7 +1197,10 @@ Object.assign(I18N.en, {
   "session.newFolder": "＋ Folder",
   "session.untitled": "Untitled session",
   "sessionMenu.duplicate": "Duplicate session",
+  "sessionMenu.cancel": "Cancel",
+  "sessionMenu.downloadArtifacts": "Download artifacts",
   "sessionMenu.exportMarkdown": "Export as Markdown",
+  "sessionMenu.viewNotebook": "View notebook",
   "sessionMenu.moveToFolder": "Move to folder",
   "skill.bodyPlaceholder": "SKILL.md body (Markdown recipe: steps, code, caveats…)",
   "skill.descPlaceholder": "One-line description (used for skill retrieval)",
@@ -1365,6 +1414,7 @@ function connectWS() {
   clearInterval(connectWS._p); connectWS._p = setInterval(() => { try { ws.readyState === 1 && ws.send('{"type":"ping"}'); } catch {} }, 25000);
 }
 const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f })); } catch {} };
+const unsub = (f) => { try { S.ws && S.ws.readyState === 1 && f && S.ws.send(JSON.stringify({ type: "unview_session", root_frame_id: f })); } catch {} };
 const conn = (on) => { const d = $("#conn-dot"); if (d) d.className = "dot " + (on ? "on" : "off"); };
 function onEvent(m) {
   const fid = m.root_frame_id || m.frame_id;
@@ -1381,7 +1431,7 @@ function onEvent(m) {
   else if (m.type === "frame_update") {
     if (mine(m.frame_id) || mine(fid)) {
       if (m.status === "processing" && !S.running) { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); resumeWatch(fid, S._openGen); }  // a turn observed on the WS (e.g. started from another tab) — watchdog covers a missed terminal event
-      if (["completed","failed","cancelled","success","done"].includes(m.status)) turnDone(m.status);
+      if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) turnDone(m.status);
     }
     loadSessions();
   }
@@ -1628,7 +1678,7 @@ async function revisePlan(changes) {
 }
 
 /* ---------- semantic activity steps (plan / search / env / skill / …) ---------- */
-const STEP_ICON = { search: "search", fetch: "globe", plan: "list-check", env: "package", skill: "book", bash: "terminal", edit: "pencil", write: "file-text", read: "file-text", files: "files", artifact: "download", delegate: "users", mcp: "link", fold: "box", code: "terminal" };
+const STEP_ICON = { search: "search", fetch: "globe", plan: "list-check", env: "package", skill: "book", bash: "terminal", edit: "pencil", write: "file-text", read: "file-text", files: "files", artifact: "download", delegate: "users", review: "eye-context", mcp: "link", fold: "box", code: "terminal" };
 function stepIcon(kind) { return STEP_ICON[kind] || "check"; }
 function openArt(meta) {
   if (!meta || !meta.artifact_id) return;
@@ -1739,6 +1789,18 @@ function stepBody(step) {
   const k = step.kind, inp = step.input || {}, out = step.output || {};
   const box = el("div", "s-inner");
   if (out.error) { box.appendChild(clipPre(out.error, "d-del")); return box; }
+  if (k === "review") {
+    const issues = Array.isArray(out.issues) ? out.issues : [];
+    if (out.verdict === "pass") return box;
+    issues.forEach(issue => {
+      const row = el("div", "review-issue " + (issue.severity || "medium"));
+      const head = el("div", "review-issue-head"); head.appendChild(el("span", "review-severity", issue.severity || "medium")); head.appendChild(el("strong", null, issue.title || "Review finding")); row.appendChild(head);
+      if (issue.detail) row.appendChild(el("div", "review-detail", issue.detail));
+      if (issue.evidence) row.appendChild(el("div", "review-evidence", issue.evidence));
+      box.appendChild(row);
+    });
+    return box;
+  }
   if (k === "search") {
     if (inp.query) box.appendChild(el("div", "s-q", "“" + inp.query + "”"));
     (out.results || []).forEach(r => {
@@ -1902,10 +1964,16 @@ function applyStepState(handle) {
   const status = step.status || "running";
   card.classList.toggle("running", status === "running");
   card.classList.toggle("err", status === "error");
-  if (status === "running") { ic.innerHTML = icon("loader", 14, "spin"); meta.textContent = ""; }
+  if (status === "running") { ic.innerHTML = icon("loader", 14, "spin"); meta.textContent = step.kind === "review" ? "Reviewing" : ""; }
   else { ic.innerHTML = icon(status === "error" ? "x" : stepIcon(step.kind), 14); meta.textContent = step.summary || (step.output && step.output.error ? t("step.status.failed") : ""); }
   body.innerHTML = ""; body.appendChild(stepBody(step));
   if ((step.kind === "plan" || step.kind === "artifact") && status !== "running") card.classList.add("open");
+  if (step.kind === "review") {
+    const hasIssues = step.output && step.output.verdict === "issues";
+    card.classList.toggle("review-pass", status === "done" && !hasIssues);
+    card.classList.toggle("review-issues", status === "done" && hasIssues);
+    card.classList.toggle("open", !!hasIssues);
+  }
 }
 function addLiveStep(m) {
   // Idempotent: if this step is already on screen (reconstructed on reopen, then
@@ -1926,12 +1994,13 @@ function addLiveStep(m) {
   st.wrap.appendChild(handle.card);
   if (st.toolCard && !st.toolCard._demoted) { st.toolCard.classList.add("has-steps"); st.toolCard._demoted = true; const lbl = st.toolCard.querySelector(".lbl"); if (lbl) lbl.textContent = t("step.label.code"); }
   st.md = el("div", "md"); st.wrap.appendChild(st.md); st.text = "";
+  if (m.kind === "review") hint("Reviewing", false, true);
   down();
 }
 function updateLiveStep(m) {
   const h = (S.stepEls || {})[m.step_id]; if (!h) return;
   h.step.status = m.status; h.step.output = m.output; h.step.summary = m.summary;
-  applyStepState(h); down();
+  applyStepState(h); if (h.step.kind === "review" && m.status !== "running") hint(""); down();
 }
 function renderStoredStep(s) {
   const handle = buildStepCard(s);
@@ -2126,12 +2195,23 @@ async function loadProjects() { try { const d = await api("/projects?limit=100&o
 function renderProjMenu() {
   $("#proj-current").textContent = S.project ? projName(S.project) : t("proj.current.allSessions");
   const m = $("#proj-menu"); m.innerHTML = "";
-  const home = el("div", "proj-item"); const hg = el("span"); hg.style.cssText = "display:flex;align-items:center;gap:6px"; hg.appendChild(iconEl("arrow-left", 16)); hg.appendChild(el("span", null, t("proj.menu.allProjects"))); home.appendChild(hg); home.onclick = () => { $("#proj-menu").classList.add("hidden"); showDashboard(); }; m.appendChild(home);
+  const item = (label, iconName, onClick) => {
+    const it = el("div", "proj-item"); const group = el("span"); group.style.cssText = "display:flex;align-items:center;gap:6px";
+    group.appendChild(iconEl(iconName, 16)); group.appendChild(el("span", null, label)); it.appendChild(group);
+    it.onclick = () => { $("#proj-menu").classList.add("hidden"); onClick(); }; m.appendChild(it); return it;
+  };
+  if (S.project) {
+    const current = S.projects.find(p => (p.project_id || p.id) === S.project);
+    if (current) item(t("proj.menu.settings"), "settings", () => openProjectModal(current));
+    item(t("proj.menu.downloadArtifacts"), "download", () => downloadArtifactBundle(`/api/projects/${encodeURIComponent(S.project)}/artifacts.zip`, `${projName(S.project)}-artifacts.zip`));
+    m.appendChild(el("div", "ctx-sep"));
+  }
+  item(t("proj.menu.allProjects"), "arrow-left", showDashboard);
   S.projects.forEach(p => {
-    const it = el("div", "proj-item"); it.appendChild(el("span", null, (p.name || t("proj.fallbackName")).slice(0, 26)));
-    const del = el("span", "del"); del.appendChild(iconEl("trash-2", 15)); del.onclick = (e) => { e.stopPropagation(); if (confirm(t("proj.delete.confirm"))) deleteProject(p.project_id || p.id); };
-    it.appendChild(del); it.onclick = () => selectProject(p.project_id || p.id); m.appendChild(it);
+    if ((p.project_id || p.id) !== S.project) item((p.name || t("proj.fallbackName")).slice(0, 26), "box", () => selectProject(p.project_id || p.id));
   });
+  m.appendChild(el("div", "ctx-sep"));
+  item(t("proj.menu.newProject"), "plus", () => openProjectModal());
 }
 const projName = (id) => { const p = S.projects.find(x => (x.project_id || x.id) === id); return p ? (p.name || t("proj.fallbackName")) : t("proj.fallbackName"); };
 function selectProject(id) { S.project = id; $("#proj-menu").classList.add("hidden"); renderProjMenu(); loadSessions(); }
@@ -2144,7 +2224,48 @@ async function createProject(name, description, context) {
   const p = await api("/projects", { method: "POST", body: JSON.stringify({ name, description, context }) });
   await loadProjects(); openProject(p.project_id || p.id);
 }
-async function deleteProject(id) { try { await api("/projects/" + id, { method: "DELETE" }); } catch {} await loadProjects(); if (S.project === id) showDashboard(); else renderProjMenu(); }
+function closeProjectModal() {
+  $("#proj-modal").classList.add("hidden");
+  S.editingProject = null;
+}
+function openProjectModal(project) {
+  const p = project || null;
+  S.editingProject = p ? (p.project_id || p.id) : null;
+  const title = $("#proj-modal .modal-head span");
+  if (title) title.textContent = t(p ? "projModal.editTitle" : "projModal.title");
+  $("#pm-name").value = p ? (p.name || "") : "";
+  $("#pm-desc").value = p ? (p.description || "") : "";
+  $("#pm-ctx").value = p ? (p.context || p.agent_context || "") : "";
+  $("#pm-create").textContent = t(p ? "common.save" : "projModal.create");
+  $("#pm-delete").classList.toggle("hidden", !p);
+  $("#proj-modal").classList.remove("hidden");
+  requestAnimationFrame(() => $("#pm-name").focus());
+}
+async function submitProjectModal() {
+  const btn = $("#pm-create"); const name = $("#pm-name").value.trim() || t("palette.action.newProject");
+  btn.disabled = true;
+  try {
+    if (S.editingProject) {
+      await api(`/projects/${S.editingProject}`, { method: "PATCH", body: JSON.stringify({ name, description: $("#pm-desc").value, context: $("#pm-ctx").value }) });
+      await loadProjects(); renderProjMenu();
+      if (!$("#dashboard").classList.contains("hidden")) renderDashProjects();
+      closeProjectModal();
+    } else {
+      await createProject(name, $("#pm-desc").value, $("#pm-ctx").value);
+      closeProjectModal();
+    }
+  } catch (e) { hint(t("artifact.save.err", e.message), true); }
+  finally { btn.disabled = false; }
+}
+async function deleteProject(id) {
+  try {
+    await api("/projects/" + id, { method: "DELETE" });
+    closeProjectModal();
+    await loadProjects();
+    if (S.project === id) { S.project = null; showDashboard(); }
+    else renderProjMenu();
+  } catch (e) { hint(t("toast.deleteFailed", e.message), true); }
+}
 
 /* ---------- sessions ---------- */
 async function loadSessions() {
@@ -2177,8 +2298,6 @@ function renderSessions() {
   const list = $("#session-list"); if (!list) return; list.innerHTML = "";
   let ss = S.sessions; if (S.project) ss = ss.filter(f => f.project_id === S.project);
   ss = ss.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-  // folder toolbar
-  if (S.project) { const tb = el("div", "folder-tools"); const nf = el("button", "side-mini", t("session.newFolder")); nf.onclick = newFolder; tb.appendChild(nf); list.appendChild(tb); }
   if (!ss.length && !(S.folders || []).length) { list.appendChild(el("div", "side-label", t("session.empty.label"))); return; }
   S._folderCollapsed = S._folderCollapsed || {};
   // folders first
@@ -2243,6 +2362,8 @@ function resumeWatch(fid, gen) {
   S._resumeTimer = setTimeout(tick, 2000);
 }
 async function openConversation(fid, pid) {
+  const previousFid = S.currentId;
+  if (previousFid && previousFid !== fid) unsub(previousFid);
   if (pid && pid !== S.project) { S.project = pid; S._projArtFor = null; }  // new project → drop cached project-wide Files
   // reflect the open conversation in the address bar so it's a persistent,
   // shareable, reload-safe location (no-op when we're already at this path, e.g.
@@ -2257,6 +2378,7 @@ async function openConversation(fid, pid) {
   S.cells = []; S.kernels = []; S.liveCells = []; S._liveCell = null; S.dockArtifact = null; S.kernelFilter = null;
   S._tbl = {}; invalidateKernelCache();  // drop the prior session's table + kernel-state caches
   S.openTabs = []; S.activeTab = "notebook"; S.provMode = false; S.lineage = null; S._lineageFor = null;
+  showDockPane("notebook");
   S.stepEls = {};  // fresh step registry so reopen-then-replay dedupes by step_id
   S.permCards = Object.create(null);  // fresh permission-card registry (null-proto; drop cards from the prior conversation)
   S.planReady = null; S.planStatus = null; S.planPending = false;  // fresh plan state per session
@@ -2335,15 +2457,93 @@ async function commitTitle() {
   try { await api("/frames/" + S.currentId, { method: "PATCH", body: JSON.stringify({ name }) }); S._titleName = name; setTitle(name); loadSessions(); }
   catch (e) { setTitle(S._titleName); hint(t("toast.renameFailed", e.message), true); }
 }
-function sessionMenu(anchor, fid) {
+function addToMessageMenu(anchor) {
   openMenu(anchor, [
-    { label: t("folder.menu.rename"), icon: "pencil", onClick: () => renameFrame(fid) },
+    { label: t("composer.menu.attachFiles"), icon: "plus", onClick: () => $("#file-input").click() },
+    { label: t("composer.menu.yourFiles"), icon: "files", onClick: () => setActiveTab("files") },
+    { label: t("composer.menu.requestReview"), icon: "eye-context", onClick: requestReview },
+    { label: t("composer.menu.saveAsSkill"), icon: "book", onClick: saveCurrentAsSkill },
+    { sep: true },
+    { label: t("composer.menu.contextUsage"), icon: "circle-dot", onClick: showContextUsage },
+  ]);
+}
+async function showContextUsage() {
+  if (!S.currentId) return;
+  let frame, steps = []; try { const data = await Promise.all([api(`/frames/${S.currentId}`), api(`/frames/${S.currentId}/steps`).catch(() => ({ steps: [] }))]); frame = data[0]; steps = data[1].steps || []; } catch (e) { hint(e.message, true); return; }
+  const input = Number(frame.input_tokens || 0); const output = Number(frame.output_tokens || 0);
+  const reviewer = steps.filter(s => s.kind === "review").reduce((sum, s) => sum + Number(s.output && s.output.usage && ((s.output.usage.input_tokens || 0) + (s.output.usage.output_tokens || 0)) || 0), 0);
+  $("#modal-title").textContent = t("composer.menu.contextUsage"); $("#modal-download").style.display = "none";
+  const body = $("#modal-body"); body.innerHTML = "";
+  const card = el("div", "prov-card"); card.appendChild(el("div", "prov-h", `${(input + output).toLocaleString()} tokens`));
+  card.appendChild(el("div", "prov-meta", `Input ${input.toLocaleString()} · Output ${output.toLocaleString()} · Reviewer ${reviewer.toLocaleString()}`)); body.appendChild(card);
+  $("#modal").classList.remove("hidden");
+}
+async function saveCurrentAsSkill() {
+  if (!S.currentId) { skillEditor(null); return; }
+  let messages = []; try { const data = await api(`/frames/${S.currentId}/messages?from=0&limit=500`); messages = data.messages || []; } catch {}
+  const latestUser = [...messages].reverse().find(m => m.role === "user");
+  const latestAssistant = [...messages].reverse().find(m => m.role === "assistant");
+  const title = (S._titleName || "research-workflow").toLowerCase().replace(/[^a-z0-9一-龥]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "research-workflow";
+  const request = String(latestUser && latestUser.content || "").trim(); const result = String(latestAssistant && latestAssistant.content || "").trim();
+  skillEditor(null, {
+    name: title,
+    description: request.replace(/\s+/g, " ").slice(0, 180),
+    body: `# Purpose\n\n${request || "Describe when this workflow should be used."}\n\n# Procedure\n\n1. Reproduce the evidence-gathering and analysis workflow.\n2. Preserve data provenance, code, and generated artifacts.\n3. State uncertainty and do not overclaim beyond the evidence.\n\n# Example outcome\n\n${result.slice(0, 6000)}`,
+  });
+}
+async function requestReview() {
+  if (!S.currentId || S.running) return;
+  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint("Reviewing", false, true);
+  try {
+    await api(`/frames/${S.currentId}/review`, { method: "POST", body: "{}" });
+    resumeWatch(S.currentId, S._openGen);
+  } catch (e) {
+    turnDone("failed"); hint(e.message, true);
+  }
+}
+async function sessionOptionsMenu(anchor) {
+  if (!S.currentId) return;
+  let review = { auto_review: false, reviewer_model: "", delegation_enabled: true };
+  try { review = await api(`/frames/${S.currentId}/review-settings`); } catch {}
+  const checked = on => on ? "✓  " : "";
+  openMenu(anchor, [
+    { label: checked(review.delegation_enabled !== false) + t("composer.option.delegation"), icon: "users", onClick: async () => { const on = review.delegation_enabled === false; try { await api(`/frames/${S.currentId}/review-settings`, { method: "PATCH", body: JSON.stringify({ delegation_enabled: on }) }); hint(t("composer.option.delegation") + ` · ${on ? "On" : "Off"}`); } catch (e) { hint(e.message, true); } } },
+    { label: checked(S.planMode) + t("composer.planMode"), icon: "grid", onClick: () => $("#plan-toggle").click() },
+    { label: checked(S.exploreMode) + t("composer.exploreMode"), icon: "compass", onClick: () => $("#explore-toggle").click() },
+    { sep: true },
+    { label: checked(review.auto_review) + t("composer.option.autoReview"), icon: "eye-context", onClick: async () => { try { await api(`/frames/${S.currentId}/review-settings`, { method: "PATCH", body: JSON.stringify({ auto_review: !review.auto_review }) }); hint(t("composer.option.autoReview") + ` · ${!review.auto_review ? "On" : "Off"}`); } catch (e) { hint(e.message, true); } } },
+    { label: t("composer.option.reviewerModel") + (review.reviewer_model ? ` · ${review.reviewer_model}` : ""), icon: "sliders", onClick: () => reviewerModelMenu(anchor, review.reviewer_model) },
+    { label: t("composer.option.memory"), icon: "book", onClick: () => openCust("memory") },
+    { label: t("composer.option.specialist"), icon: "users", onClick: () => openCust("specialists") },
+    { label: t("composer.option.compute"), icon: "terminal", onClick: () => openCust("compute") },
+  ]);
+}
+function reviewerModelMenu(anchor, current) {
+  const choices = [{ id: "", name: t("composer.option.sameModel") }].concat((S.models || []).map(m => ({ id: m.id, name: m.name || m.id })));
+  openMenu(anchor, choices.map(model => ({
+    label: (model.id === (current || "") ? "✓  " : "") + model.name,
+    icon: "circle-dot",
+    onClick: async () => { try { await api(`/frames/${S.currentId}/review-settings`, { method: "PATCH", body: JSON.stringify({ reviewer_model: model.id }) }); hint(t("composer.option.reviewerModel") + ` · ${model.name}`); } catch (e) { hint(e.message, true); } },
+  })));
+}
+function sessionMenu(anchor, fid) {
+  const frame = S.sessions.find(x => x.id === fid) || {};
+  const items = [{ label: t("folder.menu.rename"), icon: "pencil", onClick: () => renameFrame(fid) }];
+  if (frame.running || (fid === S.currentId && S.running)) items.push({ label: t("sessionMenu.cancel"), icon: "stop", onClick: async () => { try { await api(`/frames/${fid}/cancel`, { method: "POST" }); } catch {} if (fid === S.currentId) turnDone("cancelled"); loadSessions(); } });
+  items.push(
+    { label: t("sessionMenu.exportMarkdown"), icon: "download", onClick: () => exportSession(fid) },
+    { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`/api/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
+    { label: t("sessionMenu.viewNotebook"), icon: "notebook", onClick: async () => { if (fid !== S.currentId) await openConversation(fid, frame.project_id); setActiveTab("notebook"); } },
+    { sep: true },
     { label: t("sessionMenu.duplicate"), icon: "copy", onClick: () => duplicateSession(fid) },
     { label: t("sessionMenu.moveToFolder"), icon: "folder", onClick: () => moveToFolderAt(anchor, fid) },
-    { label: t("sessionMenu.exportMarkdown"), icon: "download", onClick: () => exportSession(fid) },
-    { sep: true },
     { label: t("common.delete"), icon: "trash-2", danger: true, onClick: () => { if (confirm(t("confirm.deleteSession"))) deleteSession(fid); } },
-  ]);
+  );
+  openMenu(anchor, items);
+}
+function downloadArtifactBundle(url, filename) {
+  const link = document.createElement("a"); link.href = url; link.download = filename || "artifacts.zip";
+  document.body.appendChild(link); link.click(); link.remove();
 }
 function moveToFolderAt(anchor, fid) {
   const folders = S.folders || [];
@@ -2401,7 +2601,9 @@ function openMenu(anchor, items) {
   });
   document.body.appendChild(m); S._menu = m;
   const r = anchor.getBoundingClientRect();
-  m.style.top = (r.bottom + 4) + "px";
+  let top = r.bottom + 4;
+  if (top + m.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - m.offsetHeight - 4);
+  m.style.top = top + "px";
   m.style.left = Math.max(8, Math.min(r.left, window.innerWidth - m.offsetWidth - 8)) + "px";
   setTimeout(() => document.addEventListener("mousedown", menuOutside), 0);
 }
@@ -2484,7 +2686,7 @@ async function send(text, opts) {
                      // drops them (server replay is gated on is_running, which is already
                      // false once the blocking POST returns). Idempotent set add.
   try {
-    await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, model: S.defaultModel, plan: planNow, explore: exploreNow, annotation_ids: annIds }) });
+    await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, model: S.defaultModel, plan: planNow, explore: exploreNow, annotation_ids: annIds, wait: false }) });
     // The optimistic status above clears the badge immediately; reload once the turn POST finishes to reconcile with the server.
     if (annIds.length) { try { await loadAnnotations(S.currentId); } catch {} refreshAllStages(); updateAnnotBadge(); }
   }
@@ -2498,8 +2700,14 @@ async function send(text, opts) {
       refreshAllStages(); updateAnnotBadge();
     }
     hint(t("toast.sendFailed", e.message), true);
+    if (S.running) turnDone("failed");
+    loadSessions();
+    return;
   }
-  if (S.running) turnDone("completed");
+  // The async POST returns as soon as the job is accepted. Keep the composer
+  // locked until the authoritative WebSocket frame_update arrives; the status
+  // watchdog covers a missed terminal event after reconnects.
+  resumeWatch(S.currentId, S._openGen);
   loadSessions();
 }
 /* compact "N annotations attached" block under a user message bubble */
@@ -2695,7 +2903,10 @@ function renderConversationArtifacts() {
       more.onclick = () => { more.remove(); list.slice(CAP - 1).forEach(a => tiles.appendChild(mkTile(a))); };
       tiles.appendChild(more);
     }
-    g.appendChild(tiles); $("#messages").appendChild(g);
+    g.appendChild(tiles);
+    const host = $("#messages"); let review = host.querySelector(".step-review");
+    while (review && review.parentElement !== host) review = review.parentElement;
+    host.insertBefore(g, review || null);
   };
   // Separate user uploads from cell-generated outputs so an uploaded file (e.g. a
   // .fasta) is labelled "uploaded", not "generated".
@@ -3323,17 +3534,20 @@ async function kernelCtl(action) {
 const _kc = { id: null, st: null, stAt: 0, stBusy: false, envs: null, cur: null, envAt: 0, envBusy: false };
 function invalidateKernelCache() { _kc.id = null; _kc.st = null; _kc.stAt = 0; _kc.envs = null; _kc.cur = null; _kc.envAt = 0; }
 function _paintKernel(els, st) {
-  const { state, bStop, bStart, title, revive, strip } = els || {};
+  const { state, bStop, bStart, title, revive, strip, badge } = els || {};
   const label = st.turn_running ? t("dash.badge.running") : ({ running: t("nb.kernel.stateActive"), stopped: t("nb.kernel.stateStopped"), none: t("nb.kernel.stateNone") }[st.state] || st.state);
   if (state) {
     state.textContent = label + (st.generation ? t("nb.kernel.generation", st.generation) : "");
     state.className = "kstate " + (st.turn_running ? "run" : st.state);
   }
   const env = st.env || {};
-  if (title) title.textContent = (env.name || "python")
-    + (env.language ? " · " + env.language : "")
-    + (env.python_version ? " " + env.python_version : "") + " kernel"
+  if (title) title.textContent = kernelLabel(kernelIdFromEnv(env)) + " kernel · " + t("nb.kernel.shared")
     + (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "");
+  if (badge && badge.root && badge.label) {
+    const live = !!(st.turn_running || st.alive);
+    badge.root.classList.toggle("live", live); badge.root.classList.toggle("idle", !live);
+    badge.label.textContent = live ? "Live" : "Idle";
+  }
   if (bStop) bStop.disabled = !st.alive;
   if (bStart) bStart.disabled = st.alive;
   // Revive banner: only when the kernel is stopped/absent and no turn is running.
@@ -3456,7 +3670,10 @@ function renderNotebook() {
   const chips = el("div", "kernel-chips");
   const mk = (k, label) => { const c = el("button", "kchip" + (((S.kernelFilter || null) === k) ? " on" : ""), label); c.onclick = () => { S.kernelFilter = k; renderNotebook(); }; return c; };
   chips.appendChild(mk(null, "All")); kernels.forEach(k => chips.appendChild(mk(k, kernelLabel(k))));
-  const badge = el("div", "nb-live-badge" + (S.running ? " live" : " idle")); badge.appendChild(el("span", "ld")); badge.appendChild(el("span", null, S.running ? "Live" : "Idle")); badge.appendChild(iconEl("chevron-down", 14)); chips.appendChild(badge);
+  const cachedAlive = !!(S.running || (_kc.id === S.currentId && _kc.st && _kc.st.alive));
+  const badge = el("div", "nb-live-badge" + (cachedAlive ? " live" : " idle")); badge.appendChild(el("span", "ld"));
+  const badgeLabel = el("span", null, cachedAlive ? "Live" : "Idle"); badge.appendChild(badgeLabel); badge.appendChild(iconEl("chevron-down", 14)); chips.appendChild(badge);
+  const badgeEls = { root: badge, label: badgeLabel };
   nb.appendChild(chips);
   let shown = entries; if (S.kernelFilter) shown = entries.filter(e => (e.kernel_id || "python") === S.kernelFilter);
   if (!shown.length) nb.appendChild(el("div", "dock-empty", t("nb.empty")));
@@ -3491,7 +3708,7 @@ function renderNotebook() {
   const rbtn = el("button", "solid-btn small", t("nb.revive.startBtn")); rbtn.onclick = () => kernelCtl("start", bStart);
   revive.appendChild(rbtn);
   repl.appendChild(revive);
-  refreshKernelState({ state, bStop, bStart, title, revive });
+  refreshKernelState({ state, bStop, bStart, title, revive, badge: badgeEls });
   nbPopulateEnvSelect(envSel);
   repl.appendChild(el("div", "nb-repl-body", t("nb.repl.body")));
   const pr = el("div", "nb-repl-prompt"); pr.appendChild(el("span", "pmt", ">>>")); const inp = el("input"); inp.placeholder = "run code in this kernel…"; inp.disabled = !S.currentId; inp.value = S._replDraft || "";
@@ -3519,7 +3736,7 @@ function renderNotebook() {
     const sline = el("div", "nb-status-line", "…");
     strip.appendChild(sline);
     strip.appendChild(el("div", "nb-status-hint", t("nb.status.hint")));
-    refreshKernelState({ strip: { line: sline } });
+    refreshKernelState({ strip: { line: sline }, badge: badgeEls });
     nb.appendChild(strip);
   }
   // Keep following the live output as new code/figures stream in.
@@ -3568,6 +3785,15 @@ function highlightTraceback(txt) {
     return e;
   }).join("\n");
 }
+function notebookOutputBlock(cell, raw, isError) {
+  const text = String(raw == null ? "" : raw);
+  if (!text) return;
+  if (looksBinary(text)) { cell.appendChild(binElide(text.length)); return; }
+  const details = el("details", "nbc-disclosure" + (isError ? " error" : ""));
+  details.appendChild(el("summary", null, "output"));
+  const pre = el("pre", isError ? "nbc-err" : "nbc-out"); pre.textContent = text; details.appendChild(pre);
+  cell.appendChild(details);
+}
 function cellNode(e) {
   const k = e.kernel_id || "python";
   const c = el("div", "notebook-cell" + (e.live ? " live" : ""));
@@ -3581,8 +3807,8 @@ function cellNode(e) {
     status: st,
     env: e.environment || e.env || undefined
   }));
-  if (e.stdout) { if (looksBinary(e.stdout)) c.appendChild(binElide(e.stdout.length)); else { const o = el("pre", "nbc-out"); o.textContent = e.stdout; c.appendChild(o); } }
-  if (e.stderr) { if (looksBinary(e.stderr)) c.appendChild(binElide(e.stderr.length)); else { const er = el("pre", "nbc-err"); er.textContent = e.stderr; c.appendChild(er); } }
+  notebookOutputBlock(c, e.stdout, false);
+  notebookOutputBlock(c, e.stderr, true);
   if (e.error) c.appendChild(nbErrorBlock(e.error));
   (e.figures || []).forEach(f => { const im = el("img", "nbc-fig"); im.src = artUrlByName(f); im.onerror = () => im.remove(); c.appendChild(im); });
   // Inline-render tabular outputs (CSV/TSV the cell produced) as real tables, so
@@ -3812,7 +4038,7 @@ function closePalette() { if (PAL.el) PAL.el.remove(); PAL.el = null; PAL.open =
 function palActions() {
   return [
     { group: t("palette.group.commands"), label: t("palette.action.newSession"), icon: "plus", run: () => newSession() },
-    { group: t("palette.group.commands"), label: t("palette.action.newProject"), icon: "plus", run: () => $("#proj-modal").classList.remove("hidden") },
+    { group: t("palette.group.commands"), label: t("palette.action.newProject"), icon: "plus", run: () => openProjectModal() },
     { group: t("palette.group.commands"), label: t("palette.action.openNotebook"), icon: "notebook", run: () => setActiveTab("notebook") },
     { group: t("palette.group.commands"), label: t("palette.action.customize"), icon: "sliders", run: () => openCust() },
     { group: t("palette.group.commands"), label: t("palette.action.backHome"), icon: "arrow-left", run: () => showDashboard() },
@@ -3964,9 +4190,9 @@ function insertSkillMention(name) {
   grow(); c.focus(); c.setSelectionRange(c.value.length, c.value.length);
   hint(t("skill.insertedToast", name));
 }
-async function skillEditor(name) {
+async function skillEditor(name, seed) {
   S._modalMode = "skill";
-  let cur = { name: "", description: "", body: "" };
+  let cur = seed || { name: "", description: "", body: "" };
   if (name) { try { cur = await api(`/skills/${encodeURIComponent(name)}`); } catch {} }
   $("#modal-title").textContent = name ? t("skill.editTitle", name) : t("skill.newTitle");
   $("#modal-download").style.display = "none";
@@ -4632,8 +4858,14 @@ async function init() {
   applyLayout(localStorage.getItem("os-layout") || "comfortable");
   restoreColWidths(); initColResizers();
   connectWS(); await loadModels(); refreshKeyBanner();
-  $("#dash-new-project").onclick = () => $("#proj-modal").classList.remove("hidden");
+  $("#dash-new-project").onclick = () => openProjectModal();
+  $("#pm-delete").onclick = async () => {
+    const id = S.editingProject;
+    if (!id || !confirm(t("proj.delete.confirm"))) return;
+    await deleteProject(id);
+  };
   $("#back-home").onclick = showDashboard;
+  $("#search-btn").onclick = openPalette;
   $("#new-session").onclick = newSession;
   $("#tab-new").onclick = newSession;
   $("#tab-close").onclick = (e) => { e.stopPropagation(); showDashboard(); };
@@ -4669,13 +4901,14 @@ async function init() {
   document.querySelectorAll(".cust-tab").forEach(t => t.onclick = () => custTab(t.dataset.tab));
   $("#modal-close").onclick = () => $("#modal").classList.add("hidden");
   $("#modal").onclick = (e) => { if (e.target.id === "modal") $("#modal").classList.add("hidden"); };
-  $("#attach-btn").onclick = () => $("#file-input").click();
+  $("#attach-btn").onclick = (e) => addToMessageMenu(e.currentTarget);
+  $("#session-options-btn").onclick = (e) => sessionOptionsMenu(e.currentTarget);
   $("#file-input").onchange = (e) => uploadFiles(e.target.files);
   $("#plan-toggle").onclick = () => { S.planMode = !S.planMode; if (S.planMode) { S.exploreMode = false; $("#explore-toggle").classList.remove("on"); } $("#plan-toggle").classList.toggle("on", S.planMode); hint(S.planMode ? t("plan.toggle.on") : ""); };
   $("#explore-toggle").onclick = () => { S.exploreMode = !S.exploreMode; if (S.exploreMode) { S.planMode = false; $("#plan-toggle").classList.remove("on"); } $("#explore-toggle").classList.toggle("on", S.exploreMode); hint(S.exploreMode ? t("explore.toggle.on") : ""); };
   $("#note-save").onclick = addNote;
-  $("#proj-modal-close").onclick = $("#pm-cancel").onclick = () => $("#proj-modal").classList.add("hidden");
-  $("#pm-create").onclick = async () => { const n = $("#pm-name").value.trim() || t("palette.action.newProject"); await createProject(n, $("#pm-desc").value, $("#pm-ctx").value); $("#proj-modal").classList.add("hidden"); $("#pm-name").value = $("#pm-desc").value = $("#pm-ctx").value = ""; };
+  $("#proj-modal-close").onclick = $("#pm-cancel").onclick = closeProjectModal;
+  $("#pm-create").onclick = submitProjectModal;
   const c = $("#composer");
   c.addEventListener("input", () => { grow(); acUpdate(); });
   c.addEventListener("keydown", (e) => {
