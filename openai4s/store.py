@@ -481,6 +481,28 @@ class Store:
                             )
                         except sqlite3.OperationalError:
                             pass
+            # Historical child frames inherited the root id but silently kept
+            # project_id='default'. Historical artifacts also used their actor
+            # frame as root_frame_id. Repair both idempotently when the frame
+            # tree still exists; unframed legacy uploads remain untouched.
+            self._conn.execute(
+                "UPDATE frames SET project_id=COALESCE((SELECT root.project_id "
+                "FROM frames AS root WHERE root.frame_id=frames.root_frame_id),"
+                "project_id) WHERE root_frame_id IS NOT NULL"
+            )
+            self._conn.execute(
+                "UPDATE artifacts SET project_id=COALESCE((SELECT root.project_id "
+                "FROM frames AS actor JOIN frames AS root "
+                "ON root.frame_id=actor.root_frame_id "
+                "WHERE actor.frame_id=artifacts.root_frame_id),project_id) "
+                "WHERE root_frame_id IN (SELECT frame_id FROM frames)"
+            )
+            self._conn.execute(
+                "UPDATE artifacts SET root_frame_id=COALESCE((SELECT "
+                "actor.root_frame_id FROM frames AS actor "
+                "WHERE actor.frame_id=artifacts.root_frame_id),root_frame_id) "
+                "WHERE root_frame_id IN (SELECT frame_id FROM frames)"
+            )
             self._conn.commit()
 
     # --- low-level -------------------------------------------------------
@@ -506,7 +528,22 @@ class Store:
         status: str = "processing",
     ) -> str:
         frame_id = f"f-{uuid.uuid4().hex[:12]}"
-        root = frame_id if parent_id is None else self._root_of(parent_id, frame_id)
+        if parent_id is None:
+            root = frame_id
+        else:
+            parent = self.get_frame(parent_id)
+            if parent is None:
+                # Preserve the legacy orphan fallback during delete/delegate
+                # races: the new frame becomes its own root rather than pointing
+                # root_frame_id at a row that does not exist.
+                root = frame_id
+            else:
+                scope = self.resolve_frame_scope(
+                    parent_id,
+                    fallback_project=project_id,
+                )
+                root = scope["root_frame_id"] or frame_id
+                project_id = scope["project_id"]
         now = _now_ms()
         self._exec(
             "INSERT INTO frames(frame_id,parent_id,project_id,root_frame_id,kind,"
@@ -528,12 +565,45 @@ class Store:
         )
         return frame_id
 
-    def _root_of(self, parent_id: str, fallback: str) -> str:
+    def resolve_frame_scope(
+        self,
+        frame_id: str | None,
+        *,
+        fallback_project: str = "default",
+    ) -> dict:
+        """Resolve actor, root session, and root-owned project dynamically."""
+        if not frame_id:
+            return {
+                "frame_id": frame_id,
+                "root_frame_id": frame_id,
+                "project_id": fallback_project,
+            }
         with self._lock:
-            row = self._conn.execute(
-                "SELECT root_frame_id FROM frames WHERE frame_id=?", (parent_id,)
+            frame = self._conn.execute(
+                "SELECT frame_id,root_frame_id,project_id FROM frames "
+                "WHERE frame_id=?",
+                (frame_id,),
             ).fetchone()
-        return row["root_frame_id"] if row and row["root_frame_id"] else fallback
+            if not frame:
+                return {
+                    "frame_id": frame_id,
+                    "root_frame_id": frame_id,
+                    "project_id": fallback_project,
+                }
+            root_frame_id = frame["root_frame_id"] or frame["frame_id"]
+            root = self._conn.execute(
+                "SELECT project_id FROM frames WHERE frame_id=?",
+                (root_frame_id,),
+            ).fetchone()
+        return {
+            "frame_id": frame["frame_id"],
+            "root_frame_id": root_frame_id,
+            "project_id": (
+                (root["project_id"] if root else None)
+                or frame["project_id"]
+                or fallback_project
+            ),
+        }
 
     def update_frame(self, frame_id: str, **fields: Any) -> None:
         if not fields:
@@ -1202,7 +1272,8 @@ class Store:
         checksum: str | None,
         producing_cell_id: str | None = None,
         frame_id: str | None = None,
-        project_id: str = "default",
+        root_frame_id: str | None = None,
+        project_id: str | None = None,
         artifact_id: str | None = None,
         is_user_upload: bool = False,
         priority: int = 0,
@@ -1215,12 +1286,52 @@ class Store:
         ``path`` (see gateway._write_version_snapshot). The version row is written
         before the artifact row is (re)pointed at it, both under one commit, so
         ``latest_version_id`` never dangles."""
+        explicit_scope = any(
+            value is not None for value in (frame_id, root_frame_id, project_id)
+        )
+        actor = self.get_frame(frame_id) if frame_id else None
+        scope_source = frame_id if actor else (root_frame_id or frame_id)
+        scope = self.resolve_frame_scope(
+            scope_source,
+            fallback_project=project_id or "default",
+        )
+        if actor:
+            if root_frame_id is not None and root_frame_id != scope["root_frame_id"]:
+                raise ValueError("root_frame_id conflicts with producer frame")
+            if project_id is not None and project_id != scope["project_id"]:
+                raise ValueError("project_id conflicts with producer frame")
+            resolved_root = scope["root_frame_id"]
+        else:
+            resolved_root = root_frame_id or scope["root_frame_id"] or frame_id
+        resolved_project = scope["project_id"]
         now = _now_ms()
         version_id = f"v-{uuid.uuid4().hex[:12]}"
         new_artifact = artifact_id is None
         if new_artifact:
             artifact_id = f"a-{uuid.uuid4().hex[:12]}"
         with self._lock:
+            if not new_artifact:
+                current = self._conn.execute(
+                    "SELECT project_id,root_frame_id FROM artifacts "
+                    "WHERE artifact_id=?",
+                    (artifact_id,),
+                ).fetchone()
+                if current is None:
+                    raise KeyError(f"no such artifact {artifact_id!r}")
+                if not explicit_scope:
+                    resolved_root = current["root_frame_id"]
+                    resolved_project = current["project_id"]
+                if (
+                    current["root_frame_id"] is not None
+                    and resolved_root is not None
+                    and current["root_frame_id"] != resolved_root
+                ):
+                    raise ValueError("artifact belongs to a different root frame")
+                if (
+                    current["root_frame_id"] is not None
+                    and current["project_id"] != resolved_project
+                ):
+                    raise ValueError("artifact belongs to a different project")
             self._conn.execute(
                 "INSERT INTO artifact_versions(version_id,artifact_id,filename,"
                 "content_type,size_bytes,checksum,path,snapshot_path,"
@@ -1249,8 +1360,8 @@ class Store:
                     "VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (
                         artifact_id,
-                        project_id,
-                        frame_id,
+                        resolved_project,
+                        resolved_root,
                         filename,
                         content_type,
                         1 if is_user_upload else 0,

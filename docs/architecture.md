@@ -156,6 +156,14 @@ provenance draining, event transport, and HTTP serialization remain injected
 Gateway ports, so the manager has no dependency on `SessionRunner`,
 `HostDispatcher`, or `WSHub`.
 
+Artifact ownership separates three identifiers: `frame_id` is the actual
+producer (including a delegated child), `root_frame_id` is the session and
+artifact-collection boundary, and `project_id` is inherited from that root.
+The Store resolves this scope from the frame tree for every write; Web session
+state uses the same resolver. Additive startup repair corrects historical child
+frames/artifacts that were accidentally assigned to `default` or to a child as
+their collection root, while unframed legacy uploads keep their old scope.
+
 Object-level file lineage starts inside the Python worker, where the real
 execution cwd is known. [`kernel/provenance.py`](../openai4s/kernel/provenance.py)
 normalizes reader/writer arguments to an absolute identity path plus a

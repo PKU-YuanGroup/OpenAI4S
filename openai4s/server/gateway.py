@@ -954,6 +954,13 @@ class SessionRunner:
         return result
 
     def _state(self, root_frame_id: str, project_id: str) -> SessionState:
+        scope = self.store.resolve_frame_scope(
+            root_frame_id,
+            fallback_project=project_id,
+        )
+        if scope["root_frame_id"] != root_frame_id:
+            raise ValueError("Web session operations require a root frame id")
+        project_id = scope["project_id"]
         with self._lock:
             st = self._sessions.get(root_frame_id)
             if st is None:
