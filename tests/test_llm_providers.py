@@ -1,6 +1,6 @@
 """Offline unit tests for the multi-provider, multimodal LLM client.
 
-No network: `llm._post_json` is monkeypatched to capture the outbound URL,
+No network: `llm.transport.post_json` is monkeypatched to capture the outbound URL,
 payload and headers and to return a canned per-wire response. This lets us
 assert, deterministically, that:
 
@@ -19,7 +19,7 @@ from openai4s.config import LLMConfig
 
 
 class _Capture:
-    """Replaces llm._post_json; records the last call, returns a canned body."""
+    """Replaces transport.post_json and returns a canned wire response."""
 
     def __init__(self):
         self.url = None
@@ -70,7 +70,7 @@ def _hermetic_env(monkeypatch):
 @pytest.fixture
 def cap(monkeypatch):
     c = _Capture()
-    monkeypatch.setattr(llm, "_post_json", c)
+    monkeypatch.setattr(llm.transport, "post_json", c)
     return c
 
 
@@ -87,6 +87,7 @@ def _cfg(provider, **kw):
     [
         ("ark", "openai", True),
         ("chatgpt", "openai", True),
+        ("openai_responses", "responses", False),
         ("claude", "anthropic", True),
         ("gemini", "gemini", True),
     ],
@@ -162,7 +163,7 @@ def test_anthropic_wire_url_and_auth(cap):
     )
     assert cap.url == "https://api.anthropic.com/v1/messages"
     assert cap.headers["x-api-key"] == "test-key"
-    assert cap.headers["anthropic-version"] == llm._ANTHROPIC_VERSION
+    assert cap.headers["anthropic-version"] == llm.ANTHROPIC_VERSION
     # system message is hoisted to a top-level field, not in messages
     assert cap.payload["system"] == "be brief"
     assert all(m["role"] != "system" for m in cap.payload["messages"])

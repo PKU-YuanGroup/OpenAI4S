@@ -4,18 +4,19 @@ Config is via env vars (all have working defaults), read from the environment or
 
 ## Model providers
 
-One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_url` and `model`, so usually you only set the key. Three wire formats live behind one normalized `host.llm`: OpenAI-compatible `/chat/completions`, Anthropic `/v1/messages`, and Gemini `generateContent`.
+One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_url` and `model`, so usually you only set the key. Four wire formats live behind one normalized `host.llm`: OpenAI-compatible `/chat/completions`, OpenAI `/responses`, Anthropic `/v1/messages`, and Gemini `generateContent`.
 
 | provider | wire | default model | vision |
 |---|---|---|:---:|
 | `ark` | openai | `doubao-seed-2.0-pro` (+10 more via plan/v3) | ✅ |
 | `chatgpt` | openai | `gpt-5` | ✅ |
+| `openai_responses` | responses | `gpt-5` | — |
 | `claude` | anthropic | `claude-sonnet-4-5` | ✅ |
 | `gemini` | gemini | `gemini-2.5-flash` | ✅ |
 
 `ark` is Volcengine's plan/v3 gateway — one endpoint + key serving `doubao-seed-2.0-{pro,code,lite,mini}`, `glm-5.2`, `kimi-k2.7-code`, `kimi-k2.6`, `deepseek-v4-{pro,flash}`, `minimax-{m3,m2.7}` — all pre-registered as switchable model profiles. Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
 
-Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). An OpenAI Responses / Codex-style wire (`openai_responses`) is also supported via a proxy.
+Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
 
 ## Kernel environments (conda)
 

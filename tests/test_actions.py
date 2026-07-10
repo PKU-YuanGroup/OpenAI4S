@@ -5,12 +5,18 @@ SessionRunner._loop) parse a reply through this single module, so these tests
 lock the language whitelist, the one-cell-per-step document-order rule, and
 the fence-collision guarantees the dual loop depends on.
 """
+from typing import get_args
+
 from openai4s.agent.actions import (
     MULTI_CELL_NOTE,
     NO_CODE_NUDGE,
+    Action,
     CodeCell,
+    NativeToolBatch,
+    NativeToolCall,
     count_code_blocks,
     extract_action,
+    route_action,
 )
 
 _F = "`" * 3
@@ -72,3 +78,73 @@ def test_count_code_blocks_spans_both_languages():
 def test_shared_texts_mention_both_channels():
     assert "```python" in NO_CODE_NUDGE and "```r" in NO_CODE_NUDGE
     assert "only the FIRST" in MULTI_CELL_NOTE
+
+
+def test_action_type_covers_cells_and_native_batches():
+    assert set(get_args(Action)) == {CodeCell, NativeToolBatch}
+
+
+def test_structured_native_call_wins_over_code_cell():
+    call = NativeToolCall(
+        id="call_1",
+        wire_id="call_1",
+        name="request_network_access",
+        ordinal=0,
+        raw_arguments='{"domain":"example.org"}',
+        arguments={"domain": "example.org"},
+        provider_meta={"provider": "openai"},
+    )
+
+    action = route_action(_cell("python", "raise AssertionError"), [call])
+
+    assert action == NativeToolBatch((call,))
+    assert action.calls[0] is call
+
+
+def test_empty_native_calls_keep_existing_first_cell_rule():
+    reply = _cell("r", "a <- 1") + "\n" + _cell("python", "b = 2")
+
+    assert route_action(reply) == CodeCell("r", "a <- 1\n")
+    assert route_action(reply, []) == extract_action(reply)
+    assert route_action("prose only", ()) is None
+
+
+def test_native_batch_preserves_order_and_lossless_call_details():
+    malformed = {
+        "id": "synthetic:gemini:0",
+        "wire_id": None,
+        "name": "delegate",
+        "ordinal": 0,
+        "raw_arguments": '{"task":',
+        "arguments": None,
+        "parse_error": "Expecting value: line 1 column 9 (char 8)",
+        "provider_meta": {
+            "provider": "gemini",
+            "function_call": {"name": "delegate", "args": '{"task":'},
+        },
+    }
+    valid = NativeToolCall(
+        id="toolu_2",
+        wire_id="toolu_2",
+        name="compute",
+        ordinal=1,
+        raw_arguments='{"gpu":1}',
+        arguments={"gpu": 1},
+        provider_meta={"provider": "anthropic", "index": 2},
+    )
+
+    action = route_action(
+        _cell("python", "should_not_run = True"),
+        (call for call in [malformed, valid]),
+    )
+
+    assert isinstance(action, NativeToolBatch)
+    assert action.calls == (NativeToolCall(**malformed), valid)
+    assert action.calls[0].raw_arguments == '{"task":'
+    assert action.calls[0].wire_id is None
+    assert action.calls[0].ordinal == 0
+    assert action.calls[0].arguments is None
+    assert action.calls[0].parse_error == (
+        "Expecting value: line 1 column 9 (char 8)"
+    )
+    assert action.calls[0].provider_meta == malformed["provider_meta"]

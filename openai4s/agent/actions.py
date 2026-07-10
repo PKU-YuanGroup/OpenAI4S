@@ -7,9 +7,10 @@ for that decision (CoreCoder-style: one small core, two thin loop bodies):
 
 - the fence-info → language whitelist (``python``/``py``/bare → python kernel,
   ``r``/``R`` → R kernel) lives only here;
-- the code-wins-over-tools precedence stays with the callers, but both share
-  the same extractor so a quoted ```` ```tool ```` inside a cell can never
-  hijack a turn in one loop and not the other;
+- structured native tool calls take precedence over code through
+  ``route_action`` so the control plane cannot race scientific execution;
+- replies without native calls keep the existing fence extractor, so a quoted
+  ```` ```tool ```` inside a cell can never hijack a turn;
 - the one-cell-per-step counter and the no-action nudge text live here so the
   two loops cannot drift.
 
@@ -23,7 +24,8 @@ effects on import).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Mapping, TypeAlias
 
 from openai4s.tools import scan_fenced_blocks
 
@@ -39,6 +41,36 @@ class CodeCell:
 
     language: str  # "python" | "r"
     code: str
+
+
+@dataclass(frozen=True)
+class NativeToolCall:
+    """One provider-normalized native tool call.
+
+    ``raw_arguments`` is intentionally retained alongside parsed
+    ``arguments`` and ``parse_error``. The action router is a lossless routing
+    boundary, not another wire-format parser; provider-specific details stay
+    available in ``provider_meta`` for later execution and diagnostics.
+    """
+
+    id: str
+    wire_id: str | None
+    name: str
+    ordinal: int
+    raw_arguments: str
+    arguments: dict[str, Any] | None = None
+    parse_error: str | None = None
+    provider_meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class NativeToolBatch:
+    """Ordered native tool calls selected from one assistant reply."""
+
+    calls: tuple[NativeToolCall, ...]
+
+
+Action: TypeAlias = CodeCell | NativeToolBatch
 
 
 def extract_action(text: str) -> CodeCell | None:
@@ -58,6 +90,40 @@ def extract_action(text: str) -> CodeCell | None:
         if block.info in R_INFOS:
             return CodeCell("r", block.body)
     return None
+
+
+def route_action(
+    content: str,
+    tool_calls: Iterable[NativeToolCall | Mapping[str, Any]] | None = None,
+) -> Action | None:
+    """Choose the single action channel for an assistant reply.
+
+    Any structured native call wins over fenced code in the same reply. This
+    keeps control-plane calls and scientific cells from competing for one
+    turn. With no native calls, behavior is exactly ``extract_action``: the
+    first complete top-level Python/R cell in document order is selected.
+    """
+    calls = (
+        tuple(_normalize_native_tool_call(call) for call in tool_calls)
+        if tool_calls is not None
+        else ()
+    )
+    if calls:
+        return NativeToolBatch(calls)
+    return extract_action(content)
+
+
+def _normalize_native_tool_call(
+    call: NativeToolCall | Mapping[str, Any],
+) -> NativeToolCall:
+    """Convert the LLM client's canonical mapping without altering its data."""
+    if isinstance(call, NativeToolCall):
+        return call
+    if not isinstance(call, Mapping):
+        raise TypeError("native tool calls must be NativeToolCall or mapping values")
+    # Passing the complete mapping through the constructor is deliberate: an
+    # unexpected top-level key raises instead of being silently discarded.
+    return NativeToolCall(**dict(call))
 
 
 def count_code_blocks(text: str) -> int:

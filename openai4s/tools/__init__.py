@@ -16,6 +16,7 @@ host_dispatch / loop / gateway) at module load, so it stays importable with
 zero side effects. Wiring into the agent loops happens elsewhere.
 """
 from openai4s.tools.base import Tool
+from openai4s.tools.native import ToolSpec, control_tool_specs
 from openai4s.tools.registry import (
     MAX_TOOL_CALLS_PER_TURN,
     MAX_TOOL_OBS_CHARS,
@@ -36,6 +37,7 @@ from openai4s.tools.registry import (
 
 __all__ = [
     "Tool",
+    "ToolSpec",
     "FencedBlock",
     "REGISTRY",
     "get_tool",
@@ -51,4 +53,5 @@ __all__ = [
     "finalize_tool_batch",
     "MAX_TOOL_CALLS_PER_TURN",
     "MAX_TOOL_OBS_CHARS",
+    "control_tool_specs",
 ]
