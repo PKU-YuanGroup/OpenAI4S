@@ -553,6 +553,9 @@ class HostDispatcher:
         self._app_tiles: list[dict] = []
         # background executor (exec_peek / exec_interrupt), built lazily.
         self._bg_executor: Any = None
+        # Runtime adapter for independent background kernels. Gateway/CLI set
+        # this dynamically so jobs inherit the foreground workspace and env.
+        self.background_kernel_factory: Callable[[], Any] | None = None
         # optional replay recorder: if set, every host_call is taped.
         self.recorder: Any | None = None
         # remote-compute transport, built lazily on first compute_* call.
@@ -2148,6 +2151,13 @@ class HostDispatcher:
             return {"error": f"mcp_call({server}.{tool}) failed: {e}"}
 
     # --- background exec: peek / interrupt -----------------------
+    def _new_background_kernel(self):
+        if self.background_kernel_factory is not None:
+            return self.background_kernel_factory()
+        from openai4s.kernel import Kernel
+
+        return Kernel(dispatcher=self)
+
     def _bg(self):
         """Lazily build the background executor (one per dispatcher).
 
@@ -2156,11 +2166,11 @@ class HostDispatcher:
         host_calls still resolve against the same store/session.
         """
         if self._bg_executor is None:
-            from openai4s.kernel import Kernel
             from openai4s.kernel.background import BackgroundExecutor
 
             self._bg_executor = BackgroundExecutor(
-                kernel_factory=lambda: Kernel(dispatcher=self), dispatcher=self
+                kernel_factory=self._new_background_kernel,
+                dispatcher=self,
             )
         return self._bg_executor
 

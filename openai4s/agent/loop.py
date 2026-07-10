@@ -7,6 +7,7 @@ scientific execution.  Only ``host.submit_output(...)`` completes a task.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from openai4s.agent.engine import AgentEngine
@@ -240,8 +241,13 @@ class Agent:
             {"role": "user", "content": task},
         ]
         transcript: list[Turn] = []
+        run_cwd = os.getcwd()
+        self.dispatcher.background_kernel_factory = lambda: Kernel(
+            dispatcher=self.dispatcher,
+            cwd=run_cwd,
+        )
         try:
-            with Kernel(dispatcher=self.dispatcher) as kernel:
+            with Kernel(dispatcher=self.dispatcher, cwd=run_cwd) as kernel:
                 if self._skill_loader is not None:
                     boot = self._skill_loader.bootstrap_code()
                     if boot.strip():

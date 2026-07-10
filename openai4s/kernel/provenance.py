@@ -36,6 +36,10 @@ _PROV_JSON_LEAF_CAP = 10_000
 _installed = False
 _host_call: Callable[[str, list], Any] | None = None
 _current_cell_id: list[str | None] = [None]
+# Stable filesystem root captured when the worker installs provenance. User
+# code may chdir later; absolute identity follows that live cwd, while logical
+# artifact names stay relative to the kernel's original execution root.
+_execution_root: list[str | None] = [None]
 # side table for objects that can't hold attributes (id(obj) -> frozenset)
 _side_tags: dict[int, frozenset] = {}
 
@@ -74,11 +78,48 @@ def merge_tags(*objs: Any) -> frozenset:
     return out
 
 
+def _canonical_path(path: Any) -> tuple[str, str] | None:
+    """Resolve one filesystem argument in the worker's real cwd.
+
+    The host process can have a different cwd from this kernel.  Send it an
+    absolute path for identity and a cwd-relative filename for display/logical
+    artifact naming.  Paths outside the worker cwd fall back to their basename.
+    """
+    try:
+        raw = os.fsdecode(os.fspath(path))
+        # Match Python's file APIs exactly: relative paths use cwd, while a
+        # literal '~' is not expanded unless user code expanded it first.
+        lexical = os.path.abspath(raw)
+        # Identity must follow filesystem symlinks before collapsing `..`.
+        # `abspath("link/../x")` is only lexical and can name a different file
+        # from the one open() actually reached through `link`.
+        absolute = os.path.realpath(raw)
+    except (TypeError, ValueError, OSError):
+        return None
+    try:
+        relative = os.path.relpath(
+            lexical,
+            os.path.abspath(_execution_root[0] or os.getcwd()),
+        )
+    except (ValueError, OSError):
+        relative = os.path.basename(absolute)
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        relative = os.path.basename(absolute)
+    elif relative == os.curdir:
+        relative = os.path.basename(absolute)
+    if not relative:
+        return None
+    return absolute, relative
+
+
 def _resolve_version(path: Any) -> str | None:
     if _host_call is None or path is None:
         return None
+    location = _canonical_path(path)
+    if location is None:
+        return None
     try:
-        return _host_call("prov_resolve_path", [str(path)])
+        return _host_call("prov_resolve_path", [location[0]])
     except Exception:  # noqa: BLE001 - provenance must never break user code
         return None
 
@@ -105,15 +146,18 @@ def _prov_wrap_reader(fn: Callable, path_kw: str | None = None) -> Callable:
     return wrapper
 
 
-def _report_write(path: Any, tags: frozenset) -> None:
+def _report_location(location: tuple[str, str] | None, tags: frozenset) -> None:
     if _host_call is None or not tags:
+        return
+    if location is None:
         return
     try:
         _host_call(
             "prov_record",
             [
                 {
-                    "path": str(path),
+                    "path": location[0],
+                    "filename": location[1],
                     "input_version_ids": sorted(tags),
                     "producing_cell_id": _current_cell_id[0],
                 }
@@ -121,6 +165,10 @@ def _report_write(path: Any, tags: frozenset) -> None:
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+def _report_write(path: Any, tags: frozenset) -> None:
+    _report_location(_canonical_path(path), tags)
 
 
 def _prov_wrap_method_writer(cls: type, name: str, path_argno: int = 0) -> None:
@@ -184,7 +232,9 @@ class _ProvFileWriter:
 
     def __init__(self, fh: Any, path: Any):
         self._fh = fh
-        self._path = path
+        # Freeze the location when open() resolves the relative path. A user
+        # may chdir before the handle closes, but that must not change identity.
+        self._location = _canonical_path(path)
         self._tags: frozenset = frozenset()
 
     def write(self, s: Any) -> Any:
@@ -206,12 +256,12 @@ class _ProvFileWriter:
 
     def __exit__(self, *exc: object) -> Any:
         res = self._fh.__exit__(*exc)
-        _report_write(self._path, self._tags)
+        _report_location(self._location, self._tags)
         return res
 
     def close(self) -> None:
         self._fh.close()
-        _report_write(self._path, self._tags)
+        _report_location(self._location, self._tags)
 
 
 class _ProvFileReader:
@@ -364,6 +414,7 @@ def install(host_call: Callable[[str, list], Any]) -> None:
     _host_call = host_call
     if _installed:
         return
+    _execution_root[0] = os.getcwd()
     _installed = True
 
     # builtins
@@ -436,4 +487,5 @@ def uninstall() -> None:
     global _installed
     builtins.open = _real_open  # type: ignore[assignment]
     _json.loads = _real_json_loads  # type: ignore[assignment]
+    _execution_root[0] = None
     _installed = False

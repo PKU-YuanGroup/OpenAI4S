@@ -29,6 +29,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -361,6 +362,15 @@ def _strip_sql_literals(sql: str) -> str:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _file_identity(path: str) -> str | None:
+    """Best-effort physical identity for legacy/aliased artifact paths."""
+    try:
+        raw = os.fsdecode(os.fspath(path))
+        return os.path.normcase(os.path.realpath(raw))
+    except (TypeError, ValueError, OSError):
+        return None
 
 
 def _perm_match(text: str, pattern: str) -> bool:
@@ -1405,14 +1415,44 @@ class Store:
         return row["p"] if row else None
 
     def version_for_path(self, path: str) -> str | None:
-        """Reverse lookup: newest version_id whose stored path matches."""
+        """Reverse lookup the newest version for an exact or aliased path.
+
+        The indexed lexical lookup gives us a lower bound. Newer rows are still
+        checked for a physical alias before returning it, so an older exact row
+        cannot hide a newer ``/tmp``/``/private/tmp`` or symlink spelling.
+        Without an exact row, the physical fallback also preserves legacy
+        relative-path records without rewriting history.
+        """
         with self._lock:
-            row = self._conn.execute(
-                "SELECT version_id FROM artifact_versions WHERE path=? "
-                "ORDER BY created_at DESC LIMIT 1",
+            exact = self._conn.execute(
+                "SELECT version_id,created_at,rowid AS version_rowid "
+                "FROM artifact_versions WHERE path=? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 (str(path),),
             ).fetchone()
-        return row["version_id"] if row else None
+            identity = _file_identity(path)
+            if identity is None:
+                return exact["version_id"] if exact else None
+            if exact:
+                candidates = self._conn.execute(
+                    "SELECT version_id,path FROM artifact_versions WHERE "
+                    "created_at>? OR (created_at=? AND rowid>?) "
+                    "ORDER BY created_at DESC, rowid DESC",
+                    (
+                        exact["created_at"],
+                        exact["created_at"],
+                        exact["version_rowid"],
+                    ),
+                ).fetchall()
+            else:
+                candidates = self._conn.execute(
+                    "SELECT version_id,path FROM artifact_versions "
+                    "ORDER BY created_at DESC, rowid DESC"
+                ).fetchall()
+        for candidate in candidates:
+            if _file_identity(candidate["path"]) == identity:
+                return candidate["version_id"]
+        return exact["version_id"] if exact else None
 
     def version_meta(self, version_id: str) -> dict | None:
         with self._lock:

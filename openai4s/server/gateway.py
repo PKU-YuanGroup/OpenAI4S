@@ -1101,14 +1101,18 @@ class SessionRunner:
                 pass
             disp.active_env_bin = env.bin_dir
             disp.on_env_switch = self._make_env_switch_sink(st)
-            return Kernel(
+            kernel_options = {
+                "cwd": str(st.workspace),
+                "mode": "repl",
+                "python": env.interpreter,
+                "env_root": str(env.root) if env.is_conda else None,
+                "env_name": env.name,
+            }
+            disp.background_kernel_factory = lambda: Kernel(
                 dispatcher=disp,
-                cwd=str(st.workspace),
-                mode="repl",
-                python=env.interpreter,
-                env_root=str(env.root) if env.is_conda else None,
-                env_name=env.name,
+                **kernel_options,
             )
+            return Kernel(dispatcher=disp, **kernel_options)
 
         previous_lease = st.kernels.lease("python")
         try:

@@ -337,6 +337,7 @@ def test_environment_replacement_commits_worker_dispatcher_and_active_env_togeth
                 raise RuntimeError("struct worker failed to start")
             self.dispatcher = dispatcher
             self.python = python
+            self.options = kwargs
             self.live = True
             self.shutdown_calls = 0
             kernels.append(self)
@@ -361,6 +362,9 @@ def test_environment_replacement_commits_worker_dispatcher_and_active_env_togeth
     old_kernel = first.kernel
     old_dispatcher = st.dispatcher
     old_dispatcher.active_r_env = "r-special"
+    background = old_dispatcher.background_kernel_factory()
+    assert background.python == "base-python"
+    assert background.options["cwd"] == str(st.workspace)
 
     with pytest.raises(RuntimeError, match="failed to start"):
         runner.set_env(frame_id, "struct")
@@ -379,6 +383,9 @@ def test_environment_replacement_commits_worker_dispatcher_and_active_env_togeth
     assert st.kernel is kernels[-1] and st.kernel is not old_kernel
     assert st.dispatcher is st.kernel.dispatcher
     assert st.dispatcher.active_r_env == "r-special"
+    replacement_background = st.dispatcher.background_kernel_factory()
+    assert replacement_background.python == "struct-python"
+    assert replacement_background.options["cwd"] == str(st.workspace)
     assert st.env_name == "struct"
     assert old_kernel.shutdown_calls == 1
     assert bootstrapped == [old_kernel, st.kernel]

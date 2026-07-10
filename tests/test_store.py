@@ -170,6 +170,94 @@ def test_resolve_artifact_path_prefers_snapshot_keeps_live_path(tmp_path):
     assert store.resolve_artifact_path("nope") is None
 
 
+def test_version_for_path_breaks_timestamp_ties_by_newest_row(monkeypatch, tmp_path):
+    import openai4s.store as store_module
+
+    monkeypatch.setattr(store_module, "_now_ms", lambda: 123456)
+    store = _store(tmp_path)
+    first = store.save_artifact(
+        path="/live/tied.txt",
+        filename="tied.txt",
+        content_type="text/plain",
+        size_bytes=1,
+        checksum="first",
+    )
+    second = store.save_artifact(
+        path="/live/tied.txt",
+        filename="tied.txt",
+        content_type="text/plain",
+        size_bytes=1,
+        checksum="second",
+        artifact_id=first["artifact_id"],
+    )
+
+    assert store.version_for_path("/live/tied.txt") == second["version_id"]
+
+
+def test_version_for_path_resolves_legacy_relative_and_symlink_aliases(
+    monkeypatch, tmp_path
+):
+    store = _store(tmp_path / "data")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "relative.txt"
+    target.write_text("data")
+    monkeypatch.chdir(workspace)
+    relative = store.save_artifact(
+        path="relative.txt",
+        filename="relative.txt",
+        content_type="text/plain",
+        size_bytes=4,
+        checksum="relative",
+    )
+    assert store.version_for_path(str(target)) == relative["version_id"]
+
+    physical = tmp_path / "physical"
+    physical.mkdir()
+    aliased = tmp_path / "alias"
+    aliased.symlink_to(physical, target_is_directory=True)
+    alias_path = aliased / "linked.txt"
+    real_path = physical / "linked.txt"
+    real_path.write_text("linked")
+    exact = store.save_artifact(
+        path=str(real_path),
+        filename="linked.txt",
+        content_type="text/plain",
+        size_bytes=6,
+        checksum="exact-older",
+    )
+    linked = store.save_artifact(
+        path=str(alias_path),
+        filename="linked.txt",
+        content_type="text/plain",
+        size_bytes=6,
+        checksum="linked",
+        artifact_id=exact["artifact_id"],
+    )
+    assert store.version_for_path(str(real_path)) == linked["version_id"]
+    assert store.version_for_path(str(alias_path)) == linked["version_id"]
+
+    external = tmp_path / "external"
+    external_dir = external / "dir"
+    external_dir.mkdir(parents=True)
+    traversal_link = workspace / "traversal-link"
+    traversal_link.symlink_to(external_dir, target_is_directory=True)
+    external_secret = external / "secret.txt"
+    workspace_secret = workspace / "secret.txt"
+    external_secret.write_text("outside")
+    workspace_secret.write_text("inside")
+    lexical_traversal = traversal_link / ".." / "secret.txt"
+    traversed = store.save_artifact(
+        path=str(lexical_traversal),
+        filename="secret.txt",
+        content_type="text/plain",
+        size_bytes=7,
+        checksum="outside",
+    )
+    assert store.version_for_path(str(external_secret)) == traversed["version_id"]
+    assert store.version_for_path(str(workspace_secret)) is None
+
+
 # --- lineage_edges -----------------------------------------------------------
 def test_lineage_edge_row_shape_and_directional_queries(tmp_path):
     store = _store(tmp_path)
