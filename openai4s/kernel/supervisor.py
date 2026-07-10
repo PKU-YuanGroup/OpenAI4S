@@ -200,6 +200,18 @@ class KernelSupervisor:
                 pass
             return True
 
+    def interrupt_if_current(self, lease: KernelLease) -> bool:
+        """Interrupt only the worker generation captured by ``lease``."""
+        with self._lock:
+            slot = self._slots.get(lease.language)
+            if not self._matches(slot, lease):
+                return False
+            try:
+                slot.kernel.interrupt()
+            except Exception:  # noqa: BLE001 — interruption is best-effort
+                pass
+            return True
+
     def _slot(self, language: str) -> _Slot:
         if not language:
             raise ValueError("language must be non-empty")

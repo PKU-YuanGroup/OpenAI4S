@@ -194,19 +194,27 @@ def test_blocking_restart_hook_does_not_block_concurrent_interrupt():
     assert not thread.is_alive()
 
 
-def test_stale_lease_cannot_kill_restart_or_abandon_a_new_worker():
+def test_stale_lease_cannot_interrupt_kill_restart_or_abandon_a_new_worker():
     supervisor = KernelSupervisor()
     created: list[FakeKernel] = []
     create = _factory(created, "python")
     stale = supervisor.ensure("python", "base", create)
     current = supervisor.ensure("python", "struct", create)
 
+    assert supervisor.interrupt_if_current(stale) is False
     assert supervisor.kill_if_current(stale) is False
     assert supervisor.restart_if_current(stale) is None
     assert supervisor.abandon_if_current(stale) is False
     assert supervisor.current("python") == current
-    assert current.kernel.kill_calls == current.kernel.restart_calls == 0
+    assert (
+        current.kernel.interrupt_calls
+        == current.kernel.kill_calls
+        == current.kernel.restart_calls
+        == 0
+    )
 
+    assert supervisor.interrupt_if_current(current) is True
+    assert current.kernel.interrupt_calls == 1
     assert supervisor.kill_if_current(current) is True
     assert current.kernel.kill_calls == 1
     restarted = supervisor.restart_if_current(current)

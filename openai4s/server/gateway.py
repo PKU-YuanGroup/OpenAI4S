@@ -46,6 +46,7 @@ from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
 from openai4s.config import Config, get_config, is_placeholder_api_key
+from openai4s.execution import WatchdogPolicy, execute_with_watchdog
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
 from openai4s.llm import ARK_PLAN_MODELS, PROVIDERS, chat
@@ -2982,134 +2983,45 @@ class SessionRunner:
         origin: str,
         on_chunk,
         language: str = "python",
+        lease: KernelLease | None = None,
     ) -> dict:
-        """Run one cell but NEVER let a wedged kernel hang the turn forever.
-
-        A lease freezes the exact Python or R worker for the whole watchdog
-        ladder. A stale helper can therefore never kill, restart, or abandon a
-        replacement worker installed by another lifecycle operation.
-
-        The kernel read loop (`Kernel.execute` → `_readline`) blocks on the
-        worker's stdout with no timeout, so if the worker wedges (e.g. a cell
-        deadlocks importing a heavy package after install) the turn stalls in
-        status='processing' with no reply — the "runs but never returns" bug.
-
-        We run `kernel.execute` in a helper thread and bound it. On timeout:
-          1. SIGINT the worker (breaks a Python-level hang). If that frees the
-             cell we RETURN its interrupted result and keep the kernel + namespace
-             so the turn can continue.
-          2. else hard-KILL the old worker. If the helper was blocked in the read
-             loop this EOFs it and it dies → we `restart()` the kernel in place.
-          3. else (helper wedged inside a host-side call — SIGKILL of the worker
-             can't reach it) we ABANDON this exact lease (respawned lazily)
-             rather than `restart()` it: restarting the SHARED kernel
-             would reassign the `_proc` slot the zombie still holds and let it
-             corrupt/steal frames from a fresh worker. The zombie stays bound to
-             the dead old proc and dies when its call returns.
-          4. raise TimeoutError → run_message finalises the turn as *failed*.
-
-        The cap is generous (default 900s, `OPENAI4S_CELL_TIMEOUT`) so real
-        heavy science cells (imports, training, big fetches) are never cut short.
-        """
-        import math
-        import os
-
-        lease = st.kernels.lease(language)
+        """Web adapter for the protocol-neutral exact-lease cell watchdog."""
+        lease = lease or st.kernels.lease(language)
         if lease is None:
             raise RuntimeError(f"{language} kernel is not available")
-        kernel = lease.kernel
-        try:
-            cap = float(os.environ.get("OPENAI4S_CELL_TIMEOUT", "900") or 900)
-        except (TypeError, ValueError):
-            cap = 900.0
-        if not math.isfinite(cap) or cap <= 0:  # inf/nan/<=0 → disable (old behaviour)
-            return kernel.execute(code, origin=origin, on_chunk=on_chunk)
-
-        box: dict = {}
-
-        def _run() -> None:
-            try:
-                box["result"] = kernel.execute(code, origin=origin, on_chunk=on_chunk)
-            except BaseException as e:  # noqa: BLE001 — relay to the caller thread
-                box["error"] = e
-
-        th = threading.Thread(
-            target=_run, name=f"os-cell-{st.root_frame_id}", daemon=True
-        )
-        th.start()
-        # Watchdog with a FROZEN clock while a tool call is blocked awaiting the
-        # user's permission decision: a slow human approval must never look like a
-        # wedged cell (which would SIGINT/kill the kernel and fail the turn). Only
-        # actual execution time counts toward `cap`; the permission-gate's own
-        # timeout is the human-approval backstop.
         try:
             from openai4s.permissions import broker as _perm_broker
 
-            _brk = _perm_broker()
+            permission_broker = _perm_broker()
         except Exception:  # noqa: BLE001
-            _brk = None
-        remaining = cap
-        while remaining > 0:
-            slice_ = min(remaining, 1.0)
-            th.join(slice_)
-            if not th.is_alive():
-                break
-            if st.cancel.is_set():
-                break
-            if _brk is not None and _brk.is_pending(st.root_frame_id):
-                continue  # paused for approval — do not spend the watchdog budget
-            remaining -= slice_
-        if not th.is_alive():
-            if "error" in box:
-                raise box["error"]
-            return box["result"]
+            permission_broker = None
 
-        # Cap exceeded — try a gentle SIGINT first. It breaks a Python-level hang
-        # and KEEPS the kernel + namespace, so the cell just comes back as an
-        # interrupted (error) result and the turn continues.
-        try:
-            kernel.interrupt()
-        except Exception:  # noqa: BLE001
-            pass
-        th.join(_WATCHDOG_INTERRUPT_GRACE_S)
-        if not th.is_alive():
-            if "error" in box:
-                raise box["error"]
-            if box.get("result") is not None:
-                return box["result"]
-            return {
-                "stdout": "",
-                "stderr": "",
-                "error": f"cell interrupted after exceeding {int(cap)}s",
-            }
+        def permission_pending() -> bool:
+            return bool(
+                permission_broker
+                and permission_broker.is_pending(st.root_frame_id)
+            )
 
-        # Still wedged after SIGINT. Hard-kill only the worker captured by this
-        # lease. If it is no longer current, the supervisor leaves the newer
-        # worker untouched.
-        st.kernels.kill_if_current(lease)
-        th.join(_WATCHDOG_KILL_GRACE_S)
-        if th.is_alive():
-            # Helper is stuck in a host-side call (not the read loop). Restarting
-            # the SHARED kernel would reassign the _proc slot the zombie still
-            # holds → frame corruption/steal. Abandon this Kernel instead; the
-            # session lazily respawns a fresh one and the zombie dies harmlessly
-            # against the dead old proc.
-            st.kernels.abandon_if_current(lease)
-        else:
-            # Helper is gone — safe to restart the shared Kernel in place.
-            try:
-                callback = (
-                    (lambda target: self._run_bootstrap(st, target))
-                    if language == "python"
-                    else None
-                )
-                st.kernels.restart_if_current(lease, after_restart=callback)
-            except Exception:  # noqa: BLE001
-                pass
-        raise TimeoutError(
-            f"cell exceeded {int(cap)}s with no result and was stopped; the "
-            "kernel was reset (variables from earlier cells were cleared). Break "
-            "the work into smaller steps, or raise OPENAI4S_CELL_TIMEOUT."
+        policy = WatchdogPolicy.from_environment(
+            interrupt_grace_s=_WATCHDOG_INTERRUPT_GRACE_S,
+            kill_grace_s=_WATCHDOG_KILL_GRACE_S,
+        )
+        after_restart = (
+            (lambda target: self._run_bootstrap(st, target))
+            if language == "python"
+            else None
+        )
+        return execute_with_watchdog(
+            st.kernels,
+            lease,
+            lambda kernel: kernel.execute(
+                code, origin=origin, on_chunk=on_chunk
+            ),
+            policy=policy,
+            cancelled=st.cancel.is_set,
+            paused=permission_pending,
+            after_restart=after_restart,
+            thread_name=f"os-cell-{st.root_frame_id}",
         )
 
     def _safety_refusal(self, code: str, origin: str) -> str | None:
@@ -3286,7 +3198,7 @@ class SessionRunner:
             r_lease = st.kernels.lease("r")
             try:
                 result = self._execute_with_watchdog(
-                    st, code, origin, on_chunk, language="r"
+                    st, code, origin, on_chunk, language="r", lease=r_lease
                 )
             except BaseException:
                 # A callback/protocol error may leave a live worker with an old
