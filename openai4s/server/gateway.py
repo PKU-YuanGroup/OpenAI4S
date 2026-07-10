@@ -46,7 +46,12 @@ from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
 from openai4s.config import Config, get_config, is_placeholder_api_key
-from openai4s.execution import WatchdogPolicy, execute_with_watchdog
+from openai4s.execution import (
+    CaptureResult,
+    CellRequest,
+    WatchdogPolicy,
+    execute_with_watchdog,
+)
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
 from openai4s.llm import ARK_PLAN_MODELS, PROVIDERS, chat
@@ -54,6 +59,7 @@ from openai4s.review import review_evidence
 from openai4s.server.agent_run import EventCancellation
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
 from openai4s.server.agent_run import WebActionExecutor, WebEventSink
+from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.skills_loader import SkillLoader
 from openai4s.store import Store, get_store
 from openai4s.tools import control_tool_specs
@@ -61,7 +67,6 @@ from openai4s.tools import control_tool_specs
 os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure capture
 
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
-_NB_DIVIDER = "----- output -----"  # matches the frontend live-notebook parser
 _WATCHDOG_INTERRUPT_GRACE_S = 10.0
 _WATCHDOG_KILL_GRACE_S = 10.0
 
@@ -877,20 +882,6 @@ _SUBMIT_NUDGE = (
 )
 
 
-def _activity_title(code: str, idx: int) -> str:
-    """Human-readable label for a code cell's activity card — the leading
-    `# comment`, else a generic fallow."""
-    for line in code.splitlines():
-        s = line.strip()
-        if s.startswith("#"):
-            t = s.lstrip("#").strip()
-            if t:
-                return t[:90]
-        elif s:
-            break
-    return f"Running analysis · cell {idx}"
-
-
 _JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
 
 
@@ -922,6 +913,41 @@ class SessionRunner:
         self._lock = threading.Lock()
         self._ws_root = cfg.data_dir / "agent-workspaces"
         self._ws_root.mkdir(parents=True, exist_ok=True)
+        self.cells = CellExecutionService(
+            CellExecutionPorts(
+                prepare_language=lambda st, language: (
+                    self._ensure_r_kernel(st) if language == "r" else None
+                ),
+                kernel_id=lambda st, language: (
+                    self._r_kernel_id(st)
+                    if language == "r"
+                    else self._kernel_id(st)
+                ),
+                snapshot=self._snapshot,
+                protect_versions=self._protect_latest_version_snapshots,
+                safety_refusal=lambda code, origin: self._safety_refusal(code, origin),
+                run=lambda st, request, on_chunk, lease: self._execute_with_watchdog(
+                    st,
+                    request.code,
+                    request.origin,
+                    on_chunk,
+                    language=request.language,
+                    lease=lease,
+                ),
+                capture=lambda st, index, cell_id, before, emit, language: CaptureResult(
+                    *self._capture(
+                        st,
+                        index,
+                        cell_id,
+                        before,
+                        emit,
+                        language=language,
+                    )
+                ),
+                emit_artifact_step=self._emit_artifact_step,
+                record_cell=self.store.log_cell,
+            )
+        )
 
     def workspace_for(self, root_frame_id: str) -> Path:
         ws = self._ws_root / root_frame_id
@@ -3054,202 +3080,21 @@ class SessionRunner:
         stream: bool = True,
         language: str = "python",
     ) -> dict:
-        """Run one code cell in the matching persistent kernel (python or R);
-        capture + persist it."""
-        rid = st.root_frame_id
-        st.cell_index += 1
-        idx = st.cell_index
-        cell_id = f"c-{uuid.uuid4().hex[:12]}"
-        # spawn/retarget the R kernel FIRST so the segment label below reflects
-        # the env the cell actually runs in; a missing R becomes a soft error
-        # observation after the safety gate (the model can fall back to python)
-        r_error: str | None = None
-        if language == "r":
-            r_error = self._ensure_r_kernel(st)
-        kernel_id = self._r_kernel_id(st) if language == "r" else self._kernel_id(st)
-        title = _activity_title(code, idx)
-        on_chunk = None
-        if stream:
-            emit(
-                {
-                    "type": "text_chunk",
-                    "frame_id": rid,
-                    "block_type": "tool",
-                    "chunk": f"⚙{title}\n",
-                    "cell_index": idx,
-                    "kernel_id": kernel_id,
-                    "language": language,
-                }
-            )
-            emit(
-                {
-                    "type": "text_chunk",
-                    "frame_id": rid,
-                    "block_type": "tool",
-                    "chunk": code + "\n" + _NB_DIVIDER + "\n",
-                }
-            )
-
-            def on_chunk(t: str, _emit=emit, _rid=rid) -> None:  # noqa: E306
-                _emit(
-                    {
-                        "type": "text_chunk",
-                        "frame_id": _rid,
-                        "block_type": "tool",
-                        "chunk": t,
-                    }
-                )
-
-        before = self._snapshot(st.workspace)
-        self._protect_latest_version_snapshots(st)
-        # Pre-exec code-safety gate (report e6w). Only agent-authored cells are
-        # gated — a user typing directly into the Notebook is explicitly running
-        # their own code and is not screened.
-        refusal = self._safety_refusal(code, origin)
-        if refusal is not None:
-            result = {
-                "type": "response",
-                "id": cell_id,
-                "stdout": "",
-                "stderr": "",
-                "error": refusal,
-                "interrupted": False,
-                "trace": {"error_lineno": None, "error_call": None},
-                "usage": {},
-            }
-            if stream:
-                emit(
-                    {
-                        "type": "text_chunk",
-                        "frame_id": rid,
-                        "block_type": "tool",
-                        "chunk": "\n" + refusal,
-                    }
-                )
-            self.store.log_cell(
-                frame_id=rid,
-                root_frame_id=rid,
-                code=code,
-                result=result,
-                origin=origin,
-                cell_seq=idx,
-                cell_index=idx,
-                project_id=st.project_id,
-                kernel_id=kernel_id,
-                language=language,
-                figures=[],
-                files_written=[],
-                files_read=[],
-            )
-            return {
-                "result": result,
-                "idx": idx,
-                "cell_id": cell_id,
-                "figures": [],
-                "files_written": [],
-                "saved": [],
-            }
-        if r_error is not None:
-            # no R interpreter (or spawn failed): a soft error result, logged
-            # and streamed exactly like a failed cell — never a crashed turn
-            result = {
-                "type": "response",
-                "id": cell_id,
-                "stdout": "",
-                "stderr": "",
-                "error": r_error,
-                "interrupted": False,
-                "trace": {"error_lineno": None, "error_call": None},
-                "usage": {},
-            }
-            if stream:
-                emit(
-                    {
-                        "type": "text_chunk",
-                        "frame_id": rid,
-                        "block_type": "tool",
-                        "chunk": "\n" + r_error,
-                    }
-                )
-            self.store.log_cell(
-                frame_id=rid,
-                root_frame_id=rid,
-                code=code,
-                result=result,
-                origin=origin,
-                cell_seq=idx,
-                cell_index=idx,
-                project_id=st.project_id,
-                kernel_id=kernel_id,
-                language=language,
-                figures=[],
-                files_written=[],
-                files_read=[],
-            )
-            return {
-                "result": result,
-                "idx": idx,
-                "cell_id": cell_id,
-                "figures": [],
-                "files_written": [],
-                "saved": [],
-            }
-        if language == "r":
-            r_lease = st.kernels.lease("r")
-            try:
-                result = self._execute_with_watchdog(
-                    st, code, origin, on_chunk, language="r", lease=r_lease
-                )
-            except BaseException:
-                # A callback/protocol error may leave a live worker with an old
-                # response still buffered. Close only the lease that executed
-                # this cell; watchdog recovery may already have advanced it.
-                if r_lease is not None:
-                    st.kernels.shutdown_if_current(r_lease)
-                raise
-        else:
-            result = self._execute_with_watchdog(st, code, origin, on_chunk)
-        result["id"] = cell_id
-        if stream and result.get("error"):
-            emit(
-                {
-                    "type": "text_chunk",
-                    "frame_id": rid,
-                    "block_type": "tool",
-                    "chunk": "\n" + result["error"],
-                }
-            )
-        figures, files_written, saved = self._capture(
-            st, idx, cell_id, before, emit, language=language
-        )
-        # Files this cell produced are auto-captured as versioned artifacts; project
-        # that into a persisted "artifact" activity step (files / environment / the
-        # returned artifact metadata) so the UI renders a "Saving …" card exactly
-        # like the reference — no explicit host.save_artifact call required.
-        if saved and stream:
-            self._emit_artifact_step(st, title, saved, emit)
-        self.store.log_cell(
-            frame_id=rid,
-            root_frame_id=rid,
+        """Compatibility façade over the typed cell execution service."""
+        request = CellRequest(
             code=code,
-            result=result,
             origin=origin,
-            cell_seq=idx,
-            cell_index=idx,
-            project_id=st.project_id,
-            kernel_id=kernel_id,
             language=language,
-            figures=figures,
-            files_written=files_written,
-            files_read=[],
+            stream=stream,
         )
+        executed = self.cells.execute(st, request, emit)
         return {
-            "result": result,
-            "idx": idx,
-            "cell_id": cell_id,
-            "figures": figures,
-            "files_written": files_written,
-            "saved": saved,
+            "result": executed.result,
+            "idx": executed.cell_index,
+            "cell_id": executed.cell_id,
+            "figures": executed.capture.figures,
+            "files_written": executed.capture.files_written,
+            "saved": executed.capture.artifacts,
         }
 
     def _emit_artifact_step(

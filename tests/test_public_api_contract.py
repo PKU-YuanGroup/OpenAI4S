@@ -28,7 +28,13 @@ _PACKAGE_EXPORTS = {
     },
     "openai4s.cli": {"main"},
     "openai4s.compute": {"ComputeError", "ComputeManager"},
-    "openai4s.execution": {"WatchdogPolicy", "execute_with_watchdog"},
+    "openai4s.execution": {
+        "CaptureResult",
+        "CellExecutionResult",
+        "CellRequest",
+        "WatchdogPolicy",
+        "execute_with_watchdog",
+    },
     "openai4s.kernel": {"Kernel", "KernelLease", "KernelSupervisor"},
     "openai4s.sdk": {"build_host"},
     "openai4s.security": {
