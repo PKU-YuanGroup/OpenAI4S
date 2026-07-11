@@ -325,14 +325,29 @@ class WebActionExecutor:
     def _refuse_native(
         action: NativeToolBatch, reason: str, stop_reason: str
     ) -> ExecutionOutcome:
-        refused = execute_native_batch(
-            action,
-            lambda call: (f"[Tool error] {call.name}: {reason}", False),
-            limit=len(action.calls),
-        )
+        # Cancellation and plan mode happen *before* execution.  Close the
+        # provider-native batch with one canonical result per declaration, but
+        # do not run ordinary argument/schema validation: no tool was eligible
+        # to execute, and a validation error would incorrectly hide the real
+        # terminal reason (and make plan/cancel replay misleading).
+        parts: list[str] = []
+        history: list[dict] = []
+        for call in action.calls:
+            text = f"[Tool error] {call.name or '<unnamed>'}: {reason}"
+            parts.append(text)
+            history.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "wire_id": call.wire_id,
+                    "name": call.name,
+                    "content": text,
+                    "is_error": True,
+                }
+            )
         return ExecutionOutcome(
-            refused.history_messages,
-            observation=refused.observation,
+            tuple(history),
+            observation=finalize_tool_batch(parts, len(action.calls), []),
             stop_reason=stop_reason,
         )
 

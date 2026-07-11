@@ -427,7 +427,10 @@ def test_plan_mode_refuses_native_calls_without_executing_and_closes_history(
 def test_trailing_environment_failure_is_returned_without_dangling_history(
     monkeypatch,
 ):
-    calls = (_native_call(0), _native_call(1, name="env_use"))
+    calls = (
+        _native_call(0),
+        _native_call(1, name="env_use", arguments={"name": "base"}),
+    )
     apply_count = 0
 
     def apply_pending():

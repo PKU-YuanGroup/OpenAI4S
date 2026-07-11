@@ -421,6 +421,13 @@ class HostDispatcher:
         self.frame_id = frame_id
         self.workspace_path = Path(workspace).resolve() if workspace else None
         self.store = get_store(self.cfg.db_path)
+        # A dispatcher can be constructed directly by the CLI, delegation, or
+        # tests without ever passing through the Web daemon bootstrap.  Seed
+        # the same standing policy here so routine local capabilities do not
+        # accidentally fall through to an ``ask`` decision merely because no
+        # gateway was started.  ``ask`` rules still fail closed when headless;
+        # this only makes the documented defaults consistent across surfaces.
+        self.store.seed_default_permission_rules()
         self._files = WorkspaceFileService(
             data_dir=self.cfg.data_dir,
             frame_id=lambda: self.frame_id,

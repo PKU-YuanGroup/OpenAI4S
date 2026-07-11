@@ -93,6 +93,16 @@ def test_replay_excludes_all_credential_methods_and_values(tmp_path):
     from openai4s.replay import TapeRecorder
 
     dispatcher = HostDispatcher(Config(data_dir=tmp_path))
+    # The production default for injecting a credential is deliberately
+    # ``ask``.  This headless replay contract is testing redaction rather than
+    # unattended approval, so authorize the mutation explicitly.
+    dispatcher.store.set_permission_rule(
+        scope="global",
+        scope_id="",
+        tool="credentials_set",
+        pattern="*",
+        decision="allow",
+    )
     recorder = TapeRecorder(tmp_path / "credentials-tape.json")
     dispatcher.recorder = recorder
     secret = "synthetic-secret-never-record"

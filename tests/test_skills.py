@@ -105,6 +105,14 @@ def test_skills_crud_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "skills_dir", skills_dir)
 
     disp = build_dispatcher(cfg)
+    for tool in ("skills_publish", "skills_delete"):
+        disp.store.set_permission_rule(
+            scope="global",
+            scope_id="",
+            tool=tool,
+            pattern="*",
+            decision="allow",
+        )
 
     # create a draft skill's SKILL.md
     r = disp(
@@ -176,6 +184,15 @@ def test_skills_read_only_origin_blocked(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "skills_dir", skills_dir)
 
     disp = build_dispatcher(cfg)
+    # Exercise the service's immutable-origin guard rather than stopping at
+    # the production default approval gate for destructive skill deletion.
+    disp.store.set_permission_rule(
+        scope="global",
+        scope_id="",
+        tool="skills_delete",
+        pattern="*",
+        decision="allow",
+    )
     with pytest.raises(PermissionError):
         disp("skills_delete", ["vendor"])
     with pytest.raises(PermissionError):
