@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from openai4s.config import Config
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.skills import SkillCustomizationService
@@ -237,3 +239,67 @@ def test_gateway_skill_routes_keep_soft_errors_and_shared_enablement(tmp_path):
         {"error": "skill not found"},
     )
     assert call(first, "DELETE", "/skills/Web%20Skill") == (200, {"ok": True})
+
+
+def test_skill_delete_rejects_same_prefix_sibling_directory(tmp_path):
+    user_directory = tmp_path / "user-skills"
+    user_directory.mkdir()
+    outside = tmp_path / "user-skills-evil" / "victim"
+    outside.mkdir(parents=True)
+    marker = outside / "keep.txt"
+    marker.write_text("keep\n", "utf-8")
+    skill = SimpleNamespace(name="Victim", root=outside)
+    loader = SimpleNamespace(
+        user_skills_dir=lambda: user_directory,
+        skills=lambda: {"victim": skill},
+        discover=lambda: None,
+    )
+
+    assert SkillCustomizationService(loader).delete("Victim") == {
+        "error": "only user-authored skills can be deleted"
+    }
+    assert marker.read_text("utf-8") == "keep\n"
+
+
+def test_skill_write_rejects_directory_and_document_symlink_escape(tmp_path):
+    _config, service = _service(tmp_path)
+    user_directory = service.loader.user_skills_dir()
+    user_directory.mkdir(parents=True)
+    outside_directory = tmp_path / "outside-directory"
+    outside_directory.mkdir()
+    directory_link = user_directory / "escape"
+    try:
+        directory_link.symlink_to(outside_directory, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    assert service.create_or_update("Escape", "", "outside write") == {
+        "error": "unsafe user skill path"
+    }
+    assert not (outside_directory / "SKILL.md").exists()
+
+    safe_root = user_directory / "document-link"
+    safe_root.mkdir()
+    outside_document = tmp_path / "outside-skill.md"
+    outside_document.write_text("sentinel\n", "utf-8")
+    (safe_root / "SKILL.md").symlink_to(outside_document)
+
+    assert service.create_or_update(
+        "Document Link",
+        "",
+        "replacement",
+        existing=True,
+    ) == {"error": "unsafe user skill path"}
+    assert outside_document.read_text("utf-8") == "sentinel\n"
+
+    service.create_or_update("Real Skill", "", "real body")
+    real_root = user_directory / "real-skill"
+    sentinel = real_root / "sentinel.txt"
+    sentinel.write_text("keep real skill\n", "utf-8")
+    alias = user_directory / "alias"
+    alias.symlink_to(real_root, target_is_directory=True)
+    service.loader.discover()
+
+    assert service.delete("alias") == {"error": "unsafe user skill path"}
+    assert alias.is_symlink()
+    assert sentinel.read_text("utf-8") == "keep real skill\n"

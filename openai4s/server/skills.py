@@ -64,14 +64,25 @@ class SkillCustomizationService:
         except Exception:  # noqa: BLE001 - preserve the legacy soft collision check
             pass
 
-        root = self.loader.user_skills_dir() / slug
+        user_directory = self.loader.user_skills_dir()
+        user_directory.mkdir(parents=True, exist_ok=True)
+        user_directory = user_directory.resolve()
+        root = user_directory / slug
+        if root.is_symlink():
+            return {"error": "unsafe user skill path"}
         root.mkdir(parents=True, exist_ok=True)
+        root = root.resolve()
+        if root == user_directory or not root.is_relative_to(user_directory):
+            return {"error": "unsafe user skill path"}
+        document = root / "SKILL.md"
+        if document.is_symlink():
+            return {"error": "unsafe user skill path"}
         description = " ".join((description or "").split())
         frontmatter = (
             f"---\nname: {name}\ndescription: {description}\n"
             "origin: user\n---\n\n"
         )
-        (root / "SKILL.md").write_text(
+        document.write_text(
             frontmatter + (body or "").strip() + "\n",
             "utf-8",
         )
@@ -116,8 +127,10 @@ class SkillCustomizationService:
         user_directory = self.loader.user_skills_dir().resolve()
         for skill in self.loader.skills().values():
             if skill.name == name or skill.root.name == name:
+                if skill.root.is_symlink():
+                    return {"error": "unsafe user skill path"}
                 root = skill.root.resolve()
-                if str(root).startswith(str(user_directory)) and root != user_directory:
+                if root != user_directory and root.is_relative_to(user_directory):
                     shutil.rmtree(root, ignore_errors=True)
                     self.loader.discover()
                     return {"ok": True}
