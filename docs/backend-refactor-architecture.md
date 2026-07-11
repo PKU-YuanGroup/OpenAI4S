@@ -131,7 +131,7 @@ openai4s/
     client.py                  provider-neutral chat orchestration
     messages.py · models.py    normalized messages, replies, calls, usage
     tooling.py · transport.py  wire assembly and stdlib transport
-  llm.py                       compatible public facade
+  llm/__init__.py              compatible public facade
 
   execution/
     models.py                  cell/capture value types
