@@ -71,7 +71,7 @@ def test_timeline_projects_groups_events_and_attempt_milestones(tmp_path):
     store.close()
 
 
-def test_timeline_bounds_large_payloads_and_filters_branch_cursor(tmp_path):
+def test_timeline_omits_large_payloads_and_filters_branch_cursor(tmp_path):
     store = Store(tmp_path / "openai4s.db")
     for ordinal in range(2):
         group = store.append_action_group(
@@ -83,7 +83,10 @@ def test_timeline_bounds_large_payloads_and_filters_branch_cursor(tmp_path):
         store.append_action_event(
             group_id=group["group_id"],
             type="observation",
-            result={"text": "x" * 2_000},
+            result={
+                "text": "x" * 2_000,
+                "artifact": {"artifact_id": f"artifact-{ordinal}"},
+            },
         )
     store.append_action_group(
         root_frame_id="root",
@@ -96,14 +99,56 @@ def test_timeline_bounds_large_payloads_and_filters_branch_cursor(tmp_path):
     service = ActionTimelineService(store, payload_chars=256)
     canonical = service.get("root", after_ordinal=0)
     assert [group["ordinal"] for group in canonical["groups"]] == [1]
-    result = canonical["groups"][0]["events"][0]["result"]
-    assert result["truncated"] is True
-    assert len(result["sha256"]) == 64
-    assert result["original_chars"] > 256
+    event = canonical["groups"][0]["events"][0]
+    assert "result" not in event
+    assert "arguments" not in event
+    assert event["artifacts"] == ["artifact-1"]
 
     branch = service.get("root", branch_id="branch-b")
     assert len(branch["groups"]) == 1
     assert branch["groups"][0]["branch_id"] == "branch-b"
+    store.close()
+
+
+def test_timeline_public_projection_redacts_secrets_and_provider_ids(tmp_path):
+    store = Store(tmp_path / "openai4s.db")
+    group = store.append_action_group(
+        root_frame_id="root",
+        turn_id="turn",
+        kind="native_tools",
+        wire_state={"response_id": "provider-secret-wire"},
+    )
+    store.append_action_event(
+        group_id=group["group_id"],
+        type="result",
+        action_id="action-private",
+        tool_call_id="tool-private",
+        wire_id="wire-private",
+        canonical_arguments={
+            "name": "web_fetch",
+            "arguments": {"url": "https://example.test/?token=secret-value"},
+        },
+        result={
+            "is_error": False,
+            "authorization": "Bearer secret-value",
+            "artifact": {"artifact_id": "artifact-public"},
+        },
+    )
+
+    timeline = ActionTimelineService(store).get("root")
+    public_event = timeline["groups"][0]["events"][0]
+    assert public_event["artifacts"] == ["artifact-public"]
+    assert public_event["outcome"] == "ok"
+    assert not {
+        "arguments",
+        "result",
+        "action_id",
+        "tool_call_id",
+        "wire_id",
+    } & set(public_event)
+    rendered = repr(timeline)
+    assert "secret-value" not in rendered
+    assert "provider-secret-wire" not in rendered
     store.close()
 
 

@@ -9,8 +9,7 @@ accidentally turn a debugging endpoint into a credential or protocol dump.
 
 from __future__ import annotations
 
-import hashlib
-import json
+import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
@@ -68,7 +67,16 @@ class ActionTimelineService:
         }
 
     def _group(self, group: Mapping[str, Any], attempts: Sequence[dict]) -> dict:
-        events = [self._event(event) for event in group.get("events") or ()]
+        raw_events = list(group.get("events") or ())
+        title_events = [
+            {
+                "type": event.get("type"),
+                "arguments": event.get("canonical_arguments"),
+                "result": event.get("result"),
+            }
+            for event in raw_events
+        ]
+        events = [self._event(event) for event in raw_events]
         public_attempts = [self._attempt(attempt) for attempt in attempts]
         public_attempts.sort(
             key=lambda item: (item["attempt_ordinal"], item["allocated_at"])
@@ -82,10 +90,7 @@ class ActionTimelineService:
             "kind": group.get("kind"),
             "provider": group.get("provider"),
             "model": group.get("model"),
-            "assistant_content": _bounded(
-                group.get("assistant_content"), self.payload_chars
-            ),
-            "title": _title(group, events),
+            "title": _safe_text(_title(group, title_events), 160),
             "status": _status(group, events, public_attempts),
             "events": events,
             "attempts": public_attempts,
@@ -93,8 +98,8 @@ class ActionTimelineService:
         }
 
     def _event(self, event: Mapping[str, Any]) -> dict[str, Any]:
-        arguments = _bounded(event.get("canonical_arguments"), self.payload_chars)
-        result = _bounded(event.get("result"), self.payload_chars)
+        arguments = event.get("canonical_arguments")
+        result = event.get("result")
         name = None
         if isinstance(arguments, Mapping):
             name = arguments.get("name")
@@ -104,14 +109,23 @@ class ActionTimelineService:
             "event_id": event.get("event_id"),
             "sequence": event.get("sequence"),
             "type": event.get("type"),
-            "action_id": event.get("action_id"),
-            "tool_call_id": event.get("tool_call_id"),
-            "wire_id": event.get("wire_id"),
-            "name": name,
-            "arguments": arguments,
-            "result": result,
+            "name": _safe_text(name, 120),
+            # Timeline is a researcher-facing projection, not a wire/debug
+            # endpoint.  Canonical arguments, provider ids and raw tool
+            # results remain in the ledger; exposing them here can leak a
+            # command, URL token, credential, or private dataset value into
+            # browser state.  Only outcome and artifact identities cross this
+            # boundary.
+            "is_error": bool(
+                isinstance(result, Mapping) and result.get("is_error")
+            ),
+            "outcome": _public_outcome(result),
+            "artifacts": _artifact_refs(result),
             "side_effect_class": event.get("side_effect_class"),
-            "resource_keys": list(event.get("resource_keys") or ()),
+            "resource_keys": [
+                _safe_text(value, 160)
+                for value in list(event.get("resource_keys") or ())[:64]
+            ],
             "created_at": event.get("created_at"),
         }
 
@@ -127,33 +141,55 @@ class ActionTimelineService:
             "capture_at": attempt.get("capture_at"),
             "finished_at": attempt.get("finished_at"),
             "terminal_state": attempt.get("terminal_state"),
-            "error": _bounded(attempt.get("error"), self.payload_chars),
+            "error": _safe_text(attempt.get("error"), 500),
             "replayed_from_cell_id": attempt.get("replayed_from_cell_id"),
         }
 
 
-def _bounded(value: Any, limit: int) -> Any:
-    """Keep JSON values intact when small, otherwise return an auditable preview."""
-    if value is None:
+_SECRET_RE = re.compile(
+    r"(?i)(?:Bearer\s+\S+|(?:sk|ark|ghp|github_pat|hf|xox[baprs])-"
+    r"[A-Za-z0-9_.-]{8,}|(?:api[_-]?key|token|password|secret)\s*[=:]\s*\S+)"
+)
+
+
+def _safe_text(value: Any, limit: int) -> str | None:
+    if value in (None, ""):
         return None
-    try:
-        encoded = json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    except (TypeError, ValueError):
-        encoded = repr(value)
-    if len(encoded) <= limit:
-        return value
-    digest = hashlib.sha256(encoded.encode("utf-8", "replace")).hexdigest()
-    return {
-        "truncated": True,
-        "sha256": digest,
-        "original_chars": len(encoded),
-        "preview": encoded[: limit - 1] + "…",
-    }
+    text = _SECRET_RE.sub("<redacted>", str(value))
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _public_outcome(result: Any) -> str | None:
+    if not isinstance(result, Mapping):
+        return None
+    if result.get("is_error"):
+        return "error"
+    status = str(result.get("status") or "").strip().lower()
+    if status in {"failed", "error", "denied", "cancelled", "timed_out"}:
+        return status
+    return "ok"
+
+
+def _artifact_refs(value: Any, *, limit: int = 32) -> list[str]:
+    output: list[str] = []
+
+    def visit(item: Any, depth: int = 0) -> None:
+        if depth > 3 or len(output) >= limit:
+            return
+        if isinstance(item, Mapping):
+            for key in ("artifact_id", "version_id", "filename"):
+                ref = _safe_text(item.get(key), 200)
+                if ref and ref not in output:
+                    output.append(ref)
+            for key in ("artifact", "artifacts", "files", "files_written"):
+                if key in item:
+                    visit(item[key], depth + 1)
+        elif isinstance(item, (list, tuple)):
+            for child in item[:limit]:
+                visit(child, depth + 1)
+
+    visit(value)
+    return output
 
 
 def _title(group: Mapping[str, Any], events: Sequence[Mapping[str, Any]]) -> str:
@@ -228,11 +264,7 @@ def _status(
     if any(event.get("type") == "cancelled" for event in events):
         return "cancelled"
     results = [event for event in events if event.get("type") == "result"]
-    if any(
-        isinstance(event.get("result"), Mapping)
-        and event["result"].get("is_error")
-        for event in results
-    ):
+    if any(event.get("is_error") for event in results):
         return "failed"
     if str(group.get("kind") or "") in {"native_tools", "finalize"}:
         proposed = sum(event.get("type") == "proposed" for event in events)

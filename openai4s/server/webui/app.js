@@ -1609,7 +1609,8 @@ function sanitizeActionTimeline(payload) {
       event_id: publicText(event.event_id, 96), sequence: event.sequence, type: publicText(event.type, 64),
       action_id: publicText(event.action_id, 96), name: publicText(event.name, 120),
       side_effect_class: publicText(event.side_effect_class, 64), resource_keys: publicList(event.resource_keys),
-      artifacts: publicArtifacts(event.result), created_at: event.created_at
+      artifacts: publicList(event.artifacts).concat(publicArtifacts(event.result)).slice(0, 16),
+      outcome: publicText(event.outcome, 32), is_error: !!event.is_error, created_at: event.created_at
     })),
     attempts: ((group.attempts || []).slice(0, 50)).map(attempt => ({
       attempt_id: publicText(attempt.attempt_id, 96), producing_cell_id: publicText(attempt.producing_cell_id, 96),
