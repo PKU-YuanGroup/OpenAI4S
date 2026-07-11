@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from openai4s.config import Config, get_config
+from openai4s.host.completion import CompletionService
 from openai4s.host.credentials import CredentialService
 from openai4s.host.endpoints import EndpointService
 from openai4s.host.endpoints import endpoint_fingerprint as _endpoint_fingerprint
@@ -556,7 +557,7 @@ class HostDispatcher:
     ):
         self.cfg = cfg or get_config()
         self._delegate_fn = delegate_fn
-        self.last_output: dict | None = None
+        self._completion_service = CompletionService()
         self.frame_id = frame_id
         self.workspace_path = Path(workspace).resolve() if workspace else None
         self.store = get_store(self.cfg.db_path)
@@ -629,6 +630,15 @@ class HostDispatcher:
 
             self._compute = ComputeManager(self.cfg)
         return self._compute
+
+    @property
+    def last_output(self) -> dict | None:
+        """Latest successful ``host.submit_output`` payload, if any."""
+        return self._completion_service.last_output
+
+    @last_output.setter
+    def last_output(self, value: dict | None) -> None:
+        self._completion_service.last_output = value
 
     def set_workspace(self, path: str | Path) -> None:
         """Bind host-side file operations to the kernel's actual cwd."""
@@ -1851,17 +1861,7 @@ class HostDispatcher:
 
     # --- structured output (completion_bullets) ---------------
     def _m_submit_output(self, spec: dict) -> dict:
-        bullets = spec.get("completion_bullets") or []
-        err = _validate_bullets(bullets)
-        if err:
-            return {"error": err}  # soft-fail: model must retry
-        schema = spec.get("output_schema")
-        if schema is not None:
-            verr = _validate_schema(spec.get("output"), schema)
-            if verr:
-                return {"error": verr}
-        self.last_output = {"output": spec.get("output"), "completion_bullets": bullets}
-        return {"status": "ok"}
+        return self._completion_service.submit(spec)
 
     # --- managed endpoints ---------------------------------------
     def _m_endpoints_free_port(self, *_a: Any) -> int:
@@ -2001,79 +2001,6 @@ def _rank_artifacts(items: list[dict], query: str) -> list[dict]:
             scored.append(out)
     scored.sort(key=lambda x: x["_score"], reverse=True)
     return scored
-
-
-def _validate_bullets(bullets: list) -> str | None:
-    """completion_bullets: 1-4 items, past-tense, verb-first."""
-    if not isinstance(bullets, list) or not (1 <= len(bullets) <= 4):
-        return "completion_bullets must be a list of 1-4 items"
-    for b in bullets:
-        if not isinstance(b, str) or not b.strip():
-            return "each completion bullet must be a non-empty string"
-        first = re.split(r"\s+", b.strip())[0].lower()
-        if not (first.endswith("ed") or first in _PAST_IRREGULARS):
-            return (
-                f"completion bullet {b!r} must start with a past-tense verb "
-                f"(e.g. 'Computed...', 'Saved...')"
-            )
-    return None
-
-
-_PAST_IRREGULARS = frozenset(
-    {
-        "built",
-        "found",
-        "made",
-        "ran",
-        "wrote",
-        "read",
-        "sent",
-        "set",
-        "got",
-        "began",
-        "chose",
-        "drew",
-        "fit",
-        "held",
-        "kept",
-        "led",
-        "left",
-        "put",
-        "saw",
-        "shown",
-        "showed",
-        "split",
-        "taught",
-        "told",
-        "understood",
-        "computed",
-        "created",
-        "generated",
-        "produced",
-        "analyzed",
-        "identified",
-    }
-)
-
-
-def _validate_schema(output: Any, schema: dict) -> str | None:
-    """Minimal JSON-schema-ish validation for output_schema."""
-    if not isinstance(schema, dict):
-        return None
-    stype = schema.get("type")
-    if stype == "object":
-        if not isinstance(output, dict):
-            return "output must be an object per output_schema"
-        for req in schema.get("required", []):
-            if req not in output:
-                return f"output missing required field {req!r}"
-    elif stype == "array" and not isinstance(output, list):
-        return "output must be an array per output_schema"
-    elif stype == "string" and not isinstance(output, str):
-        return "output must be a string per output_schema"
-    elif stype == "number" and not isinstance(output, (int, float)):
-        return "output must be a number per output_schema"
-    return None
 
 
 def build_dispatcher(

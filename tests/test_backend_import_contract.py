@@ -67,7 +67,6 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
 # a public facade instead.  These symbols are intentionally *not* checked as
 # stable exports, so the refactor is free to remove them with their consumers.
 LEGACY_INTERNAL_IMPORT_DEBT: dict[str, frozenset[str]] = {
-    "openai4s.host_dispatch": frozenset({"_validate_schema"}),
     "openai4s.agent.loop": frozenset({"SYSTEM_PROMPT", "_format_observation"}),
 }
 

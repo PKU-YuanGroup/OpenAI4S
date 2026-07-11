@@ -187,9 +187,9 @@ class DelegationRunner:
         # output_schema enforcement
         schema = spec.get("output_schema")
         if schema is not None:
-            from openai4s.host_dispatch import _validate_schema
+            from openai4s.host.completion import validate_output_schema
 
-            verr = _validate_schema(out["output"], schema)
+            verr = validate_output_schema(out["output"], schema)
             if verr:
                 child.status = "failed"
                 child.error = f"output_schema violation: {verr}"

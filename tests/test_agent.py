@@ -394,6 +394,34 @@ def test_delegate_single_and_list(monkeypatch):
     assert {m["output"]["echo"] for m in many} == {"A", "B", "C"}
 
 
+def test_delegate_output_schema_uses_shared_completion_validation(monkeypatch):
+    def fake_run(self, task):
+        output = {"x": 1} if task == "valid" else {"y": 1}
+        return {
+            "stop_reason": "submitted",
+            "submitted_output": {
+                "output": output,
+                "completion_bullets": ["Computed the result"],
+            },
+            "final_message": None,
+        }
+
+    monkeypatch.setattr(loop_mod.Agent, "run", fake_run)
+    runner = DelegationRunner(get_config())
+    schema = {"type": "object", "required": ["x"]}
+
+    invalid = runner({"request": "invalid", "output_schema": schema})
+    assert invalid["error"] == (
+        "output_schema violation: output missing required field 'x'"
+    )
+    assert runner.children()[0]["status"] == "failed"
+
+    valid = runner({"request": "valid", "output_schema": schema})
+    assert "error" not in valid
+    assert valid["output"] == {"x": 1}
+    assert runner.children()[1]["status"] == "done"
+
+
 def test_delegate_session_cap(monkeypatch):
     def fake_run(self, task):
         return {"stop_reason": "final", "submitted_output": None, "final_message": None}
