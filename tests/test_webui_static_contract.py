@@ -152,6 +152,7 @@ def test_critical_dom_ids_are_present_and_unique() -> None:
         "explore-toggle",
         "rightdock",
         "dock-notebook",
+        "dock-timeline",
         "cust",
         "proj-modal",
         "pm-create",
@@ -325,6 +326,96 @@ def test_notebook_retry_projection_is_expandable_and_keeps_raw_attempts() -> Non
     assert 'el("details", "nbc-revisions")' in cell_source
     assert "revisions.forEach" in cell_source
     assert ".nbc-revisions" in STYLE_CSS
+
+
+def test_action_timeline_is_a_safe_allowlisted_projection() -> None:
+    sanitizer = _extract_js_function(APP_JS, "sanitizeActionTimeline")
+    card = _extract_js_function(APP_JS, "actionTimelineCard")
+    renderer = _extract_js_function(APP_JS, "renderActionTimeline")
+    events = _extract_js_function(APP_JS, "onEvent")
+
+    assert "dock-timeline" in INDEX_HTML
+    assert "action_timeline" in events and "action-timeline" in events
+    for kind in (
+        "native_tool",
+        "python",
+        "r",
+        "delegate",
+        "permission",
+        "recovery",
+        "finalize",
+    ):
+        assert f'timeline.kind.{kind}' in APP_JS
+    # Raw provider/audit payloads may be inspected only while deriving a tiny
+    # Artifact-name allowlist; the stored group/event projection must not copy
+    # these fields and the card must never render them.
+    assert "arguments:" not in sanitizer
+    assert "wire_id:" not in sanitizer
+    assert "tool_call_id:" not in sanitizer
+    assert "assistant_content:" not in sanitizer
+    for forbidden in ("arguments", "wire_id", "tool_call_id", "assistant_content"):
+        assert forbidden not in card
+        assert forbidden not in renderer
+    assert "textContent" not in card or "innerHTML" not in card
+    assert ".timeline-card" in STYLE_CSS
+
+
+def test_notebook_live_input_appends_cells_and_keeps_history_read_only() -> None:
+    notebook = _extract_js_function(APP_JS, "renderNotebook")
+    execute = _extract_js_function(APP_JS, "executeNotebookCode")
+    cell = _extract_js_function(APP_JS, "cellNode")
+    identity = _extract_js_function(APP_JS, "nbEventCellId")
+    start = _extract_js_function(APP_JS, "nbCellStart")
+    chunk = _extract_js_function(APP_JS, "nbCellChunk")
+    finished = _extract_js_function(APP_JS, "nbCellFinished")
+
+    assert 'el("textarea", "nb-repl-input")' in notebook
+    assert '[["python", "Python"], ["r", "R"]]' in notebook
+    assert 'event.key === "Enter" && event.shiftKey' in notebook
+    assert "JSON.stringify({ code, language })" in execute
+    assert "/kernel/execute" in execute
+    assert "nb.action.rerun" in cell
+    assert "nb.action.copy" in cell
+    assert "nb.action.fork" in cell
+    assert "nb.action.promote" in cell
+    assert "_historicalRevision" in cell
+    assert "event.cell_id" in identity and "event.producing_cell_id" in identity
+    for source in (chunk, finished):
+        assert "event.cell_id" in source and "event.producing_cell_id" in source
+    assert "_seenChunks" in chunk
+    assert ".nb-repl-input" in STYLE_CSS
+    assert ".nbc-actions" in STYLE_CSS
+
+
+def test_execution_interrupts_send_the_exact_cached_identity() -> None:
+    queue = _extract_js_function(APP_JS, "rememberExecutionQueue")
+    state = _extract_js_function(APP_JS, "rememberExecutionState")
+    scoped = _extract_js_function(APP_JS, "scopedExecutionRequest")
+    cancel = _extract_js_function(APP_JS, "cancelTurn")
+    notebook = _extract_js_function(APP_JS, "renderNotebook")
+
+    assert "execution_id" in queue and "owner.kind" in queue and "owner.id" in queue
+    assert "execution_id" in state and "owner.kind" in state and "owner.id" in state
+    assert "execution_id: identity.execution_id" in scoped
+    assert "owner: identity.owner" in scoped
+    assert "owner_id: identity.owner.id" in scoped
+    assert 'scopedExecutionRequest(S.currentId, "cancel"' in cancel
+    assert 'scopedExecutionRequest(S.currentId, "kernel/interrupt"' in notebook
+
+
+def test_branch_context_and_security_controls_fail_closed_when_absent() -> None:
+    branches = _extract_js_function(APP_JS, "renderBranchPanel")
+    context = _extract_js_function(APP_JS, "renderContextPanel")
+    security = _extract_js_function(APP_JS, "renderSecurityPanel")
+    button = _extract_js_function(APP_JS, "disabledWorkbenchButton")
+
+    assert "branchCapability" in branches
+    assert "revert_preview" in branches
+    assert "button.disabled = !enabled" in button
+    assert "nb.action.unavailable" in button
+    assert "token_count" in context and "layer" in context
+    assert "sandbox" in security and "permission" in security
+    assert "self_test_passed" in security and "network_policy" in security
 
 
 def test_provenance_caches_follow_artifact_versions_and_refresh_mutations() -> None:

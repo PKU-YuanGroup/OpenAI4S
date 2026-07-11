@@ -79,7 +79,12 @@ const api = async (p, o = {}) => {
   const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch { j = t; }
   if (!r.ok) throw new Error((j && (j.error || j.detail)) || ("HTTP " + r.status)); return j;
 };
-const S = { projects: [], sessions: [], project: null, currentId: null, ws: null, stream: null, running: false, models: [], defaultModel: null, sandboxOrigin: "", planMode: false, exploreMode: false, planPending: false, planReady: null, planStatus: null, artifacts: [], dock: { open: false, tab: "notebook" }, openTabs: [], activeTab: "notebook", provMode: false, provSub: "code", cells: [], kernels: [], liveCells: [], _liveCell: null, dockArtifact: null, kernelFilter: null, _titleName: "", skillsCatalog: null, _menu: null, annotations: [], _annotDraft: null, filesScope: "frame", projectArtifacts: [], _projArtFor: null };
+const S = { projects: [], sessions: [], project: null, currentId: null, ws: null, stream: null, running: false, models: [], defaultModel: null, sandboxOrigin: "", planMode: false, exploreMode: false, planPending: false, planReady: null, planStatus: null, artifacts: [], dock: { open: false, tab: "notebook" }, openTabs: [], activeTab: "notebook", provMode: false, provSub: "code", cells: [], kernels: [], liveCells: [], _liveCell: null, dockArtifact: null, kernelFilter: null, _titleName: "", skillsCatalog: null, _menu: null, annotations: [], _annotDraft: null, filesScope: "frame", projectArtifacts: [], _projArtFor: null,
+  // The workbench surfaces are projections only. They deliberately keep no
+  // provider wire payloads or raw tool arguments in browser state.
+  actionTimeline: null, executionQueue: null, executionIdentity: null, recoveryState: null,
+  branchState: null, contextState: null, securityState: null,
+  workbenchErrors: {}, _workbenchReq: 0 };
 const ac = { open: false, items: [], idx: 0, trigger: "", start: 0 };
 const TOOL_LABELS = { run_python: "toolLabel.runPython", run_bash: "toolLabel.runBash", search_skills: "toolLabel.searchSkills", read_skill: "toolLabel.readSkill", write_file: "toolLabel.writeFile", read_file: "toolLabel.readFile", list_files: "toolLabel.listFiles", delegate: "toolLabel.delegate" };
 
@@ -119,6 +124,7 @@ function rerenderI18n() {
   try { renderProjMenu(); } catch {}
   try { renderSessions(); } catch {}
   try { renderDockTabs(); } catch {}
+  try { if (S.activeTab === "notebook") renderNotebook(); else if (S.activeTab === "timeline") renderActionTimeline(); } catch {}
   try { if (S._titleName) setTitle(S._titleName); } catch {}
   try { if (!$("#cust").classList.contains("hidden")) { const at = document.querySelector(".cust-tab.active"); custTab(at ? at.dataset.tab : "general"); } } catch {}
   try { const m = $("#messages"); if (m && m.children.length === 1 && m.firstChild && m.firstChild.classList && m.firstChild.classList.contains("empty-session")) { m.innerHTML = ""; renderEmptySession(); } } catch {}
@@ -385,6 +391,7 @@ Object.assign(I18N.zh, {
   "dock.notes.placeholder": "添加一条笔记…",
   "dock.tab.files": "文件",
   "dock.tab.notebook": "笔记本",
+  "dock.tab.timeline": "行动时间线",
   "edac.keyword": "关键字",
   "editor.label": "编辑 {0}",
   "empty.sub": "描述你的科研任务，智能体会写 Python、联网检索、调用技能并产出图表/报告/结构文件。可试试：",
@@ -488,6 +495,79 @@ Object.assign(I18N.zh, {
   "nb.status.ready": "就绪 · {0}",
   "nb.revisions.summary": "共 {0} 次尝试 · 展开查看 {1} 个失败版本",
   "nb.table.rowsHidden": "… {0} 行未显示",
+  "nb.action.copy": "复制",
+  "nb.action.copied": "已复制代码",
+  "nb.action.rerun": "作为新单元运行",
+  "nb.action.fork": "从此前 Fork",
+  "nb.action.promote": "提升为 Artifact",
+  "nb.action.unavailable": "当前服务尚未提供此操作；历史单元不会被修改。",
+  "nb.action.failed": "Notebook 操作失败：{0}",
+  "nb.interrupt.noOwner": "当前没有可精确中断的 execution owner。",
+  "nb.action.queued": "已追加为新的 {0} 单元",
+  "nb.cell.current": "Current",
+  "nb.cell.stale": "Stale",
+  "nb.cell.nonReplayable": "Non-replayable",
+  "nb.cell.historical": "历史版本 · 只读",
+  "nb.repl.language": "语言",
+  "nb.repl.run": "Shift+Enter 运行",
+  "nb.repl.multilineHint": "多行 Python/R 输入只会追加新单元；已执行历史始终只读。",
+  "runtime.branch": "Branch",
+  "runtime.python": "Python",
+  "runtime.r": "R",
+  "runtime.revision": "Revision",
+  "runtime.owner": "Owner",
+  "runtime.queue": "Queue",
+  "runtime.none": "—",
+  "runtime.status.live": "Live",
+  "runtime.status.busy": "Busy",
+  "runtime.status.ended": "Ended · 仅供查看",
+  "runtime.status.restoring": "Restoring",
+  "runtime.status.partial": "Partial",
+  "runtime.status.failed": "Failed",
+  "timeline.title": "Action Timeline",
+  "timeline.subtitle": "来自持久 Action Ledger 的安全投影；不显示原始参数、wire state 或 token。",
+  "timeline.refresh": "刷新",
+  "timeline.loading": "正在读取行动记录…",
+  "timeline.empty": "还没有可显示的行动。Notebook 仅保留科研 cell，完整控制流程会出现在这里。",
+  "timeline.owner": "Owner",
+  "timeline.permission": "权限",
+  "timeline.resources": "资源",
+  "timeline.generation": "Generation",
+  "timeline.replay": "Replay",
+  "timeline.duration": "耗时",
+  "timeline.artifacts": "产物",
+  "timeline.kind.native_tool": "Native Tool",
+  "timeline.kind.python": "Python Cell",
+  "timeline.kind.r": "R Cell",
+  "timeline.kind.dynamic_tool": "Dynamic Tool",
+  "timeline.kind.delegate": "Delegated Agent",
+  "timeline.kind.background": "Background / Remote Job",
+  "timeline.kind.permission": "Permission Pause",
+  "timeline.kind.recovery": "Recovery Event",
+  "timeline.kind.finalize": "FinalizeAction",
+  "timeline.kind.action": "Action",
+  "timeline.panel.branches": "Branch · Checkpoint",
+  "timeline.panel.context": "Context composition",
+  "timeline.panel.security": "Sandbox · Permission",
+  "timeline.noBranch": "尚无 branch/checkpoint 投影。",
+  "timeline.noContext": "尚无 context composition 投影。",
+  "timeline.noSecurity": "尚无 sandbox/permission 状态投影。",
+  "branch.current": "当前",
+  "branch.head": "Head {0}",
+  "branch.checkpoint": "创建 checkpoint",
+  "branch.preview": "预览回滚",
+  "branch.revert": "回滚并继续",
+  "branch.conflict": "检测到外部文件冲突，不能直接应用。",
+  "branch.previewTitle": "Revert preview",
+  "branch.diff": "消息 {0} · Notebook {1} · 文件写入 {2} / 删除 {3} · Artifact +{4}/-{5}",
+  "context.tokens": "{0} tokens",
+  "context.compressed": "已压缩",
+  "context.handoff": "Handoff",
+  "security.sandbox": "Sandbox",
+  "security.permission": "Permission",
+  "security.selfTest": "Self-test",
+  "security.network": "Network",
+  "security.pending": "{0} 个待审批",
   "notes.empty": "还没有笔记。",
   "notes.emptyNoProject": "在某个项目下可添加笔记。",
   "palette.action.backHome": "返回主页",
@@ -986,6 +1066,7 @@ Object.assign(I18N.en, {
   "dock.notes.placeholder": "Add a note…",
   "dock.tab.files": "Files",
   "dock.tab.notebook": "Notebook",
+  "dock.tab.timeline": "Action Timeline",
   "edac.keyword": "Keywords",
   "editor.label": "Editing {0}",
   "empty.sub": "Describe your research task and the agent will write Python, search the web, invoke skills, and produce charts/reports/structure files. Try:",
@@ -1089,6 +1170,79 @@ Object.assign(I18N.en, {
   "nb.status.ready": "Ready · {0}",
   "nb.revisions.summary": "{0} attempts · expand {1} failed revisions",
   "nb.table.rowsHidden": "… {0} rows not shown",
+  "nb.action.copy": "Copy",
+  "nb.action.copied": "Code copied",
+  "nb.action.rerun": "Rerun as new",
+  "nb.action.fork": "Fork from before",
+  "nb.action.promote": "Promote to Artifact",
+  "nb.action.unavailable": "This operation is not exposed by the current server; history will not be modified.",
+  "nb.action.failed": "Notebook action failed: {0}",
+  "nb.interrupt.noOwner": "There is no exact execution owner to interrupt.",
+  "nb.action.queued": "Appended as a new {0} cell",
+  "nb.cell.current": "Current",
+  "nb.cell.stale": "Stale",
+  "nb.cell.nonReplayable": "Non-replayable",
+  "nb.cell.historical": "Historical revision · read only",
+  "nb.repl.language": "Language",
+  "nb.repl.run": "Shift+Enter to run",
+  "nb.repl.multilineHint": "Multiline Python/R input only appends new cells; executed history is always read-only.",
+  "runtime.branch": "Branch",
+  "runtime.python": "Python",
+  "runtime.r": "R",
+  "runtime.revision": "Revision",
+  "runtime.owner": "Owner",
+  "runtime.queue": "Queue",
+  "runtime.none": "—",
+  "runtime.status.live": "Live",
+  "runtime.status.busy": "Busy",
+  "runtime.status.ended": "Ended · view only",
+  "runtime.status.restoring": "Restoring",
+  "runtime.status.partial": "Partial",
+  "runtime.status.failed": "Failed",
+  "timeline.title": "Action Timeline",
+  "timeline.subtitle": "Safe projection of the durable Action Ledger; raw arguments, wire state and tokens are never shown.",
+  "timeline.refresh": "Refresh",
+  "timeline.loading": "Loading actions…",
+  "timeline.empty": "No actions to show yet. Notebook keeps scientific cells; the full control flow appears here.",
+  "timeline.owner": "Owner",
+  "timeline.permission": "Permission",
+  "timeline.resources": "Resources",
+  "timeline.generation": "Generation",
+  "timeline.replay": "Replay",
+  "timeline.duration": "Duration",
+  "timeline.artifacts": "Artifacts",
+  "timeline.kind.native_tool": "Native Tool",
+  "timeline.kind.python": "Python Cell",
+  "timeline.kind.r": "R Cell",
+  "timeline.kind.dynamic_tool": "Dynamic Tool",
+  "timeline.kind.delegate": "Delegated Agent",
+  "timeline.kind.background": "Background / Remote Job",
+  "timeline.kind.permission": "Permission Pause",
+  "timeline.kind.recovery": "Recovery Event",
+  "timeline.kind.finalize": "FinalizeAction",
+  "timeline.kind.action": "Action",
+  "timeline.panel.branches": "Branch · Checkpoint",
+  "timeline.panel.context": "Context composition",
+  "timeline.panel.security": "Sandbox · Permission",
+  "timeline.noBranch": "No branch/checkpoint projection is available yet.",
+  "timeline.noContext": "No context composition projection is available yet.",
+  "timeline.noSecurity": "No sandbox/permission projection is available yet.",
+  "branch.current": "current",
+  "branch.head": "Head {0}",
+  "branch.checkpoint": "Create checkpoint",
+  "branch.preview": "Preview revert",
+  "branch.revert": "Revert and continue",
+  "branch.conflict": "External file conflicts prevent this revert from being applied.",
+  "branch.previewTitle": "Revert preview",
+  "branch.diff": "Messages {0} · Notebook {1} · files write {2} / delete {3} · Artifacts +{4}/-{5}",
+  "context.tokens": "{0} tokens",
+  "context.compressed": "compressed",
+  "context.handoff": "Handoff",
+  "security.sandbox": "Sandbox",
+  "security.permission": "Permission",
+  "security.selfTest": "Self-test",
+  "security.network": "Network",
+  "security.pending": "{0} pending approvals",
   "notes.empty": "No notes yet.",
   "notes.emptyNoProject": "Notes can be added under a project.",
   "palette.action.backHome": "Back to home",
@@ -1375,6 +1529,7 @@ function dockToggle() { if (S.dock.open) dockClose(); else { dockOpen(); setActi
 function dockTab(tab) {
   if (tab === "files") setActiveTab("files");
   else if (tab === "notebook") setActiveTab("notebook");
+  else if (tab === "timeline") setActiveTab("timeline");
   else if (tab === "viewer") setActiveTab(S.dockArtifact ? S.dockArtifact.id : "notebook");
   else if (tab === "prov") { if (S.dockArtifact) showProvenance(S.dockArtifact); }
 }
@@ -1392,6 +1547,9 @@ function renderDockTabs() {
   const nt = tabBtn("button", "notebook", "Notebook");
   if (S.activeTab === "notebook") nt.classList.add("active");
   nt.onclick = () => setActiveTab("notebook"); bar.appendChild(nt);
+  const tt = tabBtn("button", "clock", t("dock.tab.timeline"));
+  if (S.activeTab === "timeline") tt.classList.add("active");
+  tt.onclick = () => setActiveTab("timeline"); bar.appendChild(tt);
   if (S.activeTab === "files") { const ft = tabBtn("button", "files", "Files"); ft.classList.add("active"); bar.appendChild(ft); }
 }
 function addOpenTab(a) { if (!(S.openTabs || []).some(x => x.id === a.id)) (S.openTabs = S.openTabs || []).push(a); }
@@ -1402,13 +1560,422 @@ function closeTab(id) {
 }
 function setActiveTab(t) {
   S.activeTab = t; dockOpen(); renderDockTabs();
-  showDockPane(t === "notebook" ? "notebook" : (t === "files" ? "files" : "viewer"));
+  showDockPane(t === "notebook" ? "notebook" : (t === "timeline" ? "timeline" : (t === "files" ? "files" : "viewer")));
   if (t === "notebook") renderNotebook();
+  else if (t === "timeline") { loadWorkbenchState(S.currentId); renderActionTimeline(); }
   else if (t === "files") { if (S.filesScope === "project") loadProjectArtifacts().then(renderFilesGrid); else renderFilesGrid(); }
   else renderViewer();
 }
-function showDockPane(pane) { ["viewer", "notebook", "files"].forEach(p => { const n = $("#dock-" + p); if (n) n.classList.toggle("hidden", p !== pane); }); }
+function showDockPane(pane) { ["viewer", "notebook", "timeline", "files"].forEach(p => { const n = $("#dock-" + p); if (n) n.classList.toggle("hidden", p !== pane); }); }
 function ghostIconBtn(name, title) { const b = el("button", "icon-ghost"); b.innerHTML = icon(name, 16); if (title) b.title = title; return b; }
+
+/* ---------- Action Timeline + session workbench projections ---------- */
+// These helpers are intentionally allowlist-based. The durable ledger may carry
+// provider wire ids, canonical arguments and complete results for audit/replay;
+// none of those belong in the researcher-facing DOM (or browser state).
+function publicText(value, limit = 180) {
+  let out = String(value == null ? "" : value);
+  out = out
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+    .replace(/\b(?:sk|ark|api[_-]?key|access[_-]?token|refresh[_-]?token)[-_][A-Za-z0-9._-]{8,}\b/gi, "[redacted]")
+    .replace(/([?&](?:key|token|api_key)=)[^&#\s]+/gi, "$1[redacted]");
+  return out.length > limit ? out.slice(0, Math.max(0, limit - 1)) + "…" : out;
+}
+function publicList(value, limit = 24) {
+  return (Array.isArray(value) ? value : []).slice(0, limit).map(item => publicText(item, 160)).filter(Boolean);
+}
+function publicArtifacts(result) {
+  const found = [];
+  const add = (value) => { const text = publicText(value, 160); if (text && !found.includes(text) && found.length < 16) found.push(text); };
+  const walk = (value, depth) => {
+    if (depth > 2 || value == null) return;
+    if (Array.isArray(value)) { value.slice(0, 16).forEach(item => walk(item, depth + 1)); return; }
+    if (typeof value !== "object") return;
+    ["filename", "artifact_id", "version_id"].forEach(key => { if (value[key] != null) add(value[key]); });
+    ["artifact", "artifacts", "files", "files_written"].forEach(key => { if (value[key] != null) walk(value[key], depth + 1); });
+  };
+  walk(result, 0); return found;
+}
+function sanitizeActionTimeline(payload) {
+  const source = payload && (payload.timeline || payload.payload || payload);
+  const groups = ((source && source.groups) || []).slice(0, 500).map(group => ({
+    group_id: publicText(group.group_id, 96), branch_id: publicText(group.branch_id, 96),
+    turn_id: publicText(group.turn_id, 96), ordinal: Number.isFinite(+group.ordinal) ? +group.ordinal : null,
+    kind: publicText(group.kind, 48), language: publicText(group.language, 24), provider: publicText(group.provider, 48), model: publicText(group.model, 96),
+    title: publicText(group.title, 260), status: publicText(group.status, 32), owner: publicText(group.owner || group.owner_kind, 80),
+    permission: publicText(group.permission || group.permission_state, 80), replay_policy: publicText(group.replay_policy, 48),
+    cost: Number.isFinite(+group.cost) ? +group.cost : null, created_at: group.created_at,
+    events: ((group.events || []).slice(0, 100)).map(event => ({
+      event_id: publicText(event.event_id, 96), sequence: event.sequence, type: publicText(event.type, 64),
+      action_id: publicText(event.action_id, 96), name: publicText(event.name, 120),
+      side_effect_class: publicText(event.side_effect_class, 64), resource_keys: publicList(event.resource_keys),
+      artifacts: publicArtifacts(event.result), created_at: event.created_at
+    })),
+    attempts: ((group.attempts || []).slice(0, 50)).map(attempt => ({
+      attempt_id: publicText(attempt.attempt_id, 96), producing_cell_id: publicText(attempt.producing_cell_id, 96),
+      attempt_ordinal: attempt.attempt_ordinal, generation_id: publicText(attempt.generation_id, 96),
+      allocated_at: attempt.allocated_at, started_at: attempt.started_at, response_at: attempt.response_at,
+      capture_at: attempt.capture_at, finished_at: attempt.finished_at,
+      terminal_state: publicText(attempt.terminal_state, 48), error: publicText(attempt.error, 240),
+      replayed_from_cell_id: publicText(attempt.replayed_from_cell_id, 96)
+    }))
+  }));
+  return {
+    root_frame_id: publicText(source && source.root_frame_id, 96),
+    branch_id: publicText(source && source.branch_id, 96), groups,
+    count: Number.isFinite(+(source && source.count)) ? +(source && source.count) : groups.length,
+    last_ordinal: source && source.last_ordinal, running: !!(source && source.running)
+  };
+}
+function sanitizeExecutionQueue(payload) {
+  const source = payload && (payload.execution || payload.payload || payload) || {};
+  const ticket = item => item ? {
+    execution_id: publicText(item.execution_id, 96), status: publicText(item.status, 32),
+    owner: { kind: publicText((item.owner || {}).kind || item.owner_kind, 48), id: publicText((item.owner || {}).id || item.owner_id, 96) },
+    branch_id: publicText(item.branch_id, 96), language: publicText(item.language, 24),
+    generation_id: publicText(item.generation_id, 96), resource_keys: publicList(item.resource_keys),
+    queue_position: Number.isFinite(+item.queue_position) ? +item.queue_position : null,
+    queued_at: item.queued_at, started_at: item.started_at, cancel_requested: !!item.cancel_requested
+  } : null;
+  return {
+    owner: ticket(source.owner), queue: (source.queue || []).slice(0, 100).map(ticket).filter(Boolean),
+    queued_count: Number.isFinite(+source.queued_count) ? +source.queued_count : ((source.queue || []).length),
+    active_count: Number.isFinite(+source.active_count) ? +source.active_count : (source.owner ? 1 : 0),
+    closed: !!source.closed, close_reason: publicText(source.close_reason, 160)
+  };
+}
+function rememberExecutionQueue(payload) {
+  S.executionQueue = sanitizeExecutionQueue(payload);
+  const ticket = S.executionQueue.owner;
+  S.executionIdentity = ticket && ticket.execution_id && ticket.owner && ticket.owner.kind && ticket.owner.id ? {
+    execution_id: ticket.execution_id, owner: { kind: ticket.owner.kind, id: ticket.owner.id }
+  } : null;
+  return S.executionQueue;
+}
+function rememberExecutionState(event) {
+  const status = String(event && event.status || "").toLowerCase();
+  const identity = event && event.execution_id && event.owner && event.owner.kind && event.owner.id ? {
+    execution_id: publicText(event.execution_id, 96),
+    owner: { kind: publicText(event.owner.kind, 48), id: publicText(event.owner.id, 96) }
+  } : null;
+  if (identity && ["running", "finalizing"].includes(status)) S.executionIdentity = identity;
+  else if (identity && status === "queued" && !S.executionIdentity) S.executionIdentity = identity;
+  if (S.executionIdentity && event && event.execution_id === S.executionIdentity.execution_id && ["completed", "failed", "cancelled"].includes(status)) S.executionIdentity = null;
+}
+async function exactExecutionIdentity(frameId) {
+  if (frameId === S.currentId && S.executionIdentity) return S.executionIdentity;
+  const snapshot = await optionalApi([`/frames/${frameId}/execution-queue`, `/frames/${frameId}/execution`]);
+  if (!snapshot) return null;
+  const safe = sanitizeExecutionQueue(snapshot), ticket = safe.owner;
+  if (frameId === S.currentId) rememberExecutionQueue(snapshot);
+  return ticket && ticket.execution_id && ticket.owner && ticket.owner.kind && ticket.owner.id ? { execution_id: ticket.execution_id, owner: ticket.owner } : null;
+}
+async function scopedExecutionRequest(frameId, endpoint, reason) {
+  const identity = await exactExecutionIdentity(frameId);
+  if (!identity) { hint(t("nb.interrupt.noOwner"), true); return { ok: false, reason: "no_exact_owner" }; }
+  return api(`/frames/${frameId}/${endpoint}`, {
+    method: "POST", body: JSON.stringify({ execution_id: identity.execution_id, owner: identity.owner, owner_id: identity.owner.id, reason })
+  });
+}
+function sanitizeRecovery(payload) {
+  const source = payload && (payload.recovery || payload.payload || payload) || {};
+  return {
+    status: publicText(source.status || source.state, 48), progress: Number.isFinite(+source.progress) ? Math.max(0, Math.min(1, +source.progress)) : null,
+    state_revision: source.state_revision, branch_id: publicText(source.branch_id, 96),
+    python_generation_id: publicText(source.python_generation_id || (source.generations || {}).python, 96),
+    r_generation_id: publicText(source.r_generation_id || (source.generations || {}).r, 96),
+    message: publicText(source.message || source.reason || source.error, 240),
+    log: (source.log || source.events || (/recovery_log/.test(String(source.type || "")) ? [source] : [])).slice(-50).map(item => ({
+      status: publicText(item.status || item.state || item.type, 48), message: publicText(item.message || item.reason || item.error, 240), at: item.at || item.created_at
+    }))
+  };
+}
+function sanitizeBranches(payload) {
+  const source = payload && (payload.branch || payload.payload || payload) || {};
+  const capabilities = source.capabilities || source.actions || {};
+  const checkpoints = items => (items || []).slice(0, 100).map(cp => ({
+    checkpoint_id: publicText(cp.checkpoint_id || cp.id, 96), parent_checkpoint_id: publicText(cp.parent_checkpoint_id, 96),
+    reason: publicText(cp.reason, 80), created_at: cp.created_at, message_cursor: cp.message_cursor,
+    action_cursor: cp.action_cursor, cell_cursor: cp.cell_cursor,
+    requires_kernel_recovery: !!((cp.metadata || {}).requires_kernel_recovery || cp.requires_kernel_recovery)
+  }));
+  return {
+    branch_id: publicText(source.branch_id || source.current_branch_id, 96),
+    capabilities: {
+      checkpoint: !!capabilities.checkpoint, fork: !!capabilities.fork,
+      revert_preview: !!(capabilities.revert_preview || capabilities.preview_revert),
+      revert: !!capabilities.revert, promote: !!(capabilities.promote || capabilities.promote_artifact)
+    },
+    branches: (source.branches || []).slice(0, 100).map(branch => ({
+      branch_id: publicText(branch.branch_id || branch.id, 96), name: publicText(branch.name, 120),
+      head_checkpoint_id: publicText(branch.head_checkpoint_id, 96), created_at: branch.created_at,
+      checkpoints: checkpoints(branch.checkpoints)
+    })),
+    revert_preview: sanitizeRevertPreview(source.revert_preview)
+  };
+}
+function sanitizeRevertPreview(source) {
+  if (!source || typeof source !== "object") return null;
+  const workspace = source.workspace || {};
+  const setDelta = value => ({ added: publicList((value || {}).added), removed: publicList((value || {}).removed) });
+  return {
+    branch_id: publicText(source.branch_id, 96), current_checkpoint_id: publicText(source.current_checkpoint_id, 96),
+    target_checkpoint_id: publicText(source.target_checkpoint_id, 96), can_apply: !!source.can_apply,
+    messages: { delta: Number((source.messages || {}).delta || 0) },
+    notebook: { delta: Number((source.notebook || {}).delta || 0) },
+    actions: { delta: Number((source.actions || {}).delta || 0) },
+    workspace: { writes: publicList(workspace.writes), deletes: publicList(workspace.deletes), conflicts: publicList(workspace.conflicts) },
+    artifacts: setDelta(source.artifacts), environment: source.environment ? { changed: true } : null,
+    permissions: source.permissions ? { changed: true } : null
+  };
+}
+function sanitizeContext(payload) {
+  const source = payload && (payload.context || payload.payload || payload) || {};
+  const layers = source.layers || source.segments || source.composition || [];
+  return {
+    token_count: Number.isFinite(+source.token_count) ? +source.token_count : null,
+    token_limit: Number.isFinite(+source.token_limit) ? +source.token_limit : null,
+    handoff: !!(source.handoff || source.handoff_id), compressed: !!(source.compressed || source.compaction_count),
+    layers: (Array.isArray(layers) ? layers : []).slice(0, 100).map(layer => ({
+      name: publicText(layer.name || layer.kind || layer.type, 120), kind: publicText(layer.kind || layer.type, 64),
+      token_count: Number.isFinite(+layer.token_count) ? +layer.token_count : null,
+      status: publicText(layer.status, 48), compressed: !!layer.compressed
+    }))
+  };
+}
+function sanitizeSecurity(payload) {
+  const source = payload && (payload.security || payload.payload || payload) || {};
+  const sandbox = source.sandbox || source.kernel_sandbox || (/sandbox/.test(String(source.type || "")) ? source : {});
+  const permission = source.permission || source.permissions || {};
+  return {
+    sandbox: {
+      state: publicText(sandbox.state || sandbox.status, 48), mode: publicText(sandbox.mode, 32),
+      backend: publicText(sandbox.backend, 64), enforced: !!sandbox.enforced,
+      self_test_passed: sandbox.self_test_passed === true, network_policy: publicText(sandbox.network_policy, 64),
+      detail: publicText(sandbox.detail || sandbox.warning, 200)
+    },
+    permission: {
+      mode: publicText(permission.mode || permission.policy, 48),
+      pending_count: Number.isFinite(+permission.pending_count) ? +permission.pending_count : 0,
+      unattended: publicText(permission.unattended, 48)
+    }
+  };
+}
+async function optionalApi(paths) {
+  for (const path of paths) { try { return await api(path); } catch {} }
+  return null;
+}
+async function loadWorkbenchState(id, force = false) {
+  if (!id || id !== S.currentId) return;
+  if (!force && S._workbenchLoading === id) return;
+  const request = S._workbenchReq = (S._workbenchReq || 0) + 1;
+  S._workbenchLoading = id;
+  const base = `/frames/${id}`;
+  const [timeline, execution, branches, context, security] = await Promise.all([
+    optionalApi([base + "/action-timeline"]),
+    optionalApi([base + "/execution-queue", base + "/execution"]),
+    optionalApi([base + "/branches"]), optionalApi([base + "/context"]), optionalApi([base + "/security"])
+  ]);
+  if (request !== S._workbenchReq || id !== S.currentId) return;
+  S._workbenchLoading = null;
+  if (timeline) S.actionTimeline = sanitizeActionTimeline(timeline);
+  if (execution) rememberExecutionQueue(execution);
+  if (branches) S.branchState = sanitizeBranches(branches);
+  if (context) S.contextState = sanitizeContext(context);
+  if (security) S.securityState = sanitizeSecurity(security);
+  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "notebook") renderNotebook();
+}
+function scheduleWorkbenchRefresh(delay = 180) {
+  clearTimeout(S._workbenchTimer);
+  S._workbenchTimer = setTimeout(() => loadWorkbenchState(S.currentId, true), delay);
+}
+function latestCellForLanguage(language) {
+  return (S.cells || []).concat(S.liveCells || []).filter(cell => String(cell.language || cell.kernel_id || "python").toLowerCase().startsWith(language)).slice(-1)[0] || null;
+}
+function runtimeSummary() {
+  const queue = S.executionQueue || {};
+  const ownerTicket = queue.owner || null;
+  const owner = ownerTicket && ownerTicket.owner || {};
+  const recovery = S.recoveryState || {};
+  const recoveryStatus = String(recovery.status || "").toLowerCase();
+  let status = "ended";
+  if (/fail|error/.test(recoveryStatus)) status = "failed";
+  else if (/partial/.test(recoveryStatus)) status = "partial";
+  else if (/restor|recover|bootstrap|validat/.test(recoveryStatus)) status = "restoring";
+  else if (ownerTicket || S.running || (_kc.st && _kc.st.turn_running)) status = "busy";
+  else if (_kc.st && _kc.st.alive) status = "live";
+  const pythonCell = latestCellForLanguage("python"), rCell = latestCellForLanguage("r");
+  const branch = (S.branchState && S.branchState.branch_id) || (S.actionTimeline && S.actionTimeline.branch_id) || (recovery && recovery.branch_id) || S.currentId;
+  const stateRevision = recovery.state_revision != null ? recovery.state_revision : Math.max(0, ...((S.cells || []).concat(S.liveCells || []).map(cell => Number(cell.state_revision) || 0)));
+  const pyGeneration = recovery.python_generation_id || (_kc.st && (_kc.st.python_generation_id || _kc.st.generation_id)) || (pythonCell && pythonCell.generation_id);
+  const rGeneration = recovery.r_generation_id || (rCell && rCell.generation_id);
+  return {
+    status, branch: publicText(branch, 96), python: publicText(pyGeneration, 96), r: publicText(rGeneration, 96),
+    revision: stateRevision || null, owner: publicText(owner.kind || (ownerTicket && ownerTicket.owner_kind), 48),
+    ownerId: publicText(owner.id || (ownerTicket && ownerTicket.owner_id), 96),
+    queue: Number(queue.queued_count || (queue.queue || []).length || 0)
+  };
+}
+function shortRuntime(value) { const text = publicText(value, 96); return text ? (text.length > 12 ? text.slice(0, 8) + "…" : text) : t("runtime.none"); }
+function runtimeSummaryNode(compact = false) {
+  const runtime = runtimeSummary();
+  const root = el("div", "runtime-summary" + (compact ? " compact" : ""));
+  const state = el("span", "runtime-state " + runtime.status, t("runtime.status." + runtime.status)); root.appendChild(state);
+  const item = (key, value, title) => { const chip = el("span", "runtime-chip"); chip.appendChild(el("span", "runtime-key", t(key))); const val = el("span", "runtime-val", value); if (title) val.title = publicText(title, 160); chip.appendChild(val); root.appendChild(chip); };
+  item("runtime.branch", shortRuntime(runtime.branch), runtime.branch);
+  item("runtime.python", shortRuntime(runtime.python), runtime.python);
+  item("runtime.r", shortRuntime(runtime.r), runtime.r);
+  item("runtime.revision", runtime.revision == null ? t("runtime.none") : "S" + runtime.revision);
+  item("runtime.owner", runtime.owner ? runtime.owner + (runtime.ownerId ? " · " + shortRuntime(runtime.ownerId) : "") : t("runtime.none"), runtime.ownerId);
+  item("runtime.queue", String(runtime.queue));
+  return root;
+}
+function timelineKind(group) {
+  const kind = String(group && group.kind || "").toLowerCase();
+  const eventKinds = (group.events || []).map(event => String(event.type || "").toLowerCase()).join(" ");
+  const latestAttempt = (group.attempts || []).slice(-1)[0], linkedCell = latestAttempt && nbFindCell(latestAttempt.producing_cell_id);
+  const language = String(group.language || (linkedCell && linkedCell.language) || "").toLowerCase();
+  if (/final/.test(kind + " " + eventKinds)) return "finalize";
+  if (/permission|approval/.test(kind + " " + eventKinds)) return "permission";
+  if (/recover|restore|bootstrap/.test(kind + " " + eventKinds)) return "recovery";
+  if (/delegat|subagent/.test(kind + " " + eventKinds)) return "delegate";
+  if (/background|remote|compute|job/.test(kind + " " + eventKinds)) return "background";
+  if (/dynamic/.test(kind + " " + eventKinds)) return "dynamic_tool";
+  if (language === "r" || /\br\b|r_cell|rcode/.test(kind)) return "r";
+  if (/code|python|cell/.test(kind)) return "python";
+  if (/tool/.test(kind + " " + eventKinds)) return "native_tool";
+  return "action";
+}
+function timelineDuration(attempt) {
+  if (!attempt) return "";
+  const parse = value => { if (value == null) return null; const number = +value; if (Number.isFinite(number)) return number > 1e12 ? number : number * 1000; const date = Date.parse(value); return Number.isFinite(date) ? date : null; };
+  const start = parse(attempt.started_at || attempt.allocated_at), end = parse(attempt.finished_at || attempt.capture_at || attempt.response_at);
+  if (start == null || end == null || end < start) return "";
+  const ms = end - start; return ms < 1000 ? Math.round(ms) + " ms" : (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + " s";
+}
+function timelineMeta(label, value) {
+  if (value == null || value === "" || (Array.isArray(value) && !value.length)) return null;
+  const row = el("div", "timeline-meta"); row.appendChild(el("span", "timeline-meta-key", label));
+  const values = Array.isArray(value) ? value : [value]; const body = el("span", "timeline-meta-value");
+  values.slice(0, 24).forEach(item => body.appendChild(el("span", "timeline-pill", publicText(item, 160)))); row.appendChild(body); return row;
+}
+function actionTimelineCard(group) {
+  const kind = timelineKind(group), status = String(group.status || "completed").toLowerCase();
+  const card = el("article", "timeline-card kind-" + kind + " status-" + status); card.setAttribute("data-action-kind", kind);
+  const head = el("div", "timeline-card-head");
+  const kindLabel = el("span", "timeline-kind"); kindLabel.appendChild(iconEl(kind === "delegate" ? "users" : (kind === "permission" ? "lock" : (kind === "recovery" ? "refresh" : (kind === "finalize" ? "check" : (kind === "native_tool" || kind === "dynamic_tool" ? "sliders" : "terminal")))), 14)); kindLabel.appendChild(el("span", null, t("timeline.kind." + kind))); head.appendChild(kindLabel);
+  head.appendChild(el("span", "timeline-status " + status, publicText(status || "completed", 32))); card.appendChild(head);
+  card.appendChild(el("div", "timeline-card-title", group.title || t("timeline.kind." + kind)));
+  const latest = (group.attempts || []).slice(-1)[0] || null;
+  const resources = []; const artifacts = [];
+  (group.events || []).forEach(event => { (event.resource_keys || []).forEach(value => { if (!resources.includes(value)) resources.push(value); }); (event.artifacts || []).forEach(value => { if (!artifacts.includes(value)) artifacts.push(value); }); });
+  const owner = group.owner || "";
+  [
+    timelineMeta(t("timeline.owner"), owner),
+    timelineMeta(t("timeline.permission"), group.permission || (group.events || []).map(event => event.side_effect_class).filter(Boolean)),
+    timelineMeta(t("timeline.resources"), resources),
+    timelineMeta(t("timeline.artifacts"), artifacts),
+    timelineMeta(t("timeline.generation"), latest && latest.generation_id),
+    timelineMeta(t("timeline.replay"), group.replay_policy || (latest && latest.replayed_from_cell_id ? "replayed" : "original")),
+    timelineMeta(t("timeline.duration"), timelineDuration(latest))
+  ].filter(Boolean).forEach(node => card.appendChild(node));
+  if (latest && latest.error) card.appendChild(el("div", "timeline-error", latest.error));
+  return card;
+}
+function recoveryTimelineCard(state) {
+  const card = el("article", "timeline-card kind-recovery status-" + publicText(state.status || "recovery", 32)); card.setAttribute("data-action-kind", "recovery");
+  const head = el("div", "timeline-card-head"), kind = el("span", "timeline-kind"); kind.appendChild(iconEl("refresh", 14)); kind.appendChild(el("span", null, t("timeline.kind.recovery"))); head.appendChild(kind); head.appendChild(el("span", "timeline-status", publicText(state.status || "recovery", 32))); card.appendChild(head);
+  if (state.message) card.appendChild(el("div", "timeline-card-title", state.message));
+  if (state.progress != null) { const track = el("div", "recovery-progress"); const bar = el("span"); bar.style.width = Math.round(state.progress * 100) + "%"; track.appendChild(bar); card.appendChild(track); }
+  (state.log || []).slice(-12).forEach(entry => { const row = el("div", "recovery-log-row"); row.appendChild(el("span", "timeline-pill", entry.status || "event")); row.appendChild(el("span", "recovery-log-message", entry.message || "")); card.appendChild(row); });
+  return card;
+}
+function panelShell(title, className) {
+  const panel = el("section", "workbench-panel " + className); panel.appendChild(el("div", "workbench-panel-title", title)); return panel;
+}
+function branchCapability(name) { return !!(S.branchState && S.branchState.capabilities && S.branchState.capabilities[name]); }
+function disabledWorkbenchButton(label, enabled, action) {
+  const button = el("button", "outline-btn small", label); button.disabled = !enabled; button.title = enabled ? label : t("nb.action.unavailable"); if (enabled) button.onclick = action; return button;
+}
+async function createSessionCheckpoint() {
+  if (!S.currentId || !branchCapability("checkpoint")) return;
+  try { await api(`/frames/${S.currentId}/branches/checkpoints`, { method: "POST", body: JSON.stringify({ branch_id: (S.branchState || {}).branch_id }) }); await loadWorkbenchState(S.currentId, true); }
+  catch (error) { hint(t("nb.action.failed", error.message), true); }
+}
+async function previewSessionRevert(checkpointId) {
+  if (!S.currentId || !branchCapability("revert_preview")) return;
+  try {
+    const preview = await api(`/frames/${S.currentId}/branches/revert-preview`, { method: "POST", body: JSON.stringify({ branch_id: (S.branchState || {}).branch_id, target_checkpoint_id: checkpointId }) });
+    S.branchState.revert_preview = sanitizeRevertPreview(preview.preview || preview); renderActionTimeline();
+  } catch (error) { hint(t("nb.action.failed", error.message), true); }
+}
+async function applySessionRevert() {
+  const preview = S.branchState && S.branchState.revert_preview;
+  if (!preview || !preview.can_apply || !branchCapability("revert")) return;
+  try {
+    await api(`/frames/${S.currentId}/branches/revert`, { method: "POST", body: JSON.stringify({ branch_id: preview.branch_id, target_checkpoint_id: preview.target_checkpoint_id }) });
+    await loadWorkbenchState(S.currentId, true); loadExecutionLog(S.currentId);
+  } catch (error) { hint(t("nb.action.failed", error.message), true); }
+}
+function renderBranchPanel() {
+  const panel = panelShell(t("timeline.panel.branches"), "branch-panel"), state = S.branchState;
+  const controls = el("div", "workbench-controls"); controls.appendChild(disabledWorkbenchButton(t("branch.checkpoint"), branchCapability("checkpoint"), createSessionCheckpoint)); panel.appendChild(controls);
+  if (!state || !(state.branches || []).length) { panel.appendChild(el("div", "workbench-empty", t("timeline.noBranch"))); return panel; }
+  (state.branches || []).forEach(branch => {
+    const row = el("div", "branch-row" + (branch.branch_id === state.branch_id ? " current" : ""));
+    const head = el("div", "branch-head"); head.appendChild(el("span", "branch-name", branch.name || shortRuntime(branch.branch_id)));
+    if (branch.branch_id === state.branch_id) head.appendChild(el("span", "timeline-pill", t("branch.current")));
+    if (branch.head_checkpoint_id) head.appendChild(el("span", "branch-head-id", t("branch.head", shortRuntime(branch.head_checkpoint_id)))); row.appendChild(head);
+    const cps = el("div", "checkpoint-list"); (branch.checkpoints || []).slice(-8).reverse().forEach(cp => {
+      const cpRow = el("div", "checkpoint-row"); cpRow.appendChild(el("span", "checkpoint-id", shortRuntime(cp.checkpoint_id)));
+      cpRow.appendChild(el("span", "checkpoint-reason", cp.reason || "checkpoint"));
+      cpRow.appendChild(disabledWorkbenchButton(t("branch.preview"), branchCapability("revert_preview"), () => previewSessionRevert(cp.checkpoint_id))); cps.appendChild(cpRow);
+    }); row.appendChild(cps); panel.appendChild(row);
+  });
+  const preview = state.revert_preview;
+  if (preview) {
+    const box = el("div", "revert-preview"); box.appendChild(el("div", "revert-preview-title", t("branch.previewTitle") + " · " + shortRuntime(preview.target_checkpoint_id)));
+    const arts = preview.artifacts || { added: [], removed: [] }, ws = preview.workspace || { writes: [], deletes: [], conflicts: [] };
+    box.appendChild(el("div", "revert-diff", t("branch.diff", (preview.messages || {}).delta || 0, (preview.notebook || {}).delta || 0, ws.writes.length, ws.deletes.length, arts.added.length, arts.removed.length)));
+    if (ws.conflicts.length) box.appendChild(el("div", "timeline-error", t("branch.conflict")));
+    box.appendChild(disabledWorkbenchButton(t("branch.revert"), !!(preview.can_apply && branchCapability("revert")), applySessionRevert)); panel.appendChild(box);
+  }
+  return panel;
+}
+function renderContextPanel() {
+  const panel = panelShell(t("timeline.panel.context"), "context-panel"), state = S.contextState;
+  if (!state || !(state.layers || []).length) { panel.appendChild(el("div", "workbench-empty", t("timeline.noContext"))); return panel; }
+  const summary = el("div", "context-summary");
+  if (state.token_count != null) summary.appendChild(el("span", "timeline-pill", t("context.tokens", state.token_count) + (state.token_limit ? " / " + state.token_limit : "")));
+  if (state.compressed) summary.appendChild(el("span", "timeline-pill", t("context.compressed")));
+  if (state.handoff) summary.appendChild(el("span", "timeline-pill", t("context.handoff"))); panel.appendChild(summary);
+  state.layers.forEach(layer => { const row = el("div", "context-layer"); row.appendChild(el("span", "context-layer-name", layer.name || layer.kind || "context")); if (layer.token_count != null) row.appendChild(el("span", "context-layer-tokens", t("context.tokens", layer.token_count))); if (layer.status) row.appendChild(el("span", "timeline-pill", layer.status)); panel.appendChild(row); }); return panel;
+}
+function renderSecurityPanel() {
+  const panel = panelShell(t("timeline.panel.security"), "security-panel"), state = S.securityState;
+  if (!state) { panel.appendChild(el("div", "workbench-empty", t("timeline.noSecurity"))); return panel; }
+  const sandbox = state.sandbox || {}, permission = state.permission || {};
+  const row = (label, values, stateClass) => { const line = el("div", "security-row " + (stateClass || "")); line.appendChild(el("span", "security-label", label)); values.filter(Boolean).forEach(value => line.appendChild(el("span", "timeline-pill", value))); panel.appendChild(line); };
+  row(t("security.sandbox"), [sandbox.state || sandbox.mode || "unknown", sandbox.backend, sandbox.enforced ? "enforced" : "not enforced"], sandbox.enforced ? "ok" : "warn");
+  row(t("security.selfTest"), [sandbox.self_test_passed ? "passed" : "not passed"], sandbox.self_test_passed ? "ok" : "warn");
+  row(t("security.network"), [sandbox.network_policy || "unknown"]);
+  row(t("security.permission"), [permission.mode || "unknown", permission.pending_count ? t("security.pending", permission.pending_count) : ""]);
+  if (sandbox.detail) panel.appendChild(el("div", "security-detail", sandbox.detail)); return panel;
+}
+function renderActionTimeline() {
+  const root = $("#dock-timeline"); if (!root) return; root.innerHTML = "";
+  const top = el("div", "timeline-top"); const heading = el("div"); heading.appendChild(el("div", "timeline-title", t("timeline.title"))); heading.appendChild(el("div", "timeline-subtitle", t("timeline.subtitle"))); top.appendChild(heading);
+  const refresh = ghostIconBtn("refresh", t("timeline.refresh")); refresh.onclick = () => loadWorkbenchState(S.currentId, true); top.appendChild(refresh); root.appendChild(top);
+  root.appendChild(runtimeSummaryNode(false));
+  const layout = el("div", "workbench-layout"), side = el("div", "workbench-side"), actions = el("section", "timeline-actions");
+  side.appendChild(renderBranchPanel()); side.appendChild(renderContextPanel()); side.appendChild(renderSecurityPanel()); layout.appendChild(side);
+  const groups = (S.actionTimeline && S.actionTimeline.groups) || [];
+  if (S.recoveryState && (S.recoveryState.status || (S.recoveryState.log || []).length)) actions.appendChild(recoveryTimelineCard(S.recoveryState));
+  if (!groups.length && !actions.children.length) actions.appendChild(el("div", "workbench-empty timeline-empty", S._workbenchLoading ? t("timeline.loading") : t("timeline.empty")));
+  else groups.slice().sort((a, b) => (+a.ordinal || 0) - (+b.ordinal || 0)).forEach(group => actions.appendChild(actionTimelineCard(group)));
+  layout.appendChild(actions); root.appendChild(layout);
+}
 
 /* ---------- WebSocket ---------- */
 function connectWS() {
@@ -1429,18 +1996,44 @@ function onEvent(m) {
   else if (m.type === "text_reset") { if (mine(fid)) startStream(); }
   else if (m.type === "notebook_cell_start") { if (mine(fid)) nbCellStart(m); }
   else if (m.type === "notebook_cell_chunk") { if (mine(fid)) nbCellChunk(m); }
-  else if (m.type === "notebook_cell_finished") { if (mine(fid)) nbCellFinished(m); }
+  else if (m.type === "notebook_cell_finished") { if (mine(fid)) { nbCellFinished(m); scheduleWorkbenchRefresh(); } }
+  else if (m.type === "action_timeline" || m.type === "action-timeline") { if (mine(fid)) { S.actionTimeline = sanitizeActionTimeline(m); if (S.activeTab === "timeline") renderActionTimeline(); } }
+  else if (m.type === "execution_queue") { if (mine(fid)) { rememberExecutionQueue(m); if (S.activeTab === "timeline") renderActionTimeline(); if (S.activeTab === "notebook") renderNotebook(); } }
+  else if (m.type === "execution_state" || m.type === "execution_owner") { if (mine(fid)) {
+    // State/owner events are deltas. Paint the safe owner immediately, then
+    // refresh the authoritative FIFO snapshot so queue positions never drift.
+    if (m.type === "execution_owner") {
+      const current = S.executionQueue || sanitizeExecutionQueue({});
+      current.owner = m.owner ? sanitizeExecutionQueue({ owner: { ...m, owner: m.owner } }).owner : null;
+      S.executionQueue = current;
+      if (m.owner && m.execution_id) rememberExecutionState({ ...m, status: "running" }); else S.executionIdentity = null;
+    }
+    else rememberExecutionState(m);
+    scheduleWorkbenchRefresh(60); if (S.activeTab === "timeline") renderActionTimeline(); if (S.activeTab === "notebook") renderNotebook();
+  } }
+  else if (["recovery", "recovery_state", "recovery_log"].includes(m.type)) { if (mine(fid)) {
+    const next = sanitizeRecovery(m), previous = S.recoveryState;
+    if (previous && m.type === "recovery_log") S.recoveryState = { ...previous, ...Object.fromEntries(Object.entries(next).filter(([, value]) => value != null && value !== "")), log: (previous.log || []).concat(next.log || []).slice(-50) };
+    else S.recoveryState = next;
+    if (S.activeTab === "timeline") renderActionTimeline(); if (S.activeTab === "notebook") renderNotebook();
+  } }
+  else if (["branch", "branch_state", "checkpoint", "branch_created", "branch_reverted"].includes(m.type)) { if (mine(fid)) {
+    if (m.branches || (m.payload && m.payload.branches)) S.branchState = sanitizeBranches(m);
+    else scheduleWorkbenchRefresh(80);
+    if (S.activeTab === "timeline") renderActionTimeline(); if (S.activeTab === "notebook") renderNotebook();
+  } }
+  else if (["sandbox", "sandbox_status", "security_status"].includes(m.type)) { if (mine(fid)) { S.securityState = sanitizeSecurity(m); if (S.activeTab === "timeline") renderActionTimeline(); } }
   else if (m.type === "text_chunk") { if (mine(fid)) feed(m.block_type || "text", m.chunk || "", m); }
   else if (m.type === "step") { if (mine(fid)) addLiveStep(m); }
   else if (m.type === "step_update") { if (mine(fid)) updateLiveStep(m); }
   else if (m.type === "plan_ready") { if (mine(fid)) renderPlanCard(m.plan, m.status); }
   else if (m.type === "plan_progress") { if (mine(fid)) updatePlanProgress(m); }
-  else if (m.type === "await_permission") { if (mine(fid)) renderPermissionCard(m); }
-  else if (m.type === "permission_resolved") { if (mine(fid)) resolvePermissionCard(m); }
+  else if (m.type === "await_permission") { if (mine(fid)) { renderPermissionCard(m); scheduleWorkbenchRefresh(); } }
+  else if (m.type === "permission_resolved") { if (mine(fid)) { resolvePermissionCard(m); scheduleWorkbenchRefresh(); } }
   else if (m.type === "frame_update") {
     if (mine(m.frame_id) || mine(fid)) {
       if (m.status === "processing" && !S.running) { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); resumeWatch(fid, S._openGen); }  // a turn observed on the WS (e.g. started from another tab) — watchdog covers a missed terminal event
-      if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) turnDone(m.status);
+      if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) { turnDone(m.status); scheduleWorkbenchRefresh(); }
     }
     loadSessions();
   }
@@ -1483,6 +2076,8 @@ function onEvent(m) {
     else if (m.status === "started") hint(t("kernel.started"));
     else if (m.status === "env_changed") hint(t("kernel.envChanged", ((m.env && m.env.name) || t("kernel.envChanged.default"))));
     invalidateKernelCache();  // kernel generation/env just changed — re-read state
+    if (m.sandbox) S.securityState = sanitizeSecurity({ sandbox: m.sandbox });
+    scheduleWorkbenchRefresh();
     if (S.dock.open && S.activeTab === "notebook") renderNotebook();
   } }
 }
@@ -1522,6 +2117,7 @@ function startStream() {
 const ensure = () => { if (!S.stream) startStream(); return S.stream; };
 function feed(kind, chunk, event) {
   const st = ensure();
+  const structuredCellId = event && (event.producing_cell_id || event.cell_id);
   if (kind === "tool") {
     const cellHeader = !!(event && event.cell_index != null);
     const subagentHeader = !cellHeader && chunk.startsWith("◆");
@@ -1545,12 +2141,12 @@ function feed(kind, chunk, event) {
       st.md = el("div", "md"); st.wrap.appendChild(st.md); st.text = "";
       // Structured notebook_cell_* events own Notebook state on new daemons.
       // Keep sentinel parsing only as a compatibility fallback for old replays.
-      if (!suba && !(event && event.producing_cell_id)) nbLiveStart(tool, raw, event && event.kernel_id, event && event.cell_index, event && event.language);
+      if (!suba && !structuredCellId) nbLiveStart(tool, raw, event && event.kernel_id, event && event.cell_index, event && event.language);
     } else if (st.toolPre) {
       const add = chunk.replace(/^↳\s*/, "");
       st.toolPre.textContent += add;
       if (st.toolMeta) { const n = (st.toolPre.textContent.match(/\n/g) || []).length; st.toolMeta.textContent = n > 1 ? (n + (n === 1 ? " line" : " lines")) : "done"; }
-      if (!(event && event.producing_cell_id)) nbLiveAppend(add);
+      if (!structuredCellId) nbLiveAppend(add);
     }
   } else { st.text += chunk; st.full += chunk; st.md.classList.add("cursor"); scheduleRender(st); return; }
   down();
@@ -2394,6 +2990,9 @@ async function openConversation(fid, pid) {
   clearTimeout(S._resumeTimer);  // stop any resume-watchdog from the previously open session
   const gen = S._openGen = (S._openGen || 0) + 1;  // guard async continuations against fast session-switching
   S.cells = []; S.kernels = []; S.liveCells = []; S._liveCell = null; S.dockArtifact = null; S.kernelFilter = null;
+  S.actionTimeline = null; S.executionQueue = null; S.executionIdentity = null; S.recoveryState = null;
+  S.branchState = null; S.contextState = null; S.securityState = null;
+  clearTimeout(S._workbenchTimer); S._workbenchReq = (S._workbenchReq || 0) + 1; S._workbenchLoading = null;
   S._tbl = {}; invalidateKernelCache();  // drop the prior session's table + kernel-state caches
   S.openTabs = []; S.activeTab = "notebook"; S.provMode = false; S.lineage = null; S._lineageFor = null;
   showDockPane("notebook");
@@ -2426,7 +3025,7 @@ async function openConversation(fid, pid) {
   } catch {}
   if (gen !== S._openGen) return;
   if (!msgCount) renderEmptySession();
-  loadArtifacts(fid); loadExecutionLog(fid); loadAnnotations(fid); down(true); updateJumpPill();
+  loadArtifacts(fid); loadExecutionLog(fid); loadAnnotations(fid); loadWorkbenchState(fid); down(true); updateJumpPill();
   // Resume: subscribe AFTER history renders so a replayed in-flight turn streams
   // below it. If a turn is still running server-side (survived our last close),
   // lock the composer and let the WS replay rebuild the live stream + notebook.
@@ -2547,7 +3146,11 @@ function reviewerModelMenu(anchor, current) {
 function sessionMenu(anchor, fid) {
   const frame = S.sessions.find(x => x.id === fid) || {};
   const items = [{ label: t("folder.menu.rename"), icon: "pencil", onClick: () => renameFrame(fid) }];
-  if (frame.running || (fid === S.currentId && S.running)) items.push({ label: t("sessionMenu.cancel"), icon: "stop", onClick: async () => { try { await api(`/frames/${fid}/cancel`, { method: "POST" }); } catch {} if (fid === S.currentId) turnDone("cancelled"); loadSessions(); } });
+  if (frame.running || (fid === S.currentId && S.running)) items.push({ label: t("sessionMenu.cancel"), icon: "stop", onClick: async () => {
+    try { const result = await scopedExecutionRequest(fid, "cancel", "session menu cancel"); if (result && result.ok && fid === S.currentId) turnDone("cancelled"); }
+    catch (error) { hint(t("nb.action.failed", error.message), true); }
+    loadSessions();
+  } });
   items.push(
     { label: t("sessionMenu.exportMarkdown"), icon: "download", onClick: () => exportSession(fid) },
     { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`/api/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
@@ -2651,7 +3254,11 @@ function sendFeedback(key, rating) {
   api("/frames/" + S.currentId + "/feedback", { method: "POST", body: JSON.stringify({ key, rating }) }).catch(() => {});
   hint(rating === "up" ? t("toast.feedbackUp") : rating === "down" ? t("toast.feedbackDown") : t("toast.feedbackCancelled"));
 }
-async function cancelTurn() { if (!S.currentId) return; try { await api("/frames/" + S.currentId + "/cancel", { method: "POST" }); } catch {} turnDone("cancelled"); }
+async function cancelTurn() {
+  if (!S.currentId) return;
+  try { const result = await scopedExecutionRequest(S.currentId, "cancel", "composer cancel"); if (result && result.ok) turnDone("cancelled"); }
+  catch (error) { hint(t("nb.action.failed", error.message), true); }
+}
 
 /* ---------- send ---------- */
 async function send(text, opts) {
@@ -3550,8 +4157,9 @@ async function loadExecutionLog(id) {
   }
 }
 
+function nbEventCellId(event) { return event && (event.producing_cell_id || event.cell_id); }
 function nbCellKey(cell) {
-  if (cell && cell.producing_cell_id) return String(cell.producing_cell_id);
+  if (cell && (cell.producing_cell_id || cell.cell_id)) return String(cell.producing_cell_id || cell.cell_id);
   return "legacy:" + String(cell && cell.kernel_id || "python") + ":" + String(cell && cell.cell_index != null ? cell.cell_index : "?");
 }
 function mergeNotebookCells(serverCells, localCells) {
@@ -3572,14 +4180,20 @@ function nbFindCell(producingCellId) {
     || null;
 }
 function nbCellStart(event) {
-  const id = event && event.producing_cell_id;
+  const id = nbEventCellId(event);
   if (!id) return;
+  const previous = nbFindCell(id) || {};
   const cell = {
-    producing_cell_id: String(id), cell_index: event.cell_index,
-    kernel_id: event.kernel_id || "python", language: event.language || "python",
-    origin: event.origin || null,
-    source: event.source || "", stdout: "", stderr: "", error: "",
-    status: "running", figures: [], files_written: [], files_read: [], live: true
+    ...previous, producing_cell_id: String(id), cell_id: String(event.cell_id || previous.cell_id || id),
+    cell_index: event.cell_index != null ? event.cell_index : previous.cell_index,
+    kernel_id: event.kernel_id || previous.kernel_id || "python", language: event.language || previous.language || "python",
+    origin: event.origin || previous.origin || null,
+    source: event.source != null ? event.source : (previous.source || ""),
+    stdout: previous.stdout || "", stderr: previous.stderr || "", error: "",
+    status: "running", figures: previous.figures || [], files_written: previous.files_written || [], files_read: previous.files_read || [],
+    generation_id: event.generation_id || previous.generation_id, state_revision: event.state_revision != null ? event.state_revision : previous.state_revision,
+    attempt_group_id: event.attempt_group_id || previous.attempt_group_id, revision_of: event.revision_of || previous.revision_of,
+    replay_policy: event.replay_policy || previous.replay_policy, visibility: event.visibility || previous.visibility, live: true
   };
   // Replayed starts and reconnects upsert by the server identity; they never
   // create a duplicate temporary Cell.
@@ -3589,18 +4203,24 @@ function nbCellStart(event) {
   nbRender();
 }
 function nbCellChunk(event) {
-  const cell = event && nbFindCell(event.producing_cell_id);
+  const producingCellId = event && (event.producing_cell_id || event.cell_id);
+  const cell = event && nbFindCell(producingCellId);
   if (!cell) return;
   const stream = event.stream === "stderr" ? "stderr" : "stdout";
+  const chunkId = event.chunk_id != null ? event.chunk_id : (event.sequence != null ? event.sequence : null);
+  if (chunkId != null) {
+    cell._seenChunks = cell._seenChunks || Object.create(null);
+    const seenKey = stream + ":" + String(chunkId); if (cell._seenChunks[seenKey]) return; cell._seenChunks[seenKey] = true;
+  }
   cell[stream] = (cell[stream] || "") + (event.chunk || "");
   nbRender();
 }
 function nbCellFinished(event) {
-  const id = event && event.producing_cell_id;
+  const id = event && (event.producing_cell_id || event.cell_id);
   if (!id) return;
   const active = nbFindCell(id) || {};
   const cell = {
-    ...active, ...event, producing_cell_id: String(id),
+    ...active, ...event, producing_cell_id: String(id), cell_id: String(event.cell_id || active.cell_id || id),
     source: event.source != null ? event.source : (active.source || ""),
     stdout: event.stdout != null ? event.stdout : (active.stdout || ""),
     stderr: event.stderr != null ? event.stderr : (active.stderr || ""),
@@ -3657,6 +4277,18 @@ async function kernelCtl(action) {
   invalidateKernelCache();  // force a fresh read so the state chip reflects the action
   if (S.dock.open && S.activeTab === "notebook") renderNotebook();
 }
+async function executeNotebookCode(code, language, controls) {
+  code = String(code || ""); language = String(language || "python").toLowerCase() === "r" ? "r" : "python";
+  if (!code.trim() || !S.currentId) return false;
+  const runButton = controls && controls.runButton, input = controls && controls.input, stop = controls && controls.stop;
+  if (runButton) runButton.disabled = true; if (input) input.disabled = true; if (stop) stop.classList.remove("hidden");
+  try {
+    await api(`/frames/${S.currentId}/kernel/execute`, { method: "POST", body: JSON.stringify({ code, language }) });
+    hint(t("nb.action.queued", language === "r" ? "R" : "Python"));
+    invalidateKernelCache(); await loadExecutionLog(S.currentId); loadArtifacts(S.currentId); scheduleWorkbenchRefresh(); return true;
+  } catch (error) { hint(t("nb.repl.execFailed", error.message), true); return false; }
+  finally { if (runButton) runButton.disabled = false; if (input) input.disabled = false; if (stop) stop.classList.add("hidden"); }
+}
 // Cache for the Notebook header's kernel state + env list. renderNotebook rebuilds
 // the whole pane on every streaming frame; without a cache the state chip and env
 // <select> would refetch each frame and never settle (flickering "…" / t("nb.env.placeholder")).
@@ -3675,12 +4307,9 @@ function _paintKernel(els, st) {
   if (title) title.textContent = kernelLabel(kernelIdFromEnv(env)) + " kernel · " + t("nb.kernel.shared")
     + (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "");
   if (badge && badge.root && badge.label) {
-    const live = !!st.turn_running;
-    const ready = !live && !!st.alive;
-    badge.root.classList.toggle("live", live);
-    badge.root.classList.toggle("ready", ready);
-    badge.root.classList.toggle("idle", !live && !ready);
-    badge.label.textContent = live ? t("nb.badge.live") : (ready ? t("nb.badge.ready") : t("nb.badge.idle"));
+    const mode = runtimeSummary().status;
+    ["live", "busy", "ended", "restoring", "partial", "failed", "ready", "idle"].forEach(name => badge.root.classList.toggle(name, name === mode));
+    badge.label.textContent = t("runtime.status." + mode);
   }
   if (bStop) bStop.disabled = !st.alive;
   if (bStart) bStart.disabled = st.alive;
@@ -3712,6 +4341,7 @@ async function refreshKernelState(els, _b, _c) {
   let st; try { st = await api(`/frames/${sid}/kernel`); } catch { _kc.stBusy = false; return; }
   _kc.stBusy = false;
   if (sid !== S.currentId) return;  // session switched during the fetch — drop the stale result
+  const previousRuntimeKey = _kc.st && [_kc.st.state, _kc.st.alive, _kc.st.turn_running, _kc.st.generation_id, _kc.st.generation].join(":");
   if (_kc.id !== sid) { _kc.id = sid; _kc.envs = null; }
   _kc.st = st; _kc.stAt = Date.now();
   _paintKernel(els, st);  // els may be stale (a newer render replaced it); harmless — the next render repaints from cache
@@ -3720,7 +4350,8 @@ async function refreshKernelState(els, _b, _c) {
   // rebuild once now that `repl_enabled` is authoritative (and vice versa if a
   // runtime/config reload disabled it).
   const modeChanged = (!!st.repl_enabled && !!els.strip) || (!st.repl_enabled && !!els.state);
-  if (modeChanged && S.dock.open && S.activeTab === "notebook") requestAnimationFrame(renderNotebook);
+  const runtimeKey = [st.state, st.alive, st.turn_running, st.generation_id, st.generation].join(":");
+  if ((modeChanged || runtimeKey !== previousRuntimeKey) && S.dock.open && S.activeTab === "notebook") requestAnimationFrame(renderNotebook);
 }
 
 async function nbPopulateEnvSelect(envSel) {
@@ -3842,13 +4473,15 @@ function renderNotebook() {
   entries = projectNotebookCells(entries);
   const kernels = []; entries.forEach(e => { const k = e.kernel_id || "python"; if (!kernels.includes(k)) kernels.push(k); });
   const chips = el("div", "kernel-chips");
+  chips.appendChild(runtimeSummaryNode(true));
   const mk = (k, label) => { const c = el("button", "kchip" + (((S.kernelFilter || null) === k) ? " on" : ""), label); c.onclick = () => { S.kernelFilter = k; renderNotebook(); }; return c; };
-  chips.appendChild(mk(null, "All")); kernels.forEach(k => chips.appendChild(mk(k, kernelLabel(k))));
+  chips.appendChild(mk(null, t("nb.chips.all"))); kernels.forEach(k => chips.appendChild(mk(k, kernelLabel(k))));
   const cachedRunning = !!(S.running || (_kc.id === S.currentId && _kc.st && _kc.st.turn_running));
   const cachedReady = !cachedRunning && !!(_kc.id === S.currentId && _kc.st && _kc.st.alive);
-  const badgeMode = cachedRunning ? "live" : (cachedReady ? "ready" : "idle");
+  const runtimeMode = runtimeSummary().status;
+  const badgeMode = runtimeMode || (cachedRunning ? "busy" : (cachedReady ? "live" : "ended"));
   const badge = el("div", "nb-live-badge " + badgeMode); badge.appendChild(el("span", "ld"));
-  const badgeLabel = el("span", null, cachedRunning ? t("nb.badge.live") : (cachedReady ? t("nb.badge.ready") : t("nb.badge.idle"))); badge.appendChild(badgeLabel); badge.appendChild(iconEl("chevron-down", 14)); chips.appendChild(badge);
+  const badgeLabel = el("span", null, t("runtime.status." + badgeMode)); badge.appendChild(badgeLabel); badge.appendChild(iconEl("chevron-down", 14)); chips.appendChild(badge);
   const badgeEls = { root: badge, label: badgeLabel };
   nb.appendChild(chips);
   let shown = entries; if (S.kernelFilter) shown = entries.filter(e => (e.kernel_id || "python") === S.kernelFilter);
@@ -3886,23 +4519,37 @@ function renderNotebook() {
   repl.appendChild(revive);
   refreshKernelState({ state, bStop, bStart, title, revive, badge: badgeEls });
   nbPopulateEnvSelect(envSel);
-  repl.appendChild(el("div", "nb-repl-body", t("nb.repl.body")));
-  const pr = el("div", "nb-repl-prompt"); pr.appendChild(el("span", "pmt", ">>>")); const inp = el("input"); inp.placeholder = "run code in this kernel…"; inp.disabled = !S.currentId; inp.value = S._replDraft || "";
-  const stop = el("button", "repl-stop hidden"); stop.title = t("nb.repl.interruptTitle"); stop.innerHTML = icon("stop", 15); stop.onclick = async () => { try { await api(`/frames/${S.currentId}/kernel/interrupt`, { method: "POST" }); hint(t("nb.repl.interruptSent")); } catch {} };
-  inp.onkeydown = async (e) => {
-    if (e.isComposing || e.keyCode === 229) return;
-    if (e.key !== "Enter" || e.shiftKey) return;
-    e.preventDefault(); const code = inp.value.trim(); if (!code || !S.currentId) return;
-    inp.disabled = true; stop.classList.remove("hidden"); S._replDraft = "";
-    try { await api(`/frames/${S.currentId}/kernel/execute`, { method: "POST", body: JSON.stringify({ code }) }); }
-    catch (err) { hint(t("nb.repl.execFailed", err.message), true); }
-    stop.classList.add("hidden");
-    invalidateKernelCache();  // running code may have started/advanced the kernel
-    await loadExecutionLog(S.currentId); loadArtifacts(S.currentId);
-    requestAnimationFrame(() => { const i2 = $("#dock-notebook input"); if (i2) { i2.disabled = false; i2.focus(); } });
+  repl.appendChild(el("div", "nb-repl-body", t("nb.repl.multilineHint")));
+  S._replDrafts = S._replDrafts || { python: S._replDraft || "", r: "" };
+  S._replLanguage = S._replLanguage === "r" ? "r" : "python";
+  const editor = el("div", "nb-live-input");
+  const editorBar = el("div", "nb-live-input-bar");
+  const languageLabel = el("label", "nb-language-label", t("nb.repl.language"));
+  const language = el("select", "nb-language-select");
+  [["python", "Python"], ["r", "R"]].forEach(([value, label]) => { const option = el("option", null, label); option.value = value; language.appendChild(option); });
+  language.value = S._replLanguage; languageLabel.appendChild(language); editorBar.appendChild(languageLabel);
+  const editorActions = el("div", "nb-live-input-actions");
+  const run = el("button", "solid-btn small", t("nb.repl.run"));
+  const stop = el("button", "repl-stop hidden"); stop.title = t("nb.repl.interruptTitle"); stop.innerHTML = icon("stop", 15); stop.onclick = async () => {
+    try { const result = await scopedExecutionRequest(S.currentId, "kernel/interrupt", "notebook interrupt"); if (result && result.ok) hint(t("nb.repl.interruptSent")); }
+    catch (error) { hint(t("nb.action.failed", error.message), true); }
   };
-  inp.oninput = () => { S._replDraft = inp.value; };
-  pr.appendChild(inp); pr.appendChild(stop); repl.appendChild(pr);
+  editorActions.appendChild(run); editorActions.appendChild(stop); editorBar.appendChild(editorActions); editor.appendChild(editorBar);
+  const inp = el("textarea", "nb-repl-input"); inp.rows = 7; inp.spellcheck = false; inp.placeholder = t("nb.repl.inputPlaceholder"); inp.disabled = !S.currentId; inp.value = S._replDrafts[S._replLanguage] || ""; editor.appendChild(inp);
+  const executeDraft = async () => {
+    const currentLanguage = language.value === "r" ? "r" : "python", code = inp.value;
+    if (await executeNotebookCode(code, currentLanguage, { runButton: run, input: inp, stop })) {
+      S._replDrafts[currentLanguage] = ""; inp.value = "";
+    }
+    requestAnimationFrame(() => inp.focus());
+  };
+  language.onchange = () => {
+    S._replDrafts[S._replLanguage] = inp.value; S._replLanguage = language.value === "r" ? "r" : "python";
+    inp.value = S._replDrafts[S._replLanguage] || ""; inp.placeholder = S._replLanguage === "r" ? "# R" : t("nb.repl.inputPlaceholder"); inp.focus();
+  };
+  inp.oninput = () => { S._replDrafts[S._replLanguage] = inp.value; };
+  inp.onkeydown = (event) => { if (event.isComposing || event.keyCode === 229) return; if (event.key === "Enter" && event.shiftKey) { event.preventDefault(); executeDraft(); } };
+  run.onclick = executeDraft; repl.appendChild(editor);
   nb.appendChild(repl);
   } else {
     // Passive status strip — no <input>, no <select>, no kernel-control buttons.
@@ -3970,6 +4617,40 @@ function notebookOutputBlock(cell, raw, isError) {
   const pre = el("pre", isError ? "nbc-err" : "nbc-out"); pre.textContent = text; details.appendChild(pre);
   cell.appendChild(details);
 }
+function notebookCellState(cell) {
+  if (String(cell.replay_policy || "").toLowerCase() === "never") return { key: "nonReplayable", cls: "non-replayable" };
+  if (cell._historicalRevision) return { key: "historical", cls: "historical" };
+  const current = Number(runtimeSummary().revision), revision = Number(cell.state_revision);
+  if (current && revision && revision < current) return { key: "stale", cls: "stale" };
+  return { key: "current", cls: "current" };
+}
+function notebookCellButton(label, iconName, enabled, action) {
+  const button = el("button", "nbc-action"); button.appendChild(iconEl(iconName, 13)); button.appendChild(el("span", null, label));
+  button.disabled = !enabled; button.title = enabled ? label : t("nb.action.unavailable"); if (enabled) button.onclick = action; return button;
+}
+async function copyNotebookCell(source) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(String(source || ""));
+    else throw new Error("clipboard unavailable");
+    hint(t("nb.action.copied"));
+  } catch {
+    // The fallback still never touches history: place a copy in the live-input
+    // draft and let the user decide whether to run it.
+    const language = S._replLanguage === "r" ? "r" : "python"; S._replDrafts = S._replDrafts || { python: "", r: "" }; S._replDrafts[language] = String(source || ""); hint(t("nb.action.copied"));
+  }
+}
+async function forkNotebookCell(cell) {
+  if (!S.currentId || !branchCapability("fork")) return;
+  try {
+    await api(`/frames/${S.currentId}/branches/fork`, { method: "POST", body: JSON.stringify({ from_cell_id: nbCellKey(cell), branch_id: (S.branchState || {}).branch_id }) });
+    await loadWorkbenchState(S.currentId, true);
+  } catch (error) { hint(t("nb.action.failed", error.message), true); }
+}
+async function promoteNotebookCell(cell) {
+  if (!S.currentId || !branchCapability("promote")) return;
+  try { await api(`/frames/${S.currentId}/artifacts/promote`, { method: "POST", body: JSON.stringify({ cell_id: nbCellKey(cell) }) }); loadArtifacts(S.currentId); scheduleWorkbenchRefresh(); }
+  catch (error) { hint(t("nb.action.failed", error.message), true); }
+}
 function cellNode(e) {
   const k = e.kernel_id || "python";
   const c = el("div", "notebook-cell" + (e.live ? " live" : ""));
@@ -3981,11 +4662,16 @@ function cellNode(e) {
     const history = el("details", "nbc-revisions");
     history.appendChild(el("summary", null, t("nb.revisions.summary", revisions.length + 1, revisions.length)));
     const attempts = el("div", "nbc-revision-list");
-    revisions.forEach(revision => attempts.appendChild(cellNode({ ...revision, _revisions: [] })));
+    revisions.forEach(revision => attempts.appendChild(cellNode({ ...revision, _revisions: [], _historicalRevision: true })));
     history.appendChild(attempts); c.appendChild(history);
   }
   const st = e.status || (e.live ? "running" : "ok");
   const idx = e.cell_index != null ? e.cell_index : "…";
+  const cellState = notebookCellState(e), cellMeta = el("div", "nbc-cell-meta");
+  cellMeta.appendChild(el("span", "nbc-state " + cellState.cls, t("nb.cell." + cellState.key)));
+  if (e.state_revision != null) cellMeta.appendChild(el("span", "nbc-revision", "S" + e.state_revision));
+  if (e.generation_id) { const generation = el("span", "nbc-generation", shortRuntime(e.generation_id)); generation.title = publicText(e.generation_id, 160); cellMeta.appendChild(generation); }
+  c.appendChild(cellMeta);
   c.appendChild(codeBlock(e.source || "", {
     lang: e.language || k,
     langLabel: (e.language || k) + " [" + idx + "]",
@@ -4006,6 +4692,13 @@ function cellNode(e) {
   (e.files_written || []).forEach(f => { const s = el("span", "io-w"); s.appendChild(iconEl("pencil", 12)); s.appendChild(el("span", null, f)); io.appendChild(s); });
   (e.files_read || []).forEach(f => { const s = el("span", "io-r"); s.appendChild(iconEl("arrow-down", 12)); s.appendChild(el("span", null, f)); io.appendChild(s); });
   if (io.children.length) c.appendChild(io);
+  const actions = el("div", "nbc-actions");
+  actions.appendChild(notebookCellButton(t("nb.action.copy"), "copy", true, () => copyNotebookCell(e.source || "")));
+  const replEnabled = !!(_kc.st && _kc.st.repl_enabled), appendable = replEnabled && !e.live && !!String(e.source || "").trim();
+  actions.appendChild(notebookCellButton(t("nb.action.rerun"), "refresh", appendable, () => executeNotebookCode(e.source || "", e.language || "python")));
+  actions.appendChild(notebookCellButton(t("nb.action.fork"), "provenance", branchCapability("fork"), () => forkNotebookCell(e)));
+  actions.appendChild(notebookCellButton(t("nb.action.promote"), "star", branchCapability("promote"), () => promoteNotebookCell(e)));
+  c.appendChild(actions);
   return c;
 }
 function scrollToCell(idx, kernel) {
