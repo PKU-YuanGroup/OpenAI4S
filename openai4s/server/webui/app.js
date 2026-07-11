@@ -564,6 +564,8 @@ Object.assign(I18N.zh, {
   "context.compressed": "已压缩",
   "context.handoff": "Handoff",
   "security.sandbox": "Sandbox",
+  "security.generation": "Generation",
+  "security.generationEnded": "{0} 已结束（{1}）",
   "security.permission": "Permission",
   "security.selfTest": "Self-test",
   "security.network": "Network",
@@ -1239,6 +1241,8 @@ Object.assign(I18N.en, {
   "context.compressed": "compressed",
   "context.handoff": "Handoff",
   "security.sandbox": "Sandbox",
+  "security.generation": "Generation",
+  "security.generationEnded": "{0} ended ({1})",
   "security.permission": "Permission",
   "security.selfTest": "Self-test",
   "security.network": "Network",
@@ -1769,7 +1773,12 @@ function sanitizeSecurity(payload) {
       state: publicText(sandbox.state || sandbox.status, 48), mode: publicText(sandbox.mode, 32),
       backend: publicText(sandbox.backend, 64), enforced: !!sandbox.enforced,
       self_test_passed: sandbox.self_test_passed === true, network_policy: publicText(sandbox.network_policy, 64),
-      detail: publicText(sandbox.detail || sandbox.warning, 200)
+      detail: publicText(sandbox.detail || sandbox.warning, 500), generation_ended: !!sandbox.generation_ended,
+      runtimes: (sandbox.runtimes || []).slice(0, 2).map(runtime => ({
+        language: publicText(runtime.language, 16), source: publicText(runtime.source, 32),
+        generation_state: publicText(runtime.generation_state, 48), generation_ended: !!runtime.generation_ended,
+        generation_ended_reason: publicText(runtime.generation_ended_reason, 80)
+      }))
     },
     permission: {
       mode: publicText(permission.mode || permission.policy, 48),
@@ -1979,6 +1988,9 @@ function renderSecurityPanel() {
   row(t("security.sandbox"), [sandbox.state || sandbox.mode || "unknown", sandbox.backend, sandbox.enforced ? "enforced" : "not enforced"], sandbox.enforced ? "ok" : "warn");
   row(t("security.selfTest"), [sandbox.self_test_passed ? "passed" : "not passed"], sandbox.self_test_passed ? "ok" : "warn");
   row(t("security.network"), [sandbox.network_policy || "unknown"]);
+  (sandbox.runtimes || []).filter(runtime => runtime.generation_ended).forEach(runtime => {
+    row(t("security.generation"), [t("security.generationEnded", runtime.language || "kernel", runtime.generation_ended_reason || runtime.generation_state || "ended")]);
+  });
   row(t("security.permission"), [permission.mode || "unknown", permission.pending_count ? t("security.pending", permission.pending_count) : ""]);
   if (sandbox.detail) panel.appendChild(el("div", "security-detail", sandbox.detail)); return panel;
 }
@@ -4477,6 +4489,14 @@ function projectNotebookCells(rawEntries) {
     };
   });
 }
+function notebookExportLink(frameId) {
+  const dl = el("a", "prov-dlbtn");
+  dl.appendChild(iconEl("download", 14));
+  dl.appendChild(el("span", null, t("prov.exec.downloadNotebook")));
+  dl.href = `/api/frames/${encodeURIComponent(frameId)}/notebook/export?language=bundle`;
+  dl.setAttribute("download", `${frameId}.notebooks.zip`);
+  return dl;
+}
 function renderNotebook() {
   const nb = $("#dock-notebook"); if (!nb) return;
   // Live-follow: if the user is already parked near the bottom, keep the newest
@@ -4511,6 +4531,7 @@ function renderNotebook() {
   const badgeMode = runtimeMode || (cachedRunning ? "busy" : (cachedReady ? "live" : "ended"));
   const badge = el("div", "nb-live-badge " + badgeMode); badge.appendChild(el("span", "ld"));
   const badgeLabel = el("span", null, t("runtime.status." + badgeMode)); badge.appendChild(badgeLabel); badge.appendChild(iconEl("chevron-down", 14)); chips.appendChild(badge);
+  if (S.currentId) chips.appendChild(notebookExportLink(S.currentId));
   const badgeEls = { root: badge, label: badgeLabel };
   nb.appendChild(chips);
   let shown = entries; if (S.kernelFilter) shown = entries.filter(e => (e.kernel_id || "python") === S.kernelFilter);
@@ -4778,7 +4799,7 @@ function renderProvenanceInto(v, a) {
     else if (!lin) body.appendChild(el("div", "dock-empty", t("common.loading")));
     else body.appendChild(el("div", "dock-empty", "Generating reproduction code…"));
   } else if (S.provSub === "exec") {
-    const dl = el("a", "prov-dlbtn"); dl.appendChild(iconEl("download", 14)); dl.appendChild(el("span", null, "Download notebook")); dl.href = `/api/frames/${S.currentId}/execution-log`; dl.setAttribute("download", "notebook.json"); body.appendChild(dl);
+    if (S.currentId) body.appendChild(notebookExportLink(S.currentId));
     const cells = (S.cells || []); if (!cells.length) body.appendChild(el("div", "dock-empty", t("prov.exec.noRecords")));
     cells.forEach(e => body.appendChild(cellNode(e)));
   } else if (S.provSub === "environment") {

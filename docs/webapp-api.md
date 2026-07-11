@@ -241,6 +241,10 @@ These routes are thin Gateway adapters over `SessionDomainService` and
 | `GET /renderers` | Safe scientific renderer descriptor catalog. |
 | `GET /artifacts/{aid}/renderer?version=&root_frame_id=` | Selects a version-bound renderer descriptor plus immutable checksum/size/provenance metadata; it never executes Artifact content. |
 
+The Notebook header and provenance execution view link the bundle form of the
+Notebook export route. Language-specific Python/R files remain directly
+available through the query parameter.
+
 ### Artifacts
 
 | Method & path | Behavior |
@@ -459,5 +463,5 @@ compatibility; keep both when touching these serializers.
   `/execution-log` reload rather than a durable per-Cell WS backlog.
 - Workbench read/write routes are public, but no mutating endpoint runs the
   verified recovery pipeline. Fork-from-cell, visible checkpoint-fork/undo/
-  branch-navigation controls, the `.ipynb` download control, and most
-  specialized renderer UI components are also still absent (§2).
+  branch-navigation controls and most specialized renderer UI components are
+  also still absent (§2).

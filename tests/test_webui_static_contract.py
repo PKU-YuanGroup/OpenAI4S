@@ -363,6 +363,8 @@ def test_action_timeline_is_a_safe_allowlisted_projection() -> None:
 
 def test_notebook_live_input_appends_cells_and_keeps_history_read_only() -> None:
     notebook = _extract_js_function(APP_JS, "renderNotebook")
+    export = _extract_js_function(APP_JS, "notebookExportLink")
+    provenance = _extract_js_function(APP_JS, "renderProvenanceInto")
     execute = _extract_js_function(APP_JS, "executeNotebookCode")
     cell = _extract_js_function(APP_JS, "cellNode")
     identity = _extract_js_function(APP_JS, "nbEventCellId")
@@ -371,6 +373,12 @@ def test_notebook_live_input_appends_cells_and_keeps_history_read_only() -> None
     finished = _extract_js_function(APP_JS, "nbCellFinished")
 
     assert 'el("textarea", "nb-repl-input")' in notebook
+    assert "notebookExportLink(S.currentId)" in notebook
+    assert "notebookExportLink(S.currentId)" in provenance
+    assert 't("prov.exec.downloadNotebook")' in export
+    assert "/notebook/export?language=bundle" in export
+    assert ".notebooks.zip" in export
+    assert 'download", "notebook.json"' not in APP_JS
     assert '[["python", "Python"], ["r", "R"]]' in notebook
     assert 'event.key === "Enter" && event.shiftKey' in notebook
     assert "JSON.stringify({ code, language, execution_id: executionId })" in execute
@@ -431,6 +439,7 @@ def test_branch_context_and_security_controls_fail_closed_when_absent() -> None:
     assert "token_count" in context and "layer" in context
     assert "sandbox" in security and "permission" in security
     assert "self_test_passed" in security and "network_policy" in security
+    assert "generation_ended" in security and "generationEnded" in security
 
 
 def test_provenance_caches_follow_artifact_versions_and_refresh_mutations() -> None:

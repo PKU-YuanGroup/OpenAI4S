@@ -148,8 +148,7 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 
 - [ ] Finish the remaining product layer: an explicit verified-recovery action,
   fork-from-cell semantics plus visible branch fork/undo/navigation controls,
-  a visible `.ipynb` download control, and dedicated 2D
-  chemistry/genome/sequence/MSA/LaTeX renderers.
+  and dedicated 2D chemistry/genome/sequence/MSA/LaTeX renderers.
 - [ ] Add stronger Linux isolation beyond bubblewrap where available (for example seccomp) and expand packaged sandbox smoke coverage.
 - [ ] Keyless `web_search` beyond DuckDuckGo (rate-limit resilience).
 - [ ] More BYOC providers (Modal / SLURM) beyond SSH + NVIDIA NIM.
