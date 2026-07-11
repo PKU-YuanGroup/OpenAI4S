@@ -46,6 +46,7 @@ from openai4s.storage.permissions import (
 from openai4s.storage.permissions import PermissionRuleRepository
 from openai4s.storage.permissions import perm_match as _perm_match
 from openai4s.storage.plans import PlanRepository
+from openai4s.storage.settings import SettingsRepository
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS frames (
@@ -418,6 +419,11 @@ class Store:
             clock_ms=lambda: _now_ms(),
         )
         self._memories = MemoryRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._settings = SettingsRepository(
             self._conn,
             self._lock,
             clock_ms=lambda: _now_ms(),
@@ -2018,53 +2024,23 @@ class Store:
 
     # --- settings (KV) ---------------------------------------------------
     def get_setting(self, key: str, default: str | None = None) -> str | None:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT value FROM settings WHERE key=?", (key,)
-            ).fetchone()
-        return row["value"] if row else default
+        return self._settings.get(key, default)
 
     def set_setting(self, key: str, value: str) -> None:
-        self._exec(
-            "INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
-            "updated_at=excluded.updated_at",
-            (key, value, _now_ms()),
-        )
+        self._settings.set(key, value)
 
     # --- model profiles (saved LLM/API configs) --------------------------
     # Stored as a JSON list under the `model_profiles` setting so users can keep
     # several full API configs (provider + base_url + model + key) side by side
     # and switch between them. Activating one writes the live `llm_*` settings.
     def list_model_profiles(self) -> list[dict]:
-        raw = self.get_setting("model_profiles")
-        if not raw:
-            return []
-        try:
-            v = json.loads(raw)
-        except (ValueError, TypeError):
-            return []
-        return v if isinstance(v, list) else []
+        return self._settings.list_model_profiles()
 
     def set_model_profiles(self, profiles: list[dict]) -> None:
-        self.set_setting("model_profiles", json.dumps(profiles))
+        self._settings.set_model_profiles(profiles)
 
     def mutate_model_profiles(self, fn):
-        """Atomically read-modify-write the profile list under the store lock.
-
-        `fn(profiles)` edits the list in place (append / mutate a dict / `ps[:] =
-        ...`) and may return a value, which is returned to the caller. Holding the
-        RLock across the read AND the write closes the lost-update window of the
-        plain list()+set() pattern: under the threaded daemon two concurrent
-        mutations would otherwise each read the same list and the second write
-        would clobber the first. Nested get_setting/set_setting reacquire the same
-        RLock harmlessly, so no other thread can interleave in between.
-        """
-        with self._lock:
-            profs = self.list_model_profiles()
-            result = fn(profs)
-            self.set_model_profiles(profs)
-            return result
+        return self._settings.mutate_model_profiles(fn)
 
     # --- permission rules (opencode-style tool-call gate) ----------------
     def set_permission_rule(
@@ -2247,20 +2223,10 @@ class Store:
 
     # --- feedback (per message) -----------------------------------------
     def set_feedback(self, frame_id: str, key: str, rating: str | None) -> None:
-        """Persist a thumbs up/down for an assistant message (key = message
-        index/hash). rating None clears it."""
-        if rating:
-            self.set_setting(f"fb:{frame_id}:{key}", rating)
-        else:
-            self._exec("DELETE FROM settings WHERE key=?", (f"fb:{frame_id}:{key}",))
+        self._settings.set_feedback(frame_id, key, rating)
 
     def list_feedback(self, frame_id: str) -> dict:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT key,value FROM settings WHERE key LIKE ?", (f"fb:{frame_id}:%",)
-            ).fetchall()
-        prefix = f"fb:{frame_id}:"
-        return {r["key"][len(prefix) :]: r["value"] for r in rows}
+        return self._settings.list_feedback(frame_id)
 
     # --- image annotations (figure review) ------------------------------
     def add_annotation(
