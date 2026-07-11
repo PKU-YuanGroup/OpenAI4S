@@ -266,7 +266,12 @@ def test_late_model_reply_after_stop_cannot_execute_or_submit(monkeypatch):
     assert result["stop_reason"] == "stopped"
     assert result["output"] is None
     assert model_calls == ["started"]
-    assert _FakeKernel.instances[0].action_codes == []
+    # A capability-scoped skill bootstrap may already have run as a system
+    # cell.  Cancellation must still prevent the late model-authored action.
+    assert not any(
+        "host.submit_output" in code
+        for code in _FakeKernel.instances[0].action_codes
+    )
 
 
 def test_parent_stop_propagates_to_running_descendants(monkeypatch):

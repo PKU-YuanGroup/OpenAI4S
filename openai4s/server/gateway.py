@@ -450,6 +450,11 @@ class SessionState:
         self.env_name: str | None = None
         self.desired_env: str | None = None
         self.pending_env: str | None = None
+        # One delegation tree belongs to the whole Web session.  Re-creating a
+        # runner on every user turn used to orphan async children and reset the
+        # shared fan-out budget, making collect/steer/cancel unreliable after
+        # the next message.
+        self.delegation_runner = None
         # R execution channel: the persistent R kernel serving ```r cells —
         # spawned lazily on first use, retargeted when host.env.use() picks an
         # R-only env (dispatcher.active_r_env), torn down with the session.
@@ -1200,6 +1205,10 @@ class SessionRunner:
             try:
                 self.cancel(root_frame_id)
                 self.executions.close_session(root_frame_id, reason=reason)
+                runner = st.delegation_runner
+                if runner is not None:
+                    runner.close(cancel=True)
+                    st.delegation_runner = None
                 self._interrupt_background(st)
                 with st.turn_lock:
                     st.kernels.stop("python", manual=False, reason=reason)
@@ -1399,7 +1408,8 @@ class SessionRunner:
         proj = self.store.get_project(st.project_id) if st.project_id else None
         if proj and (proj.get("context") or "").strip():
             ctx += "\n\nProject context:\n" + proj["context"].strip()
-        sctx = _maybe_call(getattr(self.skills, "system_context", ""))
+        skills = self._skills_for(st)
+        sctx = _maybe_call(getattr(skills, "system_context", ""))
         if sctx:
             ctx += "\n\n" + sctx
         # long-term memory: inject saved memory blocks when the feature is on
@@ -1416,7 +1426,16 @@ class SessionRunner:
             pass
         # Specialists the agent can delegate to (host.delegate(request, name=...))
         try:
-            specs = list(_BUILTIN_AGENTS) + list(self.store.list_agents())
+            specialists = self.store.specialist_profiles(
+                project_id=st.project_id,
+                session_id=st.root_frame_id,
+            )
+            builtin = specialists.filter_profiles(_BUILTIN_AGENTS)
+            custom = self.store.list_agents(
+                project_id=st.project_id,
+                session_id=st.root_frame_id,
+            )
+            specs = list(builtin) + list(custom)
             if specs:
                 ctx += (
                     "\n\nAvailable specialists — delegate a self-contained "
@@ -1483,6 +1502,26 @@ class SessionRunner:
         # Cell identity is also process-local unless explicitly re-seeded.
         # The execution log remains the lossless physical-cell projection.
         st.cell_index = self.store.cell_count(st.root_frame_id)
+
+    def _skills_for(self, st: SessionState):
+        """Return the exact project/session-scoped loader used by Host RPC.
+
+        Prompt disclosure, host.search_skills/read, and kernel bootstrap must
+        all observe one capability snapshot.  Falling back to the runner-level
+        loader keeps lightweight tests that inject a dispatcher compatible.
+        """
+
+        dispatcher = st.dispatcher
+        loader = getattr(dispatcher, "skill_loader", None) if dispatcher else None
+        if loader is not None:
+            return loader
+        try:
+            return self.skills.scoped(
+                project_id=st.project_id,
+                session_id=st.root_frame_id,
+            )
+        except Exception:  # noqa: BLE001 - prompt/bootstrap remains available
+            return self.skills
 
     def _ensure_runtime(self, st: SessionState):
         """Build the session control plane without acquiring a language worker."""
@@ -1606,7 +1645,20 @@ class SessionRunner:
         ).strip().lower() in {"1", "true", "yes", "on"}
         if not delegation_enabled:
             disp._delegate_fn = None
-            disp.steer_fns = {}
+            runner = st.delegation_runner
+            # Existing async children remain observable and cancellable even
+            # after new delegation has been disabled for the session.
+            disp.steer_fns = (
+                {
+                    "children": runner.children,
+                    "collect": runner.collect,
+                    "stop_child": runner.stop_child,
+                    "send_message": runner.send_message,
+                    "delegation_stats": runner.delegation_stats,
+                }
+                if runner is not None
+                else {}
+            )
             return
         try:
             import dataclasses as _dc
@@ -1614,9 +1666,20 @@ class SessionRunner:
             from openai4s.agent.delegation import DelegationRunner
 
             child_cfg = _dc.replace(self.cfg, llm=self._llm_cfg(st))
-            runner = DelegationRunner(
-                child_cfg, depth=0, parent_frame_id=st.root_frame_id, store=self.store
-            )
+            runner = st.delegation_runner
+            if runner is None:
+                runner = DelegationRunner(
+                    child_cfg,
+                    depth=0,
+                    parent_frame_id=st.root_frame_id,
+                    store=self.store,
+                )
+                st.delegation_runner = runner
+            else:
+                # Future children inherit the current composer model while the
+                # tree, running children, steering inboxes, and session budget
+                # remain intact across Web turns.
+                runner.cfg = child_cfg
             disp._delegate_fn = runner
             disp.steer_fns = {
                 "children": runner.children,
@@ -1843,6 +1906,16 @@ class SessionRunner:
             return result
         if result.get("scope") != "running":
             return result
+        owner_result = result.get("owner") or {}
+        if owner_result.get("kind") == "agent":
+            with self._lock:
+                state = self._sessions.get(root_frame_id)
+            runner = state.delegation_runner if state is not None else None
+            if runner is not None:
+                try:
+                    runner.cancel_all("parent execution cancelled")
+                except Exception:  # noqa: BLE001 - parent cancel still succeeds
+                    traceback.print_exc()
         with self._lock:
             self.reviews.cancel_locked(root_frame_id)
         # Release any pending permission prompt for this conversation (deny).
@@ -1882,7 +1955,7 @@ class SessionRunner:
         """Run and persist the bootstrap facts observed for one generation."""
 
         target = kernel if kernel is not None else st.kernel
-        boot = _maybe_call(getattr(self.skills, "bootstrap_code", ""))
+        boot = _maybe_call(getattr(self._skills_for(st), "bootstrap_code", ""))
         metadata = {
             "status": "skipped" if not (boot and boot.strip()) else "bootstrapping",
             "bootstrap_code_sha256": (

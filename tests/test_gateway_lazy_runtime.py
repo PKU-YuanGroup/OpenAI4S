@@ -176,6 +176,27 @@ def test_session_creation_plan_and_native_tool_turn_do_not_spawn(monkeypatch, tm
     assert len(dispatchers) == 2
 
 
+def test_session_runtime_reuses_delegation_tree_and_scoped_capabilities(tmp_path):
+    runner = gateway_mod.SessionRunner(
+        _cfg(tmp_path), _Hub(), start_idle_sweeper=False
+    )
+    frame_id = _frame(runner)
+    state = runner._state(frame_id, "default")
+
+    dispatcher = runner._ensure_runtime(state)
+    first = state.delegation_runner
+    assert first is not None
+    assert dispatcher.skill_loader.capabilities.session_id == frame_id
+    assert dispatcher.skill_loader.capabilities.project_id == "default"
+
+    state.model = "next-model"
+    runner._wire_delegation(state)
+    assert state.delegation_runner is first
+    assert dispatcher._delegate_fn is first
+    assert first.cfg.llm.model == "next-model"
+    runner.close()
+
+
 def test_first_code_spawns_once_and_stop_does_not_break_tool_only_runtime(
     monkeypatch, tmp_path
 ):
