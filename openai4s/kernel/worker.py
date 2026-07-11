@@ -216,6 +216,29 @@ def _peak_rss_kb() -> int:
 # --- synchronous host RPC ---------------------------------
 
 _HOST_CALL_SEQ = 0
+_ACTIVE_CELL_ID: list[str | None] = [None]
+
+
+def _attach_cell_context(method: str, args: list) -> list:
+    """Add worker-owned cell identity to cell-scoped host calls.
+
+    The model may still pass an explicit ``producing_cell_id`` for backwards
+    compatibility. The hidden execution id remains authoritative for capture
+    identity, while the public value is preserved on the wire. Keep both on
+    the existing argument rather than adding another frame reader or protocol
+    message type.
+    """
+    cell_id = _ACTIVE_CELL_ID[0]
+    if method != "save_artifact" or not cell_id or not args:
+        return args
+    spec = args[0]
+    if not isinstance(spec, dict):
+        return args
+    enriched = dict(spec)
+    enriched["executionCellId"] = cell_id
+    if "producingCellId" not in spec and "producing_cell_id" not in spec:
+        enriched["producingCellId"] = cell_id
+    return [enriched, *args[1:]]
 
 
 def host_call(method: str, args: list) -> object:
@@ -227,6 +250,7 @@ def host_call(method: str, args: list) -> object:
     global _HOST_CALL_SEQ
     _HOST_CALL_SEQ += 1
     call_id = f"hc-{int(time.time())}-{_HOST_CALL_SEQ}"
+    args = _attach_cell_context(method, args)
     payload = json.dumps(
         {"type": "host_call", "id": call_id, "method": method, "args": args},
         ensure_ascii=False,
@@ -368,6 +392,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
     _CELL_SEQ += 1
     tag = f"<kernel:{_CELL_SEQ}>"
     _register_cell(code, tag)
+    _ACTIVE_CELL_ID[0] = cell_id
 
     if "host" not in _NS:
         _install_host(_NS)

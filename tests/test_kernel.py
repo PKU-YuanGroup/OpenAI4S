@@ -144,6 +144,55 @@ def test_explicit_cell_id_roundtrips_through_worker_response():
     assert automatic_one["id"] != automatic_two["id"]
 
 
+def test_save_artifact_host_call_carries_canonical_and_declared_cell_ids():
+    calls = []
+
+    def dispatcher(method, args):
+        calls.append((method, args))
+        return {"ok": True}
+
+    with Kernel(dispatcher=dispatcher) as kernel:
+        inherited = kernel.execute(
+            "print(host.save_artifact('result.csv')['ok'])",
+            cell_id="cell-artifact",
+        )
+        explicit = kernel.execute(
+            "host.save_artifact('result.csv', producing_cell_id='manual-cell')",
+            cell_id="cell-other",
+        )
+
+    assert inherited["error"] is None
+    assert inherited["stdout"].strip() == "True"
+    assert explicit["error"] is None
+    save_calls = [call for call in calls if call[0] == "save_artifact"]
+    assert save_calls == [
+        (
+            "save_artifact",
+            [
+                {
+                    "path": "result.csv",
+                    "inputVersionIds": [],
+                    "priority": 0,
+                    "executionCellId": "cell-artifact",
+                    "producingCellId": "cell-artifact",
+                }
+            ],
+        ),
+        (
+            "save_artifact",
+            [
+                {
+                    "path": "result.csv",
+                    "inputVersionIds": [],
+                    "producingCellId": "manual-cell",
+                    "priority": 0,
+                    "executionCellId": "cell-other",
+                }
+            ],
+        ),
+    ]
+
+
 def test_host_call_soft_fail_single_key_error_dict():
     """Dispatcher returning {'error': msg} (and nothing else) surfaces in the
     kernel as a RuntimeError('host.<method> error: <msg>') — the soft-fail

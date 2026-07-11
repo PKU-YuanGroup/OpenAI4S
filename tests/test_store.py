@@ -240,6 +240,46 @@ def test_record_cell_artifact_finds_exact_version_before_newer_duplicate(tmp_pat
     )
 
 
+def test_provisional_policy_keeps_distinct_explicit_aliases(tmp_path):
+    store = _store(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="default")
+    output = tmp_path / "physical.csv"
+    output.write_text("value\n1\n")
+    first_snapshot = tmp_path / "first.snapshot"
+    second_snapshot = tmp_path / "second.snapshot"
+    first_snapshot.write_bytes(output.read_bytes())
+    second_snapshot.write_bytes(output.read_bytes())
+
+    first = store.record_cell_artifact(
+        path=str(output),
+        filename="first.csv",
+        content_type="text/csv",
+        size_bytes=8,
+        checksum="same-bytes",
+        producing_cell_id="cell-alias",
+        frame_id=frame_id,
+        snapshot_path=str(first_snapshot),
+        reuse_policy="provisional",
+    )
+    second = store.record_cell_artifact(
+        path=str(output),
+        filename="second.csv",
+        content_type="text/csv",
+        size_bytes=8,
+        checksum="same-bytes",
+        producing_cell_id="cell-alias",
+        frame_id=frame_id,
+        snapshot_path=str(second_snapshot),
+        reuse_policy="provisional",
+    )
+
+    assert second["artifact_id"] != first["artifact_id"]
+    assert store.get_artifact(first["artifact_id"])["filename"] == "first.csv"
+    assert store.get_artifact(second["artifact_id"])["filename"] == "second.csv"
+    assert len(store.list_versions(first["artifact_id"])) == 1
+    assert len(store.list_versions(second["artifact_id"])) == 1
+
+
 def test_record_cell_artifact_coalesces_unframed_alias_and_versions_new_bytes(
     tmp_path,
 ):

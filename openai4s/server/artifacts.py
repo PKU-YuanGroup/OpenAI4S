@@ -61,6 +61,10 @@ class ArtifactManager:
     ) -> None:
         """Freeze one version's bytes while its DB path stays live/mutable."""
         try:
+            current = self.store.version_meta(version_id)
+            existing = (current or {}).get("snapshot_path")
+            if existing and Path(existing).is_file():
+                return
             safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
             snapshot = self.versions_dir() / f"{version_id}__{safe}"
             if data is not None:
@@ -187,8 +191,13 @@ class ArtifactManager:
             root_frame_id=session.root_frame_id,
             project_id=session.project_id,
             env_snapshot_id=env_snapshot_id,
+            preserve_filename=True,
+            preserve_content_type=True,
         )
-        self.write_version_snapshot(record["version_id"], relative, src_path=path)
+        display_filename = record.get("filename") or relative
+        self.write_version_snapshot(
+            record["version_id"], display_filename, src_path=path
+        )
         emit(
             {
                 "type": "artifact_created",
@@ -196,7 +205,7 @@ class ArtifactManager:
                     "id": record["artifact_id"],
                     "artifact_id": record["artifact_id"],
                     "version_id": record["version_id"],
-                    "filename": relative,
+                    "filename": display_filename,
                     "content_type": record.get("content_type"),
                     "size_bytes": size,
                     "project_id": session.project_id,
@@ -212,7 +221,7 @@ class ArtifactManager:
             "artifact_id": record["artifact_id"],
             "version_id": record["version_id"],
             "version_number": version_number,
-            "filename": relative,
+            "filename": display_filename,
             "content_type": record.get("content_type"),
             "size_bytes": size,
             "checksum": checksum,

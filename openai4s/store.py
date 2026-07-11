@@ -1431,19 +1431,30 @@ class Store:
         env_snapshot_id: str | None = None,
         snapshot_path: str | None = None,
         input_version_ids: list[str] | tuple[str, ...] | None = None,
+        preserve_filename: bool = False,
+        preserve_content_type: bool = False,
+        reuse_policy: str = "any",
     ) -> dict:
         """Atomically record or finalize one cell's physical file write.
 
         Provenance reports arrive during kernel execution and capture enriches
-        the same bytes after the cell.  When root, logical filename, physical
-        path, producing cell, and checksum all match the artifact's latest
-        version, this method preserves that version id and fills missing
-        capture metadata.  A different cell or different bytes always creates
-        a new version. ``save_artifact`` keeps its unconditional-new semantics
-        for uploads and explicit version creation.  This transaction assumes
-        the application's normal single Store writer; the process-local lock
-        serializes callers sharing that Store instance.
+        the same bytes after the cell.  When root, physical path, producing
+        cell, and checksum all match an artifact's latest version, this method
+        preserves that version id and fills missing capture metadata. Same-name
+        candidates are preferred, but an explicit display filename does not
+        split one physical cell output into two artifacts. The ``preserve_*``
+        flags let automatic capture retain an earlier explicit label and MIME
+        declaration, while still filling either field when it was absent. A
+        different cell or different bytes always creates a new version.
+        ``save_artifact`` keeps its unconditional-new semantics for uploads and
+        explicit version creation. This transaction assumes the application's
+        normal single Store writer; the process-local lock serializes callers
+        sharing that Store instance. ``reuse_policy='provisional'`` is for an
+        explicit in-cell save: it reuses an unsnapshotted provenance record but
+        keeps repeated explicit saves as distinct versions.
         """
+        if reuse_policy not in {"any", "provisional"}:
+            raise ValueError(f"unknown cell artifact reuse policy: {reuse_policy!r}")
         _explicit, resolved_root, resolved_project = self._artifact_write_scope(
             frame_id=frame_id,
             root_frame_id=root_frame_id,
@@ -1465,20 +1476,20 @@ class Store:
                 )
                 root_args = (resolved_root,) if resolved_root is not None else ()
 
-                # Search every same-name logical artifact for the exact latest
+                # Search every scoped logical artifact for the exact latest
                 # provenance version first.  A separate same-name artifact may
                 # have been registered between the mid-cell provenance report
                 # and post-cell capture; simply checking the newest artifact
                 # would strand the lineage-bearing version in that race.
                 if producing_cell_id and checksum is not None:
                     exact_rows = self._conn.execute(
-                        "SELECT v.*,a.latest_version_id AS artifact_latest_version_id "
+                        "SELECT v.*,a.latest_version_id AS artifact_latest_version_id,"
+                        "CASE WHEN a.filename=? THEN 0 ELSE 1 END AS filename_rank "
                         "FROM artifact_versions v JOIN artifacts a "
-                        "ON a.artifact_id=v.artifact_id WHERE a.filename=? "
-                        "AND a.project_id=? AND "
+                        "ON a.artifact_id=v.artifact_id WHERE a.project_id=? AND "
                         + root_clause
                         + " AND v.producing_cell_id=? AND v.checksum=? "
-                        "ORDER BY v.created_at DESC,v.rowid DESC",
+                        "ORDER BY filename_rank,v.created_at DESC,v.rowid DESC",
                         (
                             filename,
                             resolved_project,
@@ -1495,13 +1506,21 @@ class Store:
                             candidate = row
                             break
 
-                if candidate is not None:
+                reuse = candidate is not None and (
+                    reuse_policy == "any" or not candidate["snapshot_path"]
+                )
+
+                if reuse:
                     artifact = self._conn.execute(
                         "SELECT rowid AS artifact_rowid,* FROM artifacts "
                         "WHERE artifact_id=?",
                         (candidate["artifact_id"],),
                     ).fetchone()
                 else:
+                    # A snapshotted exact candidate is an earlier explicit save,
+                    # not a provisional record. Continue the requested logical
+                    # filename if it exists; a different alias starts its own
+                    # artifact instead of renaming the prior explicit result.
                     artifact = self._conn.execute(
                         "SELECT rowid AS artifact_rowid,* FROM artifacts a "
                         "WHERE a.filename=? AND a.project_id=? AND "
@@ -1510,12 +1529,20 @@ class Store:
                         (filename, resolved_project, *root_args),
                     ).fetchone()
 
-                reuse = candidate is not None
-
                 if reuse:
                     artifact_id = candidate["artifact_id"]
                     version_id = candidate["version_id"]
                     created_at = candidate["created_at"]
+                    stored_filename = (
+                        (candidate["filename"] or artifact["filename"])
+                        if preserve_filename
+                        else filename
+                    )
+                    stored_content_type = (
+                        candidate["content_type"]
+                        if preserve_content_type and candidate["content_type"]
+                        else content_type
+                    )
                     self._conn.execute(
                         "UPDATE artifact_versions SET filename=?,"
                         "content_type=COALESCE(?,content_type),size_bytes=?,"
@@ -1523,8 +1550,8 @@ class Store:
                         "env_snapshot_id=COALESCE(env_snapshot_id,?) "
                         "WHERE version_id=?",
                         (
-                            filename,
-                            content_type,
+                            stored_filename,
+                            stored_content_type,
                             size_bytes,
                             checksum,
                             path,
@@ -1534,6 +1561,8 @@ class Store:
                         ),
                     )
                 else:
+                    stored_filename = filename
+                    stored_content_type = content_type
                     version_id = f"v-{uuid.uuid4().hex[:12]}"
                     artifact_id = (
                         artifact["artifact_id"]
@@ -1571,7 +1600,7 @@ class Store:
                                 resolved_project,
                                 resolved_root,
                                 filename,
-                                content_type,
+                                stored_content_type,
                                 0,
                                 0,
                                 version_id,
@@ -1584,7 +1613,13 @@ class Store:
                     "UPDATE artifacts SET filename=?,"
                     "content_type=COALESCE(?,content_type),latest_version_id=?,"
                     "updated_at=? WHERE artifact_id=?",
-                    (filename, content_type, version_id, now, artifact_id),
+                    (
+                        stored_filename,
+                        stored_content_type,
+                        version_id,
+                        now,
+                        artifact_id,
+                    ),
                 )
                 seen_inputs: set[str] = set()
                 for input_version_id in input_version_ids or ():

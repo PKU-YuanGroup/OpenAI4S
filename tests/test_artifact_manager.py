@@ -24,7 +24,7 @@ class ArtifactHarness:
         self.frame_id = self.store.new_frame(
             kind="turn", project_id="default", status="ready"
         )
-        self.workspace = tmp_path / "workspace"
+        self.workspace = cfg.data_dir / "agent-workspaces" / self.frame_id
         self.workspace.mkdir(parents=True)
         self.broadcasts: list[tuple[str, dict]] = []
         self.environment_calls = 0
@@ -172,6 +172,132 @@ def test_capture_finalizes_provenance_version_without_duplicating_it(tmp_path):
             {"root_frame_id": harness.frame_id, "filename": "derived.txt"}
         )
     ) == 1
+
+
+def test_explicit_save_merges_provenance_and_capture_into_one_complete_version(
+    tmp_path,
+):
+    harness = ArtifactHarness(tmp_path)
+    source = harness.workspace / "input.txt"
+    source.write_text("science")
+    source_record = harness.store.save_artifact(
+        path=str(source),
+        filename=source.name,
+        content_type="text/plain",
+        size_bytes=7,
+        checksum="source",
+        frame_id=harness.frame_id,
+        project_id="default",
+    )
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+    events = []
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        before = harness.manager.snapshot(harness.workspace)
+        result = kernel.execute(
+            "text = open('input.txt').read()\n"
+            "with open('manual.csv', 'w') as handle:\n"
+            "    handle.write(text.upper())\n"
+            "saved = host.save_artifact(\n"
+            "    'manual.csv', 'published/result.csv',\n"
+            "    content_type='application/x-science',\n"
+            f"    input_version_ids=['{source_record['version_id']}'],\n"
+            "    producing_cell_id='declared-producer',\n"
+            "    priority=2,\n"
+            ")\n"
+            "print(saved['version_id'])\n"
+            "print(saved['path'])\n",
+            cell_id="cell-explicit",
+        )
+        assert result["error"] is None
+        saved_version, returned_path = result["stdout"].splitlines()
+        before_capture = harness.store.version_meta(saved_version)
+        capture = harness.manager.capture(
+            harness.session,
+            1,
+            "cell-explicit",
+            before,
+            events.append,
+            language="python",
+        )
+
+    artifact = harness.store.artifact_by_filename(
+        "published/result.csv", harness.frame_id, strict=True
+    )
+    assert artifact is not None
+    assert artifact["priority"] == 2
+    assert artifact["latest_version_id"] == saved_version
+    assert len(harness.store.list_versions(artifact["artifact_id"])) == 1
+    assert capture.files_written == ["manual.csv"]
+    assert capture.artifacts[0]["version_id"] == saved_version
+    assert capture.artifacts[0]["filename"] == "published/result.csv"
+    assert events[0]["artifact"]["filename"] == "published/result.csv"
+    metadata = harness.store.version_meta(saved_version)
+    assert metadata["producing_cell_id"] == "cell-explicit"
+    assert metadata["content_type"] == "application/x-science"
+    assert artifact["content_type"] == "application/x-science"
+    assert capture.artifacts[0]["content_type"] == "application/x-science"
+    assert metadata["path"] == str(harness.workspace / "manual.csv")
+    assert metadata["snapshot_path"] == before_capture["snapshot_path"]
+    assert returned_path == metadata["snapshot_path"]
+    assert Path(metadata["snapshot_path"]).read_text() == "SCIENCE"
+    assert metadata["env_snapshot_id"] is not None
+    assert harness.store.lineage_inputs(saved_version) == [
+        {
+            "version_id": source_record["version_id"],
+            "filename": "input.txt",
+            "path": str(source),
+        }
+    ]
+    assert (
+        harness.store.artifact_by_filename(
+            "manual.csv", harness.frame_id, strict=True
+        )
+        is None
+    )
+
+
+def test_repeated_explicit_saves_remain_versions_and_capture_adds_no_third(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        before = harness.manager.snapshot(harness.workspace)
+        result = kernel.execute(
+            "open('repeat.txt', 'w').write('same')\n"
+            "first = host.save_artifact('repeat.txt')\n"
+            "second = host.save_artifact('repeat.txt')\n"
+            "print(first['version_id'])\n"
+            "print(second['version_id'])\n",
+            cell_id="cell-repeat",
+        )
+        assert result["error"] is None
+        first_version, second_version = result["stdout"].splitlines()
+        capture = harness.manager.capture(
+            harness.session,
+            1,
+            "cell-repeat",
+            before,
+            lambda event: None,
+            language="python",
+        )
+
+    artifact = harness.store.artifact_by_filename(
+        "repeat.txt", harness.frame_id, strict=True
+    )
+    assert first_version != second_version
+    assert artifact["latest_version_id"] == second_version
+    assert capture.artifacts[0]["version_id"] == second_version
+    versions = harness.store.list_versions(artifact["artifact_id"])
+    assert {version["version_id"] for version in versions} == {
+        first_version,
+        second_version,
+    }
+    assert all(
+        Path(harness.store.version_meta(version["version_id"])["snapshot_path"])
+        .is_file()
+        for version in versions
+    )
 
 
 def test_protect_latest_backfills_live_bytes_for_legacy_version(tmp_path):

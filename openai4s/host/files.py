@@ -46,14 +46,19 @@ class WorkspaceFileService:
         *,
         data_dir: Path,
         frame_id: Callable[[], str | None],
+        workspace: Callable[[], str | Path | None] | None = None,
     ) -> None:
         self._data_dir = data_dir
         self._frame_id = frame_id
+        self._workspace = workspace
 
     def workspace(self) -> Path:
         """Return the resolved workspace, creating it on first use."""
+        explicit = self._workspace() if self._workspace is not None else None
         workspace = (
-            self._data_dir
+            Path(explicit)
+            if explicit is not None
+            else self._data_dir
             / "agent-workspaces"
             / (self._frame_id() or "default")
         ).resolve()

@@ -1087,7 +1087,11 @@ class SessionRunner:
         )
 
         def factory() -> Kernel:
-            disp = build_dispatcher(self.cfg, frame_id=st.root_frame_id)
+            disp = build_dispatcher(
+                self.cfg,
+                frame_id=st.root_frame_id,
+                workspace=st.workspace,
+            )
             # Project every visible host.* call into persisted UI activity.
             disp.on_step = self._make_step_sink(st)
             disp.on_plan = self._make_plan_sink(st)

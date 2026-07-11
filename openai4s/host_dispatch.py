@@ -545,15 +545,18 @@ class HostDispatcher:
         cfg: Config | None = None,
         delegate_fn: Callable[[dict], Any] | None = None,
         frame_id: str | None = None,
+        workspace: str | Path | None = None,
     ):
         self.cfg = cfg or get_config()
         self._delegate_fn = delegate_fn
         self.last_output: dict | None = None
         self.frame_id = frame_id
+        self.workspace_path = Path(workspace).resolve() if workspace else None
         self.store = get_store(self.cfg.db_path)
         self._files = WorkspaceFileService(
             data_dir=self.cfg.data_dir,
             frame_id=lambda: self.frame_id,
+            workspace=lambda: self.workspace_path,
         )
         # Steering hooks wired by the delegation layer.
         self.steer_fns: dict[str, Callable[..., Any]] = {}
@@ -611,6 +614,10 @@ class HostDispatcher:
 
             self._compute = ComputeManager(self.cfg)
         return self._compute
+
+    def set_workspace(self, path: str | Path) -> None:
+        """Bind host-side file operations to the kernel's actual cwd."""
+        self.workspace_path = Path(path).resolve()
 
     # dispatcher entrypoint ------------------------------------------------
     def __call__(self, method: str, args: list) -> Any:
@@ -1646,35 +1653,57 @@ class HostDispatcher:
         return path
 
     def _m_save_artifact(self, spec: dict) -> dict:
-        src = Path(spec["path"]).expanduser()
-        if not src.exists():
+        src = self._resolve(str(spec["path"]), must_exist=True)
+        if not src.is_file():
             raise FileNotFoundError(f"save_artifact: no such file: {src}")
-        filename = spec.get("filename") or src.name
+        filename = str(spec.get("filename") or src.name)
         data = src.read_bytes()
         checksum = hashlib.sha256(data).hexdigest()
         version_id_stub = uuid.uuid4().hex[:12]
-        dst = self.cfg.artifacts_dir / f"v-{version_id_stub}__{filename}"
+        safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
+        self.cfg.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        dst = self.cfg.artifacts_dir / f"v-{version_id_stub}__{safe_filename}"
         shutil.copy2(src, dst)
-        rec = self.store.save_artifact(
-            path=str(dst),
-            filename=filename,
-            content_type=spec.get("content_type"),
-            size_bytes=len(data),
-            checksum=checksum,
-            producing_cell_id=spec.get("producing_cell_id"),
-            frame_id=self.frame_id,
-            is_user_upload=spec.get("is_user_upload", False),
-            priority=int(spec.get("priority", 0)),
-        )
-        # record declared input lineage edges if provided
-        for input_vid in spec.get("input_version_ids") or []:
-            self.store.add_lineage_edge(
-                input_version_id=input_vid,
-                output_version_id=rec["version_id"],
-                producing_cell_id=spec.get("producing_cell_id"),
-                frame_id=self.frame_id,
+        try:
+            execution_cell_id = spec.get("execution_cell_id") or spec.get(
+                "producing_cell_id"
             )
-        return rec
+            rec = self.store.record_cell_artifact(
+                path=str(src),
+                filename=filename,
+                content_type=spec.get("content_type"),
+                size_bytes=len(data),
+                checksum=checksum,
+                producing_cell_id=execution_cell_id,
+                frame_id=self.frame_id,
+                snapshot_path=str(dst),
+                input_version_ids=spec.get("input_version_ids") or [],
+                reuse_policy="provisional",
+            )
+        except Exception:
+            dst.unlink(missing_ok=True)
+            raise
+
+        # A repeated explicit save in the same cell may reuse a version that
+        # already owns an immutable snapshot.  Keep that first snapshot and
+        # discard the redundant copy; replace only a stale/missing binding.
+        metadata = self.store.version_meta(rec["version_id"]) or {}
+        bound_snapshot = metadata.get("snapshot_path")
+        if bound_snapshot != str(dst):
+            if bound_snapshot and Path(bound_snapshot).is_file():
+                dst.unlink(missing_ok=True)
+            else:
+                self.store.set_version_snapshot(rec["version_id"], str(dst))
+                bound_snapshot = str(dst)
+        priority = int(spec.get("priority", 0))
+        if priority:
+            self.store.set_priority(rec["artifact_id"], priority)
+        # Keep the historical RPC response contract: callers receive the
+        # immutable saved path even though the database now retains the live
+        # workspace path separately for provenance/capture identity.
+        response = dict(rec)
+        response["path"] = bound_snapshot or str(dst)
+        return response
 
     def _m_view_image(self, spec: dict) -> dict:
         """Register an image artifact for host rendering."""
@@ -2416,5 +2445,11 @@ def build_dispatcher(
     cfg: Config | None = None,
     delegate_fn: Callable[[dict], Any] | None = None,
     frame_id: str | None = None,
+    workspace: str | Path | None = None,
 ) -> HostDispatcher:
-    return HostDispatcher(cfg=cfg, delegate_fn=delegate_fn, frame_id=frame_id)
+    return HostDispatcher(
+        cfg=cfg,
+        delegate_fn=delegate_fn,
+        frame_id=frame_id,
+        workspace=workspace,
+    )

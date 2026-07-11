@@ -242,6 +242,7 @@ class Agent:
         ]
         transcript: list[Turn] = []
         run_cwd = os.getcwd()
+        self.dispatcher.set_workspace(run_cwd)
         self.dispatcher.background_kernel_factory = lambda: Kernel(
             dispatcher=self.dispatcher,
             cwd=run_cwd,
