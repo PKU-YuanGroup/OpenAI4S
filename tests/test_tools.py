@@ -3,6 +3,8 @@
 These lock the registry shape, the ```tool parse convention, prompt rendering,
 tool-local prechecks, and the protected dispatch/observation contract.
 """
+import ast
+import inspect
 import time
 from dataclasses import FrozenInstanceError
 
@@ -68,6 +70,25 @@ def test_builtin_tools_are_named_classes_with_local_execute_behavior():
     )
     expected_types = (TOOL_TYPES[5], *TOOL_TYPES[6:])
     assert tuple(type(tool) for tool in compatibility_aliases) == expected_types
+
+
+def test_builtin_tool_modules_do_not_construct_eager_singletons():
+    """Concrete modules define behaviour; only the registry creates instances."""
+    violations = []
+    for tool_type in TOOL_TYPES:
+        module = inspect.getmodule(tool_type)
+        tree = ast.parse(inspect.getsource(module))
+        for statement in tree.body:
+            value = None
+            if isinstance(statement, ast.Assign):
+                value = statement.value
+            elif isinstance(statement, ast.AnnAssign):
+                value = statement.value
+            if not isinstance(value, ast.Call):
+                continue
+            if isinstance(value.func, ast.Name) and value.func.id == tool_type.__name__:
+                violations.append(f"{module.__name__}:{statement.lineno}")
+    assert violations == []
 
 
 def test_tool_schema_returns_an_isolated_parameter_copy():
