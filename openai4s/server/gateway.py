@@ -71,6 +71,7 @@ from openai4s.server.plans import public_plan as _plan_public
 from openai4s.server.plans import short_hash as _short_hash
 from openai4s.server.plans import slugify as _slugify
 from openai4s.server.skills import SkillCustomizationService
+from openai4s.server.titles import SessionTitleService
 from openai4s.skills_loader import SkillLoader
 from openai4s.store import Store, get_store
 from openai4s.tools import control_tool_specs
@@ -850,6 +851,18 @@ class SessionRunner:
             store=self.store,
             emitter_for=lambda root_frame_id: self.hub.emitter(root_frame_id),
             run_message=lambda *args, **kwargs: self.run_message(*args, **kwargs),
+        )
+        self.titles = SessionTitleService(
+            store=lambda: self.store,
+            broadcast=lambda root_frame_id, event: self.hub.broadcast(
+                root_frame_id, event
+            ),
+            chat_call=lambda messages, llm_cfg, **kwargs: chat(
+                messages, llm_cfg, **kwargs
+            ),
+            summarize_call=lambda user_text, llm_cfg: self._summarize_title(
+                user_text, llm_cfg
+            ),
         )
         self.cells = CellExecutionService(
             CellExecutionPorts(
@@ -2392,101 +2405,13 @@ class SessionRunner:
             call = self._review_calls.get(root_frame_id)
             return bool(call is not None and not call.is_set())
 
-    @staticmethod
-    def _summarize_title(user_text: str, llm_cfg) -> str | None:
-        """A short, descriptive session title distilled from the first message.
-
-        One cheap, capped chat call; returns None on empty input / any usable
-        result the caller should ignore. The caller runs this off-thread and
-        keeps the truncation placeholder if this returns None or raises.
-        """
-        src = re.sub(r"\s+", " ", user_text or "").strip()[:2000]
-        if not src:
-            return None
-        msgs = [
-            {
-                "role": "system",
-                "content": (
-                    "You name chat sessions. Read the user's first message and reply "
-                    "with a short title capturing its intent — at most 16 characters "
-                    "for Chinese/CJK, or 6 words for English. Reply in the SAME "
-                    "language as the message. Output the title only: no surrounding "
-                    "quotes, no trailing punctuation, no label like '标题:' or 'Title:'."
-                ),
-            },
-            {"role": "user", "content": src},
-        ]
-        # 64 (not 32) leaves headroom: a 16-char CJK title can already cost ~32
-        # tokens, so a tighter cap risks cutting the title mid-string.
-        res = chat(msgs, llm_cfg, max_tokens=64, temperature=0.3)
-        # A length-truncated reply is a partial title — keep the placeholder
-        # instead of saving a chopped one. (Gemini says "MAX_TOKENS".)
-        if str(res.get("finish_reason") or "").lower() in ("length", "max_tokens"):
-            return None
-        title = (res.get("content") or "").strip()
-        if not title:
-            return None
-        title = title.splitlines()[0].strip()
-        title = re.sub(r"^(标题|title)\s*[:：]\s*", "", title, flags=re.IGNORECASE)
-        # Strip only symmetric wrapping decoration. NOT the CJK book/quote
-        # brackets 《》「」『』【】 as a char-class: str.strip() treats them as a
-        # set removed from both ends, which mangles legit titles like
-        # "《红楼梦》赏析" → "红楼梦》赏析". Instead unwrap one *balanced* pair.
-        title = title.strip().strip("\"“”'`*").strip()
-        for _o, _c in (
-            ("《", "》"),
-            ("「", "」"),
-            ("『", "』"),
-            ("【", "】"),
-            ("（", "）"),
-            ("(", ")"),
-        ):
-            if (
-                len(title) >= 2
-                and title[0] == _o
-                and title[-1] == _c
-                and title.count(_o) == 1
-                and title.count(_c) == 1
-            ):
-                title = title[1:-1].strip()
-                break
-        return title[:80] or None
+    def _summarize_title(self, user_text: str, llm_cfg) -> str | None:
+        return self.titles.summarize(user_text, llm_cfg)
 
     def _spawn_title_summary(
         self, root_frame_id: str, user_text: str, llm_cfg, placeholder: str
     ) -> None:
-        """Upgrade the placeholder session title to an LLM summary, off-thread.
-
-        Never blocks the turn and never raises into it. Any failure (no API key,
-        timeout, empty reply) simply leaves the truncation placeholder in place.
-        Skips writing if the user renamed the session (`name`) or changed the
-        title away from our placeholder while we were thinking.
-        """
-
-        def _target() -> None:
-            try:
-                title = self._summarize_title(user_text, llm_cfg)
-            except Exception:  # noqa: BLE001 — titling must never break a turn
-                return
-            if not title or title == placeholder:
-                return
-            cur = self.store.get_frame(root_frame_id) or {}
-            if cur.get("name") or cur.get("task_summary") != placeholder:
-                return
-            self.store.update_frame(root_frame_id, task_summary=title)
-            self.hub.broadcast(
-                root_frame_id,
-                {
-                    "type": "frame_update",
-                    "frame_id": root_frame_id,
-                    "status": "titled",
-                    "task_summary": title,
-                },
-            )
-
-        threading.Thread(
-            target=_target, name=f"os-title-{root_frame_id}", daemon=True
-        ).start()
+        self.titles.spawn(root_frame_id, user_text, llm_cfg, placeholder)
 
     def _build_annotated_content(self, st, text: str, annos: list):
         """Turn an annotation turn into a MULTIMODAL user message: the text

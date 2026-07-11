@@ -729,7 +729,10 @@ def test_frame_update_status_literal_vocabulary(tmp_path):
     terminal site emits a VARIABLE status ∈ {completed, failed, cancelled}
     (asserted behaviorally by the structured-submit and max-turn tests above).
     If this fails, a status was added/removed — update docs/webapp-api.md."""
+    from openai4s.server import titles as titles_mod
+
     src = Path(gateway_mod.__file__).read_text(encoding="utf-8")
+    src += Path(titles_mod.__file__).read_text(encoding="utf-8")
     sites = list(re.finditer(r'"type": "frame_update"', src))
     assert len(sites) >= 7  # the emit sites documented today
     literals = set()
