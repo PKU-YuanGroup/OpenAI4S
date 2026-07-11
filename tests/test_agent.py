@@ -1,4 +1,5 @@
 """Agent loop + delegation + compaction tests, with the LLM mocked offline."""
+import json
 from pathlib import Path
 
 import pytest
@@ -334,6 +335,81 @@ def test_estimate_tokens_monotonic():
     assert comp_mod.estimate_tokens(big) > comp_mod.estimate_tokens(small)
 
 
+def test_context_estimate_accounts_for_structured_components_independently():
+    estimate = comp_mod.estimate_context(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": "https://x/i"}},
+                ],
+                "tool_calls": [{"id": "c1", "name": "lookup", "arguments": {}}],
+                "wire_state": {"response_id": "resp-1", "cursor": 9},
+            }
+        ]
+    )
+
+    assert estimate.text > 0
+    assert estimate.images >= comp_mod.IMAGE_TOKEN_ESTIMATE
+    assert estimate.tool_calls > 0
+    assert estimate.wire_state > 0
+    assert estimate.total == sum(
+        (estimate.text, estimate.images, estimate.tool_calls, estimate.wire_state)
+    )
+
+
+def test_large_tool_result_is_content_addressed_and_recoverable(tmp_path):
+    content = "measurement," * 100
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "task"},
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "measure",
+            "content": content,
+        },
+    ]
+
+    projected = comp_mod.externalize_large_outputs(
+        messages,
+        tmp_path,
+        threshold_chars=32,
+        preview_chars=24,
+        archive_metadata={"branch": "branch-a", "ledger_cursor": 41},
+    )
+
+    reference = projected[2]["content_archive"]
+    assert len(reference["sha256"]) == 64
+    assert reference["sha256"] in projected[2]["content"]
+    assert "measurement" in projected[2]["content"]
+    assert comp_mod.load_archived_content(tmp_path, reference["sha256"]) == content
+    blob = json.loads((tmp_path / reference["archive_ref"]).read_text("utf-8"))
+    assert blob["metadata"]["branch"] == "branch-a"
+    assert blob["metadata"]["ledger_cursor"] == 41
+
+
+def test_code_and_observation_are_one_atomic_compaction_segment():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "```python\nx = 1\n```"},
+        {"role": "user", "content": "[Observation]\n(no output)"},
+        {"role": "assistant", "content": "next"},
+    ]
+
+    segments = comp_mod.segment_messages(messages)
+    assert any(
+        segment.kind == "code_observation"
+        and (segment.start, segment.end) == (2, 4)
+        for segment in segments
+    )
+    # A fixed two-message tail would begin at the observation; V2 expands it
+    # back to include the source cell that produced that observation.
+    assert comp_mod.safe_keep_recent(messages, minimum=2) == 3
+
+
 def test_should_compact_uses_window(monkeypatch):
     cfg = get_config()
     # ~1000 tokens of content
@@ -359,6 +435,71 @@ def test_compact_shrinks_and_preserves_head(monkeypatch):
     assert out[1]["content"] == "task"  # original task preserved
     assert "SUMMARY TEXT" in out[2]["content"]  # summary injected
     assert out[-1]["content"] == "o5"  # most recent kept verbatim
+
+
+def test_compact_handoff_is_structured_and_never_invents_kernel_continuity(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(comp_mod, "chat", ScriptedLLM(["Finished old analysis."]))
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "old work"},
+        {"role": "user", "content": "old result"},
+        {"role": "assistant", "content": "recent"},
+    ]
+
+    out = comp_mod.compact(
+        messages,
+        get_config(),
+        keep_recent=1,
+        archive_dir=tmp_path,
+        archive_metadata={
+            "branch": "experiment-b",
+            "ledger_cursor": 73,
+            "recovery_pointer": {"checkpoint": "cp-4"},
+        },
+    )
+
+    handoff = out[2]["content"]
+    for field in comp_mod.HANDOFF_FIELDS:
+        assert f"## {field}" in handoff
+    assert "Unknown" in handoff
+    assert "NOT assumed to exist" in handoff
+    assert "namespace still holds" not in handoff
+    archive_path = next(
+        path for path in tmp_path.glob("compaction-*.json") if path.is_file()
+    )
+    archive = json.loads(archive_path.read_text("utf-8"))
+    assert archive["schema_version"] == 2
+    assert archive["metadata"]["branch"] == "experiment-b"
+    assert archive["metadata"]["ledger_cursor"] == 73
+    assert archive["metadata"]["recovery_pointer"] == {"checkpoint": "cp-4"}
+
+
+def test_compact_handoff_marks_restarted_generation_as_non_persistent(monkeypatch):
+    monkeypatch.setattr(comp_mod, "chat", ScriptedLLM(["Summary"]))
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "old"},
+        {"role": "user", "content": "old result"},
+        {"role": "assistant", "content": "recent"},
+    ]
+
+    out = comp_mod.compact(
+        messages,
+        get_config(),
+        keep_recent=1,
+        archive_metadata={
+            "active_kernel_generation": "python:8",
+            "previous_kernel_generation": "python:7",
+        },
+    )
+
+    assert "python:8" in out[2]["content"]
+    assert "previous: python:7" in out[2]["content"]
+    assert "variables from earlier generations are NOT available" in out[2]["content"]
 
 
 # ---- delegation ----------------------------------------------------------

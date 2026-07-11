@@ -295,11 +295,21 @@ def test_compaction_expands_tail_to_keep_assistant_tool_group_atomic(monkeypatch
 
     monkeypatch.setattr(runtime, "should_compact", lambda messages, cfg: True)
 
-    def fake_compact(messages, cfg, *, keep_recent, archive_dir):
+    def fake_compact(
+        messages,
+        cfg,
+        *,
+        keep_recent,
+        archive_dir,
+        archive_metadata,
+        large_output_chars,
+    ):
         captured.update(
             keep_recent=keep_recent,
             tail=messages[-keep_recent:],
             archive_dir=archive_dir,
+            archive_metadata=archive_metadata,
+            large_output_chars=large_output_chars,
         )
         return messages
 
@@ -312,6 +322,56 @@ def test_compaction_expands_tail_to_keep_assistant_tool_group_atomic(monkeypatch
     assert captured["keep_recent"] == 6
     assert captured["tail"] == [assistant, *tools]
     assert captured["archive_dir"] == "archive"
+    assert captured["archive_metadata"].active_kernel_generation is None
+    assert captured["large_output_chars"] == runtime.DEFAULT_LARGE_OUTPUT_CHARS
+
+
+def test_compaction_circuit_breaker_stops_repeated_low_yield_calls(monkeypatch):
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "old"},
+        {"role": "user", "content": "old observation"},
+        {"role": "assistant", "content": "recent"},
+    ]
+    attempts = []
+    monkeypatch.setattr(runtime, "should_compact", lambda messages, cfg: True)
+
+    def no_yield(messages, cfg, **kwargs):
+        attempts.append(kwargs)
+        return messages
+
+    monkeypatch.setattr(runtime, "compact", no_yield)
+    policy = CompactionPolicy(SimpleNamespace(compaction_dir="archive"))
+    state = RunState(messages)
+
+    policy.prepare(state)
+    policy.prepare(state)
+    policy.prepare(state)
+
+    assert len(attempts) == 2
+    assert policy.low_yield_streak == 2
+    assert policy.circuit_open is True
+    assert state.metadata["compaction_circuit_open"] is True
+
+
+def test_executor_records_kernel_generation_change_for_safe_handoff():
+    kernel = FakeKernel()
+    kernel.generation = 9
+    state = RunState(
+        [{"role": "user", "content": "continue"}],
+        metadata={"active_kernel_generation": 8},
+    )
+
+    _executor(kernel=kernel).execute(
+        CodeCell("python", "print('ready')"),
+        ModelReply(content="```python\nprint('ready')\n```"),
+        state,
+    )
+
+    assert state.metadata["previous_kernel_generation"] == 8
+    assert state.metadata["active_kernel_generation"] == 9
+    assert state.metadata["kernel_restarted"] is True
 
 
 def test_transcript_sink_projects_only_reply_and_observed_outcome_events():
