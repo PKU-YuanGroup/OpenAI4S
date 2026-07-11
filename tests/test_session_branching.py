@@ -171,5 +171,13 @@ def test_revert_and_undo_append_history_and_preserve_untracked_files(tmp_path):
         assert (workspace / "analysis.txt").read_text(encoding="utf-8") == "v2"
         assert len(repository.list_checkpoints("root")) == 6
         assert [event["type"] for event in events].count("branch_reverted") == 2
+        revert_events = [
+            event for event in events if event["type"] == "branch_reverted"
+        ]
+        assert all(event["root_frame_id"] == "root" for event in revert_events)
+        assert all(event["branch_id"] == "root" for event in revert_events)
+        assert all("operation" not in event for event in revert_events)
+        assert all("checkpoint" not in event for event in revert_events)
+        assert all("preview" not in event for event in revert_events)
     finally:
         connection.close()

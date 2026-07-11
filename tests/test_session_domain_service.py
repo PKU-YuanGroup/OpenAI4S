@@ -280,6 +280,7 @@ def test_session_domain_composes_checkpoint_branch_timeline_export_and_renderer(
     timeline = service.action_timeline(root)
     assert timeline["count"] >= 1
     assert any(group["kind"] == "checkpoint" for group in timeline["groups"])
+    assert any(group["kind"] == "revert" for group in timeline["groups"])
     exported = service.notebook_export(root, language="python")
     assert exported["filename"].endswith(".python.ipynb")
     assert exported["sha256"] == hashlib.sha256(exported["data"]).hexdigest()
@@ -292,6 +293,11 @@ def test_session_domain_composes_checkpoint_branch_timeline_export_and_renderer(
     assert renderer["version_id"] == artifact["version_id"]
     assert renderer["immutable"]["checksum"] == artifact["checksum"]
     assert events[0]["type"] == "checkpoint_created"
+    reverted_events = [event for event in events if event["type"] == "branch_reverted"]
+    assert len(reverted_events) == 2
+    assert all(event["root_frame_id"] == root for event in reverted_events)
+    assert all("operation" not in event for event in reverted_events)
+    assert all("checkpoint" not in event for event in reverted_events)
     store.close()
 
 

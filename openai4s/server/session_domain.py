@@ -500,13 +500,6 @@ class SessionDomainService:
         }
 
     def _record_domain_event(self, event: dict[str, Any]) -> None:
-        try:
-            self._event_sink(dict(event))
-        except Exception:  # noqa: BLE001 - durable state already committed
-            pass
-        root_frame_id = str(event.get("root_frame_id") or "")
-        if not root_frame_id:
-            return
         event_type = str(event.get("type") or "session_event")
         public = {
             key: event.get(key)
@@ -525,9 +518,19 @@ class SessionDomainService:
             )
             if event.get(key) is not None
         }
+        # The browser event bus and durable timeline share the same explicit
+        # projection.  Domain service return values may contain full workspace
+        # previews or checkpoint records, none of which belong on WebSocket.
+        try:
+            self._event_sink(dict(public))
+        except Exception:  # noqa: BLE001 - durable state already committed
+            pass
+        root_frame_id = str(public.get("root_frame_id") or "")
+        if not root_frame_id:
+            return
         group = self.store.append_action_group(
             root_frame_id=root_frame_id,
-            branch_id=str(event.get("branch_id") or root_frame_id),
+            branch_id=str(public.get("branch_id") or root_frame_id),
             turn_id=f"domain-{uuid.uuid4().hex[:16]}",
             kind=_event_kind(event_type),
         )
@@ -541,7 +544,7 @@ class SessionDomainService:
             ),
             resource_keys=[
                 f"session:{root_frame_id}",
-                f"branch:{event.get('branch_id') or root_frame_id}",
+                f"branch:{public.get('branch_id') or root_frame_id}",
             ],
         )
 

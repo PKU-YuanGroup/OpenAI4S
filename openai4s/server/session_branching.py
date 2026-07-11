@@ -382,7 +382,23 @@ class SessionBranchingService:
             "undo_checkpoint_id": undo["checkpoint_id"],
             "requires_kernel_recovery": True,
         }
-        self._emit({"type": "branch_reverted", **result})
+        # Emit only the stable public identity of the mutation.  ``result``
+        # intentionally contains the full operation/preview/checkpoint records
+        # for the direct HTTP response; those records can include workspace
+        # diffs and must never be copied wholesale onto the session event bus.
+        self._emit(
+            {
+                "type": "branch_reverted",
+                "root_frame_id": root_frame_id,
+                "branch_id": branch_id,
+                "operation_id": operation_id,
+                "target_checkpoint_id": target_checkpoint_id,
+                "checkpoint_id": reverted["checkpoint_id"],
+                "undo_checkpoint_id": undo["checkpoint_id"],
+                "ok": True,
+                "requires_kernel_recovery": True,
+            }
+        )
         return result
 
     def undo_revert(
