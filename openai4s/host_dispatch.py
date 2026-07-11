@@ -32,6 +32,7 @@ from openai4s.host.endpoints import free_port as _free_port
 from openai4s.host.endpoints import probe_ready as _probe_ready
 from openai4s.host.files import WorkspaceFileService
 from openai4s.host.files import is_secret_path as _is_secret_path
+from openai4s.host.llm import LLMService
 from openai4s.host.mcp import MCPService
 from openai4s.host.progress import PLAN_STEP_STATUSES, ProgressService
 from openai4s.host.remote_capabilities import RemoteCapabilityService
@@ -448,6 +449,13 @@ class HostDispatcher:
     ):
         self.cfg = cfg or get_config()
         self._delegate_fn = delegate_fn
+        self._llm_service = LLMService(
+            lambda: self.cfg,
+            chat_call=lambda *args, **kwargs: chat(*args, **kwargs),
+            one_call=lambda spec: self._one_llm(spec),
+            fanout_cap=lambda: self.LLM_FANOUT_CAP,
+            executor_factory=lambda **kwargs: ThreadPoolExecutor(**kwargs),
+        )
         self._completion_service = CompletionService()
         self.frame_id = frame_id
         self.workspace_path = Path(workspace).resolve() if workspace else None
@@ -803,36 +811,16 @@ class HostDispatcher:
 
     # --- llm --------------------------------------------------------------
     def _one_llm(self, spec: dict) -> str:
-        res = chat(
-            spec.get("messages") or [],
-            self.cfg.llm,
-            max_tokens=spec.get("max_tokens"),
-            temperature=spec.get("temperature"),
-        )
-        return res.get("content", "")
+        return self._llm_service.one(spec)
 
     def _m_llm(self, spec: dict) -> Any:
-        if "batch" in spec:
-            batch = spec.get("batch") or []
-            if not batch:
-                return []
-            req_conc = spec.get("max_concurrency") or self.LLM_FANOUT_CAP
-            workers = max(1, min(self.LLM_FANOUT_CAP, req_conc, len(batch)))
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                return list(ex.map(self._one_llm, batch))
-        return self._one_llm(spec)
+        return self._llm_service.complete(spec)
 
     def _m_current_model(self) -> str:
-        return self.cfg.llm.model
+        return self._llm_service.current_model()
 
     def _m_list_models(self) -> list:
-        return [
-            {
-                "id": self.cfg.llm.model,
-                "context_window": self.cfg.context_window_tokens,
-                "default": True,
-            }
-        ]
+        return self._llm_service.list_models()
 
     # --- identity / capabilities ------------------------------------
     def _remote_gpu_status_payload(self) -> dict:
