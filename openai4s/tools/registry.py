@@ -16,16 +16,42 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from openai4s.tools.artifacts import ListArtifactsTool, SaveArtifactTool
 from openai4s.tools.base import Tool
 from openai4s.tools.content_search import ContentSearchTool
+from openai4s.tools.delegation import (
+    CollectChildrenTool,
+    DelegateTaskTool,
+    ListChildrenTool,
+    SendChildMessageTool,
+    StopChildTool,
+)
+from openai4s.tools.dynamic_control import (
+    DefineDynamicTool,
+    ListDynamicTools,
+    PromoteDynamicTool,
+)
 from openai4s.tools.edit import EditFileTool
 from openai4s.tools.env_create import EnvCreateTool
 from openai4s.tools.env_list import EnvListTool
 from openai4s.tools.env_use import EnvUseTool
 from openai4s.tools.glob_files import GlobFilesTool
 from openai4s.tools.list_directory import ListDirectoryTool
+from openai4s.tools.mcp import CallMCPTool, ListMCPServersTool, ListMCPToolsTool
+from openai4s.tools.network_access import RequestNetworkAccessTool
+from openai4s.tools.progress import (
+    ReadPlanTool,
+    ReadTodosTool,
+    UpdatePlanStepTool,
+    WriteTodosTool,
+)
 from openai4s.tools.read_text_file import ReadTextFileTool
+from openai4s.tools.remote_capabilities import (
+    RegisterRemoteCapabilityTool,
+    RemoteGPUStatusTool,
+)
 from openai4s.tools.schema import SchemaDefinitionError
+from openai4s.tools.skills import LoadSkillTool, SearchSkillsTool
 from openai4s.tools.taxonomy import READ_ONLY, SIDE_EFFECT_CLASSES
 from openai4s.tools.web_fetch import WebFetchTool
 from openai4s.tools.web_search import WebSearchTool
@@ -47,6 +73,28 @@ TOOL_TYPES: tuple[type[Tool], ...] = (
     EnvCreateTool,
     WebSearchTool,
     WebFetchTool,
+    SearchSkillsTool,
+    LoadSkillTool,
+    ListArtifactsTool,
+    SaveArtifactTool,
+    ReadTodosTool,
+    WriteTodosTool,
+    ReadPlanTool,
+    UpdatePlanStepTool,
+    DelegateTaskTool,
+    ListChildrenTool,
+    CollectChildrenTool,
+    StopChildTool,
+    SendChildMessageTool,
+    ListMCPServersTool,
+    ListMCPToolsTool,
+    CallMCPTool,
+    RequestNetworkAccessTool,
+    RemoteGPUStatusTool,
+    RegisterRemoteCapabilityTool,
+    DefineDynamicTool,
+    ListDynamicTools,
+    PromoteDynamicTool,
 )
 FILE_TOOL_TYPES = TOOL_TYPES[:6]
 
@@ -146,6 +194,16 @@ def get_tool_by_host_method(host_method: str) -> Tool | None:
 def all_tools() -> list[Tool]:
     """A copy of the registry list (callers may reorder/filter freely)."""
     return list(REGISTRY)
+
+
+def _catalog_tool(name: str, catalog: Any = None) -> Tool | None:
+    if catalog is None:
+        return get_tool(name)
+    resolver = getattr(catalog, "get", None)
+    if not callable(resolver):
+        raise TypeError("tool catalog must provide get(name)")
+    tool = resolver(name)
+    return tool if isinstance(tool, Tool) else None
 
 
 # --- parsing model replies -------------------------------------------------
@@ -289,7 +347,12 @@ def _coerce_call(obj: Any) -> tuple[dict | None, str | None]:
     return {"name": name, "arguments": args}, None
 
 
-def _parse_tool_body(body: str, calls: list[dict], errors: list[str]) -> None:
+def _parse_tool_body(
+    body: str,
+    calls: list[dict],
+    errors: list[str],
+    catalog: Any = None,
+) -> None:
     """Decode one ```tool block body (a JSON object or list) into calls/errors."""
     body = (body or "").strip()
     if not body:
@@ -306,13 +369,16 @@ def _parse_tool_body(body: str, calls: list[dict], errors: list[str]) -> None:
         if err is not None:
             errors.append(err)
             continue
-        if get_tool(call["name"]) is None:
+        if _catalog_tool(call["name"], catalog) is None:
             errors.append(f"unknown tool: {call['name']!r}")
             continue
         calls.append(call)
 
 
-def parse_tool_calls(reply: str) -> tuple[list[dict], list[str]]:
+def parse_tool_calls(
+    reply: str,
+    catalog: Any = None,
+) -> tuple[list[dict], list[str]]:
     """Scan `reply` for TOP-LEVEL ```tool blocks and return (calls, errors).
 
     Fences are paired by character and run length, so a ```tool token nested
@@ -338,14 +404,14 @@ def parse_tool_calls(reply: str) -> tuple[list[dict], list[str]]:
         if not block.closed:
             errors.append("unclosed ```tool block")
             continue
-        _parse_tool_body(block.body, calls, errors)
+        _parse_tool_body(block.body, calls, errors, catalog)
     return calls, errors
 
 
 # --- prompt rendering ------------------------------------------------------
 
 
-def render_tools_prompt() -> str:
+def render_tools_prompt(catalog: Any = None) -> str:
     """A concise system-prompt section describing the ```tool convention and
     listing every tool as "- signature(): description"."""
     lines = [
@@ -375,7 +441,8 @@ def render_tools_prompt() -> str:
         "",
         "Available tools:",
     ]
-    for tool in REGISTRY:
+    tools = REGISTRY if catalog is None else tuple(catalog.tools())
+    for tool in tools:
         lines.append(f"- {tool.signature_line()}: {tool.description}")
     return "\n".join(lines)
 
@@ -460,9 +527,13 @@ def format_tool_result(tool: Tool, result: Any) -> str:
     return _truncate_with_marker(text, tool.output_limit, "\n… [truncated]")
 
 
-def tool_validation_error(name: str, arguments: Any) -> str | None:
+def tool_validation_error(
+    name: str,
+    arguments: Any,
+    catalog: Any = None,
+) -> str | None:
     """Return the canonical tool-result text for invalid known-tool input."""
-    tool = get_tool(name)
+    tool = _catalog_tool(name, catalog)
     if tool is None:
         return None
     detail = tool.validation_error(arguments)
@@ -472,7 +543,11 @@ def tool_validation_error(name: str, arguments: Any) -> str | None:
     return _truncate_with_marker(text, tool.output_limit, "\n… [truncated]")
 
 
-def execute_tool_call(dispatcher: Any, call: Any) -> tuple[str, bool]:
+def execute_tool_call(
+    dispatcher: Any,
+    call: Any,
+    catalog: Any = None,
+) -> tuple[str, bool]:
     """Run one parsed tool call through `dispatcher` and return
     (observation_text, ok).
 
@@ -491,7 +566,7 @@ def execute_tool_call(dispatcher: Any, call: Any) -> tuple[str, bool]:
             return "[Tool error] tool call must be a JSON object", False
         raw_name = call.get("name")
         name = raw_name if type(raw_name) is str else "unknown"
-        tool = get_tool(name)
+        tool = _catalog_tool(name, catalog)
         if tool is None:
             return f"[Tool error] unknown tool: {name!r}", False
 
@@ -505,7 +580,7 @@ def execute_tool_call(dispatcher: Any, call: Any) -> tuple[str, bool]:
             )
         spec = dict(raw_spec)
 
-        validation_error = tool_validation_error(tool.name, spec)
+        validation_error = tool_validation_error(tool.name, spec, catalog)
         if validation_error is not None:
             return validation_error, False
 
@@ -559,7 +634,12 @@ def finalize_tool_batch(parts: list[str], n_total: int, errors: list[str]) -> st
     )
 
 
-def run_tool_calls(dispatcher: Any, calls: list[dict], errors: list[str]) -> str:
+def run_tool_calls(
+    dispatcher: Any,
+    calls: list[dict],
+    errors: list[str],
+    catalog: Any = None,
+) -> str:
     """Execute a batch of parsed tool calls through `dispatcher` (up to
     MAX_TOOL_CALLS_PER_TURN) and return a single bounded observation string.
 
@@ -569,6 +649,6 @@ def run_tool_calls(dispatcher: Any, calls: list[dict], errors: list[str]) -> str
     """
     parts: list[str] = []
     for call in calls[:MAX_TOOL_CALLS_PER_TURN]:
-        text, _ok = execute_tool_call(dispatcher, call)
+        text, _ok = execute_tool_call(dispatcher, call, catalog)
         parts.append(text)
     return finalize_tool_batch(parts, len(calls), errors)

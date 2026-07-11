@@ -327,6 +327,8 @@ class DynamicToolRegistry:
         self.approval = approval or (lambda _manifest, _operation: False)
         self.clock = clock
         self._manifests: dict[str, DynamicToolManifest] = {}
+        self.load_errors: list[str] = []
+        self._load_session_manifests()
 
     def define(self, spec: Mapping[str, Any]) -> DynamicToolManifest:
         name = str(spec.get("name") or "")
@@ -334,6 +336,8 @@ class DynamicToolRegistry:
             raise ValueError("dynamic tool name is not provider-portable")
         if name in {"bash", "submit_output", "finalize_response"}:
             raise ValueError(f"dynamic tool name is reserved: {name}")
+        if self.get(name) is not None:
+            raise ValueError(f"dynamic tool already exists: {name!r}")
         description = " ".join(str(spec.get("description") or "").split())
         if not description:
             raise ValueError("dynamic tool description is required")
@@ -404,13 +408,19 @@ class DynamicToolRegistry:
             for manifest in sorted(self._manifests.values(), key=lambda item: item.name)
         )
 
-    def promote(self, name: str, scope: str) -> DynamicToolManifest:
+    def promote(
+        self,
+        name: str,
+        scope: str,
+        *,
+        approved: bool = False,
+    ) -> DynamicToolManifest:
         if scope not in {"project", "global"}:
             raise ValueError("dynamic tool promotion scope must be project or global")
         manifest = self.get(name)
         if manifest is None:
             raise KeyError(name)
-        if not self.approval(manifest, f"promote:{scope}"):
+        if not approved and not self.approval(manifest, f"promote:{scope}"):
             raise PermissionError("dynamic tool promotion requires human approval")
         # Promotion freezes a new manifest; it does not import implementation
         # into this process or mutate the session instance in place.
@@ -453,6 +463,81 @@ class DynamicToolRegistry:
         temporary.write_text(_canonical_json(manifest.record()), encoding="utf-8")
         os.chmod(temporary, 0o600)
         os.replace(temporary, destination)
+
+    def _load_session_manifests(self) -> None:
+        """Restore valid, unexpired session manifests without importing code."""
+
+        for path in sorted(self.storage_dir.glob("dyn-*.json")):
+            try:
+                if path.stat().st_size > _MAX_SOURCE_CHARS * 2:
+                    raise ValueError("manifest is too large")
+                record = json.loads(path.read_text("utf-8"))
+                if not isinstance(record, dict) or record.get("version") != 1:
+                    raise ValueError("unsupported manifest record")
+                if record.get("scope") != "session":
+                    continue
+                if record.get("session_id") != self.session_id:
+                    raise ValueError("session identity mismatch")
+                source = str(record.get("implementation") or "")
+                imports = validate_dynamic_source(source)
+                if tuple(record.get("imports") or ()) != imports:
+                    raise ValueError("validated import set mismatch")
+                permissions = tuple(record.get("permissions") or ())
+                if permissions:
+                    raise ValueError("session manifest requests permissions")
+                name = str(record.get("name") or "")
+                description = " ".join(
+                    str(record.get("description") or "").split()
+                )
+                if not _TOOL_NAME.fullmatch(name) or not description:
+                    raise ValueError("manifest identity is invalid")
+                if name in {"bash", "submit_output", "finalize_response"}:
+                    raise ValueError("manifest identity is reserved")
+                input_schema = self._schema(record.get("input_schema"), "input_schema")
+                output_schema = self._schema(
+                    record.get("output_schema"), "output_schema"
+                )
+                ttl = self._ttl(record.get("ttl_s"))
+                created = float(record.get("created_at"))
+                expires = float(record.get("expires_at"))
+                if not math.isfinite(created) or not math.isfinite(expires):
+                    raise ValueError("manifest timestamps are invalid")
+                if abs((created + ttl) - expires) > 1e-6:
+                    raise ValueError("manifest expiry does not match its TTL")
+                core = {
+                    "name": name,
+                    "description": description,
+                    "input_schema": input_schema,
+                    "output_schema": output_schema,
+                    "implementation": source,
+                    "imports": list(imports),
+                    "permissions": list(permissions),
+                    "scope": "session",
+                    "session_id": self.session_id,
+                    "ttl_s": ttl,
+                }
+                manifest_id = "dyn-" + _manifest_hash(core)
+                if record.get("manifest_id") != manifest_id or path.stem != manifest_id:
+                    raise ValueError("manifest content hash mismatch")
+                manifest = DynamicToolManifest(
+                    name=core["name"],
+                    description=core["description"],
+                    input_schema=input_schema,
+                    output_schema=output_schema,
+                    implementation=source,
+                    imports=imports,
+                    permissions=permissions,
+                    scope="session",
+                    session_id=self.session_id,
+                    ttl_s=ttl,
+                    created_at=created,
+                    expires_at=expires,
+                    manifest_id=manifest_id,
+                )
+                if self.clock() < expires:
+                    self._manifests[manifest.name] = manifest
+            except Exception as error:  # noqa: BLE001 - corrupt files stay inert
+                self.load_errors.append(f"{path.name}: {error}")
 
     @staticmethod
     def _schema(value: Any, name: str) -> dict[str, Any]:

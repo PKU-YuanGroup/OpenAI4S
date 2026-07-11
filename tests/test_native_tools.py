@@ -15,7 +15,21 @@ def test_specs_are_frozen_fresh_copies_of_the_existing_registry():
     assert [spec.name for spec in specs] == [tool.name for tool in REGISTRY]
     assert all(isinstance(spec, ToolSpec) for spec in specs)
     strict_names = {spec.name for spec in specs if spec.strict}
-    assert strict_names == {"write_file", "env_use"}
+    assert strict_names == {
+        "write_file",
+        "env_use",
+        "load_skill",
+        "read_todos",
+        "read_plan",
+        "list_children",
+        "stop_child",
+        "send_child_message",
+        "list_mcp_servers",
+        "list_mcp_tools",
+        "remote_gpu_status",
+        "list_dynamic_tools",
+        "promote_dynamic_tool",
+    }
 
     by_name = {tool.name: tool for tool in REGISTRY}
     for spec in specs:

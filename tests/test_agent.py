@@ -102,6 +102,54 @@ def test_no_code_block_nudge(monkeypatch):
     assert result["stop_reason"] == "submitted"
 
 
+def test_cli_non_scientific_finalize_uses_live_catalog_and_engine_result(monkeypatch):
+    seen_tools = []
+    arguments = {
+        "summary": "The requested explanation was completed.",
+        "completion_bullets": ["Completed the requested explanation"],
+    }
+
+    def finalize_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        seen_tools.append([tool.name for tool in kwargs["tools"]])
+        call = {
+            "id": "final-cli",
+            "wire_id": "wire-final-cli",
+            "name": "finalize_response",
+            "ordinal": 0,
+            "raw_arguments": json.dumps(arguments),
+            "arguments": arguments,
+            "parse_error": None,
+            "provider_meta": {"provider": "test"},
+        }
+        return {
+            "content": "",
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [call],
+            },
+        }
+
+    monkeypatch.setattr(loop_mod, "chat", finalize_chat)
+    result = Agent(
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=1,
+    ).run("Explain the already-known result without scientific computation")
+
+    assert "finalize_response" in seen_tools[0]
+    assert "bash" not in seen_tools[0]
+    assert "submit_output" not in seen_tools[0]
+    assert result["stop_reason"] == "submitted"
+    assert result["submitted_output"] == {
+        "output": {"summary": "The requested explanation was completed."},
+        "completion_bullets": ["Completed the requested explanation"],
+    }
+    assert result["final_message"] == "The requested explanation was completed."
+
+
 def test_submit_output_soft_fail_does_not_complete(monkeypatch):
     """host.submit_output with invalid completion_bullets soft-fails (the
     dispatcher returns {'error': ...} → RuntimeError in the cell) and the task

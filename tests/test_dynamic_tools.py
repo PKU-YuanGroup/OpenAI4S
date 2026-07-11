@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from openai4s.tools.catalog import SessionToolCatalog
 from openai4s.tools.dynamic import (
     DynamicToolManifest,
     DynamicToolRegistry,
@@ -13,6 +14,7 @@ from openai4s.tools.dynamic import (
     ProxyDynamicTool,
     validate_dynamic_source,
 )
+from openai4s.tools.registry import execute_tool_call
 
 
 class _Sandbox:
@@ -232,3 +234,72 @@ def test_project_or_global_promotion_requires_explicit_approval(tmp_path):
     promoted = approved.promote("sum_values", "project")
     assert promoted.scope == "project"
     assert promoted.manifest_id != approved.get("sum_values").manifest_id
+
+
+def test_session_catalog_define_list_execute_and_promote_are_host_gated(tmp_path):
+    registry = DynamicToolRegistry(
+        "session-catalog",
+        tmp_path,
+        tmp_path / "catalog-manifests",
+        worker=_worker(tmp_path),
+    )
+    catalog = SessionToolCatalog(registry)
+
+    with pytest.raises(PermissionError, match="Host approval"):
+        catalog.define(_definition())
+    manifest = catalog.define(_definition(), approved=True)
+    assert manifest["name"] == "sum_values"
+    assert "implementation" not in manifest
+    assert catalog.list_dynamic() == [manifest]
+    assert "sum_values" in {spec.name for spec in catalog.specs()}
+
+    class Dispatcher:
+        def __call__(self, method, args):
+            tool = catalog.get_by_host_method(method)
+            assert tool is not None
+            return catalog.execute(tool.name, None, args[0])
+
+    text, ok = execute_tool_call(
+        Dispatcher(),
+        {"name": "sum_values", "arguments": {"values": [2, 4]}},
+        catalog,
+    )
+    assert ok is True
+    assert '"total": 6' in text
+
+    with pytest.raises(PermissionError, match="Host approval"):
+        catalog.promote("sum_values", "project")
+    promoted = catalog.promote("sum_values", "project", approved=True)
+    assert promoted["scope"] == "project"
+
+
+def test_session_manifests_restore_by_hash_and_tampering_stays_inert(tmp_path):
+    storage = tmp_path / "restore-manifests"
+    first = DynamicToolRegistry(
+        "session-restore",
+        tmp_path,
+        storage,
+        worker=_worker(tmp_path),
+    )
+    manifest = first.define(_definition(ttl_s=600))
+
+    restored = DynamicToolRegistry(
+        "session-restore",
+        tmp_path,
+        storage,
+        worker=_worker(tmp_path),
+    )
+    assert restored.get("sum_values").manifest_id == manifest.manifest_id
+
+    path = storage / f"{manifest.manifest_id}.json"
+    record = json.loads(path.read_text("utf-8"))
+    record["description"] = "tampered"
+    path.write_text(json.dumps(record), "utf-8")
+    rejected = DynamicToolRegistry(
+        "session-restore",
+        tmp_path,
+        storage,
+        worker=_worker(tmp_path),
+    )
+    assert rejected.get("sum_values") is None
+    assert rejected.load_errors and "hash mismatch" in rejected.load_errors[0]

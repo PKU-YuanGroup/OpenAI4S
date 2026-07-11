@@ -15,6 +15,7 @@ from openai4s.tools import (
     execute_tool_call,
     parse_tool_calls,
     run_tool_calls,
+    tool_validation_error,
 )
 
 from .actions import (
@@ -67,7 +68,7 @@ class ChatModel:
 
     cfg: Any
     chat_fn: Callable[..., Mapping[str, Any]]
-    tools: Sequence[Any] = ()
+    tools: Sequence[Any] | Callable[..., Sequence[Any]] = ()
     stream: bool = False
 
     def complete(
@@ -75,7 +76,17 @@ class ChatModel:
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
     ) -> Mapping[str, Any]:
-        kwargs: dict[str, Any] = {"tools": tuple(self.tools)}
+        if callable(self.tools):
+            try:
+                source = self.tools(messages)
+            except TypeError as original:
+                try:
+                    source = self.tools()
+                except TypeError:
+                    raise original
+        else:
+            source = self.tools
+        kwargs: dict[str, Any] = {"tools": tuple(source)}
         if self.stream:
             kwargs["on_delta"] = on_delta
         return self.chat_fn([dict(message) for message in messages], self.cfg, **kwargs)
@@ -181,6 +192,7 @@ class LocalActionExecutor:
     pre_exec_gate: Callable[[str, list[dict]], str | None]
     execute_r: Callable[[str], dict]
     log: LogFn = _null_log
+    tool_catalog: Any = None
 
     def execute(
         self, action: Action | None, reply: ModelReply, state: RunState
@@ -195,12 +207,20 @@ class LocalActionExecutor:
 
     def _execute_native(self, batch: NativeToolBatch) -> ExecutionOutcome:
         def invoke(call):
-            return execute_tool_call(
-                self.dispatcher,
-                {"name": call.name, "arguments": call.arguments},
-            )
+            payload = {"name": call.name, "arguments": call.arguments}
+            if self.tool_catalog is None:
+                return execute_tool_call(self.dispatcher, payload)
+            return execute_tool_call(self.dispatcher, payload, self.tool_catalog)
 
-        return execute_native_batch(batch, invoke)
+        if self.tool_catalog is None:
+            return execute_native_batch(batch, invoke)
+        return execute_native_batch(
+            batch,
+            invoke,
+            validate=lambda name, arguments: tool_validation_error(
+                name, arguments, self.tool_catalog
+            ),
+        )
 
     def _execute_code(
         self, action: CodeCell, reply: ModelReply, state: RunState
@@ -232,9 +252,20 @@ class LocalActionExecutor:
         state.metadata["active_kernel_generation"] = generation
 
     def _execute_legacy_or_nudge(self, reply: ModelReply) -> ExecutionOutcome:
-        calls, errors = parse_tool_calls(reply.content)
+        if self.tool_catalog is None:
+            calls, errors = parse_tool_calls(reply.content)
+        else:
+            calls, errors = parse_tool_calls(reply.content, self.tool_catalog)
         if calls or errors:
-            observation = run_tool_calls(self.dispatcher, calls, errors)
+            if self.tool_catalog is None:
+                observation = run_tool_calls(self.dispatcher, calls, errors)
+            else:
+                observation = run_tool_calls(
+                    self.dispatcher,
+                    calls,
+                    errors,
+                    self.tool_catalog,
+                )
         else:
             observation = NO_CODE_NUDGE
         return self._user_observation(observation)

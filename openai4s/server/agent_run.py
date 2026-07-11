@@ -36,6 +36,7 @@ from openai4s.tools import (
     parse_tool_calls,
     scan_fenced_blocks,
     strip_fenced_blocks,
+    tool_validation_error,
 )
 
 
@@ -282,6 +283,7 @@ class WebActionExecutor:
     plan_mode: bool = False
     finalize_plan: Callable[[ModelReply, str], None] | None = None
     cancelled: Callable[[], bool] = _never_cancelled
+    tool_catalog: Any = None
 
     def execute(
         self, action: Action | None, reply: ModelReply, state: RunState
@@ -304,9 +306,12 @@ class WebActionExecutor:
         if isinstance(action, FinalizeAction):
             return execute_finalize_action(action)
         if isinstance(action, NativeToolBatch):
-            outcome = execute_native_batch(
-                action, self._invoke_native, cancelled=self.cancelled
-            )
+            kwargs = {"cancelled": self.cancelled}
+            if self.tool_catalog is not None:
+                kwargs["validate"] = lambda name, arguments: tool_validation_error(
+                    name, arguments, self.tool_catalog
+                )
+            outcome = execute_native_batch(action, self._invoke_native, **kwargs)
             if self.cancelled():
                 return outcome
             return self._apply_trailing_pending(outcome)
@@ -376,7 +381,11 @@ class WebActionExecutor:
         )
 
         def invoke() -> tuple[str, bool]:
-            return execute_tool_call(self.dispatcher(), payload)
+            if self.tool_catalog is None:
+                return execute_tool_call(self.dispatcher(), payload)
+            return execute_tool_call(
+                self.dispatcher(), payload, self.tool_catalog
+            )
 
         return self.native_wrapper(call, invoke) if self.native_wrapper else invoke()
 
@@ -404,7 +413,10 @@ class WebActionExecutor:
             return ExecutionOutcome(tuple(history), observation=observation)
 
     def _legacy_or_nudge(self, reply: ModelReply) -> ExecutionOutcome:
-        calls, errors = parse_tool_calls(reply.content)
+        if self.tool_catalog is None:
+            calls, errors = parse_tool_calls(reply.content)
+        else:
+            calls, errors = parse_tool_calls(reply.content, self.tool_catalog)
         if calls or errors:
             parts: list[str] = []
             for call in calls[:MAX_TOOL_CALLS_PER_TURN]:

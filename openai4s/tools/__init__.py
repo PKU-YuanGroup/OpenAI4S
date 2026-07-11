@@ -11,12 +11,31 @@ This package is pure stdlib and imports nothing from the engine (no
 host_dispatch / loop / gateway) at module load, so it stays importable with
 zero side effects. Wiring into the agent loops happens elsewhere.
 """
+from openai4s.tools.artifacts import ListArtifactsTool, SaveArtifactTool
 from openai4s.tools.base import Tool
+from openai4s.tools.catalog import SessionToolCatalog
 from openai4s.tools.content_search import ContentSearchTool
 from openai4s.tools.contexts import (
     ControlToolContext,
     EnvironmentToolContext,
     WorkspaceToolContext,
+)
+from openai4s.tools.delegation import (
+    CollectChildrenTool,
+    DelegateTaskTool,
+    ListChildrenTool,
+    SendChildMessageTool,
+    StopChildTool,
+)
+from openai4s.tools.dynamic import (
+    DynamicToolManifest,
+    DynamicToolRegistry,
+    ProxyDynamicTool,
+)
+from openai4s.tools.dynamic_control import (
+    DefineDynamicTool,
+    ListDynamicTools,
+    PromoteDynamicTool,
 )
 from openai4s.tools.edit import EditFileTool
 from openai4s.tools.env_create import EnvCreateTool
@@ -24,7 +43,15 @@ from openai4s.tools.env_list import EnvListTool
 from openai4s.tools.env_use import EnvUseTool
 from openai4s.tools.glob_files import GlobFilesTool
 from openai4s.tools.list_directory import ListDirectoryTool
+from openai4s.tools.mcp import CallMCPTool, ListMCPServersTool, ListMCPToolsTool
 from openai4s.tools.native import ToolSpec, control_tool_specs
+from openai4s.tools.network_access import RequestNetworkAccessTool
+from openai4s.tools.progress import (
+    ReadPlanTool,
+    ReadTodosTool,
+    UpdatePlanStepTool,
+    WriteTodosTool,
+)
 from openai4s.tools.read_text_file import ReadTextFileTool
 from openai4s.tools.registry import (
     MAX_TOOL_CALLS_PER_TURN,
@@ -46,6 +73,10 @@ from openai4s.tools.registry import (
     strip_fenced_blocks,
     tool_validation_error,
 )
+from openai4s.tools.remote_capabilities import (
+    RegisterRemoteCapabilityTool,
+    RemoteGPUStatusTool,
+)
 from openai4s.tools.schema import (
     SchemaDefinitionError,
     ValidationIssue,
@@ -54,6 +85,7 @@ from openai4s.tools.schema import (
     validate_json_schema,
     validate_schema_definition,
 )
+from openai4s.tools.skills import LoadSkillTool, SearchSkillsTool
 from openai4s.tools.taxonomy import SIDE_EFFECT_CLASSES
 from openai4s.tools.web_fetch import WebFetchTool
 from openai4s.tools.web_search import WebSearchTool
@@ -62,6 +94,7 @@ from openai4s.tools.write_file import WriteFileTool
 __all__ = [
     "Tool",
     "ToolSpec",
+    "SessionToolCatalog",
     "WorkspaceToolContext",
     "EnvironmentToolContext",
     "ControlToolContext",
@@ -76,6 +109,31 @@ __all__ = [
     "EnvCreateTool",
     "WebSearchTool",
     "WebFetchTool",
+    "SearchSkillsTool",
+    "LoadSkillTool",
+    "ListArtifactsTool",
+    "SaveArtifactTool",
+    "ReadTodosTool",
+    "WriteTodosTool",
+    "ReadPlanTool",
+    "UpdatePlanStepTool",
+    "DelegateTaskTool",
+    "ListChildrenTool",
+    "CollectChildrenTool",
+    "StopChildTool",
+    "SendChildMessageTool",
+    "ListMCPServersTool",
+    "ListMCPToolsTool",
+    "CallMCPTool",
+    "RequestNetworkAccessTool",
+    "RemoteGPUStatusTool",
+    "RegisterRemoteCapabilityTool",
+    "DefineDynamicTool",
+    "ListDynamicTools",
+    "PromoteDynamicTool",
+    "DynamicToolManifest",
+    "DynamicToolRegistry",
+    "ProxyDynamicTool",
     "FencedBlock",
     "REGISTRY",
     "get_tool",

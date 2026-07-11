@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.agent.engine import AgentEngine
+from openai4s.agent.finalize import with_finalize_response
 from openai4s.agent.runtime import (
     ChatModel,
     CompactionPolicy,
@@ -27,7 +28,7 @@ from openai4s.host_dispatch import HostDispatcher, build_dispatcher
 from openai4s.kernel import Kernel
 from openai4s.llm import chat
 from openai4s.security import classify_code, screen_trajectory
-from openai4s.tools import control_tool_specs, parse_tool_calls, scan_fenced_blocks
+from openai4s.tools import parse_tool_calls, scan_fenced_blocks
 
 SYSTEM_PROMPT = """\
 You are openai4s, an autonomous scientific research agent with two distinct, \
@@ -86,9 +87,12 @@ straight to synthetic data when a real lookup is possible.
 - Do NOT import or call anything OS-destructive unless the task needs it.
 
 Finishing:
-- When (and only when) the task is fully done, run a code cell that calls \
-`host.submit_output({...}, ["what you did",...])`. THAT call ends the task — \
-there is no other completion signal. The submitted `output` must include a \
+- A conversational or tool-only task finishes with `finalize_response` as the \
+ONLY native call in its turn. Use its structured fields to report only work \
+that actually completed.
+- Scientific work that used the Python/R runtime finishes by running one final \
+python cell that calls `host.submit_output({...}, ["what you did",...])`. This \
+is the sole completion signal for a scientific cell. The submitted `output` must include a \
 concise, evidence-backed `summary`; when relevant also include `findings`, \
 `metrics`, and `limitations`. `completion_bullets` must contain 1-4 completed \
 actions. Never fabricate a field just to fill the structure.
@@ -152,6 +156,20 @@ def _cancelled_model_reply() -> dict[str, Any]:
         "assistant_message": {"role": "assistant", "content": ""},
         "finish_reason": "cancelled",
     }
+
+
+def _completion_summary(completion: Any) -> str | None:
+    """Project an EngineResult completion into the CLI's final-message slot."""
+
+    if not isinstance(completion, Mapping):
+        return None
+    output = completion.get("output")
+    if isinstance(output, Mapping):
+        summary = output.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+    summary = completion.get("summary")
+    return summary.strip() if isinstance(summary, str) and summary.strip() else None
 
 
 @dataclass
@@ -330,10 +348,13 @@ class Agent:
                         boot = self._skill_loader.bootstrap_code()
                         if boot.strip():
                             kernel.execute(boot, origin="agent")
+                    tool_catalog = self.dispatcher.tool_catalog()
                     model: Any = ChatModel(
                         self.cfg.llm,
                         chat,
-                        tools=control_tool_specs(),
+                        tools=lambda messages: with_finalize_response(
+                            tool_catalog.specs_for(messages)
+                        ),
                     )
                     if self.cancellation is not None:
                         model = _CancellationAwareModel(
@@ -348,6 +369,7 @@ class Agent:
                             self._pre_exec_gate,
                             self._execute_r,
                             log=self._log,
+                            tool_catalog=tool_catalog,
                         ),
                         context_policy=(
                             self.context_policy
@@ -368,12 +390,17 @@ class Agent:
         finally:
             self._close_run()
 
-        final_reply = (
-            result.last_reply.content
-            if result.stop_reason == "submitted" and result.last_reply is not None
-            else None
+        final_reply = None
+        if result.stop_reason == "submitted":
+            final_reply = _completion_summary(result.completion)
+            if final_reply is None and result.last_reply is not None:
+                final_reply = result.last_reply.content or None
+        return self._finish(
+            transcript,
+            final_reply,
+            result.stop_reason,
+            completion=result.completion,
         )
-        return self._finish(transcript, final_reply, result.stop_reason)
 
     def _execute_r(self, code: str) -> dict:
         """Run one ```r cell on the persistent R kernel, spawning it lazily.
@@ -454,13 +481,20 @@ class Agent:
             return False
 
     def _finish(
-        self, transcript: list[Turn], final_reply: str | None, reason: str
+        self,
+        transcript: list[Turn],
+        final_reply: str | None,
+        reason: str,
+        *,
+        completion: Any = None,
     ) -> dict:
         assert self.dispatcher is not None
         return {
             "stop_reason": reason,
             "final_message": final_reply,
-            "submitted_output": self.dispatcher.last_output,
+            "submitted_output": (
+                completion if completion is not None else self.dispatcher.last_output
+            ),
             "transcript": [{"role": t.role, "content": t.content} for t in transcript],
         }
 

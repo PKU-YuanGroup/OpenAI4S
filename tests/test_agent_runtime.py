@@ -100,6 +100,25 @@ def test_chat_model_passes_native_schemas_and_is_blocking_by_default():
     assert "on_delta" not in calls[0][2]
 
 
+def test_chat_model_refreshes_callable_session_catalog_each_turn():
+    first = ToolSpec("first", "", {"type": "object", "properties": {}})
+    second = ToolSpec("second", "", {"type": "object", "properties": {}})
+    active = [first]
+    seen = []
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        seen.append(tuple(tool.name for tool in kwargs["tools"]))
+        return {"content": "done"}
+
+    model = ChatModel(object(), fake_chat, tools=lambda: tuple(active))
+    model.complete([], lambda _delta: None)
+    active.append(second)
+    model.complete([], lambda _delta: None)
+
+    assert seen == [("first",), ("first", "second")]
+
+
 def test_native_batch_returns_one_canonical_tool_message_per_call(monkeypatch):
     dispatched = []
 

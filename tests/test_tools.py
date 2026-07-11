@@ -68,7 +68,7 @@ def test_builtin_tools_are_named_classes_with_local_execute_behavior():
         web_search,
         web_fetch,
     )
-    expected_types = (TOOL_TYPES[5], *TOOL_TYPES[6:])
+    expected_types = TOOL_TYPES[5:11]
     assert tuple(type(tool) for tool in compatibility_aliases) == expected_types
 
 
@@ -123,6 +123,13 @@ def test_control_tool_classes_own_their_security_policy():
         "env_setup",
         "web_search",
         "web_fetch",
+        "save_artifact",
+        "delegate",
+        "mcp_call",
+        "request_network_access",
+        "register_remote_capability",
+        "dynamic_tool_define",
+        "dynamic_tool_promote",
     }
     assert get_tool("read_text_file").secret_path({"path": "config/.env"}) == (
         "config/.env"

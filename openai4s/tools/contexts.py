@@ -8,7 +8,7 @@ objects that implement the relevant port only after a call has been approved.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 
 class WorkspaceToolContext(Protocol):
@@ -48,12 +48,14 @@ class ControlToolContext:
         get_active_r_env: Callable[[], str | None],
         set_active_r_env: Callable[[str | None], None],
         get_on_env_switch: Callable[[], Callable[[str], None] | None],
+        invoke_control: Callable[..., Any] | None = None,
     ) -> None:
         self._workspace = workspace
         self._get_active_env_bin = get_active_env_bin
         self._get_active_r_env = get_active_r_env
         self._set_active_r_env = set_active_r_env
         self._get_on_env_switch = get_on_env_switch
+        self._invoke_control = invoke_control
 
     def workspace(self) -> Path:
         return self._workspace.workspace()
@@ -82,6 +84,18 @@ class ControlToolContext:
     @property
     def on_env_switch(self) -> Callable[[str], None] | None:
         return self._get_on_env_switch()
+
+    def invoke(self, method: str, *arguments: Any) -> Any:
+        """Call one focused Host service from inside the policy envelope.
+
+        Concrete orchestration tools own their schema and argument
+        normalization, while the supplied callback reaches the existing
+        focused Host service.  A context without that port fails closed.
+        """
+
+        if self._invoke_control is None:
+            raise RuntimeError(f"control behavior is unavailable: {method}")
+        return self._invoke_control(method, *arguments)
 
 
 __all__ = [

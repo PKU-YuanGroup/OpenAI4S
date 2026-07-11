@@ -14,6 +14,7 @@ from .actions import NativeToolBatch, NativeToolCall
 from .models import ExecutionOutcome
 
 ToolInvoker = Callable[[NativeToolCall], tuple[str, bool]]
+ToolValidator = Callable[[str, object], str | None]
 
 
 def _never_cancelled() -> bool:
@@ -26,6 +27,7 @@ def execute_native_batch(
     *,
     limit: int = MAX_TOOL_CALLS_PER_TURN,
     cancelled: Callable[[], bool] = _never_cancelled,
+    validate: ToolValidator = tool_validation_error,
 ) -> ExecutionOutcome:
     """Execute valid calls and return one canonical result for every call."""
     parts: list[str] = []
@@ -48,7 +50,7 @@ def execute_native_batch(
             text = f"[Tool error] {call.name or '<unnamed>'}: {detail}"
             ok = False
         else:
-            validation_error = tool_validation_error(call.name, call.arguments)
+            validation_error = validate(call.name, call.arguments)
             if validation_error is not None:
                 text = validation_error
                 ok = False

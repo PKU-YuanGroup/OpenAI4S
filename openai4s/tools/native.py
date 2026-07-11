@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Iterable
 
+from openai4s.tools.base import Tool
 from openai4s.tools.registry import REGISTRY
 
 # Portable intersection of the native function-name rules used by OpenAI Chat
@@ -44,7 +46,7 @@ def _validate_portable_name(name: str) -> None:
         )
 
 
-def control_tool_specs() -> tuple[ToolSpec, ...]:
+def control_tool_specs(tools: Iterable[Tool] | None = None) -> tuple[ToolSpec, ...]:
     """Return fresh native declarations for the safe control-tool registry.
 
     Every call deep-copies the legacy metadata.  Callers may therefore adapt a
@@ -53,7 +55,7 @@ def control_tool_specs() -> tuple[ToolSpec, ...]:
     """
 
     specs: list[ToolSpec] = []
-    for tool in REGISTRY:
+    for tool in REGISTRY if tools is None else tuple(tools):
         if tool.name in _NEVER_NATIVE or tool.host_method in _NEVER_NATIVE:
             continue
         _validate_portable_name(tool.name)

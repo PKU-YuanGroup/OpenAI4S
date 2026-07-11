@@ -46,7 +46,9 @@ from openai4s.host.remote_science import RemoteScienceService
 from openai4s.host.skills import SkillService
 from openai4s.llm import chat
 from openai4s.store import SECRET_ARG_HOST_CALLS, get_store
+from openai4s.tools.catalog import SessionToolCatalog
 from openai4s.tools.contexts import ControlToolContext
+from openai4s.tools.dynamic import DynamicToolRegistry
 from openai4s.tools.registry import (
     BUILTIN_CONTROL_HOST_METHODS,
     format_tool_result,
@@ -215,6 +217,20 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
                 "verification_command": remote_cmd,
             },
         )
+    if method == "dynamic_tool_define":
+        return (
+            "tool",
+            f"Defining dynamic tool {a.get('name') or ''}",
+            {"name": a.get("name"), "ttl_s": a.get("ttl_s")},
+        )
+    if method == "dynamic_tool_promote":
+        return (
+            "tool",
+            f"Promoting dynamic tool {a.get('name') or ''}",
+            {"name": a.get("name"), "scope": a.get("scope")},
+        )
+    if method.startswith("dynamic:"):
+        return ("tool", "Running a session dynamic tool", {})
     if method == "mcp_call":
         return (
             "mcp",
@@ -527,6 +543,8 @@ class HostDispatcher:
         self.recorder: Any | None = None
         # remote-compute transport, built lazily on first compute_* call.
         self._compute: Any = None
+        self._session_tool_catalog: SessionToolCatalog | None = None
+        self._session_tool_scope: tuple[str, str] | None = None
         # optional sink for semantic activity steps (wired by the web gateway):
         # on_step({"phase":"begin"|"end", "step_id", "kind", "title",
         #          "input"|"output", "status", "summary"}). None = headless/CLI.
@@ -556,6 +574,7 @@ class HostDispatcher:
             get_active_r_env=lambda: self.active_r_env,
             set_active_r_env=lambda value: setattr(self, "active_r_env", value),
             get_on_env_switch=lambda: self.on_env_switch,
+            invoke_control=self._invoke_control_behavior,
         )
 
     @property
@@ -623,6 +642,32 @@ class HostDispatcher:
         """Bind host-side file operations to the kernel's actual cwd."""
         self.workspace_path = Path(path).resolve()
 
+    def tool_catalog(self) -> SessionToolCatalog:
+        """Return the dynamic, session-local model/execution catalog."""
+
+        scope = self.store.resolve_frame_scope(self.frame_id)
+        session_id = str(scope.get("root_frame_id") or self.frame_id or "").strip()
+        if not session_id:
+            # Built-ins remain usable for lightweight dispatcher tests, but a
+            # model cannot define code without a durable session identity.
+            if self._session_tool_scope != ("", ""):
+                self._session_tool_catalog = SessionToolCatalog()
+                self._session_tool_scope = ("", "")
+            assert self._session_tool_catalog is not None
+            return self._session_tool_catalog
+        workspace = str(self._files.workspace())
+        identity = (session_id, workspace)
+        if self._session_tool_catalog is None or self._session_tool_scope != identity:
+            safe_session = re.sub(r"[^A-Za-z0-9._-]+", "_", session_id)
+            registry = DynamicToolRegistry(
+                session_id,
+                workspace,
+                self.cfg.data_dir / "dynamic-tools" / safe_session,
+            )
+            self._session_tool_catalog = SessionToolCatalog(registry)
+            self._session_tool_scope = identity
+        return self._session_tool_catalog
+
     def set_capability_scope(self, frame_id: str | None = None) -> None:
         """Retarget Skill/Specialist policy to the frame's project + session."""
 
@@ -647,9 +692,19 @@ class HostDispatcher:
             name,
         )
 
+    def _invoke_control_behavior(self, method: str, *arguments: Any) -> Any:
+        handler = getattr(self, f"_m_{method}", None)
+        if handler is None:
+            raise RuntimeError(f"control behavior is unavailable: {method}")
+        return handler(*arguments)
+
     # dispatcher entrypoint ------------------------------------------------
     def __call__(self, method: str, args: list) -> Any:
         control_tool = get_tool_by_host_method(method)
+        dynamic_catalog = None
+        if control_tool is None and method.startswith("dynamic:"):
+            dynamic_catalog = self.tool_catalog()
+            control_tool = dynamic_catalog.get_by_host_method(method)
         legacy_handler = getattr(self, f"_m_{method}", None)
         if control_tool is not None:
             if (
@@ -662,6 +717,12 @@ class HostDispatcher:
                 )
 
             def handler(spec: dict | None = None) -> Any:
+                if dynamic_catalog is not None:
+                    return dynamic_catalog.execute(
+                        control_tool.name,
+                        self._tool_context,
+                        spec or {},
+                    )
                 return control_tool.execute(self._tool_context, spec or {})
 
         else:
@@ -941,6 +1002,23 @@ class HostDispatcher:
 
     def _m_register_remote_capability(self, spec: dict) -> dict:
         return self._remote_capability_service.register(spec)
+
+    # --- session dynamic tools -------------------------------------------
+    def _m_dynamic_tool_define(self, spec: dict) -> dict:
+        return self.tool_catalog().define(spec, approved=True)
+
+    def _m_dynamic_tool_list(self, *_a: Any) -> dict:
+        tools = self.tool_catalog().list_dynamic()
+        return {"count": len(tools), "tools": tools}
+
+    def _m_dynamic_tool_promote(self, spec: dict) -> dict:
+        # Reaching this method means the class-based lifecycle Tool has already
+        # passed HostDispatcher's permission/approval envelope.
+        return self.tool_catalog().promote(
+            str(spec.get("name") or ""),
+            str(spec.get("scope") or ""),
+            approved=True,
+        )
 
     def _m_get_user_email(self) -> str:
         import os
