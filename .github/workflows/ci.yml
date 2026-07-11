@@ -20,7 +20,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, next]
   pull_request:
 
 permissions:
@@ -89,3 +89,44 @@ jobs:
         run: uv run pytest
       - name: Run deterministic harness contracts
         run: uv run python -m harness.cli run --tier pr --offline
+
+  browser-smoke:
+    name: Browser smoke (Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the zero-dependency server and browser driver
+        run: |
+          uv sync --locked
+          npm install --no-save --ignore-scripts playwright@1.54.1
+          npx playwright install --with-deps chromium
+      - name: Start the daemon and open the real workbench
+        env:
+          OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-browser-smoke
+          OPENAI4S_KERNEL_SANDBOX: "off"
+          OPENAI4S_HOST: 127.0.0.1
+          OPENAI4S_PORT: "8760"
+        run: |
+          uv run openai4s serve >"${RUNNER_TEMP}/openai4s-browser.log" 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:8760/ >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$daemon_pid" 2>/dev/null; then
+              cat "${RUNNER_TEMP}/openai4s-browser.log"
+              exit 1
+            fi
+            sleep 0.25
+          done
+          node tests/browser_smoke.mjs
+      - name: Show daemon log after a failure
+        if: failure()
+        run: cat "${RUNNER_TEMP}/openai4s-browser.log" || true

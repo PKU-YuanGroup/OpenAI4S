@@ -14,11 +14,15 @@
 
 # ---- Runtime core: agent loop, kernel protocol, host API, store -------------
 /openai4s/agent/                    @Nobody-Zhang @riiiiiiin
+/openai4s/execution/                @Nobody-Zhang @riiiiiiin
+/openai4s/host/                     @Nobody-Zhang @riiiiiiin
 /openai4s/kernel/                   @Nobody-Zhang @riiiiiiin
 /openai4s/sdk/                      @Nobody-Zhang @riiiiiiin
+/openai4s/storage/                  @Nobody-Zhang @riiiiiiin
+/openai4s/tools/                    @Nobody-Zhang @riiiiiiin
 /openai4s/host_dispatch.py          @Nobody-Zhang @riiiiiiin
 /openai4s/store.py                  @Nobody-Zhang @riiiiiiin
-/openai4s/llm.py                    @Nobody-Zhang @riiiiiiin
+/openai4s/llm/                      @Nobody-Zhang @riiiiiiin
 
 # ---- Security-sensitive paths: require the security owner -------------------
 /openai4s/security/                 @Nobody-Zhang
@@ -41,6 +45,7 @@
 
 # ---- Tests -------------------------------------------------------------------
 /tests/                             @Nobody-Zhang @riiiiiiin
+/tests/browser_smoke.mjs            @Nobody-Zhang @difficulttopickaname
 
 # ---- Governance and CI: changes to the rules need the lead -------------------
 /.github/                           @Nobody-Zhang

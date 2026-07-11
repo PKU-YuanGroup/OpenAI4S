@@ -7,6 +7,7 @@ __pycache__/
 .env.bak.*
 !.env.example
 *.egg-info/
+node_modules/
 
 # macOS
 .DS_Store
