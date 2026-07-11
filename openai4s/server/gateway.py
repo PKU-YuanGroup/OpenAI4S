@@ -77,6 +77,7 @@ from openai4s.server.plans import public_plan as _plan_public
 from openai4s.server.plans import short_hash as _short_hash
 from openai4s.server.plans import slugify as _slugify
 from openai4s.server.reviews import ReviewPorts, ReviewService
+from openai4s.server.session_recovery import PROCESS_INSTANCE_ID, SessionRecoveryService
 from openai4s.server.session_runtime import SessionRuntime
 from openai4s.server.skills import SkillCustomizationService
 from openai4s.server.titles import SessionTitleService
@@ -383,14 +384,28 @@ class WSHub:
 #  Session runner — Code-as-Action turn on a persistent per-session kernel
 # --------------------------------------------------------------------------- #
 class SessionState:
-    def __init__(self, root_frame_id: str, project_id: str, workspace: Path):
+    def __init__(
+        self,
+        root_frame_id: str,
+        project_id: str,
+        workspace: Path,
+        *,
+        kernel_generations=None,
+        owner_instance_id: str | None = None,
+        clock_ms=None,
+    ):
         self.root_frame_id = root_frame_id
         self.project_id = project_id
         self.workspace = workspace
         # One owner for both persistent execution channels.  ``Kernel`` keeps
         # sole ownership of protocol I/O; the supervisor only coordinates
         # lifecycle and exact-worker identity across cancellation/watchdogs.
-        self.kernels = KernelSupervisor()
+        self.kernels = KernelSupervisor(
+            root_frame_id=root_frame_id,
+            generations=kernel_generations,
+            owner_instance_id=owner_instance_id,
+            clock_ms=clock_ms,
+        )
         # The JSON control plane belongs to the session, not to either language
         # worker.  It is constructed lazily and survives kernel stop/restart.
         self.runtime = SessionRuntime()
@@ -857,14 +872,24 @@ _SUBMIT_NUDGE = (
 
 
 class SessionRunner:
-    def __init__(self, cfg: Config, hub: WSHub) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        hub: WSHub,
+        *,
+        clock=None,
+        start_idle_sweeper: bool = True,
+    ) -> None:
         self.cfg = cfg
         self.hub = hub
+        self._clock = clock or time.time
+        self._owner_instance_id = PROCESS_INSTANCE_ID
         self.store = get_store(cfg.db_path)
         self.skills = SkillLoader(cfg=cfg)
         self._sessions: dict[str, SessionState] = {}
         self._jobs: dict[str, MessageJob] = {}
         self._lock = threading.Lock()
+        self._closed = False
         self.reviews = ReviewService(
             store=lambda: self.store,
             lock=self._lock,
@@ -953,6 +978,7 @@ class SessionRunner:
                 emit_artifact_step=self._emit_artifact_step,
                 record_cell=self.store.log_cell,
                 allocate_attempt=self._allocate_cell_attempt,
+                bind_attempt_generation=self._bind_cell_attempt_generation,
                 mark_attempt_started=lambda attempt_id: (
                     self.store.mark_execution_attempt_started(attempt_id)
                 ),
@@ -971,11 +997,198 @@ class SessionRunner:
                 ),
             )
         )
+        self.recovery = SessionRecoveryService(
+            store=self.store,
+            sessions=self._session_snapshot,
+            turn_active=self._execution_active,
+            approval_pending=self._permission_pending,
+            background_active=self._background_active,
+            background_last_activity_ms=self._background_last_activity_ms,
+            release_idle=self._release_idle_session,
+            owner_instance_id=self._owner_instance_id,
+            clock=self._clock,
+        )
+        self.recovery.reconcile_startup()
+        if start_idle_sweeper:
+            self.recovery.start()
 
     def workspace_for(self, root_frame_id: str) -> Path:
         ws = self._ws_root / root_frame_id
         ws.mkdir(parents=True, exist_ok=True)
         return ws
+
+    def _session_snapshot(self) -> list[SessionState]:
+        with self._lock:
+            return list(self._sessions.values())
+
+    def _execution_active(self, root_frame_id: str) -> bool:
+        """Cover current MessageJobs and a present/future coordinator queue."""
+
+        if self.is_running(root_frame_id):
+            return True
+        coordinator = getattr(self, "coordinator", None)
+        if coordinator is None:
+            with self._lock:
+                state = self._sessions.get(root_frame_id)
+            coordinator = getattr(state, "coordinator", None) if state else None
+        if coordinator is None:
+            return False
+        try:
+            snapshot = coordinator.snapshot(root_frame_id)
+            return bool(
+                snapshot.get("owner")
+                or snapshot.get("queued_count")
+                or snapshot.get("queue")
+            )
+        except Exception:  # noqa: BLE001 — unknown coordinator state is occupied
+            return True
+
+    @staticmethod
+    def _permission_pending(root_frame_id: str) -> bool:
+        try:
+            from openai4s.permissions import broker
+
+            return bool(broker().is_pending(root_frame_id))
+        except Exception:  # noqa: BLE001 — telemetry cannot release a kernel
+            return True
+
+    @staticmethod
+    def _background_jobs(st: SessionState) -> list[dict]:
+        dispatcher = st.dispatcher
+        executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None
+        if executor is None:
+            return []
+        try:
+            return list(executor.list_jobs())
+        except Exception:  # noqa: BLE001 — unknown background state is occupied
+            return [{"status": "running"}]
+
+    def _background_active(self, st: SessionState) -> bool:
+        return any(
+            str(job.get("status") or "").lower() == "running"
+            for job in self._background_jobs(st)
+        )
+
+    def _background_last_activity_ms(self, st: SessionState) -> int | None:
+        timestamps = [
+            int(value)
+            for job in self._background_jobs(st)
+            for value in (job.get("ended_at"), job.get("started_at"))
+            if isinstance(value, (int, float))
+        ]
+        return max(timestamps) if timestamps else None
+
+    def _interrupt_background(self, st: SessionState) -> None:
+        dispatcher = st.dispatcher
+        executor = getattr(dispatcher, "_bg_executor", None) if dispatcher else None
+        if executor is None:
+            return
+        shutdown = getattr(executor, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown()
+            except Exception:  # noqa: BLE001 — continue session cleanup
+                pass
+            return
+        for job in self._background_jobs(st):
+            if str(job.get("status") or "").lower() != "running":
+                continue
+            try:
+                executor.interrupt(job["exec_id"])
+            except Exception:  # noqa: BLE001 — cleanup remains best-effort
+                pass
+
+    def _release_idle_session(self, st: SessionState, reason: str) -> bool:
+        """Cross the session barrier and release both slots if still eligible."""
+
+        emit = self.hub.emitter(st.root_frame_id)
+        with st.stop_lock:
+            st.stop_finished.clear()
+            st.stop_requested.set()
+            try:
+                # The sweeper must never wait behind a turn while holding its
+                # stop intent: a raced active/queued turn is simply retried by
+                # a later sweep, which keeps shutdown and thread stop bounded.
+                if not st.turn_lock.acquire(blocking=False):
+                    return False
+                try:
+                    # Admission is now closed. Recheck every external blocker so
+                    # the first sweep's optimistic snapshot cannot win a race.
+                    if self.recovery.blocked(st) or not self.recovery.idle_expired(st):
+                        return False
+                    stopped = st.kernels.stop(
+                        "python", manual=False, reason=reason
+                    )
+                    stopped += st.kernels.stop("r", manual=False, reason=reason)
+                finally:
+                    st.turn_lock.release()
+                if not stopped:
+                    return False
+                status = st.kernels.status("python")
+                emit(
+                    {
+                        "type": "kernel_status",
+                        "frame_id": st.root_frame_id,
+                        "status": "ended",
+                        "state": "ended",
+                        "generation_id": status.get("generation_id"),
+                        "ended_reason": reason,
+                    }
+                )
+                return True
+            finally:
+                st.stop_requested.clear()
+                st.stop_finished.set()
+
+    def drop_session(self, root_frame_id: str, *, reason: str = "session_closed") -> bool:
+        """Cancel and fully detach one in-memory session before deletion/close."""
+
+        with self._lock:
+            st = self._sessions.get(root_frame_id)
+        if st is None:
+            return False
+        with st.stop_lock:
+            st.stop_finished.clear()
+            st.stop_requested.set()
+            try:
+                self.cancel(root_frame_id)
+                self._interrupt_background(st)
+                with st.turn_lock:
+                    st.kernels.stop("python", manual=False, reason=reason)
+                    st.kernels.stop("r", manual=False, reason=reason)
+            finally:
+                st.stop_requested.clear()
+                st.stop_finished.set()
+        with self._lock:
+            self._sessions.pop(root_frame_id, None)
+        try:
+            from openai4s.permissions import broker
+
+            broker().unregister_channel(root_frame_id)
+        except Exception:  # noqa: BLE001 — session resources are already stopped
+            pass
+        return True
+
+    def close(self) -> None:
+        """Stop the sweeper, turns, background workers, and all session slots."""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        recovery = getattr(self, "recovery", None)
+        if recovery is not None:
+            recovery.stop()
+        for st in self._session_snapshot():
+            self.drop_session(st.root_frame_id, reason="daemon_shutdown")
+        with self._lock:
+            jobs = list(self._jobs.values())
+        for job in jobs:
+            thread = job.thread
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=5.0)
+        with self._lock:
+            self._jobs.clear()
 
     # --- artifact version snapshots --------------------------------------
     def _versions_dir(self) -> Path:
@@ -1018,7 +1231,12 @@ class SessionRunner:
             st = self._sessions.get(root_frame_id)
             if st is None:
                 st = SessionState(
-                    root_frame_id, project_id, self.workspace_for(root_frame_id)
+                    root_frame_id,
+                    project_id,
+                    self.workspace_for(root_frame_id),
+                    kernel_generations=self.store,
+                    owner_instance_id=self._owner_instance_id,
+                    clock_ms=lambda: int(self._clock() * 1000),
                 )
                 self._sessions[root_frame_id] = st
             return st
@@ -1223,7 +1441,18 @@ class SessionRunner:
             # Run outside the supervisor lock so cancellation can interrupt a
             # slow sidecar.  The caller's turn_lock still prevents execution
             # from racing this one-time bootstrap.
-            self._run_bootstrap(st, lease.kernel)
+            bootstrap = self._run_bootstrap(st, lease.kernel) or {}
+            if bootstrap.get("status") == "failed":
+                st.kernels.shutdown_if_current(
+                    lease,
+                    reason="bootstrap_failed",
+                    terminal_state="failed",
+                )
+                st.booted = False
+                raise RuntimeError(
+                    "kernel bootstrap failed: "
+                    + str(bootstrap.get("error") or "unknown bootstrap error")
+                )
         st.booted = True
         return lease
 
@@ -1454,15 +1683,46 @@ class SessionRunner:
         interrupted = st.kernels.interrupt() if st is not None else 0
         return {"ok": True, "interrupted": interrupted, "frame_id": root_frame_id}
 
-    def _run_bootstrap(self, st: SessionState, kernel: Kernel | None = None) -> None:
-        """(Re)run skill-sidecar bootstrap in the session kernel."""
+    def _run_bootstrap(self, st: SessionState, kernel: Kernel | None = None) -> dict:
+        """Run and persist the bootstrap facts observed for one generation."""
+
+        target = kernel if kernel is not None else st.kernel
+        boot = _maybe_call(getattr(self.skills, "bootstrap_code", ""))
+        metadata = {
+            "status": "skipped" if not (boot and boot.strip()) else "bootstrapping",
+            "bootstrap_code_sha256": (
+                hashlib.sha256(boot.encode("utf-8")).hexdigest() if boot else None
+            ),
+            # The current loader only adds its helper path; it does not eagerly
+            # import sidecars. Recording [] is the truthful manifest.
+            "loaded_sidecars": [],
+            "project_init_hooks": [],
+            "working_directory": str(st.workspace),
+            "interpreter": getattr(target, "python", None),
+            "environment_name": getattr(target, "env_name", None),
+            "environment_root": getattr(target, "env_root", None),
+        }
         try:
-            boot = _maybe_call(getattr(self.skills, "bootstrap_code", ""))
-            target = kernel if kernel is not None else st.kernel
             if target is not None and boot and boot.strip():
-                target.execute(boot, origin="system")
-        except Exception:  # noqa: BLE001
-            pass
+                result = target.execute(boot, origin="system")
+                if result.get("error"):
+                    metadata["status"] = "failed"
+                    metadata["error"] = str(result["error"])[:500]
+                else:
+                    metadata["status"] = "active"
+        except Exception as exc:  # noqa: BLE001 — preserve compatible soft failure
+            metadata["status"] = "failed"
+            metadata["error"] = str(exc)[:500]
+        if target is not None:
+            lifecycle_state = (
+                "active"
+                if metadata["status"] in {"active", "skipped"}
+                else "bootstrapping"
+            )
+            st.kernels.record_bootstrap_if_current(
+                "python", target, metadata, state=lifecycle_state
+            )
+        return metadata
 
     def restart_kernel(self, root_frame_id: str, project_id: str) -> dict:
         """Tear down + respawn the session's kernel (fresh namespace).
@@ -1475,9 +1735,10 @@ class SessionRunner:
         st = self._state(root_frame_id, project_id)
         emit = self.hub.emitter(root_frame_id)
         with st.execution_barrier():
+            self.recovery.touch(st)
             # the R kernel restarts with the session: drop it here and let the
             # next ```r cell respawn it fresh (same lazy path as first use)
-            st.kernels.stop("r", manual=False)
+            st.kernels.stop("r", manual=False, reason="session_restart")
             if st.kernel is None:
                 self._ensure_kernel(st)
                 lease = st.kernels.lease("python")
@@ -1506,12 +1767,14 @@ class SessionRunner:
                     "frame_id": root_frame_id,
                     "status": "restarted",
                     "generation": gen,
+                    "generation_id": lease.generation_id if lease else None,
                 }
             )
         return {
             "ok": True,
             "status": "restarted",
             "generation": gen,
+            "generation_id": lease.generation_id if lease else None,
             "frame_id": root_frame_id,
         }
 
@@ -1574,16 +1837,41 @@ class SessionRunner:
         stop/start/resume."""
         st = self._sessions.get(root_frame_id)
         supervisor_status = st.kernels.status("python") if st else None
+        persisted = (
+            None
+            if supervisor_status is not None
+            else self.store.latest_kernel_generation(root_frame_id, "python")
+        )
         alive = bool(supervisor_status and supervisor_status["alive"])
         if st is None:
-            state = "none"
+            state = "ended" if persisted is not None else "none"
         else:
             state = supervisor_status["state"]
         return {
             "frame_id": root_frame_id,
-            "state": state,  # none | running | stopped
+            "state": state,  # none | running | stopped | ended
             "alive": alive,
             "generation": supervisor_status["generation"] if supervisor_status else 0,
+            "generation_id": (
+                supervisor_status.get("generation_id")
+                if supervisor_status
+                else (persisted or {}).get("generation_id")
+            ),
+            "generation_ordinal": (
+                supervisor_status.get("generation_ordinal")
+                if supervisor_status
+                else (persisted or {}).get("ordinal")
+            ),
+            "last_activity_at": (
+                supervisor_status.get("last_activity_at")
+                if supervisor_status
+                else (persisted or {}).get("last_activity_at")
+            ),
+            "ended_reason": (
+                supervisor_status.get("ended_reason")
+                if supervisor_status
+                else (persisted or {}).get("ended_reason")
+            ),
             "turn_running": self.is_running(root_frame_id),
             "cell_count": (st.cell_index if st else 0),
             "manual_stop": bool(supervisor_status and supervisor_status["manual_stop"]),
@@ -1681,8 +1969,11 @@ class SessionRunner:
                 # and shutting down its worker. New turns observe stop_requested
                 # and yield this barrier instead of clearing cancellation.
                 with st.turn_lock:
-                    st.kernels.stop("python", manual=True)
-                    st.kernels.stop("r", manual=True)
+                    st.kernels.stop(
+                        "python", manual=True, reason="manual_stop"
+                    )
+                    st.kernels.stop("r", manual=True, reason="manual_stop")
+                stopped_status = st.kernels.status("python")
                 # Publish the stopped state before waking a queued start; its
                 # later "started" event must be the final visible lifecycle.
                 emit(
@@ -1690,6 +1981,8 @@ class SessionRunner:
                         "type": "kernel_status",
                         "frame_id": root_frame_id,
                         "status": "stopped",
+                        "generation_id": stopped_status.get("generation_id"),
+                        "ended_reason": "manual_stop",
                     }
                 )
             finally:
@@ -1712,12 +2005,14 @@ class SessionRunner:
                     "frame_id": root_frame_id,
                     "status": "started",
                     "generation": gen,
+                    "generation_id": lease.generation_id if lease else None,
                 }
             )
         return {
             "ok": True,
             "state": "running",
             "generation": gen,
+            "generation_id": lease.generation_id if lease else None,
             "frame_id": root_frame_id,
         }
 
@@ -1784,6 +2079,7 @@ class SessionRunner:
                     "frame_id": root_frame_id,
                     "status": "env_changed",
                     "generation": gen,
+                    "generation_id": lease.generation_id if lease else None,
                     "env": self._env_summary(st),
                 }
             )
@@ -1792,6 +2088,7 @@ class SessionRunner:
             "state": lifecycle,
             "env": env_name,
             "generation": gen,
+            "generation_id": lease.generation_id if lease else None,
             "language": env.language,
             "python_version": env.python_version(),
             "frame_id": root_frame_id,
@@ -1829,6 +2126,7 @@ class SessionRunner:
                     "frame_id": st.root_frame_id,
                     "status": "env_changed",
                     "generation": status["generation"],
+                    "generation_id": status.get("generation_id"),
                     "env": self._env_summary(st),
                 }
             )
@@ -1842,6 +2140,7 @@ class SessionRunner:
                 "frame_id": st.root_frame_id,
                 "status": "env_changed",
                 "generation": lease.generation,
+                "generation_id": lease.generation_id,
                 "env": self._env_summary(st),
             }
         )
@@ -1989,10 +2288,14 @@ class SessionRunner:
         model's native/legacy JSON control-tool boundary, where no Cell
         snapshot exists.
         """
+        self.recovery.touch(st)
         name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
         tool = get_tool(name)
         if tool is None or not tool.writes_files:
-            return invoke()
+            try:
+                return invoke()
+            finally:
+                self.recovery.touch(st)
 
         before = self.artifacts.snapshot(st.workspace)
         self.artifacts.protect_latest(st)
@@ -2023,6 +2326,7 @@ class SessionRunner:
                     )
             except Exception:  # noqa: BLE001 — capture cannot mask tool outcome
                 traceback.print_exc()
+            self.recovery.touch(st)
 
     def _capture_env_snapshot(self, st=None) -> str | None:
         return self.artifacts.capture_environment(
@@ -2241,6 +2545,7 @@ class SessionRunner:
         st.explore = bool(explore) and not st.plan
         emit = self.hub.emitter(root_frame_id)
         with st.execution_barrier():
+            self.recovery.touch(st)
             # Tool-only and plan turns need the control plane and provider
             # history, not a scientific worker.  A CodeCell acquires its kernel
             # later through CellExecutionService.prepare_language.
@@ -2459,6 +2764,7 @@ class SessionRunner:
                 root_frame_id, status=("done" if status == "completed" else status)
             )
             emit({"type": "frame_update", "frame_id": root_frame_id, "status": status})
+            self.recovery.touch(st)
             return {
                 "status": status,
                 "frame_id": root_frame_id,
@@ -2634,21 +2940,27 @@ class SessionRunner:
             if language == "python"
             else None
         )
-        return execute_with_watchdog(
-            st.kernels,
-            lease,
-            lambda kernel: kernel.execute(
-                code,
-                origin=origin,
-                on_chunk=on_chunk,
-                cell_id=cell_id,
-            ),
-            policy=policy,
-            cancelled=st.cancel.is_set,
-            paused=permission_pending,
-            after_restart=after_restart,
-            thread_name=f"os-cell-{st.root_frame_id}",
-        )
+        self.recovery.touch(st, language, state="busy")
+        try:
+            return execute_with_watchdog(
+                st.kernels,
+                lease,
+                lambda kernel: kernel.execute(
+                    code,
+                    origin=origin,
+                    on_chunk=on_chunk,
+                    cell_id=cell_id,
+                ),
+                policy=policy,
+                cancelled=st.cancel.is_set,
+                paused=permission_pending,
+                after_restart=after_restart,
+                thread_name=f"os-cell-{st.root_frame_id}",
+            )
+        finally:
+            # A watchdog may have replaced the captured lease. Touch whichever
+            # exact generation is current rather than mutating a stale record.
+            self.recovery.touch(st, language, state="active")
 
     def _safety_refusal(self, code: str, origin: str) -> str | None:
         """Pre-exec code-safety verdict for an agent cell (report e6w).
@@ -2703,13 +3015,25 @@ class SessionRunner:
                 resource_keys=[f"kernel:{request.language}"],
             )
         status = st.kernels.status(request.language)
-        generation_id = f"{request.language}:{status.get('generation', 0)}"
         attempt = self.store.allocate_execution_attempt(
             group_id=group_id,
             producing_cell_id=cell_id,
-            generation_id=generation_id,
+            generation_id=(
+                status.get("generation_id") if status.get("alive") else None
+            ),
+            owner_instance_id=self._owner_instance_id,
         )
         return attempt["attempt_id"]
+
+    def _bind_cell_attempt_generation(
+        self, attempt_id: str, st: SessionState, language: str
+    ) -> None:
+        generation_id = st.kernels.status(language).get("generation_id")
+        if not generation_id:
+            raise RuntimeError(
+                f"{language} execution attempt has no live kernel generation"
+            )
+        self.store.bind_execution_attempt_generation(attempt_id, generation_id)
 
     def _execute_and_log(
         self,
@@ -3858,6 +4182,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # remove each session's workspace tree (holds non-artifact
                     # scratch + the live copies of edited artifacts) + resume buffer
                     for fid in res.get("frame_ids", []):
+                        runner.drop_session(fid, reason="project_deleted")
                         try:
                             _shutil.rmtree(
                                 runner.workspace_for(fid), ignore_errors=True
@@ -4003,6 +4328,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json(_frame_json(store.get_frame(fid), store))
                     return
                 if method == "DELETE":
+                    runner.drop_session(fid, reason="frame_deleted")
                     store.delete_frame(fid)
                     self._json({"ok": True})
                     return
@@ -5450,6 +5776,20 @@ in-browser structure drawing.</p></body></html>"""
 # --------------------------------------------------------------------------- #
 #  server bootstrap
 # --------------------------------------------------------------------------- #
+class _GatewayHTTPServer(ThreadingHTTPServer):
+    """HTTP server whose resource close also closes every SessionRunner slot."""
+
+    def __init__(self, *args, runner: SessionRunner, **kwargs) -> None:
+        self.runner = runner
+        super().__init__(*args, **kwargs)
+
+    def server_close(self) -> None:
+        try:
+            self.runner.close()
+        finally:
+            super().server_close()
+
+
 def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     cfg = cfg or get_config()
     cfg.ensure_dirs()
@@ -5488,7 +5828,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     except Exception:  # noqa: BLE001 - seeding must never block startup
         traceback.print_exc()
     handler = make_handler(cfg, hub, runner)
-    httpd = ThreadingHTTPServer((cfg.host, cfg.port), handler)
+    httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
     httpd.daemon_threads = True
     return httpd
 
@@ -5503,6 +5843,7 @@ def serve_app(cfg: Config | None = None, *, block: bool = True) -> ThreadingHTTP
             pass
         finally:
             httpd.shutdown()
+            httpd.server_close()
     else:
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd

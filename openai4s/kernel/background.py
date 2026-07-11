@@ -83,12 +83,21 @@ class BackgroundExecutor:
         self._dispatcher = dispatcher
         self._jobs: dict[str, _BackgroundJob] = {}
         self._lock = threading.Lock()
+        self._closed = False
 
     def launch(self, code: str, origin: str = "agent") -> dict:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("background executor is closed")
         exec_id = f"exec-{uuid.uuid4().hex[:12]}"
         job = _BackgroundJob(exec_id, code)
         job._kernel = self._kernel_factory()
         with self._lock:
+            if self._closed:
+                try:
+                    job._kernel.shutdown()
+                finally:
+                    raise RuntimeError("background executor is closed")
             self._jobs[exec_id] = job
 
         def _run() -> None:
@@ -141,3 +150,29 @@ class BackgroundExecutor:
     def list_jobs(self) -> list[dict]:
         with self._lock:
             return [j.peek() for j in self._jobs.values()]
+
+    def shutdown(self, timeout_per_job: float = 5.0) -> int:
+        """Interrupt then exact-kill every running background worker."""
+
+        with self._lock:
+            self._closed = True
+            jobs = list(self._jobs.values())
+        stopped = 0
+        for job in jobs:
+            if job.status != "running":
+                continue
+            stopped += 1
+            try:
+                job._kernel.interrupt()
+            except Exception:  # noqa: BLE001 — advance to the exact hard stop
+                pass
+            thread = job._thread
+            if thread is not None:
+                thread.join(timeout=max(0.0, timeout_per_job))
+            if thread is not None and thread.is_alive():
+                try:
+                    job._kernel.kill_worker()
+                except Exception:  # noqa: BLE001 — worker may already be dead
+                    pass
+                thread.join(timeout=max(0.0, timeout_per_job))
+        return stopped

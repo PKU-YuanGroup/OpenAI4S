@@ -35,6 +35,12 @@ def _no_attempt_milestone(attempt_id: str) -> None:
     del attempt_id
 
 
+def _no_attempt_generation(
+    attempt_id: str, session: "CellSession", language: str
+) -> None:
+    del attempt_id, session, language
+
+
 def _no_attempt_finish(
     attempt_id: str, terminal_state: str, error: Any = None
 ) -> None:
@@ -70,6 +76,9 @@ class CellExecutionPorts:
     allocate_attempt: Callable[
         [CellSession, CellRequest, str, str | None], str | None
     ] = _no_attempt_allocate
+    bind_attempt_generation: Callable[
+        [str, CellSession, str], None
+    ] = _no_attempt_generation
     mark_attempt_started: Callable[[str], None] = _no_attempt_milestone
     mark_attempt_response: Callable[[str], None] = _no_attempt_milestone
     mark_attempt_capture: Callable[[str], None] = _no_attempt_milestone
@@ -109,6 +118,10 @@ class CellExecutionService:
         try:
             runtime_error = self.ports.prepare_language(session, request.language)
             kernel_id = self.ports.kernel_id(session, request.language)
+            if attempt_id is not None and runtime_error is None:
+                self.ports.bind_attempt_generation(
+                    attempt_id, session, request.language
+                )
         except BaseException as exc:
             self._finish_attempt(attempt_id, "prepare_failed", exc)
             raise

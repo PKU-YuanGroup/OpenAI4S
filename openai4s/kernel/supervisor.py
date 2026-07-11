@@ -8,6 +8,8 @@ coordinates worker identity, lifecycle, and ABA-safe watchdog recovery.
 from __future__ import annotations
 
 import threading
+import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Hashable
 
@@ -20,6 +22,8 @@ class KernelLease:
     key: Hashable | None
     generation: int
     kernel: Any
+    generation_id: str | None = None
+    persistent_ordinal: int | None = None
 
 
 @dataclass
@@ -28,6 +32,11 @@ class _Slot:
     factory: KernelFactory | None = None
     kernel: Any = None
     generation: int = -1
+    generation_id: str | None = None
+    persistent_ordinal: int | None = None
+    started_at: int | None = None
+    last_activity_at: int | None = None
+    ended_reason: str | None = None
     manual_stop: bool = False
 
 
@@ -40,9 +49,22 @@ class KernelSupervisor:
     the only operations intended for concurrent watchdog/cancellation paths.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        root_frame_id: str | None = None,
+        branch_id: str | None = None,
+        generations: Any = None,
+        owner_instance_id: str | None = None,
+        clock_ms: Callable[[], int] | None = None,
+    ) -> None:
         self._slots: dict[str, _Slot] = {}
         self._lock = threading.RLock()
+        self._root_frame_id = root_frame_id
+        self._branch_id = branch_id or root_frame_id
+        self._generations = generations
+        self._owner_instance_id = owner_instance_id
+        self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
 
     def ensure(
         self, language: str, key: Hashable | None, factory: KernelFactory
@@ -54,16 +76,40 @@ class KernelSupervisor:
             if current is not None and slot.key == key and self._alive(current):
                 slot.factory = factory
                 slot.manual_stop = False
+                self._touch_slot(slot)
                 return self._lease(language, slot)
 
             # Build first: a failed replacement must not destroy a usable worker.
             replacement = self._create_live(language, factory)
+            old_generation_id = slot.generation_id
+            old_was_alive = current is not None and self._alive(current)
+            try:
+                identity = self._begin_generation(
+                    language,
+                    replacement,
+                    key,
+                    parent_generation_id=old_generation_id,
+                )
+            except Exception:
+                self._shutdown(replacement)
+                raise
             old = slot.kernel
             slot.kernel = replacement
             slot.key = key
             slot.factory = factory
             slot.generation += 1
+            slot.generation_id = identity["generation_id"]
+            slot.persistent_ordinal = identity.get("ordinal")
+            slot.started_at = identity["started_at"]
+            slot.last_activity_at = identity["last_activity_at"]
+            slot.ended_reason = None
             slot.manual_stop = False
+            if old_generation_id is not None:
+                self._finish_generation(
+                    old_generation_id,
+                    state="released" if old_was_alive else "crashed",
+                    reason="replaced" if old_was_alive else "worker_died",
+                )
             if old is not None:
                 self._shutdown(old)
             return self._lease(language, slot)
@@ -102,11 +148,18 @@ class KernelSupervisor:
                 count += 1
                 try:
                     slot.kernel.interrupt()
+                    self._touch_slot(slot)
                 except Exception:  # noqa: BLE001 — interruption is best-effort
                     pass
             return count
 
-    def stop(self, language: str | None = None, *, manual: bool = True) -> int:
+    def stop(
+        self,
+        language: str | None = None,
+        *,
+        manual: bool = True,
+        reason: str | None = None,
+    ) -> int:
         with self._lock:
             if language is not None:
                 # An explicit stop is meaningful even before the first worker:
@@ -117,6 +170,7 @@ class KernelSupervisor:
             else:
                 names = list(self._slots)
             kernels: list[Any] = []
+            ended: list[str] = []
             for name in names:
                 slot = self._slots.get(name)
                 if slot is None:
@@ -124,7 +178,18 @@ class KernelSupervisor:
                 if slot.kernel is not None:
                     kernels.append(slot.kernel)
                     slot.kernel = None
+                    if slot.generation_id is not None:
+                        ended.append(slot.generation_id)
                 slot.manual_stop = manual
+                slot.ended_reason = reason or (
+                    "manual_stop" if manual else "released"
+                )
+            for generation_id in ended:
+                self._finish_generation(
+                    generation_id,
+                    state="manually_stopped" if manual else "released",
+                    reason=reason or ("manual_stop" if manual else "released"),
+                )
         for kernel in kernels:
             self._shutdown(kernel)
         return len(kernels)
@@ -134,6 +199,7 @@ class KernelSupervisor:
     ) -> KernelLease:
         with self._lock:
             slot = self._slot(language)
+            old_generation_id = slot.generation_id
             if slot.kernel is None:
                 if slot.factory is None:
                     raise RuntimeError(f"no {language} kernel factory configured")
@@ -142,7 +208,36 @@ class KernelSupervisor:
                 slot.kernel.restart()
                 if not self._alive(slot.kernel):
                     raise RuntimeError(f"restarted {language} kernel is not alive")
+            try:
+                identity = self._begin_generation(
+                    language,
+                    slot.kernel,
+                    slot.key,
+                    parent_generation_id=old_generation_id,
+                )
+            except Exception:
+                failed = slot.kernel
+                slot.kernel = None
+                slot.ended_reason = "generation_record_failed"
+                self._finish_generation(
+                    old_generation_id,
+                    state="crashed",
+                    reason="generation_record_failed",
+                )
+                self._shutdown(failed)
+                raise
+            if old_generation_id is not None:
+                self._finish_generation(
+                    old_generation_id,
+                    state="released",
+                    reason="restarted",
+                )
             slot.generation += 1
+            slot.generation_id = identity["generation_id"]
+            slot.persistent_ordinal = identity.get("ordinal")
+            slot.started_at = identity["started_at"]
+            slot.last_activity_at = identity["last_activity_at"]
+            slot.ended_reason = None
             slot.manual_stop = False
             lease = self._lease(language, slot)
         if after_restart is not None:
@@ -156,9 +251,22 @@ class KernelSupervisor:
             if not self._matches(slot, lease):
                 return False
             slot.kernel = None
+            slot.ended_reason = "watchdog_abandoned"
+            self._finish_generation(
+                lease.generation_id,
+                state="crashed",
+                reason="watchdog_abandoned",
+            )
             return True
 
-    def shutdown_if_current(self, lease: KernelLease, *, manual: bool = False) -> bool:
+    def shutdown_if_current(
+        self,
+        lease: KernelLease,
+        *,
+        manual: bool = False,
+        reason: str | None = None,
+        terminal_state: str | None = None,
+    ) -> bool:
         """Detach and shut down an exact desynchronized worker if still current."""
         with self._lock:
             slot = self._slots.get(lease.language)
@@ -167,6 +275,15 @@ class KernelSupervisor:
             kernel = slot.kernel
             slot.kernel = None
             slot.manual_stop = manual
+            slot.ended_reason = reason or (
+                "manual_stop" if manual else "desynchronized"
+            )
+            self._finish_generation(
+                lease.generation_id,
+                state=terminal_state
+                or ("manually_stopped" if manual else "crashed"),
+                reason=slot.ended_reason,
+            )
         self._shutdown(kernel)
         return True
 
@@ -179,10 +296,39 @@ class KernelSupervisor:
             slot = self._slots.get(lease.language)
             if not self._matches(slot, lease):
                 return None
+            old_generation_id = slot.generation_id
             slot.kernel.restart()
             if not self._alive(slot.kernel):
                 raise RuntimeError(f"restarted {lease.language} kernel is not alive")
+            try:
+                identity = self._begin_generation(
+                    lease.language,
+                    slot.kernel,
+                    slot.key,
+                    parent_generation_id=old_generation_id,
+                )
+            except Exception:
+                failed = slot.kernel
+                slot.kernel = None
+                slot.ended_reason = "generation_record_failed"
+                self._finish_generation(
+                    old_generation_id,
+                    state="crashed",
+                    reason="generation_record_failed",
+                )
+                self._shutdown(failed)
+                raise
+            self._finish_generation(
+                old_generation_id,
+                state="crashed",
+                reason="watchdog_restart",
+            )
             slot.generation += 1
+            slot.generation_id = identity["generation_id"]
+            slot.persistent_ordinal = identity.get("ordinal")
+            slot.started_at = identity["started_at"]
+            slot.last_activity_at = identity["last_activity_at"]
+            slot.ended_reason = None
             slot.manual_stop = False
             restarted = self._lease(lease.language, slot)
         if after_restart is not None:
@@ -196,6 +342,7 @@ class KernelSupervisor:
                 return False
             try:
                 slot.kernel.kill_worker()
+                self._touch_slot(slot, state="busy")
             except Exception:  # noqa: BLE001 — hard kill is best-effort
                 pass
             return True
@@ -208,8 +355,58 @@ class KernelSupervisor:
                 return False
             try:
                 slot.kernel.interrupt()
+                self._touch_slot(slot)
             except Exception:  # noqa: BLE001 — interruption is best-effort
                 pass
+            return True
+
+    def touch(
+        self,
+        language: str | None = None,
+        *,
+        state: str | None = None,
+        at_ms: int | None = None,
+    ) -> int:
+        """Record activity for live slots without touching protocol I/O."""
+
+        with self._lock:
+            names = [language] if language is not None else list(self._slots)
+            touched = 0
+            for name in names:
+                slot = self._slots.get(name)
+                if slot is None or slot.kernel is None:
+                    continue
+                self._touch_slot(slot, state=state, at_ms=at_ms)
+                touched += 1
+            return touched
+
+    def record_bootstrap_if_current(
+        self,
+        language: str,
+        kernel: Any,
+        metadata: dict[str, Any],
+        *,
+        state: str = "active",
+    ) -> bool:
+        """Attach truthful bootstrap metadata to an exact live worker."""
+
+        with self._lock:
+            slot = self._slots.get(language)
+            if slot is None or slot.kernel is not kernel:
+                return False
+            now = self._clock_ms()
+            slot.last_activity_at = now
+            generation_id = slot.generation_id
+            if generation_id is not None and self._generations is not None:
+                try:
+                    self._generations.touch_kernel_generation(
+                        generation_id,
+                        state=state,
+                        bootstrap=metadata,
+                        at=now,
+                    )
+                except Exception:  # noqa: BLE001 — never strand a live worker
+                    pass
             return True
 
     def _slot(self, language: str) -> _Slot:
@@ -233,6 +430,127 @@ class KernelSupervisor:
         self._shutdown(replacement)
         raise RuntimeError(f"{language} kernel factory returned a dead worker")
 
+    def _begin_generation(
+        self,
+        language: str,
+        kernel: Any,
+        key: Hashable | None,
+        *,
+        parent_generation_id: str | None,
+    ) -> dict[str, Any]:
+        now = self._clock_ms()
+        generation_id = str(uuid.uuid4())
+        environment = self._environment_metadata(kernel, key)
+        if self._generations is None or self._root_frame_id is None:
+            return {
+                "generation_id": generation_id,
+                "ordinal": None,
+                "started_at": now,
+                "last_activity_at": now,
+            }
+        return self._generations.create_kernel_generation(
+            root_frame_id=self._root_frame_id,
+            branch_id=self._branch_id,
+            language=language,
+            generation_id=generation_id,
+            parent_generation_id=parent_generation_id,
+            environment=environment,
+            bootstrap={
+                "status": "pending" if language == "python" else "not_applicable",
+                "loaded_sidecars": [],
+            },
+            worker_pid=self._pid(kernel),
+            owner_instance_id=self._owner_instance_id,
+            state="bootstrapping" if language == "python" else "active",
+            started_at=now,
+        )
+
+    def _touch_slot(
+        self,
+        slot: _Slot,
+        *,
+        state: str | None = None,
+        at_ms: int | None = None,
+    ) -> None:
+        now = self._clock_ms() if at_ms is None else int(at_ms)
+        slot.last_activity_at = now
+        if slot.generation_id is not None and self._generations is not None:
+            try:
+                self._generations.touch_kernel_generation(
+                    slot.generation_id,
+                    state=state,
+                    worker_pid=self._pid(slot.kernel),
+                    at=now,
+                )
+            except Exception:  # noqa: BLE001 — activity cannot break execution
+                pass
+
+    def _finish_generation(
+        self,
+        generation_id: str | None,
+        *,
+        state: str,
+        reason: str,
+    ) -> None:
+        if generation_id is None or self._generations is None:
+            return
+        try:
+            self._generations.finish_kernel_generation(
+                generation_id,
+                state=state,
+                reason=reason,
+                ended_at=self._clock_ms(),
+            )
+        except Exception:  # noqa: BLE001 — persistence cannot leak a worker
+            pass
+
+    @staticmethod
+    def _pid(kernel: Any) -> int | None:
+        try:
+            pid = getattr(kernel, "pid", None)
+            return int(pid) if pid is not None else None
+        except (TypeError, ValueError, OSError):
+            return None
+
+    @classmethod
+    def _environment_metadata(
+        cls, kernel: Any, key: Hashable | None
+    ) -> dict[str, Any]:
+        mode = getattr(kernel, "mode", None)
+        argv = getattr(kernel, "argv", None)
+        interpreter = getattr(kernel, "python", None)
+        if mode == "r" and isinstance(argv, (list, tuple)) and len(argv) >= 2:
+            # r_kernel.r_argv ends with ``<Rscript> <r_worker.R>``.
+            interpreter = argv[-2]
+        metadata: dict[str, Any] = {
+            "key": cls._json_safe(key),
+            "runtime": mode or "python",
+            "interpreter": interpreter,
+            "worker_argv": cls._json_safe(argv),
+            "environment_root": getattr(kernel, "env_root", None),
+            "environment_name": getattr(kernel, "env_name", None),
+            "working_directory": getattr(kernel, "cwd", None),
+        }
+        try:
+            sandbox = getattr(kernel, "sandbox_status", None)
+            if sandbox is not None:
+                metadata["sandbox"] = cls._json_safe(sandbox)
+        except Exception:  # noqa: BLE001 — metadata must not break a spawn
+            pass
+        return metadata
+
+    @classmethod
+    def _json_safe(cls, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, (list, tuple)):
+            return [cls._json_safe(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                str(key): cls._json_safe(item) for key, item in value.items()
+            }
+        return repr(value)
+
     @staticmethod
     def _shutdown(kernel: Any) -> None:
         try:
@@ -242,7 +560,14 @@ class KernelSupervisor:
 
     @staticmethod
     def _lease(language: str, slot: _Slot) -> KernelLease:
-        return KernelLease(language, slot.key, slot.generation, slot.kernel)
+        return KernelLease(
+            language,
+            slot.key,
+            slot.generation,
+            slot.kernel,
+            slot.generation_id,
+            slot.persistent_ordinal,
+        )
 
     @staticmethod
     def _matches(slot: _Slot | None, lease: KernelLease) -> bool:
@@ -256,14 +581,39 @@ class KernelSupervisor:
     def _slot_status(self, language: str, slot: _Slot | None) -> dict:
         kernel = slot.kernel if slot else None
         alive = kernel is not None and self._alive(kernel)
-        return {
+        status = {
             "language": language,
-            "state": "running" if alive else ("stopped" if slot and slot.manual_stop else "none"),
+            "state": (
+                "running"
+                if alive
+                else (
+                    "stopped"
+                    if slot and slot.manual_stop
+                    else (
+                        "ended"
+                        if slot
+                        and slot.ended_reason
+                        in {"idle_ttl", "session_closed", "daemon_shutdown"}
+                        else "none"
+                    )
+                )
+            ),
             "alive": alive,
             "generation": slot.generation if slot and slot.generation >= 0 else 0,
             "manual_stop": bool(slot and slot.manual_stop),
             "key": slot.key if slot else None,
         }
+        if slot is not None and slot.generation_id is not None:
+            status.update(
+                {
+                    "generation_id": slot.generation_id,
+                    "generation_ordinal": slot.persistent_ordinal,
+                    "started_at": slot.started_at,
+                    "last_activity_at": slot.last_activity_at,
+                    "ended_reason": slot.ended_reason if not alive else None,
+                }
+            )
+        return status
 
 
 __all__ = ["KernelLease", "KernelSupervisor"]

@@ -17,7 +17,6 @@ import sqlite3
 import uuid
 from typing import Any, Callable, TypedDict, cast
 
-
 ACTION_LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS action_groups (
     group_id           TEXT PRIMARY KEY,
@@ -66,6 +65,7 @@ CREATE TABLE IF NOT EXISTS execution_attempts (
     producing_cell_id      TEXT NOT NULL,
     attempt_ordinal        INTEGER NOT NULL CHECK (attempt_ordinal >= 0),
     generation_id          TEXT,
+    owner_instance_id      TEXT,
     allocated_at           INTEGER NOT NULL,
     started_at             INTEGER,
     response_at            INTEGER,
@@ -126,6 +126,7 @@ class ExecutionAttemptDTO(TypedDict):
     producing_cell_id: str
     attempt_ordinal: int
     generation_id: str | None
+    owner_instance_id: str | None
     allocated_at: int
     started_at: int | None
     response_at: int | None
@@ -204,6 +205,16 @@ class ActionLedgerRepository:
             if "assistant_message" not in columns:
                 self._connection.execute(
                     "ALTER TABLE action_groups ADD COLUMN assistant_message TEXT"
+                )
+            attempt_columns = {
+                row["name"]
+                for row in self._connection.execute(
+                    "PRAGMA table_info(execution_attempts)"
+                ).fetchall()
+            }
+            if "owner_instance_id" not in attempt_columns:
+                self._connection.execute(
+                    "ALTER TABLE execution_attempts ADD COLUMN owner_instance_id TEXT"
                 )
             self._connection.commit()
 
@@ -506,6 +517,7 @@ class ActionLedgerRepository:
         group_id: str,
         producing_cell_id: str,
         generation_id: str | None = None,
+        owner_instance_id: str | None = None,
         replayed_from_cell_id: str | None = None,
         attempt_ordinal: int | None = None,
         attempt_id: str | None = None,
@@ -532,14 +544,15 @@ class ActionLedgerRepository:
                 self._connection.execute(
                     "INSERT INTO execution_attempts("
                     "attempt_id,group_id,producing_cell_id,attempt_ordinal,"
-                    "generation_id,allocated_at,replayed_from_cell_id) "
-                    "VALUES(?,?,?,?,?,?,?)",
+                    "generation_id,owner_instance_id,allocated_at,"
+                    "replayed_from_cell_id) VALUES(?,?,?,?,?,?,?,?)",
                     (
                         attempt_id,
                         group_id,
                         producing_cell_id,
                         attempt_ordinal,
                         generation_id,
+                        owner_instance_id,
                         now,
                         replayed_from_cell_id,
                     ),
@@ -551,6 +564,33 @@ class ActionLedgerRepository:
             row = self._attempt_row_locked(attempt_id)
         return self._normalize_attempt(row)
 
+    def abandon_incomplete_attempts(
+        self,
+        *,
+        owner_instance_id: str,
+        finished_at: int | None = None,
+    ) -> int:
+        """Terminalize unfinished attempts allocated by an older daemon."""
+
+        owner_instance_id = _required_text("owner_instance_id", owner_instance_id)
+        now = self._clock_ms() if finished_at is None else finished_at
+        error = _json_dump(
+            {
+                "type": "daemon_restart",
+                "message": "execution interrupted by daemon restart",
+            }
+        )
+        with self._lock:
+            cursor = self._connection.execute(
+                "UPDATE execution_attempts SET finished_at=?,"
+                "terminal_state='abandoned',error=? WHERE finished_at IS NULL "
+                "AND terminal_state IS NULL AND (owner_instance_id IS NULL "
+                "OR owner_instance_id<>?)",
+                (now, error, owner_instance_id),
+            )
+            self._connection.commit()
+            return int(cursor.rowcount)
+
     def mark_attempt_started(
         self, attempt_id: str, *, started_at: int | None = None
     ) -> ExecutionAttemptDTO:
@@ -560,6 +600,36 @@ class ActionLedgerRepository:
             at=started_at,
             prerequisite=None,
         )
+
+    def bind_attempt_generation(
+        self, attempt_id: str, generation_id: str
+    ) -> ExecutionAttemptDTO:
+        """Bind the worker UUID after lazy language preparation.
+
+        Attempts are allocated before a worker is acquired, so their generation
+        starts nullable.  Once set, the identity is immutable: an ABA-safe retry
+        receives a new attempt rather than rewriting the old one.
+        """
+
+        attempt_id = _required_text("attempt_id", attempt_id)
+        generation_id = _required_text("generation_id", generation_id)
+        with self._lock:
+            row = self._attempt_row_locked(attempt_id)
+            current = row["generation_id"]
+            if current is not None and current != generation_id:
+                raise AttemptStateError(
+                    f"attempt {attempt_id!r} is already bound to generation "
+                    f"{current!r}"
+                )
+            if current is None:
+                self._connection.execute(
+                    "UPDATE execution_attempts SET generation_id=? "
+                    "WHERE attempt_id=? AND generation_id IS NULL",
+                    (generation_id, attempt_id),
+                )
+                self._connection.commit()
+                row = self._attempt_row_locked(attempt_id)
+        return self._normalize_attempt(row)
 
     def mark_attempt_response(
         self, attempt_id: str, *, response_at: int | None = None
@@ -833,6 +903,10 @@ class ActionLedgerRepository:
     @staticmethod
     def _normalize_attempt(row: Any) -> ExecutionAttemptDTO:
         data = dict(row)
+        # Keep the established public DTO byte-for-byte compatible for legacy
+        # attempts while exposing ownership on newly allocated daemon attempts.
+        if data.get("owner_instance_id") is None:
+            data.pop("owner_instance_id", None)
         data["error"] = _json_load(data.get("error"))
         return cast(ExecutionAttemptDTO, data)
 

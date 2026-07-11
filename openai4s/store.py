@@ -45,6 +45,7 @@ from openai4s.storage.artifacts import file_identity as _file_identity
 from openai4s.storage.artifacts import same_file_path as _same_file_path
 from openai4s.storage.connectors import ConnectorRepository
 from openai4s.storage.frames import FrameRepository
+from openai4s.storage.kernels import KernelGenerationRepository
 from openai4s.storage.memories import MemoryRepository
 from openai4s.storage.metadata import (
     DERIVABLE_HOST_CALLS,
@@ -385,6 +386,7 @@ QUERY_DENYLIST = frozenset(
         "action_groups",
         "action_events",
         "execution_attempts",
+        "kernel_generations",
     }
 )
 
@@ -424,6 +426,11 @@ class Store:
         self._conn.commit()
         self._migrate()
         self._actions = ActionLedgerRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._kernel_generations = KernelGenerationRepository(
             self._conn,
             self._lock,
             clock_ms=lambda: _now_ms(),
@@ -957,6 +964,7 @@ class Store:
         group_id: str,
         producing_cell_id: str,
         generation_id: str | None = None,
+        owner_instance_id: str | None = None,
         replayed_from_cell_id: str | None = None,
         attempt_ordinal: int | None = None,
         attempt_id: str | None = None,
@@ -966,6 +974,7 @@ class Store:
             group_id=group_id,
             producing_cell_id=producing_cell_id,
             generation_id=generation_id,
+            owner_instance_id=owner_instance_id,
             replayed_from_cell_id=replayed_from_cell_id,
             attempt_ordinal=attempt_ordinal,
             attempt_id=attempt_id,
@@ -976,6 +985,22 @@ class Store:
         self, attempt_id: str, *, started_at: int | None = None
     ) -> dict:
         return self._actions.mark_attempt_started(attempt_id, started_at=started_at)
+
+    def bind_execution_attempt_generation(
+        self, attempt_id: str, generation_id: str
+    ) -> dict:
+        return self._actions.bind_attempt_generation(attempt_id, generation_id)
+
+    def abandon_incomplete_execution_attempts(
+        self,
+        *,
+        owner_instance_id: str,
+        finished_at: int | None = None,
+    ) -> int:
+        return self._actions.abandon_incomplete_attempts(
+            owner_instance_id=owner_instance_id,
+            finished_at=finished_at,
+        )
 
     def mark_execution_attempt_response(
         self, attempt_id: str, *, response_at: int | None = None
@@ -1022,6 +1047,72 @@ class Store:
             root_frame_id=root_frame_id,
             branch_id=branch_id,
             turn_id=turn_id,
+        )
+
+    # --- persistent kernel generations --------------------------------
+    def create_kernel_generation(self, **fields: Any) -> dict:
+        return self._kernel_generations.create(**fields)
+
+    def touch_kernel_generation(
+        self, generation_id: str, **fields: Any
+    ) -> dict:
+        return self._kernel_generations.touch(generation_id, **fields)
+
+    def finish_kernel_generation(
+        self,
+        generation_id: str,
+        *,
+        state: str,
+        reason: str,
+        ended_at: int | None = None,
+    ) -> dict:
+        return self._kernel_generations.finish(
+            generation_id,
+            state=state,
+            reason=reason,
+            ended_at=ended_at,
+        )
+
+    def abandon_live_kernel_generations(
+        self,
+        *,
+        owner_instance_id: str,
+        reason: str = "daemon_restart",
+        ended_at: int | None = None,
+    ) -> int:
+        return self._kernel_generations.abandon_live(
+            owner_instance_id=owner_instance_id,
+            reason=reason,
+            ended_at=ended_at,
+        )
+
+    def get_kernel_generation(self, generation_id: str) -> dict | None:
+        return self._kernel_generations.get(generation_id)
+
+    def latest_kernel_generation(
+        self,
+        root_frame_id: str,
+        language: str,
+        *,
+        branch_id: str | None = None,
+    ) -> dict | None:
+        return self._kernel_generations.latest(
+            root_frame_id,
+            language,
+            branch_id=branch_id,
+        )
+
+    def list_kernel_generations(
+        self,
+        root_frame_id: str,
+        *,
+        language: str | None = None,
+        branch_id: str | None = None,
+    ) -> list[dict]:
+        return self._kernel_generations.list(
+            root_frame_id,
+            language=language,
+            branch_id=branch_id,
         )
 
     def delete_frame(self, frame_id: str) -> None:

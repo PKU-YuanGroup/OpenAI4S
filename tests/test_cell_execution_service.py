@@ -359,6 +359,9 @@ def test_attempt_is_allocated_before_prepare_and_completes_all_milestones(tmp_pa
         mark_attempt_started=lambda attempt_id: attempts.append(
             ("started", attempt_id)
         ),
+        bind_attempt_generation=lambda attempt_id, session, language: attempts.append(
+            ("bound", attempt_id, language, list(harness.order))
+        ),
         mark_attempt_response=lambda attempt_id: attempts.append(
             ("response", attempt_id)
         ),
@@ -381,6 +384,7 @@ def test_attempt_is_allocated_before_prepare_and_completes_all_milestones(tmp_pa
     assert attempts == [
         ("allocated", "cell-ledger", "group-1", []),
         ("started", "attempt-1"),
+        ("bound", "attempt-1", "python", ["prepare", "label"]),
         ("response", "attempt-1"),
         ("capture", "attempt-1"),
         ("finished", "attempt-1", "completed", None),
