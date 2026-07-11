@@ -26,19 +26,19 @@ All timestamps are epoch-ms. Booleans are 0/1. One DB per data_dir.
 """
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
 import sqlite3
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
 from openai4s.storage.agents import AgentProfileRepository
 from openai4s.storage.annotations import AnnotationRepository
+from openai4s.storage.artifacts import ArtifactRepository
+from openai4s.storage.artifacts import file_identity as _file_identity
+from openai4s.storage.artifacts import same_file_path as _same_file_path
 from openai4s.storage.connectors import ConnectorRepository
 from openai4s.storage.frames import FrameRepository
 from openai4s.storage.memories import MemoryRepository
@@ -374,28 +374,6 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _file_identity(path: str) -> str | None:
-    """Best-effort physical identity for legacy/aliased artifact paths."""
-    try:
-        raw = os.fsdecode(os.fspath(path))
-        return os.path.normcase(os.path.realpath(raw))
-    except (TypeError, ValueError, OSError):
-        return None
-
-
-def _same_file_path(left: str, right: str) -> bool:
-    """Return whether two stored paths identify the same physical file."""
-    if left == right:
-        return True
-    left_identity = _file_identity(left)
-    right_identity = _file_identity(right)
-    return (
-        left_identity is not None
-        and right_identity is not None
-        and left_identity == right_identity
-    )
-
-
 class Store:
     """Thread-safe SQLite wrapper. One per data_dir; created lazily."""
 
@@ -454,6 +432,23 @@ class Store:
                 frame_id, **kwargs
             ),
             get_project=lambda project_id: self.get_project(project_id),
+        )
+        self._artifacts = ArtifactRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+            get_frame=lambda frame_id: self.get_frame(frame_id),
+            resolve_frame_scope=lambda frame_id, **kwargs: self.resolve_frame_scope(
+                frame_id, **kwargs
+            ),
+            resolve_artifact_write_scope=lambda **kwargs: self._artifact_write_scope(
+                **kwargs
+            ),
+            execute=lambda sql, params=(): self._exec(sql, params),
+            get_artifact=lambda artifact_id: self.get_artifact(artifact_id),
+            get_env_snapshot=lambda snapshot_id: self.get_env_snapshot(snapshot_id),
+            identify_file=lambda path: _file_identity(path),
+            paths_match=lambda left, right: _same_file_path(left, right),
         )
         self._notes = NotesRepository(
             self._conn,
@@ -798,86 +793,22 @@ class Store:
         return self._frames.get_frame(frame_id)
 
     def get_artifact(self, artifact_id: str) -> dict | None:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT a.*, v.size_bytes, v.checksum, v.path "
-                "FROM artifacts a LEFT JOIN artifact_versions v "
-                "ON a.latest_version_id=v.version_id WHERE a.artifact_id=?",
-                (artifact_id,),
-            ).fetchone()
-        return dict(row) if row else None
+        return self._artifacts.get_artifact(artifact_id)
 
     def delete_artifact(self, artifact_id: str) -> list[str]:
-        """Remove an artifact + its versions. Returns the on-disk paths that are
-        no longer referenced (caller may unlink them)."""
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT path, snapshot_path FROM artifact_versions "
-                "WHERE artifact_id=?",
-                (artifact_id,),
-            ).fetchall()
-            # both the live path AND the immutable per-version snapshot are ours
-            # to reclaim once the artifact is gone
-            paths = {p for r in rows for p in (r["path"], r["snapshot_path"]) if p}
-            self._conn.execute(
-                "DELETE FROM artifact_versions WHERE artifact_id=?", (artifact_id,)
-            )
-            self._conn.execute(
-                "DELETE FROM artifacts WHERE artifact_id=?", (artifact_id,)
-            )
-            self._conn.execute(
-                "DELETE FROM annotations WHERE artifact_id=?", (artifact_id,)
-            )
-            self._conn.commit()
-            # keep any path a surviving version still references (as a live path or
-            # a snapshot) — checked AFTER deletion so only OTHER artifacts count
-            keep = set()
-            for p in paths:
-                if self._conn.execute(
-                    "SELECT 1 FROM artifact_versions "
-                    "WHERE path=? OR snapshot_path=? LIMIT 1",
-                    (p, p),
-                ).fetchone():
-                    keep.add(p)
-        return [p for p in paths if p not in keep]
+        return self._artifacts.delete_artifact(artifact_id)
 
     def rename_artifact(self, artifact_id: str, filename: str) -> None:
-        now = _now_ms()
-        with self._lock:
-            self._conn.execute(
-                "UPDATE artifacts SET filename=?, updated_at=? WHERE artifact_id=?",
-                (filename, now, artifact_id),
-            )
-            self._conn.execute(
-                "UPDATE artifact_versions SET filename=? WHERE artifact_id=?",
-                (filename, artifact_id),
-            )
-            self._conn.commit()
+        self._artifacts.rename_artifact(artifact_id, filename)
 
     def artifact_by_filename(
         self, filename: str, root_frame_id: str | None = None, *, strict: bool = False
     ) -> dict | None:
-        """Find an artifact by filename. With ``strict=True`` and a
-        ``root_frame_id``, ONLY match within that session (no cross-session
-        fallback) — used when versioning a re-written file so a common name like
-        ``figure_cell1_1.png`` isn't mistaken for another session's artifact."""
-        with self._lock:
-            if root_frame_id:
-                row = self._conn.execute(
-                    "SELECT artifact_id FROM artifacts WHERE filename=? AND "
-                    "root_frame_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
-                    (filename, root_frame_id),
-                ).fetchone()
-                if row:
-                    return self.get_artifact(row["artifact_id"])
-                if strict:
-                    return None
-            row = self._conn.execute(
-                "SELECT artifact_id FROM artifacts WHERE filename=? "
-                "ORDER BY created_at DESC,rowid DESC LIMIT 1",
-                (filename,),
-            ).fetchone()
-        return self.get_artifact(row["artifact_id"]) if row else None
+        return self._artifacts.artifact_by_filename(
+            filename,
+            root_frame_id,
+            strict=strict,
+        )
 
     # --- artifacts -------------------------------------------------------
     def _artifact_write_scope(
@@ -887,25 +818,11 @@ class Store:
         root_frame_id: str | None,
         project_id: str | None,
     ) -> tuple[bool, str | None, str]:
-        """Resolve and validate producer/root/project ownership for a write."""
-        explicit_scope = any(
-            value is not None for value in (frame_id, root_frame_id, project_id)
+        return self._artifacts.artifact_write_scope(
+            frame_id=frame_id,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
         )
-        actor = self.get_frame(frame_id) if frame_id else None
-        scope_source = frame_id if actor else (root_frame_id or frame_id)
-        scope = self.resolve_frame_scope(
-            scope_source,
-            fallback_project=project_id or "default",
-        )
-        if actor:
-            if root_frame_id is not None and root_frame_id != scope["root_frame_id"]:
-                raise ValueError("root_frame_id conflicts with producer frame")
-            if project_id is not None and project_id != scope["project_id"]:
-                raise ValueError("project_id conflicts with producer frame")
-            resolved_root = scope["root_frame_id"]
-        else:
-            resolved_root = root_frame_id or scope["root_frame_id"] or frame_id
-        return explicit_scope, resolved_root, scope["project_id"]
 
     def save_artifact(
         self,
@@ -925,101 +842,22 @@ class Store:
         env_snapshot_id: str | None = None,
         snapshot_path: str | None = None,
     ) -> dict:
-        """Register a new artifact version. ``path`` is the (live, possibly
-        mutable) file; ``snapshot_path`` — when given — is an immutable per-version
-        copy of the bytes so version history survives later in-place overwrites of
-        ``path`` (see gateway._write_version_snapshot). The version row is written
-        before the artifact row is (re)pointed at it, both under one commit, so
-        ``latest_version_id`` never dangles."""
-        explicit_scope, resolved_root, resolved_project = self._artifact_write_scope(
+        return self._artifacts.save_artifact(
+            path=path,
+            filename=filename,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            checksum=checksum,
+            producing_cell_id=producing_cell_id,
             frame_id=frame_id,
             root_frame_id=root_frame_id,
             project_id=project_id,
+            artifact_id=artifact_id,
+            is_user_upload=is_user_upload,
+            priority=priority,
+            env_snapshot_id=env_snapshot_id,
+            snapshot_path=snapshot_path,
         )
-        now = _now_ms()
-        version_id = f"v-{uuid.uuid4().hex[:12]}"
-        new_artifact = artifact_id is None
-        if new_artifact:
-            artifact_id = f"a-{uuid.uuid4().hex[:12]}"
-        with self._lock:
-            if not new_artifact:
-                current = self._conn.execute(
-                    "SELECT project_id,root_frame_id FROM artifacts "
-                    "WHERE artifact_id=?",
-                    (artifact_id,),
-                ).fetchone()
-                if current is None:
-                    raise KeyError(f"no such artifact {artifact_id!r}")
-                if not explicit_scope:
-                    resolved_root = current["root_frame_id"]
-                    resolved_project = current["project_id"]
-                if (
-                    current["root_frame_id"] is not None
-                    and resolved_root is not None
-                    and current["root_frame_id"] != resolved_root
-                ):
-                    raise ValueError("artifact belongs to a different root frame")
-                if (
-                    current["root_frame_id"] is not None
-                    and current["project_id"] != resolved_project
-                ):
-                    raise ValueError("artifact belongs to a different project")
-            self._conn.execute(
-                "INSERT INTO artifact_versions(version_id,artifact_id,filename,"
-                "content_type,size_bytes,checksum,path,snapshot_path,"
-                "producing_cell_id,frame_id,created_at,env_snapshot_id) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    version_id,
-                    artifact_id,
-                    filename,
-                    content_type,
-                    size_bytes,
-                    checksum,
-                    path,
-                    snapshot_path,
-                    producing_cell_id,
-                    frame_id,
-                    now,
-                    env_snapshot_id,
-                ),
-            )
-            if new_artifact:
-                self._conn.execute(
-                    "INSERT INTO artifacts(artifact_id,project_id,root_frame_id,"
-                    "filename,content_type,is_user_upload,priority,"
-                    "latest_version_id,created_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        artifact_id,
-                        resolved_project,
-                        resolved_root,
-                        filename,
-                        content_type,
-                        1 if is_user_upload else 0,
-                        priority,
-                        version_id,
-                        now,
-                        now,
-                    ),
-                )
-            else:
-                self._conn.execute(
-                    "UPDATE artifacts SET latest_version_id=?,updated_at=? "
-                    "WHERE artifact_id=?",
-                    (version_id, now, artifact_id),
-                )
-            self._conn.commit()
-        return {
-            "artifact_id": artifact_id,
-            "version_id": version_id,
-            "filename": filename,
-            "path": path,
-            "content_type": content_type,
-            "size_bytes": size_bytes,
-            "checksum": checksum,
-            "created_at": now,
-        }
 
     def record_cell_artifact(
         self,
@@ -1040,444 +878,51 @@ class Store:
         preserve_content_type: bool = False,
         reuse_policy: str = "any",
     ) -> dict:
-        """Atomically record or finalize one cell's physical file write.
-
-        Provenance reports arrive during kernel execution and capture enriches
-        the same bytes after the cell.  When root, physical path, producing
-        cell, and checksum all match an artifact's latest version, this method
-        preserves that version id and fills missing capture metadata. Same-name
-        candidates are preferred, but an explicit display filename does not
-        split one physical cell output into two artifacts. The ``preserve_*``
-        flags let automatic capture retain an earlier explicit label and MIME
-        declaration, while still filling either field when it was absent. A
-        different cell or different bytes always creates a new version.
-        ``save_artifact`` keeps its unconditional-new semantics for uploads and
-        explicit version creation. This transaction assumes the application's
-        normal single Store writer; the process-local lock serializes callers
-        sharing that Store instance. ``reuse_policy='provisional'`` is for an
-        explicit in-cell save: it reuses an unsnapshotted provenance record but
-        keeps repeated explicit saves as distinct versions.
-        """
-        if reuse_policy not in {"any", "provisional"}:
-            raise ValueError(f"unknown cell artifact reuse policy: {reuse_policy!r}")
-        _explicit, resolved_root, resolved_project = self._artifact_write_scope(
+        return self._artifacts.record_cell_artifact(
+            path=path,
+            filename=filename,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            checksum=checksum,
+            producing_cell_id=producing_cell_id,
             frame_id=frame_id,
             root_frame_id=root_frame_id,
             project_id=project_id,
+            env_snapshot_id=env_snapshot_id,
+            snapshot_path=snapshot_path,
+            input_version_ids=input_version_ids,
+            preserve_filename=preserve_filename,
+            preserve_content_type=preserve_content_type,
+            reuse_policy=reuse_policy,
         )
-        now = _now_ms()
-        version_id: str
-        artifact_id: str
-        created_at = now
-        stored_version: sqlite3.Row
-        with self._lock:
-            try:
-                artifact = None
-                candidate = None
-                root_clause = (
-                    "a.root_frame_id=?"
-                    if resolved_root is not None
-                    else "a.root_frame_id IS NULL"
-                )
-                root_args = (resolved_root,) if resolved_root is not None else ()
-
-                # Search every scoped logical artifact for the exact latest
-                # provenance version first.  A separate same-name artifact may
-                # have been registered between the mid-cell provenance report
-                # and post-cell capture; simply checking the newest artifact
-                # would strand the lineage-bearing version in that race.
-                if producing_cell_id and checksum is not None:
-                    exact_rows = self._conn.execute(
-                        "SELECT v.*,a.latest_version_id AS artifact_latest_version_id,"
-                        "CASE WHEN a.filename=? THEN 0 ELSE 1 END AS filename_rank "
-                        "FROM artifact_versions v JOIN artifacts a "
-                        "ON a.artifact_id=v.artifact_id WHERE a.project_id=? AND "
-                        + root_clause
-                        + " AND v.producing_cell_id=? AND v.checksum=? "
-                        "ORDER BY filename_rank,v.created_at DESC,v.rowid DESC",
-                        (
-                            filename,
-                            resolved_project,
-                            *root_args,
-                            producing_cell_id,
-                            checksum,
-                        ),
-                    ).fetchall()
-                    for row in exact_rows:
-                        if (
-                            row["artifact_latest_version_id"] == row["version_id"]
-                            and _same_file_path(row["path"], path)
-                        ):
-                            candidate = row
-                            break
-
-                reuse = candidate is not None and (
-                    reuse_policy == "any" or not candidate["snapshot_path"]
-                )
-
-                if reuse:
-                    artifact = self._conn.execute(
-                        "SELECT rowid AS artifact_rowid,* FROM artifacts "
-                        "WHERE artifact_id=?",
-                        (candidate["artifact_id"],),
-                    ).fetchone()
-                else:
-                    # A snapshotted exact candidate is an earlier explicit save,
-                    # not a provisional record. Continue the requested logical
-                    # filename if it exists; a different alias starts its own
-                    # artifact instead of renaming the prior explicit result.
-                    artifact = self._conn.execute(
-                        "SELECT rowid AS artifact_rowid,* FROM artifacts a "
-                        "WHERE a.filename=? AND a.project_id=? AND "
-                        + root_clause
-                        + " ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1",
-                        (filename, resolved_project, *root_args),
-                    ).fetchone()
-
-                if reuse:
-                    artifact_id = candidate["artifact_id"]
-                    version_id = candidate["version_id"]
-                    created_at = candidate["created_at"]
-                    stored_filename = (
-                        (candidate["filename"] or artifact["filename"])
-                        if preserve_filename
-                        else filename
-                    )
-                    stored_content_type = (
-                        candidate["content_type"]
-                        if preserve_content_type and candidate["content_type"]
-                        else content_type
-                    )
-                    self._conn.execute(
-                        "UPDATE artifact_versions SET filename=?,"
-                        "content_type=COALESCE(?,content_type),size_bytes=?,"
-                        "checksum=?,path=?,snapshot_path=COALESCE(snapshot_path,?),"
-                        "env_snapshot_id=COALESCE(env_snapshot_id,?) "
-                        "WHERE version_id=?",
-                        (
-                            stored_filename,
-                            stored_content_type,
-                            size_bytes,
-                            checksum,
-                            path,
-                            snapshot_path,
-                            env_snapshot_id,
-                            version_id,
-                        ),
-                    )
-                else:
-                    stored_filename = filename
-                    stored_content_type = content_type
-                    version_id = f"v-{uuid.uuid4().hex[:12]}"
-                    artifact_id = (
-                        artifact["artifact_id"]
-                        if artifact is not None
-                        else f"a-{uuid.uuid4().hex[:12]}"
-                    )
-                    self._conn.execute(
-                        "INSERT INTO artifact_versions(version_id,artifact_id,"
-                        "filename,content_type,size_bytes,checksum,path,"
-                        "snapshot_path,producing_cell_id,frame_id,created_at,"
-                        "env_snapshot_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (
-                            version_id,
-                            artifact_id,
-                            filename,
-                            content_type,
-                            size_bytes,
-                            checksum,
-                            path,
-                            snapshot_path,
-                            producing_cell_id,
-                            frame_id,
-                            now,
-                            env_snapshot_id,
-                        ),
-                    )
-                    if artifact is None:
-                        self._conn.execute(
-                            "INSERT INTO artifacts(artifact_id,project_id,"
-                            "root_frame_id,filename,content_type,is_user_upload,"
-                            "priority,latest_version_id,created_at,updated_at) "
-                            "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                            (
-                                artifact_id,
-                                resolved_project,
-                                resolved_root,
-                                filename,
-                                stored_content_type,
-                                0,
-                                0,
-                                version_id,
-                                now,
-                                now,
-                            ),
-                        )
-
-                self._conn.execute(
-                    "UPDATE artifacts SET filename=?,"
-                    "content_type=COALESCE(?,content_type),latest_version_id=?,"
-                    "updated_at=? WHERE artifact_id=?",
-                    (
-                        stored_filename,
-                        stored_content_type,
-                        version_id,
-                        now,
-                        artifact_id,
-                    ),
-                )
-                seen_inputs: set[str] = set()
-                for input_version_id in input_version_ids or ():
-                    if (
-                        not input_version_id
-                        or input_version_id == version_id
-                        or input_version_id in seen_inputs
-                    ):
-                        continue
-                    seen_inputs.add(input_version_id)
-                    exists = self._conn.execute(
-                        "SELECT 1 FROM lineage_edges WHERE input_version_id=? "
-                        "AND output_version_id=? LIMIT 1",
-                        (input_version_id, version_id),
-                    ).fetchone()
-                    if exists:
-                        continue
-                    self._conn.execute(
-                        "INSERT INTO lineage_edges(edge_id,input_version_id,"
-                        "output_version_id,producing_cell_id,frame_id,created_at) "
-                        "VALUES(?,?,?,?,?,?)",
-                        (
-                            f"e-{uuid.uuid4().hex[:12]}",
-                            input_version_id,
-                            version_id,
-                            producing_cell_id,
-                            frame_id,
-                            now,
-                        ),
-                    )
-                stored_version = self._conn.execute(
-                    "SELECT * FROM artifact_versions WHERE version_id=?",
-                    (version_id,),
-                ).fetchone()
-                self._conn.commit()
-            except Exception:
-                self._conn.rollback()
-                raise
-        return {
-            "artifact_id": artifact_id,
-            "version_id": version_id,
-            "filename": stored_version["filename"],
-            "path": stored_version["path"],
-            "content_type": stored_version["content_type"],
-            "size_bytes": stored_version["size_bytes"],
-            "checksum": stored_version["checksum"],
-            "created_at": created_at,
-        }
-
-    # --- environment snapshots -------------------------------------------
     def upsert_env_snapshot(self, snapshot: dict) -> str:
-        """Store a de-duplicated environment snapshot; return its snapshot_id.
-
-        The id is a content hash of the interpreter identity + package manifest,
-        so identical envs collapse to a single row (many figures share it)."""
-        packages = snapshot.get("packages") or []
-        pj = json.dumps(packages, separators=(",", ":"))
-        remote = snapshot.get("remote") or []
-        rj = json.dumps(remote, separators=(",", ":"), sort_keys=True)
-        basis = "|".join(
-            [
-                snapshot.get("kind") or "",
-                snapshot.get("python_version") or "",
-                snapshot.get("implementation") or "",
-                snapshot.get("platform") or "",
-                pj,
-                rj,  # remote-GPU job provenance makes a remotely-computed run distinct
-            ]
-        )
-        sid = "env-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
-        with self._lock:
-            exists = self._conn.execute(
-                "SELECT 1 FROM env_snapshots WHERE snapshot_id=?", (sid,)
-            ).fetchone()
-            if not exists:
-                self._conn.execute(
-                    "INSERT INTO env_snapshots(snapshot_id,created_at,kind,"
-                    "python_version,implementation,platform,package_count,"
-                    "packages_json,remote_json) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (
-                        sid,
-                        _now_ms(),
-                        snapshot.get("kind"),
-                        snapshot.get("python_version"),
-                        snapshot.get("implementation"),
-                        snapshot.get("platform"),
-                        int(snapshot.get("package_count") or len(packages)),
-                        pj,
-                        rj if remote else None,
-                    ),
-                )
-                self._conn.commit()
-        return sid
+        return self._artifacts.upsert_env_snapshot(snapshot)
 
     def get_env_snapshot(self, snapshot_id: str) -> dict | None:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM env_snapshots WHERE snapshot_id=?", (snapshot_id,)
-            ).fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        try:
-            d["packages"] = json.loads(d.pop("packages_json") or "[]")
-        except (ValueError, TypeError):
-            d.pop("packages_json", None)
-            d["packages"] = []
-        try:
-            d["remote"] = json.loads(d.pop("remote_json") or "[]")
-        except (ValueError, TypeError):
-            d.pop("remote_json", None)
-            d["remote"] = []
-        return d
+        return self._artifacts.get_env_snapshot(snapshot_id)
 
     def env_snapshot_for_artifact(
         self, artifact_id: str, version_id: str | None = None
     ) -> dict | None:
-        """The env snapshot bound to a specific version, or the artifact's latest.
-
-        Returns None when nothing was recorded (e.g. a user upload, or an artifact
-        produced before this feature existed) — the caller falls back to live."""
-        with self._lock:
-            if version_id:
-                row = self._conn.execute(
-                    "SELECT env_snapshot_id FROM artifact_versions "
-                    "WHERE version_id=? AND artifact_id=?",
-                    (version_id, artifact_id),
-                ).fetchone()
-            else:
-                row = self._conn.execute(
-                    "SELECT v.env_snapshot_id FROM artifacts a "
-                    "JOIN artifact_versions v ON a.latest_version_id=v.version_id "
-                    "WHERE a.artifact_id=?",
-                    (artifact_id,),
-                ).fetchone()
-        sid = row["env_snapshot_id"] if row else None
-        return self.get_env_snapshot(sid) if sid else None
+        return self._artifacts.env_snapshot_for_artifact(
+            artifact_id,
+            version_id,
+        )
 
     def list_artifacts(self, filters: dict | None = None) -> list[dict]:
-        filters = filters or {}
-        sql = (
-            "SELECT a.artifact_id,a.filename,a.content_type,a.is_user_upload,"
-            "a.priority,a.latest_version_id,a.root_frame_id,a.project_id,"
-            "a.created_at,v.size_bytes,v.checksum "
-            "FROM artifacts a LEFT JOIN artifact_versions v "
-            "ON a.latest_version_id=v.version_id"
-        )
-        clauses, params = [], []
-        for k in (
-            "project_id",
-            "content_type",
-            "filename",
-            "artifact_id",
-            "root_frame_id",
-        ):
-            if k in filters:
-                clauses.append(f"a.{k}=?")
-                params.append(filters[k])
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY a.created_at DESC"
-        with self._lock:
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
-        return [dict(r) for r in rows]
+        return self._artifacts.list_artifacts(filters)
 
     def resolve_artifact_path(self, ident: str) -> str | None:
-        """On-disk file to serve for a version_id or artifact_id. Prefers the
-        immutable per-version ``snapshot_path`` (so historical versions serve their
-        OWN bytes, not the current live-file content), falling back to ``path``."""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT COALESCE(snapshot_path, path) AS p FROM artifact_versions "
-                "WHERE version_id=?",
-                (ident,),
-            ).fetchone()
-            if row:
-                return row["p"]
-            row = self._conn.execute(
-                "SELECT COALESCE(v.snapshot_path, v.path) AS p FROM artifacts a "
-                "JOIN artifact_versions v ON a.latest_version_id=v.version_id "
-                "WHERE a.artifact_id=?",
-                (ident,),
-            ).fetchone()
-        return row["p"] if row else None
+        return self._artifacts.resolve_artifact_path(ident)
 
     def version_for_path(self, path: str) -> str | None:
-        """Reverse lookup the newest version for an exact or aliased path.
-
-        The indexed lexical lookup gives us a lower bound. Newer rows are still
-        checked for a physical alias before returning it, so an older exact row
-        cannot hide a newer ``/tmp``/``/private/tmp`` or symlink spelling.
-        Without an exact row, the physical fallback also preserves legacy
-        relative-path records without rewriting history.
-        """
-        with self._lock:
-            exact = self._conn.execute(
-                "SELECT version_id,created_at,rowid AS version_rowid "
-                "FROM artifact_versions WHERE path=? "
-                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                (str(path),),
-            ).fetchone()
-            identity = _file_identity(path)
-            if identity is None:
-                return exact["version_id"] if exact else None
-            if exact:
-                candidates = self._conn.execute(
-                    "SELECT version_id,path FROM artifact_versions WHERE "
-                    "created_at>? OR (created_at=? AND rowid>?) "
-                    "ORDER BY created_at DESC, rowid DESC",
-                    (
-                        exact["created_at"],
-                        exact["created_at"],
-                        exact["version_rowid"],
-                    ),
-                ).fetchall()
-            else:
-                candidates = self._conn.execute(
-                    "SELECT version_id,path FROM artifact_versions "
-                    "ORDER BY created_at DESC, rowid DESC"
-                ).fetchall()
-        for candidate in candidates:
-            if _file_identity(candidate["path"]) == identity:
-                return candidate["version_id"]
-        return exact["version_id"] if exact else None
+        return self._artifacts.version_for_path(path)
 
     def version_meta(self, version_id: str) -> dict | None:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM artifact_versions WHERE version_id=?", (version_id,)
-            ).fetchone()
-        return dict(row) if row else None
+        return self._artifacts.version_meta(version_id)
 
     def list_versions(self, artifact_id: str) -> list[dict]:
-        """All versions of an artifact, newest first, each flagged is_latest."""
-        with self._lock:
-            latest = self._conn.execute(
-                "SELECT latest_version_id FROM artifacts WHERE artifact_id=?",
-                (artifact_id,),
-            ).fetchone()
-            rows = self._conn.execute(
-                "SELECT version_id,filename,content_type,size_bytes,checksum,"
-                "producing_cell_id,frame_id,created_at FROM artifact_versions "
-                "WHERE artifact_id=? ORDER BY created_at DESC, rowid DESC",
-                (artifact_id,),
-            ).fetchall()
-        lv = latest["latest_version_id"] if latest else None
-        out = []
-        for i, r in enumerate(rows):
-            d = dict(r)
-            d["is_latest"] = r["version_id"] == lv
-            d["ordinal"] = len(rows) - i  # v1 = oldest
-            out.append(d)
-        return out
+        return self._artifacts.list_versions(artifact_id)
 
     def update_version_path(
         self,
@@ -1486,58 +931,24 @@ class Store:
         size_bytes: int | None = None,
         checksum: str | None = None,
     ) -> None:
-        """Re-point a version at an (immutable) snapshot file so version history
-        survives later in-place edits of the live workspace file."""
-        sets = ["path=?"]
-        params: list = [path]
-        if size_bytes is not None:
-            sets.append("size_bytes=?")
-            params.append(size_bytes)
-        if checksum is not None:
-            sets.append("checksum=?")
-            params.append(checksum)
-        params.append(version_id)
-        self._exec(
-            f"UPDATE artifact_versions SET {','.join(sets)} " "WHERE version_id=?",
-            tuple(params),
+        self._artifacts.update_version_path(
+            version_id,
+            path,
+            size_bytes=size_bytes,
+            checksum=checksum,
         )
 
     def set_version_snapshot(self, version_id: str, snapshot_path: str) -> None:
-        """Bind a version to its immutable per-version byte snapshot, WITHOUT
-        touching ``path`` (which stays the live workspace file so the provenance
-        reverse-lookup ``version_for_path`` keeps resolving reads of that file)."""
-        self._exec(
-            "UPDATE artifact_versions SET snapshot_path=? " "WHERE version_id=?",
-            (snapshot_path, version_id),
-        )
+        self._artifacts.set_version_snapshot(version_id, snapshot_path)
 
     def set_priority(self, artifact_id: str, priority: int) -> dict | None:
-        """priority > 0 = starred/pinned, < 0 = hidden, 0 = normal."""
-        self._exec(
-            "UPDATE artifacts SET priority=?,updated_at=? WHERE artifact_id=?",
-            (int(priority), _now_ms(), artifact_id),
-        )
-        return self.get_artifact(artifact_id)
+        return self._artifacts.set_priority(artifact_id, priority)
 
-    def set_latest_version(self, artifact_id: str, version_id: str) -> dict | None:
-        """Revert: make an existing version the current one. Validates the
-        version belongs to the artifact. History is preserved."""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT version_id FROM artifact_versions WHERE version_id=? "
-                "AND artifact_id=?",
-                (version_id, artifact_id),
-            ).fetchone()
-        if not row:
-            return None
-        self._exec(
-            "UPDATE artifacts SET latest_version_id=?,updated_at=? "
-            "WHERE artifact_id=?",
-            (version_id, _now_ms(), artifact_id),
-        )
-        return self.get_artifact(artifact_id)
+    def set_latest_version(
+        self, artifact_id: str, version_id: str
+    ) -> dict | None:
+        return self._artifacts.set_latest_version(artifact_id, version_id)
 
-    # --- lineage ---------------------------------------------------------
     def add_lineage_edge(
         self,
         *,
@@ -1546,59 +957,21 @@ class Store:
         producing_cell_id: str | None = None,
         frame_id: str | None = None,
     ) -> None:
-        self._exec(
-            "INSERT INTO lineage_edges(edge_id,input_version_id,"
-            "output_version_id,producing_cell_id,frame_id,created_at) "
-            "VALUES(?,?,?,?,?,?)",
-            (
-                f"e-{uuid.uuid4().hex[:12]}",
-                input_version_id,
-                output_version_id,
-                producing_cell_id,
-                frame_id,
-                _now_ms(),
-            ),
+        self._artifacts.add_lineage_edge(
+            input_version_id=input_version_id,
+            output_version_id=output_version_id,
+            producing_cell_id=producing_cell_id,
+            frame_id=frame_id,
         )
 
     def lineage_inputs(self, version_id: str) -> list[dict]:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT le.input_version_id, av.filename, av.path "
-                "FROM lineage_edges le LEFT JOIN artifact_versions av "
-                "ON le.input_version_id=av.version_id "
-                "WHERE le.output_version_id=?",
-                (version_id,),
-            ).fetchall()
-        return [
-            {
-                "version_id": r["input_version_id"],
-                "filename": r["filename"],
-                "path": r["path"],
-            }
-            for r in rows
-        ]
+        return self._artifacts.lineage_inputs(version_id)
 
     def lineage_edges_for(self, version_id: str, direction: str) -> list[dict]:
-        col_from = "output_version_id" if direction == "up" else "input_version_id"
-        col_to = "input_version_id" if direction == "up" else "output_version_id"
-        with self._lock:
-            rows = self._conn.execute(
-                f"SELECT {col_to} AS nxt FROM lineage_edges WHERE {col_from}=?",
-                (version_id,),
-            ).fetchall()
-        return [r["nxt"] for r in rows]
+        return self._artifacts.lineage_edges_for(version_id, direction)
 
     def producing_cell_for_version(self, version_id: str) -> dict | None:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT el.code, el.frame_id, el.producing_cell_id "
-                "FROM artifact_versions av "
-                "LEFT JOIN execution_log el "
-                "ON av.producing_cell_id=el.producing_cell_id "
-                "WHERE av.version_id=?",
-                (version_id,),
-            ).fetchone()
-        return dict(row) if row and row["code"] is not None else None
+        return self._artifacts.producing_cell_for_version(version_id)
 
     # --- notes -----------------------------------------------------------
     def add_note(
