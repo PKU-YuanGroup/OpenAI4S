@@ -24,6 +24,19 @@ class SkillService:
         self.cfg = cfg
         self.loader = SkillLoader(cfg=cfg)
 
+    def set_scope(
+        self,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """Retarget prompt/search/read/bootstrap to one capability snapshot."""
+
+        self.loader = self.loader.scoped(
+            project_id=project_id,
+            session_id=session_id,
+        )
+
     def load(self, name: str | dict) -> dict:
         """Load full guidance, with the historical fuzzy-name fallback."""
         if isinstance(name, dict):
@@ -73,11 +86,7 @@ class SkillService:
 
     def read(self, spec: dict) -> str:
         self.loader.discover()
-        skill = self.loader.get(spec["name"])
-        if skill is None:
-            raise KeyError(f"no such skill: {spec['name']!r}")
-        path = self._safe_path(skill.root, spec.get("path", "SKILL.md"))
-        return path.read_text("utf-8")
+        return self.loader.read(spec["name"], spec.get("path", "SKILL.md"))
 
     def edit(self, spec: dict) -> dict:
         name = spec["name"]
@@ -85,7 +94,7 @@ class SkillService:
         content = spec.get("content", "")
         old_string = spec.get("old_string")
         self.loader.discover()
-        existing = self.loader.get(name)
+        existing = self.loader.get(name, include_disabled=True)
         if existing is not None and existing.read_only:
             raise PermissionError(
                 f"skill {name!r} origin={existing.origin} is read-only"
@@ -126,7 +135,7 @@ class SkillService:
         }
         if target.name == "kernel.py":
             self.loader.discover()
-            skill = self.loader.get(name)
+            skill = self.loader.get(name, include_disabled=True)
             result["sidecar_gate"] = (
                 skill.sidecar_gate()
                 if skill
@@ -136,7 +145,7 @@ class SkillService:
 
     def publish(self, name: str) -> dict:
         self.loader.discover()
-        skill = self.loader.get(name)
+        skill = self.loader.get(name, include_disabled=True)
         if skill is None:
             raise KeyError(f"no such skill: {name!r}")
         if skill.read_only:
@@ -154,7 +163,7 @@ class SkillService:
 
     def delete(self, name: str) -> dict:
         self.loader.discover()
-        skill = self.loader.get(name)
+        skill = self.loader.get(name, include_disabled=True)
         if skill is None:
             raise KeyError(f"no such skill: {name!r}")
         if skill.read_only:

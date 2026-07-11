@@ -212,7 +212,8 @@ def test_gateway_skill_routes_keep_soft_errors_and_shared_enablement(tmp_path):
     fresh_web_skill = next(
         item for item in fresh_catalog["skills"] if item["name"] == "Web Skill"
     )
-    assert fresh_web_skill["enabled"] is True
+    # Enablement is durable capability policy, not handler-local UI state.
+    assert fresh_web_skill["enabled"] is False
 
     code, updated = call(
         second,

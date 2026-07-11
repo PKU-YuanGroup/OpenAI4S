@@ -493,9 +493,12 @@ class HostDispatcher:
             delegate_provider=lambda: self._delegate_fn,
             steering=lambda: self.steer_fns,
             store=lambda: self.store,
+            capability_scope=self._current_capability_scope,
+            specialist_enabled=self._specialist_enabled,
         )
         self._skill_service = SkillService(self.cfg)
         self._skills = self._skill_service.loader  # private compatibility alias
+        self.set_capability_scope(self.frame_id)
         self._credential_service = CredentialService()
         self._endpoint_service = EndpointService(
             self.store,
@@ -568,6 +571,12 @@ class HostDispatcher:
         """Latest successful ``host.submit_output`` payload, if any."""
         return self._completion_service.last_output
 
+    @property
+    def skill_loader(self):
+        """The dispatcher-scoped loader shared by prompt and host retrieval."""
+
+        return self._skill_service.loader
+
     @last_output.setter
     def last_output(self, value: dict | None) -> None:
         self._completion_service.last_output = value
@@ -575,6 +584,30 @@ class HostDispatcher:
     def set_workspace(self, path: str | Path) -> None:
         """Bind host-side file operations to the kernel's actual cwd."""
         self.workspace_path = Path(path).resolve()
+
+    def set_capability_scope(self, frame_id: str | None = None) -> None:
+        """Retarget Skill/Specialist policy to the frame's project + session."""
+
+        scope = self.store.resolve_frame_scope(frame_id or self.frame_id)
+        self._skill_service.set_scope(
+            project_id=scope.get("project_id"),
+            session_id=scope.get("root_frame_id"),
+        )
+        self._skills = self._skill_service.loader
+
+    def _current_capability_scope(self) -> dict[str, str | None]:
+        scope = self.store.resolve_frame_scope(self.frame_id)
+        return {
+            "project_id": scope.get("project_id"),
+            "session_id": scope.get("root_frame_id"),
+        }
+
+    def _specialist_enabled(self, name: str) -> bool:
+        scope = self._current_capability_scope()
+        return self.store.capability_state(**scope).is_enabled(
+            "specialist",
+            name,
+        )
 
     # dispatcher entrypoint ------------------------------------------------
     def __call__(self, method: str, args: list) -> Any:

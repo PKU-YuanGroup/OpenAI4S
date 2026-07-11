@@ -27,7 +27,6 @@ from openai4s.host_dispatch import HostDispatcher, build_dispatcher
 from openai4s.kernel import Kernel
 from openai4s.llm import chat
 from openai4s.security import classify_code, screen_trajectory
-from openai4s.skills_loader import SkillLoader
 from openai4s.tools import control_tool_specs, parse_tool_calls, scan_fenced_blocks
 
 SYSTEM_PROMPT = """\
@@ -230,7 +229,10 @@ class Agent:
 
             self._recorder = TapeRecorder(self.cfg.tape_path)
             self.dispatcher.recorder = self._recorder
-        self._skill_loader = SkillLoader(cfg=self.cfg) if self.use_skills else None
+        self.dispatcher.set_capability_scope(self.frame_id)
+        self._skill_loader = (
+            self.dispatcher.skill_loader if self.use_skills else None
+        )
 
     def _log(self, *a: object) -> None:
         if self.verbose:

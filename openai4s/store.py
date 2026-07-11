@@ -13,6 +13,7 @@ as turns/cells/artifacts/compactions happen. Schema and write paths:
   compaction_archives  compacted history slices
   agents            agent profile definitions
   custom_skills     user-authored SKILL.md bodies
+  capability_*      scoped enablement events/state + bootstrap manifests
   memories          memory blocks (scope/block-listed in host.query)
   managed_endpoints local model endpoints
   notes             project notes
@@ -37,12 +38,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+from openai4s.capabilities import CapabilityStateService, SpecialistProfileService
 from openai4s.storage.actions import ActionLedgerRepository
 from openai4s.storage.agents import AgentProfileRepository
 from openai4s.storage.annotations import AnnotationRepository
 from openai4s.storage.artifacts import ArtifactRepository
 from openai4s.storage.artifacts import file_identity as _file_identity
 from openai4s.storage.artifacts import same_file_path as _same_file_path
+from openai4s.storage.capabilities import CapabilityStateRepository
 from openai4s.storage.connectors import ConnectorRepository
 from openai4s.storage.frames import FrameRepository
 from openai4s.storage.kernels import KernelGenerationRepository
@@ -206,6 +209,47 @@ CREATE TABLE IF NOT EXISTS custom_skills (
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
+
+-- Shared enablement policy for Skills, Specialists, and future capability
+-- kinds.  ``capability_events`` is append-only; ``capability_states`` is its
+-- efficient current-state projection.  Session state overrides project state,
+-- which overrides global state.
+CREATE TABLE IF NOT EXISTS capability_states (
+    kind            TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    scope           TEXT NOT NULL,       -- global | project | session
+    scope_id        TEXT NOT NULL DEFAULT '',
+    enabled         INTEGER NOT NULL,
+    metadata        TEXT,                -- JSON, non-secret manifest hints
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    PRIMARY KEY(kind, normalized_name, scope, scope_id)
+);
+CREATE TABLE IF NOT EXISTS capability_events (
+    event_id        TEXT PRIMARY KEY,
+    kind            TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    scope_id        TEXT NOT NULL DEFAULT '',
+    event           TEXT NOT NULL,       -- enabled | disabled | sidecar_loaded
+    enabled         INTEGER,
+    metadata        TEXT,
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_capability_events_lookup
+    ON capability_events(kind, normalized_name, created_at);
+CREATE TABLE IF NOT EXISTS capability_manifests (
+    manifest_id TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    project_id  TEXT,
+    kind        TEXT NOT NULL,
+    entries     TEXT NOT NULL,            -- JSON snapshot, loaded=false initially
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_capability_manifest_session
+    ON capability_manifests(session_id, kind, created_at);
 
 CREATE TABLE IF NOT EXISTS memories (
     memory_id     TEXT PRIMARY KEY,
@@ -387,6 +431,9 @@ QUERY_DENYLIST = frozenset(
         "action_events",
         "execution_attempts",
         "kernel_generations",
+        "capability_states",
+        "capability_events",
+        "capability_manifests",
     }
 )
 
@@ -471,6 +518,16 @@ class Store:
             self._conn,
             self._lock,
             clock_ms=lambda: _now_ms(),
+        )
+        self._capability_repository = CapabilityStateRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._capabilities = CapabilityStateService(self._capability_repository)
+        self._specialists = SpecialistProfileService(
+            self._agents,
+            self._capabilities,
         )
         self._frames = FrameRepository(
             self._conn,
@@ -1630,11 +1687,86 @@ class Store:
         }
 
     # --- agents / specialists -------------------------------------------
-    def list_agents(self) -> list[dict]:
-        return self._agents.list()
+    def capability_state(
+        self,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+    ) -> CapabilityStateService:
+        return self._capabilities.scoped(
+            project_id=project_id,
+            session_id=session_id,
+        )
 
-    def get_agent(self, name: str) -> dict | None:
-        return self._agents.get(name)
+    def set_capability_enabled(
+        self,
+        kind: str,
+        name: str,
+        enabled: bool,
+        *,
+        scope: str = "global",
+        scope_id: str = "",
+        metadata: dict | None = None,
+    ) -> dict:
+        return self._capabilities.set_enabled(
+            kind,
+            name,
+            enabled,
+            scope=scope,
+            scope_id=scope_id,
+            metadata=metadata,
+        )
+
+    def capability_snapshot(
+        self,
+        kind: str,
+        names,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, dict]:
+        return self.capability_state(
+            project_id=project_id,
+            session_id=session_id,
+        ).snapshot(kind, names)
+
+    def list_agents(
+        self,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        include_disabled: bool = False,
+    ) -> list[dict]:
+        return self.specialist_profiles(
+            project_id=project_id,
+            session_id=session_id,
+        ).list(include_disabled=include_disabled)
+
+    def specialist_profiles(
+        self,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+    ) -> SpecialistProfileService:
+        """Return the shared resolver/filter seam for custom and built-ins."""
+
+        return self._specialists.scoped(
+            project_id=project_id,
+            session_id=session_id,
+        )
+
+    def get_agent(
+        self,
+        name: str,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        include_disabled: bool = False,
+    ) -> dict | None:
+        return self.specialist_profiles(
+            project_id=project_id,
+            session_id=session_id,
+        ).resolve(name, include_disabled=include_disabled)
 
     def upsert_agent(
         self,

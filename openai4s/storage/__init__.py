@@ -4,6 +4,7 @@ from openai4s.storage.actions import ActionLedgerRepository
 from openai4s.storage.agents import AgentProfileRepository
 from openai4s.storage.annotations import AnnotationRepository
 from openai4s.storage.artifacts import ArtifactRepository
+from openai4s.storage.capabilities import CapabilityStateRepository
 from openai4s.storage.connectors import ConnectorRepository
 from openai4s.storage.frames import FrameRepository
 from openai4s.storage.kernels import KernelGenerationRepository
@@ -24,6 +25,7 @@ __all__ = [
     "AgentProfileRepository",
     "AnnotationRepository",
     "ArtifactRepository",
+    "CapabilityStateRepository",
     "ConnectorRepository",
     "FrameRepository",
     "KernelGenerationRepository",

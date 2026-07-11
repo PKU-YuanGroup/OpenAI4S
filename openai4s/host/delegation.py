@@ -6,13 +6,16 @@ from typing import Any, Callable, Protocol
 
 
 class AgentProfileStore(Protocol):
-    def get_agent(self, name: str) -> dict | None: ...
+    def get_agent(self, name: str, **kwargs) -> dict | None:
+        ...
 
 
 Delegate = Callable[[dict], Any]
 DelegateProvider = Callable[[], Delegate | None]
 SteeringProvider = Callable[[], dict[str, Callable[..., Any]]]
 StoreProvider = Callable[[], AgentProfileStore]
+CapabilityScopeProvider = Callable[[], dict[str, str | None]]
+SpecialistEnabled = Callable[[str], bool]
 
 
 BUILTIN_SPECIALIST_PROMPTS = {
@@ -53,6 +56,8 @@ class DelegationService:
         delegate_provider: DelegateProvider | None = None,
         steering: dict[str, Callable[..., Any]] | SteeringProvider,
         store: AgentProfileStore | StoreProvider,
+        capability_scope: CapabilityScopeProvider | None = None,
+        specialist_enabled: SpecialistEnabled | None = None,
     ) -> None:
         if delegate is not None and delegate_provider is not None:
             raise ValueError("provide delegate or delegate_provider, not both")
@@ -60,6 +65,8 @@ class DelegationService:
         self._delegate_provider = delegate_provider
         self._steering_source = steering
         self._store_source = store
+        self._capability_scope = capability_scope or (lambda: {})
+        self._specialist_enabled = specialist_enabled or (lambda _name: True)
 
     def _delegate(self) -> Delegate | None:
         if self._delegate_provider is not None:
@@ -85,8 +92,22 @@ class DelegationService:
             )
         name = spec.get("specialist") or spec.get("name")
         if name:
+            if not self._specialist_enabled(str(name)):
+                raise RuntimeError(
+                    f"specialist {name!r} is disabled by capability policy"
+                )
             try:
-                agent = self._store().get_agent(name)
+                scope = self._capability_scope()
+                try:
+                    agent = self._store().get_agent(
+                        name,
+                        project_id=scope.get("project_id"),
+                        session_id=scope.get("session_id"),
+                    )
+                except TypeError:
+                    # Lightweight embedders/test doubles can retain the
+                    # historical one-argument Store protocol.
+                    agent = self._store().get_agent(name)
             except Exception:  # noqa: BLE001 - optional profile lookup
                 agent = None
             builtin_prompt = BUILTIN_SPECIALIST_PROMPTS.get(str(name).upper())

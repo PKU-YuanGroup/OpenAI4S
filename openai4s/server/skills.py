@@ -20,7 +20,16 @@ class SkillCustomizationService:
 
     def __init__(self, loader: SkillLoader) -> None:
         self.loader = loader
-        self.disabled_names: set[str] = set()
+        try:
+            self.disabled_names = loader.capabilities.disabled_names("skill")
+        except Exception:  # noqa: BLE001 - compatibility with simple test doubles
+            self.disabled_names: set[str] = set()
+
+    def _all_skills(self):
+        try:
+            return self.loader.skills(include_disabled=True)
+        except TypeError:
+            return self.loader.skills()
 
     @staticmethod
     def slug(name: str) -> str:
@@ -109,7 +118,7 @@ class SkillCustomizationService:
         return self.create_or_update(name, description, body)
 
     def get(self, name: str) -> dict:
-        for skill in self.loader.skills().values():
+        for skill in self._all_skills().values():
             if skill.name == name or skill.root.name == name:
                 _metadata, body = self.parse_document(
                     (skill.root / "SKILL.md").read_text("utf-8")
@@ -125,7 +134,7 @@ class SkillCustomizationService:
 
     def delete(self, name: str) -> dict:
         user_directory = self.loader.user_skills_dir().resolve()
-        for skill in self.loader.skills().values():
+        for skill in self._all_skills().values():
             if skill.name == name or skill.root.name == name:
                 if skill.root.is_symlink():
                     return {"error": "unsafe user skill path"}
@@ -138,16 +147,19 @@ class SkillCustomizationService:
         return {"error": "skill not found"}
 
     def set_enabled(self, name: str, enabled: Any) -> dict:
+        state = self.loader.set_enabled(name, bool(enabled))
+        canonical = str(state.get("name") or name)
         if enabled:
+            self.disabled_names.discard(canonical)
             self.disabled_names.discard(name)
         else:
-            self.disabled_names.add(name)
+            self.disabled_names.add(canonical)
         return {"ok": True}
 
     def catalog(self, disabled: set[str] | None = None) -> list[dict]:
         disabled_names = self.disabled_names if disabled is None else disabled
         try:
-            catalog = self.loader.catalog()
+            catalog = self.loader.catalog(include_disabled=True)
         except Exception:  # noqa: BLE001 - Customize degrades to an empty catalog
             return []
 
