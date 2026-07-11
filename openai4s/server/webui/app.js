@@ -1598,7 +1598,7 @@ function publicArtifacts(result) {
 }
 function sanitizeActionTimeline(payload) {
   const source = payload && (payload.timeline || payload.payload || payload);
-  const groups = ((source && source.groups) || []).slice(0, 500).map(group => ({
+  const groups = ((source && source.groups) || []).slice(-500).map(group => ({
     group_id: publicText(group.group_id, 96), branch_id: publicText(group.branch_id, 96),
     turn_id: publicText(group.turn_id, 96), ordinal: Number.isFinite(+group.ordinal) ? +group.ordinal : null,
     kind: publicText(group.kind, 48), language: publicText(group.language, 24), provider: publicText(group.provider, 48), model: publicText(group.model, 96),
@@ -1625,6 +1625,8 @@ function sanitizeActionTimeline(payload) {
     root_frame_id: publicText(source && source.root_frame_id, 96),
     branch_id: publicText(source && source.branch_id, 96), groups,
     count: Number.isFinite(+(source && source.count)) ? +(source && source.count) : groups.length,
+    total_count: Number.isFinite(+(source && source.total_count)) ? +(source && source.total_count) : groups.length,
+    truncated: !!(source && source.truncated), has_earlier: !!(source && source.has_earlier), has_more: !!(source && source.has_more),
     last_ordinal: source && source.last_ordinal, running: !!(source && source.running)
   };
 }

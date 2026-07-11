@@ -36,6 +36,7 @@ class ActionTimelineService:
         *,
         branch_id: str | None = None,
         after_ordinal: int | None = None,
+        limit: int = 500,
     ) -> dict[str, Any]:
         if not str(root_frame_id or "").strip():
             raise ValueError("root_frame_id is required")
@@ -46,8 +47,18 @@ class ActionTimelineService:
             if isinstance(after_ordinal, bool) or int(after_ordinal) < 0:
                 raise ValueError("after_ordinal must be a non-negative integer")
             filters["after_ordinal"] = int(after_ordinal)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 500
+        ):
+            raise ValueError("limit must be an integer between 1 and 500")
 
         groups = self.store.list_action_groups(root_frame_id, **filters)
+        total_count = len(groups)
+        # Initial reads show the most recent research state. Cursor reads move
+        # forward from their explicit ordinal and therefore keep the first page.
+        groups = groups[:limit] if after_ordinal is not None else groups[-limit:]
         attempts = self.store.list_execution_attempts(root_frame_id=root_frame_id)
         attempts_by_group: dict[str, list[dict]] = defaultdict(list)
         for attempt in attempts:
@@ -62,6 +73,11 @@ class ActionTimelineService:
             "branch_id": branch_id or root_frame_id,
             "groups": projected,
             "count": len(projected),
+            "total_count": total_count,
+            "truncated": total_count > len(projected),
+            "has_earlier": after_ordinal is None and total_count > len(projected),
+            "has_more": after_ordinal is not None and total_count > len(projected),
+            "first_ordinal": projected[0]["ordinal"] if projected else None,
             "last_ordinal": projected[-1]["ordinal"] if projected else None,
             "running": any(group["status"] == "running" for group in projected),
         }

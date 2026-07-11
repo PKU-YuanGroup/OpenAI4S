@@ -336,6 +336,7 @@ def test_action_timeline_is_a_safe_allowlisted_projection() -> None:
 
     assert "dock-timeline" in INDEX_HTML
     assert "action_timeline" in events and "action-timeline" in events
+    assert ".slice(-500)" in sanitizer
     for kind in (
         "native_tool",
         "python",

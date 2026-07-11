@@ -212,3 +212,29 @@ def test_timeline_does_not_hide_an_earlier_tool_failure(tmp_path):
     assert group["title"] == "first, second"
     assert group["status"] == "failed"
     store.close()
+
+
+def test_timeline_caps_initial_history_to_latest_and_pages_forward(tmp_path):
+    store = Store(tmp_path / "openai4s.db")
+    for ordinal in range(6):
+        store.append_action_group(
+            root_frame_id="root",
+            turn_id=f"turn-{ordinal}",
+            kind="system",
+            ordinal=ordinal,
+        )
+
+    service = ActionTimelineService(store)
+    latest = service.get("root", limit=3)
+    assert [group["ordinal"] for group in latest["groups"]] == [3, 4, 5]
+    assert latest["count"] == 3
+    assert latest["total_count"] == 6
+    assert latest["truncated"] is True
+    assert latest["has_earlier"] is True
+    assert latest["has_more"] is False
+
+    forward = service.get("root", after_ordinal=1, limit=3)
+    assert [group["ordinal"] for group in forward["groups"]] == [2, 3, 4]
+    assert forward["has_earlier"] is False
+    assert forward["has_more"] is True
+    store.close()
