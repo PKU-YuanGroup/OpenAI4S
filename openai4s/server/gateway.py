@@ -5238,26 +5238,41 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/frames/([^/]+)/action-timeline", sub)
             if m and method == "GET":
                 after = (q.get("after_ordinal") or [None])[0]
+                before = (q.get("before_ordinal") or [None])[0]
                 raw_limit = (q.get("limit") or ["500"])[0]
                 try:
                     after_ordinal = (
                         int(after) if after not in (None, "") else None
                     )
+                    before_ordinal = (
+                        int(before) if before not in (None, "") else None
+                    )
                     limit = int(raw_limit)
                 except (TypeError, ValueError):
                     self._json(
-                        {"error": "after_ordinal and limit must be integers"},
+                        {
+                            "error": (
+                                "after_ordinal, before_ordinal, and limit must "
+                                "be integers"
+                            )
+                        },
                         400,
                     )
                     return
-                if (after_ordinal is not None and after_ordinal < 0) or not (
-                    1 <= limit <= 500
-                ):
+                invalid_cursor = (
+                    (after_ordinal is not None and after_ordinal < 0)
+                    or (before_ordinal is not None and before_ordinal < 0)
+                    or (
+                        after_ordinal is not None and before_ordinal is not None
+                    )
+                )
+                if invalid_cursor or not (1 <= limit <= 500):
                     self._json(
                         {
                             "error": (
-                                "after_ordinal must be non-negative and limit "
-                                "must be between 1 and 500"
+                                "timeline cursors must be non-negative and "
+                                "mutually exclusive; limit must be between 1 "
+                                "and 500"
                             )
                         },
                         400,
@@ -5268,6 +5283,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         m.group(1),
                         branch_id=(q.get("branch_id") or [None])[0],
                         after_ordinal=after_ordinal,
+                        before_ordinal=before_ordinal,
                         limit=limit,
                     )
                 )

@@ -237,4 +237,9 @@ def test_timeline_caps_initial_history_to_latest_and_pages_forward(tmp_path):
     assert [group["ordinal"] for group in forward["groups"]] == [2, 3, 4]
     assert forward["has_earlier"] is False
     assert forward["has_more"] is True
+
+    older = service.get("root", before_ordinal=3, limit=3)
+    assert [group["ordinal"] for group in older["groups"]] == [0, 1, 2]
+    assert older["has_earlier"] is False
+    assert older["has_more"] is False
     store.close()

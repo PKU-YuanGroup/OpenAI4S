@@ -36,6 +36,7 @@ class ActionTimelineService:
         *,
         branch_id: str | None = None,
         after_ordinal: int | None = None,
+        before_ordinal: int | None = None,
         limit: int = 500,
     ) -> dict[str, Any]:
         if not str(root_frame_id or "").strip():
@@ -47,6 +48,12 @@ class ActionTimelineService:
             if isinstance(after_ordinal, bool) or int(after_ordinal) < 0:
                 raise ValueError("after_ordinal must be a non-negative integer")
             filters["after_ordinal"] = int(after_ordinal)
+        if before_ordinal is not None:
+            if isinstance(before_ordinal, bool) or int(before_ordinal) < 0:
+                raise ValueError("before_ordinal must be a non-negative integer")
+            before_ordinal = int(before_ordinal)
+        if after_ordinal is not None and before_ordinal is not None:
+            raise ValueError("after_ordinal and before_ordinal are mutually exclusive")
         if (
             isinstance(limit, bool)
             or not isinstance(limit, int)
@@ -55,6 +62,12 @@ class ActionTimelineService:
             raise ValueError("limit must be an integer between 1 and 500")
 
         groups = self.store.list_action_groups(root_frame_id, **filters)
+        if before_ordinal is not None:
+            groups = [
+                group
+                for group in groups
+                if int(group.get("ordinal") or 0) < before_ordinal
+            ]
         total_count = len(groups)
         # Initial reads show the most recent research state. Cursor reads move
         # forward from their explicit ordinal and therefore keep the first page.
