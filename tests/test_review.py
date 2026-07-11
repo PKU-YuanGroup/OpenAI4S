@@ -523,7 +523,7 @@ def test_manual_review_reserves_operation_and_honors_pre_state_cancel(
         runner.submit_review(fid, "default")
     assert busy.value.code == 409
 
-    runner.cancel(fid)
+    runner.cancel_review(fid)
     allow_state.set()
     result = job.wait_result()
 

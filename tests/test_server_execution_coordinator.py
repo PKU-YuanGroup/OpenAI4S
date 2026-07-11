@@ -225,7 +225,12 @@ def test_cancel_queued_repl_never_cancels_active_agent(monkeypatch, tmp_path):
 
     def run_repl() -> None:
         try:
-            runner.run_repl(frame_id, "default", "print('never')")
+            runner.run_repl(
+                frame_id,
+                "default",
+                "print('never')",
+                execution_id="repl-client-exact",
+            )
         except BaseException as error:  # noqa: BLE001 - asserted below
             repl_errors.append(error)
 
@@ -233,6 +238,11 @@ def test_cancel_queued_repl_never_cancels_active_agent(monkeypatch, tmp_path):
     repl.start()
     _wait_for(lambda: runner.executions.snapshot(frame_id)["queued_count"] == 1)
     queued = runner.executions.snapshot(frame_id)["queue"][0]
+    assert queued["execution_id"] == "repl-client-exact"
+    assert queued["owner"] == {
+        "kind": "user_repl",
+        "id": "repl-client-exact",
+    }
     result = runner.cancel(
         frame_id,
         queued["execution_id"],
@@ -288,7 +298,7 @@ def test_http_cancel_forwards_exact_execution_and_owner(monkeypatch, tmp_path):
             "exec-exact",
             {
                 "owner": {"kind": "user_repl", "id": "cell-exact"},
-                "owner_id": None,
+                "owner_id": "cell-exact",
                 "reason": "cancel this cell only",
             },
         )
@@ -296,4 +306,43 @@ def test_http_cancel_forwards_exact_execution_and_owner(monkeypatch, tmp_path):
     assert replies == [
         (200, {"ok": True, "frame_id": frame_id, "execution_id": "exec-exact"})
     ]
+    runner.close()
+
+
+def test_http_cancel_without_exact_identity_fails_closed(monkeypatch, tmp_path):
+    runner = _runner(tmp_path)
+    frame_id = runner.store.new_frame(
+        kind="turn", project_id="default", status="ready"
+    )
+    monkeypatch.setattr(
+        runner,
+        "cancel",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("incomplete cancellation reached runner")
+        ),
+    )
+    handler = object.__new__(gateway_mod.make_handler(runner.cfg, runner.hub, runner))
+    replies: list[tuple[int, dict]] = []
+    handler._query = lambda: {}
+    handler._body = lambda: {}
+    handler._json = lambda payload, code=200: replies.append((code, payload))
+
+    handler._api("POST", f"/frames/{frame_id}/cancel")
+
+    assert replies[0][0] == 400
+    assert replies[0][1]["ok"] is False
+    assert "execution_id" in replies[0][1]["error"]
+    runner.close()
+
+
+def test_runner_cancel_without_identity_never_resolves_current_owner(tmp_path):
+    runner = _runner(tmp_path)
+    frame_id = runner.store.new_frame(
+        kind="turn", project_id="default", status="ready"
+    )
+
+    result = runner.cancel(frame_id)
+
+    assert result["ok"] is False
+    assert "exact cancellation requires" in result["reason"]
     runner.close()

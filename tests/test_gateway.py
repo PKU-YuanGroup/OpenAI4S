@@ -1473,24 +1473,50 @@ def test_notebook_repl_execute_route_gated_by_flag(monkeypatch, tmp_path):
     runner2 = gateway_mod.SessionRunner(cfg2, _Hub())
     sentinel = {"cell": {"cell_index": 1}}
     hits = []
-    runner2.run_repl = (
-        lambda rfid, pid, code: hits.append((rfid, pid, code)) or sentinel
+    runner2.run_repl = lambda rfid, pid, code, **kwargs: (
+        hits.append((rfid, pid, code, kwargs)) or sentinel
     )
 
     handler2 = object.__new__(gateway_mod.make_handler(cfg2, _Hub(), runner2))
     replies2 = []
     handler2._query = lambda: {}
-    handler2._body = lambda: {"code": "print(2)"}
+    handler2._body = lambda: {
+        "code": "print(2)",
+        "language": "python",
+        "execution_id": "repl-client-exact",
+    }
     handler2._json = lambda obj, code=200: replies2.append((code, obj))
 
     handler2._api("POST", f"/frames/{fid}/kernel/execute")
-    assert hits == [(fid, "default", "print(2)")]
+    assert hits == [
+        (
+            fid,
+            "default",
+            "print(2)",
+            {"language": "python", "execution_id": "repl-client-exact"},
+        )
+    ]
     assert replies2[-1] == (200, sentinel)
 
     interrupts = []
-    runner2.interrupt_kernel = lambda rfid: interrupts.append(rfid) or {"ok": True}
+    runner2.interrupt_kernel = lambda rfid, **kwargs: (
+        interrupts.append((rfid, kwargs)) or {"ok": True}
+    )
+    handler2._body = lambda: {
+        "execution_id": "repl-client-exact",
+        "owner": {"kind": "user_repl", "id": "repl-client-exact"},
+    }
     handler2._api("POST", f"/frames/{fid}/kernel/interrupt")
-    assert interrupts == [fid]
+    assert interrupts == [
+        (
+            fid,
+            {
+                "execution_id": "repl-client-exact",
+                "owner": {"kind": "user_repl", "id": "repl-client-exact"},
+                "owner_id": "repl-client-exact",
+            },
+        )
+    ]
     assert replies2[-1] == (200, {"ok": True})
 
 

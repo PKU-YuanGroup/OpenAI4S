@@ -135,28 +135,28 @@ class SessionWorkbenchStateService:
             raise ValueError("workbench projections require a root frame")
         return frame
 
-    @staticmethod
-    def _sandbox(state: Any | None) -> dict[str, Any]:
-        kernel = getattr(state, "kernel", None) if state is not None else None
-        if kernel is not None:
+    @classmethod
+    def _sandbox(cls, state: Any | None) -> dict[str, Any]:
+        runtimes: list[dict[str, Any]] = []
+        for language, attribute in (("python", "kernel"), ("r", "r_kernel")):
             try:
-                status = getattr(kernel, "sandbox_status", None)
-                if isinstance(status, Mapping):
-                    return {
-                        key: status.get(key)
-                        for key in (
-                            "mode",
-                            "state",
-                            "backend",
-                            "enforced",
-                            "self_test_passed",
-                            "network_policy",
-                            "detail",
-                            "warning",
-                        )
+                kernel = getattr(state, attribute, None) if state is not None else None
+                status = (
+                    getattr(kernel, "sandbox_status", None)
+                    if kernel is not None
+                    else None
+                )
+            except Exception:  # noqa: BLE001 - never invent enforcement state
+                continue
+            if isinstance(status, Mapping):
+                runtimes.append(
+                    {
+                        "language": language,
+                        **cls._public_sandbox(status),
                     }
-            except Exception:  # noqa: BLE001 - never invent an enforcement state
-                pass
+                )
+        if runtimes:
+            return cls._aggregate_sandboxes(runtimes)
         mode = str(os.environ.get("OPENAI4S_KERNEL_SANDBOX", "auto") or "auto")
         return {
             "mode": mode,
@@ -167,6 +167,73 @@ class SessionWorkbenchStateService:
             "network_policy": "unknown",
             "detail": "Sandbox status is verified only after a kernel worker starts.",
             "warning": None,
+            "runtimes": [],
+        }
+
+    @staticmethod
+    def _public_sandbox(status: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: status.get(key)
+            for key in (
+                "mode",
+                "state",
+                "backend",
+                "enforced",
+                "self_test_passed",
+                "network_policy",
+                "detail",
+                "warning",
+            )
+        }
+
+    @staticmethod
+    def _aggregate_sandboxes(
+        runtimes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        def common(field: str) -> Any:
+            values = {
+                str(runtime.get(field))
+                for runtime in runtimes
+                if runtime.get(field) not in (None, "")
+            }
+            if not values:
+                return None
+            return next(iter(values)) if len(values) == 1 else "mixed"
+
+        details = []
+        for runtime in runtimes:
+            detail = runtime.get("detail") or runtime.get("warning")
+            if detail:
+                details.append(
+                    f"{runtime['language']}: {str(detail)[:200]}"
+                )
+        public_runtimes = [
+            {
+                key: runtime.get(key)
+                for key in (
+                    "language",
+                    "mode",
+                    "state",
+                    "backend",
+                    "enforced",
+                    "self_test_passed",
+                    "network_policy",
+                )
+            }
+            for runtime in runtimes
+        ]
+        return {
+            "mode": common("mode"),
+            "state": common("state"),
+            "backend": common("backend"),
+            "enforced": all(runtime.get("enforced") is True for runtime in runtimes),
+            "self_test_passed": all(
+                runtime.get("self_test_passed") is True for runtime in runtimes
+            ),
+            "network_policy": common("network_policy"),
+            "detail": "; ".join(details)[:500] or None,
+            "warning": common("warning"),
+            "runtimes": public_runtimes,
         }
 
 

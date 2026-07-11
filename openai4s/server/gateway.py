@@ -1249,7 +1249,11 @@ class SessionRunner:
             st.stop_finished.clear()
             st.stop_requested.set()
             try:
-                self.cancel(root_frame_id)
+                self._cancel_current_for_lifecycle(
+                    root_frame_id,
+                    reason=reason,
+                )
+                self.cancel_review(root_frame_id)
                 self.executions.close_session(root_frame_id, reason=reason)
                 runner = st.delegation_runner
                 if runner is not None:
@@ -1392,6 +1396,7 @@ class SessionRunner:
         *,
         owner: str,
         owner_id: str,
+        execution_id: str | None = None,
         language: str | None = None,
         reason: str,
     ):
@@ -1406,6 +1411,7 @@ class SessionRunner:
                     st.root_frame_id,
                     owner=owner,
                     owner_id=owner_id,
+                    execution_id=execution_id,
                     branch_id=st.root_frame_id,
                     language=language,
                     resource_keys=("workspace", f"kernel:{language or 'control'}"),
@@ -1419,6 +1425,7 @@ class SessionRunner:
         *,
         owner: str,
         owner_id: str,
+        execution_id: str | None = None,
         language: str | None = None,
         reason: str,
         ticket=None,
@@ -1438,6 +1445,7 @@ class SessionRunner:
                 st,
                 owner=owner,
                 owner_id=owner_id,
+                execution_id=execution_id,
                 language=language,
                 reason=reason,
             )
@@ -1951,45 +1959,65 @@ class SessionRunner:
         owner_id: str | None = None,
         reason: str = "cancelled by user",
     ) -> dict:
-        """Cancel a scoped ticket; legacy callers resolve the exact owner first."""
+        """Cancel only an explicitly identified execution ticket and owner."""
 
         owner_kind = owner.get("kind") if isinstance(owner, dict) else owner
         owner_id = (
             (owner.get("id") if isinstance(owner, dict) else owner_id) or owner_id
         )
-        if execution_id:
-            if not owner_kind or not owner_id:
+        if not execution_id or not owner_kind or not owner_id:
+            return {
+                "ok": False,
+                "frame_id": root_frame_id,
+                "execution_id": execution_id,
+                "reason": (
+                    "exact cancellation requires execution_id, owner.kind, "
+                    "and owner.id"
+                ),
+            }
+        result = self.executions.cancel(
+            root_frame_id,
+            execution_id=execution_id,
+            owner=str(owner_kind),
+            owner_id=str(owner_id),
+            reason=reason,
+        )
+        return self._after_execution_cancel(root_frame_id, result)
+
+    def _cancel_current_for_lifecycle(
+        self,
+        root_frame_id: str,
+        *,
+        reason: str,
+    ) -> dict:
+        """Trusted lifecycle-only broad cancellation before close or stop."""
+
+        result = self.executions.cancel_current(root_frame_id, reason=reason)
+        return self._after_execution_cancel(root_frame_id, result)
+
+    def cancel_review(self, root_frame_id: str) -> dict:
+        """Cancel the root-scoped evidence review operation, if present."""
+
+        with self._lock:
+            if root_frame_id not in self.reviews.operations:
                 return {
                     "ok": False,
                     "frame_id": root_frame_id,
-                    "execution_id": execution_id,
-                    "reason": "exact cancellation requires owner.kind and owner.id",
+                    "scope": "review",
+                    "reason": "no_active_review",
                 }
-            result = self.executions.cancel(
-                root_frame_id,
-                execution_id=execution_id,
-                owner=str(owner_kind),
-                owner_id=str(owner_id),
-                reason=reason,
-            )
-        else:
-            result = self.executions.cancel_current(root_frame_id, reason=reason)
+            self.reviews.cancel_locked(root_frame_id)
+        return {"ok": True, "frame_id": root_frame_id, "scope": "review"}
+
+    def _after_execution_cancel(
+        self,
+        root_frame_id: str,
+        result: dict,
+    ) -> dict:
         # A queued cancellation must not release the active Agent's approval or
         # reviewer.  Those session-global compatibility paths are touched only
         # after the coordinator proved the exact running owner.
         if not result.get("ok"):
-            # Manual evidence review predates scientific execution tickets and
-            # has its own exact root-scoped operation signal. Preserve that
-            # independent cancellation channel without touching any queued or
-            # running scientific owner.
-            with self._lock:
-                if root_frame_id in self.reviews.operations:
-                    self.reviews.cancel_locked(root_frame_id)
-                    return {
-                        "ok": True,
-                        "frame_id": root_frame_id,
-                        "scope": "review",
-                    }
             return result
         if result.get("scope") != "running":
             return result
@@ -2331,7 +2359,10 @@ class SessionRunner:
                 with st.admission_lock:
                     st.stop_finished.clear()
                     st.stop_requested.set()
-                    cancel_result = self.cancel(root_frame_id)
+                    cancel_result = self._cancel_current_for_lifecycle(
+                        root_frame_id,
+                        reason="manual kernel stop",
+                    )
                     ticket = self.executions.submit(
                         root_frame_id,
                         owner="lifecycle",
@@ -3705,15 +3736,19 @@ class SessionRunner:
         project_id: str,
         code: str,
         language: str = "python",
+        execution_id: str | None = None,
     ) -> dict:
         """Execute code directly in the session kernel (notebook REPL, no LLM)."""
         st = self._state(root_frame_id, project_id)
         emit = self.hub.emitter(root_frame_id)
-        execution_id = f"repl-{uuid.uuid4().hex}"
+        execution_id = str(execution_id or f"repl-{uuid.uuid4().hex}")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", execution_id):
+            raise ValueError("execution_id must be a portable identifier")
         with self._session_execution(
             st,
             owner="user_repl",
             owner_id=execution_id,
+            execution_id=execution_id,
             language=language,
             reason="user notebook cell",
         ) as execution:
@@ -4984,12 +5019,32 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/frames/([^/]+)/cancel", sub)
             if m and method == "POST":
                 b = self._body()
+                owner = b.get("owner") or b.get("owner_kind")
+                owner_kind = owner.get("kind") if isinstance(owner, dict) else owner
+                owner_id = (
+                    owner.get("id") if isinstance(owner, dict) else b.get("owner_id")
+                )
+                if not b.get("execution_id") or not owner_kind or not owner_id:
+                    self._json(
+                        {
+                            "ok": False,
+                            "frame_id": m.group(1),
+                            "error": (
+                                "execution_id, owner.kind, and owner.id are required"
+                            ),
+                            "reason": (
+                                "execution_id, owner.kind, and owner.id are required"
+                            ),
+                        },
+                        400,
+                    )
+                    return
                 self._json(
                     runner.cancel(
                         m.group(1),
                         b.get("execution_id"),
-                        owner=b.get("owner") or b.get("owner_kind"),
-                        owner_id=b.get("owner_id"),
+                        owner=owner,
+                        owner_id=str(owner_id),
                         reason=b.get("reason") or "cancelled by user",
                     )
                 )
@@ -5402,11 +5457,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if language not in {"python", "r"}:
                     self._json({"error": "language must be python or r"}, 400)
                     return
+                requested_execution_id = body.get("execution_id")
+                if requested_execution_id and not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}",
+                    str(requested_execution_id),
+                ):
+                    self._json({"error": "invalid execution_id"}, 400)
+                    return
                 try:
+                    kwargs = {}
                     if "language" in body:
-                        result = runner.run_repl(fid, pid, code, language=language)
-                    else:
-                        result = runner.run_repl(fid, pid, code)
+                        kwargs["language"] = language
+                    if requested_execution_id:
+                        kwargs["execution_id"] = str(requested_execution_id)
+                    result = runner.run_repl(fid, pid, code, **kwargs)
                 except ExecutionCancelled as error:
                     result = {
                         "status": "cancelled",
@@ -5455,13 +5519,33 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     return
                 body = self._body()
-                kwargs = {}
-                if body.get("execution_id"):
-                    kwargs = {
-                        "execution_id": body.get("execution_id"),
-                        "owner": body.get("owner") or body.get("owner_kind"),
-                        "owner_id": body.get("owner_id"),
-                    }
+                owner = body.get("owner") or body.get("owner_kind")
+                owner_kind = owner.get("kind") if isinstance(owner, dict) else owner
+                owner_id = (
+                    owner.get("id")
+                    if isinstance(owner, dict)
+                    else body.get("owner_id")
+                )
+                if not body.get("execution_id") or not owner_kind or not owner_id:
+                    self._json(
+                        {
+                            "ok": False,
+                            "frame_id": m.group(1),
+                            "error": (
+                                "execution_id, owner.kind, and owner.id are required"
+                            ),
+                            "reason": (
+                                "execution_id, owner.kind, and owner.id are required"
+                            ),
+                        },
+                        400,
+                    )
+                    return
+                kwargs = {
+                    "execution_id": body.get("execution_id"),
+                    "owner": owner,
+                    "owner_id": str(owner_id),
+                }
                 self._json(runner.interrupt_kernel(m.group(1), **kwargs))
                 return
             m = re.fullmatch(r"/frames/([^/]+)/kernel/start", sub)

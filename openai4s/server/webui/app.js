@@ -1663,16 +1663,27 @@ function rememberExecutionState(event) {
   else if (identity && status === "queued" && !S.executionIdentity) S.executionIdentity = identity;
   if (S.executionIdentity && event && event.execution_id === S.executionIdentity.execution_id && ["completed", "failed", "cancelled"].includes(status)) S.executionIdentity = null;
 }
-async function exactExecutionIdentity(frameId) {
-  if (frameId === S.currentId && S.executionIdentity) return S.executionIdentity;
-  const snapshot = await optionalApi([`/frames/${frameId}/execution-queue`, `/frames/${frameId}/execution`]);
-  if (!snapshot) return null;
-  const safe = sanitizeExecutionQueue(snapshot), ticket = safe.owner;
-  if (frameId === S.currentId) rememberExecutionQueue(snapshot);
+function identityForOwner(queue, ownerKind) {
+  const safe = queue || sanitizeExecutionQueue({}), candidates = [safe.owner].concat(safe.queue || []).filter(Boolean);
+  const ticket = ownerKind ? candidates.find(item => item.owner && item.owner.kind === ownerKind) : safe.owner;
   return ticket && ticket.execution_id && ticket.owner && ticket.owner.kind && ticket.owner.id ? { execution_id: ticket.execution_id, owner: ticket.owner } : null;
 }
-async function scopedExecutionRequest(frameId, endpoint, reason) {
-  const identity = await exactExecutionIdentity(frameId);
+async function exactExecutionIdentity(frameId, ownerKind) {
+  const pending = ownerKind === "user_repl" && frameId === S.currentId && S.pendingReplIdentity && S.pendingReplIdentity.frame_id === frameId ? S.pendingReplIdentity : null;
+  if (pending && pending.owner.kind === ownerKind) return pending;
+  if (frameId === S.currentId) {
+    const cached = identityForOwner(S.executionQueue, ownerKind);
+    if (cached) return cached;
+    if (!ownerKind && S.executionIdentity) return S.executionIdentity;
+  }
+  const snapshot = await optionalApi([`/frames/${frameId}/execution-queue`, `/frames/${frameId}/execution`]);
+  if (!snapshot) return null;
+  const safe = sanitizeExecutionQueue(snapshot);
+  if (frameId === S.currentId) rememberExecutionQueue(snapshot);
+  return identityForOwner(safe, ownerKind);
+}
+async function scopedExecutionRequest(frameId, endpoint, reason, ownerKind) {
+  const identity = await exactExecutionIdentity(frameId, ownerKind);
   if (!identity) { hint(t("nb.interrupt.noOwner"), true); return { ok: false, reason: "no_exact_owner" }; }
   return api(`/frames/${frameId}/${endpoint}`, {
     method: "POST", body: JSON.stringify({ execution_id: identity.execution_id, owner: identity.owner, owner_id: identity.owner.id, reason })
@@ -4287,13 +4298,16 @@ async function executeNotebookCode(code, language, controls) {
   code = String(code || ""); language = String(language || "python").toLowerCase() === "r" ? "r" : "python";
   if (!code.trim() || !S.currentId) return false;
   const runButton = controls && controls.runButton, input = controls && controls.input, stop = controls && controls.stop;
+  const randomId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") ? globalThis.crypto.randomUUID() : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+  const executionId = "repl-" + randomId, frameId = S.currentId;
+  S.pendingReplIdentity = { frame_id: frameId, execution_id: executionId, owner: { kind: "user_repl", id: executionId } };
   if (runButton) runButton.disabled = true; if (input) input.disabled = true; if (stop) stop.classList.remove("hidden");
   try {
-    await api(`/frames/${S.currentId}/kernel/execute`, { method: "POST", body: JSON.stringify({ code, language }) });
+    await api(`/frames/${frameId}/kernel/execute`, { method: "POST", body: JSON.stringify({ code, language, execution_id: executionId }) });
     hint(t("nb.action.queued", language === "r" ? "R" : "Python"));
-    invalidateKernelCache(); await loadExecutionLog(S.currentId); loadArtifacts(S.currentId); scheduleWorkbenchRefresh(); return true;
+    if (S.currentId === frameId) { invalidateKernelCache(); await loadExecutionLog(frameId); loadArtifacts(frameId); scheduleWorkbenchRefresh(); } return true;
   } catch (error) { hint(t("nb.repl.execFailed", error.message), true); return false; }
-  finally { if (runButton) runButton.disabled = false; if (input) input.disabled = false; if (stop) stop.classList.add("hidden"); }
+  finally { if (S.pendingReplIdentity && S.pendingReplIdentity.execution_id === executionId) S.pendingReplIdentity = null; if (runButton) runButton.disabled = false; if (input) input.disabled = false; if (stop) stop.classList.add("hidden"); }
 }
 // Cache for the Notebook header's kernel state + env list. renderNotebook rebuilds
 // the whole pane on every streaming frame; without a cache the state chip and env
@@ -4537,7 +4551,7 @@ function renderNotebook() {
   const editorActions = el("div", "nb-live-input-actions");
   const run = el("button", "solid-btn small", t("nb.repl.run"));
   const stop = el("button", "repl-stop hidden"); stop.title = t("nb.repl.interruptTitle"); stop.innerHTML = icon("stop", 15); stop.onclick = async () => {
-    try { const result = await scopedExecutionRequest(S.currentId, "kernel/interrupt", "notebook interrupt"); if (result && result.ok) hint(t("nb.repl.interruptSent")); }
+    try { const result = await scopedExecutionRequest(S.currentId, "kernel/interrupt", "notebook interrupt", "user_repl"); if (result && result.ok) hint(t("nb.repl.interruptSent")); }
     catch (error) { hint(t("nb.action.failed", error.message), true); }
   };
   editorActions.appendChild(run); editorActions.appendChild(stop); editorBar.appendChild(editorActions); editor.appendChild(editorBar);

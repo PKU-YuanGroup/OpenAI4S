@@ -372,7 +372,8 @@ def test_notebook_live_input_appends_cells_and_keeps_history_read_only() -> None
     assert 'el("textarea", "nb-repl-input")' in notebook
     assert '[["python", "Python"], ["r", "R"]]' in notebook
     assert 'event.key === "Enter" && event.shiftKey' in notebook
-    assert "JSON.stringify({ code, language })" in execute
+    assert "JSON.stringify({ code, language, execution_id: executionId })" in execute
+    assert 'owner: { kind: "user_repl", id: executionId }' in execute
     assert "/kernel/execute" in execute
     assert "nb.action.rerun" in cell
     assert "nb.action.copy" in cell
@@ -390,6 +391,8 @@ def test_notebook_live_input_appends_cells_and_keeps_history_read_only() -> None
 def test_execution_interrupts_send_the_exact_cached_identity() -> None:
     queue = _extract_js_function(APP_JS, "rememberExecutionQueue")
     state = _extract_js_function(APP_JS, "rememberExecutionState")
+    exact = _extract_js_function(APP_JS, "exactExecutionIdentity")
+    owner = _extract_js_function(APP_JS, "identityForOwner")
     scoped = _extract_js_function(APP_JS, "scopedExecutionRequest")
     cancel = _extract_js_function(APP_JS, "cancelTurn")
     notebook = _extract_js_function(APP_JS, "renderNotebook")
@@ -401,6 +404,10 @@ def test_execution_interrupts_send_the_exact_cached_identity() -> None:
     assert "owner_id: identity.owner.id" in scoped
     assert 'scopedExecutionRequest(S.currentId, "cancel"' in cancel
     assert 'scopedExecutionRequest(S.currentId, "kernel/interrupt"' in notebook
+    assert '"user_repl"' in notebook
+    assert "ownerKind" in exact and "pendingReplIdentity" in exact
+    assert 'ownerKind === "user_repl"' in exact
+    assert "owner.kind === ownerKind" in owner
 
 
 def test_branch_context_and_security_controls_fail_closed_when_absent() -> None:

@@ -122,14 +122,14 @@ def test_stop_intent_cannot_be_overtaken_by_a_new_start(monkeypatch, tmp_path):
     st.kernels.ensure("python", "base", lambda: current)
     cancel_reached = threading.Event()
     let_stop_wait_for_barrier = threading.Event()
-    original_cancel = runner.cancel
+    original_cancel = runner._cancel_current_for_lifecycle
 
-    def paused_cancel(root_frame_id: str) -> None:
-        original_cancel(root_frame_id)
+    def paused_cancel(root_frame_id: str, *, reason: str) -> None:
+        original_cancel(root_frame_id, reason=reason)
         cancel_reached.set()
         assert let_stop_wait_for_barrier.wait(2)
 
-    monkeypatch.setattr(runner, "cancel", paused_cancel)
+    monkeypatch.setattr(runner, "_cancel_current_for_lifecycle", paused_cancel)
     replacement = _RecordingKernel("replacement")
     start_entered = threading.Event()
 

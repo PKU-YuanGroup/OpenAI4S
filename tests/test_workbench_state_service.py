@@ -69,3 +69,69 @@ def test_security_uses_only_public_live_sandbox_fields():
     assert result["sandbox"]["backend"] == "seatbelt"
     assert "workspace" not in result["sandbox"]
     assert "/private" not in repr(result)
+
+
+def test_security_projects_an_r_only_worker_without_claiming_not_started():
+    r_kernel = SimpleNamespace(
+        sandbox_status={
+            "mode": "auto",
+            "state": "enforced",
+            "backend": "seatbelt",
+            "enforced": True,
+            "self_test_passed": True,
+            "network_policy": "blocked",
+        }
+    )
+    state = SimpleNamespace(kernel=None, r_kernel=r_kernel)
+
+    result = _service(state=state).security("root")
+
+    assert result["sandbox"]["state"] == "enforced"
+    assert result["sandbox"]["enforced"] is True
+    assert result["sandbox"]["runtimes"] == [
+        {
+            "language": "r",
+            "mode": "auto",
+            "state": "enforced",
+            "backend": "seatbelt",
+            "enforced": True,
+            "self_test_passed": True,
+            "network_policy": "blocked",
+        }
+    ]
+
+
+def test_security_aggregates_python_and_r_to_the_weakest_truthful_claim():
+    python = SimpleNamespace(
+        sandbox_status={
+            "mode": "auto",
+            "state": "enforced",
+            "backend": "seatbelt",
+            "enforced": True,
+            "self_test_passed": True,
+            "network_policy": "blocked",
+        }
+    )
+    r = SimpleNamespace(
+        sandbox_status={
+            "mode": "auto",
+            "state": "warning",
+            "backend": "none",
+            "enforced": False,
+            "self_test_passed": False,
+            "network_policy": "unknown",
+            "detail": "R sandbox unavailable",
+            "workspace": "/must/not/leak",
+        }
+    )
+
+    result = _service(state=SimpleNamespace(kernel=python, r_kernel=r)).security(
+        "root"
+    )
+
+    assert result["sandbox"]["state"] == "mixed"
+    assert result["sandbox"]["backend"] == "mixed"
+    assert result["sandbox"]["enforced"] is False
+    assert result["sandbox"]["self_test_passed"] is False
+    assert len(result["sandbox"]["runtimes"]) == 2
+    assert "/must/not/leak" not in repr(result)
