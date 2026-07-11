@@ -27,6 +27,7 @@ from typing import Any, Callable
 from openai4s.config import Config, get_config
 from openai4s.host.files import WorkspaceFileService
 from openai4s.host.files import is_secret_path as _is_secret_path
+from openai4s.host.skills import SkillService
 from openai4s.llm import chat
 from openai4s.store import SECRET_ARG_HOST_CALLS, get_store
 from openai4s.tools.contexts import ControlToolContext
@@ -560,9 +561,8 @@ class HostDispatcher:
         )
         # Steering hooks wired by the delegation layer.
         self.steer_fns: dict[str, Callable[..., Any]] = {}
-        from openai4s.skills_loader import SkillLoader
-
-        self._skills = SkillLoader(cfg=self.cfg)
+        self._skill_service = SkillService(self.cfg)
+        self._skills = self._skill_service.loader  # private compatibility alias
         # in-memory credential vault (never persisted —)
         self._credentials: dict[str, str] = {}
         # app tiles rendered this session
@@ -1536,26 +1536,7 @@ class HostDispatcher:
     def _m_load_skill(self, name: str) -> dict:
         """Return a skill's full guidance (SKILL.md) — the reference's
         'Loading <skill> skill guidance → loaded' step."""
-        if isinstance(name, dict):
-            name = name.get("name", "")
-        self._skills.discover()
-        s = self._skills.get(name)
-        if s is None:
-            hits = self._skills.search(name, limit=1)
-            if hits:
-                s = self._skills.get(hits[0]["name"])
-        if s is None:
-            return {"error": f"no such skill: {name!r}"}
-        try:
-            content = (s.root / "SKILL.md").read_text("utf-8")
-        except Exception:  # noqa: BLE001
-            content = getattr(s, "doc", "") or ""
-        return {
-            "name": s.name,
-            "origin": s.origin,
-            "description": s.description,
-            "content": content,
-        }
+        return self._skill_service.load(name)
 
     def _m_remember(self, spec: dict) -> dict:
         """Persist a durable memory the daemon injects into future sessions
@@ -2157,118 +2138,25 @@ class HostDispatcher:
 
     # --- skills: retrieval (progressive disclosure) ----------------------
     def _m_search_skills(self, spec: dict) -> list:
-        self._skills.discover()
-        return self._skills.search(
-            spec.get("query", ""), limit=int(spec.get("limit", 5))
-        )
+        return self._skill_service.search(spec)
 
     def _m_skills_list(self) -> list:
-        self._skills.discover()
-        return self._skills.catalog()
+        return self._skill_service.list()
 
     def _m_skills_get(self, name: str) -> dict:
-        self._skills.discover()
-        s = self._skills.get(name)
-        if s is None:
-            raise KeyError(f"no such skill: {name!r}")
-        return {
-            "name": s.name,
-            "origin": s.origin,
-            "description": s.description,
-            "has_kernel": s.has_kernel,
-            "read_only": s.read_only,
-            "sidecar_gate": s.sidecar_gate(),
-        }
+        return self._skill_service.get(name)
 
     def _m_skills_read(self, spec: dict) -> str:
-        self._skills.discover()
-        s = self._skills.get(spec["name"])
-        if s is None:
-            raise KeyError(f"no such skill: {spec['name']!r}")
-        path = self._safe_skill_path(s.root, spec.get("path", "SKILL.md"))
-        return path.read_text("utf-8")
+        return self._skill_service.read(spec)
 
     def _m_skills_edit(self, spec: dict) -> dict:
-        name = spec["name"]
-        rel = spec.get("path", "SKILL.md")
-        content = spec.get("content", "")
-        old_string = spec.get("old_string")
-        self._skills.discover()
-        existing = self._skills.get(name)
-        if existing is not None and existing.read_only:
-            raise PermissionError(
-                f"skill {name!r} origin={existing.origin} is read-only"
-            )
-
-        if existing is not None:
-            root = existing.root
-        else:
-            root = self.cfg.skills_dir / name
-            root.mkdir(parents=True, exist_ok=True)
-            skill_md = root / "SKILL.md"
-            if not skill_md.exists() and rel != "SKILL.md":
-                skill_md.write_text(
-                    f"---\nname: {name}\ndescription: (draft)\norigin: draft\n---\n"
-                    f"# Skill: {name}\n",
-                    "utf-8",
-                )
-
-        target = self._safe_skill_path(root, rel)
-        if old_string is None:
-            target.write_text(content, "utf-8")
-            mode = "overwrite"
-        else:
-            if not target.exists():
-                raise FileNotFoundError(f"{rel} does not exist for str_replace")
-            cur = target.read_text("utf-8")
-            if old_string not in cur:
-                raise ValueError("old_string not found in file")
-            target.write_text(cur.replace(old_string, content, 1), "utf-8")
-            mode = "str_replace"
-
-        result = {"ok": True, "mode": mode, "path": str(target)}
-        if target.name == "kernel.py":
-            self._skills.discover()
-            s = self._skills.get(name)
-            result["sidecar_gate"] = (
-                s.sidecar_gate() if s else {"ok": True, "error": None}
-            )
-        return result
+        return self._skill_service.edit(spec)
 
     def _m_skills_publish(self, name: str) -> dict:
-        self._skills.discover()
-        s = self._skills.get(name)
-        if s is None:
-            raise KeyError(f"no such skill: {name!r}")
-        if s.read_only:
-            raise PermissionError(f"skill {name!r} is read-only")
-        md = s.root / "SKILL.md"
-        text = md.read_text("utf-8")
-        if text.startswith("---"):
-            new = re.sub(r"(?m)^origin:.*$", "origin: personal", text, count=1)
-            if "origin:" not in text:
-                new = text.replace("---", "---\norigin: personal", 1)
-        else:
-            new = f"---\nname: {name}\norigin: personal\n---\n" + text
-        md.write_text(new, "utf-8")
-        return {"ok": True, "origin": "personal"}
+        return self._skill_service.publish(name)
 
     def _m_skills_delete(self, name: str) -> dict:
-        self._skills.discover()
-        s = self._skills.get(name)
-        if s is None:
-            raise KeyError(f"no such skill: {name!r}")
-        if s.read_only:
-            raise PermissionError(f"skill {name!r} is read-only")
-        shutil.rmtree(s.root)
-        return {"ok": True, "deleted": name}
-
-    def _safe_skill_path(self, root: Path, rel: str) -> Path:
-        root = root.resolve()
-        target = (root / rel).resolve()
-        if root != target and root not in target.parents:
-            raise ValueError(f"path escapes skill dir: {rel!r}")
-        return target
+        return self._skill_service.delete(name)
 
 
 # --- helpers --------------------------------------------------------------
