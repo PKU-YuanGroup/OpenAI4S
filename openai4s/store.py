@@ -37,6 +37,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from openai4s.storage.agents import AgentProfileRepository
 from openai4s.storage.annotations import AnnotationRepository
 from openai4s.storage.connectors import ConnectorRepository
 from openai4s.storage.memories import MemoryRepository
@@ -436,6 +437,11 @@ class Store:
             set_setting=self.set_setting,
         )
         self._connectors = ConnectorRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._agents = AgentProfileRepository(
             self._conn,
             self._lock,
             clock_ms=lambda: _now_ms(),
@@ -2321,28 +2327,10 @@ class Store:
 
     # --- agents / specialists -------------------------------------------
     def list_agents(self) -> list[dict]:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT name,description,skill_names,connectors,unrestricted,"
-                "system_prompt,created_at,updated_at FROM agents ORDER BY name"
-            ).fetchall()
-        out = []
-        for r in rows:
-            d = dict(r)
-            for k in ("skill_names", "connectors"):
-                if d.get(k):
-                    try:
-                        d[k] = json.loads(d[k])
-                    except (ValueError, TypeError):
-                        d[k] = None
-            out.append(d)
-        return out
+        return self._agents.list()
 
     def get_agent(self, name: str) -> dict | None:
-        for a in self.list_agents():
-            if a["name"] == name:
-                return a
-        return None
+        return self._agents.get(name)
 
     def upsert_agent(
         self,
@@ -2354,44 +2342,17 @@ class Store:
         connectors: list | None = None,
         unrestricted: bool = True,
     ) -> dict:
-        now = _now_ms()
-        exists = self.get_agent(name) is not None
-        sk = json.dumps(skill_names) if skill_names is not None else None
-        cn = json.dumps(connectors) if connectors is not None else None
-        if exists:
-            self._exec(
-                "UPDATE agents SET description=?,skill_names=?,connectors=?,"
-                "unrestricted=?,system_prompt=?,updated_at=? WHERE name=?",
-                (
-                    description,
-                    sk,
-                    cn,
-                    1 if unrestricted else 0,
-                    system_prompt,
-                    now,
-                    name,
-                ),
-            )
-        else:
-            self._exec(
-                "INSERT INTO agents(name,description,skill_names,connectors,"
-                "unrestricted,system_prompt,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (
-                    name,
-                    description,
-                    sk,
-                    cn,
-                    1 if unrestricted else 0,
-                    system_prompt,
-                    now,
-                    now,
-                ),
-            )
-        return self.get_agent(name) or {"name": name}
+        return self._agents.upsert(
+            name=name,
+            description=description,
+            system_prompt=system_prompt,
+            skill_names=skill_names,
+            connectors=connectors,
+            unrestricted=unrestricted,
+        )
 
     def delete_agent(self, name: str) -> None:
-        self._exec("DELETE FROM agents WHERE name=?", (name,))
+        self._agents.delete(name)
 
     # --- connectors (MCP servers) ---------------------------------------
     def list_connectors(self) -> list[dict]:
