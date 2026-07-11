@@ -4,16 +4,24 @@ from types import SimpleNamespace
 
 from openai4s.config import LLMConfig
 from openai4s.server.workbench_state import SessionWorkbenchStateService
+from openai4s.store import Store
 
 
 class _Store:
+    def __init__(self, generations=None):
+        self.generations = generations or {}
+
     def get_frame(self, frame_id):
         return {"frame_id": frame_id, "root_frame_id": frame_id}
 
+    def latest_kernel_generation(self, root_frame_id, language, *, branch_id=None):
+        del root_frame_id, branch_id
+        return self.generations.get(language)
 
-def _service(state=None, pending=()):
+
+def _service(state=None, pending=(), generations=None, store=None):
     return SessionWorkbenchStateService(
-        _Store(),
+        store or _Store(generations),
         state_for=lambda _root: state,
         history_for=lambda _root: [
             {"role": "user", "content": "hello"},
@@ -135,3 +143,89 @@ def test_security_aggregates_python_and_r_to_the_weakest_truthful_claim():
     assert result["sandbox"]["self_test_passed"] is False
     assert len(result["sandbox"]["runtimes"]) == 2
     assert "/must/not/leak" not in repr(result)
+
+
+def test_security_keeps_last_verified_generation_after_ttl_release(tmp_path):
+    store = Store(tmp_path / "workbench.db")
+    root_frame_id = store.new_frame(project_id="science")
+    generation = store.create_kernel_generation(
+        root_frame_id=root_frame_id,
+        language="python",
+        environment={
+            "sandbox": {
+                "mode": "auto",
+                "state": "enabled",
+                "backend": "seatbelt",
+                "enforced": True,
+                "self_test_passed": True,
+                "network_policy": "blocked",
+                "detail": "verified",
+                "workspace": "/must/not/leak",
+            }
+        },
+        state="active",
+        started_at=1000,
+    )
+    store.finish_kernel_generation(
+        generation["generation_id"],
+        state="released",
+        reason="idle_ttl",
+        ended_at=2000,
+    )
+
+    sandbox = _service(store=store).security(root_frame_id)["sandbox"]
+
+    assert sandbox["state"] == "enabled"
+    assert sandbox["enforced"] is True
+    assert sandbox["self_test_passed"] is True
+    assert sandbox["generation_ended"] is True
+    assert sandbox["ended_languages"] == ["python"]
+    assert sandbox["runtimes"][0]["source"] == "persisted_generation"
+    assert sandbox["runtimes"][0]["generation_ended_reason"] == "idle_ttl"
+    assert "generation ended (idle_ttl)" in sandbox["detail"]
+    assert "/must/not/leak" not in repr(sandbox)
+
+
+def test_live_and_ended_language_sandboxes_still_aggregate_to_weaker_claim():
+    python = SimpleNamespace(
+        sandbox_status={
+            "mode": "auto",
+            "state": "enabled",
+            "backend": "seatbelt",
+            "enforced": True,
+            "self_test_passed": True,
+            "network_policy": "blocked",
+        }
+    )
+    ended_r = {
+        "generation_id": "generation-r",
+        "state": "released",
+        "ended_at": 3000,
+        "ended_reason": "manual_stop",
+        "environment": {
+            "sandbox": {
+                "mode": "auto",
+                "state": "unavailable",
+                "backend": "none",
+                "enforced": False,
+                "self_test_passed": False,
+                "network_policy": "not_enforced",
+                "detail": "R sandbox unavailable",
+            }
+        },
+    }
+
+    sandbox = _service(
+        state=SimpleNamespace(kernel=python, r_kernel=None),
+        generations={"r": ended_r},
+    ).security("root")["sandbox"]
+
+    assert sandbox["state"] == "mixed"
+    assert sandbox["enforced"] is False
+    assert sandbox["self_test_passed"] is False
+    assert sandbox["generation_ended"] is False
+    assert sandbox["ended_languages"] == ["r"]
+    assert {runtime["language"] for runtime in sandbox["runtimes"]} == {
+        "python",
+        "r",
+    }

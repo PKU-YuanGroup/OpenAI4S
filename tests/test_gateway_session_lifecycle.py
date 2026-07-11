@@ -38,6 +38,15 @@ class _Kernel:
         self.env_name = "base"
         self.env_root = "/env"
         self.cwd = "/workspace"
+        self.sandbox_status = {
+            "mode": "auto",
+            "state": "enabled",
+            "backend": "seatbelt",
+            "enforced": True,
+            "self_test_passed": True,
+            "network_policy": "blocked",
+            "detail": "verified",
+        }
 
     def is_alive(self):
         return self.live
@@ -138,6 +147,16 @@ def test_gateway_idle_sweep_releases_both_slots_and_emits_ended(tmp_path):
         event.get("type") == "kernel_status"
         and event.get("status") == "ended"
         for event in runner.hub.events
+    )
+    sandbox = runner.workbench.security(frame_id)["sandbox"]
+    assert sandbox["state"] == "enabled"
+    assert sandbox["enforced"] is True
+    assert sandbox["self_test_passed"] is True
+    assert sandbox["generation_ended"] is True
+    assert sandbox["ended_languages"] == ["python", "r"]
+    assert all(
+        runtime["generation_ended_reason"] == "idle_ttl"
+        for runtime in sandbox["runtimes"]
     )
     runner.close()
 

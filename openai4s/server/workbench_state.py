@@ -19,6 +19,14 @@ from openai4s.llm.capabilities import get_model_capabilities
 class WorkbenchStore(Protocol):
     def get_frame(self, frame_id: str) -> dict | None: ...
 
+    def latest_kernel_generation(
+        self,
+        root_frame_id: str,
+        language: str,
+        *,
+        branch_id: str | None = None,
+    ) -> dict | None: ...
+
 
 StateProvider = Callable[[str], Any | None]
 HistoryProvider = Callable[[str], Sequence[Mapping[str, Any]]]
@@ -96,7 +104,7 @@ class SessionWorkbenchStateService:
     def security(self, root_frame_id: str) -> dict[str, Any]:
         self._root_frame(root_frame_id)
         state = self._state_for(root_frame_id)
-        sandbox = self._sandbox(state)
+        sandbox = self._sandbox(root_frame_id, state)
         pending = list(self._pending_for(root_frame_id))
         try:
             from openai4s import egress
@@ -135,8 +143,9 @@ class SessionWorkbenchStateService:
             raise ValueError("workbench projections require a root frame")
         return frame
 
-    @classmethod
-    def _sandbox(cls, state: Any | None) -> dict[str, Any]:
+    def _sandbox(
+        self, root_frame_id: str, state: Any | None
+    ) -> dict[str, Any]:
         runtimes: list[dict[str, Any]] = []
         for language, attribute in (("python", "kernel"), ("r", "r_kernel")):
             try:
@@ -147,16 +156,20 @@ class SessionWorkbenchStateService:
                     else None
                 )
             except Exception:  # noqa: BLE001 - never invent enforcement state
-                continue
+                status = None
             if isinstance(status, Mapping):
                 runtimes.append(
                     {
                         "language": language,
-                        **cls._public_sandbox(status),
+                        **self._public_sandbox(status),
                     }
                 )
+                continue
+            persisted = self._persisted_sandbox(root_frame_id, language)
+            if persisted is not None:
+                runtimes.append(persisted)
         if runtimes:
-            return cls._aggregate_sandboxes(runtimes)
+            return self._aggregate_sandboxes(runtimes)
         mode = str(os.environ.get("OPENAI4S_KERNEL_SANDBOX", "auto") or "auto")
         return {
             "mode": mode,
@@ -168,6 +181,34 @@ class SessionWorkbenchStateService:
             "detail": "Sandbox status is verified only after a kernel worker starts.",
             "warning": None,
             "runtimes": [],
+        }
+
+    def _persisted_sandbox(
+        self, root_frame_id: str, language: str
+    ) -> dict[str, Any] | None:
+        latest = getattr(self.store, "latest_kernel_generation", None)
+        if not callable(latest):
+            return None
+        try:
+            generation = latest(root_frame_id, language)
+        except Exception:  # noqa: BLE001 - persistence cannot invent a claim
+            return None
+        if not isinstance(generation, Mapping):
+            return None
+        environment = generation.get("environment")
+        status = environment.get("sandbox") if isinstance(environment, Mapping) else None
+        if not isinstance(status, Mapping):
+            return None
+        ended_at = generation.get("ended_at")
+        return {
+            "language": language,
+            "source": "persisted_generation",
+            **self._public_sandbox(status),
+            "generation_id": generation.get("generation_id"),
+            "generation_state": generation.get("state"),
+            "generation_ended": ended_at is not None,
+            "generation_ended_at": ended_at,
+            "generation_ended_reason": generation.get("ended_reason"),
         }
 
     @staticmethod
@@ -207,8 +248,14 @@ class SessionWorkbenchStateService:
                 details.append(
                     f"{runtime['language']}: {str(detail)[:200]}"
                 )
-        public_runtimes = [
-            {
+            if runtime.get("generation_ended") is True:
+                reason = runtime.get("generation_ended_reason") or "ended"
+                details.append(
+                    f"{runtime['language']}: generation ended ({str(reason)[:80]})"
+                )
+        public_runtimes = []
+        for runtime in runtimes:
+            public = {
                 key: runtime.get(key)
                 for key in (
                     "language",
@@ -220,7 +267,21 @@ class SessionWorkbenchStateService:
                     "network_policy",
                 )
             }
+            for key in (
+                "source",
+                "generation_id",
+                "generation_state",
+                "generation_ended",
+                "generation_ended_at",
+                "generation_ended_reason",
+            ):
+                if key in runtime:
+                    public[key] = runtime.get(key)
+            public_runtimes.append(public)
+        ended_languages = [
+            runtime["language"]
             for runtime in runtimes
+            if runtime.get("generation_ended") is True
         ]
         return {
             "mode": common("mode"),
@@ -234,6 +295,8 @@ class SessionWorkbenchStateService:
             "detail": "; ".join(details)[:500] or None,
             "warning": common("warning"),
             "runtimes": public_runtimes,
+            "generation_ended": len(ended_languages) == len(runtimes),
+            "ended_languages": ended_languages,
         }
 
 
