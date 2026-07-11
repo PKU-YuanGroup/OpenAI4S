@@ -17,23 +17,30 @@ from dataclasses import dataclass
 from typing import Any
 
 from openai4s.tools.base import Tool
-from openai4s.tools.edit import edit_file, static_edit_precheck
+from openai4s.tools.content_search import ContentSearchTool
+from openai4s.tools.edit import EditFileTool
 from openai4s.tools.env import env_create, env_list, env_use
-from openai4s.tools.fs import list_dir, read_text_file, write_file
-from openai4s.tools.search import content_search, glob_files
+from openai4s.tools.glob_files import GlobFilesTool
+from openai4s.tools.list_directory import ListDirectoryTool
+from openai4s.tools.read_text_file import ReadTextFileTool
 from openai4s.tools.web import web_fetch, web_search
+from openai4s.tools.write_file import WriteFileTool
 
 # Ordered, canonical tool surface. Order here is the order shown in the prompt.
 # There is deliberately NO shell tool: the host executes only python/R cells —
 # shell commands run inside the kernel (`host.bash` in sdk/host.py, or
 # subprocess in a cell), never in the host process.
+FILE_TOOL_TYPES: tuple[type[Tool], ...] = (
+    ListDirectoryTool,
+    ReadTextFileTool,
+    WriteFileTool,
+    GlobFilesTool,
+    ContentSearchTool,
+    EditFileTool,
+)
+
 REGISTRY: list[Tool] = [
-    list_dir,
-    read_text_file,
-    write_file,
-    glob_files,
-    content_search,
-    edit_file,
+    *(tool_type() for tool_type in FILE_TOOL_TYPES),
     env_list,
     env_use,
     env_create,
@@ -42,11 +49,25 @@ REGISTRY: list[Tool] = [
 ]
 
 _BY_NAME: dict[str, Tool] = {t.name: t for t in REGISTRY}
+_BY_HOST_METHOD: dict[str, Tool] = {t.host_method: t for t in REGISTRY}
+
+if len(_BY_NAME) != len(REGISTRY):
+    raise RuntimeError("duplicate public tool name in REGISTRY")
+if len(_BY_HOST_METHOD) != len(REGISTRY):
+    raise RuntimeError("duplicate host method in REGISTRY")
 
 
 def get_tool(name: str) -> Tool | None:
     """Look up a Tool by its ReAct name, or None if unknown."""
     return _BY_NAME.get(name)
+
+
+def get_tool_by_host_method(host_method: str) -> Tool | None:
+    """Look up the concrete implementation behind one protected host method."""
+    tool = _BY_HOST_METHOD.get(host_method)
+    if tool is None or type(tool).execute is Tool.execute:
+        return None
+    return tool
 
 
 def all_tools() -> list[Tool]:
@@ -389,12 +410,11 @@ def execute_tool_call(dispatcher: Any, call: Any) -> tuple[str, bool]:
             )
         spec = dict(raw_spec)
 
-        if tool.host_method == "edit_file":
-            err = static_edit_precheck(spec)
-            if err:
-                return f"[Tool: {tool.name}] {err}", False
+        err = tool.native_precheck(spec)
+        if err:
+            return f"[Tool: {tool.name}] {err}", False
 
-        result = dispatcher(tool.host_method, [spec])
+        result = tool.invoke(dispatcher, spec)
         ok = not (isinstance(result, dict) and set(result.keys()) == {"error"})
         return format_tool_result(tool, result), ok
     except Exception as e:  # noqa: BLE001 — a tool error must not crash the loop

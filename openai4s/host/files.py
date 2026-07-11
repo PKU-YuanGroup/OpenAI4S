@@ -1,9 +1,13 @@
-"""Workspace-confined file operations for host RPC calls."""
+"""Workspace path boundary shared by class-based file tools.
+
+This service owns only session-root resolution and confinement.  Concrete
+read/write/edit/search behaviour lives beside its schema in
+``openai4s.tools``.
+"""
 
 from __future__ import annotations
 
 import fnmatch
-import re
 from pathlib import Path
 from typing import Callable
 
@@ -79,139 +83,36 @@ class WorkspaceFileService:
             raise FileNotFoundError(f"no such file: {relative}")
         return target
 
+    @staticmethod
+    def is_secret_path(path: str) -> bool:
+        """Expose the shared denylist without coupling tools to this module."""
+        return is_secret_path(path)
+
+    def _execute_compat(self, host_method: str, spec: dict) -> dict:
+        """Preserve the former service API while concrete tools own behaviour."""
+        from openai4s.tools.registry import get_tool_by_host_method
+
+        tool = get_tool_by_host_method(host_method)
+        if tool is None:
+            raise ValueError(f"no control tool registered for {host_method!r}")
+        return tool.execute(self, spec)
+
     def read_file(self, spec: dict) -> dict:
-        path = self.resolve(spec.get("path", ""), must_exist=True)
-        offset = max(0, int(spec.get("offset") or 0))
-        limit = max(1, int(spec.get("limit") or 2000))
-        try:
-            data = path.read_bytes()
-        except OSError as error:
-            return {"error": f"read_file: {error}"}
-        try:
-            content = data.decode("utf-8")
-        except UnicodeDecodeError:
-            return {
-                "path": self.relative(path),
-                "binary": True,
-                "size_bytes": len(data),
-                "content": "",
-            }
-        lines = content.splitlines()
-        window = lines[offset : offset + limit]
-        return {
-            "path": self.relative(path),
-            "total_lines": len(lines),
-            "offset": offset,
-            "content": "\n".join(window),
-            "truncated": (offset + limit) < len(lines),
-        }
+        return self._execute_compat("read_file", spec)
 
     def write_file(self, spec: dict) -> dict:
-        path = self.resolve(spec.get("path", ""))
-        content = spec.get("content", "")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return {
-            "path": self.relative(path),
-            "bytes": len(content.encode("utf-8")),
-        }
+        return self._execute_compat("write_file", spec)
 
     def edit_file(self, spec: dict) -> dict:
-        path = self.resolve(spec.get("path", ""), must_exist=True)
-        old = spec.get("old_string", "")
-        new = spec.get("new_string", "")
-        replace_all = bool(spec.get("replace_all"))
-        content = path.read_text(encoding="utf-8")
-        matches = content.count(old)
-        if not old or matches == 0:
-            return {"error": "edit_file: old_string not found"}
-        if matches > 1 and not replace_all:
-            return {
-                "error": f"edit_file: old_string is not unique ({matches} matches); "
-                "pass replace_all=True or add more context"
-            }
-        content = (
-            content.replace(old, new)
-            if replace_all
-            else content.replace(old, new, 1)
-        )
-        path.write_text(content, encoding="utf-8")
-        return {"path": self.relative(path), "replaced": matches}
+        return self._execute_compat("edit_file", spec)
 
     def glob(self, spec: dict) -> dict:
-        pattern = spec.get("pattern") or "**/*"
-        base = (
-            self.resolve(spec.get("path"))
-            if spec.get("path")
-            else self.workspace()
-        )
-        matches = []
-        for path in sorted(base.glob(pattern)):
-            relative = self.relative(path) if path.is_file() else None
-            if relative is not None and not is_secret_path(relative):
-                matches.append(relative)
-        return {
-            "pattern": pattern,
-            "count": len(matches),
-            "matches": matches[:1000],
-        }
+        return self._execute_compat("glob", spec)
 
     def grep(self, spec: dict) -> dict:
-        pattern = spec.get("pattern") or ""
-        if not pattern:
-            return {"error": "grep: empty pattern"}
-        try:
-            regex = re.compile(pattern)
-        except re.error as error:
-            return {"error": f"grep: bad regex: {error}"}
-        include = spec.get("include")
-        base = (
-            self.resolve(spec.get("path"))
-            if spec.get("path")
-            else self.workspace()
-        )
-        hits: list[dict] = []
-        paths = base.glob(include) if include else base.rglob("*")
-        for path in sorted(paths):
-            if not path.is_file():
-                continue
-            relative = self.relative(path)
-            if relative is None or is_secret_path(relative):
-                continue
-            try:
-                content = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            for line_number, line in enumerate(content.splitlines(), 1):
-                if regex.search(line):
-                    hits.append(
-                        {"file": relative, "line": line_number, "text": line[:400]}
-                    )
-                    if len(hits) >= 200:
-                        return {
-                            "pattern": pattern,
-                            "count": len(hits),
-                            "matches": hits,
-                            "truncated": True,
-                        }
-        return {"pattern": pattern, "count": len(hits), "matches": hits}
+        return self._execute_compat("grep", spec)
 
     def list_dir(self, spec: dict) -> dict:
-        relative = spec.get("path") or "."
-        base = self.resolve(relative) if relative != "." else self.workspace()
-        if not base.exists():
-            return {"error": f"list_dir: no such directory: {relative}"}
-        entries = []
-        for path in sorted(base.iterdir()):
-            entries.append(
-                {
-                    "name": path.name,
-                    "path": self.relative(path) or path.name,
-                    "is_dir": path.is_dir(),
-                    "size_bytes": path.stat().st_size if path.is_file() else None,
-                }
-            )
-        return {"path": relative, "count": len(entries), "entries": entries}
-
+        return self._execute_compat("list_dir", spec)
 
 __all__ = ["WorkspaceFileService", "is_secret_path"]

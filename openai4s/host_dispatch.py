@@ -29,6 +29,7 @@ from openai4s.host.files import WorkspaceFileService
 from openai4s.host.files import is_secret_path as _is_secret_path
 from openai4s.llm import chat
 from openai4s.store import SECRET_ARG_HOST_CALLS, get_store
+from openai4s.tools.registry import get_tool_by_host_method
 
 # frames client-side status enum (host silently returns empty on typo)
 _OP_FRAMES_VALID_STATUS = frozenset(
@@ -993,6 +994,15 @@ class HostDispatcher:
     def _resolve(self, rel: str, *, must_exist: bool = False) -> Path:
         return self._files.resolve(rel, must_exist=must_exist)
 
+    def _execute_control_tool(
+        self, host_method: str, spec: dict, *, context: Any
+    ) -> Any:
+        """Run one concrete tool after ``__call__`` applied shared policies."""
+        tool = get_tool_by_host_method(host_method)
+        if tool is None:
+            raise ValueError(f"no control tool registered for {host_method!r}")
+        return tool.execute(context, spec)
+
     # NOTE: there is deliberately no `_m_bash`. The host executes only python/R
     # cells; shell commands run INSIDE the kernel worker via the kernel-local
     # `host.bash` (sdk/host.py), which keeps the static shell precheck and the
@@ -1017,22 +1027,22 @@ class HostDispatcher:
         return {"blocked": None}
 
     def _m_read_file(self, spec: dict) -> dict:
-        return self._files.read_file(spec)
+        return self._execute_control_tool("read_file", spec, context=self._files)
 
     def _m_write_file(self, spec: dict) -> dict:
-        return self._files.write_file(spec)
+        return self._execute_control_tool("write_file", spec, context=self._files)
 
     def _m_edit_file(self, spec: dict) -> dict:
-        return self._files.edit_file(spec)
+        return self._execute_control_tool("edit_file", spec, context=self._files)
 
     def _m_glob(self, spec: dict) -> dict:
-        return self._files.glob(spec)
+        return self._execute_control_tool("glob", spec, context=self._files)
 
     def _m_grep(self, spec: dict) -> dict:
-        return self._files.grep(spec)
+        return self._execute_control_tool("grep", spec, context=self._files)
 
     def _m_list_dir(self, spec: dict) -> dict:
-        return self._files.list_dir(spec)
+        return self._execute_control_tool("list_dir", spec, context=self._files)
 
     def _m_web_fetch(self, spec: dict) -> dict:
         from openai4s import egress, webtools

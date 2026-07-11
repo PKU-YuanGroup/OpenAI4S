@@ -1,12 +1,12 @@
-"""ReAct tool-surface contracts — openai4s.tools.
+"""Class-based control-tool contracts — openai4s.tools.
 
-The tool layer is pure metadata routed through a HostDispatcher passed in by
-the caller: it re-implements no fs/shell/web logic. These lock the registry
-shape, the ```tool parse convention, the prompt rendering, the cheap static
-prechecks, and the dispatch/observation contract — all without a real kernel
-or dispatcher (a fake callable stands in).
+These lock the registry shape, the ```tool parse convention, prompt rendering,
+tool-local prechecks, and the protected dispatch/observation contract.
 """
 import time
+from dataclasses import FrozenInstanceError
+
+import pytest
 
 from openai4s.host_dispatch import HostDispatcher
 from openai4s.security.shellcheck import precheck_command
@@ -20,6 +20,9 @@ from openai4s.tools import (
     render_tools_prompt,
     run_tool_calls,
 )
+from openai4s.tools.base import Tool
+from openai4s.tools.edit import edit_file
+from openai4s.tools.registry import FILE_TOOL_TYPES
 
 _F = "`" * 3  # triple-backtick fence delimiter
 
@@ -45,6 +48,17 @@ def test_registry_is_populated_and_every_tool_resolves_to_a_handler():
         assert hasattr(
             HostDispatcher, f"_m_{t.host_method}"
         ), f"{t.name} -> unresolvable host_method {t.host_method!r}"
+
+
+def test_workspace_tools_are_named_classes_with_local_execute_behavior():
+    """Built-in file tools must never regress to anonymous Tool metadata."""
+    assert tuple(type(tool) for tool in REGISTRY[:6]) == FILE_TOOL_TYPES
+    for tool in REGISTRY[:6]:
+        assert type(tool) is not Tool
+        assert type(tool).execute is not Tool.execute
+        with pytest.raises(FrozenInstanceError):
+            tool.name = "renamed"
+    assert type(edit_file) is FILE_TOOL_TYPES[-1]
 
 
 # --- parsing model replies --------------------------------------------------

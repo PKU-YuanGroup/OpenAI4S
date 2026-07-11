@@ -6,6 +6,7 @@ import pytest
 
 from openai4s.config import Config, LLMConfig
 from openai4s.host_dispatch import HostDispatcher
+from openai4s.tools import get_tool_by_host_method
 
 
 def _dispatcher(tmp_path: Path, frame_id: str | None = "frame-1") -> HostDispatcher:
@@ -30,6 +31,37 @@ def test_workspace_follows_frame_id_assigned_after_construction(tmp_path):
     assert dispatcher._workspace().name == "frame-late"
     assert (dispatcher._workspace() / "result.txt").read_text() == "late-bound"
     assert not (default_workspace / "result.txt").exists()
+
+
+def test_dispatcher_envelope_calls_registered_file_tool_class(tmp_path, monkeypatch):
+    dispatcher = _dispatcher(tmp_path)
+    tool = get_tool_by_host_method("list_dir")
+    assert tool is not None
+    seen = []
+
+    def execute(_self, context, arguments):
+        seen.append((context, arguments))
+        return {"path": ".", "count": 0, "entries": []}
+
+    monkeypatch.setattr(type(tool), "execute", execute)
+
+    result = dispatcher("list_dir", [{"path": "."}])
+
+    assert result == {"path": ".", "count": 0, "entries": []}
+    assert seen == [(dispatcher._files, {"path": "."})]
+
+
+def test_workspace_service_keeps_legacy_operation_facade(tmp_path):
+    dispatcher = _dispatcher(tmp_path)
+    service = dispatcher._files
+
+    written = service.write_file({"path": "compat.txt", "content": "hello"})
+    read = service.read_file({"path": "compat.txt"})
+
+    assert written == {"path": "compat.txt", "bytes": 5}
+    assert read["content"] == "hello"
+    for method in ("edit_file", "glob", "grep", "list_dir"):
+        assert callable(getattr(service, method))
 
 
 def test_resolve_confines_parent_absolute_and_symlink_paths(tmp_path):
