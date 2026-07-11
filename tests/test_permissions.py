@@ -143,11 +143,19 @@ def test_upsert_and_delete_rule(tmp_path):
 
 
 # --- broker round-trip ----------------------------------------------------
-def test_broker_headless_allows_ask_but_enforces_deny(tmp_path):
+def test_broker_headless_fails_closed_unless_operator_explicitly_allows(
+    tmp_path, monkeypatch
+):
     st = _store(tmp_path)
     b = PermissionBroker()
-    # no UI channel registered -> ask degrades to allow (non-interactive runs)
-    assert b.gate(store=st, frame_id=None, method="bash", target="ls")["allow"] is True
+    # No UI channel registered: an ask action is auditable and denied by
+    # default instead of silently escalating to allow.
+    denied = b.gate(store=st, frame_id=None, method="bash", target="ls")
+    assert denied["allow"] is False
+    assert st.list_permission_requests(state="denied")[-1]["tool"] == "bash"
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "allow")
+    assert b.gate(store=st, frame_id=None, method="bash", target="pwd")["allow"] is True
+    assert st.list_permission_requests(state="allowed")[-1]["target"] == "pwd"
     # deny rules still bite even without a channel
     res = b.gate(store=st, frame_id=None, method="read_file", target="a/.env")
     assert res["allow"] is False
@@ -179,6 +187,9 @@ def test_broker_blocks_until_allowed_and_persists(tmp_path):
     )
     t.join(timeout=5)
     assert out["res"]["allow"] is True
+    durable = st.get_permission_request(ask["decision_id"])
+    assert durable["state"] == "allowed"
+    assert durable["scope"] == "conversation"
     # a resolved event was emitted to clear the card
     assert any(e.get("type") == "permission_resolved" for e in events)
     # the conversation rule was persisted, so a matching call no longer asks
@@ -237,6 +248,43 @@ def test_broker_cancel_denies_pending(tmp_path):
     b.cancel_root("root3")
     t.join(timeout=5)
     assert out["res"]["allow"] is False
+    decision_id = next(
+        event["decision_id"]
+        for event in events
+        if event.get("type") == "await_permission"
+    )
+    assert st.get_permission_request(decision_id)["state"] == "cancelled"
+
+
+def test_durable_pending_request_survives_broker_restart_and_can_be_resolved(tmp_path):
+    st = _store(tmp_path)
+    payload = {
+        "type": "await_permission",
+        "frame_id": "root-durable",
+        "decision_id": "perm-durable",
+        "tool": "mcp_call",
+        "target": "server/send",
+    }
+    st.create_permission_request(
+        decision_id="perm-durable",
+        root_frame_id="root-durable",
+        frame_id="root-durable",
+        project_id="default",
+        tool="mcp_call",
+        target="server/send",
+        payload=payload,
+    )
+
+    restarted = PermissionBroker()
+    restarted.register_channel(
+        "root-durable", lambda event: None, store=st
+    )
+    assert restarted.pending_events("root-durable") == [payload]
+    assert restarted.resolve("perm-durable", allow=False, message="reviewed")
+    row = st.get_permission_request("perm-durable")
+    assert row["state"] == "denied"
+    assert row["message"] == "reviewed"
+    assert restarted.pending_events("root-durable") == []
 
 
 def test_suggest_patterns_generalizes():
@@ -578,10 +626,16 @@ def test_agent_query_cannot_read_settings_secret(tmp_path):
 
 
 def test_credentials_set_secret_never_in_host_call_log(tmp_path):
-    # credentials_set runs (headless dispatcher passes the gate) and stores the
-    # value in the in-memory vault, but its plaintext must never reach the
-    # host_call_log preview.
+    # Explicitly authorize this synthetic credential write; headless `ask`
+    # now fails closed. Its plaintext must never reach the host_call_log.
     disp, _frame, st = _dispatcher(tmp_path)
+    st.set_permission_rule(
+        scope="global",
+        scope_id="",
+        tool="credentials_set",
+        pattern="*",
+        decision="allow",
+    )
     out = disp("credentials_set", [{"name": "HF_TOKEN", "value": _SYNTH_SECRET}])
     assert out.get("ok") is True
     # the value round-trips in-process…
@@ -601,6 +655,13 @@ def test_recorder_never_tapes_credentials_set(tmp_path):
     from openai4s.replay import TapeRecorder
 
     disp, _frame, _st = _dispatcher(tmp_path)
+    _st.set_permission_rule(
+        scope="global",
+        scope_id="",
+        tool="credentials_set",
+        pattern="*",
+        decision="allow",
+    )
     rec = TapeRecorder(tmp_path / "openai4s_tape.json")
     disp.recorder = rec
 

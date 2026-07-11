@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import sqlite3
 import uuid
 from typing import Any, Callable
@@ -235,6 +236,137 @@ class PermissionRuleRepository:
                 )
             self._connection.commit()
         self._set_setting("perm_seeded", "1")
+
+    # --- durable per-action approval requests --------------------------
+    def create_request(
+        self,
+        *,
+        decision_id: str,
+        tool: str,
+        target: str = "",
+        root_frame_id: str | None = None,
+        frame_id: str | None = None,
+        project_id: str | None = None,
+        payload: dict | None = None,
+        expires_at: int | None = None,
+        created_at: int | None = None,
+    ) -> dict:
+        """Append one immutable pending approval identity."""
+        if not decision_id or not tool:
+            raise ValueError("decision_id and tool are required")
+        now = self._clock_ms() if created_at is None else int(created_at)
+        encoded = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"))
+        with self._lock:
+            try:
+                self._connection.execute(
+                    "INSERT INTO permission_requests("
+                    "decision_id,root_frame_id,frame_id,project_id,tool,target,"
+                    "payload,state,created_at,expires_at) "
+                    "VALUES(?,?,?,?,?,?,?,'pending',?,?)",
+                    (
+                        decision_id,
+                        root_frame_id,
+                        frame_id,
+                        project_id,
+                        tool,
+                        target or "",
+                        encoded,
+                        now,
+                        expires_at,
+                    ),
+                )
+            except Exception:
+                self._connection.rollback()
+                raise
+            self._connection.commit()
+            row = self._request_row_locked(decision_id)
+        return self._normalize_request(row)
+
+    def resolve_request(
+        self,
+        decision_id: str,
+        *,
+        state: str,
+        scope: str | None = None,
+        pattern: str | None = None,
+        message: str | None = None,
+        resolved_at: int | None = None,
+    ) -> dict:
+        terminal = {"allowed", "denied", "timed_out", "cancelled"}
+        if state not in terminal:
+            raise ValueError(f"invalid terminal permission state: {state!r}")
+        now = self._clock_ms() if resolved_at is None else int(resolved_at)
+        with self._lock:
+            row = self._request_row_locked(decision_id)
+            if row["state"] != "pending":
+                current = self._normalize_request(row)
+                if current["state"] == state:
+                    return current
+                raise RuntimeError(
+                    f"permission request {decision_id!r} is already {row['state']}"
+                )
+            cursor = self._connection.execute(
+                "UPDATE permission_requests SET state=?,scope=?,pattern=?,"
+                "message=?,resolved_at=? WHERE decision_id=? AND state='pending'",
+                (state, scope, pattern, message, now, decision_id),
+            )
+            if cursor.rowcount != 1:
+                self._connection.rollback()
+                raise RuntimeError(f"permission request {decision_id!r} raced")
+            self._connection.commit()
+            row = self._request_row_locked(decision_id)
+        return self._normalize_request(row)
+
+    def get_request(self, decision_id: str) -> dict | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM permission_requests WHERE decision_id=?",
+                (decision_id,),
+            ).fetchone()
+        return self._normalize_request(row) if row is not None else None
+
+    def list_requests(
+        self,
+        *,
+        root_frame_id: str | None = None,
+        state: str | None = None,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if root_frame_id is not None:
+            clauses.append("root_frame_id=?")
+            params.append(root_frame_id)
+        if state is not None:
+            clauses.append("state=?")
+            params.append(state)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM permission_requests"
+                + where
+                + " ORDER BY created_at,decision_id",
+                params,
+            ).fetchall()
+        return [self._normalize_request(row) for row in rows]
+
+    def _request_row_locked(self, decision_id: str):
+        row = self._connection.execute(
+            "SELECT * FROM permission_requests WHERE decision_id=?",
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown permission request {decision_id!r}")
+        return row
+
+    @staticmethod
+    def _normalize_request(row) -> dict:
+        data = dict(row)
+        try:
+            payload = json.loads(data.get("payload") or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        data["payload"] = payload if isinstance(payload, dict) else {}
+        return data
 
 
 __all__ = [

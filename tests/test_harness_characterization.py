@@ -52,7 +52,7 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
         "partial_sse_hard_failure",
         "compaction_summary_provider_hoist",
         "oversized_observation_unbudgeted",
-        "headless_ask_allows_deny_absolute",
+        "headless_ask_fails_closed_deny_absolute",
         "disabled_mcp_tools_connects",
     }
     for case in cases.values():
@@ -69,7 +69,12 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
 
     assert cases["cli_max_turns"]["known_bug"] is False
     assert cases["partial_sse_hard_failure"]["known_bug"] is False
-    for case_id in set(cases) - {"cli_max_turns", "partial_sse_hard_failure"}:
+    assert cases["headless_ask_fails_closed_deny_absolute"]["known_bug"] is False
+    for case_id in set(cases) - {
+        "cli_max_turns",
+        "partial_sse_hard_failure",
+        "headless_ask_fails_closed_deny_absolute",
+    }:
         assert cases[case_id]["known_bug"] is True
 
     observed = {case_id: case["trace"][1]["payload"] for case_id, case in cases.items()}
@@ -93,10 +98,10 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
     assert oversized["model_view_chars"] > oversized["input_chars"]
     assert oversized["has_content_ref"] is False
 
-    permission = observed["headless_ask_allows_deny_absolute"]
+    permission = observed["headless_ask_fails_closed_deny_absolute"]
     assert permission["ask_effective_decision"] == "ask"
-    assert permission["headless_ask_allowed"] is True
-    # Preserve this invariant when fixing headless ask: standing deny is absolute.
+    assert permission["headless_ask_allowed"] is False
+    # Standing deny remains absolute as well.
     assert permission["deny_effective_decision"] == "deny"
     assert permission["headless_deny_allowed"] is False
 

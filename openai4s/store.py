@@ -342,6 +342,28 @@ CREATE TABLE IF NOT EXISTS permission_rules (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_perm ON permission_rules(scope, scope_id, tool, pattern);
 CREATE INDEX IF NOT EXISTS ix_perm_scope ON permission_rules(scope, scope_id);
+
+-- Durable approval requests. Unlike permission_rules (standing policy), each
+-- row is one concrete action decision and remains auditable across reconnects
+-- and daemon restarts. Terminal requests are immutable.
+CREATE TABLE IF NOT EXISTS permission_requests (
+    decision_id    TEXT PRIMARY KEY,
+    root_frame_id  TEXT,
+    frame_id       TEXT,
+    project_id     TEXT,
+    tool           TEXT NOT NULL,
+    target         TEXT NOT NULL DEFAULT '',
+    payload        TEXT,
+    state          TEXT NOT NULL DEFAULT 'pending',
+    scope          TEXT,
+    pattern        TEXT,
+    message        TEXT,
+    created_at     INTEGER NOT NULL,
+    expires_at     INTEGER,
+    resolved_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_permission_request_root
+    ON permission_requests(root_frame_id, state, created_at);
 """
 
 # Tables host.query must refuse to read. These hold secrets or
@@ -359,6 +381,7 @@ QUERY_DENYLIST = frozenset(
         "memories",
         "host_call_log",
         "permission_rules",
+        "permission_requests",
         "action_groups",
         "action_events",
         "execution_attempts",
@@ -1273,6 +1296,42 @@ class Store:
 
     def seed_default_permission_rules(self, *, force: bool = False) -> None:
         self._permissions.seed_defaults(force=force)
+
+    def create_permission_request(self, **request: Any) -> dict:
+        return self._permissions.create_request(**request)
+
+    def resolve_permission_request(
+        self,
+        decision_id: str,
+        *,
+        state: str,
+        scope: str | None = None,
+        pattern: str | None = None,
+        message: str | None = None,
+        resolved_at: int | None = None,
+    ) -> dict:
+        return self._permissions.resolve_request(
+            decision_id,
+            state=state,
+            scope=scope,
+            pattern=pattern,
+            message=message,
+            resolved_at=resolved_at,
+        )
+
+    def get_permission_request(self, decision_id: str) -> dict | None:
+        return self._permissions.get_request(decision_id)
+
+    def list_permission_requests(
+        self,
+        *,
+        root_frame_id: str | None = None,
+        state: str | None = None,
+    ) -> list[dict]:
+        return self._permissions.list_requests(
+            root_frame_id=root_frame_id,
+            state=state,
+        )
 
     # --- plans (structured plan → approve → auto-execute) ----------------
     def _plan_row(self, row) -> dict:

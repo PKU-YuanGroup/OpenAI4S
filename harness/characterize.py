@@ -492,10 +492,10 @@ def collect_prechange_characterization(data_dir: str | Path) -> dict[str, Any]:
             "probe": _oversized_observation,
         },
         {
-            "case_id": "headless_ask_allows_deny_absolute",
-            "current_behavior": "A headless effective ask is allowed, while a matching standing deny remains an absolute rejection.",
-            "desired_contract": "rules_only denies unresolved ask in headless mode while preserving standing deny as absolute.",
-            "known_bug": True,
+            "case_id": "headless_ask_fails_closed_deny_absolute",
+            "current_behavior": "A headless effective ask is denied unless an operator explicitly enables unattended approval; a matching standing deny remains absolute.",
+            "desired_contract": "Deny unresolved ask in headless mode while preserving an explicit operator override and standing deny as absolute.",
+            "known_bug": False,
             "probe": lambda: _headless_permission(root / "permissions"),
         },
         {

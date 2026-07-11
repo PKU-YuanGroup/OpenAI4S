@@ -6,11 +6,11 @@ against the persisted rules (see :meth:`Store.resolve_permission`) and:
 
 * ``allow`` → returns immediately;
 * ``deny``  → returns a soft-fail the model can recover from;
-* ``ask``   → if a UI channel is registered for the conversation, emits an
-  ``await_permission`` event and BLOCKS the (daemon) turn thread until the user
-  answers via ``POST /api/frames/<id>/decision`` (→ :meth:`resolve`), a turn
-  cancel (→ :meth:`cancel_root`) or a timeout; with no channel (headless/CLI),
-  ``ask`` degrades to allow so non-interactive runs are never wedged.
+* ``ask``   → persists a concrete approval request, emits an
+  ``await_permission`` event when a UI channel exists, and BLOCKS the daemon
+  turn until the user answers, the turn is cancelled, or the request expires.
+  Headless/unattended execution fails closed by default; an operator must set
+  ``OPENAI4S_UNATTENDED_APPROVAL=allow`` to opt into fail-open behaviour.
 
 The broker is keyed by ``root_frame_id`` so the SAME dispatcher (foreground +
 background cells) and any nested/delegated dispatcher all gate uniformly and
@@ -19,6 +19,7 @@ delegation subsystem needing to know anything about the gate.
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -76,9 +77,10 @@ class _Pending:
         "message",
         "payload",
         "created_at",
+        "store",
     )
 
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict, store=None):
         self.event = threading.Event()
         self.allow = False
         self.scope = "once"
@@ -86,6 +88,7 @@ class _Pending:
         self.message: str | None = None
         self.payload = payload
         self.created_at = time.time()
+        self.store = store
 
 
 class PermissionBroker:
@@ -107,16 +110,16 @@ class PermissionBroker:
         emit: Callable[[dict], Any],
         cancel_event: threading.Event | None = None,
         watching: Callable[[], bool] | None = None,
+        store=None,
     ) -> None:
-        # `watching` (optional) reports whether a human is ACTUALLY viewing this
-        # conversation right now (a live WS subscriber). The gate only prompts —
-        # and blocks — when someone can answer; otherwise it degrades to allow so
-        # an unwatched/background/headless turn is never wedged for 15 minutes.
+        # `watching` is UI metadata only. Approval correctness never depends on
+        # a subscriber being present: unwatched requests remain durably pending.
         with self._lock:
             self._channels[root_frame_id] = {
                 "emit": emit,
                 "cancel": cancel_event,
                 "watching": watching,
+                "store": store,
             }
 
     def unregister_channel(self, root_frame_id: str) -> None:
@@ -127,11 +130,28 @@ class PermissionBroker:
         """Outstanding await_permission payloads for a conversation (for a
         client reconnecting mid-pause)."""
         with self._lock:
-            return [
+            memory = [
                 self._pending[d].payload
                 for d in self._by_root.get(root_frame_id, ())
                 if d in self._pending
             ]
+            channel = self._channels.get(root_frame_id) or {}
+            store = channel.get("store")
+        if store is None:
+            return memory
+        seen = {item.get("decision_id") for item in memory}
+        try:
+            durable = [
+                row.get("payload") or {}
+                for row in store.list_permission_requests(
+                    root_frame_id=root_frame_id,
+                    state="pending",
+                )
+                if row.get("decision_id") not in seen
+            ]
+        except Exception:  # noqa: BLE001 — reconnect must remain available
+            durable = []
+        return memory + durable
 
     def is_pending(self, root_frame_id: str) -> bool:
         """Whether a tool call is currently blocked awaiting approval for this
@@ -188,28 +208,8 @@ class PermissionBroker:
                 "message": "blocked by a standing 'deny' permission rule",
             }
 
-        # decision == "ask"
-        with self._lock:
-            chan = self._channels.get(root)
-        if chan is None:
-            # No UI attached (headless/CLI/tests) — cannot prompt; allow.
-            return {"allow": True}
-        # A channel is registered, but only prompt if a human is ACTUALLY
-        # watching this conversation right now. Otherwise the await_permission
-        # event would stream to nobody and the turn would block for the full
-        # timeout then get denied — the "runs but never returns" hang. Degrade
-        # to allow so unwatched/background turns proceed.
-        watching = chan.get("watching")
-        if watching is not None:
-            try:
-                if not watching():
-                    return {"allow": True}
-            except Exception:  # noqa: BLE001 — never let the check break a call
-                return {"allow": True}
-        cancel_ev = chan.get("cancel")
-        if cancel_ev is not None and cancel_ev.is_set():
-            return {"allow": False, "message": "turn cancelled"}
-
+        # decision == "ask": allocate the durable identity before deciding how
+        # the caller will wait, so even a headless denial is auditable.
         did = "perm-" + uuid.uuid4().hex[:12]
         kind = view[0] if view else method
         title = view[1] if view else method
@@ -227,7 +227,62 @@ class PermissionBroker:
             "scopes": list(_SCOPES),
             "sub_agent": bool(frame_id and root and frame_id != root),
         }
-        pend = _Pending(payload)
+        wait_seconds = timeout if timeout is not None else self.DEFAULT_TIMEOUT
+        try:
+            store.create_permission_request(
+                decision_id=did,
+                root_frame_id=root,
+                frame_id=frame_id,
+                project_id=proj or "default",
+                tool=method,
+                target=target,
+                payload=payload,
+                expires_at=int((time.time() + wait_seconds) * 1000),
+            )
+        except Exception:  # noqa: BLE001 — inability to audit must fail closed
+            return {
+                "allow": False,
+                "message": "approval required but its durable request could not be recorded",
+            }
+
+        with self._lock:
+            chan = self._channels.get(root)
+            if chan is not None and chan.get("store") is None:
+                chan["store"] = store
+        if chan is None:
+            unattended = os.environ.get(
+                "OPENAI4S_UNATTENDED_APPROVAL", "deny"
+            ).strip().lower()
+            allowed = unattended == "allow"
+            state = "allowed" if allowed else "denied"
+            message = (
+                "allowed by explicit unattended approval policy"
+                if allowed
+                else "approval required but no interactive channel is attached"
+            )
+            try:
+                store.resolve_permission_request(
+                    did,
+                    state=state,
+                    scope="once",
+                    message=message,
+                )
+            except Exception:  # noqa: BLE001
+                allowed = False
+                message = "approval persistence failed closed"
+            return {"allow": allowed, **({} if allowed else {"message": message})}
+
+        cancel_ev = chan.get("cancel")
+        if cancel_ev is not None and cancel_ev.is_set():
+            try:
+                store.resolve_permission_request(
+                    did, state="cancelled", scope="once", message="turn cancelled"
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return {"allow": False, "message": "turn cancelled"}
+
+        pend = _Pending(payload, store=store)
         with self._lock:
             self._pending[did] = pend
             self._by_root.setdefault(root, set()).add(did)
@@ -236,7 +291,7 @@ class PermissionBroker:
         except Exception:  # noqa: BLE001
             pass
 
-        deadline = time.time() + (timeout or self.DEFAULT_TIMEOUT)
+        deadline = time.time() + wait_seconds
         try:
             while not pend.event.wait(self._POLL):
                 if cancel_ev is not None and cancel_ev.is_set():
@@ -266,7 +321,32 @@ class PermissionBroker:
             except Exception:  # noqa: BLE001
                 pass
 
-        # Persist the chosen rule (on the turn thread, with the caller's store).
+        durable_state = (
+            "allowed"
+            if pend.allow
+            else (
+                "cancelled"
+                if pend.message == "turn cancelled"
+                else ("timed_out" if pend.message == "approval timed out" else "denied")
+            )
+        )
+        try:
+            store.resolve_permission_request(
+                did,
+                state=durable_state,
+                scope=pend.scope,
+                pattern=pend.pattern,
+                message=pend.message,
+            )
+        except Exception:  # noqa: BLE001 — the action is already decided in memory
+            if pend.allow:
+                return {
+                    "allow": False,
+                    "message": "approval resolution could not be durably recorded",
+                }
+        # Persist a standing rule only after the concrete request's terminal
+        # state is durable; otherwise a failed audit write could still leave a
+        # broad allow rule behind.
         if pend.scope and pend.scope != "once":
             scope_id = {
                 "conversation": root,
@@ -301,14 +381,38 @@ class PermissionBroker:
             return False
         with self._lock:
             pend = self._pending.get(decision_id)
-            if pend is None:
-                return False
-            pend.allow = bool(allow)
-            pend.scope = scope if scope in _SCOPES else "once"
-            pend.pattern = pattern
-            pend.message = message
-            pend.event.set()
-        return True
+            if pend is not None:
+                pend.allow = bool(allow)
+                pend.scope = scope if scope in _SCOPES else "once"
+                pend.pattern = pattern
+                pend.message = message
+                pend.event.set()
+                return True
+            # After a daemon restart there is no blocked thread, but the
+            # durable request must still be resolvable and auditable. The
+            # ledger/runtime layer can then resume or close the action group.
+            stores = [
+                channel.get("store")
+                for channel in self._channels.values()
+                if channel.get("store") is not None
+            ]
+        terminal = "allowed" if allow else "denied"
+        for store in stores:
+            try:
+                request = store.get_permission_request(decision_id)
+                if request is None or request.get("state") != "pending":
+                    continue
+                store.resolve_permission_request(
+                    decision_id,
+                    state=terminal,
+                    scope=scope if scope in _SCOPES else "once",
+                    pattern=pattern,
+                    message=message,
+                )
+                return True
+            except Exception:  # noqa: BLE001 — try another registered store
+                continue
+        return False
 
     def cancel_root(self, root_frame_id: str) -> None:
         """Deny every pending prompt for a conversation (on turn cancel)."""

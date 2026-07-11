@@ -299,3 +299,50 @@ def test_store_facade_and_frame_project_cascades_remain_aggregate(tmp_path):
         scope_id=second_frame,
     ) == []
     assert second_conversation != global_id
+
+
+def test_durable_permission_request_is_append_only_and_terminal_is_immutable(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    request = store.create_permission_request(
+        decision_id="perm-request-1",
+        root_frame_id="root-1",
+        frame_id="root-1",
+        project_id="science",
+        tool="mcp_call",
+        target="lab/send",
+        payload={"type": "await_permission", "decision_id": "perm-request-1"},
+        created_at=100,
+        expires_at=500,
+    )
+    assert request["state"] == "pending"
+    assert request["payload"]["type"] == "await_permission"
+    with pytest.raises(sqlite3.IntegrityError):
+        store.create_permission_request(
+            decision_id="perm-request-1",
+            tool="mcp_call",
+            payload={},
+        )
+
+    resolved = store.resolve_permission_request(
+        "perm-request-1",
+        state="allowed",
+        scope="once",
+        message="approved",
+        resolved_at=200,
+    )
+    assert resolved["state"] == "allowed"
+    assert store.list_permission_requests(
+        root_frame_id="root-1", state="pending"
+    ) == []
+    assert [
+        item["decision_id"]
+        for item in store.list_permission_requests(
+            root_frame_id="root-1", state="allowed"
+        )
+    ] == ["perm-request-1"]
+    # Idempotent same-terminal delivery is safe; a rewrite is not.
+    assert store.resolve_permission_request(
+        "perm-request-1", state="allowed"
+    )["resolved_at"] == 200
+    with pytest.raises(RuntimeError, match="already allowed"):
+        store.resolve_permission_request("perm-request-1", state="denied")

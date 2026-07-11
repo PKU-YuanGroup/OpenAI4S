@@ -321,7 +321,14 @@ def test_request_network_access_denied_leaves_fence_closed(tmp_path, monkeypatch
 
 def test_request_network_access_requires_a_domain(tmp_path, monkeypatch):
     _allowlist(monkeypatch)
-    disp, _frame, _ = _dispatcher(tmp_path)  # headless → gate allows, handler runs
+    disp, _frame, store = _dispatcher(tmp_path)
+    store.set_permission_rule(
+        scope="global",
+        scope_id="",
+        tool="request_network_access",
+        pattern="*",
+        decision="allow",
+    )
     r = disp("request_network_access", [{"domain": ""}])
     assert set(r.keys()) == {"error"} and "domain" in r["error"]
 
