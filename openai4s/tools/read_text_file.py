@@ -14,13 +14,20 @@ class ReadTextFileTool(Tool):
     description = "Read a UTF-8 text file from the workspace, optionally a line window."
     parameters = {
         "properties": {
-            "path": {"type": "string", "description": "File to read."},
+            "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "File to read.",
+            },
             "offset": {
                 "type": "integer",
+                "minimum": 0,
                 "description": "0-based first line to return.",
             },
             "limit": {
                 "type": "integer",
+                "minimum": 1,
+                "maximum": 10000,
                 "description": "Maximum number of lines to return.",
             },
         },
@@ -28,6 +35,8 @@ class ReadTextFileTool(Tool):
     }
     permission_target_key = "path"
     secret_path_key = "path"
+    resource_key_prefix = "workspace"
+    resource_target_key = "path"
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
         path = workspace.resolve(arguments.get("path", ""), must_exist=True)

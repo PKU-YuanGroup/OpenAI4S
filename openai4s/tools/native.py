@@ -8,7 +8,6 @@ their own wire shape later.
 
 from __future__ import annotations
 
-import copy
 import re
 from dataclasses import dataclass
 
@@ -58,13 +57,13 @@ def control_tool_specs() -> tuple[ToolSpec, ...]:
         if tool.name in _NEVER_NATIVE or tool.host_method in _NEVER_NATIVE:
             continue
         _validate_portable_name(tool.name)
-        schema = copy.deepcopy(tool.parameters)
-        schema["type"] = "object"
+        schema = tool.input_schema()
         specs.append(
             ToolSpec(
                 name=tool.name,
                 description=tool.description,
                 input_schema=schema,
+                strict=tool.supports_provider_strict(),
             )
         )
     return tuple(specs)

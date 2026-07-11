@@ -20,12 +20,16 @@ class EnvListTool(Tool):
         "properties": {
             "packages": {
                 "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "maxItems": 200,
                 "description": "Package names to check per-environment coverage for.",
             },
         },
         "required": [],
     }
     requires_approval = False
+    resource_key_prefix = "environment"
+    resource_target_default = "catalog"
 
     @staticmethod
     def current_environment_name(runtime: EnvironmentToolContext) -> str:

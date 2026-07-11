@@ -59,3 +59,27 @@ def test_mid_batch_cancellation_stops_side_effects_but_closes_every_call():
         "cancelled before execution" in item["content"]
         for item in outcome.history_messages[1:]
     )
+
+
+def test_normalized_known_tool_arguments_are_validated_before_invocation():
+    call = NativeToolCall(
+        id="call-invalid",
+        wire_id="wire-invalid",
+        name="read_text_file",
+        ordinal=0,
+        raw_arguments='{"path":3,"surprise":true}',
+        arguments={"path": 3, "surprise": True},
+    )
+    invoked = []
+
+    outcome = execute_native_batch(
+        NativeToolBatch((call,)),
+        lambda native_call: (invoked.append(native_call.id) or "ran", True),
+    )
+
+    assert invoked == []
+    assert outcome.history_messages[0]["is_error"] is True
+    assert outcome.history_messages[0]["role"] == "tool"
+    assert "invalid arguments" in outcome.history_messages[0]["content"]
+    assert "$.path: expected string" in outcome.history_messages[0]["content"]
+    assert "$.surprise: unknown property" in outcome.history_messages[0]["content"]

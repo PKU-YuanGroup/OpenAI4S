@@ -130,6 +130,14 @@ def test_control_tool_classes_own_their_security_policy():
     assert get_tool("web_fetch").permission_target(
         {"url": "https://www.example.org/a"}
     ) == "example.org"
+    assert get_tool("write_file").side_effect_class == "workspace_write"
+    assert get_tool("env_use").side_effect_class == "runtime_mutation"
+    assert get_tool("read_text_file").resource_keys({"path": "data/a.csv"}) == (
+        "workspace:data/a.csv",
+    )
+    assert get_tool("web_fetch").resource_keys(
+        {"url": "https://www.example.org/a"}
+    ) == ("network:example.org",)
 
 
 def test_registration_rejects_shell_completion_and_metadata_only_tools():
@@ -378,6 +386,34 @@ def test_execute_bad_arguments_never_raises_or_dispatches():
     assert ok is False
     assert "arguments" in obs
     assert seen == []
+
+
+def test_execute_schema_invalid_arguments_never_reach_dispatcher():
+    seen = []
+
+    def disp(method, args):
+        seen.append((method, args))
+        return {"ok": True}
+
+    obs, ok = execute_tool_call(
+        disp,
+        {
+            "name": "web_fetch",
+            "arguments": {
+                "url": "https://example.test",
+                "format": "pdf",
+                "timeout": 0,
+                "unknown": True,
+            },
+        },
+    )
+
+    assert ok is False
+    assert seen == []
+    assert obs.startswith("[Tool error] web_fetch: invalid arguments")
+    assert "must be one of" in obs
+    assert "must be >= 1" in obs
+    assert "unknown property" in obs
 
 
 def test_execute_hostile_mapping_never_reraises_while_formatting_error():

@@ -16,19 +16,28 @@ class ContentSearchTool(Tool):
     description = "Regex-search the contents of workspace files."
     parameters = {
         "properties": {
-            "pattern": {"type": "string", "description": "Regular expression."},
+            "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Regular expression.",
+            },
             "path": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Directory to search under (default the workspace root).",
             },
             "include": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Glob limiting which files are searched, e.g. '*.py'.",
             },
         },
         "required": ["pattern"],
     }
     permission_target_key = "pattern"
+    resource_key_prefix = "workspace"
+    resource_target_key = "path"
+    resource_target_default = "."
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
         pattern = arguments.get("pattern") or ""

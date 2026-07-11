@@ -25,6 +25,8 @@ from openai4s.tools.env_use import EnvUseTool
 from openai4s.tools.glob_files import GlobFilesTool
 from openai4s.tools.list_directory import ListDirectoryTool
 from openai4s.tools.read_text_file import ReadTextFileTool
+from openai4s.tools.schema import SchemaDefinitionError
+from openai4s.tools.taxonomy import READ_ONLY, SIDE_EFFECT_CLASSES
 from openai4s.tools.web_fetch import WebFetchTool
 from openai4s.tools.web_search import WebSearchTool
 from openai4s.tools.write_file import WriteFileTool
@@ -74,6 +76,37 @@ def register_tool(tool: Tool) -> Tool:
         raise ValueError(f"duplicate host method: {tool.host_method!r}")
     if tool.needs_network and not tool.screen_untrusted_output:
         raise ValueError("network tools must screen untrusted output")
+    if tool.side_effect_class not in SIDE_EFFECT_CLASSES:
+        raise ValueError(
+            f"unknown side_effect_class for {tool.name!r}: "
+            f"{tool.side_effect_class!r}"
+        )
+    if not tool.read_only and tool.side_effect_class == READ_ONLY:
+        raise ValueError(
+            f"mutating tool {tool.name!r} must declare a side_effect_class"
+        )
+    try:
+        tool.input_schema()
+    except SchemaDefinitionError as error:
+        raise ValueError(f"invalid schema for tool {tool.name!r}: {error}") from error
+    if tool.provider_strict is True and not tool.supports_provider_strict():
+        raise ValueError(
+            f"tool {tool.name!r} opts into provider strict mode with an "
+            "incompatible schema"
+        )
+    try:
+        keys = tool.resource_keys({})
+    except Exception as error:  # noqa: BLE001 — reject broken extension metadata
+        raise ValueError(
+            f"tool {tool.name!r} could not derive resource keys: {error}"
+        ) from error
+    if not isinstance(keys, tuple) or not keys or not all(
+        isinstance(key, str) and ":" in key for key in keys
+    ):
+        raise ValueError(
+            f"tool {tool.name!r} resource_keys() must return non-empty namespaced "
+            "strings"
+        )
     REGISTRY.append(tool)
     _BY_NAME[tool.name] = tool
     _BY_HOST_METHOD[tool.host_method] = tool
@@ -427,6 +460,18 @@ def format_tool_result(tool: Tool, result: Any) -> str:
     return _truncate_with_marker(text, tool.output_limit, "\n… [truncated]")
 
 
+def tool_validation_error(name: str, arguments: Any) -> str | None:
+    """Return the canonical tool-result text for invalid known-tool input."""
+    tool = get_tool(name)
+    if tool is None:
+        return None
+    detail = tool.validation_error(arguments)
+    if detail is None:
+        return None
+    text = f"[Tool error] {tool.name}: {detail}"
+    return _truncate_with_marker(text, tool.output_limit, "\n… [truncated]")
+
+
 def execute_tool_call(dispatcher: Any, call: Any) -> tuple[str, bool]:
     """Run one parsed tool call through `dispatcher` and return
     (observation_text, ok).
@@ -459,6 +504,10 @@ def execute_tool_call(dispatcher: Any, call: Any) -> tuple[str, bool]:
                 False,
             )
         spec = dict(raw_spec)
+
+        validation_error = tool_validation_error(tool.name, spec)
+        if validation_error is not None:
+            return validation_error, False
 
         err = tool.native_precheck(spec)
         if err:

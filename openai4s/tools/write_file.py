@@ -14,7 +14,11 @@ class WriteFileTool(Tool):
     description = "Create or overwrite a workspace file with the given content."
     parameters = {
         "properties": {
-            "path": {"type": "string", "description": "File to write."},
+            "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "File to write.",
+            },
             "content": {"type": "string", "description": "Full file contents."},
         },
         "required": ["path", "content"],
@@ -23,6 +27,9 @@ class WriteFileTool(Tool):
     writes_files = True
     permission_target_key = "path"
     secret_path_key = "path"
+    side_effect_class = "workspace_write"
+    resource_key_prefix = "workspace"
+    resource_target_key = "path"
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
         path = workspace.resolve(arguments.get("path", ""))

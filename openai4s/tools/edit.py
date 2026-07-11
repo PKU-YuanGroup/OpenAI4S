@@ -16,9 +16,14 @@ class EditFileTool(Tool):
     description = "Replace an exact string in a workspace file (unique unless replace_all)."
     parameters = {
         "properties": {
-            "path": {"type": "string", "description": "File to edit."},
+            "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "File to edit.",
+            },
             "old_string": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Exact text to replace (must be unique unless replace_all).",
             },
             "new_string": {
@@ -36,6 +41,9 @@ class EditFileTool(Tool):
     writes_files = True
     permission_target_key = "path"
     secret_path_key = "path"
+    side_effect_class = "workspace_write"
+    resource_key_prefix = "workspace"
+    resource_target_key = "path"
 
     @staticmethod
     def native_precheck(arguments: dict) -> str | None:

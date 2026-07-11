@@ -44,7 +44,17 @@ from openai4s.tools.registry import (
     run_tool_calls,
     scan_fenced_blocks,
     strip_fenced_blocks,
+    tool_validation_error,
 )
+from openai4s.tools.schema import (
+    SchemaDefinitionError,
+    ValidationIssue,
+    normalize_object_schema,
+    provider_strict_compatible,
+    validate_json_schema,
+    validate_schema_definition,
+)
+from openai4s.tools.taxonomy import SIDE_EFFECT_CLASSES
 from openai4s.tools.web_fetch import WebFetchTool
 from openai4s.tools.web_search import WebSearchTool
 from openai4s.tools.write_file import WriteFileTool
@@ -84,4 +94,12 @@ __all__ = [
     "MAX_TOOL_CALLS_PER_TURN",
     "MAX_TOOL_OBS_CHARS",
     "control_tool_specs",
+    "tool_validation_error",
+    "SchemaDefinitionError",
+    "ValidationIssue",
+    "normalize_object_schema",
+    "provider_strict_compatible",
+    "validate_json_schema",
+    "validate_schema_definition",
+    "SIDE_EFFECT_CLASSES",
 ]

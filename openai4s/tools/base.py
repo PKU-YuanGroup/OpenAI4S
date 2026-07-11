@@ -17,6 +17,13 @@ import copy
 from dataclasses import FrozenInstanceError
 from typing import Any
 
+from openai4s.tools.schema import (
+    normalize_object_schema,
+    provider_strict_compatible,
+    validate_json_schema,
+)
+from openai4s.tools.taxonomy import READ_ONLY, resource_key, workspace_target
+
 
 class Tool:
     """Base interface and compatibility adapter for one control tool.
@@ -42,6 +49,20 @@ class Tool:
     permission_target_default: str = ""
     secret_path_key: str | None = None
     screen_untrusted_output: bool = False
+    # The Host uses these declarations for durable audit events and future
+    # resource-aware scheduling. They are separate from permission targets:
+    # permission patterns answer "may this run?", resource keys answer "what
+    # does this action touch?".
+    side_effect_class: str = READ_ONLY
+    resource_key_prefix: str = "tool"
+    resource_target_key: str | None = None
+    resource_target_default: str = ""
+    # Unknown model-provided arguments are rejected unless a trusted extension
+    # explicitly opts into an open schema.
+    unknown_properties: str = "forbid"
+    # None enables strict provider declarations only when the normalized schema
+    # satisfies the portable strict subset. False is an explicit opt-out.
+    provider_strict: bool | None = None
 
     _METADATA_FIELDS = (
         "name",
@@ -59,6 +80,12 @@ class Tool:
         "permission_target_default",
         "secret_path_key",
         "screen_untrusted_output",
+        "side_effect_class",
+        "resource_key_prefix",
+        "resource_target_key",
+        "resource_target_default",
+        "unknown_properties",
+        "provider_strict",
     )
 
     def __init__(
@@ -78,6 +105,12 @@ class Tool:
         permission_target_default: str | None = None,
         secret_path_key: str | None = None,
         screen_untrusted_output: bool | None = None,
+        side_effect_class: str | None = None,
+        resource_key_prefix: str | None = None,
+        resource_target_key: str | None = None,
+        resource_target_default: str | None = None,
+        unknown_properties: str | None = None,
+        provider_strict: bool | None = None,
     ) -> None:
         # No arguments snapshots the concrete subclass's class declarations.
         overrides = {
@@ -96,6 +129,12 @@ class Tool:
             "permission_target_default": permission_target_default,
             "secret_path_key": secret_path_key,
             "screen_untrusted_output": screen_untrusted_output,
+            "side_effect_class": side_effect_class,
+            "resource_key_prefix": resource_key_prefix,
+            "resource_target_key": resource_target_key,
+            "resource_target_default": resource_target_default,
+            "unknown_properties": unknown_properties,
+            "provider_strict": provider_strict,
         }
         for field, value in overrides.items():
             if value is None:
@@ -162,6 +201,43 @@ class Tool:
         value = arguments.get(self.secret_path_key)
         return str(value or "")
 
+    def resource_keys(self, arguments: Any) -> tuple[str, ...]:
+        """Derive stable resource identifiers for audit and conflict checks."""
+        target: Any = None
+        if self.resource_target_key and isinstance(arguments, dict):
+            target = arguments.get(self.resource_target_key)
+        if target in (None, ""):
+            target = self.resource_target_default or (
+                "*" if self.resource_target_key else self.name
+            )
+        if self.resource_key_prefix == "workspace":
+            target = workspace_target(target)
+        return (resource_key(self.resource_key_prefix, target),)
+
+    def input_schema(self) -> dict:
+        """Return the isolated, explicit schema enforced by the Host."""
+        return normalize_object_schema(
+            self.parameters, unknown_properties=self.unknown_properties
+        )
+
+    def validation_error(self, arguments: Any) -> str | None:
+        """Return a canonical detail string, or None when arguments are valid."""
+        issues = validate_json_schema(
+            arguments,
+            self.input_schema(),
+            unknown_properties=self.unknown_properties,
+        )
+        if not issues:
+            return None
+        return "invalid arguments: " + "; ".join(str(issue) for issue in issues)
+
+    def supports_provider_strict(self) -> bool:
+        """Whether provider-side strict generation is safe for this schema."""
+        if self.provider_strict is False:
+            return False
+        compatible = provider_strict_compatible(self.input_schema())
+        return compatible if self.provider_strict is None else compatible
+
     def signature_line(self) -> str:
         """Return ``name(arg1, arg2?, ...)`` using declared parameter order."""
         props = self.parameters.get("properties") or {}
@@ -176,13 +252,8 @@ class Tool:
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": copy.deepcopy(
-                        self.parameters.get("properties") or {}
-                    ),
-                    "required": list(self.parameters.get("required") or []),
-                },
+                "parameters": self.input_schema(),
+                "strict": self.supports_provider_strict(),
             },
         }
 

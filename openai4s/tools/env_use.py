@@ -16,12 +16,17 @@ class EnvUseTool(Tool):
         "properties": {
             "name": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Prebuilt environment to switch to.",
             },
         },
         "required": ["name"],
     }
     requires_approval = False
+    read_only = False
+    side_effect_class = "runtime_mutation"
+    resource_key_prefix = "kernel"
+    resource_target_default = "environment"
 
     def execute(self, runtime: EnvironmentToolContext, arguments: dict | str) -> dict:
         from openai4s.kernel import environments as envmod

@@ -14,7 +14,8 @@ def test_specs_are_frozen_fresh_copies_of_the_existing_registry():
     assert isinstance(specs, tuple)
     assert [spec.name for spec in specs] == [tool.name for tool in REGISTRY]
     assert all(isinstance(spec, ToolSpec) for spec in specs)
-    assert all(spec.strict is False for spec in specs)
+    strict_names = {spec.name for spec in specs if spec.strict}
+    assert strict_names == {"write_file", "env_use"}
 
     by_name = {tool.name: tool for tool in REGISTRY}
     for spec in specs:
@@ -23,6 +24,7 @@ def test_specs_are_frozen_fresh_copies_of_the_existing_registry():
         assert spec.input_schema["type"] == "object"
         assert spec.input_schema["properties"] == source.parameters["properties"]
         assert spec.input_schema["required"] == source.parameters["required"]
+        assert spec.input_schema["additionalProperties"] is False
         assert spec.input_schema is not source.parameters
         assert spec.input_schema["properties"] is not source.parameters["properties"]
 

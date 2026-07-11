@@ -17,16 +17,22 @@ class EnvCreateTool(Tool):
         "properties": {
             "name": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Optional environment label.",
             },
             "packages": {
                 "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "maxItems": 100,
                 "description": "Package names to install.",
             },
         },
         "required": ["packages"],
     }
     read_only = False
+    side_effect_class = "runtime_mutation"
+    resource_key_prefix = "kernel"
+    resource_target_default = "environment"
 
     def permission_target(self, arguments: Any) -> str:
         if not isinstance(arguments, dict):

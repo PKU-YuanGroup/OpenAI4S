@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Callable
 
-from openai4s.tools import MAX_TOOL_CALLS_PER_TURN, finalize_tool_batch
+from openai4s.tools import (
+    MAX_TOOL_CALLS_PER_TURN,
+    finalize_tool_batch,
+    tool_validation_error,
+)
 
 from .actions import NativeToolBatch, NativeToolCall
 from .models import ExecutionOutcome
@@ -44,15 +48,20 @@ def execute_native_batch(
             text = f"[Tool error] {call.name or '<unnamed>'}: {detail}"
             ok = False
         else:
-            try:
-                text, ok = invoke(call)
-            except Exception as exc:  # noqa: BLE001 — close every protocol call
-                try:
-                    detail = str(exc)
-                except Exception:  # noqa: BLE001
-                    detail = type(exc).__name__
-                text = f"[Tool error] {call.name or '<unnamed>'}: {detail}"
+            validation_error = tool_validation_error(call.name, call.arguments)
+            if validation_error is not None:
+                text = validation_error
                 ok = False
+            else:
+                try:
+                    text, ok = invoke(call)
+                except Exception as exc:  # noqa: BLE001 — close every protocol call
+                    try:
+                        detail = str(exc)
+                    except Exception:  # noqa: BLE001
+                        detail = type(exc).__name__
+                    text = f"[Tool error] {call.name or '<unnamed>'}: {detail}"
+                    ok = False
         parts.append(text)
         history.append(
             {

@@ -16,6 +16,7 @@ class ListDirectoryTool(Tool):
         "properties": {
             "path": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Directory to list, relative to the workspace "
                 "(default '.').",
             },
@@ -24,6 +25,9 @@ class ListDirectoryTool(Tool):
     }
     permission_target_key = "path"
     permission_target_default = "."
+    resource_key_prefix = "workspace"
+    resource_target_key = "path"
+    resource_target_default = "."
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
         relative = arguments.get("path") or "."

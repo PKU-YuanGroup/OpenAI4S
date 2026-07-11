@@ -14,15 +14,23 @@ class GlobFilesTool(Tool):
     description = "Find workspace files by glob pattern, e.g. '**/*.csv'."
     parameters = {
         "properties": {
-            "pattern": {"type": "string", "description": "Glob pattern."},
+            "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Glob pattern.",
+            },
             "path": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Directory to glob under (default the workspace root).",
             },
         },
         "required": ["pattern"],
     }
     permission_target_key = "pattern"
+    resource_key_prefix = "workspace"
+    resource_target_key = "path"
+    resource_target_default = "."
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
         pattern = arguments.get("pattern") or "**/*"

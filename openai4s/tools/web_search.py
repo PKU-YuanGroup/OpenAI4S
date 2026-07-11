@@ -15,13 +15,21 @@ class WebSearchTool(Tool):
     description = "Live keyless web search; returns a list of {title, url, snippet}."
     parameters = {
         "properties": {
-            "query": {"type": "string", "description": "Search query."},
+            "query": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Search query.",
+            },
             "num_results": {
                 "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
                 "description": "Maximum results to return (default 8).",
             },
             "timeout": {
                 "type": "number",
+                "minimum": 1,
+                "maximum": 120,
                 "description": "Seconds to wait before giving up (default 20).",
             },
         },
@@ -30,6 +38,8 @@ class WebSearchTool(Tool):
     needs_network = True
     screen_untrusted_output = True
     permission_target_key = "query"
+    resource_key_prefix = "network"
+    resource_target_default = "search"
 
     def execute(self, _runtime: Any, arguments: dict) -> dict:
         from openai4s import egress, webtools
