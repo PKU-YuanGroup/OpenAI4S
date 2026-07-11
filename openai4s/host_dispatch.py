@@ -14,9 +14,11 @@ exceptions are also converted to {"error":...} on the wire by the manager.
 from __future__ import annotations
 
 import re
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
@@ -472,11 +474,12 @@ class HostDispatcher:
         # here.  Until then the capability still binds the worker's per-process
         # generation claim; the service independently checks this value whenever
         # it is populated.
-        self.bash_generation_id: str | int | None = None
+        self._bash_generation_local = threading.local()
+        self._bash_generation_default: str | int | None = None
         self._bash_authorization = BashAuthorizationService(
             workspace=lambda: self._files.workspace(),
             frame_id=lambda: self.frame_id,
-            generation=lambda: self.bash_generation_id,
+            generation=self._current_bash_generation,
             allowed_roots=_configured_bash_allowed_roots,
             audit=lambda **fields: self.store.log_host_call(**fields),
             step_sink=lambda: self.on_step,
@@ -576,6 +579,41 @@ class HostDispatcher:
         """The dispatcher-scoped loader shared by prompt and host retrieval."""
 
         return self._skill_service.loader
+
+    @property
+    def bash_generation_id(self) -> str | int | None:
+        """Compatibility view of the active worker-scoped shell generation."""
+
+        return self._current_bash_generation()
+
+    @bash_generation_id.setter
+    def bash_generation_id(self, value: str | int | None) -> None:
+        self._bash_generation_default = value
+
+    def _current_bash_generation(self) -> str | int | None:
+        return getattr(
+            self._bash_generation_local,
+            "generation",
+            self._bash_generation_default,
+        )
+
+    @contextmanager
+    def bind_bash_generation(self, generation: str | int):
+        """Bind Host authorization to one manager reader thread/worker."""
+
+        marker = object()
+        previous = getattr(self._bash_generation_local, "generation", marker)
+        self._bash_generation_local.generation = generation
+        try:
+            yield
+        finally:
+            if previous is marker:
+                try:
+                    del self._bash_generation_local.generation
+                except AttributeError:
+                    pass
+            else:
+                self._bash_generation_local.generation = previous
 
     @last_output.setter
     def last_output(self, value: dict | None) -> None:

@@ -57,6 +57,7 @@ class Kernel:
         # one synchronous reader loop.
         self._sandbox = sandbox or create_kernel_sandbox(self.cwd)
         self.generation = 0  # bumped on every (re)spawn
+        self.authorization_generation = f"kernel:{uuid.uuid4()}"
         try:
             self._proc = self._spawn()
         except Exception:
@@ -103,6 +104,7 @@ class Kernel:
             cwd=self.cwd,
             env_root=self.env_root,
             env_name=self.env_name,
+            kernel_generation=self.authorization_generation,
             repo_root=repo_root,
         )
 
@@ -218,7 +220,18 @@ class Kernel:
             )
             return
         try:
-            data = self.dispatcher(method, args)
+            bind_generation = getattr(
+                self.dispatcher, "bind_bash_generation", None
+            )
+            if callable(bind_generation):
+                # HostDispatcher is shared by the session and can service a
+                # main and background worker on different reader threads.  A
+                # thread-local binding prevents either worker from borrowing
+                # the other's shell capability generation.
+                with bind_generation(self.authorization_generation):
+                    data = self.dispatcher(method, args)
+            else:
+                data = self.dispatcher(method, args)
             # soft-fail contract: a single-key {"error": msg} return is a
             # soft failure the worker must raise, not a normal result.
             if isinstance(data, dict) and set(data.keys()) == {"error"}:
@@ -258,6 +271,7 @@ class Kernel:
                 stream and stream.close()
             except Exception:  # noqa: BLE001
                 pass
+        self.authorization_generation = f"kernel:{uuid.uuid4()}"
         self._proc = self._spawn()
         self.generation += 1
 

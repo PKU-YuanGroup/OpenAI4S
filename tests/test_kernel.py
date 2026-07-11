@@ -66,6 +66,7 @@ def test_kernel_child_environment_is_rebuilt_from_strict_allowlist(tmp_path):
         "OPENAI4S_PROVENANCE_OFF": "1",
         "OPENAI4S_SAFETY_AUDIT_HOOK": "0",
         "OPENAI4S_KERNEL_MODE": "host-override",
+        "OPENAI4S_KERNEL_GENERATION": "host-forged-generation",
         "OPENAI4S_WORKSPACE": "/host/wrong-workspace",
         "OPENAI4S_LLM_API_KEY": "llm-secret",
         "OPENAI4S_ARK_API_KEY": "ark-secret",
@@ -93,6 +94,7 @@ def test_kernel_child_environment_is_rebuilt_from_strict_allowlist(tmp_path):
         cwd=str(tmp_path),
         env_root=str(env_root),
         env_name="science",
+        kernel_generation="kernel:test-generation",
         repo_root=str(repo_root),
     )
 
@@ -104,6 +106,7 @@ def test_kernel_child_environment_is_rebuilt_from_strict_allowlist(tmp_path):
     assert env["OPENAI4S_PROVENANCE_OFF"] == "1"
     assert env["OPENAI4S_SAFETY_AUDIT_HOOK"] == "0"
     assert env["OPENAI4S_KERNEL_MODE"] == "python"
+    assert env["OPENAI4S_KERNEL_GENERATION"] == "kernel:test-generation"
     assert env["OPENAI4S_WORKSPACE"] == str(tmp_path.resolve())
     assert env["PWD"] == str(tmp_path.resolve())
     assert env["PYTHONPATH"] == str(repo_root.resolve())
@@ -546,6 +549,33 @@ def test_host_bash_is_kernel_local_and_never_rpcs(tmp_path):
     ]
     assert "bash" in methods  # safe result audit
     assert "authorize_bash" in methods
+
+
+def test_host_bash_capability_is_bound_to_exact_worker_spawn(tmp_path):
+    dispatcher = _authorized_bash_dispatcher(tmp_path)
+    observed: list[tuple[str, str | int | None]] = []
+    authorize = dispatcher._bash_authorization.authorize
+
+    def inspect_binding(spec):
+        observed.append((spec.get("generation"), dispatcher.bash_generation_id))
+        return authorize(spec)
+
+    dispatcher._bash_authorization.authorize = inspect_binding
+    with Kernel(dispatcher=dispatcher, cwd=str(tmp_path)) as kernel:
+        first_generation = kernel.authorization_generation
+        first = kernel.execute("print(host.bash('echo first')['stdout'])")
+        assert first["error"] is None
+        kernel.restart()
+        second_generation = kernel.authorization_generation
+        second = kernel.execute("print(host.bash('echo second')['stdout'])")
+        assert second["error"] is None
+
+    assert first_generation != second_generation
+    assert observed == [
+        (first_generation, first_generation),
+        (second_generation, second_generation),
+    ]
+    assert dispatcher.bash_generation_id is None
 
 
 def test_host_bash_static_precheck_blocks_catastrophe(tmp_path):

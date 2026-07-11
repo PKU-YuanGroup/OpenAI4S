@@ -158,6 +158,7 @@ def build_kernel_environment(
     cwd: str | None = None,
     env_root: str | None = None,
     env_name: str | None = None,
+    kernel_generation: str | None = None,
     repo_root: str | None = None,
 ) -> dict[str, str]:
     """Build the complete environment for a Python or R kernel child.
@@ -192,6 +193,11 @@ def build_kernel_environment(
     env["PWD"] = str(workspace)
     env["OPENAI4S_WORKSPACE"] = str(workspace)
     env["OPENAI4S_KERNEL_MODE"] = str(mode)
+    if kernel_generation:
+        # Synthesized by the trusted manager for this exact worker spawn.  It
+        # is never inherited from the daemon environment and is used only to
+        # bind one-shot host.bash capabilities to the originating process.
+        env["OPENAI4S_KERNEL_GENERATION"] = str(kernel_generation)
 
     # Do not inherit a host PYTHONPATH: arbitrary entries are import-time code
     # injection.  The worker only needs the trusted OpenAI4S source root when a
