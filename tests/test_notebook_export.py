@@ -17,6 +17,8 @@ class _Store:
             {
                 "producing_cell_id": "cell-python",
                 "cell_index": 1,
+                "state_revision": 11,
+                "generation_id": "generation-python-1",
                 "kernel_id": "python:gen-1",
                 "language": "python",
                 "status": "ok",
@@ -33,6 +35,8 @@ class _Store:
             {
                 "producing_cell_id": "cell-r",
                 "cell_index": 2,
+                "state_revision": 12,
+                "generation_id": "generation-r-1",
                 "kernel_id": "r:gen-1",
                 "language": "r",
                 "status": "error",
@@ -61,7 +65,10 @@ def test_python_and_r_exports_are_separate_read_only_notebooks():
     py_cell = python["cells"][0]
     assert py_cell["id"] == "cell-python"
     assert py_cell["metadata"]["openai4s"]["history_is_read_only"] is True
-    assert py_cell["metadata"]["openai4s"]["state_revision"] == 1
+    assert py_cell["metadata"]["openai4s"]["state_revision"] == 11
+    assert py_cell["metadata"]["openai4s"]["generation_id"] == "generation-python-1"
+    assert r["cells"][0]["metadata"]["openai4s"]["state_revision"] == 12
+    assert r["cells"][0]["metadata"]["openai4s"]["generation_id"] == "generation-r-1"
     assert py_cell["outputs"][0] == {
         "name": "stdout",
         "output_type": "stream",

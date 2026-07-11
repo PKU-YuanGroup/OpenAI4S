@@ -122,6 +122,11 @@ class CellExecutionService:
                 self.ports.bind_attempt_generation(
                     attempt_id, session, request.language
                 )
+            generation_id = (
+                self._generation_id(session, request.language)
+                if runtime_error is None
+                else None
+            )
         except BaseException as exc:
             self._finish_attempt(attempt_id, "prepare_failed", exc)
             raise
@@ -140,6 +145,7 @@ class CellExecutionService:
                     cell_id,
                     kernel_id,
                     title,
+                    generation_id,
                 )
                 if show_in_notebook
                 else None
@@ -166,6 +172,7 @@ class CellExecutionService:
                 refusal,
                 attempt_id,
                 "safety_refused",
+                generation_id,
             )
         if runtime_error is not None:
             return self._soft_error(
@@ -178,6 +185,7 @@ class CellExecutionService:
                 runtime_error,
                 attempt_id,
                 "runtime_unavailable",
+                generation_id,
             )
 
         lease = session.kernels.lease("r") if request.language == "r" else None
@@ -189,6 +197,23 @@ class CellExecutionService:
             # watchdog recovery may already have advanced the generation.
             if lease is not None:
                 session.kernels.shutdown_if_current(lease)
+            failed_result = _error_result(cell_id, str(exc))
+            try:
+                # A worker/protocol failure is still an immutable Cell
+                # transaction.  Persist its source and terminal observation so
+                # the session revision cannot disappear or be reused after a
+                # daemon reopen.  No response/capture milestones are invented.
+                self._record(
+                    session,
+                    request,
+                    index,
+                    kernel_id,
+                    failed_result,
+                    CaptureResult(),
+                )
+            except BaseException as record_exc:
+                self._finish_attempt(attempt_id, "record_failed", record_exc)
+                raise record_exc from exc
             self._finish_attempt(attempt_id, "worker_died", exc)
             if show_in_notebook and request.stream:
                 self._emit_finished(
@@ -198,8 +223,9 @@ class CellExecutionService:
                     index,
                     cell_id,
                     kernel_id,
-                    _error_result(cell_id, str(exc)),
+                    failed_result,
                     CaptureResult(),
+                    generation_id,
                 )
             raise
 
@@ -262,8 +288,16 @@ class CellExecutionService:
                 kernel_id,
                 result,
                 capture,
+                generation_id,
             )
-        return CellExecutionResult(result, index, cell_id, capture)
+        return CellExecutionResult(
+            result,
+            index,
+            cell_id,
+            capture,
+            state_revision=index,
+            generation_id=generation_id,
+        )
 
     def _start_stream(
         self,
@@ -274,6 +308,7 @@ class CellExecutionService:
         cell_id: str,
         kernel_id: str,
         title: str,
+        generation_id: str | None,
     ) -> ChunkSink | None:
         if not request.stream:
             return None
@@ -284,6 +319,8 @@ class CellExecutionService:
                 "root_frame_id": session.root_frame_id,
                 "producing_cell_id": cell_id,
                 "cell_index": index,
+                "state_revision": index,
+                "generation_id": generation_id,
                 "kernel_id": kernel_id,
                 "language": request.language,
                 "origin": request.origin,
@@ -351,6 +388,7 @@ class CellExecutionService:
         message: str,
         attempt_id: str | None,
         terminal_state: str,
+        generation_id: str | None,
     ) -> CellExecutionResult:
         result = _error_result(cell_id, message)
         if attempt_id is not None:
@@ -396,8 +434,16 @@ class CellExecutionService:
                 kernel_id,
                 result,
                 capture,
+                generation_id,
             )
-        return CellExecutionResult(result, index, cell_id, capture)
+        return CellExecutionResult(
+            result,
+            index,
+            cell_id,
+            capture,
+            state_revision=index,
+            generation_id=generation_id,
+        )
 
     def _finish_attempt(
         self,
@@ -425,6 +471,7 @@ class CellExecutionService:
         kernel_id: str,
         result: dict[str, Any],
         capture: CaptureResult,
+        generation_id: str | None,
     ) -> None:
         status = (
             "interrupted"
@@ -438,6 +485,8 @@ class CellExecutionService:
                 "root_frame_id": session.root_frame_id,
                 "producing_cell_id": cell_id,
                 "cell_index": index,
+                "state_revision": index,
+                "generation_id": generation_id,
                 "kernel_id": kernel_id,
                 "language": request.language,
                 "origin": request.origin,
@@ -471,6 +520,7 @@ class CellExecutionService:
             origin=request.origin,
             cell_seq=index,
             cell_index=index,
+            state_revision=index,
             project_id=session.project_id,
             kernel_id=kernel_id,
             language=request.language,
@@ -478,6 +528,16 @@ class CellExecutionService:
             files_written=capture.files_written,
             files_read=[],
         )
+
+    @staticmethod
+    def _generation_id(session: CellSession, language: str) -> str | None:
+        """Return the exact acquired worker UUID without synthesizing one."""
+
+        try:
+            value = session.kernels.status(language).get("generation_id")
+        except Exception:  # noqa: BLE001 - projection must not break a Cell
+            return None
+        return str(value) if value else None
 
     @staticmethod
     def _emit_error(

@@ -302,9 +302,12 @@ def test_notebook_live_state_and_outputs_follow_the_ui_contract() -> None:
         assert event_type in event_source
     assert "producing_cell_id" in start_source
     assert "event.origin" in start_source
+    assert "event.generation_id" in start_source
+    assert "event.state_revision" in start_source
     assert "mergeNotebookCells" in start_source
     assert "producing_cell_id" in chunk_source
     assert "producing_cell_id" in finished_source
+    assert "...event" in finished_source
     assert "S.liveCells" in finished_source and "S.cells" in finished_source
     assert "event.producing_cell_id" in feed_source
     assert "S._executionLoadReq" in load_source
@@ -313,6 +316,9 @@ def test_notebook_live_state_and_outputs_follow_the_ui_contract() -> None:
     assert 't("nb.status.ready"' in status_source
     assert "st.turn_running" in status_source
     assert ".alive" in status_source
+    state_source = _extract_js_function(APP_JS, "notebookCellState")
+    assert "runtimeSummary().revision" in state_source
+    assert "revision < current" in state_source
 
 
 def test_notebook_retry_projection_is_expandable_and_keeps_raw_attempts() -> None:

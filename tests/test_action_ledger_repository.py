@@ -237,6 +237,7 @@ def test_execution_attempt_is_allocated_first_and_terminal_state_is_immutable(
         attempt_id="xa-1",
         group_id="ag-code",
         producing_cell_id="cell-1",
+        state_revision=3,
         generation_id="python:7",
         replayed_from_cell_id="cell-old",
         allocated_at=100,
@@ -246,6 +247,7 @@ def test_execution_attempt_is_allocated_first_and_terminal_state_is_immutable(
         "group_id": "ag-code",
         "producing_cell_id": "cell-1",
         "attempt_ordinal": 0,
+        "state_revision": 3,
         "generation_id": "python:7",
         "allocated_at": 100,
         "started_at": None,
@@ -317,6 +319,14 @@ def test_repository_additively_migrates_normalized_assistant_message_column():
         "kind TEXT NOT NULL,provider TEXT,model TEXT,wire_state TEXT,"
         "assistant_content TEXT,created_at INTEGER NOT NULL)"
     )
+    connection.execute(
+        "CREATE TABLE execution_attempts("
+        "attempt_id TEXT PRIMARY KEY,group_id TEXT NOT NULL,"
+        "producing_cell_id TEXT NOT NULL,attempt_ordinal INTEGER NOT NULL,"
+        "generation_id TEXT,allocated_at INTEGER NOT NULL,started_at INTEGER,"
+        "response_at INTEGER,capture_at INTEGER,finished_at INTEGER,"
+        "terminal_state TEXT,error TEXT,replayed_from_cell_id TEXT)"
+    )
     repository = ActionLedgerRepository(
         connection,
         threading.RLock(),
@@ -326,6 +336,11 @@ def test_repository_additively_migrates_normalized_assistant_message_column():
         row["name"] for row in connection.execute("PRAGMA table_info(action_groups)")
     }
     assert "assistant_message" in columns
+    attempt_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(execution_attempts)")
+    }
+    assert {"owner_instance_id", "state_revision"} <= attempt_columns
     group = repository.append_group(
         root_frame_id="root",
         turn_id="turn",

@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS execution_log (
     project_id    TEXT NOT NULL DEFAULT 'default',
     cell_seq      INTEGER,
     cell_index    INTEGER,
+    state_revision INTEGER,
     kernel_id     TEXT,
     language      TEXT,
     status        TEXT,
@@ -612,6 +613,7 @@ class Store:
         "execution_log": [
             ("root_frame_id", "TEXT"),
             ("cell_index", "INTEGER"),
+            ("state_revision", "INTEGER"),
             ("kernel_id", "TEXT"),
             ("language", "TEXT"),
             ("status", "TEXT"),
@@ -659,6 +661,14 @@ class Store:
                 "actor.root_frame_id FROM frames AS actor "
                 "WHERE actor.frame_id=artifacts.root_frame_id),root_frame_id) "
                 "WHERE root_frame_id IN (SELECT frame_id FROM frames)"
+            )
+            # ``cell_index`` was already the session-monotonic allocation for
+            # historical Web Cells.  Backfill the explicitly named runtime
+            # revision without pretending that rows which never had an index
+            # carry recoverable state.
+            self._conn.execute(
+                "UPDATE execution_log SET state_revision=cell_index "
+                "WHERE state_revision IS NULL AND cell_index IS NOT NULL"
             )
             self._conn.commit()
 
@@ -792,6 +802,9 @@ class Store:
     def cell_count(self, root_frame_id: str) -> int:
         return self._frames.cell_count(root_frame_id)
 
+    def latest_state_revision(self, root_frame_id: str) -> int:
+        return self._frames.latest_state_revision(root_frame_id)
+
     # --- semantic activity steps (plan / search / env / skill / edit / …) ----
     # Every visible host.* tool call becomes a persisted "step" so a reopened
     # session re-renders the same rich activity (not just the final prose).
@@ -885,6 +898,7 @@ class Store:
         project_id: str = "default",
         root_frame_id: str | None = None,
         cell_index: int | None = None,
+        state_revision: int | None = None,
         kernel_id: str = "python",
         language: str = "python",
         figures: list | None = None,
@@ -900,6 +914,7 @@ class Store:
             project_id=project_id,
             root_frame_id=root_frame_id,
             cell_index=cell_index,
+            state_revision=state_revision,
             kernel_id=kernel_id,
             language=language,
             figures=figures,
@@ -1041,6 +1056,7 @@ class Store:
         *,
         group_id: str,
         producing_cell_id: str,
+        state_revision: int | None = None,
         generation_id: str | None = None,
         owner_instance_id: str | None = None,
         replayed_from_cell_id: str | None = None,
@@ -1051,6 +1067,7 @@ class Store:
         return self._actions.allocate_attempt(
             group_id=group_id,
             producing_cell_id=producing_cell_id,
+            state_revision=state_revision,
             generation_id=generation_id,
             owner_instance_id=owner_instance_id,
             replayed_from_cell_id=replayed_from_cell_id,

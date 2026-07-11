@@ -190,8 +190,8 @@ The first Agent/user Cell starts only the selected language; a native-tool or
 
 | Method & path | Behavior |
 | --- | --- |
-| `GET /frames/{fid}/execution-log` | `{"kernels":[id…],"entries":[cell…]}`; entries include stable `producing_cell_id`, `cell_index`, `kernel_id`, `language`, `origin`, source/output/error, files/figures, usage, and immutable retry metadata when recorded. |
-| `POST /frames/{fid}/kernel/execute` | Body `{code,language?,execution_id?}` where language is `python` (default) or `r`; the shipped UI supplies a portable execution ID so its queued ticket is addressable before the blocking response returns. Runs a new FIFO-owned user Cell and never edits history. A completed execution returns `{status,execution_id,owner,cell:{cell_index,kernel_id,language,source,stdout,stderr,status,error,figures,files_written,files_read}}`; cancellation while still queued returns the smaller `{status:"cancelled",frame_id,reason}` shape. |
+| `GET /frames/{fid}/execution-log` | `{"kernels":[id…],"entries":[cell…]}`; entries include stable `producing_cell_id`, `cell_index`, session-monotonic `state_revision`, attempt-derived `generation_id` (nullable for legacy rows or when no worker was acquired), `kernel_id`, `language`, `origin`, source/output/error, files/figures, usage, and immutable retry metadata when recorded. |
+| `POST /frames/{fid}/kernel/execute` | Body `{code,language?,execution_id?}` where language is `python` (default) or `r`; the shipped UI supplies a portable execution ID so its queued ticket is addressable before the blocking response returns. Runs a new FIFO-owned user Cell and never edits history. A completed execution returns `{status,execution_id,owner,cell:{cell_index,state_revision,generation_id,kernel_id,language,source,stdout,stderr,status,error,figures,files_written,files_read}}`; cancellation while still queued returns the smaller `{status:"cancelled",frame_id,reason}` shape. |
 | `POST /frames/{fid}/kernel/restart` | → `{"ok":true,"status":"restarted","generation","generation_id","frame_id"}` + `kernel_status` WS event. |
 | `POST /frames/{fid}/kernel/stop` | → `{"ok":true,"state":"stopped"|"none","frame_id"}`. |
 | `POST /frames/{fid}/kernel/start` | → `{"ok":true,"state":"running","generation","frame_id",…}`. |
@@ -216,6 +216,11 @@ lifecycle work.
 execution-log routes now carries the runtime segment — `python` for the
 default env, `python — struct` / `python — phylo` etc. when the agent has
 switched conda env — so per-cell rows label which environment they ran under.
+`state_revision` currently reuses the durable session Cell ordinal. It is a
+state-change cursor used for stale/read-only UI labeling, not serialized
+variable state and not evidence that an older in-memory namespace is
+recoverable. `generation_id` is the UUID bound to the execution attempt rather
+than a value reconstructed from this display label.
 
 ### Scientific session workbench
 
@@ -360,9 +365,9 @@ m.frame_id`.
 | `replay_begin` / `replay_end` | — | Bracket the buffered-event replay after `view_session` mid-turn. |
 | `text_reset` | `frame_id` | Start of a fresh streamed assistant message (clears the live bubble). |
 | `text_chunk` | `frame_id`, `block_type` (`"text"` for prose, `"tool"` for code-cell echo/stdout/errors), `chunk`; a code-cell start also carries `cell_index`, canonical `kernel_id`, and `language` | Incremental stream. The frontend uses the start metadata directly so live Notebook grouping matches the persisted execution log without a status-cache race. |
-| `notebook_cell_start` | `frame_id`, `producing_cell_id`, `cell_index`, `kernel_id`, `language`, `origin`, `source`, `status` | Starts/upserts one immutable Cell identity. |
+| `notebook_cell_start` | `frame_id`, `producing_cell_id`, `cell_index`, `state_revision`, `generation_id`, `kernel_id`, `language`, `origin`, `source`, `status` | Starts/upserts one immutable Cell identity using the exact attempt-bound runtime generation. |
 | `notebook_cell_chunk` | `frame_id`, `producing_cell_id`, `stream`, `chunk` | Appends output to that exact live Cell. Unknown/replayed fields are tolerated. |
-| `notebook_cell_finished` | start identity plus complete source/output/error, figures/files and usage | Replaces the live projection with the authoritative finished revision. |
+| `notebook_cell_finished` | start identity (including the unchanged `state_revision` and `generation_id`) plus complete source/output/error, figures/files and usage | Replaces the live projection with the authoritative finished revision. |
 | `step` | `frame_id`, `step_id`, `kind`, `title`, `input`, `status:"running"` | A semantic step began (host call, artifact save, …). |
 | `step_update` | `frame_id`, `step_id`, `status`, `output`, `summary` | Step finished/patched. Artifact-save steps emit `step`+`step_update` back-to-back. |
 | `plan_ready` | `frame_id`, `plan_id`, `status`, `plan`, `artifact_id` | A plan-mode turn produced a structured plan. |

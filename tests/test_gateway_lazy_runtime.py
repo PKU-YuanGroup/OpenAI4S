@@ -327,6 +327,8 @@ def test_explicit_start_and_repl_spawn_but_repl_attempt_precedes_spawn(
     expected_attempts.add(repl_frame)
     result = runner.run_repl(repl_frame, "default", "print('hello')")
     assert result["cell"]["status"] == "ok"
+    assert result["cell"]["state_revision"] == 1
+    assert result["cell"]["generation_id"]
     assert len(kernels) == 2
     repl_events = [
         event
@@ -345,10 +347,80 @@ def test_explicit_start_and_repl_spawn_but_repl_attempt_precedes_spawn(
     assert next(
         event for event in repl_events if event["type"] == "notebook_cell_chunk"
     )["chunk"] == "live output"
+    start = next(
+        event for event in repl_events if event["type"] == "notebook_cell_start"
+    )
+    finished = next(
+        event for event in repl_events if event["type"] == "notebook_cell_finished"
+    )
+    assert start["state_revision"] == finished["state_revision"] == 1
+    assert (
+        start["generation_id"]
+        == finished["generation_id"]
+        == result["cell"]["generation_id"]
+    )
     assert not any(event["type"] == "text_chunk" for event in repl_events)
     attempts = runner.store.list_execution_attempts(root_frame_id=repl_frame)
     assert len(attempts) == 1
     assert attempts[0]["terminal_state"] == "completed"
+    assert attempts[0]["state_revision"] == 1
+    assert attempts[0]["generation_id"] == start["generation_id"]
+
+
+def test_reopened_repl_allocates_after_durable_attempt_revision(
+    monkeypatch, tmp_path
+):
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), _Hub())
+    _install_fake_runtime(monkeypatch, runner)
+    frame_id = _frame(runner)
+    runner.store.log_cell(
+        frame_id=frame_id,
+        root_frame_id=frame_id,
+        code="historical()",
+        result={"id": "historical-cell"},
+        cell_index=5,
+    )
+    group = runner.store.append_action_group(
+        root_frame_id=frame_id,
+        turn_id="failed-before-log",
+        kind="execution",
+    )
+    runner.store.allocate_execution_attempt(
+        group_id=group["group_id"],
+        producing_cell_id="failed-before-log",
+        state_revision=7,
+    )
+
+    result = runner.run_repl(frame_id, "default", "print('after reopen')")
+
+    assert result["cell"]["state_revision"] == 8
+    assert [
+        cell["state_revision"] for cell in runner.store.list_cells(frame_id)
+    ] == [5, 8]
+    attempt = next(
+        item
+        for item in runner.store.list_execution_attempts(root_frame_id=frame_id)
+        if item["state_revision"] == 8
+    )
+    start = next(
+        event
+        for event in runner.hub.events
+        if event.get("type") == "notebook_cell_start"
+        and event.get("root_frame_id") == frame_id
+    )
+    finished = next(
+        event
+        for event in runner.hub.events
+        if event.get("type") == "notebook_cell_finished"
+        and event.get("root_frame_id") == frame_id
+    )
+    assert start["state_revision"] == finished["state_revision"] == 8
+    assert (
+        start["generation_id"]
+        == finished["generation_id"]
+        == result["cell"]["generation_id"]
+        == attempt["generation_id"]
+    )
 
 
 def test_repl_response_and_persisted_cell_keep_interrupted_terminal_state(

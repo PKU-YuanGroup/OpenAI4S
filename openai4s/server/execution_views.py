@@ -56,6 +56,14 @@ class ExecutionViewService:
                 {
                     "producing_cell_id": identity,
                     "cell_index": cell_index,
+                    "state_revision": (
+                        cell.get("state_revision")
+                        if cell.get("state_revision") is not None
+                        else cell_index
+                    ),
+                    # Store derives this from the immutable execution-attempt
+                    # association; the view never guesses from kernel labels.
+                    "generation_id": cell.get("generation_id"),
                     "kernel_id": kernel_id,
                     "language": language,
                     "origin": cell.get("origin"),

@@ -47,7 +47,10 @@ class NotebookExportService:
             if str(cell.get("language") or "python").lower() == language
         ]
         cells = [
-            self._cell(cell, revision=index + 1)
+            self._cell(
+                cell,
+                revision=self._state_revision(cell, fallback=index + 1),
+            )
             for index, cell in enumerate(source_cells)
         ]
         spec = _LANGUAGE[language]
@@ -185,6 +188,7 @@ class NotebookExportService:
                     "origin": cell.get("origin"),
                     "status": cell.get("status"),
                     "state_revision": revision,
+                    "generation_id": cell.get("generation_id"),
                     "created_at": cell.get("created_at"),
                     "figures": figures,
                     "files_read": list(cell.get("files_read") or ()),
@@ -204,6 +208,19 @@ class NotebookExportService:
         except (TypeError, ValueError):
             count = fallback
         return max(1, count)
+
+    @staticmethod
+    def _state_revision(cell: Mapping[str, Any], fallback: int) -> int:
+        """Keep the session-global revision in language-split exports."""
+
+        value = cell.get("state_revision")
+        if value is None:
+            value = cell.get("cell_index")
+        try:
+            revision = int(value)
+        except (TypeError, ValueError):
+            revision = fallback
+        return max(1, revision)
 
     @staticmethod
     def _jupyter_id(value: str) -> str:

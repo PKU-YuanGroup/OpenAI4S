@@ -45,6 +45,8 @@ def test_execution_log_keeps_order_defaults_and_first_seen_kernels():
     store.cells["frame"] = [
         {
             "cell_index": 2,
+            "state_revision": 9,
+            "generation_id": "generation-python-9",
             "kernel_id": None,
             "language": None,
             "code": None,
@@ -91,6 +93,8 @@ def test_execution_log_keeps_order_defaults_and_first_seen_kernels():
     first, second, _third, interrupted = payload["entries"]
     assert set(first) == {
         "cell_index",
+        "state_revision",
+        "generation_id",
         "producing_cell_id",
         "kernel_id",
         "language",
@@ -114,6 +118,8 @@ def test_execution_log_keeps_order_defaults_and_first_seen_kernels():
     assert first == {
         "producing_cell_id": "legacy-cell-2",
         "cell_index": 2,
+        "state_revision": 9,
+        "generation_id": "generation-python-9",
         "kernel_id": "python",
         "language": "python",
         "origin": None,

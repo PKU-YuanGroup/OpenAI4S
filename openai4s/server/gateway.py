@@ -1496,6 +1496,11 @@ class SessionRunner:
                     owner_instance_id=self._owner_instance_id,
                     clock_ms=lambda: int(self._clock() * 1000),
                 )
+                # A direct REPL Cell allocates its attempt before lazy language
+                # preparation calls ``_seed_messages``.  Seed the durable
+                # cursor at SessionState creation so a daemon reopen can never
+                # reserve revision 1 over an existing session history.
+                st.cell_index = self.store.latest_state_revision(root_frame_id)
                 self._sessions[root_frame_id] = st
             return st
 
@@ -1703,9 +1708,13 @@ class SessionRunner:
             {"role": "system", "content": ctx},
             *restore_action_history(self.store, st.root_frame_id),
         ]
-        # Cell identity is also process-local unless explicitly re-seeded.
-        # The execution log remains the lossless physical-cell projection.
-        st.cell_index = self.store.cell_count(st.root_frame_id)
+        # Re-seed from the durable transaction cursor, not row count.  Failed
+        # attempts can reserve a revision before an execution-log row exists,
+        # and that ordinal must never be reused after daemon reopen.
+        st.cell_index = max(
+            st.cell_index,
+            self.store.latest_state_revision(st.root_frame_id),
+        )
 
     def _skills_for(self, st: SessionState):
         """Return the exact project/session-scoped loader used by Host RPC.
@@ -3623,6 +3632,7 @@ class SessionRunner:
         attempt = self.store.allocate_execution_attempt(
             group_id=group_id,
             producing_cell_id=cell_id,
+            state_revision=st.cell_index,
             generation_id=(
                 status.get("generation_id") if status.get("alive") else None
             ),
@@ -3669,6 +3679,8 @@ class SessionRunner:
             "result": executed.result,
             "idx": executed.cell_index,
             "cell_id": executed.cell_id,
+            "state_revision": executed.state_revision,
+            "generation_id": executed.generation_id,
             "figures": executed.capture.figures,
             "files_written": executed.capture.files_written,
             "saved": executed.capture.artifacts,
@@ -3878,6 +3890,8 @@ class SessionRunner:
                 "owner": execution.owner.as_dict(),
                 "cell": {
                     "cell_index": info["idx"],
+                    "state_revision": info["state_revision"],
+                    "generation_id": info["generation_id"],
                     "kernel_id": (
                         self._r_kernel_id(st)
                         if language == "r"

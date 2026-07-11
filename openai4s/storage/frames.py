@@ -403,6 +403,30 @@ class FrameRepository:
             ).fetchone()
         return row["n"] or 0
 
+    def latest_state_revision(self, root_frame_id: str) -> int:
+        """Return the durable session revision cursor used for the next Cell.
+
+        Indexed historical rows are authoritative.  A count fallback reserves
+        ordinals for older unindexed rows without fabricating per-row revision
+        metadata for them.
+        """
+
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT (SELECT COUNT(*) FROM execution_log WHERE root_frame_id=?) "
+                "AS n,(SELECT MAX(COALESCE(state_revision,cell_index,0)) FROM "
+                "execution_log WHERE root_frame_id=?) AS logged_revision,"
+                "(SELECT MAX(a.state_revision) FROM execution_attempts AS a "
+                "JOIN action_groups AS g ON g.group_id=a.group_id "
+                "WHERE g.root_frame_id=?) AS attempt_revision",
+                (root_frame_id, root_frame_id, root_frame_id),
+            ).fetchone()
+        return max(
+            int(row["n"] or 0),
+            int(row["logged_revision"] or 0),
+            int(row["attempt_revision"] or 0),
+        )
+
     # --- semantic activity steps ------------------------------------
     def add_step(
         self,
@@ -632,6 +656,7 @@ class FrameRepository:
         project_id: str = "default",
         root_frame_id: str | None = None,
         cell_index: int | None = None,
+        state_revision: int | None = None,
         kernel_id: str = "python",
         language: str = "python",
         figures: list | None = None,
@@ -645,16 +670,60 @@ class FrameRepository:
             if result.get("interrupted")
             else ("error" if result.get("error") else "ok")
         )
+        with self._lock:
+            reserved = self._connection.execute(
+                "SELECT state_revision FROM execution_attempts "
+                "WHERE producing_cell_id=? AND state_revision IS NOT NULL "
+                "ORDER BY attempt_ordinal DESC LIMIT 1",
+                (cell_id,),
+            ).fetchone()
+        reserved_revision = (
+            int(reserved["state_revision"]) if reserved is not None else None
+        )
+        if state_revision is None:
+            state_revision = (
+                reserved_revision
+                if reserved_revision is not None
+                else cell_index
+            )
+        elif (
+            reserved_revision is not None
+            and state_revision != reserved_revision
+        ):
+            raise ValueError(
+                "state_revision must match the durable execution attempt"
+            )
+        latest_revision = (
+            self.latest_state_revision(root_frame_id) if root_frame_id else 0
+        )
+        if state_revision is None and root_frame_id:
+            state_revision = latest_revision + 1
+        if state_revision is not None:
+            if isinstance(state_revision, bool) or not isinstance(
+                state_revision, int
+            ):
+                raise TypeError("state_revision must be an integer")
+            if state_revision < 1:
+                raise ValueError("state_revision must be positive")
+            if (
+                root_frame_id
+                and reserved_revision is None
+                and state_revision <= latest_revision
+            ):
+                raise ValueError(
+                    "state_revision must advance the session revision cursor"
+                )
         # Execution history is an append-only audit record. A duplicate Cell ID
         # means the caller is attempting to overwrite an already-observed
         # execution, which must fail loudly instead of silently replacing its
         # source, output, error, provenance, or timestamp.
         self._execute(
             "INSERT INTO execution_log(producing_cell_id,frame_id,"
-            "root_frame_id,project_id,cell_seq,cell_index,kernel_id,language,"
+            "root_frame_id,project_id,cell_seq,cell_index,state_revision,"
+            "kernel_id,language,"
             "status,origin,code,stdout,stderr,error,figures,files_read,"
             "files_written,interrupted,wall_s,cpu_s,peak_rss_kb,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 cell_id,
                 frame_id,
@@ -662,6 +731,7 @@ class FrameRepository:
                 project_id,
                 cell_seq,
                 cell_index,
+                state_revision,
                 kernel_id,
                 language,
                 status,
@@ -686,10 +756,16 @@ class FrameRepository:
         """Return a session's notebook execution log oldest first."""
         with self._lock:
             rows = self._connection.execute(
-                "SELECT producing_cell_id,cell_index,kernel_id,language,status,origin,"
-                "code,stdout,stderr,error,figures,files_read,files_written,"
-                "cpu_s,peak_rss_kb,created_at FROM execution_log "
-                "WHERE root_frame_id=? ORDER BY created_at ASC",
+                "SELECT e.producing_cell_id,e.cell_index,e.state_revision,"
+                "e.kernel_id,e.language,e.status,e.origin,e.code,e.stdout,"
+                "e.stderr,e.error,e.figures,e.files_read,e.files_written,"
+                "e.cpu_s,e.peak_rss_kb,e.created_at,(SELECT a.generation_id "
+                "FROM execution_attempts AS a WHERE a.producing_cell_id="
+                "e.producing_cell_id AND a.generation_id IS NOT NULL "
+                "ORDER BY a.attempt_ordinal DESC LIMIT 1) AS generation_id "
+                "FROM execution_log AS e WHERE e.root_frame_id=? "
+                "ORDER BY COALESCE(e.state_revision,e.cell_index) ASC,"
+                "e.created_at ASC,e.producing_cell_id ASC",
                 (root_frame_id,),
             ).fetchall()
         cells = []
@@ -700,13 +776,19 @@ class FrameRepository:
                     cell[key] = json.loads(cell.get(key) or "[]")
                 except (TypeError, ValueError):
                     cell[key] = []
+            if cell.get("state_revision") is None:
+                cell["state_revision"] = cell.get("cell_index")
             cells.append(cell)
         return cells
 
     def cell_detail(self, producing_cell_id: str) -> dict | None:
         with self._lock:
             row = self._connection.execute(
-                "SELECT * FROM execution_log WHERE producing_cell_id=?",
+                "SELECT e.*,(SELECT a.generation_id FROM execution_attempts AS a "
+                "WHERE a.producing_cell_id=e.producing_cell_id "
+                "AND a.generation_id IS NOT NULL ORDER BY a.attempt_ordinal DESC "
+                "LIMIT 1) AS generation_id FROM execution_log AS e "
+                "WHERE e.producing_cell_id=?",
                 (producing_cell_id,),
             ).fetchone()
         if not row:
@@ -717,6 +799,8 @@ class FrameRepository:
                 cell[key] = json.loads(cell.get(key) or "[]")
             except (TypeError, ValueError):
                 cell[key] = []
+        if cell.get("state_revision") is None:
+            cell["state_revision"] = cell.get("cell_index")
         return cell
 
     def delete_frame(self, frame_id: str) -> None:

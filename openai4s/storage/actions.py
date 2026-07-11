@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS execution_attempts (
     group_id               TEXT NOT NULL,
     producing_cell_id      TEXT NOT NULL,
     attempt_ordinal        INTEGER NOT NULL CHECK (attempt_ordinal >= 0),
+    state_revision         INTEGER CHECK (state_revision >= 1),
     generation_id          TEXT,
     owner_instance_id      TEXT,
     allocated_at           INTEGER NOT NULL,
@@ -125,6 +126,7 @@ class ExecutionAttemptDTO(TypedDict):
     group_id: str
     producing_cell_id: str
     attempt_ordinal: int
+    state_revision: int | None
     generation_id: str | None
     owner_instance_id: str | None
     allocated_at: int
@@ -215,6 +217,10 @@ class ActionLedgerRepository:
             if "owner_instance_id" not in attempt_columns:
                 self._connection.execute(
                     "ALTER TABLE execution_attempts ADD COLUMN owner_instance_id TEXT"
+                )
+            if "state_revision" not in attempt_columns:
+                self._connection.execute(
+                    "ALTER TABLE execution_attempts ADD COLUMN state_revision INTEGER"
                 )
             self._connection.commit()
 
@@ -516,6 +522,7 @@ class ActionLedgerRepository:
         *,
         group_id: str,
         producing_cell_id: str,
+        state_revision: int | None = None,
         generation_id: str | None = None,
         owner_instance_id: str | None = None,
         replayed_from_cell_id: str | None = None,
@@ -529,6 +536,10 @@ class ActionLedgerRepository:
             "attempt_id", attempt_id or f"xa-{uuid.uuid4().hex[:16]}"
         )
         now = self._clock_ms() if allocated_at is None else allocated_at
+        if state_revision is not None:
+            state_revision = _ordinal("state_revision", state_revision)
+            if state_revision == 0:
+                raise ValueError("state_revision must be positive")
         with self._lock:
             self._require_group_locked(group_id)
             if attempt_ordinal is None:
@@ -544,13 +555,14 @@ class ActionLedgerRepository:
                 self._connection.execute(
                     "INSERT INTO execution_attempts("
                     "attempt_id,group_id,producing_cell_id,attempt_ordinal,"
-                    "generation_id,owner_instance_id,allocated_at,"
-                    "replayed_from_cell_id) VALUES(?,?,?,?,?,?,?,?)",
+                    "state_revision,generation_id,owner_instance_id,allocated_at,"
+                    "replayed_from_cell_id) VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         attempt_id,
                         group_id,
                         producing_cell_id,
                         attempt_ordinal,
+                        state_revision,
                         generation_id,
                         owner_instance_id,
                         now,

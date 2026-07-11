@@ -82,6 +82,9 @@ def test_status_and_execution_attempt_share_persistent_generation_uuid(tmp_path)
     status = runner.kernel_status(frame_id)
     assert status["generation_id"] == lease.generation_id
     assert str(uuid.UUID(status["generation_id"])) == status["generation_id"]
+    # CellExecutionService increments the session revision immediately before
+    # calling this lower-level allocation hook.
+    state.cell_index = 1
     attempt_id = runner._allocate_cell_attempt(
         state,
         CellRequest(code="print(1)", origin="user"),
@@ -89,6 +92,7 @@ def test_status_and_execution_attempt_share_persistent_generation_uuid(tmp_path)
         None,
     )
     attempt = runner.store.get_execution_attempt(attempt_id)
+    assert attempt["state_revision"] == 1
     assert attempt["generation_id"] == status["generation_id"]
 
     runner.close()
@@ -105,6 +109,7 @@ def test_attempt_does_not_bind_a_dead_slot_before_lazy_replacement(tmp_path):
     state.kernels.ensure("python", "base", lambda: dead)
     dead.live = False
 
+    state.cell_index = 1
     attempt_id = runner._allocate_cell_attempt(
         state,
         CellRequest(code="print(2)", origin="user"),

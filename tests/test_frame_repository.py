@@ -375,13 +375,45 @@ def test_execution_log_status_json_fallback_append_only_and_clock(tmp_path):
     assert first_id == "cell-1"
     assert error_id == "cell-2"
     assert repository.cell_count(frame) == 2
+    assert repository.latest_state_revision(frame) == 8
     cells = repository.list_cells(frame)
     assert cells[0]["status"] == "interrupted"
     assert cells[0]["figures"] == ["figure.png"]
     assert cells[0]["files_read"] == ["input.csv"]
     assert cells[0]["files_written"] == ["output.csv"]
+    assert cells[0]["state_revision"] == 7
+    assert cells[0]["generation_id"] is None
     assert cells[1]["status"] == "interrupted"
+    assert cells[1]["state_revision"] == 8
     assert repository.cell_detail("missing") is None
+
+    group = store.append_action_group(
+        root_frame_id=frame,
+        turn_id="turn-cell-1",
+        kind="execution",
+    )
+    store.allocate_execution_attempt(
+        group_id=group["group_id"],
+        producing_cell_id="cell-1",
+        state_revision=7,
+        generation_id="generation-python-1",
+    )
+    associated = repository.cell_detail("cell-1")
+    assert associated["state_revision"] == 7
+    assert associated["generation_id"] == "generation-python-1"
+    assert repository.list_cells(frame)[0]["generation_id"] == "generation-python-1"
+
+    failed_group = store.append_action_group(
+        root_frame_id=frame,
+        turn_id="turn-failed-before-log",
+        kind="execution",
+    )
+    store.allocate_execution_attempt(
+        group_id=failed_group["group_id"],
+        producing_cell_id="cell-failed-before-log",
+        state_revision=9,
+    )
+    assert repository.latest_state_revision(frame) == 9
 
     with store._lock:
         store._conn.execute(
@@ -419,6 +451,83 @@ def test_execution_log_status_json_fallback_append_only_and_clock(tmp_path):
         assert independent.execute(
             "SELECT COUNT(*) FROM execution_log"
         ).fetchone() == (2,)
+
+
+def test_execution_log_orders_equal_timestamps_by_state_revision(tmp_path):
+    store, repository, _clock = _repository(tmp_path)
+    frame = repository.new_frame(project_id="science")
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="first()",
+        result={"id": "zzz-first"},
+        cell_index=1,
+    )
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="second()",
+        result={"id": "aaa-second"},
+        cell_index=2,
+    )
+    with store._lock:
+        store._conn.execute(
+            "UPDATE execution_log SET created_at=2000 WHERE root_frame_id=?",
+            (frame,),
+        )
+        store._conn.commit()
+
+    cells = repository.list_cells(frame)
+    assert [cell["producing_cell_id"] for cell in cells] == [
+        "zzz-first",
+        "aaa-second",
+    ]
+    assert [cell["state_revision"] for cell in cells] == [1, 2]
+
+
+def test_execution_log_consumes_matching_attempt_revision_without_reallocating(
+    tmp_path,
+):
+    store, repository, _clock = _repository(tmp_path)
+    frame = repository.new_frame(project_id="science")
+    group = store.append_action_group(
+        root_frame_id=frame,
+        turn_id="turn-1",
+        kind="execution",
+    )
+    store.allocate_execution_attempt(
+        group_id=group["group_id"],
+        producing_cell_id="cell-reserved",
+        state_revision=1,
+        generation_id="generation-1",
+    )
+
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="run()",
+        result={"id": "cell-reserved"},
+        cell_index=1,
+        state_revision=1,
+    )
+
+    detail = repository.cell_detail("cell-reserved")
+    assert detail["state_revision"] == 1
+    assert detail["generation_id"] == "generation-1"
+    store.allocate_execution_attempt(
+        group_id=group["group_id"],
+        producing_cell_id="cell-wrong",
+        state_revision=3,
+    )
+    with pytest.raises(ValueError, match="durable execution attempt"):
+        repository.log_cell(
+            frame_id=frame,
+            root_frame_id=frame,
+            code="wrong()",
+            result={"id": "cell-wrong"},
+            cell_index=2,
+            state_revision=2,
+        )
 
 
 def test_delete_frame_preserves_exact_legacy_aggregate_boundary(tmp_path):

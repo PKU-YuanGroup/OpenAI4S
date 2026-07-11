@@ -27,6 +27,15 @@ class CellExecutionResult:
     cell_index: int
     cell_id: str
     capture: CaptureResult = field(default_factory=CaptureResult)
+    # ``state_revision`` is the durable, session-monotonic scientific-state
+    # ordinal.  It currently shares the Cell index allocation, but remains a
+    # separately named contract so clients do not mistake display numbering
+    # for a variable-value snapshot or recovery guarantee.
+    state_revision: int | None = None
+    # UUID of the exact persistent worker generation to which the durable
+    # execution attempt was bound.  ``None`` is truthful for failures that
+    # never acquired a worker (for example, an unavailable R runtime).
+    generation_id: str | None = None
 
 
 __all__ = ["CaptureResult", "CellExecutionResult", "CellRequest"]

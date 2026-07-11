@@ -1005,6 +1005,8 @@ def test_execution_log_route_serializer_contract(tmp_path):
     assert set(e1) == {
         "producing_cell_id",
         "cell_index",
+        "state_revision",
+        "generation_id",
         "kernel_id",
         "language",
         "origin",
@@ -1025,6 +1027,8 @@ def test_execution_log_route_serializer_contract(tmp_path):
         "attempt_count",
     }
     assert e1["producing_cell_id"] == "cell-1"
+    assert e1["state_revision"] == 1
+    assert e1["generation_id"] is None
     assert e1["attempt_group_id"] == "cell-1"
     assert e1["source"] == "print('hi')"  # code -> source rename
     assert e1["status"] == "ok"

@@ -145,6 +145,8 @@ def test_submit_output_does_not_skip_capture_or_execution_log(tmp_path):
         "root_frame_id": "frame-1",
         "producing_cell_id": "cell-1",
         "cell_index": 1,
+        "state_revision": 1,
+        "generation_id": None,
         "kernel_id": "python — struct",
         "language": "python",
         "origin": "agent",
@@ -159,11 +161,56 @@ def test_submit_output_does_not_skip_capture_or_execution_log(tmp_path):
     assert events[4]["chunk"] == "live output"
     finished = events[-1]
     assert finished["producing_cell_id"] == "cell-1"
+    assert finished["state_revision"] == 1
+    assert finished["generation_id"] is None
     assert finished["status"] == "ok"
     assert finished["origin"] == "agent"
     assert finished["stdout"] == "ok"
     assert finished["figures"] == ["figure-1.png"]
     assert finished["files_written"] == ["result.csv"]
+    assert harness.records[0]["state_revision"] == 1
+    assert result.state_revision == 1
+    assert result.generation_id is None
+
+
+def test_live_and_finished_events_use_the_exact_persistent_generation(tmp_path):
+    harness = Harness()
+    session = _session(tmp_path)
+    bound_generations = []
+
+    class Kernel:
+        def is_alive(self):
+            return True
+
+        def shutdown(self):
+            return None
+
+    lease = session.kernels.ensure("python", "base", Kernel)
+    ports = replace(
+        harness.ports(),
+        allocate_attempt=lambda *args: "attempt-gen",
+        bind_attempt_generation=lambda attempt_id, active, language: (
+            bound_generations.append(
+                (attempt_id, active.kernels.status(language).get("generation_id"))
+            )
+        ),
+    )
+    service = CellExecutionService(ports, id_factory=lambda: "cell-gen")
+    events = []
+
+    result = service.execute(
+        session,
+        CellRequest("print('generation')", "agent"),
+        events.append,
+    )
+
+    start = next(event for event in events if event["type"] == "notebook_cell_start")
+    finished = events[-1]
+    assert start["state_revision"] == finished["state_revision"] == 1
+    assert start["generation_id"] == finished["generation_id"] == lease.generation_id
+    assert bound_generations == [("attempt-gen", lease.generation_id)]
+    assert result.state_revision == 1
+    assert result.generation_id == lease.generation_id
 
 
 def test_interrupted_result_wins_over_its_error_text_in_notebook_event(tmp_path):
@@ -302,7 +349,9 @@ def test_r_protocol_exception_shuts_down_only_the_executing_lease(tmp_path):
     assert session.kernels.current("r") is None
     assert harness.seen_lease == lease
     assert kernel.shutdown_calls == 1
-    assert "capture" not in harness.order and "record" not in harness.order
+    assert "capture" not in harness.order and harness.order[-1] == "record"
+    assert harness.records[0]["state_revision"] == 1
+    assert harness.records[0]["result"]["error"] == "malformed R frame"
     assert events[-1]["type"] == "notebook_cell_finished"
     assert events[-1]["producing_cell_id"] == "cell-r-bad"
     assert events[-1]["status"] == "error"
@@ -451,6 +500,45 @@ def test_worker_exception_still_finishes_allocated_attempt(tmp_path):
     assert attempts[-1][:3] == ("finished", "attempt-dead", "worker_died")
     assert attempts[-1][3] == {"kind": "EOFError", "message": "worker exited"}
     assert not any(item[0] in {"response", "capture"} for item in attempts)
+    assert harness.records[0]["state_revision"] == 1
+    assert harness.records[0]["result"]["error"] == "worker exited"
+
+
+def test_worker_failure_is_recorded_once_and_retry_uses_a_new_cell_id(tmp_path):
+    from openai4s.config import Config
+    from openai4s.store import get_store
+
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    frame_id = store.new_frame(project_id="project-1")
+    session = _session(tmp_path)
+    session.root_frame_id = frame_id
+    ids = iter(("cell-dead-once", "cell-retry"))
+    harness = Harness()
+    harness.fail_run = EOFError("worker exited")
+    ports = replace(harness.ports(), record_cell=store.log_cell)
+    service = CellExecutionService(ports, id_factory=lambda: next(ids))
+
+    with pytest.raises(EOFError, match="worker exited"):
+        service.execute(
+            session,
+            CellRequest("fragile()", "agent", stream=False),
+            lambda event: None,
+        )
+
+    harness.fail_run = None
+    service.execute(
+        session,
+        CellRequest("retry()", "agent", stream=False),
+        lambda event: None,
+    )
+
+    cells = store.list_cells(frame_id)
+    assert [cell["producing_cell_id"] for cell in cells] == [
+        "cell-dead-once",
+        "cell-retry",
+    ]
+    assert [cell["state_revision"] for cell in cells] == [1, 2]
+    assert cells[0]["status"] == "error"
 
 
 def test_record_failure_is_not_misclassified_as_capture_failure(tmp_path):

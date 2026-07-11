@@ -259,6 +259,20 @@ scientific analysis step, so its live source is suppressed and the Notebook
 projection filters it out. A Cell that computes, reads, writes, or prints in
 addition to submitting remains visible.
 
+Every allocated Python/R Cell transaction also receives a positive,
+session-monotonic `state_revision`. The current implementation deliberately
+shares the durable Cell ordinal, while naming it separately in storage and on
+the wire so a display index is not confused with a recoverable object snapshot.
+The revision is persisted on the execution attempt before language preparation;
+successful, refused, interrupted, unavailable-runtime, and worker-failure rows
+retain the same revision in the execution log. Live
+`notebook_cell_start`/`notebook_cell_finished` events and reopened Notebook
+entries carry that revision plus the exact worker `generation_id`. Reopened
+generation identity is joined from the immutable execution-attempt association,
+never inferred from `kernel_id` text. An older revision may therefore be shown
+as stale relative to the current session cursor, but this does **not** claim its
+Python/R variables can be inspected or restored.
+
 [`server/artifacts.py`](../openai4s/server/artifacts.py) owns the durable
 workspace side of that transaction: deliverable diffing, Python figure export,
 one environment/provenance snapshot per producing cell, version registration,
@@ -305,7 +319,7 @@ uniform yet:
 |---|---|---|
 | Action Timeline | Append-only ledger, redacted/field-bounded projection, maximum-500 latest windows with older/newer cursors, `GET /frames/{id}/action-timeline`, safe Timeline cards with runtime/queue status, and an explicit UI control that pages backward from the first loaded ordinal. | Incremental WS action replay remains limited; the browser keeps a bounded recent window while preserving the latest actions. |
 | Checkpoint / branch / revert | SQLite repositories, workspace content-addressed snapshots, immutable checkpoints, branch/checkpoint routes, conflict-aware revert preview/apply/undo, plus visible checkpoint and preview/apply controls. | Fork accepts checkpoints only; fork-from-cell is unsupported, and the static UI has no checkpoint-fork, undo, or branch-navigation control yet. |
-| Kernel recovery | Durable generation/bootstrap manifests, append-only Recovery Journal, verified build/hydrate/replay/validate/publish orchestration, plus public status/action projections. | The Gateway exposes recovery state and available actions but does not yet expose an action that runs the full pipeline; normal reopen must not claim arbitrary in-memory objects survived. |
+| Kernel recovery | Python and R generations persist complete versioned bootstrap manifests. `POST /frames/{id}/recovery/actions/{restore\|retry\|restart_fresh}` re-checks the advertised action after exact FIFO admission, enters the recovery scope, builds a separate worker, restores the checkpoint CAS tree, verifies referenced Artifact-version bytes, replays only classifier-approved Cells, validates runtime/symbol/hash requirements, and atomically publishes through `KernelSupervisor.publish_candidate`. Journal and WS recovery events cover every phase; `restart_fresh` requires `{"confirm":true}`. | Recovery mutations currently target the root/current branch only. A checkpoint with prior Cells defaults to `namespace_coverage=unverified`; without an explicit replay/symbol coverage recipe it ends Partial rather than claiming an empty namespace is recovered. CAS conflicts, unavailable historical interpreters/helpers, unsafe Cells, or unverifiable objects likewise produce Failed/Partial and never replace the existing worker. Artifact-version hydration verifies immutable bytes and their materialized checkpoint workspace file; it does not rewrite historical Artifact lineage heads. |
 | Notebook export | Deterministic Python and R `.ipynb` generation, a stable ZIP bundle, `GET /frames/{id}/notebook/export`, and a visible bundle download in the Notebook header and provenance execution view. | Separate Python/R single-notebook selectors remain API-only. |
 | Scientific renderers | Safe catalog/selection routes bind image/table/3D molecule/2D chemistry/genome/sequence/MSA/PDF/LaTeX/text/download descriptors to Artifact versions. | The existing UI renders image, table, Markdown/text, PDF/HTML preview and 3Dmol paths; most new specialized descriptors are not yet connected to dedicated UI components. |
 
