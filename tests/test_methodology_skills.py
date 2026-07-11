@@ -43,7 +43,7 @@ PROBES = [
 ]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def loader():
     ld = SkillLoader(cfg=Config())
     ld.discover()

@@ -103,7 +103,15 @@ class SkillService:
         if existing is not None:
             root = existing.root
         else:
-            root = self.cfg.skills_dir / name
+            user_directory = self.loader.user_skills_dir()
+            user_directory.mkdir(parents=True, exist_ok=True)
+            user_directory = user_directory.resolve()
+            candidate = user_directory / name
+            if candidate.is_symlink():
+                raise ValueError(f"unsafe skill path: {name!r}")
+            root = candidate.resolve()
+            if root == user_directory or not root.is_relative_to(user_directory):
+                raise ValueError(f"unsafe skill name: {name!r}")
             root.mkdir(parents=True, exist_ok=True)
             skill_md = root / "SKILL.md"
             if not skill_md.exists() and relative != "SKILL.md":

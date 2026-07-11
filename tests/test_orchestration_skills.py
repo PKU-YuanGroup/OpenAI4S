@@ -14,6 +14,7 @@ fresh random port on every call, so a byte-identical re-registration wrongly
 tripped the approval card (port is the name's mutex and must be reused).
 """
 import json
+import shutil
 import sqlite3
 
 import pytest
@@ -31,6 +32,17 @@ def session(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     cfg.ensure_dirs()
     disp = build_dispatcher(cfg=cfg)
+    # Production is fail-closed without an attached approval channel.  This
+    # lifecycle test explicitly authorizes the two destructive transitions it
+    # intends to exercise.
+    for tool in ("skills_publish", "skills_delete"):
+        disp.store.set_permission_rule(
+            scope="global",
+            scope_id="",
+            tool=tool,
+            pattern="e2e-demo-skill",
+            decision="allow",
+        )
     disp.store.log_host_call(
         method="seed_ping", args=[{"x": 1}], ok=True, frame_id="frame-seed"
     )
@@ -39,6 +51,9 @@ def session(tmp_path, monkeypatch):
         yield cfg, disp, kernel
     finally:
         kernel.shutdown()
+        draft = cfg.data_dir / "user-skills" / "e2e-demo-skill"
+        if draft.exists():
+            shutil.rmtree(draft)
 
 
 def _emit(kernel, expr):

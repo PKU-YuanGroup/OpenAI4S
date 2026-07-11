@@ -1,5 +1,6 @@
 """Skill loader + example_stats sidecar tests (offline)."""
 import ast
+from pathlib import Path
 
 import pytest
 
@@ -127,6 +128,8 @@ def test_skills_crud_roundtrip(tmp_path, monkeypatch):
         ],
     )
     assert r["ok"] and r["mode"] == "overwrite"
+    assert Path(r["path"]).is_relative_to(tmp_path / "user-skills")
+    assert not (skills_dir / "demo").exists()
 
     # write a BROKEN sidecar -> gate should report not ok
     r2 = disp(

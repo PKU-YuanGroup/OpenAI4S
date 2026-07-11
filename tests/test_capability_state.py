@@ -10,7 +10,7 @@ import pytest
 from openai4s.config import Config
 from openai4s.host.skills import SkillService
 from openai4s.skills_loader import SkillLoader
-from openai4s.store import Store
+from openai4s.store import Store, get_store
 
 
 def _skill(root, directory: str, name: str, keyword: str) -> None:
@@ -65,6 +65,28 @@ def test_capability_scope_precedence_events_and_restart(tmp_path):
     assert state["never-configured"]["enabled"] is True
     assert state["never-configured"]["scope"] == "default"
     reopened.close()
+
+
+def test_default_skill_loader_survives_store_generation_replacement(tmp_path):
+    """A long-lived loader must not retain a closed SQLite repository."""
+
+    bundled = tmp_path / "skills"
+    _skill(bundled, "durable", "Durable", "lifecycletoken")
+    config = Config(data_dir=tmp_path / "data", skills_dir=bundled)
+    loader = SkillLoader(cfg=config)
+    loader.discover()
+    first = get_store(config.db_path)
+    first.set_capability_enabled("skill", "Durable", False)
+    assert loader.get("Durable") is None
+
+    first.close()
+    second = get_store(config.db_path)
+    assert second is not first
+    assert loader.get("Durable") is None
+
+    second.set_capability_enabled("skill", "Durable", True)
+    assert loader.get("Durable") is not None
+    second.close()
 
 
 def test_disabled_skill_is_consistent_across_prompt_search_read_and_bootstrap(

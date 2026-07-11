@@ -154,6 +154,13 @@ def test_structured_path_probe_is_quoted_and_visible_in_activity(
     steps = []
     dispatcher = HostDispatcher()
     dispatcher.on_step = steps.append
+    dispatcher.store.set_permission_rule(
+        scope="global",
+        scope_id="",
+        tool="register_remote_capability",
+        pattern=registered_host,
+        decision="allow",
+    )
     path = '/opt/Model Runner/runner\'s "service".sh'
     result = dispatcher(
         "register_remote_capability",

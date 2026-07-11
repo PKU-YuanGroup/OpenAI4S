@@ -35,6 +35,53 @@ _READONLY_ORIGINS = ("openai4s",)
 _WORD = re.compile(r"[a-z0-9]+")
 
 
+class _StoreCapabilityRepository:
+    """Resolve the current Store-owned repository for every operation.
+
+    A ``SkillLoader`` can legitimately outlive a server/test Store generation
+    (configuration reloads and daemon restarts both replace the SQLite owner).
+    Holding the concrete repository would leave the loader pointing at a
+    closed connection.  This tiny adapter preserves the Store as the sole
+    connection owner while making the default loader safe across that
+    lifecycle boundary.  Explicitly injected capability services retain their
+    caller-owned lifetime semantics.
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = Path(db_path)
+
+    def _call(self, method: str, *args, **kwargs):
+        # Lazy import avoids a Store -> skills -> Store initialization cycle.
+        from openai4s.store import get_store
+
+        repository = get_store(self._db_path).capability_state().repository
+        return getattr(repository, method)(*args, **kwargs)
+
+    def set_enabled(self, *args, **kwargs):
+        return self._call("set_enabled", *args, **kwargs)
+
+    def resolve(self, *args, **kwargs):
+        return self._call("resolve", *args, **kwargs)
+
+    def snapshot(self, *args, **kwargs):
+        return self._call("snapshot", *args, **kwargs)
+
+    def explicit_states(self, *args, **kwargs):
+        return self._call("explicit_states", *args, **kwargs)
+
+    def append_event(self, *args, **kwargs):
+        return self._call("append_event", *args, **kwargs)
+
+    def list_events(self, *args, **kwargs):
+        return self._call("list_events", *args, **kwargs)
+
+    def record_manifest(self, *args, **kwargs):
+        return self._call("record_manifest", *args, **kwargs)
+
+    def latest_manifest(self, *args, **kwargs):
+        return self._call("latest_manifest", *args, **kwargs)
+
+
 def _strip_scalar(v: str) -> str:
     """Normalize an inline YAML scalar: drop inline comments and surrounding
     quotes. Only strips a `#` comment on *unquoted* values so a `#` inside a
@@ -318,12 +365,8 @@ class SkillLoader:
         self.cfg = cfg or get_config()
         self.skills_dir = Path(skills_dir) if skills_dir else self.cfg.skills_dir
         if capabilities is None:
-            # Lazy import avoids coupling Store's schema initialization back to
-            # skill discovery while still making persistence the default for
-            # every runtime loader.
-            from openai4s.store import get_store
-
-            capabilities = get_store(self.cfg.db_path).capability_state(
+            capabilities = CapabilityStateService(
+                _StoreCapabilityRepository(self.cfg.db_path),
                 project_id=project_id,
                 session_id=session_id,
             )
@@ -377,7 +420,12 @@ class SkillLoader:
                 meta, body = _parse_frontmatter(raw)
                 origin = (meta.get("origin") or "unknown").lower()
                 if is_user:
-                    origin = "user"
+                    # User-space files cannot claim a trusted bundled origin.
+                    # Preserve the host lifecycle's draft -> personal states;
+                    # Web-authored documents use the separate ``user`` state.
+                    origin = (
+                        origin if origin in {"draft", "personal"} else "user"
+                    )
                 elif origin not in _VALID_ORIGINS:
                     origin = "unknown"
                 description = meta.get("description") or _first_paragraph(body)

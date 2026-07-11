@@ -471,6 +471,7 @@ class Store:
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
+        self._closed = False
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -669,7 +670,11 @@ class Store:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
             self._conn.close()
+            self._closed = True
+        _discard_store(self)
 
     # --- frames ----------------------------------------------------------
     def new_frame(
@@ -2034,12 +2039,21 @@ _STORES: dict[str, Store] = {}
 _STORES_LOCK = threading.Lock()
 
 
+def _discard_store(store: Store) -> None:
+    """Remove a closed singleton without evicting a newer replacement."""
+
+    key = str(store.db_path.resolve())
+    with _STORES_LOCK:
+        if _STORES.get(key) is store:
+            _STORES.pop(key, None)
+
+
 def get_store(db_path: Path) -> Store:
     """Process-wide singleton Store per db path."""
     key = str(Path(db_path).resolve())
     with _STORES_LOCK:
         st = _STORES.get(key)
-        if st is None:
+        if st is None or st._closed:
             st = Store(Path(db_path))
             _STORES[key] = st
     return st
