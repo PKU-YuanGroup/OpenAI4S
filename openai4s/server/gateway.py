@@ -40,6 +40,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from openai4s.agent.engine import AgentEngine
+from openai4s.agent.ledger import (
+    RuntimeActionLedger,
+    new_turn_id,
+    restore_action_history,
+)
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
@@ -403,6 +408,10 @@ class SessionState:
         # turn only ends via host.submit_output (prose-only replies are nudged).
         self.explore: bool = False
         self.last_model_prose: str = ""
+        # Set only around one AgentEngine CodeCell dispatch so the compatible
+        # ``_execute_and_log`` call shape need not expose ledger internals.
+        self.active_action_group_id: str | None = None
+        self.active_action_ledger: RuntimeActionLedger | None = None
         # `env_name` is the environment the current kernel actually runs in;
         # `desired_env` is the user's/agent's pinned selection. They differ only
         # during a transient fallback to base when the pin cannot be resolved.
@@ -932,6 +941,23 @@ class SessionRunner:
                 capture=self._capture_artifacts,
                 emit_artifact_step=self._emit_artifact_step,
                 record_cell=self.store.log_cell,
+                allocate_attempt=self._allocate_cell_attempt,
+                mark_attempt_started=lambda attempt_id: (
+                    self.store.mark_execution_attempt_started(attempt_id)
+                ),
+                mark_attempt_response=lambda attempt_id: (
+                    self.store.mark_execution_attempt_response(attempt_id)
+                ),
+                mark_attempt_capture=lambda attempt_id: (
+                    self.store.mark_execution_attempt_capture(attempt_id)
+                ),
+                finish_attempt=lambda attempt_id, terminal_state, error: (
+                    self.store.finish_execution_attempt(
+                        attempt_id,
+                        terminal_state=terminal_state,
+                        error=error,
+                    )
+                ),
             )
         )
 
@@ -1085,7 +1111,16 @@ class SessionRunner:
                 )
         except Exception:  # noqa: BLE001
             pass
-        st.messages = [{"role": "system", "content": ctx}]
+        # The Action Ledger, rather than UI prose/execution-log projections,
+        # is the canonical provider history.  Rebuild complete action groups
+        # after the freshly composed system prompt on every daemon resume.
+        st.messages = [
+            {"role": "system", "content": ctx},
+            *restore_action_history(self.store, st.root_frame_id),
+        ]
+        # Cell identity is also process-local unless explicitly re-seeded.
+        # The execution log remains the lossless physical-cell projection.
+        st.cell_index = self.store.cell_count(st.root_frame_id)
 
     def _spawn_kernel(self, st: SessionState) -> KernelLease:
         """Ensure the Python worker matches the resolved runtime environment.
@@ -1123,6 +1158,7 @@ class SessionRunner:
                     self.hub.emitter(_rid),
                     cancel_event=st.cancel,
                     watching=lambda r=_rid: self.hub.has_subscriber(r),
+                    store=self.store,
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -2169,7 +2205,17 @@ class SessionRunner:
                 if annos
                 else resolved
             )
-            st.messages.append({"role": "user", "content": content})
+            llm_cfg = self._llm_cfg(st)
+            action_ledger = RuntimeActionLedger(
+                self.store,
+                root_frame_id,
+                new_turn_id(),
+                provider=getattr(llm_cfg, "provider", None),
+                model=getattr(llm_cfg, "model", None),
+            )
+            user_message = {"role": "user", "content": content}
+            action_ledger.append_user(user_message)
+            st.messages.append(user_message)
             auto_review = self._auto_review_enabled(root_frame_id)
             artifact_versions_before = {
                 (a.get("artifact_id") or a.get("id")): a.get("latest_version_id")
@@ -2185,7 +2231,17 @@ class SessionRunner:
             loop_reason: str | None = None
             try:
                 st.dispatcher.last_output = None
-                loop_reason = self._loop(st, emit, assistant_visible)
+                st.active_action_ledger = action_ledger
+                try:
+                    # Keep the historical three-argument composition seam so
+                    # tests/extensions that replace ``_loop`` remain valid.
+                    loop_reason = self._loop(st, emit, assistant_visible)
+                finally:
+                    st.active_action_ledger = None
+                action_ledger.append_terminal(
+                    loop_reason or "unknown",
+                    completion=getattr(st.dispatcher, "last_output", None),
+                )
                 if loop_reason == "max_turns":
                     status = "failed"
                     err_text = (
@@ -2203,6 +2259,13 @@ class SessionRunner:
             except Exception as e:  # noqa: BLE001
                 status = "failed"
                 err_text = self._friendly_error(e)
+                try:
+                    action_ledger.append_terminal(
+                        "runtime_error",
+                        error={"type": type(e).__name__, "message": err_text},
+                    )
+                except Exception:  # noqa: BLE001 — preserve the primary failure
+                    traceback.print_exc()
                 emit(
                     {
                         "type": "text_chunk",
@@ -2345,13 +2408,24 @@ class SessionRunner:
             return text
         return text + "\n\n---\n(附:被引用的文件内容)\n\n" + "\n\n".join(blocks)
 
-    def _loop(self, st: SessionState, emit, assistant_visible: list[dict]) -> str:
+    def _loop(
+        self,
+        st: SessionState,
+        emit,
+        assistant_visible: list[dict],
+        *,
+        action_ledger: RuntimeActionLedger | None = None,
+        llm_cfg=None,
+    ) -> str:
         """Run one Web turn through the shared provider-neutral AgentEngine."""
+        action_ledger = action_ledger or getattr(
+            st, "active_action_ledger", None
+        )
         rid = st.root_frame_id
         max_turns = self.cfg.max_turns or 12
         if st.explore:
             max_turns = max(max_turns, self.cfg.explore_max_turns or 0)
-        llm_cfg = self._llm_cfg(st)
+        llm_cfg = llm_cfg or self._llm_cfg(st)
 
         def add_usage(usage: dict) -> None:
             self.store.add_frame_tokens(
@@ -2376,6 +2450,7 @@ class SessionRunner:
             language=response_language(latest_user_text),
             narrate_actions=not st.plan,
             cancelled=st.cancel.is_set,
+            action_ledger=action_ledger,
         )
 
         def apply_pending() -> None:
@@ -2383,14 +2458,20 @@ class SessionRunner:
                 self._apply_pending_env(st, emit)
 
         def execute_cell(action) -> dict:
-            return self._execute_and_log(
-                st,
-                action.code,
-                "agent",
-                emit,
-                stream=True,
-                language=action.language,
-            )["result"]
+            st.active_action_group_id = (
+                action_ledger.current_group_id if action_ledger else None
+            )
+            try:
+                return self._execute_and_log(
+                    st,
+                    action.code,
+                    "agent",
+                    emit,
+                    stream=True,
+                    language=action.language,
+                )["result"]
+            finally:
+                st.active_action_group_id = None
 
         def finalize_plan(reply, prose: str) -> None:
             try:
@@ -2508,6 +2589,46 @@ class SessionRunner:
             return None
         return verdict.as_observation()
 
+    def _allocate_cell_attempt(
+        self,
+        st: SessionState,
+        request: CellRequest,
+        cell_id: str,
+        action_group_id: str | None,
+    ) -> str:
+        """Allocate durable Cell identity before any runtime work begins."""
+        group_id = action_group_id
+        if group_id is None:
+            # User REPL and compatibility callers do not pass through an
+            # AgentEngine ActionRouted event.  Keep their execution attempts in
+            # the same append-only ledger without projecting them into model
+            # history on resume.
+            group = self.store.append_action_group(
+                root_frame_id=st.root_frame_id,
+                turn_id=f"cell-{cell_id}",
+                kind="execution",
+            )
+            group_id = group["group_id"]
+            self.store.append_action_event(
+                group_id=group_id,
+                type="proposed",
+                action_id=f"{group_id}:action",
+                canonical_arguments={
+                    "language": request.language,
+                    "code": request.code,
+                    "origin": request.origin,
+                },
+                resource_keys=[f"kernel:{request.language}"],
+            )
+        status = st.kernels.status(request.language)
+        generation_id = f"{request.language}:{status.get('generation', 0)}"
+        attempt = self.store.allocate_execution_attempt(
+            group_id=group_id,
+            producing_cell_id=cell_id,
+            generation_id=generation_id,
+        )
+        return attempt["attempt_id"]
+
     def _execute_and_log(
         self,
         st: SessionState,
@@ -2516,6 +2637,7 @@ class SessionRunner:
         emit,
         stream: bool = True,
         language: str = "python",
+        action_group_id: str | None = None,
     ) -> dict:
         """Compatibility façade over the typed cell execution service."""
         request = CellRequest(
@@ -2524,7 +2646,14 @@ class SessionRunner:
             language=language,
             stream=stream,
         )
-        executed = self.cells.execute(st, request, emit)
+        executed = self.cells.execute(
+            st,
+            request,
+            emit,
+            action_group_id=(
+                action_group_id or getattr(st, "active_action_group_id", None)
+            ),
+        )
         return {
             "result": executed.result,
             "idx": executed.cell_index,

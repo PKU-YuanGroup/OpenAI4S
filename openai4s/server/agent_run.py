@@ -157,12 +157,18 @@ class WebEventSink:
     language: str = "en"
     narrate_actions: bool = True
     cancelled: Callable[[], bool] = _never_cancelled
+    action_ledger: Any | None = None
     current_prose: str = field(default="", init=False)
     model_prose: str = field(default="", init=False)
     _streamer: ProseStreamer | None = field(default=None, init=False)
     _current_action: Action | None = field(default=None, init=False)
 
     def emit(self, event: AgentEvent) -> None:
+        # Persist the canonical engine event before projecting it to transient
+        # WebSocket/UI state.  If persistence fails, execution must not advance
+        # past an unrecorded action boundary.
+        if self.action_ledger is not None:
+            self.action_ledger.emit(event)
         if isinstance(event, TurnStarted):
             self.current_prose = ""
             self.model_prose = ""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -342,3 +343,122 @@ def test_non_streaming_cell_still_captures_and_records_without_activity_step(tmp
     assert events == []
     assert "capture" in harness.order and harness.order[-1] == "record"
     assert "artifact_step" not in harness.order
+
+
+def test_attempt_is_allocated_before_prepare_and_completes_all_milestones(tmp_path):
+    harness = Harness()
+    attempts: list[tuple] = []
+    ports = replace(
+        harness.ports(),
+        allocate_attempt=lambda session, request, cell_id, group_id: (
+            attempts.append(
+                ("allocated", cell_id, group_id, list(harness.order))
+            )
+            or "attempt-1"
+        ),
+        mark_attempt_started=lambda attempt_id: attempts.append(
+            ("started", attempt_id)
+        ),
+        mark_attempt_response=lambda attempt_id: attempts.append(
+            ("response", attempt_id)
+        ),
+        mark_attempt_capture=lambda attempt_id: attempts.append(
+            ("capture", attempt_id)
+        ),
+        finish_attempt=lambda attempt_id, state, error: attempts.append(
+            ("finished", attempt_id, state, error)
+        ),
+    )
+    service = CellExecutionService(ports, id_factory=lambda: "cell-ledger")
+
+    service.execute(
+        _session(tmp_path),
+        CellRequest("print(1)", "agent", stream=False),
+        lambda event: None,
+        action_group_id="group-1",
+    )
+
+    assert attempts == [
+        ("allocated", "cell-ledger", "group-1", []),
+        ("started", "attempt-1"),
+        ("response", "attempt-1"),
+        ("capture", "attempt-1"),
+        ("finished", "attempt-1", "completed", None),
+    ]
+    assert harness.order[:2] == ["prepare", "label"]
+
+
+def test_worker_exception_still_finishes_allocated_attempt(tmp_path):
+    harness = Harness()
+    harness.fail_run = EOFError("worker exited")
+    attempts: list[tuple] = []
+    ports = replace(
+        harness.ports(),
+        allocate_attempt=lambda *args: "attempt-dead",
+        mark_attempt_started=lambda attempt_id: attempts.append(
+            ("started", attempt_id)
+        ),
+        mark_attempt_response=lambda attempt_id: attempts.append(
+            ("response", attempt_id)
+        ),
+        mark_attempt_capture=lambda attempt_id: attempts.append(
+            ("capture", attempt_id)
+        ),
+        finish_attempt=lambda attempt_id, state, error: attempts.append(
+            ("finished", attempt_id, state, error)
+        ),
+    )
+    service = CellExecutionService(ports, id_factory=lambda: "cell-dead")
+
+    with pytest.raises(EOFError, match="worker exited"):
+        service.execute(
+            _session(tmp_path),
+            CellRequest("print(1)", "agent", stream=False),
+            lambda event: None,
+            action_group_id="group-dead",
+        )
+
+    assert attempts[0] == ("started", "attempt-dead")
+    assert attempts[-1][:3] == ("finished", "attempt-dead", "worker_died")
+    assert attempts[-1][3] == {"kind": "EOFError", "message": "worker exited"}
+    assert not any(item[0] in {"response", "capture"} for item in attempts)
+
+
+def test_record_failure_is_not_misclassified_as_capture_failure(tmp_path):
+    harness = Harness()
+    attempts: list[tuple] = []
+
+    def fail_record(**record):
+        del record
+        harness.order.append("record")
+        raise OSError("sqlite unavailable")
+
+    ports = replace(
+        harness.ports(),
+        record_cell=fail_record,
+        allocate_attempt=lambda *args: "attempt-record",
+        mark_attempt_started=lambda attempt_id: None,
+        mark_attempt_response=lambda attempt_id: None,
+        mark_attempt_capture=lambda attempt_id: None,
+        finish_attempt=lambda attempt_id, state, error: attempts.append(
+            (attempt_id, state, error)
+        ),
+    )
+    service = CellExecutionService(ports, id_factory=lambda: "cell-record")
+
+    with pytest.raises(OSError, match="sqlite unavailable"):
+        service.execute(
+            _session(tmp_path),
+            CellRequest("print(1)", "agent", stream=False),
+            lambda event: None,
+            action_group_id="group-record",
+        )
+
+    assert "capture" in harness.order
+    assert attempts == [
+        (
+            "attempt-record",
+            "record_failed",
+            {"kind": "OSError", "message": "sqlite unavailable"},
+        )
+    ]

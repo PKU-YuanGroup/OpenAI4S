@@ -21,6 +21,26 @@ EventSink = Callable[[dict[str, Any]], None]
 ChunkSink = Callable[[str], None]
 
 
+def _no_attempt_allocate(
+    session: "CellSession",
+    request: CellRequest,
+    cell_id: str,
+    action_group_id: str | None,
+) -> None:
+    del session, request, cell_id, action_group_id
+    return None
+
+
+def _no_attempt_milestone(attempt_id: str) -> None:
+    del attempt_id
+
+
+def _no_attempt_finish(
+    attempt_id: str, terminal_state: str, error: Any = None
+) -> None:
+    del attempt_id, terminal_state, error
+
+
 class CellSession(Protocol):
     root_frame_id: str
     project_id: str
@@ -47,6 +67,13 @@ class CellExecutionPorts:
         [CellSession, str, list[dict], EventSink], None
     ]
     record_cell: Callable[..., None]
+    allocate_attempt: Callable[
+        [CellSession, CellRequest, str, str | None], str | None
+    ] = _no_attempt_allocate
+    mark_attempt_started: Callable[[str], None] = _no_attempt_milestone
+    mark_attempt_response: Callable[[str], None] = _no_attempt_milestone
+    mark_attempt_capture: Callable[[str], None] = _no_attempt_milestone
+    finish_attempt: Callable[[str, str, Any], None] = _no_attempt_finish
 
 
 class CellExecutionService:
@@ -62,35 +89,59 @@ class CellExecutionService:
         self.title_factory = title_factory or activity_title
 
     def execute(
-        self, session: CellSession, request: CellRequest, emit: EventSink
+        self,
+        session: CellSession,
+        request: CellRequest,
+        emit: EventSink,
+        *,
+        action_group_id: str | None = None,
     ) -> CellExecutionResult:
         session.cell_index += 1
         index = session.cell_index
         cell_id = self.id_factory()
-        runtime_error = self.ports.prepare_language(session, request.language)
-        kernel_id = self.ports.kernel_id(session, request.language)
-        title = self.title_factory(request.code, index)
-        show_in_notebook = not (
-            request.origin == "agent"
-            and is_completion_only_cell(request.code, request.language)
+        # Attempt identity is durable before *any* language preparation,
+        # safety classification, runtime acquisition, or worker interaction.
+        attempt_id = self.ports.allocate_attempt(
+            session, request, cell_id, action_group_id
         )
-        on_chunk = (
-            self._start_stream(
-                session,
-                request,
-                emit,
-                index,
-                cell_id,
-                kernel_id,
-                title,
+        if attempt_id is not None:
+            self.ports.mark_attempt_started(attempt_id)
+        try:
+            runtime_error = self.ports.prepare_language(session, request.language)
+            kernel_id = self.ports.kernel_id(session, request.language)
+        except BaseException as exc:
+            self._finish_attempt(attempt_id, "prepare_failed", exc)
+            raise
+        try:
+            title = self.title_factory(request.code, index)
+            show_in_notebook = not (
+                request.origin == "agent"
+                and is_completion_only_cell(request.code, request.language)
             )
-            if show_in_notebook
-            else None
-        )
+            on_chunk = (
+                self._start_stream(
+                    session,
+                    request,
+                    emit,
+                    index,
+                    cell_id,
+                    kernel_id,
+                    title,
+                )
+                if show_in_notebook
+                else None
+            )
+        except BaseException as exc:
+            self._finish_attempt(attempt_id, "projection_failed", exc)
+            raise
 
-        before = self.ports.snapshot(session.workspace)
-        self.ports.protect_versions(session)
-        refusal = self.ports.safety_refusal(request.code, request.origin)
+        try:
+            before = self.ports.snapshot(session.workspace)
+            self.ports.protect_versions(session)
+            refusal = self.ports.safety_refusal(request.code, request.origin)
+        except BaseException as exc:
+            self._finish_attempt(attempt_id, "prepare_failed", exc)
+            raise
         if refusal is not None:
             return self._soft_error(
                 session,
@@ -100,6 +151,8 @@ class CellExecutionService:
                 cell_id,
                 kernel_id,
                 refusal,
+                attempt_id,
+                "safety_refused",
             )
         if runtime_error is not None:
             return self._soft_error(
@@ -110,6 +163,8 @@ class CellExecutionService:
                 cell_id,
                 kernel_id,
                 runtime_error,
+                attempt_id,
+                "runtime_unavailable",
             )
 
         lease = session.kernels.lease("r") if request.language == "r" else None
@@ -121,6 +176,7 @@ class CellExecutionService:
             # watchdog recovery may already have advanced the generation.
             if lease is not None:
                 session.kernels.shutdown_if_current(lease)
+            self._finish_attempt(attempt_id, "worker_died", exc)
             if show_in_notebook and request.stream:
                 self._emit_finished(
                     session,
@@ -135,32 +191,53 @@ class CellExecutionService:
             raise
 
         result["id"] = cell_id
+        if attempt_id is not None:
+            self.ports.mark_attempt_response(attempt_id)
         if request.stream and result.get("error"):
-            self._emit_error(
+            try:
+                self._emit_error(
+                    emit,
+                    session.root_frame_id,
+                    str(result["error"]),
+                    producing_cell_id=cell_id,
+                )
+            except BaseException as exc:
+                self._finish_attempt(attempt_id, "projection_failed", exc)
+                raise
+        try:
+            capture = self.ports.capture(
+                session,
+                index,
+                cell_id,
+                before,
                 emit,
-                session.root_frame_id,
-                str(result["error"]),
-                producing_cell_id=cell_id,
+                request.language,
             )
-        capture = self.ports.capture(
-            session,
-            index,
-            cell_id,
-            before,
-            emit,
-            request.language,
-        )
-        if capture.artifacts and request.stream:
-            self.ports.emit_artifact_step(
-                session, title, capture.artifacts, emit
+            if attempt_id is not None:
+                self.ports.mark_attempt_capture(attempt_id)
+            if capture.artifacts and request.stream:
+                self.ports.emit_artifact_step(
+                    session, title, capture.artifacts, emit
+                )
+        except BaseException as exc:
+            self._finish_attempt(attempt_id, "capture_failed", exc)
+            raise
+        try:
+            self._record(
+                session,
+                request,
+                index,
+                kernel_id,
+                result,
+                capture,
             )
-        self._record(
-            session,
-            request,
-            index,
-            kernel_id,
-            result,
-            capture,
+        except BaseException as exc:
+            self._finish_attempt(attempt_id, "record_failed", exc)
+            raise
+        self._finish_attempt(
+            attempt_id,
+            _terminal_state(result),
+            result.get("error") or None,
         )
         if show_in_notebook and request.stream:
             self._emit_finished(
@@ -259,24 +336,39 @@ class CellExecutionService:
         cell_id: str,
         kernel_id: str,
         message: str,
+        attempt_id: str | None,
+        terminal_state: str,
     ) -> CellExecutionResult:
         result = _error_result(cell_id, message)
+        if attempt_id is not None:
+            self.ports.mark_attempt_response(attempt_id)
         if request.stream:
-            self._emit_error(
-                emit,
-                session.root_frame_id,
-                message,
-                producing_cell_id=cell_id,
-            )
+            try:
+                self._emit_error(
+                    emit,
+                    session.root_frame_id,
+                    message,
+                    producing_cell_id=cell_id,
+                )
+            except BaseException as exc:
+                self._finish_attempt(attempt_id, "projection_failed", exc)
+                raise
         capture = CaptureResult()
-        self._record(
-            session,
-            request,
-            index,
-            kernel_id,
-            result,
-            capture,
-        )
+        try:
+            if attempt_id is not None:
+                self.ports.mark_attempt_capture(attempt_id)
+            self._record(
+                session,
+                request,
+                index,
+                kernel_id,
+                result,
+                capture,
+            )
+        except BaseException as exc:
+            self._finish_attempt(attempt_id, "record_failed", exc)
+            raise
+        self._finish_attempt(attempt_id, terminal_state, message)
         show_in_notebook = not (
             request.origin == "agent"
             and is_completion_only_cell(request.code, request.language)
@@ -293,6 +385,22 @@ class CellExecutionService:
                 capture,
             )
         return CellExecutionResult(result, index, cell_id, capture)
+
+    def _finish_attempt(
+        self,
+        attempt_id: str | None,
+        terminal_state: str,
+        error: Any = None,
+    ) -> None:
+        if attempt_id is None:
+            return
+        payload = None
+        if error not in (None, ""):
+            payload = {
+                "kind": type(error).__name__,
+                "message": str(error),
+            }
+        self.ports.finish_attempt(attempt_id, terminal_state, payload)
 
     @staticmethod
     def _emit_finished(
@@ -405,6 +513,18 @@ def _error_result(cell_id: str, message: str) -> dict[str, Any]:
         "trace": {"error_lineno": None, "error_call": None},
         "usage": {},
     }
+
+
+def _terminal_state(result: dict[str, Any]) -> str:
+    if result.get("interrupted"):
+        return "interrupted"
+    error = str(result.get("error") or "")
+    lowered = error.lower()
+    if "timed out" in lowered or "timeout" in lowered:
+        return "timed_out"
+    if error:
+        return "failed"
+    return "completed"
 
 
 __all__ = ["CellExecutionPorts", "CellExecutionService", "activity_title"]
