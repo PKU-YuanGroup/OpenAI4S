@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
 
@@ -35,7 +37,8 @@ class EditFileTool(Tool):
     permission_target_key = "path"
     secret_path_key = "path"
 
-    def native_precheck(self, arguments: dict) -> str | None:
+    @staticmethod
+    def native_precheck(arguments: dict) -> str | None:
         """Reject degenerate model calls before asking for edit approval."""
         old = arguments.get("old_string", "")
         new = arguments.get("new_string", "")
@@ -72,11 +75,20 @@ def static_edit_precheck(arguments) -> str | None:
     """Compatibility wrapper for the former module-level precheck helper."""
     if not isinstance(arguments, dict):
         return None
-    return EditFileTool().native_precheck(arguments)
+    return EditFileTool.native_precheck(arguments)
 
 
-# Compatibility name retained for callers that imported the former singleton.
-edit_file = EditFileTool()
+if TYPE_CHECKING:
+    edit_file: EditFileTool
+
+
+def __getattr__(name: str):
+    """Resolve the former singleton through the canonical registry lazily."""
+    if name == "edit_file":
+        from openai4s.tools.registry import get_tool
+
+        return get_tool("edit_file")
+    raise AttributeError(name)
 
 
 __all__ = ["EditFileTool", "edit_file", "static_edit_precheck"]
