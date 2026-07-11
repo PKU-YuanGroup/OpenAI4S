@@ -1,10 +1,12 @@
 """Kernel tests: persistent namespace, print capture, error attribution,
 usage accounting, and host_call RPC round-trip (dispatcher stubbed)."""
+import os
 import threading
 
 import pytest
 
 from openai4s.kernel import Kernel
+from openai4s.kernel.environment import build_kernel_environment
 
 
 def _echo_dispatcher(method, args):
@@ -27,6 +29,117 @@ def test_persistent_namespace():
         k.execute("x = 41")
         r = k.execute("print(x + 1)")
         assert r["stdout"].strip() == "42"
+
+
+def test_kernel_child_environment_is_rebuilt_from_strict_allowlist(tmp_path):
+    source = {
+        "PATH": "/host/bin",
+        "HOME": "/home/scientist",
+        "LANG": "en_US.UTF-8",
+        "TMPDIR": "/safe/tmp",
+        "MPLBACKEND": "Agg",
+        "VIRTUAL_ENV": "/host/venv",
+        "PYTHONPATH": "/host/injected-pythonpath",
+        "CONDA_PREFIX": "/host/wrong-conda",
+        "OPENAI4S_PROVENANCE_OFF": "1",
+        "OPENAI4S_SAFETY_AUDIT_HOOK": "0",
+        "OPENAI4S_KERNEL_MODE": "host-override",
+        "OPENAI4S_WORKSPACE": "/host/wrong-workspace",
+        "OPENAI4S_LLM_API_KEY": "llm-secret",
+        "OPENAI4S_ARK_API_KEY": "ark-secret",
+        "OPENAI_API_KEY": "openai-secret",
+        "ANTHROPIC_API_KEY": "anthropic-secret",
+        "HF_TOKEN": "hf-secret",
+        "AWS_SECRET_ACCESS_KEY": "aws-secret",
+        "SYNTHETIC_OAUTH_CREDENTIAL": "oauth-secret",
+        "DATABASE_PASSWORD": "db-secret",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "HTTPS_PROXY": "https://user:password@proxy.invalid",
+        "LD_PRELOAD": "/tmp/evil.so",
+        "LD_LIBRARY_PATH": "/tmp/evil-libs",
+        "DYLD_INSERT_LIBRARIES": "/tmp/evil.dylib",
+        "DYLD_LIBRARY_PATH": "/tmp/evil-dylibs",
+        "BASH_ENV": "/tmp/evil-bashrc",
+        "NODE_OPTIONS": "--require=/tmp/evil.js",
+    }
+    repo_root = tmp_path / "trusted-repo"
+    env_root = tmp_path / "conda" / "science"
+
+    env = build_kernel_environment(
+        source=source,
+        mode="python",
+        cwd=str(tmp_path),
+        env_root=str(env_root),
+        env_name="science",
+        repo_root=str(repo_root),
+    )
+
+    assert env["PATH"].split(os.pathsep)[0] == str(env_root / "bin")
+    assert env["HOME"] == "/home/scientist"
+    assert env["LANG"] == "en_US.UTF-8"
+    assert env["TMPDIR"] == "/safe/tmp"
+    assert env["MPLBACKEND"] == "Agg"
+    assert env["OPENAI4S_PROVENANCE_OFF"] == "1"
+    assert env["OPENAI4S_SAFETY_AUDIT_HOOK"] == "0"
+    assert env["OPENAI4S_KERNEL_MODE"] == "python"
+    assert env["OPENAI4S_WORKSPACE"] == str(tmp_path.resolve())
+    assert env["PWD"] == str(tmp_path.resolve())
+    assert env["PYTHONPATH"] == str(repo_root.resolve())
+    assert env["CONDA_PREFIX"] == str(env_root)
+    assert env["CONDA_DEFAULT_ENV"] == "science"
+    assert env["CONDA_SHLVL"] == "1"
+    assert "VIRTUAL_ENV" not in env  # selected conda runtime wins
+
+    forbidden = {
+        "OPENAI4S_LLM_API_KEY",
+        "OPENAI4S_ARK_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "HF_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "SYNTHETIC_OAUTH_CREDENTIAL",
+        "DATABASE_PASSWORD",
+        "SSH_AUTH_SOCK",
+        "HTTPS_PROXY",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "BASH_ENV",
+        "NODE_OPTIONS",
+    }
+    assert forbidden.isdisjoint(env)
+    assert "/host/injected-pythonpath" not in env["PYTHONPATH"]
+    assert source["OPENAI4S_LLM_API_KEY"] == "llm-secret"  # source not mutated
+
+
+def test_python_kernel_and_its_subprocesses_cannot_inherit_host_api_key(
+    monkeypatch, tmp_path
+):
+    marker = "synthetic-host-llm-secret-never-in-kernel"
+    monkeypatch.setenv("OPENAI4S_LLM_API_KEY", marker)
+    monkeypatch.setenv("OPENAI4S_ARK_API_KEY", marker)
+    monkeypatch.setenv("OPENAI_API_KEY", marker)
+    monkeypatch.setenv("HF_TOKEN", marker)
+    monkeypatch.setenv("LD_PRELOAD", "/tmp/openai4s-never-load.so")
+    monkeypatch.setenv("DYLD_INSERT_LIBRARIES", "/tmp/openai4s-never-load.dylib")
+    monkeypatch.setenv("OPENAI4S_PROVENANCE_OFF", "1")
+
+    code = """
+import os, shlex, subprocess, sys
+probe = "import os; print(os.environ.get('OPENAI4S_LLM_API_KEY', '<missing>'))"
+print(os.environ.get('OPENAI4S_LLM_API_KEY', '<missing>'))
+print(subprocess.check_output([sys.executable, '-c', probe], text=True).strip())
+cmd = shlex.quote(sys.executable) + ' -c ' + shlex.quote(probe)
+print(host.bash(cmd)['stdout'].strip())
+print(os.environ.get('OPENAI4S_PROVENANCE_OFF', '<missing>'))
+"""
+    with Kernel(dispatcher=_echo_dispatcher, cwd=str(tmp_path)) as kernel:
+        result = kernel.execute(code)
+
+    assert result["error"] is None
+    assert result["stdout"].splitlines() == ["<missing>", "<missing>", "<missing>", "1"]
+    assert marker not in result["stdout"]
 
 
 def test_expr_echo():

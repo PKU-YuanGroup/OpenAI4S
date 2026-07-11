@@ -61,6 +61,34 @@ def test_execute_persistence_and_stray_stdout(fake_rscript, tmp_path):
     assert not k.is_alive()
 
 
+def test_r_kernel_cannot_inherit_host_api_keys_or_loader_injection(
+    fake_rscript, monkeypatch, tmp_path
+):
+    marker = "synthetic-host-r-secret-never-in-kernel"
+    monkeypatch.setenv("OPENAI4S_LLM_API_KEY", marker)
+    monkeypatch.setenv("OPENAI4S_ARK_API_KEY", marker)
+    monkeypatch.setenv("OPENAI_API_KEY", marker)
+    monkeypatch.setenv("HF_TOKEN", marker)
+    monkeypatch.setenv("LD_PRELOAD", "/tmp/openai4s-never-load.so")
+    monkeypatch.setenv("DYLD_INSERT_LIBRARIES", "/tmp/openai4s-never-load.dylib")
+    monkeypatch.setenv("OPENAI4S_PROVENANCE_OFF", "1")
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=fake_rscript)
+    try:
+        for name in (
+            "OPENAI4S_LLM_API_KEY",
+            "OPENAI4S_ARK_API_KEY",
+            "OPENAI_API_KEY",
+            "HF_TOKEN",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+        ):
+            assert kernel.execute(f"ENV:{name}")["stdout"] == "<missing>"
+        assert kernel.execute("ENV:OPENAI4S_PROVENANCE_OFF")["stdout"] == "1"
+    finally:
+        kernel.shutdown()
+
+
 def test_child_stderr_flood_does_not_deadlock(fake_rscript, tmp_path):
     """A cell whose process writes >64KB to inherited fd2 must not wedge the
     kernel: the manager's drain thread keeps the stderr pipe empty (this used

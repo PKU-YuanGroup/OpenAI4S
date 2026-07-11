@@ -17,6 +17,7 @@ aliased to stderr by the sh wrapper. Scripted behaviors, keyed on the cell code:
                 manager drains the stderr pipe: >64KB used to deadlock)
     DIE      -> exits 1 without responding (worker-death path)
     SLEEP    -> sleeps 30s; SIGINT -> interrupted=True response
+    ENV:name -> stdout is the child environment value or "<missing>"
     anything -> stdout "ran:<code>"
 """
 import json
@@ -86,5 +87,8 @@ while True:
             respond(rid, stdout="woke")
         except KeyboardInterrupt:
             respond(rid, error="Interrupted", interrupted=True)
+        continue
+    if code.startswith("ENV:"):
+        respond(rid, stdout=os.environ.get(code[4:], "<missing>"))
         continue
     respond(rid, stdout=f"ran:{code}")

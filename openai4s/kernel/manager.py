@@ -16,6 +16,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
+from openai4s.kernel.environment import build_kernel_environment
+
 _WORKER = Path(__file__).resolve().parent / "worker.py"
 
 # A host-call dispatcher: (method:str, args:list) -> data. Raises to signal error.
@@ -80,27 +82,17 @@ class Kernel:
         return proc
 
     def _child_env(self) -> dict:
-        import os
-
-        env = dict(os.environ)
-        # Ensure the worker can import openai4s.* even when it runs under a
-        # different (conda) interpreter than the daemon.
+        # Build from a strict runtime allowlist: daemon LLM/provider keys,
+        # cloud credentials and loader-injection variables must never enter a
+        # Python/R worker or any subprocess launched from a cell.
         repo_root = str(Path(__file__).resolve().parent.parent.parent)
-        env["PYTHONPATH"] = repo_root + (
-            (":" + env["PYTHONPATH"]) if env.get("PYTHONPATH") else ""
+        return build_kernel_environment(
+            mode=self.mode,
+            cwd=self.cwd,
+            env_root=self.env_root,
+            env_name=self.env_name,
+            repo_root=repo_root,
         )
-        # splice gate: tell the worker which SDK surface to assemble.
-        env["OPENAI4S_KERNEL_MODE"] = self.mode
-        # Activate the selected conda env for the worker's subprocesses: prepend
-        # its bin/ to PATH (so pip/mafft/iqtree/Rscript resolve inside the env)
-        # and advertise the prefix, matching a `conda activate`.
-        if self.env_root:
-            bindir = str(Path(self.env_root) / "bin")
-            env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
-            env["CONDA_PREFIX"] = str(self.env_root)
-            if self.env_name:
-                env["CONDA_DEFAULT_ENV"] = self.env_name
-        return env
 
     def _send(self, obj: dict) -> None:
         assert self._proc.stdin is not None
