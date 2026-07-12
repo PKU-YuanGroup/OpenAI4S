@@ -206,10 +206,10 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 ## 🤝 社区贡献者
 
 <!-- CONTRIBUTORS:START -->
-<a href="https://github.com/Nobody-Zhang"><img src="https://github.com/Nobody-Zhang.png" width="64" height="64" alt="Nobody-Zhang" /></a>
-<a href="https://github.com/Grace-xyx"><img src="https://github.com/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
-<a href="https://github.com/wangyu-sd"><img src="https://github.com/wangyu-sd.png" width="64" height="64" alt="wangyu-sd" /></a>
-<a href="https://github.com/yusowa0716"><img src="https://github.com/yusowa0716.png" width="64" height="64" alt="yusowa0716" /></a>
+<a href="https://github.com/Nobody-Zhang" title="Nobody-Zhang"><img src=".github/contributors/Nobody-Zhang.svg" width="64" height="64" alt="Nobody-Zhang" /></a>
+<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.svg" width="64" height="64" alt="Grace-xyx" /></a>
+<a href="https://github.com/wangyu-sd" title="wangyu-sd"><img src=".github/contributors/wangyu-sd.svg" width="64" height="64" alt="wangyu-sd" /></a>
+<a href="https://github.com/yusowa0716" title="yusowa0716"><img src=".github/contributors/yusowa0716.svg" width="64" height="64" alt="yusowa0716" /></a>
 <!-- CONTRIBUTORS:END -->
 
 <sub>由 <code>scripts/update_contributors.py</code> 从 GitHub <a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">贡献者图谱</a>自动生成(Contributors 工作流)。</sub>
