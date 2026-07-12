@@ -89,7 +89,22 @@ def fetch_contributors(token: str | None) -> list[dict]:
     return kept
 
 
-def _circular_svg(avatar_b64: str) -> str:
+def _mime(data: bytes) -> str:
+    # GitHub avatars come back as JPEG, PNG, or WEBP; the data-URI MIME must
+    # match the real bytes or the browser fails to decode it (a broken-image
+    # glyph inside the circle).
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:4] == b"GIF8":
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
+
+
+def _circular_svg(avatar_b64: str, mime: str) -> str:
     # A circle filled with the avatar via a pattern — the same technique
     # contrib.rocks uses, so GitHub renders it round.
     return (
@@ -99,7 +114,7 @@ def _circular_svg(avatar_b64: str) -> str:
         '<defs><pattern id="a" patternUnits="userSpaceOnUse" '
         'width="128" height="128">'
         '<image width="128" height="128" preserveAspectRatio="xMidYMid slice" '
-        f'xlink:href="data:image/png;base64,{avatar_b64}"/></pattern></defs>'
+        f'xlink:href="data:{mime};base64,{avatar_b64}"/></pattern></defs>'
         '<circle cx="64" cy="64" r="64" fill="url(#a)"/></svg>\n'
     )
 
@@ -112,12 +127,13 @@ def write_avatars(people: list[dict], token: str | None) -> set[str]:
         url = c.get("avatar_url") or f"https://github.com/{login}.png"
         url += ("&" if "?" in url else "?") + "s=128"
         try:
-            b64 = base64.b64encode(_get(url, token)).decode("ascii")
+            raw = _get(url, token)
         except Exception as exc:  # noqa: BLE001
             print(f"  avatar fetch failed for {login}: {exc}", file=sys.stderr)
             continue
+        b64 = base64.b64encode(raw).decode("ascii")
         with open(os.path.join(AVATAR_DIR, f"{login}.svg"), "w", encoding="utf-8") as f:
-            f.write(_circular_svg(b64))
+            f.write(_circular_svg(b64, _mime(raw)))
         ok.add(login)
     # Drop SVGs for contributors that are no longer present.
     if os.path.isdir(AVATAR_DIR):
