@@ -8606,14 +8606,23 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         pass
     _seed_example_project(cfg)
     _seed_example_connector(cfg)
-    if _demo_seed_enabled():
-        try:
-            _seed_demo_session(cfg, runner)
-        except Exception:  # noqa: BLE001 - seeding must never block startup
-            traceback.print_exc()
     handler = make_handler(cfg, hub, runner)
     httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
     httpd.daemon_threads = True
+    if _demo_seed_enabled():
+        # The demo session runs real cells (UniProt/RCSB network + a gated MCP
+        # call whose approval can block up to DEFAULT_TIMEOUT).  It must never
+        # run on the synchronous startup path or the daemon never binds its
+        # port; seed best-effort in the background after the server is built.
+        def _seed_demo_bg() -> None:
+            try:
+                _seed_demo_session(cfg, runner)
+            except Exception:  # noqa: BLE001 - seeding must never break the daemon
+                traceback.print_exc()
+
+        threading.Thread(
+            target=_seed_demo_bg, name="openai4s-demo-seed", daemon=True
+        ).start()
     return httpd
 
 
