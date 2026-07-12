@@ -89,6 +89,19 @@ def test_resolve_and_record_send_canonical_path_metadata(tmp_path, monkeypatch):
     ]
 
 
+def test_resolve_version_ignores_non_str_host_result(tmp_path, monkeypatch):
+    """A host that returns a non-scalar (e.g. an error/metadata dict) for an
+    untracked path must not reach ``frozenset({vid})`` — an unhashable value
+    there crashes the whole worker (e.g. opening /proc/self/status for RSS)."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(
+        provenance, "_host_call", lambda method, args: {"error": "not tracked"}
+    )
+    assert provenance._resolve_version("system/status") is None
+
+
 def test_open_writer_freezes_relative_location_before_cwd_changes(
     tmp_path, monkeypatch
 ):
@@ -165,9 +178,7 @@ def test_real_kernel_tracks_relative_read_to_nested_relative_write(tmp_path):
         )
 
     assert result["error"] is None
-    output = store.artifact_by_filename(
-        "nested/output.txt", frame_id, strict=True
-    )
+    output = store.artifact_by_filename("nested/output.txt", frame_id, strict=True)
     assert output is not None
     assert len(store.list_versions(output["artifact_id"])) == 1
     metadata = store.version_meta(output["latest_version_id"])
@@ -184,6 +195,7 @@ def test_real_kernel_tracks_relative_read_to_nested_relative_write(tmp_path):
         "nested/after-chdir.txt", frame_id, strict=True
     )
     assert after_chdir is not None
-    assert store.lineage_inputs(after_chdir["latest_version_id"])[0][
-        "version_id"
-    ] == source_version["version_id"]
+    assert (
+        store.lineage_inputs(after_chdir["latest_version_id"])[0]["version_id"]
+        == source_version["version_id"]
+    )

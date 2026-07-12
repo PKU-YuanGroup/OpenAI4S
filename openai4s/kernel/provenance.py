@@ -120,9 +120,14 @@ def _resolve_version(path: Any) -> str | None:
     if location is None:
         return None
     try:
-        return _host_call("prov_resolve_path", [location[0]])
+        resolved = _host_call("prov_resolve_path", [location[0]])
     except Exception:  # noqa: BLE001 - provenance must never break user code
         return None
+    # Enforce the ``str | None`` contract.  The host may return a non-scalar
+    # (e.g. an error/metadata dict) for an untracked path; an unhashable value
+    # would crash ``frozenset({vid})`` at the call sites and take the whole
+    # worker down (e.g. opening /proc/self/status for the RSS accounting).
+    return resolved if isinstance(resolved, str) else None
 
 
 def _first_path_arg(args: tuple, kwargs: dict, path_kw: str | None) -> Any:
