@@ -1,0 +1,18 @@
+{
+  "true_names": [
+    "Clinoptilolite-Ca",
+    "Bertrandite",
+    "Diopside"
+  ],
+  "true_fractions": {
+    "Clinoptilolite-Ca": 0.25091200512204953,
+    "Bertrandite": 0.30268842086941916,
+    "Diopside": 0.44639957400853125
+  },
+  "meta": {
+    "n_components": 3,
+    "noise_level": 0.02,
+    "n_spikes": 3,
+    "baseline_strength": 0.5
+  }
+}

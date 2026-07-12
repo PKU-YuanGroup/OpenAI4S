@@ -1,0 +1,34 @@
+{
+  "case_id": "case1",
+  "spectrum_type": "synthetic dirty mixed-mineral Raman spectrum",
+  "component_type_definition": "Each listed element is a mineral phase component from the RRUFF reference-library mixture, not a chemical element.",
+  "components": [
+    {
+      "name": "Clinoptilolite-Ca",
+      "type": "mineral phase",
+      "role": "hidden synthetic component",
+      "true_fraction": 0.25091200512204953,
+      "source": "RRUFF excellent_oriented reference spectrum"
+    },
+    {
+      "name": "Bertrandite",
+      "type": "mineral phase",
+      "role": "hidden synthetic component",
+      "true_fraction": 0.30268842086941916,
+      "source": "RRUFF excellent_oriented reference spectrum"
+    },
+    {
+      "name": "Diopside",
+      "type": "mineral phase",
+      "role": "hidden synthetic component",
+      "true_fraction": 0.44639957400853125,
+      "source": "RRUFF excellent_oriented reference spectrum"
+    }
+  ],
+  "generation_meta": {
+    "n_components": 3,
+    "noise_level": 0.02,
+    "n_spikes": 3,
+    "baseline_strength": 0.5
+  }
+}

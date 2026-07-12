@@ -1,0 +1,124 @@
+{
+  "case_id": "case1",
+  "pipeline": "global preprocessing once -> iterative residual peak-find/match/subtract -> NNLS unmixing -> final evaluation",
+  "predicted_components": [
+    {
+      "name": "Diopside",
+      "estimated_fraction": 0.457,
+      "support_peaks_cm1": [180.0, 232.0, 324.0, 356.0, 390.0, 530.0, 666.0, 1012.0],
+      "type": "predicted mineral phase"
+    },
+    {
+      "name": "Bertrandite",
+      "estimated_fraction": 0.296,
+      "support_peaks_cm1": [182.0, 202.0, 228.0, 356.0, 710.0, 820.0, 926.0, 986.0],
+      "type": "predicted mineral phase"
+    },
+    {
+      "name": "Clinoptilolite-Ca",
+      "estimated_fraction": 0.247,
+      "support_peaks_cm1": [220.0, 260.0, 482.0, 614.0],
+      "type": "predicted mineral phase"
+    }
+  ],
+  "clean_peak_count": 28,
+  "clean_peak_positions_head_cm1": [
+    180.0,
+    202.0,
+    226.0,
+    254.0,
+    298.0,
+    324.0,
+    358.0,
+    390.0,
+    484.0,
+    530.0,
+    558.0,
+    612.0,
+    666.0,
+    686.0,
+    710.0,
+    822.0,
+    926.0,
+    964.0,
+    986.0,
+    1012.0
+  ],
+  "diagnostics": {
+    "fit_corr": 0.983,
+    "residual_rmse": 0.0005,
+    "rel_residual": 0.16027,
+    "explained_energy": 0.973,
+    "n_residual_peaks": 0,
+    "residual_peak_positions": [],
+    "reliability": "high"
+  },
+  "evaluation": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "fraction_mae": 0.007
+  },
+  "config": {
+    "despike_enabled": true,
+    "despike_threshold": 7.0,
+    "despike_window": 5,
+    "denoise_method": "savgol",
+    "denoise_window": 7,
+    "savgol_poly": 3,
+    "baseline_method": "asls",
+    "baseline_lam": 100000.0,
+    "baseline_p": 0.01,
+    "baseline_poly_order": 5,
+    "normalise_method": "area",
+    "peak_smooth_window": 11,
+    "peak_savgol_poly": 3,
+    "peak_prominence_sigma": 3.0,
+    "peak_min_distance_cm": 8.0,
+    "peak_prefilter_enabled": true,
+    "peak_match_tol_cm": 8.0,
+    "peak_min_matches": 1,
+    "match_metric": "pearson",
+    "top_k": 8,
+    "corr_threshold": 0.3,
+    "greedy_min_gain": 0.01,
+    "fraction_threshold": 0.05
+  },
+  "history": [
+    {
+      "step": 0,
+      "added_component": "Diopside",
+      "match_corr": 0.8433,
+      "rel_residual": 0.53746,
+      "residual_rmse": 0.001652,
+      "n_residual_peaks": 28,
+      "residual_peak_positions": [180.0, 202.0, 226.0, 254.0, 298.0, 324.0, 358.0, 390.0, 484.0, 530.0, 558.0, 612.0],
+      "cumulative_components": ["Diopside"]
+    },
+    {
+      "step": 1,
+      "added_component": "Bertrandite",
+      "match_corr": 0.7987,
+      "rel_residual": 0.3049,
+      "residual_rmse": 0.000937,
+      "n_residual_peaks": 31,
+      "residual_peak_positions": [180.0, 202.0, 226.0, 254.0, 298.0, 358.0, 400.0, 484.0, 514.0, 574.0, 590.0, 612.0],
+      "cumulative_components": ["Diopside", "Bertrandite"]
+    },
+    {
+      "step": 2,
+      "added_component": "Clinoptilolite-Ca",
+      "match_corr": 0.793,
+      "rel_residual": 0.16027,
+      "residual_rmse": 0.000493,
+      "n_residual_peaks": 32,
+      "residual_peak_positions": [220.0, 254.0, 330.0, 362.0, 406.0, 484.0, 514.0, 546.0, 574.0, 590.0, 612.0, 680.0],
+      "cumulative_components": ["Diopside", "Bertrandite", "Clinoptilolite-Ca"]
+    }
+  ],
+  "artifacts": {
+    "observable_spectrum": "case1/spectrum.csv",
+    "hidden_truth": "case1/truth.json",
+    "input_plot": "case1/input.png"
+  }
+}
