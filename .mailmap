@@ -1,0 +1,6 @@
+# Consolidate commits made under a local/machine git identity to the
+# contributor's canonical GitHub identity so the Contributors graph,
+# `git shortlog -sne`, and contrib.rocks attribute them to one account.
+#
+# Format: Proper Name <canonical@email> <commit@email>
+Hao Li <49901804+HowardLi1984@users.noreply.github.com> <lihao@lihaodeMacBook-Air.local>
