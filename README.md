@@ -232,9 +232,21 @@ Released under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## 🤝 Community contributors
 
-<a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=PKU-YuanGroup/OpenAI4S&v=20260707" alt="OpenAI4S contributors" />
-</a>
+<!--
+  Manual contributor wall. contrib.rocks caches its render per repo on the
+  server side and lagged far behind the real GitHub contributor list (it showed
+  only one avatar while the graph already had several), so avatars are pinned
+  here explicitly and reliably. To add a contributor, append one line:
+  <a href="https://github.com/LOGIN"><img src="https://github.com/LOGIN.png" width="64" height="64" alt="LOGIN" /></a>
+-->
+<a href="https://github.com/Nobody-Zhang"><img src="https://github.com/Nobody-Zhang.png" width="64" height="64" alt="Nobody-Zhang" /></a>
+<a href="https://github.com/HowardLi1984"><img src="https://github.com/HowardLi1984.png" width="64" height="64" alt="HowardLi1984" /></a>
+<a href="https://github.com/wangyu-sd"><img src="https://github.com/wangyu-sd.png" width="64" height="64" alt="wangyu-sd" /></a>
+<a href="https://github.com/yusowa0716"><img src="https://github.com/yusowa0716.png" width="64" height="64" alt="yusowa0716" /></a>
+<a href="https://github.com/riiiiiiin"><img src="https://github.com/riiiiiiin.png" width="64" height="64" alt="riiiiiiin" /></a>
+<a href="https://github.com/Grace-xyx"><img src="https://github.com/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
+
+<sub>Full history on the <a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">contributors graph</a>.</sub>
 
 ---
 

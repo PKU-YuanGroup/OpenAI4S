@@ -205,9 +205,20 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 
 ## 🤝 社区贡献者
 
-<a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=PKU-YuanGroup/OpenAI4S&v=20260707" alt="OpenAI4S contributors" />
-</a>
+<!--
+  手动贡献者头像墙。contrib.rocks 在服务端按仓库缓存,长期落后于真实的 GitHub
+  贡献者名单(图上只有一个头像,而 graph 已有多人),故在此显式、可靠地固定头像。
+  新增贡献者只需追加一行:
+  <a href="https://github.com/LOGIN"><img src="https://github.com/LOGIN.png" width="64" height="64" alt="LOGIN" /></a>
+-->
+<a href="https://github.com/Nobody-Zhang"><img src="https://github.com/Nobody-Zhang.png" width="64" height="64" alt="Nobody-Zhang" /></a>
+<a href="https://github.com/HowardLi1984"><img src="https://github.com/HowardLi1984.png" width="64" height="64" alt="HowardLi1984" /></a>
+<a href="https://github.com/wangyu-sd"><img src="https://github.com/wangyu-sd.png" width="64" height="64" alt="wangyu-sd" /></a>
+<a href="https://github.com/yusowa0716"><img src="https://github.com/yusowa0716.png" width="64" height="64" alt="yusowa0716" /></a>
+<a href="https://github.com/riiiiiiin"><img src="https://github.com/riiiiiiin.png" width="64" height="64" alt="riiiiiiin" /></a>
+<a href="https://github.com/Grace-xyx"><img src="https://github.com/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
+
+<sub>完整记录见<a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">贡献者图谱</a>。</sub>
 
 ---
 
