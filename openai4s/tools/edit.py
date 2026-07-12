@@ -13,7 +13,9 @@ class EditFileTool(Tool):
 
     name = "edit_file"
     host_method = "edit_file"
-    description = "Replace an exact string in a workspace file (unique unless replace_all)."
+    description = (
+        "Replace an exact string in a workspace file (unique unless replace_all)."
+    )
     parameters = {
         "properties": {
             "path": {
@@ -71,9 +73,7 @@ class EditFileTool(Tool):
                 "pass replace_all=True or add more context"
             }
         content = (
-            content.replace(old, new)
-            if replace_all
-            else content.replace(old, new, 1)
+            content.replace(old, new) if replace_all else content.replace(old, new, 1)
         )
         path.write_text(content, encoding="utf-8")
         return {"path": workspace.relative(path), "replaced": matches}

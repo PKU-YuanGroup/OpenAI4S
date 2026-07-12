@@ -139,9 +139,7 @@ def is_completion_only_cell(cell: CodeCell | str, language: str = "python") -> b
         ast.Lambda,
     )
     return not any(
-        isinstance(node, hidden_work)
-        for value in values
-        for node in ast.walk(value)
+        isinstance(node, hidden_work) for value in values for node in ast.walk(value)
     )
 
 

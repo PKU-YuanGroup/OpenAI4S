@@ -21,7 +21,6 @@ import unicodedata
 import uuid
 from typing import Any, Callable, Mapping
 
-
 SKILL_VERSION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS skill_blobs (
     sha256       TEXT PRIMARY KEY,
@@ -224,9 +223,10 @@ class SkillVersionRepository:
                     (digest,),
                 ).fetchone()
                 if existing is not None:
-                    if int(existing["size_bytes"]) != len(content) or bytes(
-                        existing["content"]
-                    ) != content:
+                    if (
+                        int(existing["size_bytes"]) != len(content)
+                        or bytes(existing["content"]) != content
+                    ):
                         raise ValueError("content-addressed Skill blob collision")
                 else:
                     self._connection.execute(

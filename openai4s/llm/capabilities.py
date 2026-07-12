@@ -531,9 +531,7 @@ def _provider_base_locked(name: str) -> tuple[ProviderCapabilities, str]:
         "default_model": str(entry.get("model", builtin.default_model)).strip(),
         "vision": bool(entry.get("vision", builtin.vision)),
     }
-    capability_changes = {
-        key: entry[key] for key in _CAPABILITY_FIELDS if key in entry
-    }
+    capability_changes = {key: entry[key] for key in _CAPABILITY_FIELDS if key in entry}
     capability_changes = _validated_changes(capability_changes)
     wire = identity_changes["wire"]
     if wire != builtin.wire and "usage_mapping" not in capability_changes:

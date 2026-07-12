@@ -81,12 +81,18 @@ def test_edit_versions_live_text_and_preserves_exact_event_shape(tmp_path):
         "size_bytes": len(b"version two"),
     }
     assert (harness.workspace / "notes.txt").read_text() == "version two"
-    assert Path(
-        harness.store.version_meta(first["version_id"])["snapshot_path"]
-    ).read_bytes() == b"version one"
-    assert Path(
-        harness.store.version_meta(result["version_id"])["snapshot_path"]
-    ).read_bytes() == b"version two"
+    assert (
+        Path(
+            harness.store.version_meta(first["version_id"])["snapshot_path"]
+        ).read_bytes()
+        == b"version one"
+    )
+    assert (
+        Path(
+            harness.store.version_meta(result["version_id"])["snapshot_path"]
+        ).read_bytes()
+        == b"version two"
+    )
     assert len(harness.store.list_versions(artifact_id)) == 2
     assert harness.events == []
     assert override == [
@@ -226,12 +232,18 @@ def test_upload_keeps_legacy_decode_versioning_and_event_contracts(tmp_path):
     versions = harness.store.list_versions(first["artifact_id"])
     assert len(versions) == 2
     by_ordinal = {version["ordinal"]: version for version in versions}
-    assert Path(
-        harness.store.resolve_artifact_path(by_ordinal[1]["version_id"])
-    ).read_bytes() == b"alpha"
-    assert Path(
-        harness.store.resolve_artifact_path(by_ordinal[2]["version_id"])
-    ).read_bytes() == b"beta"
+    assert (
+        Path(
+            harness.store.resolve_artifact_path(by_ordinal[1]["version_id"])
+        ).read_bytes()
+        == b"alpha"
+    )
+    assert (
+        Path(
+            harness.store.resolve_artifact_path(by_ordinal[2]["version_id"])
+        ).read_bytes()
+        == b"beta"
+    )
     assert harness.events[-1] == (
         harness.frame_id,
         {
@@ -252,9 +264,10 @@ def test_upload_keeps_legacy_decode_versioning_and_event_contracts(tmp_path):
             "frame_id": harness.frame_id,
         }
     )
-    assert Path(
-        harness.store.resolve_artifact_path(fallback["artifact_id"])
-    ).read_bytes() == b"%%% not base64 %%%"
+    assert (
+        Path(harness.store.resolve_artifact_path(fallback["artifact_id"])).read_bytes()
+        == b"%%% not base64 %%%"
+    )
 
     event_count = len(harness.events)
     loose = harness.manager.upload(
@@ -264,9 +277,7 @@ def test_upload_keeps_legacy_decode_versioning_and_event_contracts(tmp_path):
         }
     )
     assert len(harness.events) == event_count
-    assert (
-        harness.cfg.data_dir / "uploads" / "loose.bin"
-    ).read_bytes() == b"outside"
+    assert (harness.cfg.data_dir / "uploads" / "loose.bin").read_bytes() == b"outside"
     assert harness.store.get_artifact(loose["artifact_id"])["root_frame_id"] is None
 
 

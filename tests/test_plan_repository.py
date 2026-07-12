@@ -74,9 +74,7 @@ def test_plan_repository_facade_preserves_status_merge_and_delete(tmp_path):
         steps=[{"id": "s1", "title": "First"}],
     )
 
-    updated = store.set_plan_step_status(
-        plan["plan_id"], "s1", "completed", "done"
-    )
+    updated = store.set_plan_step_status(plan["plan_id"], "s1", "completed", "done")
     assert updated["step_status"]["s1"]["status"] == "completed"
     assert updated["step_status"]["s1"]["note"] == "done"
     assert store.set_plan_step_status("missing", "s1", "completed") is None

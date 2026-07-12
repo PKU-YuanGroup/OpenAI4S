@@ -284,8 +284,7 @@ def test_artifact_excerpt_preserves_type_extension_limit_and_decode(tmp_path):
     assert ReviewService.artifact_excerpt({"path": str(markdown)}) == "markdown"
     assert ReviewService.artifact_excerpt({"path": str(binary)}) is None
     assert (
-        ReviewService.artifact_excerpt({"path": str(tmp_path / "missing.txt")})
-        is None
+        ReviewService.artifact_excerpt({"path": str(tmp_path / "missing.txt")}) is None
     )
 
 
@@ -390,19 +389,20 @@ def test_run_builds_evidence_persists_usage_and_streams_exact_steps(tmp_path):
 
 def test_run_honors_pre_provider_cancel_without_starting_provider():
     threads = ImmediateThreads()
-    service, store, state, events, _jobs, _reviews = _service(
-        thread_factory=threads
-    )
+    service, store, state, events, _jobs, _reviews = _service(thread_factory=threads)
     state.cancel.set()
 
-    assert service.run(
-        state,
-        events.append,
-        user_text="request",
-        assistant_text="answer",
-        artifact_versions_before={},
-        cell_count_before=0,
-    ) is None
+    assert (
+        service.run(
+            state,
+            events.append,
+            user_text="request",
+            assistant_text="answer",
+            artifact_versions_before={},
+            cell_count_before=0,
+        )
+        is None
+    )
 
     assert threads.created == []
     assert store.steps[0]["status"] == "cancelled"

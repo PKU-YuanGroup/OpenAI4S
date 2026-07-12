@@ -155,9 +155,7 @@ class RemoteCapabilityService:
                             "name": name,
                             "engine": (metadata or {}).get("engine"),
                             "script": (metadata or {}).get("script"),
-                            "verified": bool(
-                                (metadata or {}).get("verified_at")
-                            ),
+                            "verified": bool((metadata or {}).get("verified_at")),
                             "verified_at": (metadata or {}).get("verified_at"),
                         }
                         for name, metadata in capabilities.items()
@@ -189,8 +187,7 @@ class RemoteCapabilityService:
         if not registry.get_host(alias):
             return {
                 "error": (
-                    "register_remote_capability: unknown remote GPU host "
-                    f"{alias!r}"
+                    "register_remote_capability: unknown remote GPU host " f"{alias!r}"
                 )
             }
         try:
@@ -216,8 +213,7 @@ class RemoteCapabilityService:
         except subprocess.TimeoutExpired:
             return {
                 "error": (
-                    "register_remote_capability: verification timed out on "
-                    f"{alias}"
+                    "register_remote_capability: verification timed out on " f"{alias}"
                 )
             }
         except OSError as exc:

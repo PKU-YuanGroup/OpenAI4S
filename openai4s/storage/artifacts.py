@@ -241,12 +241,14 @@ class ArtifactRepository:
         env_snapshot_id: str | None = None,
         snapshot_path: str | None = None,
     ) -> dict:
-        explicit_scope, resolved_root, resolved_project = (
-            self._resolve_artifact_write_scope(
-                frame_id=frame_id,
-                root_frame_id=root_frame_id,
-                project_id=project_id,
-            )
+        (
+            explicit_scope,
+            resolved_root,
+            resolved_project,
+        ) = self._resolve_artifact_write_scope(
+            frame_id=frame_id,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
         )
         now = self._clock_ms()
         version_id = f"v-{uuid.uuid4().hex[:12]}"
@@ -355,12 +357,10 @@ class ArtifactRepository:
         """Atomically record or finalize one cell's physical file write."""
         if reuse_policy not in {"any", "provisional"}:
             raise ValueError(f"unknown cell artifact reuse policy: {reuse_policy!r}")
-        _explicit, resolved_root, resolved_project = (
-            self._resolve_artifact_write_scope(
-                frame_id=frame_id,
-                root_frame_id=root_frame_id,
-                project_id=project_id,
-            )
+        _explicit, resolved_root, resolved_project = self._resolve_artifact_write_scope(
+            frame_id=frame_id,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
         )
         now = self._clock_ms()
         version_id: str
@@ -396,10 +396,9 @@ class ArtifactRepository:
                         ),
                     ).fetchall()
                     for row in exact_rows:
-                        if (
-                            row["artifact_latest_version_id"] == row["version_id"]
-                            and self._paths_match(row["path"], path)
-                        ):
+                        if row["artifact_latest_version_id"] == row[
+                            "version_id"
+                        ] and self._paths_match(row["path"], path):
                             candidate = row
                             break
 
@@ -587,12 +586,10 @@ class ArtifactRepository:
         """
         if not version_id or version_id == source_version_id:
             raise ValueError("restore requires a fresh version id")
-        _explicit, resolved_root, resolved_project = (
-            self._resolve_artifact_write_scope(
-                frame_id=frame_id,
-                root_frame_id=root_frame_id,
-                project_id=project_id,
-            )
+        _explicit, resolved_root, resolved_project = self._resolve_artifact_write_scope(
+            frame_id=frame_id,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
         )
         now = self._clock_ms()
         with self._lock:
@@ -697,9 +694,7 @@ class ArtifactRepository:
                 remote_json,
             ]
         )
-        snapshot_id = (
-            "env-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
-        )
+        snapshot_id = "env-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
         with self._lock:
             exists = self._connection.execute(
                 "SELECT 1 FROM env_snapshots WHERE snapshot_id=?", (snapshot_id,)
@@ -922,9 +917,7 @@ class ArtifactRepository:
         )
         return self._get_artifact(artifact_id)
 
-    def set_latest_version(
-        self, artifact_id: str, version_id: str
-    ) -> dict | None:
+    def set_latest_version(self, artifact_id: str, version_id: str) -> dict | None:
         with self._lock:
             row = self._connection.execute(
                 "SELECT version_id FROM artifact_versions WHERE version_id=? "
@@ -981,12 +974,8 @@ class ArtifactRepository:
         ]
 
     def lineage_edges_for(self, version_id: str, direction: str) -> list[dict]:
-        column_from = (
-            "output_version_id" if direction == "up" else "input_version_id"
-        )
-        column_to = (
-            "input_version_id" if direction == "up" else "output_version_id"
-        )
+        column_from = "output_version_id" if direction == "up" else "input_version_id"
+        column_to = "input_version_id" if direction == "up" else "output_version_id"
         with self._lock:
             rows = self._connection.execute(
                 f"SELECT {column_to} AS nxt FROM lineage_edges "

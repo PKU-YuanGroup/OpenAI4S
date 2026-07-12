@@ -144,9 +144,10 @@ def test_checkpoint_captures_full_structured_state_and_survives_reopen(tmp_path)
     assert state["plans"][0]["step_status"]["s1"]["note"] == "done"
     assert state["review"]["steps"][0]["output"]["verdict"] == "pass"
     assert state["review"]["settings"]["auto_review"]["value"] == "1"
-    assert state["review"]["annotations"][0]["annotation_id"] == annotation[
-        "annotation_id"
-    ]
+    assert (
+        state["review"]["annotations"][0]["annotation_id"]
+        == annotation["annotation_id"]
+    )
     assert state["memory"]["entries"] == [memory]
     digest = snapshot["state_sha256"]
     store.close()
@@ -219,9 +220,7 @@ def test_revert_restart_and_undo_restore_plan_review_and_memory(tmp_path):
     assert store.get_plan(plan["plan_id"])["title"] == "First plan"
     assert store.get_plan(plan["plan_id"])["steps"][0]["id"] == "s1"
     assert store.list_memories(project_id="science") == [first_memory]
-    reviews = [
-        item for item in store.list_steps(root) if item["kind"] == "review"
-    ]
+    reviews = [item for item in store.list_steps(root) if item["kind"] == "review"]
     assert [item["step_id"] for item in reviews] == ["review-first"]
     assert reviews[0]["output"]["verdict"] == "pass"
     assert store.get_setting(f"review:auto:{root}") == "0"
@@ -248,9 +247,7 @@ def test_revert_restart_and_undo_restore_plan_review_and_memory(tmp_path):
     assert restored_plan["title"] == "Second plan"
     assert restored_plan["steps"][0]["id"] == "s2"
     assert store.list_memories(project_id="science") == [second_memory]
-    reviews = [
-        item for item in store.list_steps(root) if item["kind"] == "review"
-    ]
+    reviews = [item for item in store.list_steps(root) if item["kind"] == "review"]
     assert [item["step_id"] for item in reviews] == [
         "review-first",
         "review-second",
@@ -259,9 +256,10 @@ def test_revert_restart_and_undo_restore_plan_review_and_memory(tmp_path):
     assert store.get_setting(f"review:auto:{root}") == "1"
     assert store.get_setting(f"review:model:{root}") == "second-reviewer"
     assert store.list_annotations(root)[0]["body"] == "second annotation"
-    assert undone["checkpoint"]["metadata"]["reverted_to"] == reverted[
-        "undo_checkpoint_id"
-    ]
+    assert (
+        undone["checkpoint"]["metadata"]["reverted_to"]
+        == reverted["undo_checkpoint_id"]
+    )
     undo_state = store.get_checkpoint_state_snapshot(
         undone["checkpoint"]["checkpoint_id"]
     )
@@ -386,9 +384,9 @@ def test_corrupt_state_fails_closed_and_checkpoint_insert_is_atomic(
     with pytest.raises(RuntimeError, match="state capture failed"):
         service.create_checkpoint(root, reason="must_rollback")
     monkeypatch.setattr(store._checkpoint_states, "capture_checkpoint", original)
-    assert [
-        item["checkpoint_id"] for item in store.list_session_checkpoints(root)
-    ] == [checkpoint["checkpoint_id"]]
+    assert [item["checkpoint_id"] for item in store.list_session_checkpoints(root)] == [
+        checkpoint["checkpoint_id"]
+    ]
     store.close()
 
 
@@ -502,12 +500,11 @@ def test_quarantined_import_remaps_all_identities_and_forces_review_off(tmp_path
     assert activated["session_state"]["trust_state"] == "quarantined_import"
     assert store.get_setting(f"review:auto:{imported_root}") == "0"
     assert store.get_setting(f"review:model:{imported_root}") is None
-    assert store.get_plan_by_frame(imported_root)["plan_id"] == imported_plan[
-        "plan_id"
-    ]
-    assert store.list_memories(project_id="imported-project")[0][
-        "memory_id"
-    ] == imported_memory["memory_id"]
+    assert store.get_plan_by_frame(imported_root)["plan_id"] == imported_plan["plan_id"]
+    assert (
+        store.list_memories(project_id="imported-project")[0]["memory_id"]
+        == imported_memory["memory_id"]
+    )
     store.close()
 
 

@@ -217,9 +217,7 @@ def test_responses_rejects_incomplete_and_unterminated_tool_streams(monkeypatch)
         on_event(
             {
                 "type": "response.incomplete",
-                "response": {
-                    "incomplete_details": {"reason": "max_output_tokens"}
-                },
+                "response": {"incomplete_details": {"reason": "max_output_tokens"}},
             }
         )
 

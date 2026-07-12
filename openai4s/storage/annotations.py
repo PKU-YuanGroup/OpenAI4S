@@ -125,9 +125,7 @@ class AnnotationRepository:
 
     def mark_sent(self, annotation_ids: list[str]) -> None:
         ids = [
-            annotation_id
-            for annotation_id in (annotation_ids or [])
-            if annotation_id
+            annotation_id for annotation_id in (annotation_ids or []) if annotation_id
         ]
         if not ids:
             return

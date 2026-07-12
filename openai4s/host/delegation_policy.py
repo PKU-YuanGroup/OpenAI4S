@@ -220,7 +220,9 @@ class ChildExecutionPolicy:
         if method in _ALWAYS:
             return "allow"
         candidates = self._candidates(method, tool)
-        specific = [self.permissions[item] for item in candidates if item in self.permissions]
+        specific = [
+            self.permissions[item] for item in candidates if item in self.permissions
+        ]
         for wanted in ("deny", "ask", "allow"):
             if wanted in specific:
                 return wanted

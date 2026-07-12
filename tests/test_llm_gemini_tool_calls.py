@@ -268,9 +268,7 @@ def test_gemini_missing_wire_id_uses_stable_local_id_but_never_replays_it(
         },
     ]
     llm.chat(history, _cfg(), tools=[_LOOKUP])
-    response = cap.calls[-1]["payload"]["contents"][-1]["parts"][0][
-        "functionResponse"
-    ]
+    response = cap.calls[-1]["payload"]["contents"][-1]["parts"][0]["functionResponse"]
     assert "id" not in response
 
 

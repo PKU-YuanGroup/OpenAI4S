@@ -117,9 +117,10 @@ def test_checkpoint_branches_are_append_only_and_head_updates_are_cas_guarded(tm
         )
         assert first["branch_id"] == "root-1"
         assert first["artifact_versions"] == ["v-1"]
-        assert repository.get_branch("root-1")["head_checkpoint_id"] == first[
-            "checkpoint_id"
-        ]
+        assert (
+            repository.get_branch("root-1")["head_checkpoint_id"]
+            == first["checkpoint_id"]
+        )
 
         fork = repository.fork_branch(
             root_frame_id="root-1",
@@ -136,12 +137,14 @@ def test_checkpoint_branches_are_append_only_and_head_updates_are_cas_guarded(tm
             expected_head=first["checkpoint_id"],
         )
         assert second["parent_checkpoint_id"] == first["checkpoint_id"]
-        assert repository.get_branch("root-1")["head_checkpoint_id"] == first[
-            "checkpoint_id"
-        ]
-        assert repository.get_branch("branch-b")["head_checkpoint_id"] == second[
-            "checkpoint_id"
-        ]
+        assert (
+            repository.get_branch("root-1")["head_checkpoint_id"]
+            == first["checkpoint_id"]
+        )
+        assert (
+            repository.get_branch("branch-b")["head_checkpoint_id"]
+            == second["checkpoint_id"]
+        )
 
         with pytest.raises(RuntimeError, match="branch head changed"):
             repository.create_checkpoint(
@@ -151,9 +154,10 @@ def test_checkpoint_branches_are_append_only_and_head_updates_are_cas_guarded(tm
                 workspace_tree_id="c" * 64,
                 expected_head=first["checkpoint_id"],
             )
-        assert [item["checkpoint_id"] for item in repository.list_checkpoints(
-            "root-1", branch_id="branch-b"
-        )] == [second["checkpoint_id"]]
+        assert [
+            item["checkpoint_id"]
+            for item in repository.list_checkpoints("root-1", branch_id="branch-b")
+        ] == [second["checkpoint_id"]]
     finally:
         connection.close()
 
@@ -186,12 +190,15 @@ def test_cursor_checkpoint_binding_is_exact_internal_and_idempotent(tmp_path):
         assert repeated["source_kind"] == "cell"
         assert repeated["source_id"] == "cell-1"
         assert repeated["internal"] is True
-        assert repository.get_checkpoint_for_source(
-            "root-cursor", source_kind="cell", source_id="cell-1"
-        )["checkpoint_id"] == first["checkpoint_id"]
-        assert repository.checkpoint_source_map(
-            "root-cursor", source_kind="cell"
-        ) == {"cell-1": first["checkpoint_id"]}
+        assert (
+            repository.get_checkpoint_for_source(
+                "root-cursor", source_kind="cell", source_id="cell-1"
+            )["checkpoint_id"]
+            == first["checkpoint_id"]
+        )
+        assert repository.checkpoint_source_map("root-cursor", source_kind="cell") == {
+            "cell-1": first["checkpoint_id"]
+        }
         assert len(repository.list_checkpoints("root-cursor")) == 1
     finally:
         connection.close()

@@ -64,12 +64,12 @@ def test_personal_install_upgrade_publish_and_rollback_preserve_exact_package(
 
         rolled_back = versions.rollback("Analysis Helper", first_id)
         assert rolled_back["previous_version_id"] == published["version_id"]
-        assert (root / "SKILL.md").read_bytes() == first_files[
-            "SKILL.md"
-        ].encode("utf-8")
-        assert (root / "kernel.py").read_bytes() == first_files[
-            "kernel.py"
-        ].encode("utf-8")
+        assert (root / "SKILL.md").read_bytes() == first_files["SKILL.md"].encode(
+            "utf-8"
+        )
+        assert (root / "kernel.py").read_bytes() == first_files["kernel.py"].encode(
+            "utf-8"
+        )
         assert (root / "resources" / "schema.json").read_bytes() == first_files[
             "resources/schema.json"
         ]
@@ -104,10 +104,13 @@ def test_identical_package_reuses_content_address_but_keeps_events(tmp_path):
             "upgraded",
             "installed",
         ]
-        assert store._conn.execute("SELECT count(*) FROM skill_versions").fetchone()[
-            0
-        ] == 1
-        assert store._conn.execute("SELECT count(*) FROM skill_blobs").fetchone()[0] == 1
+        assert (
+            store._conn.execute("SELECT count(*) FROM skill_versions").fetchone()[0]
+            == 1
+        )
+        assert (
+            store._conn.execute("SELECT count(*) FROM skill_blobs").fetchone()[0] == 1
+        )
         with pytest.raises(PermissionError, match="skill_blobs"):
             store.query("SELECT content FROM skill_blobs")
     finally:
@@ -126,9 +129,9 @@ def test_delete_keeps_immutable_history_and_old_version_can_be_reactivated(tmp_p
         root = cfg.data_dir / "user-skills" / "recoverable"
         assert versions.delete("Recoverable")["ok"] is True
         assert not root.exists()
-        assert versions.history("Recoverable")["installation"][
-            "active_version_id"
-        ] is None
+        assert (
+            versions.history("Recoverable")["installation"]["active_version_id"] is None
+        )
         restored = versions.rollback("Recoverable", installed["version_id"])
         assert restored["ok"] is True
         assert root.joinpath("SKILL.md").read_text("utf-8") == _document(
@@ -162,17 +165,19 @@ def test_version_history_and_blob_bytes_survive_store_reopen(tmp_path):
     reopened = Store(cfg.db_path)
     try:
         service = SkillVersionService(cfg, repository=reopened.skill_versions())
-        assert service.history("Durable")["installation"][
-            "active_version_id"
-        ] == installed["version_id"]
+        assert (
+            service.history("Durable")["installation"]["active_version_id"]
+            == installed["version_id"]
+        )
         frozen = reopened.skill_versions().get_version(
             installed["version_id"],
             include_files=True,
         )
         assert frozen["files"]["kernel.py"] == b"VALUE = 7\n"
-        assert frozen["manifest"]["sidecar"]["sha256"] == hashlib.sha256(
-            b"VALUE = 7\n"
-        ).hexdigest()
+        assert (
+            frozen["manifest"]["sidecar"]["sha256"]
+            == hashlib.sha256(b"VALUE = 7\n").hexdigest()
+        )
     finally:
         reopened.close()
 
@@ -187,9 +192,10 @@ def test_default_version_service_rebinds_after_cached_store_generation_closes(tm
     )
     first_store.close()
 
-    assert service.history("Rebound")["installation"][
-        "active_version_id"
-    ] == installed["version_id"]
+    assert (
+        service.history("Rebound")["installation"]["active_version_id"]
+        == installed["version_id"]
+    )
     replacement = get_store(cfg.db_path)
     assert replacement is not first_store
     replacement.close()
@@ -342,10 +348,7 @@ def test_sidecar_gate_and_package_path_limits_fail_before_activation(tmp_path):
                 {"SKILL.md": _document("name-with-spaces", "second owner")},
             )
         assert (
-            cfg.data_dir
-            / "user-skills"
-            / "name-with-spaces"
-            / "SKILL.md"
+            cfg.data_dir / "user-skills" / "name-with-spaces" / "SKILL.md"
         ).read_text("utf-8") == _document("Name With Spaces", "first owner")
         draft = versions.install(
             "Broken Draft",
@@ -357,9 +360,10 @@ def test_sidecar_gate_and_package_path_limits_fail_before_activation(tmp_path):
         )
         with pytest.raises(ValueError, match="compile gate"):
             versions.publish("Broken Draft")
-        assert versions.history("Broken Draft")["installation"][
-            "active_version_id"
-        ] == draft["version_id"]
+        assert (
+            versions.history("Broken Draft")["installation"]["active_version_id"]
+            == draft["version_id"]
+        )
         assert "origin: draft" in (
             cfg.data_dir / "user-skills" / "broken-draft" / "SKILL.md"
         ).read_text("utf-8")
@@ -466,8 +470,9 @@ def test_failed_pointer_switch_restores_previous_runtime_directory(tmp_path):
         assert root.joinpath("SKILL.md").read_text("utf-8") == _document(
             "Atomic", "old"
         )
-        assert versions.history("Atomic")["installation"][
-            "active_version_id"
-        ] == first["version_id"]
+        assert (
+            versions.history("Atomic")["installation"]["active_version_id"]
+            == first["version_id"]
+        )
     finally:
         store.close()

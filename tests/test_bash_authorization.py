@@ -226,9 +226,9 @@ def test_sdk_executes_only_after_issue_and_consume_and_reports_diff(
         "record_bash_result",
     ]
     assert audits[0]["method"] == "bash"
-    assert audits[0]["args"][0]["stdout"]["sha256"] == hashlib.sha256(
-        b"done"
-    ).hexdigest()
+    assert (
+        audits[0]["args"][0]["stdout"]["sha256"] == hashlib.sha256(b"done").hexdigest()
+    )
 
 
 def test_host_dispatcher_permission_gate_and_secret_safe_audit(tmp_path, monkeypatch):

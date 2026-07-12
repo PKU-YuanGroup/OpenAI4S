@@ -9,17 +9,19 @@ accidentally turn a debugging endpoint into a credential or protocol dump.
 
 from __future__ import annotations
 
-import re
 import math
+import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 
 class ActionTimelineStore(Protocol):
-    def list_action_groups(self, root_frame_id: str, **filters: Any) -> list[dict]: ...
+    def list_action_groups(self, root_frame_id: str, **filters: Any) -> list[dict]:
+        ...
 
-    def list_execution_attempts(self, **filters: Any) -> list[dict]: ...
+    def list_execution_attempts(self, **filters: Any) -> list[dict]:
+        ...
 
 
 class ActionTimelineService:
@@ -155,9 +157,7 @@ class ActionTimelineService:
             # command, URL token, credential, or private dataset value into
             # browser state.  Only outcome and artifact identities cross this
             # boundary.
-            "is_error": bool(
-                isinstance(result, Mapping) and result.get("is_error")
-            ),
+            "is_error": bool(isinstance(result, Mapping) and result.get("is_error")),
             "outcome": _public_outcome(result),
             "artifacts": _artifact_refs(result),
             "side_effect_class": event.get("side_effect_class"),
@@ -217,9 +217,7 @@ def _permission_summary(events: Sequence[Mapping[str, Any]]) -> dict[str, Any] |
 
 
 def _replay_policy(events: Sequence[Mapping[str, Any]]) -> str:
-    effects = {
-        str(event.get("side_effect_class") or "unknown") for event in events
-    }
+    effects = {str(event.get("side_effect_class") or "unknown") for event in events}
     if effects <= {"read_only"}:
         return "safe"
     if effects & {"external_side_effect", "irreversible"}:

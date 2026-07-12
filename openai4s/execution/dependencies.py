@@ -88,9 +88,7 @@ class _Bindings(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
         self.locals.add(node.name)
 
-    def visit_AsyncFunctionDef(  # noqa: N802
-        self, node: ast.AsyncFunctionDef
-    ) -> None:
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
         self.locals.add(node.name)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
@@ -100,16 +98,12 @@ class _Bindings(ast.NodeVisitor):
         del node
 
 
-def _function_scope(
-    arguments: ast.arguments, body: Iterable[ast.AST]
-) -> _Scope:
+def _function_scope(arguments: ast.arguments, body: Iterable[ast.AST]) -> _Scope:
     bindings = _Bindings(arguments)
     for node in body:
         bindings.visit(node)
     locals_ = bindings.locals - bindings.globals - bindings.nonlocals
-    return _Scope(
-        frozenset(locals_), frozenset(bindings.globals), deferred=True
-    )
+    return _Scope(frozenset(locals_), frozenset(bindings.globals), deferred=True)
 
 
 def _target_names(node: ast.AST) -> set[str]:
@@ -199,10 +193,7 @@ class _PythonDependencies(ast.NodeVisitor):
 
     def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
         if isinstance(node.ctx, ast.Load):
-            if (
-                self._is_external(node.id)
-                and node.id not in self._defined_in_cell
-            ):
+            if self._is_external(node.id) and node.id not in self._defined_in_cell:
                 self.reads.add(node.id)
         elif isinstance(node.ctx, ast.Store):
             self._write_name(node.id)
@@ -292,9 +283,7 @@ class _PythonDependencies(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
         self._visit_function(node)
 
-    def visit_AsyncFunctionDef(  # noqa: N802
-        self, node: ast.AsyncFunctionDef
-    ) -> None:
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
         self._visit_function(node)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
@@ -376,8 +365,7 @@ class _PythonDependencies(ast.NodeVisitor):
             mutates = (
                 node.func.attr in self._MUTATING_METHODS
                 or (
-                    node.func.attr.endswith("_")
-                    and not node.func.attr.startswith("__")
+                    node.func.attr.endswith("_") and not node.func.attr.startswith("__")
                 )
                 or any(
                     keyword.arg == "inplace"
@@ -469,8 +457,7 @@ def _r_dependencies(code: str) -> tuple[set[str], set[str], set[str], bool]:
     # ``table$column <-`` and ``table[i] <-`` writes to ``table``.
     selector = r"(?:\$[A-Za-z.][A-Za-z0-9._]*|\[[^\n;]*?\])?"
     left_arrow = re.compile(
-        r"(?<![A-Za-z0-9._])([A-Za-z.][A-Za-z0-9._]*)"
-        rf"\s*({selector})\s*(<<-|<-)"
+        r"(?<![A-Za-z0-9._])([A-Za-z.][A-Za-z0-9._]*)" rf"\s*({selector})\s*(<<-|<-)"
     )
     for match in left_arrow.finditer(clean):
         name = match.group(1)
@@ -479,9 +466,7 @@ def _r_dependencies(code: str) -> tuple[set[str], set[str], set[str], bool]:
         assignments.append((name, match.start(1), in_place))
         target_spans.add(match.span(1))
         if match.group(2).lstrip().startswith("$"):
-            selector_name = re.search(
-                r"[A-Za-z.][A-Za-z0-9._]*", match.group(2)[1:]
-            )
+            selector_name = re.search(r"[A-Za-z.][A-Za-z0-9._]*", match.group(2)[1:])
             if selector_name is not None:
                 offset = match.start(2) + 1
                 ignored_read_spans.add(
@@ -494,8 +479,7 @@ def _r_dependencies(code: str) -> tuple[set[str], set[str], set[str], bool]:
     # ``=`` is assignment only at a statement boundary here.  This avoids
     # misclassifying named call arguments such as ``na.rm = TRUE``.
     left_equal = re.compile(
-        rf"(?:^|[;\n{{}}])\s*([A-Za-z.][A-Za-z0-9._]*)"
-        rf"\s*({selector})\s*=(?!=)",
+        rf"(?:^|[;\n{{}}])\s*([A-Za-z.][A-Za-z0-9._]*)" rf"\s*({selector})\s*=(?!=)",
         re.MULTILINE,
     )
     for match in left_equal.finditer(clean):
@@ -505,9 +489,7 @@ def _r_dependencies(code: str) -> tuple[set[str], set[str], set[str], bool]:
         assignments.append((name, match.start(1), in_place))
         target_spans.add(match.span(1))
         if match.group(2).lstrip().startswith("$"):
-            selector_name = re.search(
-                r"[A-Za-z.][A-Za-z0-9._]*", match.group(2)[1:]
-            )
+            selector_name = re.search(r"[A-Za-z.][A-Za-z0-9._]*", match.group(2)[1:])
             if selector_name is not None:
                 offset = match.start(2) + 1
                 ignored_read_spans.add(
@@ -517,16 +499,12 @@ def _r_dependencies(code: str) -> tuple[set[str], set[str], set[str], bool]:
                     )
                 )
 
-    for match in re.finditer(
-        r"(?:->>|->)\s*([A-Za-z.][A-Za-z0-9._]*)", clean
-    ):
+    for match in re.finditer(r"(?:->>|->)\s*([A-Za-z.][A-Za-z0-9._]*)", clean):
         writes.add(match.group(1))
         assignments.append((match.group(1), match.start(1), False))
         target_spans.add(match.span(1))
 
-    for match in re.finditer(
-        r"\bfor\s*\(\s*([A-Za-z.][A-Za-z0-9._]*)\s+in\b", clean
-    ):
+    for match in re.finditer(r"\bfor\s*\(\s*([A-Za-z.][A-Za-z0-9._]*)\s+in\b", clean):
         writes.add(match.group(1))
         assignments.append((match.group(1), match.start(1), False))
         target_spans.add(match.span(1))
@@ -550,9 +528,7 @@ def _r_dependencies(code: str) -> tuple[set[str], set[str], set[str], bool]:
         if pieces and all(re.fullmatch(r"[A-Za-z.][A-Za-z0-9._]*", p) for p in pieces):
             deletes.update(pieces)
             body_start = match.start(1)
-            for symbol in re.finditer(
-                r"[A-Za-z.][A-Za-z0-9._]*", body
-            ):
+            for symbol in re.finditer(r"[A-Za-z.][A-Za-z0-9._]*", body):
                 ignored_read_spans.add(
                     (
                         body_start + symbol.start(),
@@ -562,9 +538,7 @@ def _r_dependencies(code: str) -> tuple[set[str], set[str], set[str], bool]:
         elif pieces:
             uncertain = True
 
-    if re.search(
-        r"\b(?:assign|delayedAssign|dyn.load|load|source)\s*\(", clean
-    ):
+    if re.search(r"\b(?:assign|delayedAssign|dyn.load|load|source)\s*\(", clean):
         uncertain = True
     if re.search(r"\beval\s*\(\s*parse\s*\(", clean):
         uncertain = True
@@ -579,11 +553,7 @@ def _r_dependencies(code: str) -> tuple[set[str], set[str], set[str], bool]:
     for match in _R_IDENTIFIER.finditer(clean):
         name = match.group(1)
         span = match.span(1)
-        if (
-            name in _R_RESERVED
-            or span in target_spans
-            or span in ignored_read_spans
-        ):
+        if name in _R_RESERVED or span in target_spans or span in ignored_read_spans:
             continue
         # A value produced earlier in this same Cell is not an input from the
         # previous state revision.
@@ -659,11 +629,7 @@ def normalize_string_list(value: Any) -> tuple[str, ...]:
         return ()
     return tuple(
         sorted(
-            {
-                item.strip()
-                for item in value
-                if isinstance(item, str) and item.strip()
-            }
+            {item.strip() for item in value if isinstance(item, str) and item.strip()}
         )
     )
 
@@ -712,9 +678,7 @@ def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, An
                 invalidations.append(({old}, name, index, False))
             else:
                 consumers = {
-                    item
-                    for item in external_consumers.get(name, set())
-                    if item < index
+                    item for item in external_consumers.get(name, set()) if item < index
                 }
                 if consumers:
                     invalidations.append((consumers, name, index, True))
@@ -733,21 +697,13 @@ def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, An
             queue.extend(root for root in roots if root < invalidator)
         else:
             for root in roots:
-                queue.extend(
-                    target
-                    for target in edges[root]
-                    if target < invalidator
-                )
+                queue.extend(target for target in edges[root] if target < invalidator)
         while queue:
             current = queue.pop(0)
             if current in seen or current >= invalidator:
                 continue
             seen.add(current)
-            queue.extend(
-                target
-                for target in edges[current]
-                if target < invalidator
-            )
+            queue.extend(target for target in edges[current] if target < invalidator)
         if not seen:
             continue
         by = _cell_id(cells[invalidator], invalidator)
@@ -769,10 +725,7 @@ def compute_stale_cells(cells: Sequence[Mapping[str, Any]]) -> list[dict[str, An
             if reason not in reasons[current]:
                 reasons[current].append(reason)
 
-    return [
-        {"stale": bool(items), "stale_reasons": items}
-        for items in reasons
-    ]
+    return [{"stale": bool(items), "stale_reasons": items} for items in reasons]
 
 
 __all__ = [

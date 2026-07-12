@@ -238,6 +238,8 @@ def _apply_chat_tools(
         payload["tool_choice"] = tool_choice
     if parallel_tool_calls is not None:
         payload["parallel_tool_calls"] = bool(parallel_tool_calls)
+
+
 def _apply_anthropic_tools(
     payload: dict,
     specs: list[dict],

@@ -15,15 +15,20 @@ from openai4s.tools.dynamic_scopes import DynamicScopeStore
 
 
 class SessionDeletionStore(Protocol):
-    def get_frame(self, frame_id: str) -> dict | None: ...
+    def get_frame(self, frame_id: str) -> dict | None:
+        ...
 
-    def project_session_ids(self, project_id: str) -> list[str]: ...
+    def project_session_ids(self, project_id: str) -> list[str]:
+        ...
 
-    def delete_frame(self, frame_id: str) -> dict[str, Any]: ...
+    def delete_frame(self, frame_id: str) -> dict[str, Any]:
+        ...
 
-    def delete_project(self, project_id: str) -> dict[str, Any]: ...
+    def delete_project(self, project_id: str) -> dict[str, Any]:
+        ...
 
-    def retained_workspace_tree_ids(self) -> tuple[str, ...]: ...
+    def retained_workspace_tree_ids(self) -> tuple[str, ...]:
+        ...
 
 
 class SessionDeletionService:
@@ -71,9 +76,7 @@ class SessionDeletionService:
         result = self.store.delete_project(project_id)
         deleted_roots = tuple(
             dict.fromkeys(
-                str(value)
-                for value in result.get("root_frame_ids", ())
-                if value
+                str(value) for value in result.get("root_frame_ids", ()) if value
             )
         )
         # Admission is closed by SessionRunner while this service runs. This
@@ -173,9 +176,8 @@ class SessionDeletionService:
         except OSError:
             return False
         identity = SessionDeletionService._file_identity(resolved)
-        if (
-            os.path.normcase(str(resolved)) in retained_paths
-            or (identity is not None and identity in retained_files)
+        if os.path.normcase(str(resolved)) in retained_paths or (
+            identity is not None and identity in retained_files
         ):
             return False
         if not allowed or candidate.is_dir():

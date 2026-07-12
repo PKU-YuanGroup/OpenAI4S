@@ -70,9 +70,7 @@ def test_frame_hierarchy_scope_updates_tokens_and_commit(tmp_path):
         "root_frame_id": None,
         "project_id": "fallback",
     }
-    assert repository.resolve_frame_scope(
-        "unknown", fallback_project="fallback"
-    ) == {
+    assert repository.resolve_frame_scope("unknown", fallback_project="fallback") == {
         "frame_id": "unknown",
         "root_frame_id": "unknown",
         "project_id": "fallback",
@@ -284,9 +282,7 @@ def test_frame_browse_detail_and_regex_search_contracts(tmp_path):
         kind="delegate",
         depth=1,
     )
-    beta = repository.new_frame(
-        project_id="other", name="Beta", status="failed"
-    )
+    beta = repository.new_frame(project_id="other", name="Beta", status="failed")
     repository.log_cell(
         frame_id=alpha,
         root_frame_id=alpha,
@@ -303,8 +299,7 @@ def test_frame_browse_detail_and_regex_search_contracts(tmp_path):
     )
 
     assert [
-        row["frame_id"]
-        for row in repository.browse_frames(project_id="science")
+        row["frame_id"] for row in repository.browse_frames(project_id="science")
     ] == [alpha]
     assert {
         row["frame_id"]
@@ -340,8 +335,7 @@ def test_frame_browse_detail_and_regex_search_contracts(tmp_path):
         for row in repository.search_frames("PROTEIN", project_id="science")
     ] == [alpha]
     assert [
-        row["frame_id"]
-        for row in repository.search_frames("beta", project_id="all")
+        row["frame_id"] for row in repository.search_frames("beta", project_id="all")
     ] == [beta]
     with pytest.raises(re.error):
         repository.search_frames("[")
@@ -457,9 +451,9 @@ def test_execution_log_status_json_fallback_append_only_and_clock(tmp_path):
         )
     assert repository.cell_detail("bad-cell") is None
     with sqlite3.connect(store.db_path) as independent:
-        assert independent.execute(
-            "SELECT COUNT(*) FROM execution_log"
-        ).fetchone() == (2,)
+        assert independent.execute("SELECT COUNT(*) FROM execution_log").fetchone() == (
+            2,
+        )
 
 
 def test_cell_projection_metadata_is_validated_and_round_trips(tmp_path):
@@ -757,9 +751,9 @@ def test_delete_project_cascade_paths_rows_and_single_commit(tmp_path):
             "plans",
             "annotations",
         ):
-            assert independent.execute(
-                f"SELECT COUNT(*) FROM {table}"
-            ).fetchone() == (0,)
+            assert independent.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (
+                0,
+            )
         assert independent.execute(
             "SELECT rule_id FROM permission_rules"
         ).fetchall() == [("global-rule",)]

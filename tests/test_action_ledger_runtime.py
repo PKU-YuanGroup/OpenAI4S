@@ -105,11 +105,7 @@ def test_runtime_writer_roundtrips_native_group_and_redacts_arguments(tmp_path):
             0,
         )
     )
-    ledger.emit(
-        RunFinished(
-            EngineResult((), {"ok": True}, "submitted", 1, reply)
-        )
-    )
+    ledger.emit(RunFinished(EngineResult((), {"ok": True}, "submitted", 1, reply)))
 
     groups = store.list_action_groups("root-1")
     assert [group["kind"] for group in groups] == [
@@ -245,9 +241,7 @@ def test_session_dynamic_tool_taxonomy_survives_restart_projection(tmp_path):
         wire_id="wire-dynamic",
         name="sum_session_values",
         ordinal=0,
-        raw_arguments=(
-            '{"values":[3,4],"access_token":"session-private-token"}'
-        ),
+        raw_arguments=('{"values":[3,4],"access_token":"session-private-token"}'),
         arguments=arguments,
     )
     reply = _reply((call,), content="Using the session capability.")
@@ -275,9 +269,11 @@ def test_session_dynamic_tool_taxonomy_survives_restart_projection(tmp_path):
     native = store.list_action_groups("root-dynamic")[1]
     proposed = native["events"][0]
     assert proposed["side_effect_class"] == proxy.side_effect_class == "read_only"
-    assert proposed["resource_keys"] == list(proxy.resource_keys(arguments)) == [
-        f"dynamic_tool:{manifest.manifest_id}"
-    ]
+    assert (
+        proposed["resource_keys"]
+        == list(proxy.resource_keys(arguments))
+        == [f"dynamic_tool:{manifest.manifest_id}"]
+    )
     assert secret not in repr(native)
     assert proposed["canonical_arguments"]["arguments"]["access_token"] == REDACTED
     store.close()
@@ -289,9 +285,7 @@ def test_session_dynamic_tool_taxonomy_survives_restart_projection(tmp_path):
     )
     public_event = dynamic_group["events"][0]
     assert public_event["side_effect_class"] == "read_only"
-    assert public_event["resource_keys"] == [
-        f"dynamic_tool:{manifest.manifest_id}"
-    ]
+    assert public_event["resource_keys"] == [f"dynamic_tool:{manifest.manifest_id}"]
     assert not {"arguments", "raw_arguments", "wire_id"} & set(public_event)
     assert secret not in repr(timeline)
     assert implementation_marker not in repr(timeline)

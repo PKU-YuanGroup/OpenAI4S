@@ -153,9 +153,7 @@ def test_compute_namespace_create_status_concurrency_and_repr():
         {"nvidia": {"image": "science:1", "gpu": "A100", "model": None}},
     )
     assert isinstance(instance, _ComputeInstance)
-    assert repr(instance) == (
-        "<host.compute byoc:nvidia image='science:1' gpu='A100'>"
-    )
+    assert repr(instance) == ("<host.compute byoc:nvidia image='science:1' gpu='A100'>")
     assert repr(compute) == (
         "<host.compute — create(target) -> ComputeInstance; "
         "set_concurrency_limit(n); status(); help(host.compute) for the lifecycle>"
@@ -185,15 +183,16 @@ def test_instance_command_transfer_attach_close_and_context_cleanup(
         ]
     )
     instance = _ComputeInstance(recorder, "ssh:lab")
-    assert instance.call_command(
-        "nvidia-smi",
-        intent="inspect gpu",
-        login_shell=True,
-        timeout_seconds=7,
-    )["exit_code"] == 0
-    assert instance.download("/scratch/result.csv") == {
-        "path": "downloaded.txt"
-    }
+    assert (
+        instance.call_command(
+            "nvidia-smi",
+            intent="inspect gpu",
+            login_shell=True,
+            timeout_seconds=7,
+        )["exit_code"]
+        == 0
+    )
+    assert instance.download("/scratch/result.csv") == {"path": "downloaded.txt"}
     assert instance.upload(str(local), "/scratch/input.txt") == {"ok": True}
     attached = instance.attach_job("job-old")
     assert isinstance(attached, _ComputeJob)
@@ -321,9 +320,7 @@ def test_submit_normalizes_aliases_inputs_reuse_and_prints_handle(
     )
     assert second.job_id == "job-2"
     assert recorder.calls[1][1][0]["reuse_job_id"] == "job-1"
-    assert recorder.calls[1][1][0]["inputs"] == [
-        {"src": "{{artifact:abc}}"}
-    ]
+    assert recorder.calls[1][1][0]["inputs"] == [{"src": "{{artifact:abc}}"}]
     assert recorder.calls[1][1][0]["timeout_seconds"] == 30
     assert recorder.calls[1][1][0]["environment"] == "runtime"
 

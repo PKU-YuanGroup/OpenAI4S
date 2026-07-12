@@ -34,7 +34,8 @@ class MessageRunner(Protocol):
         model: str | None = None,
         *,
         plan: bool = False,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        ...
 
 
 class PlanSession(Protocol):
@@ -83,11 +84,7 @@ class PlanService:
             return
 
         previous = self.store.get_plan_by_frame(root_frame_id)
-        reusable = (
-            previous
-            if previous and previous.get("status") == "draft"
-            else None
-        )
+        reusable = previous if previous and previous.get("status") == "draft" else None
         artifact = self.write_artifact(
             session,
             plan,
@@ -235,9 +232,7 @@ class PlanService:
         steps_text = "\n".join(lines)
         return (
             f"已批准计划「{plan.get('title', '')}」，现在开始自动执行。\n\n"
-            "请严格按下面的步骤顺序推进：\n"
-            + steps_text
-            + "\n\n"
+            "请严格按下面的步骤顺序推进：\n" + steps_text + "\n\n"
             "执行规则：\n"
             '1. 每开始一个步骤前，先调用 host.plan_update("<step_id>", '
             '"in_progress")（这会把计划卡上的该步标记为进行中）。\n'
@@ -291,8 +286,7 @@ class PlanService:
             else (
                 "failed"
                 if result.get("status") == "failed"
-                else self.store.get_plan(plan["plan_id"]).get("status")
-                or "completed"
+                else self.store.get_plan(plan["plan_id"]).get("status") or "completed"
             )
         )
         if final_status in ("completed", "failed"):
@@ -318,8 +312,7 @@ class PlanService:
             "请根据下面的修改意见，重新拟定上面的执行计划，并再次只输出："
             "一段简短的方案说明（散文）＋ 一个 ```json 代码块（"
             "{title, rationale, confidence, steps:[{id,title,detail,deliverables}]} "
-            "结构，与之前一致）。不要执行、不要调用任何工具。\n\n修改意见："
-            + changes
+            "结构，与之前一致）。不要执行、不要调用任何工具。\n\n修改意见：" + changes
         )
         return self.run_message(
             root_frame_id,
@@ -384,15 +377,11 @@ def extract_plan_json(reply: str) -> Any:
     """Extract a plan object from a fenced or bare planner response."""
     if not reply:
         return None
-    for match in re.finditer(
-        r"```json\s*\n(.*?)```", reply, re.DOTALL | re.IGNORECASE
-    ):
+    for match in re.finditer(r"```json\s*\n(.*?)```", reply, re.DOTALL | re.IGNORECASE):
         value = _try_json(match.group(1))
         if isinstance(value, dict) and ("steps" in value or "title" in value):
             return value
-    for match in re.finditer(
-        r"```[a-zA-Z0-9]*\s*\n(.*?)```", reply, re.DOTALL
-    ):
+    for match in re.finditer(r"```[a-zA-Z0-9]*\s*\n(.*?)```", reply, re.DOTALL):
         value = _try_json(match.group(1))
         if isinstance(value, dict) and "steps" in value:
             return value
@@ -472,9 +461,7 @@ def normalize_plan(
                         or ""
                     ).strip(),
                     "deliverables": [
-                        str(deliverable)
-                        for deliverable in deliverables
-                        if deliverable
+                        str(deliverable) for deliverable in deliverables if deliverable
                     ],
                 }
             )
@@ -483,24 +470,16 @@ def normalize_plan(
     confidence = raw.get("confidence")
     if isinstance(confidence, (int, float)):
         confidence = (
-            "high"
-            if confidence >= 0.75
-            else "low"
-            if confidence < 0.4
-            else "medium"
+            "high" if confidence >= 0.75 else "low" if confidence < 0.4 else "medium"
         )
-    confidence = (
-        (str(confidence).strip() or None) if confidence is not None else None
-    )
+    confidence = (str(confidence).strip() or None) if confidence is not None else None
     return {
         "title": (
             str(raw.get("title") or "").strip()
             or (task_hint[:80] if task_hint else "")
             or "执行计划"
         ),
-        "rationale": str(
-            raw.get("rationale") or raw.get("reasoning") or ""
-        ).strip(),
+        "rationale": str(raw.get("rationale") or raw.get("reasoning") or "").strip(),
         "confidence": confidence,
         "steps": steps,
     }

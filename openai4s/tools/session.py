@@ -14,7 +14,9 @@ class SessionStatusTool(Tool):
 
     name = "session_status"
     host_method = "session_status"
-    description = "Inspect the current session's branch, checkpoint, and recovery state."
+    description = (
+        "Inspect the current session's branch, checkpoint, and recovery state."
+    )
     parameters = {
         "properties": {
             "checkpoint_limit": {
@@ -188,9 +190,7 @@ class PendingPermissionsTool(Tool):
     host_method = "session_pending_permissions"
     description = "List unresolved human-approval requests for the current session."
     parameters = {
-        "properties": {
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100}
-        },
+        "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}},
         "required": [],
     }
     requires_approval = False

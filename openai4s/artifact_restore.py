@@ -19,11 +19,14 @@ from typing import Any, Callable, Protocol
 class ArtifactRestoreStore(Protocol):
     """Persistence surface required by :class:`ArtifactRestoreService`."""
 
-    def version_meta(self, version_id: str) -> dict | None: ...
+    def version_meta(self, version_id: str) -> dict | None:
+        ...
 
-    def set_version_snapshot(self, version_id: str, snapshot_path: str) -> None: ...
+    def set_version_snapshot(self, version_id: str, snapshot_path: str) -> None:
+        ...
 
-    def record_artifact_restore(self, **fields: Any) -> dict: ...
+    def record_artifact_restore(self, **fields: Any) -> dict:
+        ...
 
 
 LivePathResolver = Callable[[dict, dict], Path]
@@ -129,9 +132,7 @@ class ArtifactRestoreService:
                 "_",
                 str(current.get("filename") or "artifact"),
             )
-            snapshot = self.primary_snapshot_dir / (
-                f"{current['version_id']}__{safe}"
-            )
+            snapshot = self.primary_snapshot_dir / (f"{current['version_id']}__{safe}")
             if snapshot.exists():
                 raise RuntimeError("refusing to overwrite an existing snapshot")
             self.atomic_write(snapshot, live_data)

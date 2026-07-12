@@ -111,12 +111,16 @@ def test_busy_restoring_ended_and_never_started_fail_without_protocol_reads():
         assert _service(state).inspect("root", "python")["state"] == "busy"
     finally:
         state.turn_lock.release()
-    assert _service(state, owner={"execution_id": "exec"}).inspect(
-        "root", "python"
-    )["state"] == "busy"
-    assert _service(state, recovering=True).inspect("root", "python")[
-        "state"
-    ] == "restoring"
+    assert (
+        _service(state, owner={"execution_id": "exec"}).inspect("root", "python")[
+            "state"
+        ]
+        == "busy"
+    )
+    assert (
+        _service(state, recovering=True).inspect("root", "python")["state"]
+        == "restoring"
+    )
     assert kernel.calls == 0
 
     ended = _service(

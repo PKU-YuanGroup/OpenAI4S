@@ -46,7 +46,10 @@ class _InspectableKernel:
         return self.live
 
     def inspect_variables(self, *, limit=200):
-        return {"variables": self.variables[:limit], "truncated": len(self.variables) > limit}
+        return {
+            "variables": self.variables[:limit],
+            "truncated": len(self.variables) > limit,
+        }
 
     def shutdown(self):
         self.live = False
@@ -123,9 +126,7 @@ def test_checkpoint_fork_and_workbench_routes_share_domain_service(tmp_path):
     assert branch_workspace != workspace
     assert (branch_workspace / "analysis.txt").read_text("utf-8") == "checkpointed\n"
 
-    code, timeline = _call(
-        handler, "GET", f"/frames/{frame_id}/action-timeline"
-    )
+    code, timeline = _call(handler, "GET", f"/frames/{frame_id}/action-timeline")
     assert code == 200
     assert "checkpoint" in {group["kind"] for group in timeline["groups"]}
     code, branch_timeline = _call(
@@ -142,9 +143,7 @@ def test_checkpoint_fork_and_workbench_routes_share_domain_service(tmp_path):
     assert code == 200 and "layers" in context
     code, security = _call(handler, "GET", f"/frames/{frame_id}/security")
     assert code == 200 and security["sandbox"]["state"] == "not_started"
-    code, delegations = _call(
-        handler, "GET", f"/frames/{frame_id}/delegations"
-    )
+    code, delegations = _call(handler, "GET", f"/frames/{frame_id}/delegations")
     assert code == 200
     assert delegations["root_frame_id"] == frame_id
     assert delegations["children"] == []
@@ -247,18 +246,27 @@ def test_branch_activation_restores_checkpoint_projection_and_runtime_binding(
         assert state is not None and state.branch_id == branch_id
         assert state.workspace == runner.workspace_for_branch(frame_id, branch_id)
         assert (state.workspace / "analysis.txt").read_text("utf-8") == "baseline\n"
-        assert runner.store.get_artifact(baseline_version["artifact_id"])[
-            "latest_version_id"
-        ] == baseline_version["version_id"]
-        assert runner.store.capability_state(
-            project_id="project-domain", session_id=frame_id
-        ).is_enabled("skill", "branch-skill") is False
-        assert runner.store.resolve_permission(
-            root_frame_id=frame_id,
-            project_id="project-domain",
-            tool="web_fetch",
-            pattern_input="example.org/item",
-        ) == "allow"
+        assert (
+            runner.store.get_artifact(baseline_version["artifact_id"])[
+                "latest_version_id"
+            ]
+            == baseline_version["version_id"]
+        )
+        assert (
+            runner.store.capability_state(
+                project_id="project-domain", session_id=frame_id
+            ).is_enabled("skill", "branch-skill")
+            is False
+        )
+        assert (
+            runner.store.resolve_permission(
+                root_frame_id=frame_id,
+                project_id="project-domain",
+                tool="web_fetch",
+                pattern_input="example.org/item",
+            )
+            == "allow"
+        )
         assert activated["dimensions"]["provider_history"]["applied"] is True
 
         code, branches = _call(handler, "GET", f"/frames/{frame_id}/branches")
@@ -502,16 +510,12 @@ def test_restart_permission_route_requires_explicit_continuation(tmp_path):
         llm=LLMConfig(provider="deepseek", api_key="test-key"),
     )
     hub = _Hub()
-    restarted = gateway_mod.SessionRunner(
-        config, hub, start_idle_sweeper=False
-    )
+    restarted = gateway_mod.SessionRunner(config, hub, start_idle_sweeper=False)
     handler_class = gateway_mod.make_handler(config, hub, restarted)
     handler = object.__new__(handler_class)
     try:
         assert restarted._sessions == {}
-        code, security = _call(
-            handler, "GET", f"/frames/{frame_id}/security"
-        )
+        code, security = _call(handler, "GET", f"/frames/{frame_id}/security")
         assert code == 200
         assert security["permission"]["pending_count"] == 1
 
@@ -541,9 +545,7 @@ def test_restart_permission_route_requires_explicit_continuation(tmp_path):
         assert "arguments" not in repr(marker["events"][0]["result"])
 
         events = [
-            event
-            for event in hub.events
-            if event.get("type") == "permission_resolved"
+            event for event in hub.events if event.get("type") == "permission_resolved"
         ]
         assert len(events) == 1
         assert events[0]["requires_continue"] is True
@@ -579,9 +581,7 @@ def test_variable_inspector_route_never_starts_workers_and_is_idle_only(tmp_path
             ]
         )
         lease = state.kernels.ensure("python", "base", lambda: kernel)
-        attempts_before = runner.store.list_execution_attempts(
-            root_frame_id=frame_id
-        )
+        attempts_before = runner.store.list_execution_attempts(root_frame_id=frame_id)
         cells_before = runner.store.cell_count(frame_id)
 
         code, active = _call(
@@ -748,21 +748,20 @@ def test_exact_cell_and_message_cursor_forks_are_isolated_and_view_only(tmp_path
         )
         fork_arguments = branch_groups[-1]["events"][-1]["canonical_arguments"]
         assert fork_arguments["source_id"] == cell_id
-        assert fork_arguments["from_checkpoint_id"] == cell_fork[
-            "from_checkpoint_id"
-        ]
+        assert fork_arguments["from_checkpoint_id"] == cell_fork["from_checkpoint_id"]
         assert "name" not in fork_arguments and "workspace" not in fork_arguments
-        assert runner.workspace_for_branch(
-            frame_id, cell_fork["branch_id"]
-        ).joinpath("state.txt").read_text(encoding="utf-8") == "cell-boundary"
+        assert (
+            runner.workspace_for_branch(frame_id, cell_fork["branch_id"])
+            .joinpath("state.txt")
+            .read_text(encoding="utf-8")
+            == "cell-boundary"
+        )
         assert state_file.read_text(encoding="utf-8") == "current"
 
         runner.store.update_frame(frame_id, name="cursor test")
 
         def loop_after_message(st, _emit, _visible):
-            (st.workspace / "after-message.txt").write_text(
-                "later", encoding="utf-8"
-            )
+            (st.workspace / "after-message.txt").write_text("later", encoding="utf-8")
             st.dispatcher.last_output = {"output": "done"}
             return "submitted"
 
@@ -846,8 +845,7 @@ def test_message_snapshot_failure_does_not_fail_message_or_advertise_fork(tmp_pa
             for group in groups
             for event in group.get("events") or []
             if event.get("type") == "failed"
-            and (event.get("canonical_arguments") or {}).get("source_kind")
-            == "message"
+            and (event.get("canonical_arguments") or {}).get("source_kind") == "message"
         )
         assert "private snapshot failure detail" not in repr(warning)
     finally:
@@ -875,9 +873,7 @@ def test_real_runner_checkpoint_can_restore_through_mutation_route(tmp_path):
     try:
         started = runner.start_kernel(frame_id, "project-domain")
         assert started["state"] == "running"
-        generation = runner.store.get_kernel_generation(
-            started["generation_id"]
-        )
+        generation = runner.store.get_kernel_generation(started["generation_id"])
         assert generation["bootstrap"]["version"] == 2
         assert generation["bootstrap"]["runtime_version"] == platform.python_version()
 
@@ -894,9 +890,7 @@ def test_real_runner_checkpoint_can_restore_through_mutation_route(tmp_path):
         }
 
         runner.stop_kernel(frame_id, "project-domain")
-        code, actions = _call(
-            handler, "GET", f"/frames/{frame_id}/recovery/actions"
-        )
+        code, actions = _call(handler, "GET", f"/frames/{frame_id}/recovery/actions")
         assert code == 200
         restore = next(item for item in actions["actions"] if item["id"] == "restore")
         assert restore["enabled"] is True
@@ -922,9 +916,7 @@ def test_real_runner_checkpoint_can_restore_through_mutation_route(tmp_path):
         runner.close()
 
 
-def test_failed_fresh_recovery_keeps_exact_current_generation(
-    monkeypatch, tmp_path
-):
+def test_failed_fresh_recovery_keeps_exact_current_generation(monkeypatch, tmp_path):
     runner, handler, frame_id = _setup(tmp_path)
     try:
         runner.start_kernel(frame_id, "project-domain")
@@ -960,9 +952,10 @@ def test_failed_fresh_recovery_keeps_exact_current_generation(
         current = state.kernels.lease("python")
         assert current == before
         assert current.kernel.is_alive()
-        assert runner.store.latest_kernel_generation(
-            frame_id, "python"
-        )["generation_id"] == before.generation_id
+        assert (
+            runner.store.latest_kernel_generation(frame_id, "python")["generation_id"]
+            == before.generation_id
+        )
         assert runner.session_domain.recovery_status(frame_id)["state"] == "failed"
     finally:
         runner.close()

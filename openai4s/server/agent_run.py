@@ -123,15 +123,9 @@ class CodeDraftStreamer:
         self.acc += str(delta)[:remaining]
         distance = len(self.acc) - self.last_scan_at
         should_scan = (
-            (
-                not self.active
-                and ("\n" in str(delta) or distance >= self._INITIAL_SCAN_STEP)
-            )
-            or (
-                self.active
-                and (distance >= self._SCAN_STEP or "```" in str(delta))
-            )
-        )
+            not self.active
+            and ("\n" in str(delta) or distance >= self._INITIAL_SCAN_STEP)
+        ) or (self.active and (distance >= self._SCAN_STEP or "```" in str(delta)))
         if should_scan:
             self._project()
 
@@ -336,11 +330,7 @@ class WebEventSink:
                 or is_completion_only_cell(event.action)
             ):
                 self._code_draft.clear("not_executed")
-            if (
-                self.narrate_actions
-                and not self.current_prose
-                and not self.cancelled()
-            ):
+            if self.narrate_actions and not self.current_prose and not self.cancelled():
                 self._publish(
                     action_narration(event.action, self.language), before_action=True
                 )
@@ -458,9 +448,8 @@ class WebActionExecutor:
             self.apply_pending()
             result = self.execute_cell(action)
             observation = format_observation(result)
-            if (
-                count_code_blocks(reply.content) > 1
-                or has_incomplete_code_block(reply.content)
+            if count_code_blocks(reply.content) > 1 or has_incomplete_code_block(
+                reply.content
             ):
                 observation += MULTI_CELL_NOTE
             completion = getattr(self.dispatcher(), "last_output", None)
@@ -526,15 +515,11 @@ class WebActionExecutor:
         def invoke() -> tuple[str, bool]:
             if self.tool_catalog is None:
                 return execute_tool_call(self.dispatcher(), payload)
-            return execute_tool_call(
-                self.dispatcher(), payload, self.tool_catalog
-            )
+            return execute_tool_call(self.dispatcher(), payload, self.tool_catalog)
 
         return self.native_wrapper(call, invoke) if self.native_wrapper else invoke()
 
-    def _apply_trailing_pending(
-        self, outcome: ExecutionOutcome
-    ) -> ExecutionOutcome:
+    def _apply_trailing_pending(self, outcome: ExecutionOutcome) -> ExecutionOutcome:
         try:
             self.apply_pending()
             return outcome

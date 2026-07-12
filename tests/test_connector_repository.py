@@ -172,9 +172,7 @@ def test_falsy_normalization_serialization_errors_and_unknown_noops(tmp_path):
     repository.delete("missing")
     assert clock_calls == [3000, 3001, 3002]
     with sqlite3.connect(store.db_path) as independent:
-        assert independent.execute(
-            "SELECT COUNT(*) FROM connectors"
-        ).fetchone() == (1,)
+        assert independent.execute("SELECT COUNT(*) FROM connectors").fetchone() == (1,)
 
 
 def test_enabled_toggle_delete_and_store_facade_feed_mcp_service(tmp_path):
@@ -210,6 +208,4 @@ def test_enabled_toggle_delete_and_store_facade_feed_mcp_service(tmp_path):
     store.delete_connector("science")
     assert store.get_connector("science") is None
     with sqlite3.connect(store.db_path) as independent:
-        assert independent.execute(
-            "SELECT COUNT(*) FROM connectors"
-        ).fetchone() == (0,)
+        assert independent.execute("SELECT COUNT(*) FROM connectors").fetchone() == (0,)

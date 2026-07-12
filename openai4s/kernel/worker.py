@@ -638,10 +638,16 @@ def _container_sample(value: object) -> tuple[list[object], int]:
     value_type = type(value)
     if value_type is list:
         length = list.__len__(value)
-        return [list.__getitem__(value, i) for i in range(min(length, _INSPECT_SAMPLE_ITEMS))], length
+        return [
+            list.__getitem__(value, i)
+            for i in range(min(length, _INSPECT_SAMPLE_ITEMS))
+        ], length
     if value_type is tuple:
         length = tuple.__len__(value)
-        return [tuple.__getitem__(value, i) for i in range(min(length, _INSPECT_SAMPLE_ITEMS))], length
+        return [
+            tuple.__getitem__(value, i)
+            for i in range(min(length, _INSPECT_SAMPLE_ITEMS))
+        ], length
     if value_type is dict:
         length = dict.__len__(value)
         items = []
@@ -697,8 +703,11 @@ def _safe_container_summary(value: object) -> tuple[str, int, str, str] | None:
         tokens.sort()
         previews.sort()
     opening, closing = {
-        list: ("[", "]"), tuple: ("(", ")"), dict: ("{", "}"),
-        set: ("{", "}"), frozenset: ("frozenset({", "})"),
+        list: ("[", "]"),
+        tuple: ("(", ")"),
+        dict: ("{", "}"),
+        set: ("{", "}"),
+        frozenset: ("frozenset({", "})"),
     }[value_type]
     suffix = ", …" if length > len(sample) else ""
     preview = opening + ", ".join(previews) + suffix + closing
@@ -709,7 +718,11 @@ def _safe_container_summary(value: object) -> tuple[str, int, str, str] | None:
         + b":"
         + b"|".join(tokens)
     )
-    kind = "mapping" if value_type is dict else ("set" if value_type in {set, frozenset} else "sequence")
+    kind = (
+        "mapping"
+        if value_type is dict
+        else ("set" if value_type in {set, frozenset} else "sequence")
+    )
     return kind, length, preview[:240], hashlib.sha256(canonical).hexdigest()
 
 
@@ -718,7 +731,11 @@ def _inspect_one(name: str, value: object) -> dict:
     value_type = type(value)
     if value_type in _SAFE_SCALAR_TYPES:
         token = _primitive_token(value)
-        entry["kind"] = "scalar" if value_type not in {str, bytes} else ("text" if value_type is str else "bytes")
+        entry["kind"] = (
+            "scalar"
+            if value_type not in {str, bytes}
+            else ("text" if value_type is str else "bytes")
+        )
         if value_type in {str, bytes}:
             entry["length"] = len(value)
         entry["preview"] = _primitive_preview(value)
@@ -746,11 +763,15 @@ def _inspect_namespace(limit: int) -> dict:
     names = sorted(
         name
         for name in _NS
-        if type(name) is str and name not in _INSPECT_HIDDEN and not name.startswith("__")
+        if type(name) is str
+        and name not in _INSPECT_HIDDEN
+        and not name.startswith("__")
     )
     selected = names[:limit]
     return {
-        "variables": [_inspect_one(name, dict.__getitem__(_NS, name)) for name in selected],
+        "variables": [
+            _inspect_one(name, dict.__getitem__(_NS, name)) for name in selected
+        ],
         "truncated": len(names) > len(selected),
         "limit": limit,
     }

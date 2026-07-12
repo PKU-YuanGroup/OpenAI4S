@@ -171,7 +171,9 @@ def test_kernel_interrupt_rejects_queued_ticket_without_cancelling_it():
     assert queued.state is TicketState.QUEUED
     assert not queued.cancellation.is_set()
     assert not active_cancel.is_set()
-    assert coordinator.snapshot("frame-a")["owner"]["execution_id"] == active.execution_id
+    assert (
+        coordinator.snapshot("frame-a")["owner"]["execution_id"] == active.execution_id
+    )
 
     release.set()
     thread.join(1)
@@ -180,9 +182,7 @@ def test_kernel_interrupt_rejects_queued_ticket_without_cancelling_it():
 
 def test_repl_owner_releases_then_queued_agent_continues(monkeypatch, tmp_path):
     runner = _runner(tmp_path)
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="default", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
     repl_entered = threading.Event()
     release_repl = threading.Event()
     agent_entered = threading.Event()
@@ -238,9 +238,7 @@ def test_repl_owner_releases_then_queued_agent_continues(monkeypatch, tmp_path):
 
 def test_submit_repl_returns_ticket_before_cell_finishes(monkeypatch, tmp_path):
     runner = _runner(tmp_path)
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="default", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
     entered = threading.Event()
     release = threading.Event()
 
@@ -275,9 +273,7 @@ def test_submit_repl_returns_ticket_before_cell_finishes(monkeypatch, tmp_path):
 
 def test_cancel_queued_repl_never_cancels_active_agent(monkeypatch, tmp_path):
     runner = _runner(tmp_path)
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="default", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
     agent_entered = threading.Event()
     release_agent = threading.Event()
     repl_executed = threading.Event()
@@ -341,9 +337,7 @@ def test_cancel_queued_repl_never_cancels_active_agent(monkeypatch, tmp_path):
 
 def test_http_cancel_forwards_exact_execution_and_owner(monkeypatch, tmp_path):
     runner = _runner(tmp_path)
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="default", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
     calls: list[tuple] = []
 
     def cancel(root_frame_id, execution_id=None, **kwargs):
@@ -386,9 +380,7 @@ def test_http_cancel_forwards_exact_execution_and_owner(monkeypatch, tmp_path):
 
 def test_http_cancel_without_exact_identity_fails_closed(monkeypatch, tmp_path):
     runner = _runner(tmp_path)
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="default", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
     monkeypatch.setattr(
         runner,
         "cancel",
@@ -412,9 +404,7 @@ def test_http_cancel_without_exact_identity_fails_closed(monkeypatch, tmp_path):
 
 def test_runner_cancel_without_identity_never_resolves_current_owner(tmp_path):
     runner = _runner(tmp_path)
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="default", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
 
     result = runner.cancel(frame_id)
 

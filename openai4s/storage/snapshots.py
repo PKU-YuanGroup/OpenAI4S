@@ -282,9 +282,7 @@ class WorkspaceCAS:
         with self._lock:
             if retained_tree_ids_provider is not None:
                 retained.update(
-                    str(value)
-                    for value in retained_tree_ids_provider()
-                    if value
+                    str(value) for value in retained_tree_ids_provider() if value
                 )
             for tree_id in sorted(candidates - retained):
                 try:
@@ -390,9 +388,7 @@ class WorkspaceCAS:
                 raise ValueError(f"duplicate snapshot path: {path}")
             seen.add(path)
             blob = str(raw.get("blob") or "")
-            if len(blob) != 64 or any(
-                ch not in "0123456789abcdef" for ch in blob
-            ):
+            if len(blob) != 64 or any(ch not in "0123456789abcdef" for ch in blob):
                 raise ValueError(f"invalid blob id for {path}")
             if not self._blob_path(blob).is_file():
                 raise ValueError(f"snapshot blob does not exist for {path}")
@@ -400,9 +396,7 @@ class WorkspaceCAS:
             mode = int(raw.get("mode") or 0o600) & 0o777
             if size < 0:
                 raise ValueError(f"invalid size for {path}")
-            normalized.append(
-                {"path": path, "blob": blob, "size": size, "mode": mode}
-            )
+            normalized.append({"path": path, "blob": blob, "size": size, "mode": mode})
         normalized.sort(key=lambda item: item["path"])
         safe_skipped = [
             {
@@ -601,10 +595,7 @@ class WorkspaceCAS:
             if (
                 not isinstance(blob_id, str)
                 or len(blob_id) != 64
-                or any(
-                    character not in "0123456789abcdef"
-                    for character in blob_id
-                )
+                or any(character not in "0123456789abcdef" for character in blob_id)
             ):
                 return None
             blobs.add(blob_id)
@@ -790,9 +781,7 @@ class SessionSnapshotRepository:
             if parent_checkpoint_id is None:
                 parent_checkpoint_id = current_head
             elif parent_checkpoint_id != current_head:
-                raise ValueError(
-                    "parent checkpoint must be the branch's current head"
-                )
+                raise ValueError("parent checkpoint must be the branch's current head")
             try:
                 self._connection.execute(
                     "INSERT INTO session_checkpoints("
@@ -873,9 +862,7 @@ class SessionSnapshotRepository:
         checkpoint = self.get_checkpoint(from_checkpoint_id)
         if checkpoint is None or checkpoint["root_frame_id"] != root_frame_id:
             raise KeyError(from_checkpoint_id)
-        branch_id = self._text(
-            "branch_id", branch_id or f"br-{uuid.uuid4().hex[:16]}"
-        )
+        branch_id = self._text("branch_id", branch_id or f"br-{uuid.uuid4().hex[:16]}")
         now = self._clock_ms()
         with self._lock:
             try:
@@ -1028,10 +1015,7 @@ class SessionSnapshotRepository:
                     "WHERE checkpoint_id=?",
                     (checkpoint_id,),
                 ).fetchone()
-                if (
-                    checkpoint is None
-                    or checkpoint["root_frame_id"] != root_frame_id
-                ):
+                if checkpoint is None or checkpoint["root_frame_id"] != root_frame_id:
                     raise ValueError("snapshot operation checkpoint mismatch")
             self._connection.execute(
                 "INSERT INTO snapshot_operations("

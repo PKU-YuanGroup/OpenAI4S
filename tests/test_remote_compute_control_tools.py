@@ -140,9 +140,7 @@ def test_schema_rejects_sdk_only_or_unbounded_remote_compute_fields():
     assert "required property" in get_tool("compute_result").validation_error(
         {"job_id": "job-1"}
     )
-    assert "item count must be <= 100" in get_tool(
-        "compute_close"
-    ).validation_error(
+    assert "item count must be <= 100" in get_tool("compute_close").validation_error(
         {"provider": "ssh:lab", "job_ids": [f"job-{i}" for i in range(101)]}
     )
 
@@ -168,9 +166,7 @@ def test_remote_compute_policy_taxonomy_resources_and_progressive_group():
     assert result.read_only is False
     assert result.requires_approval is False
     assert result.side_effect_class == "runtime_mutation"
-    assert result.resource_keys(
-        {"provider": "byoc:nvidia", "job_id": "job-1"}
-    ) == (
+    assert result.resource_keys({"provider": "byoc:nvidia", "job_id": "job-1"}) == (
         "remote_compute_provider:byoc%3Anvidia",
         "remote_compute_job:job-1",
     )
@@ -256,18 +252,27 @@ def test_dispatcher_gates_submit_but_keeps_exact_job_cleanup_available(tmp_path)
         )
 
     assert dispatcher("compute_status", [{}])["live"] == 1
-    assert dispatcher(
-        "compute_result",
-        [{"provider": "byoc:nvidia", "job_id": "job-1"}],
-    )["status"] == "running"
-    assert dispatcher(
-        "compute_cancel",
-        [{"provider": "byoc:nvidia", "job_id": "job-1"}],
-    )["status"] == "cancelled"
-    assert dispatcher(
-        "compute_close",
-        [{"provider": "byoc:nvidia", "job_ids": ["job-1"]}],
-    )["status"] == "closed"
+    assert (
+        dispatcher(
+            "compute_result",
+            [{"provider": "byoc:nvidia", "job_id": "job-1"}],
+        )["status"]
+        == "running"
+    )
+    assert (
+        dispatcher(
+            "compute_cancel",
+            [{"provider": "byoc:nvidia", "job_id": "job-1"}],
+        )["status"]
+        == "cancelled"
+    )
+    assert (
+        dispatcher(
+            "compute_close",
+            [{"provider": "byoc:nvidia", "job_ids": ["job-1"]}],
+        )["status"]
+        == "closed"
+    )
 
     assert compute.calls == [
         ("submit", submit),

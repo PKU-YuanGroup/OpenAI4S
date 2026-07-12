@@ -49,8 +49,14 @@ def _lease():
 
 
 def test_policy_reads_timeout_dynamically_and_invalid_values_fall_back():
-    assert WatchdogPolicy.from_environment({"OPENAI4S_CELL_TIMEOUT": "12.5"}).timeout_s == 12.5
-    assert WatchdogPolicy.from_environment({"OPENAI4S_CELL_TIMEOUT": "bad"}).timeout_s == 900.0
+    assert (
+        WatchdogPolicy.from_environment({"OPENAI4S_CELL_TIMEOUT": "12.5"}).timeout_s
+        == 12.5
+    )
+    assert (
+        WatchdogPolicy.from_environment({"OPENAI4S_CELL_TIMEOUT": "bad"}).timeout_s
+        == 900.0
+    )
     assert not WatchdogPolicy(timeout_s=0).enabled
     assert not WatchdogPolicy(timeout_s=float("nan")).enabled
 
@@ -59,12 +65,9 @@ def test_fast_result_and_original_exception_pass_through():
     supervisor, kernel, lease = _lease()
     policy = WatchdogPolicy(timeout_s=1, poll_s=0.01)
 
-    assert (
-        execute_with_watchdog(
-            supervisor, lease, lambda worker: {"pid": id(worker)}, policy=policy
-        )
-        == {"pid": id(kernel)}
-    )
+    assert execute_with_watchdog(
+        supervisor, lease, lambda worker: {"pid": id(worker)}, policy=policy
+    ) == {"pid": id(kernel)}
 
     error = ValueError("cell failed")
 

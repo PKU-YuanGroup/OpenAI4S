@@ -17,9 +17,11 @@ from typing import Any, Protocol, TypeVar
 
 
 class BranchProjectionStore(Protocol):
-    def get_session_branch(self, branch_id: str) -> dict[str, Any] | None: ...
+    def get_session_branch(self, branch_id: str) -> dict[str, Any] | None:
+        ...
 
-    def get_session_checkpoint(self, checkpoint_id: str) -> dict[str, Any] | None: ...
+    def get_session_checkpoint(self, checkpoint_id: str) -> dict[str, Any] | None:
+        ...
 
 
 Record = TypeVar("Record", bound=Mapping[str, Any])

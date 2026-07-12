@@ -200,7 +200,9 @@ def build_kernel_environment(
         # stable, non-secret runtime cache; an enforced OS sandbox replaces it
         # with its own private temp path in KernelSandbox.apply_environment().
         runtime_tmp = env.get("TMPDIR") or env.get("TEMP") or env.get("TMP")
-        cache_root = Path(runtime_tmp) if runtime_tmp else workspace / ".openai4s-runtime"
+        cache_root = (
+            Path(runtime_tmp) if runtime_tmp else workspace / ".openai4s-runtime"
+        )
         env["MPLCONFIGDIR"] = str(cache_root / "openai4s-matplotlib")
     if kernel_generation:
         # Synthesized by the trusted manager for this exact worker spawn.  It
@@ -211,9 +213,7 @@ def build_kernel_environment(
     # Do not inherit a host PYTHONPATH: arbitrary entries are import-time code
     # injection.  The worker only needs the trusted OpenAI4S source root when a
     # selected conda interpreter differs from the daemon interpreter.
-    root = Path(repo_root or Path(__file__).resolve().parents[2]).resolve(
-        strict=False
-    )
+    root = Path(repo_root or Path(__file__).resolve().parents[2]).resolve(strict=False)
     env["PYTHONPATH"] = str(root)
     return env
 

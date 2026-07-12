@@ -236,9 +236,7 @@ class FrameRepository:
                     (project["project_id"],),
                 ).fetchone()
                 project["conversation_count"] = aggregate["n"] or 0
-                project["last_active_at"] = (
-                    aggregate["last"] or project["updated_at"]
-                )
+                project["last_active_at"] = aggregate["last"] or project["updated_at"]
                 projects.append(project)
         return projects
 
@@ -343,10 +341,7 @@ class FrameRepository:
                 "c.checkpoint_id FROM session_checkpoints AS c WHERE "
                 "c.root_frame_id=m.root_frame_id AND c.source_kind='message' "
                 "AND c.source_id=m.message_id LIMIT 1) AS fork_checkpoint_id "
-                "FROM messages AS m WHERE "
-                + where
-                + " ORDER BY m.seq ASC"
-                + suffix,
+                "FROM messages AS m WHERE " + where + " ORDER BY m.seq ASC" + suffix,
                 tuple(params),
             ).fetchall()
         values = [dict(row) for row in rows]
@@ -661,26 +656,17 @@ class FrameRepository:
         )
         if state_revision is None:
             state_revision = (
-                reserved_revision
-                if reserved_revision is not None
-                else cell_index
+                reserved_revision if reserved_revision is not None else cell_index
             )
-        elif (
-            reserved_revision is not None
-            and state_revision != reserved_revision
-        ):
-            raise ValueError(
-                "state_revision must match the durable execution attempt"
-            )
+        elif reserved_revision is not None and state_revision != reserved_revision:
+            raise ValueError("state_revision must match the durable execution attempt")
         latest_revision = (
             self.latest_state_revision(root_frame_id) if root_frame_id else 0
         )
         if state_revision is None and root_frame_id:
             state_revision = latest_revision + 1
         if state_revision is not None:
-            if isinstance(state_revision, bool) or not isinstance(
-                state_revision, int
-            ):
+            if isinstance(state_revision, bool) or not isinstance(state_revision, int):
                 raise TypeError("state_revision must be an integer")
             if state_revision < 1:
                 raise ValueError("state_revision must be positive")
@@ -772,9 +758,7 @@ class FrameRepository:
                 "FROM execution_attempts AS a WHERE a.producing_cell_id="
                 "e.producing_cell_id AND a.generation_id IS NOT NULL "
                 "ORDER BY a.attempt_ordinal DESC LIMIT 1) AS generation_id "
-                "FROM execution_log AS e WHERE e.root_frame_id=? "
-                + branch_filter
-                + " "
+                "FROM execution_log AS e WHERE e.root_frame_id=? " + branch_filter + " "
                 "ORDER BY COALESCE(e.state_revision,e.cell_index) ASC,"
                 "e.created_at ASC,e.producing_cell_id ASC",
                 tuple(params),
@@ -801,9 +785,7 @@ class FrameRepository:
             ):
                 cell[key] = list(normalize_string_list(cell.get(key)))
             cell["pin"] = bool(cell.get("pin"))
-            cell["mutation_uncertain"] = bool(
-                cell.get("mutation_uncertain")
-            )
+            cell["mutation_uncertain"] = bool(cell.get("mutation_uncertain"))
             if cell.get("state_revision") is None:
                 cell["state_revision"] = cell.get("cell_index")
             cells.append(cell)

@@ -432,10 +432,7 @@ def test_code_action_executes_one_cell_and_warns_about_later_cells():
         ),
     )
     reply = ModelReply(
-        content=(
-            "```python\nprint('first')\n```\n"
-            "```python\nprint('second')\n```"
-        )
+        content=("```python\nprint('first')\n```\n" "```python\nprint('second')\n```")
     )
 
     outcome = executor.execute(
@@ -460,10 +457,7 @@ def test_code_action_warns_when_a_complete_cell_has_an_incomplete_tail():
         ),
     )
     reply = ModelReply(
-        content=(
-            "```python\nprint('first')\n```\n"
-            "```python\nresult = unfinished(\n"
-        )
+        content=("```python\nprint('first')\n```\n" "```python\nresult = unfinished(\n")
     )
 
     outcome = executor.execute(
@@ -489,18 +483,12 @@ def test_legacy_fenced_tool_still_executes_and_returns_user_observation(monkeypa
         apply_pending=lambda: applied.append("apply"),
     )
     reply = ModelReply(
-        content=(
-            "```tool\n"
-            '{"name":"list_dir","arguments":{"path":"."}}\n'
-            "```"
-        )
+        content=("```tool\n" '{"name":"list_dir","arguments":{"path":"."}}\n' "```")
     )
 
     outcome = executor.execute(None, reply, RunState([]))
 
-    assert invoked == [
-        (dispatcher, {"name": "list_dir", "arguments": {"path": "."}})
-    ]
+    assert invoked == [(dispatcher, {"name": "list_dir", "arguments": {"path": "."}})]
     assert applied == ["apply", "apply"]
     assert "legacy result" in outcome.observation
     assert outcome.history_messages == (

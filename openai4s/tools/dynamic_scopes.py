@@ -90,7 +90,9 @@ class DynamicScopeStore:
         with self._lock:
             if destination.exists():
                 existing = json.loads(destination.read_text("utf-8"))
-                comparable_existing = dict(existing) if isinstance(existing, dict) else {}
+                comparable_existing = (
+                    dict(existing) if isinstance(existing, dict) else {}
+                )
                 comparable_new = dict(record)
                 for key in ("created_at", "expires_at"):
                     comparable_existing.pop(key, None)
@@ -130,7 +132,9 @@ class DynamicScopeStore:
         if not _MANIFEST_ID.fullmatch(manifest_id):
             raise ValueError("invalid activated manifest id")
         if not name or not actor_root_frame_id or not actor_project_id:
-            raise ValueError("dynamic activation requires bound actor and tool identity")
+            raise ValueError(
+                "dynamic activation requires bound actor and tool identity"
+            )
         # The previous pointer and ordering timestamp are derived while holding
         # the shared root lock. A caller's earlier snapshot may already be stale
         # because another session can promote the same project/global tool.
@@ -175,9 +179,7 @@ class DynamicScopeStore:
                 name=name,
             )
             if not history:
-                raise ValueError(
-                    f"dynamic tool {name!r} has no active {scope} version"
-                )
+                raise ValueError(f"dynamic tool {name!r} has no active {scope} version")
             current = str(history[-1]["manifest_id"])
             target = next(
                 (
@@ -287,7 +289,9 @@ class DynamicScopeStore:
                         events.append(event)
                 except Exception as error:  # noqa: BLE001 - corrupt data stays inert
                     errors.append(f"{path.name}: {error}")
-        events.sort(key=lambda item: (int(item.get("created_at_ns") or 0), item["event_id"]))
+        events.sort(
+            key=lambda item: (int(item.get("created_at_ns") or 0), item["event_id"])
+        )
         return events, errors
 
     def active_manifest_id(
@@ -330,9 +334,7 @@ class DynamicScopeStore:
 
             scope_removed = not directory.exists() and not directory.is_symlink()
             for path in (
-                sorted(self.manifests_dir.glob("dyn-*.json"))
-                if scope_removed
-                else ()
+                sorted(self.manifests_dir.glob("dyn-*.json")) if scope_removed else ()
             ):
                 try:
                     record = self._read_record(path, _MANIFEST_ID, "manifest")

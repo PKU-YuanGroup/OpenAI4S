@@ -125,10 +125,13 @@ def test_folders_order_rename_assignment_and_delete(tmp_path):
             "SELECT folder_id FROM frames WHERE frame_id=?",
             (frame_id,),
         ).fetchone() == (None,)
-        assert independent.execute(
-            "SELECT 1 FROM folders WHERE folder_id=?",
-            (alpha["folder_id"],),
-        ).fetchone() is None
+        assert (
+            independent.execute(
+                "SELECT 1 FROM folders WHERE folder_id=?",
+                (alpha["folder_id"],),
+            ).fetchone()
+            is None
+        )
 
 
 def test_folder_delete_keeps_two_separate_commits():
@@ -167,18 +170,24 @@ def test_endpoint_dynamic_insert_partial_update_and_order(tmp_path):
     now, calls = _clock(3000)
     repository = EndpointRepository(store._conn, store._lock, clock_ms=now)
 
-    assert repository.upsert(
-        "later",
-        url="http://127.0.0.1:20001",
-        status="registered",
-        created_at=50,
-    ) is None
-    assert repository.upsert(
-        "earlier",
-        url="https://example.test",
-        status="live",
-        created_at=10,
-    ) is None
+    assert (
+        repository.upsert(
+            "later",
+            url="http://127.0.0.1:20001",
+            status="registered",
+            created_at=50,
+        )
+        is None
+    )
+    assert (
+        repository.upsert(
+            "earlier",
+            url="https://example.test",
+            status="live",
+            created_at=10,
+        )
+        is None
+    )
     assert [row["name"] for row in repository.list()] == ["earlier", "later"]
 
     repository.upsert("later", status="starting", created_at=5)
@@ -240,9 +249,7 @@ def test_compaction_archive_unicode_shape_and_clock_after_serialization(tmp_path
 
 def test_compaction_archive_persists_context_v2_linkage(tmp_path):
     store = _store(tmp_path)
-    repository = CompactionRepository(
-        store._conn, store._lock, clock_ms=lambda: 5000
-    )
+    repository = CompactionRepository(store._conn, store._lock, clock_ms=lambda: 5000)
     archive_id = repository.archive(
         frame_id="root-context",
         project_id="science",
@@ -256,9 +263,7 @@ def test_compaction_archive_persists_context_v2_linkage(tmp_path):
         compacted=[{"role": "tool", "content": "preview"}],
         context_before={"total": 900},
         context_after={"total": 300},
-        artifact_refs=[
-            {"artifact_id": "a-1", "version_id": "v-1", "sha256": "a" * 64}
-        ],
+        artifact_refs=[{"artifact_id": "a-1", "version_id": "v-1", "sha256": "a" * 64}],
     )
 
     archived = repository.list("root-context")

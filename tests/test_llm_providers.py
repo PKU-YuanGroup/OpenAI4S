@@ -173,9 +173,12 @@ def test_loopback_endpoint_does_not_inherit_unverified_vendor_tool_support(cap):
     llm.chat([{"role": "user", "content": "hi"}], c, tools=tools)
 
     assert "tools" not in cap.payload
-    assert llm.get_model_capabilities(
-        "chatgpt", "local-model", base_url=c.base_url
-    ).tool_calling is False
+    assert (
+        llm.get_model_capabilities(
+            "chatgpt", "local-model", base_url=c.base_url
+        ).tool_calling
+        is False
+    )
 
 
 # --- wire selection + auth headers ---------------------------------------

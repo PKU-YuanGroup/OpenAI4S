@@ -44,9 +44,7 @@ class RecoveryExecutionPorts:
     inspect_symbols: Callable[[Candidate, str], Any]
     artifact_digest: Callable[[Candidate, str], str | None]
     inspect_environment: Callable[[Candidate], Mapping[str, Any]]
-    publish_candidate: Callable[
-        [Candidate, BootstrapManifest, str | None], Any
-    ]
+    publish_candidate: Callable[[Candidate, BootstrapManifest, str | None], Any]
     cancelled: Callable[[], bool] = _not_cancelled
     candidate_started: Callable[[Candidate], Any] = _ignore_candidate
     candidate_finished: Callable[[Candidate], Any] = _ignore_candidate
@@ -204,9 +202,7 @@ def _recipe_for_language(
         selected_requirements = nested
     return RecoveryRecipe(
         steps=tuple(steps),
-        required_symbols={
-            language: tuple(recipe.required_symbols.get(language) or ())
-        },
+        required_symbols={language: tuple(recipe.required_symbols.get(language) or ())},
         artifact_hashes=(dict(recipe.artifact_hashes) if include_hydration else {}),
         environment_requirements=dict(selected_requirements),
         namespace_coverage=(
@@ -218,7 +214,10 @@ def _recipe_for_language(
 def _aggregate_status(results: list[RecoveryResult], expected: int) -> str:
     if not results:
         return "cancelled"
-    if all(result.status == "active" for result in results) and len(results) == expected:
+    if (
+        all(result.status == "active" for result in results)
+        and len(results) == expected
+    ):
         return "active"
     if any(result.status == "cancelled" for result in results):
         return "cancelled"

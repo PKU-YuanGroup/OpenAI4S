@@ -104,12 +104,10 @@ _JSON_SECRET = re.compile(
 )
 _BEARER_SECRET = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _TOKEN_SECRET = re.compile(
-    r"(?i)\b(?:sk|ark|ghp|gho|github_pat|hf|xox[baprs])[-_]"
-    r"[A-Za-z0-9._-]{8,}\b"
+    r"(?i)\b(?:sk|ark|ghp|gho|github_pat|hf|xox[baprs])[-_]" r"[A-Za-z0-9._-]{8,}\b"
 )
 _PRIVATE_KEY_BLOCK = re.compile(
-    r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?"
-    r"-----END [^-\r\n]*PRIVATE KEY-----",
+    r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?" r"-----END [^-\r\n]*PRIVATE KEY-----",
     re.DOTALL,
 )
 _REDACTED = "[REDACTED]"
@@ -139,7 +137,7 @@ def _safe_text(value: Any) -> str:
     text = _BEARER_SECRET.sub(f"Bearer {_REDACTED}", text)
     text = _TOKEN_SECRET.sub(_REDACTED, text)
     text = _ENV_SECRET.sub(lambda match: f"{match.group(1)}={_REDACTED}", text)
-    text = _JSON_SECRET.sub(lambda match: f"{match.group(1)}\"{_REDACTED}\"", text)
+    text = _JSON_SECRET.sub(lambda match: f'{match.group(1)}"{_REDACTED}"', text)
     return text
 
 
@@ -205,9 +203,7 @@ def _is_secret_path(value: str) -> bool:
     return any(
         part.lower() in _SECRET_NAMES or part.lower().startswith(".env.")
         for part in path.parts
-    ) or (
-        path.suffix.lower() in _SECRET_SUFFIXES
-    )
+    ) or (path.suffix.lower() in _SECRET_SUFFIXES)
 
 
 def _safe_artifact_filename(value: Any) -> str:
@@ -255,8 +251,7 @@ def _zip_bytes(files: Mapping[str, bytes]) -> bytes:
             preview = zlib.compress(data) if data else b""
             info.compress_type = (
                 zipfile.ZIP_STORED
-                if data
-                and len(data) / max(1, len(preview)) > MAX_COMPRESSION_RATIO / 2
+                if data and len(data) / max(1, len(preview)) > MAX_COMPRESSION_RATIO / 2
                 else zipfile.ZIP_DEFLATED
             )
             info.create_system = 3
@@ -433,9 +428,11 @@ class SessionPackageService:
             active_branch=active_branch,
             checkpoints=checkpoints,
         )
-        artifact_files, artifact_projection, environment_snapshots = (
-            self._export_artifacts(root_frame_id)
-        )
+        (
+            artifact_files,
+            artifact_projection,
+            environment_snapshots,
+        ) = self._export_artifacts(root_frame_id)
         safe_artifact_ids = {
             str(item.get("artifact_id"))
             for item in artifact_projection.get("artifacts") or []
@@ -456,9 +453,7 @@ class SessionPackageService:
         permissions = {
             "policy": "imported allow rules are downgraded to ask",
             "project": _sanitize(permission_state.get("project") or []),
-            "conversation": _sanitize(
-                permission_state.get("conversation") or []
-            ),
+            "conversation": _sanitize(permission_state.get("conversation") or []),
         }
         self._bounded_records("permission_rules", permissions["project"])
         if (
@@ -471,13 +466,9 @@ class SessionPackageService:
         capability_rows = [
             _sanitize(item)
             for item in self.store.list_explicit_capability_states()
-            if (
-                item.get("scope") == "project"
-                and item.get("scope_id") == project_id
-            )
+            if (item.get("scope") == "project" and item.get("scope_id") == project_id)
             or (
-                item.get("scope") == "session"
-                and item.get("scope_id") == root_frame_id
+                item.get("scope") == "session" and item.get("scope_id") == root_frame_id
             )
         ]
         self._bounded_records("capability_states", capability_rows)
@@ -486,9 +477,7 @@ class SessionPackageService:
         )
         plans = self._bounded_records(
             "plans",
-            self.store.list_plans(
-                root_frame_id, limit=_RECORD_LIMITS["plans"] + 1
-            ),
+            self.store.list_plans(root_frame_id, limit=_RECORD_LIMITS["plans"] + 1),
         )
         plans = [
             {
@@ -526,9 +515,7 @@ class SessionPackageService:
             ],
         )
         local_review_auto = self.store.get_setting(f"review:auto:{root_frame_id}")
-        local_reviewer_model = self.store.get_setting(
-            f"review:model:{root_frame_id}"
-        )
+        local_reviewer_model = self.store.get_setting(f"review:model:{root_frame_id}")
         review_settings = {
             "auto_review": (
                 None
@@ -668,9 +655,7 @@ class SessionPackageService:
 
     def _export_cells(self, root_frame_id: str) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []
-        summaries = self._bounded_records(
-            "cells", self.store.list_cells(root_frame_id)
-        )
+        summaries = self._bounded_records("cells", self.store.list_cells(root_frame_id))
         for summary in summaries:
             cell_id = str(summary.get("producing_cell_id") or "")
             cell = self.store.cell_detail(cell_id) or summary
@@ -742,9 +727,9 @@ class SessionPackageService:
             for item in checkpoints
             if item.get("workspace_tree_id")
         }
-        active_workspace = Path(
-            self._workspace(root_frame_id, active_branch)
-        ).expanduser().resolve()
+        active_workspace = (
+            Path(self._workspace(root_frame_id, active_branch)).expanduser().resolve()
+        )
         active_workspace.mkdir(parents=True, exist_ok=True)
         current = self.cas.capture(active_workspace)
         source_ids.add(str(current["tree_id"]))
@@ -777,7 +762,9 @@ class SessionPackageService:
                 )
             entries.sort(key=lambda item: item["path"])
             skipped = _sanitize(skipped)
-            skipped.sort(key=lambda item: (item.get("path", ""), item.get("reason", "")))
+            skipped.sort(
+                key=lambda item: (item.get("path", ""), item.get("reason", ""))
+            )
             body = {"version": 1, "entries": entries, "skipped": skipped}
             safe_tree_id = _sha256(_canonical_json(body))
             safe_tree = {**body, "tree_id": safe_tree_id}
@@ -1000,7 +987,9 @@ class SessionPackageService:
             new_root = self.store.new_frame(
                 project_id=new_project_id,
                 kind="turn",
-                name=_safe_text(session.get("frame", {}).get("name") or "Imported session"),
+                name=_safe_text(
+                    session.get("frame", {}).get("name") or "Imported session"
+                ),
                 model=session.get("frame", {}).get("model"),
                 status="done",
             )
@@ -1020,9 +1009,7 @@ class SessionPackageService:
             source_project = str(source["project_id"])
             snapshots = documents["snapshots.json"]
             source_branches = list(snapshots.get("branches") or [])
-            source_branch_ids = {
-                str(item.get("branch_id")) for item in source_branches
-            }
+            source_branch_ids = {str(item.get("branch_id")) for item in source_branches}
             source_branch_ids.add(source_root)
             branch_map = {
                 branch_id: (
@@ -1034,12 +1021,14 @@ class SessionPackageService:
             }
             source_active = str(source.get("active_branch_id") or source_root)
             active_branch = branch_map[source_active]
-            active_workspace = Path(
-                self._workspace(new_root, active_branch)
-            ).expanduser().resolve()
+            active_workspace = (
+                Path(self._workspace(new_root, active_branch)).expanduser().resolve()
+            )
             active_workspace.mkdir(parents=True, exist_ok=True)
             if any(active_workspace.iterdir()):
-                raise SessionPackageError("new import workspace is unexpectedly non-empty")
+                raise SessionPackageError(
+                    "new import workspace is unexpectedly non-empty"
+                )
 
             message_map = self._import_messages(
                 new_root,
@@ -1064,9 +1053,7 @@ class SessionPackageService:
                 revision_map=revision_map,
             )
             env_map = self._import_environment_snapshots(
-                documents["environment.json"].get(
-                    "artifact_environment_snapshots"
-                )
+                documents["environment.json"].get("artifact_environment_snapshots")
                 or []
             )
             imported_env_ids.update(env_map.values())
@@ -1096,9 +1083,7 @@ class SessionPackageService:
                 str(value)
                 for value in (workspace_projection.get("tree_map") or {}).values()
             }
-            package_blob_ids = self._workspace_blob_ids(
-                workspace_projection, files
-            )
+            package_blob_ids = self._workspace_blob_ids(workspace_projection, files)
             preexisting_trees = {
                 tree_id
                 for tree_id in package_tree_ids
@@ -1160,7 +1145,9 @@ class SessionPackageService:
                     expected_current_branch_id=new_root,
                 )
             if any(active_workspace.iterdir()):
-                raise SessionPackageError("new import workspace is unexpectedly non-empty")
+                raise SessionPackageError(
+                    "new import workspace is unexpectedly non-empty"
+                )
             source_current_tree = workspace_projection.get("active_source_tree_id")
             current_tree = tree_map.get(str(source_current_tree or ""))
             if not current_tree:
@@ -1250,9 +1237,7 @@ class SessionPackageService:
                     cleanup_errors.append(f"database: {cleanup_error}")
             if imported_env_ids:
                 try:
-                    self.store.delete_env_snapshots_if_unreferenced(
-                        imported_env_ids
-                    )
+                    self.store.delete_env_snapshots_if_unreferenced(imported_env_ids)
                 except Exception as cleanup_error:  # noqa: BLE001
                     cleanup_errors.append(f"environment snapshots: {cleanup_error}")
             if import_root is not None:
@@ -1291,7 +1276,9 @@ class SessionPackageService:
             try:
                 infos = archive.infolist()
             except (OSError, RuntimeError, zipfile.BadZipFile) as error:
-                raise SessionPackageError("session package ZIP directory is corrupt") from error
+                raise SessionPackageError(
+                    "session package ZIP directory is corrupt"
+                ) from error
             if not infos or len(infos) > MAX_ENTRIES:
                 raise SessionPackageError("session package entry count is invalid")
             total = 0
@@ -1323,7 +1310,9 @@ class SessionPackageService:
                     )
                 total += int(info.file_size)
                 if total > MAX_UNCOMPRESSED_BYTES:
-                    raise SessionPackageError("session package expands beyond its limit")
+                    raise SessionPackageError(
+                        "session package expands beyond its limit"
+                    )
                 try:
                     payload = archive.read(info)
                 except (
@@ -1402,7 +1391,9 @@ class SessionPackageService:
                 raise SessionPackageError(f"{document_name}.{key} must be a list")
             self._bounded_records(limit_name, value)
             if any(not isinstance(item, Mapping) for item in value):
-                raise SessionPackageError(f"{document_name}.{key} contains an invalid record")
+                raise SessionPackageError(
+                    f"{document_name}.{key} contains an invalid record"
+                )
             return value
 
         def identities(
@@ -1451,9 +1442,7 @@ class SessionPackageService:
 
         messages = records("session.json", "messages", "messages")
         groups = records("ledger.json", "groups", "groups")
-        attempts = records(
-            "ledger.json", "execution_attempts", "execution_attempts"
-        )
+        attempts = records("ledger.json", "execution_attempts", "execution_attempts")
         cells = records("notebook.json", "cells", "cells")
         branches = records("snapshots.json", "branches", "branches")
         checkpoints = records("snapshots.json", "checkpoints", "checkpoints")
@@ -1461,9 +1450,7 @@ class SessionPackageService:
             "snapshots.json", "checkpoint_states", "checkpoint_states"
         )
         operations = records("snapshots.json", "operations", "operations")
-        recovery = records(
-            "snapshots.json", "recovery_journal", "recovery_journal"
-        )
+        recovery = records("snapshots.json", "recovery_journal", "recovery_journal")
         artifacts = records("artifacts.json", "artifacts", "artifacts")
         generations = records("environment.json", "generations", "generations")
         env_snapshots = records(
@@ -1474,16 +1461,10 @@ class SessionPackageService:
         lineage = records("lineage.json", "edges", "lineage_edges")
         plans = records("plans.json", "plans", "plans")
         annotations = records("review.json", "annotations", "annotations")
-        review_steps = records(
-            "review.json", "activity_steps", "review_steps"
-        )
+        review_steps = records("review.json", "activity_steps", "review_steps")
         records("memory.json", "memories", "memories")
-        capability_states = records(
-            "capabilities.json", "states", "capability_states"
-        )
-        permission_project = records(
-            "permissions.json", "project", "permission_rules"
-        )
+        capability_states = records("capabilities.json", "states", "capability_states")
+        permission_project = records("permissions.json", "project", "permission_rules")
         permission_conversation = records(
             "permissions.json", "conversation", "permission_rules"
         )
@@ -1526,7 +1507,9 @@ class SessionPackageService:
             except (TypeError, ValueError):
                 raise SessionPackageError("cell state revision is invalid") from None
             if revision < 1 or revision in seen_revisions:
-                raise SessionPackageError("cell state revisions must be unique and positive")
+                raise SessionPackageError(
+                    "cell state revisions must be unique and positive"
+                )
             seen_revisions.add(revision)
             if str(cell.get("language") or "python").lower() not in {"python", "r"}:
                 raise SessionPackageError("cell language is invalid")
@@ -1554,12 +1537,16 @@ class SessionPackageService:
                 event_id = event.get("event_id")
                 if event_id not in (None, ""):
                     if not isinstance(event_id, str) or event_id in seen_event_ids:
-                        raise SessionPackageError("duplicate or invalid action event identity")
+                        raise SessionPackageError(
+                            "duplicate or invalid action event identity"
+                        )
                     seen_event_ids.add(event_id)
                 try:
                     sequence = int(event.get("sequence") or 0)
                 except (TypeError, ValueError):
-                    raise SessionPackageError("action event sequence is invalid") from None
+                    raise SessionPackageError(
+                        "action event sequence is invalid"
+                    ) from None
                 if sequence < 0 or sequence in sequences:
                     raise SessionPackageError("action event sequence is duplicated")
                 sequences.add(sequence)
@@ -1567,25 +1554,23 @@ class SessionPackageService:
         attempt_ids, _ = identities(attempts, "attempt_id", "execution attempt")
         del attempt_ids
         for attempt in attempts:
-            required_reference(
-                attempt.get("group_id"), group_ids, "execution attempt"
-            )
+            required_reference(attempt.get("group_id"), group_ids, "execution attempt")
             required_reference(
                 attempt.get("producing_cell_id"), cell_ids, "execution attempt"
             )
             reference(
                 attempt.get("replayed_from_cell_id"), cell_ids, "execution attempt"
             )
-            reference(
-                attempt.get("generation_id"), generation_ids, "execution attempt"
-            )
+            reference(attempt.get("generation_id"), generation_ids, "execution attempt")
 
         for generation in generations:
             required_reference(
                 generation.get("branch_id"), branch_ids, "kernel generation"
             )
             if generation.get("root_frame_id") not in (None, source_root):
-                raise SessionPackageError("kernel generation belongs to another Session")
+                raise SessionPackageError(
+                    "kernel generation belongs to another Session"
+                )
 
         artifact_ids, _ = identities(artifacts, "artifact_id", "artifact")
         version_ids: set[str] = set()
@@ -1604,7 +1589,9 @@ class SessionPackageService:
                 raise SessionPackageError("artifact versions are invalid")
             version_count += len(versions)
             if version_count > _RECORD_LIMITS["artifact_versions"]:
-                raise SessionPackageError("session package has too many artifact versions")
+                raise SessionPackageError(
+                    "session package has too many artifact versions"
+                )
             local_versions: set[str] = set()
             available_versions: set[str] = set()
             available_count = 0
@@ -1615,17 +1602,19 @@ class SessionPackageService:
                     or not version_id
                     or version_id in version_ids
                 ):
-                    raise SessionPackageError("duplicate or invalid artifact version identity")
+                    raise SessionPackageError(
+                        "duplicate or invalid artifact version identity"
+                    )
                 version_ids.add(version_id)
                 local_versions.add(version_id)
                 if _safe_artifact_filename(version.get("filename")) != filename:
-                    raise SessionPackageError("artifact version filename is inconsistent")
+                    raise SessionPackageError(
+                        "artifact version filename is inconsistent"
+                    )
                 reference(
                     version.get("producing_cell_id"), cell_ids, "artifact version"
                 )
-                reference(
-                    version.get("env_snapshot_id"), env_ids, "artifact version"
-                )
+                reference(version.get("env_snapshot_id"), env_ids, "artifact version")
                 digest = version.get("snapshot_sha256")
                 if version.get("available"):
                     available_count += 1
@@ -1634,7 +1623,9 @@ class SessionPackageService:
                         raise SessionPackageError("artifact snapshot digest is invalid")
                     payload = files.get(f"artifact-data/{digest}")
                     if payload is None or _sha256(payload) != digest:
-                        raise SessionPackageError("artifact snapshot is missing or corrupt")
+                        raise SessionPackageError(
+                            "artifact snapshot is missing or corrupt"
+                        )
                     if self._contains_secret_bytes(payload):
                         raise SessionPackageError("artifact snapshot contains a secret")
             if available_count == 0:
@@ -1695,7 +1686,10 @@ class SessionPackageService:
                 "entries": tree.get("entries"),
                 "skipped": tree.get("skipped"),
             }
-            if tree.get("tree_id") != tree_id or _sha256(_canonical_json(body)) != tree_id:
+            if (
+                tree.get("tree_id") != tree_id
+                or _sha256(_canonical_json(body)) != tree_id
+            ):
                 raise SessionPackageError("workspace tree checksum mismatch")
             seen: set[str] = set()
             entries = tree.get("entries")
@@ -1703,7 +1697,9 @@ class SessionPackageService:
                 raise SessionPackageError("workspace tree entries are invalid")
             workspace_entry_count += len(entries)
             if workspace_entry_count > _RECORD_LIMITS["workspace_entries"]:
-                raise SessionPackageError("session package has too many workspace entries")
+                raise SessionPackageError(
+                    "session package has too many workspace entries"
+                )
             for entry in entries:
                 if not isinstance(entry, Mapping):
                     raise SessionPackageError("workspace tree entry is invalid")
@@ -1734,9 +1730,7 @@ class SessionPackageService:
                 source_checkpoint, checkpoint_ids, "checkpoint domain state"
             )
             if source_checkpoint in checkpoint_state_ids:
-                raise SessionPackageError(
-                    "duplicate checkpoint domain state identity"
-                )
+                raise SessionPackageError("duplicate checkpoint domain state identity")
             checkpoint_state_ids.add(str(source_checkpoint))
             if (
                 summary.get("root_frame_id") != source_root
@@ -1749,7 +1743,10 @@ class SessionPackageService:
             required_reference(
                 state_branch, branch_ids, "checkpoint domain state branch"
             )
-            if checkpoint_by_id[str(source_checkpoint)].get("branch_id") != state_branch:
+            if (
+                checkpoint_by_id[str(source_checkpoint)].get("branch_id")
+                != state_branch
+            ):
                 raise SessionPackageError(
                     "checkpoint domain state branch is inconsistent"
                 )
@@ -1773,9 +1770,7 @@ class SessionPackageService:
             reference(
                 checkpoint.get("parent_checkpoint_id"), checkpoint_ids, "checkpoint"
             )
-            reference(
-                checkpoint.get("workspace_tree_id"), set(tree_map), "checkpoint"
-            )
+            reference(checkpoint.get("workspace_tree_id"), set(tree_map), "checkpoint")
             checkpoint_versions = checkpoint.get("artifact_versions") or []
             if not isinstance(checkpoint_versions, list):
                 raise SessionPackageError("checkpoint Artifact versions are invalid")
@@ -1870,7 +1865,9 @@ class SessionPackageService:
             checkpoints_by_branch[branch_id].add(checkpoint_id)
         for branch_id, branch in branch_by_id.items():
             head = branch.get("head_checkpoint_id")
-            base = branch.get("base_checkpoint_id") if branch_id != source_root else None
+            base = (
+                branch.get("base_checkpoint_id") if branch_id != source_root else None
+            )
             reference(head, checkpoint_ids, "branch head")
             if branch_id != source_root and head in (None, ""):
                 raise SessionPackageError("child branch head is missing")
@@ -1885,7 +1882,9 @@ class SessionPackageService:
                     raise SessionPackageError("branch head belongs to another branch")
                 cursor = checkpoint.get("parent_checkpoint_id")
             if branch_id != source_root and cursor != base:
-                raise SessionPackageError("child checkpoint chain misses its branch base")
+                raise SessionPackageError(
+                    "child checkpoint chain misses its branch base"
+                )
             if visited != checkpoints_by_branch[branch_id]:
                 raise SessionPackageError("checkpoint chain is branching or incomplete")
 
@@ -1898,7 +1897,9 @@ class SessionPackageService:
                 operation.get("branch_id"), branch_ids, "snapshot operation"
             )
             if operation.get("root_frame_id") not in (None, source_root):
-                raise SessionPackageError("snapshot operation belongs to another Session")
+                raise SessionPackageError(
+                    "snapshot operation belongs to another Session"
+                )
             reference(
                 operation.get("source_checkpoint_id"),
                 checkpoint_ids,
@@ -1953,7 +1954,9 @@ class SessionPackageService:
                 frame_id=new_root,
                 role=role,
                 content=str(item.get("content") or ""),
-                metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else None,
+                metadata=item.get("metadata")
+                if isinstance(item.get("metadata"), dict)
+                else None,
                 created_at=item.get("created_at"),
             )
             source_id = item.get("message_id")
@@ -1974,7 +1977,10 @@ class SessionPackageService:
         turn_map: dict[str, str] = {}
         groups = sorted(
             ledger.get("groups") or [],
-            key=lambda item: (str(item.get("branch_id") or ""), int(item.get("ordinal") or 0)),
+            key=lambda item: (
+                str(item.get("branch_id") or ""),
+                int(item.get("ordinal") or 0),
+            ),
         )
         # Allocate every identity before inserting the first row. Provider wire
         # state and assistant tool declarations may point forward to event IDs,
@@ -2018,9 +2024,7 @@ class SessionPackageService:
                 kind=str(item.get("kind") or "imported"),
                 provider=item.get("provider"),
                 model=item.get("model"),
-                wire_state=self._remap_nested(
-                    item.get("wire_state"), identity_map
-                ),
+                wire_state=self._remap_nested(item.get("wire_state"), identity_map),
                 assistant_content=item.get("assistant_content"),
                 assistant_message=(
                     self._remap_nested(assistant_message, identity_map)
@@ -2037,7 +2041,8 @@ class SessionPackageService:
                 created_at=item.get("created_at"),
             )
             for event in sorted(
-                item.get("events") or [], key=lambda value: int(value.get("sequence") or 0)
+                item.get("events") or [],
+                key=lambda value: int(value.get("sequence") or 0),
             ):
                 self.store.append_action_event(
                     group_id=group_map[source_group],
@@ -2108,7 +2113,9 @@ class SessionPackageService:
                 cell_seq=revision,
                 cell_index=revision,
                 state_revision=revision,
-                kernel_id=str(item.get("kernel_id") or item.get("language") or "python"),
+                kernel_id=str(
+                    item.get("kernel_id") or item.get("language") or "python"
+                ),
                 language=str(item.get("language") or "python").lower(),
                 visibility=str(item.get("visibility") or "scientific"),
                 pin=bool(item.get("pin")),
@@ -2234,7 +2241,8 @@ class SessionPackageService:
                     path=str(live_path),
                     snapshot_path=str(destination),
                     filename=filename,
-                    content_type=version.get("content_type") or artifact.get("content_type"),
+                    content_type=version.get("content_type")
+                    or artifact.get("content_type"),
                     size_bytes=len(payload),
                     checksum=digest,
                     producing_cell_id=cell_map.get(
@@ -2261,7 +2269,9 @@ class SessionPackageService:
                     newest_payload = payload
             if new_artifact and newest_new:
                 self.store.set_latest_version(new_artifact, newest_new)
-                self.store.set_priority(new_artifact, int(artifact.get("priority") or 0))
+                self.store.set_priority(
+                    new_artifact, int(artifact.get("priority") or 0)
+                )
                 if newest_payload is not None:
                     live_artifacts.append((filename, newest_payload))
         return artifact_map, version_map, live_artifacts
@@ -2404,7 +2414,9 @@ class SessionPackageService:
 
         by_branch: dict[str, list[dict[str, Any]]] = {}
         for item in checkpoints:
-            by_branch.setdefault(str(item.get("branch_id") or source_root), []).append(item)
+            by_branch.setdefault(str(item.get("branch_id") or source_root), []).append(
+                item
+            )
         for items in by_branch.values():
             items.sort(
                 key=lambda item: (
@@ -2447,7 +2459,10 @@ class SessionPackageService:
                 if parent not in (set(branch_map) - remaining):
                     continue
                 mapped_base = checkpoint_map.get(base)
-                if not mapped_base or self.store.get_session_checkpoint(mapped_base) is None:
+                if (
+                    not mapped_base
+                    or self.store.get_session_checkpoint(mapped_base) is None
+                ):
                     raise SessionPackageError("snapshot branch base is unavailable")
                 self.store.fork_session_branch(
                     root_frame_id=new_root,
@@ -2476,7 +2491,9 @@ class SessionPackageService:
                 remaining.remove(source_branch)
                 progressed = True
             if not progressed:
-                raise SessionPackageError("snapshot branch graph is cyclic or incomplete")
+                raise SessionPackageError(
+                    "snapshot branch graph is cyclic or incomplete"
+                )
         return checkpoint_map
 
     def _create_checkpoint_chain(
@@ -2528,7 +2545,9 @@ class SessionPackageService:
                 for version in item.get("artifact_versions") or []
                 if str(version) in maps["version_map"]
             ]
-            cell_cursor = self._map_cursor(item.get("cell_cursor"), maps["revision_map"])
+            cell_cursor = self._map_cursor(
+                item.get("cell_cursor"), maps["revision_map"]
+            )
             metadata = self._safe_import_checkpoint_metadata(
                 item.get("metadata"),
                 checkpoint_map=checkpoint_map,
@@ -2578,9 +2597,7 @@ class SessionPackageService:
             )
             state = maps["checkpoint_states"].get(source_checkpoint)
             if state is not None:
-                source_state_checkpoint = str(
-                    state.get("source_checkpoint_id") or ""
-                )
+                source_state_checkpoint = str(state.get("source_checkpoint_id") or "")
                 mapped_source_state = (
                     checkpoint_map.get(source_state_checkpoint)
                     if source_state_checkpoint in maps["checkpoint_states"]
@@ -2810,9 +2827,7 @@ class SessionPackageService:
             for raw in state.get(scope) or []:
                 item = dict(raw)
                 item["scope_id"] = new_project if scope == "project" else new_root
-                item["decision"] = _import_permission_decision(
-                    item.get("decision")
-                )
+                item["decision"] = _import_permission_decision(item.get("decision"))
                 rows.append(item)
             output[scope] = rows
         del source_project, source_root
@@ -2871,8 +2886,10 @@ class SessionPackageService:
         if isinstance(projection, Mapping):
             base = projection.get("base_checkpoint_id")
             cursors = projection.get("resume_cursors")
-            if isinstance(base, str) and base in checkpoint_map and isinstance(
-                cursors, Mapping
+            if (
+                isinstance(base, str)
+                and base in checkpoint_map
+                and isinstance(cursors, Mapping)
             ):
                 output["history_projection"] = {
                     "version": 1,
@@ -2913,7 +2930,10 @@ class SessionPackageService:
     @classmethod
     def _remap_nested(cls, value: Any, mapping: Mapping[str, str]) -> Any:
         if isinstance(value, Mapping):
-            return {str(key): cls._remap_nested(item, mapping) for key, item in value.items()}
+            return {
+                str(key): cls._remap_nested(item, mapping)
+                for key, item in value.items()
+            }
         if isinstance(value, list):
             return [cls._remap_nested(item, mapping) for item in value]
         if isinstance(value, str):
@@ -2965,9 +2985,7 @@ class SessionPackageService:
             target.write_bytes(payload)
             os.chmod(target, 0o600)
 
-    def _release_import_cas(
-        self, tree_ids: set[str], blob_ids: set[str]
-    ) -> None:
+    def _release_import_cas(self, tree_ids: set[str], blob_ids: set[str]) -> None:
         if not tree_ids and not blob_ids:
             return
         self.cas.release_trees(
@@ -3005,7 +3023,9 @@ class SessionPackageService:
     def _remove_private_tree(path: Path) -> None:
         if not path.exists() and not path.is_symlink():
             return
-        for child in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        for child in sorted(
+            path.rglob("*"), key=lambda item: len(item.parts), reverse=True
+        ):
             if child.is_symlink() or child.is_file():
                 child.unlink(missing_ok=True)
             elif child.is_dir():

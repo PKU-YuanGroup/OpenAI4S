@@ -211,14 +211,8 @@ def test_single_and_batch_item_failures_remain_hard(tmp_path):
 
     service = LLMService(_config(tmp_path), chat_call=fail)
     with pytest.raises(RuntimeError, match="single failed"):
-        service.complete(
-            {"messages": [{"role": "user", "content": "single failed"}]}
-        )
+        service.complete({"messages": [{"role": "user", "content": "single failed"}]})
     with pytest.raises(RuntimeError, match="batch failed"):
         service.complete(
-            {
-                "batch": [
-                    {"messages": [{"role": "user", "content": "batch failed"}]}
-                ]
-            }
+            {"batch": [{"messages": [{"role": "user", "content": "batch failed"}]}]}
         )

@@ -397,12 +397,8 @@ class _Child:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             queued = sum(message.status == "queued" for message in self._messages)
-            delivered = sum(
-                message.status == "delivered" for message in self._messages
-            )
-            discarded = sum(
-                message.status == "discarded" for message in self._messages
-            )
+            delivered = sum(message.status == "delivered" for message in self._messages)
+            discarded = sum(message.status == "discarded" for message in self._messages)
             output = (self.result or {}).get("output")
             if self.status == "stopped":
                 output = None
@@ -485,16 +481,12 @@ class _Child:
         child.status = state if state in _TERMINAL else "stopped"
         child.frame_id = value.get("frame_id")
         child.result = (
-            dict(value["result"])
-            if isinstance(value.get("result"), Mapping)
-            else None
+            dict(value["result"]) if isinstance(value.get("result"), Mapping) else None
         )
         child.error = value.get("error")
         child.created_at = float(value.get("created_at") or 0.0)
         child.started_at = (
-            float(value["started_at"])
-            if value.get("started_at") is not None
-            else None
+            float(value["started_at"]) if value.get("started_at") is not None else None
         )
         child.finished_at = (
             float(value["finished_at"])
@@ -523,9 +515,7 @@ class _Child:
             child._messages.append(message)
             if message.status == "queued":
                 child._inbox.append(message)
-        child._stop_reason = str(
-            value.get("stop_reason") or "restored terminal child"
-        )
+        child._stop_reason = str(value.get("stop_reason") or "restored terminal child")
         if child.status == "stopped":
             child.stop_event.set()
         child._budget_released = True
@@ -644,9 +634,7 @@ class _DelegationTree:
                 return list(self.children.values())
         return self.descendants(parent_child_id, include_self=False)
 
-    def emit(
-        self, event: str, child: _Child, **extra: Any
-    ) -> None:
+    def emit(self, event: str, child: _Child, **extra: Any) -> None:
         persist = self.persistence_sink
         if persist is not None:
             try:
@@ -1048,9 +1036,7 @@ class DelegationRunner:
                 list(self._children.values())
                 if not child_ids
                 else [
-                    self._children[item]
-                    for item in child_ids
-                    if item in self._children
+                    self._children[item] for item in child_ids if item in self._children
                 ]
             )
         output: list[dict[str, Any]] = []
@@ -1098,9 +1084,7 @@ class DelegationRunner:
                     pass
             if child.snapshot()["status"] == "stopped":
                 self._persist_status(child, "stopped")
-                self._tree.emit(
-                    "stopped", child, propagated=child.child_id != child_id
-                )
+                self._tree.emit("stopped", child, propagated=child.child_id != child_id)
         return self._children[child_id].snapshot()
 
     def send_message(self, spec: dict[str, Any]) -> dict[str, Any]:
@@ -1124,9 +1108,7 @@ class DelegationRunner:
                 "queued": queued,
                 "reason": f"child is {child.snapshot()['status']}",
             }
-        self._tree.emit(
-            "steering_queued", child, message_id=message.message_id
-        )
+        self._tree.emit("steering_queued", child, message_id=message.message_id)
         return {
             "ok": True,
             "child_id": child_id,

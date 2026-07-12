@@ -20,10 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from openai4s.llm.capabilities import (
-    calculate_usage_cost_usd,
-    get_model_capabilities,
-)
+from openai4s.llm.capabilities import calculate_usage_cost_usd, get_model_capabilities
 from openai4s.storage.branch_projection import project_branch_records
 from openai4s.tools import get_tool
 
@@ -77,13 +74,17 @@ _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 class LedgerStore(Protocol):
     """Narrow Store surface used by the runtime writer and reducer."""
 
-    def append_action_group(self, **values: Any) -> dict: ...
+    def append_action_group(self, **values: Any) -> dict:
+        ...
 
-    def append_action_event(self, **values: Any) -> dict: ...
+    def append_action_event(self, **values: Any) -> dict:
+        ...
 
-    def append_tool_action_group(self, **values: Any) -> dict: ...
+    def append_tool_action_group(self, **values: Any) -> dict:
+        ...
 
-    def list_action_groups(self, root_frame_id: str, **filters: Any) -> list[dict]: ...
+    def list_action_groups(self, root_frame_id: str, **filters: Any) -> list[dict]:
+        ...
 
 
 def _key_name(value: Any) -> str:
@@ -548,9 +549,7 @@ class RuntimeActionLedger:
             ),
         }
         if event.outcome.completion is not None:
-            result["completion"] = _redact_value(
-                event.outcome.completion, frozenset()
-            )
+            result["completion"] = _redact_value(event.outcome.completion, frozenset())
         self.store.append_action_event(
             group_id=group_id,
             type="observation",
@@ -625,9 +624,7 @@ def _call_from_mapping(value: Mapping[str, Any], ordinal: int) -> NativeToolCall
             if isinstance(value.get("arguments"), Mapping)
             else None
         ),
-        parse_error=(
-            str(value["parse_error"]) if value.get("parse_error") else None
-        ),
+        parse_error=(str(value["parse_error"]) if value.get("parse_error") else None),
         provider_meta=(
             dict(value["provider_meta"])
             if isinstance(value.get("provider_meta"), Mapping)
@@ -672,7 +669,11 @@ def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         if kind == "terminal":
             continue
         raw_message = group.get("assistant_message")
-        message = copy.deepcopy(dict(raw_message)) if isinstance(raw_message, Mapping) else None
+        message = (
+            copy.deepcopy(dict(raw_message))
+            if isinstance(raw_message, Mapping)
+            else None
+        )
         if kind in {"user", "system", "permission_resolution"}:
             if message and message.get("role") in {"user", "system"}:
                 history.append(message)
@@ -739,9 +740,7 @@ def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                     for item in messages
                     if isinstance(item, Mapping)
                 )
-            if not observation_messages and isinstance(
-                result.get("observation"), str
-            ):
+            if not observation_messages and isinstance(result.get("observation"), str):
                 observation_messages.append(
                     {"role": "user", "content": result["observation"]}
                 )
@@ -763,9 +762,7 @@ def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                 detail = "[Observation]\nERROR:\nexecution was cancelled before an observation was recorded"
             else:
                 detail = "[Observation]\nERROR:\nexecution was interrupted before an observation was recorded"
-            observation_messages = [
-                {"role": "user", "content": detail}
-            ]
+            observation_messages = [{"role": "user", "content": detail}]
         history.extend([message, *observation_messages])
     return history
 

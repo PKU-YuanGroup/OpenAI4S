@@ -63,12 +63,8 @@ class AgentProfileRepository:
     ) -> dict:
         now = self._clock_ms()
         exists = self.get(name) is not None
-        encoded_skills = (
-            json.dumps(skill_names) if skill_names is not None else None
-        )
-        encoded_connectors = (
-            json.dumps(connectors) if connectors is not None else None
-        )
+        encoded_skills = json.dumps(skill_names) if skill_names is not None else None
+        encoded_connectors = json.dumps(connectors) if connectors is not None else None
         if exists:
             self._execute(
                 "UPDATE agents SET description=?,skill_names=?,connectors=?,"

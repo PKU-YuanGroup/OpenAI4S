@@ -118,6 +118,7 @@ def test_recipe_requires_exact_recorded_source_hash_and_r_bootstrap():
 
     assert recipe["namespace_coverage"] == "unverified"
     assert recipe["steps"][0]["replay_policy"] == "never"
-    assert "recorded source hash does not match Cell source" in recipe["steps"][0][
-        "payload"
-    ]["manual_reasons"]
+    assert (
+        "recorded source hash does not match Cell source"
+        in recipe["steps"][0]["payload"]["manual_reasons"]
+    )

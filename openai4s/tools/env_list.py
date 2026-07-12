@@ -53,9 +53,7 @@ class EnvListTool(Tool):
         for environment in envmod.discover_environments():
             has = [package for package in packages if environment.has_package(package)]
             missing = [
-                package
-                for package in packages
-                if not environment.has_package(package)
+                package for package in packages if not environment.has_package(package)
             ]
             environments.append(
                 {

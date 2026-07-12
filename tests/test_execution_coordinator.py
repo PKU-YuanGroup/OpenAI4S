@@ -45,9 +45,7 @@ def test_fifo_contexts_never_run_two_writers_in_one_session():
 
     def worker(index: int) -> None:
         nonlocal active, maximum_active
-        with coordinator.execution(
-            "session-a", owner="agent", owner_id=f"job-{index}"
-        ):
+        with coordinator.execution("session-a", owner="agent", owner_id=f"job-{index}"):
             with guard:
                 active += 1
                 maximum_active = max(maximum_active, active)
@@ -67,8 +65,7 @@ def test_fifo_contexts_never_run_two_writers_in_one_session():
         else:
             expected = index
             _wait_for(
-                lambda: coordinator.snapshot("session-a")["queued_count"]
-                == expected
+                lambda: coordinator.snapshot("session-a")["queued_count"] == expected
             )
 
     assert order == [0]

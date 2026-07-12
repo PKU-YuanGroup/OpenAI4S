@@ -43,10 +43,7 @@ def test_python_dynamic_namespace_and_parse_failures_are_uncertain():
 
 def test_r_analysis_tracks_common_assignment_in_place_and_delete_forms():
     metadata = analyze_code(
-        "x <- source + 1\n"
-        "y <- x * 2\n"
-        "table$score <- y\n"
-        "rm(old)\n",
+        "x <- source + 1\n" "y <- x * 2\n" "table$score <- y\n" "rm(old)\n",
         "r",
     )
 
@@ -84,11 +81,7 @@ def test_stale_projection_handles_external_values_and_uncertain_mutations():
     # later unknown mutation must then conservatively invalidate all prior rows.
     assert all(item["stale"] for item in projection[:3])
     assert projection[3] == {"stale": False, "stale_reasons": []}
+    assert any("bootstrap_value" in reason for reason in projection[0]["stale_reasons"])
     assert any(
-        "bootstrap_value" in reason
-        for reason in projection[0]["stale_reasons"]
-    )
-    assert any(
-        "unknown namespace state" in reason
-        for reason in projection[1]["stale_reasons"]
+        "unknown namespace state" in reason for reason in projection[1]["stale_reasons"]
     )

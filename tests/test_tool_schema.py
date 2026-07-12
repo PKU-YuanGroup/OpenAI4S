@@ -96,9 +96,10 @@ def test_unknown_property_policy_and_schema_for_additional_values():
         "additionalProperties": {"type": "integer"},
     }
 
-    assert validate_json_schema(
-        {"extension": 1}, open_schema, unknown_properties="allow"
-    ) == ()
+    assert (
+        validate_json_schema({"extension": 1}, open_schema, unknown_properties="allow")
+        == ()
+    )
     assert "unknown property" in str(
         validate_json_schema(
             {"extension": 1}, open_schema, unknown_properties="forbid"

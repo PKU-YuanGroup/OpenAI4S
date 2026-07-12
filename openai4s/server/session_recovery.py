@@ -72,17 +72,15 @@ class SessionRecoveryService:
         self._turn_active = turn_active
         self._approval_pending = approval_pending
         self._background_active = background_active
-        self._background_last_activity_ms = (
-            background_last_activity_ms or (lambda _session: None)
+        self._background_last_activity_ms = background_last_activity_ms or (
+            lambda _session: None
         )
         self._release_idle = release_idle
         self.owner_instance_id = owner_instance_id
         self.ttl_s = (
             kernel_idle_ttl()
             if ttl_s is None
-            else kernel_idle_ttl(
-                {"OPENAI4S_KERNEL_IDLE_TTL": str(ttl_s)}
-            )
+            else kernel_idle_ttl({"OPENAI4S_KERNEL_IDLE_TTL": str(ttl_s)})
         )
         self.sweep_interval_s = (
             self._default_interval(self.ttl_s)
@@ -145,9 +143,7 @@ class SessionRecoveryService:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=max(0.0, timeout))
         with self._lock:
-            if self._thread is thread and (
-                thread is None or not thread.is_alive()
-            ):
+            if self._thread is thread and (thread is None or not thread.is_alive()):
                 self._thread = None
 
     close = stop
@@ -216,17 +212,13 @@ class SessionRecoveryService:
             return False
         now = self.now_ms() if now_ms is None else int(now_ms)
         live = [
-            state
-            for state in session.kernels.status().values()
-            if state.get("alive")
+            state for state in session.kernels.status().values() if state.get("alive")
         ]
         if not live:
             return False
         background_at = self._background_last_activity_ms(session)
         if background_at is not None:
-            recorded = max(
-                int(state.get("last_activity_at") or 0) for state in live
-            )
+            recorded = max(int(state.get("last_activity_at") or 0) for state in live)
             if background_at > recorded:
                 self.touch(session, at_ms=background_at)
                 live = [

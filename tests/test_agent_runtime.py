@@ -200,9 +200,7 @@ def test_native_limit_skips_dispatch_but_never_drops_tool_results(monkeypatch):
     monkeypatch.setattr(runtime, "execute_tool_call", fake_execute)
     calls = tuple(_native_call(index) for index in range(18))
 
-    outcome = _executor().execute(
-        NativeToolBatch(calls), ModelReply(), RunState([])
-    )
+    outcome = _executor().execute(NativeToolBatch(calls), ModelReply(), RunState([]))
 
     assert len(dispatched) == runtime.MAX_TOOL_CALLS_PER_TURN == 16
     assert len(outcome.history_messages) == len(calls) == 18
@@ -212,8 +210,7 @@ def test_native_limit_skips_dispatch_but_never_drops_tool_results(monkeypatch):
     assert all(message["role"] == "tool" for message in outcome.history_messages)
     assert all(message["is_error"] for message in outcome.history_messages[16:])
     assert all(
-        "was not run" in message["content"]
-        for message in outcome.history_messages[16:]
+        "was not run" in message["content"] for message in outcome.history_messages[16:]
     )
 
 
@@ -230,8 +227,7 @@ def test_code_observation_notes_extra_cells_and_only_submit_sets_completion():
     )
     reply = ModelReply(
         content=(
-            "```python\nprint(6 * 7)\n```\n"
-            "```python\nraise AssertionError\n```"
+            "```python\nprint(6 * 7)\n```\n" "```python\nraise AssertionError\n```"
         )
     )
 
@@ -263,15 +259,10 @@ def test_code_observation_notes_extra_cells_and_only_submit_sets_completion():
 
 
 def test_code_observation_notes_an_incomplete_tail_after_the_executed_cell():
-    kernel = FakeKernel(
-        {"stdout": "first\n", "stderr": "", "error": None, "usage": {}}
-    )
+    kernel = FakeKernel({"stdout": "first\n", "stderr": "", "error": None, "usage": {}})
     executor = _executor(kernel=kernel, dispatcher=FakeDispatcher())
     reply = ModelReply(
-        content=(
-            "```python\nprint('first')\n```\n"
-            "```r\nresult <- unfinished(\n"
-        )
+        content=("```python\nprint('first')\n```\n" "```r\nresult <- unfinished(\n")
     )
 
     outcome = executor.execute(
@@ -292,11 +283,7 @@ def test_none_action_keeps_legacy_tool_fallback_as_user_history(monkeypatch):
     monkeypatch.setattr(runtime, "run_tool_calls", fake_run)
     dispatcher = FakeDispatcher()
     executor = _executor(dispatcher=dispatcher)
-    fenced = (
-        "```tool\n"
-        '{"name":"list_dir","arguments":{"path":"."}}\n'
-        "```"
-    )
+    fenced = "```tool\n" '{"name":"list_dir","arguments":{"path":"."}}\n' "```"
 
     legacy = executor.execute(None, ModelReply(content=fenced), RunState([]))
     prose = executor.execute(None, ModelReply(content="plain prose"), RunState([]))
@@ -321,9 +308,7 @@ def test_none_action_can_fall_back_to_code_when_native_tools_are_unavailable():
         prose_nudge=runtime.NO_NATIVE_COMPLETION_NUDGE,
     )
 
-    outcome = executor.execute(
-        None, ModelReply(content="plain prose"), RunState([])
-    )
+    outcome = executor.execute(None, ModelReply(content="plain prose"), RunState([]))
 
     assert outcome.observation == runtime.NO_NATIVE_COMPLETION_NUDGE
     assert "host.submit_output" in outcome.observation
@@ -365,9 +350,7 @@ def test_compaction_expands_tail_to_keep_assistant_tool_group_atomic(monkeypatch
     ]
     captured = {}
 
-    monkeypatch.setattr(
-        runtime, "should_compact", lambda messages, cfg, **kwargs: True
-    )
+    monkeypatch.setattr(runtime, "should_compact", lambda messages, cfg, **kwargs: True)
 
     def fake_compact(
         messages,
@@ -410,9 +393,7 @@ def test_compaction_circuit_breaker_stops_repeated_low_yield_calls(monkeypatch):
         {"role": "assistant", "content": "recent"},
     ]
     attempts = []
-    monkeypatch.setattr(
-        runtime, "should_compact", lambda messages, cfg, **kwargs: True
-    )
+    monkeypatch.setattr(runtime, "should_compact", lambda messages, cfg, **kwargs: True)
 
     def no_yield(messages, cfg, **kwargs):
         attempts.append(kwargs)

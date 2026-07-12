@@ -27,9 +27,7 @@ class Finding:
 _TEXT_DETECTORS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "private-key",
-        re.compile(
-            r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"
-        ),
+        re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
     ),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b")),
@@ -95,7 +93,11 @@ def _git_candidates(root: Path) -> list[Path] | None:
         )
     except (OSError, subprocess.CalledProcessError):
         return None
-    return [root / Path(raw.decode("utf-8", "surrogateescape")) for raw in result.stdout.split(b"\0") if raw]
+    return [
+        root / Path(raw.decode("utf-8", "surrogateescape"))
+        for raw in result.stdout.split(b"\0")
+        if raw
+    ]
 
 
 def candidate_files(root: Path) -> list[Path]:
@@ -146,8 +148,7 @@ def scan(root: Path) -> list[Finding]:
             for detector, pattern in _TEXT_DETECTORS:
                 matches = pattern.finditer(line)
                 if any(
-                    _SYNTHETIC_TOKEN.search(match.group(0)) is None
-                    for match in matches
+                    _SYNTHETIC_TOKEN.search(match.group(0)) is None for match in matches
                 ):
                     findings.append(Finding(relative, line_number, detector))
     return findings
@@ -165,7 +166,9 @@ def main(argv: list[str] | None = None) -> int:
     findings = scan(args.root)
     if findings:
         for finding in findings:
-            location = f"{finding.path}:{finding.line}" if finding.line else finding.path
+            location = (
+                f"{finding.path}:{finding.line}" if finding.line else finding.path
+            )
             print(f"{location}: {finding.detector}", file=sys.stderr)
         print(
             f"source secret scan failed with {len(findings)} finding(s); matched values were suppressed",

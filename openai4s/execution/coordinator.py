@@ -362,9 +362,7 @@ class SessionExecutionCoordinator:
                     ticket._transition(TicketState.CANCELLED, at=self._clock())
                     events.append(self._state_event(ticket, reason=reason))
                     self._promote_locked(ticket.session_id, session, events)
-                    events.append(
-                        self._queue_event_locked(ticket.session_id, session)
-                    )
+                    events.append(self._queue_event_locked(ticket.session_id, session))
                     self._condition.notify_all()
                 timeout_error = TimeoutError(
                     f"timed out waiting for execution {ticket.execution_id!r}"
@@ -542,9 +540,7 @@ class SessionExecutionCoordinator:
                 for session_id, session in self._sessions.items()
             }
 
-    def close_session(
-        self, session_id: str, *, reason: str = "session closed"
-    ) -> bool:
+    def close_session(self, session_id: str, *, reason: str = "session closed") -> bool:
         """Reject new work, cancel waiters, and signal the exact active owner."""
 
         return self._close_session(session_id, reason=reason, remove_when_idle=False)
@@ -819,9 +815,7 @@ class SessionExecutionCoordinator:
                 continue
 
 
-def _coerce_owner(
-    owner: ExecutionOwner | str, owner_id: str | None
-) -> ExecutionOwner:
+def _coerce_owner(owner: ExecutionOwner | str, owner_id: str | None) -> ExecutionOwner:
     if isinstance(owner, ExecutionOwner):
         if owner_id is not None and owner_id != owner.owner_id:
             raise ValueError("owner_id conflicts with ExecutionOwner.owner_id")

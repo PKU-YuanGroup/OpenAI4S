@@ -379,7 +379,9 @@ class DelegationProjectionRepository:
             "ORDER BY created_at,child_id",
             (root_frame_id,),
         ).fetchall()
-        children = [self._normalize_child(row, include_text=include_text) for row in rows]
+        children = [
+            self._normalize_child(row, include_text=include_text) for row in rows
+        ]
         for child in children:
             stats[child["status"]] += 1
         return {
@@ -390,7 +392,9 @@ class DelegationProjectionRepository:
             "children": children,
         }
 
-    def _normalize_child(self, row: sqlite3.Row, *, include_text: bool) -> dict[str, Any]:
+    def _normalize_child(
+        self, row: sqlite3.Row, *, include_text: bool
+    ) -> dict[str, Any]:
         result = _decode(row["result_json"])
         overrides = _decode(row["overrides_json"])
         message_rows = self._connection.execute(
@@ -434,8 +438,12 @@ class DelegationProjectionRepository:
             },
             "steering": {
                 "queued": sum(item["status"] == "queued" for item in message_rows),
-                "delivered": sum(item["status"] == "delivered" for item in message_rows),
-                "discarded": sum(item["status"] == "discarded" for item in message_rows),
+                "delivered": sum(
+                    item["status"] == "delivered" for item in message_rows
+                ),
+                "discarded": sum(
+                    item["status"] == "discarded" for item in message_rows
+                ),
                 "messages": messages,
             },
         }
@@ -467,7 +475,9 @@ class DelegationProjectionRepository:
                 _text(message.get("text_preview"), 600) or "",
                 float(message.get("queued_at") or 0.0),
                 _float(message.get("delivered_at")),
-                int(message["boundary"]) if message.get("boundary") is not None else None,
+                int(message["boundary"])
+                if message.get("boundary") is not None
+                else None,
                 owner,
                 runner,
             ),
@@ -526,7 +536,11 @@ def _text(value: Any, limit: int) -> str | None:
     text = _BEARER.sub("Bearer <redacted>", str(value))
     text = _TOKEN.sub("<redacted-token>", text)
     text = _ASSIGNMENT.sub(lambda match: f"{match.group(1)}=<redacted>", text)
-    return text if len(text) <= limit else text[: max(0, limit - 18)] + "...[host truncated]"
+    return (
+        text
+        if len(text) <= limit
+        else text[: max(0, limit - 18)] + "...[host truncated]"
+    )
 
 
 def _public(value: Any, depth: int = 0) -> Any:
@@ -543,9 +557,13 @@ def _public(value: Any, depth: int = 0) -> Any:
                 output["<truncated>"] = True
                 break
             key = str(raw_key)[:160]
-            output[key] = "<redacted>" if _SECRET_KEY.search(key) else _public(item, depth + 1)
+            output[key] = (
+                "<redacted>" if _SECRET_KEY.search(key) else _public(item, depth + 1)
+            )
         return output
-    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, memoryview)):
+    if isinstance(value, Sequence) and not isinstance(
+        value, (bytes, bytearray, memoryview)
+    ):
         output = [_public(item, depth + 1) for item in value[:60]]
         if len(value) > 60:
             output.append("<truncated>")

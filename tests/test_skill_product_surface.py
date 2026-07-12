@@ -48,19 +48,25 @@ def test_skill_control_tools_keep_schema_policy_and_behavior_in_named_classes():
     assert rollback.resource_keys({"name": "QC", "scope": "project"}) == (
         "skill:project/QC",
     )
-    assert rollback.permission_target(
-        {"name": "QC", "scope": "project", "version_id": "skillv-" + "a" * 64}
-    ) == "project/QC/skillv-" + "a" * 64
+    assert (
+        rollback.permission_target(
+            {"name": "QC", "scope": "project", "version_id": "skillv-" + "a" * 64}
+        )
+        == "project/QC/skillv-" + "a" * 64
+    )
     assert rollback.native_precheck(
         {"name": "QC", "scope": "project", "version_id": "latest"}
     )
-    assert rollback.native_precheck(
-        {
-            "name": "QC",
-            "scope": "project",
-            "version_id": "skillv-" + "a" * 64,
-        }
-    ) is None
+    assert (
+        rollback.native_precheck(
+            {
+                "name": "QC",
+                "scope": "project",
+                "version_id": "skillv-" + "a" * 64,
+            }
+        )
+        is None
+    )
 
 
 def test_sdk_skill_version_methods_encode_only_narrow_scope_arguments():
@@ -131,9 +137,12 @@ def test_dispatcher_scopes_rollback_to_current_project_and_audits_it(tmp_path):
             ],
         )
         assert denied.get("error", "").startswith("Permission denied:")
-        assert versions.status(
-            "Project QC", scope="project", project_id="project-a"
-        )["active_version_id"] == second["version_id"]
+        assert (
+            versions.status("Project QC", scope="project", project_id="project-a")[
+                "active_version_id"
+            ]
+            == second["version_id"]
+        )
         store.set_permission_rule(
             scope="global",
             scope_id="",
@@ -236,9 +245,7 @@ def test_http_personal_and_project_history_and_rollback_routes(tmp_path):
         )
         assert code == 200 and rolled_back["version_id"] == personal_first
 
-        code, project_catalog = call(
-            "GET", "/projects/project-a/skills/catalog"
-        )
+        code, project_catalog = call("GET", "/projects/project-a/skills/catalog")
         assert code == 200
         assert [item["name"] for item in project_catalog["skills"]] == ["Project QC"]
         code, project_history = call(

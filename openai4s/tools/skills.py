@@ -96,7 +96,9 @@ class SkillStatusTool(Tool):
 
     def resource_keys(self, arguments: Any) -> tuple[str, ...]:
         arguments = arguments if isinstance(arguments, dict) else {}
-        target = f"{arguments.get('scope') or 'personal'}/{arguments.get('name') or '*'}"
+        target = (
+            f"{arguments.get('scope') or 'personal'}/{arguments.get('name') or '*'}"
+        )
         return (resource_key("skill", target),)
 
     def execute(self, runtime: ControlToolContext, arguments: dict) -> dict:

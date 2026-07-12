@@ -313,7 +313,9 @@ def _has_code_action(message: Mapping[str, Any]) -> bool:
     )
 
 
-def segment_messages(messages: Sequence[Mapping[str, Any]]) -> tuple[ContextSegment, ...]:
+def segment_messages(
+    messages: Sequence[Mapping[str, Any]]
+) -> tuple[ContextSegment, ...]:
     """Partition messages into atomic replay/compaction segments.
 
     An assistant declaration and every adjacent tool result are one segment.
@@ -374,9 +376,7 @@ def _content_chars(content: Any) -> int:
     return len(content) if isinstance(content, str) else len(_json_text(content))
 
 
-def _large_output_candidate(
-    messages: Sequence[Mapping[str, Any]], index: int
-) -> bool:
+def _large_output_candidate(messages: Sequence[Mapping[str, Any]], index: int) -> bool:
     message = messages[index]
     role = message.get("role")
     if role == "tool":
@@ -450,7 +450,9 @@ def externalize_large_outputs(
     threshold_chars: int = DEFAULT_LARGE_OUTPUT_CHARS,
     preview_chars: int = DEFAULT_PREVIEW_CHARS,
     archive_metadata: Mapping[str, Any] | CompactionArchiveMetadata | None = None,
-    artifact_archiver: Callable[[Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]]
+    artifact_archiver: Callable[
+        [Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]
+    ]
     | None = None,
 ) -> list[dict]:
     """Archive oversized outputs and return context-safe message copies.
@@ -566,9 +568,7 @@ def _runtime_handoff_value(metadata: CompactionArchiveMetadata) -> str:
     )
 
 
-def _normalize_handoff(
-    summary: str, metadata: CompactionArchiveMetadata
-) -> str:
+def _normalize_handoff(summary: str, metadata: CompactionArchiveMetadata) -> str:
     """Guarantee every machine-consumed handoff field and runtime truth."""
     text = (summary or "").strip()
     lowered = text.lower()
@@ -582,7 +582,11 @@ def _normalize_handoff(
             + r"\s*:|\Z)"
         )
         text = active_pattern.sub("", text).strip()
-        return text + "\n\n## Active Kernel Generation\n" + _runtime_handoff_value(metadata)
+        return (
+            text
+            + "\n\n## Active Kernel Generation\n"
+            + _runtime_handoff_value(metadata)
+        )
 
     done = text or "- No reliable summary was produced."
     fields = {
@@ -624,7 +628,9 @@ def compact(
     archive_dir: Path | str | None = None,
     archive_metadata: Mapping[str, Any] | CompactionArchiveMetadata | None = None,
     large_output_chars: int = DEFAULT_LARGE_OUTPUT_CHARS,
-    artifact_archiver: Callable[[Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]]
+    artifact_archiver: Callable[
+        [Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]
+    ]
     | None = None,
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None,
     tool_schemas: Iterable[Mapping[str, Any]] = (),

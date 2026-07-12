@@ -14,11 +14,14 @@ from openai4s.storage.branch_projection import project_branch_records
 class CellStore(Protocol):
     def list_cells(
         self, root_frame_id: str, *, branch_id: str | None = None
-    ) -> list[dict]: ...
+    ) -> list[dict]:
+        ...
 
-    def get_session_branch(self, branch_id: str) -> dict | None: ...
+    def get_session_branch(self, branch_id: str) -> dict | None:
+        ...
 
-    def get_session_checkpoint(self, checkpoint_id: str) -> dict | None: ...
+    def get_session_checkpoint(self, checkpoint_id: str) -> dict | None:
+        ...
 
 
 _LANGUAGE = {
@@ -197,7 +200,9 @@ class NotebookExportService:
                 )
         error = str(cell.get("error") or "")
         if error:
-            headline = next((line for line in error.splitlines() if line.strip()), error)
+            headline = next(
+                (line for line in error.splitlines() if line.strip()), error
+            )
             outputs.append(
                 {
                     "ename": "OpenAI4SCellError",
@@ -213,7 +218,8 @@ class NotebookExportService:
                     "name": "stdout",
                     "output_type": "stream",
                     "text": [
-                        "[OpenAI4S artifacts] " + ", ".join(str(item) for item in figures)
+                        "[OpenAI4S artifacts] "
+                        + ", ".join(str(item) for item in figures)
                     ],
                 }
             )

@@ -87,19 +87,20 @@ def test_session_tool_policy_resources_and_exact_fork_source_precheck():
         "session:current",
         "checkpoint:head",
     )
-    assert get_tool("fork_session").resource_keys(
-        {"from_message_id": "message-1"}
-    ) == ("session:current", "message:message-1", "branch:new")
-    assert get_tool("revert_preview").resource_keys(
-        {"checkpoint_id": "cp-1"}
-    ) == ("session:current", "checkpoint:cp-1")
+    assert get_tool("fork_session").resource_keys({"from_message_id": "message-1"}) == (
+        "session:current",
+        "message:message-1",
+        "branch:new",
+    )
+    assert get_tool("revert_preview").resource_keys({"checkpoint_id": "cp-1"}) == (
+        "session:current",
+        "checkpoint:cp-1",
+    )
 
     fork = ForkSessionTool()
     assert fork.native_precheck({}) is not None
     assert (
-        fork.native_precheck(
-            {"from_checkpoint_id": "cp-1", "from_cell_id": "cell-1"}
-        )
+        fork.native_precheck({"from_checkpoint_id": "cp-1", "from_cell_id": "cell-1"})
         is not None
     )
     assert fork.native_precheck({"from_cell_id": "cell-1"}) is None

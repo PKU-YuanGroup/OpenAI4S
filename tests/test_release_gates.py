@@ -27,9 +27,7 @@ def _load_script(name: str):
 def test_source_secret_scan_detects_without_echoing_values(tmp_path):
     scanner = _load_script("source_secret_scan")
     secret = "sk-" + "z" * 32
-    (tmp_path / "module.py").write_text(
-        f'API_TOKEN = "{secret}"\n', encoding="utf-8"
-    )
+    (tmp_path / "module.py").write_text(f'API_TOKEN = "{secret}"\n', encoding="utf-8")
 
     findings = scanner.scan(tmp_path)
 
@@ -53,9 +51,7 @@ def test_source_secret_scan_allows_explicit_synthetic_fixtures(tmp_path):
 def test_source_secret_scan_rejects_credential_files(tmp_path):
     scanner = _load_script("source_secret_scan")
     (tmp_path / ".env").write_text("SAFE_PLACEHOLDER=1\n", encoding="utf-8")
-    (tmp_path / ".env.production").write_text(
-        "SAFE_PLACEHOLDER=1\n", encoding="utf-8"
-    )
+    (tmp_path / ".env.production").write_text("SAFE_PLACEHOLDER=1\n", encoding="utf-8")
     (tmp_path / ".env.example").write_text(
         "OPENAI4S_LLM_API_KEY=your-key-here\n", encoding="utf-8"
     )
@@ -86,7 +82,9 @@ def _write_wheel(path: Path, verifier, *, omit: str | None = None) -> None:
                 archive.writestr(name, b"resource")
         dist_info = "openai4s-0.1.0.dist-info"
         archive.writestr(f"{dist_info}/METADATA", _metadata())
-        archive.writestr(f"{dist_info}/WHEEL", b"Wheel-Version: 1.0\nTag: py3-none-any\n")
+        archive.writestr(
+            f"{dist_info}/WHEEL", b"Wheel-Version: 1.0\nTag: py3-none-any\n"
+        )
         archive.writestr(
             f"{dist_info}/entry_points.txt",
             b"[console_scripts]\nopenai4s = openai4s.cli:main\n",
@@ -129,9 +127,7 @@ def test_release_artifact_verifier_rejects_core_dependency():
     with pytest.raises(verifier.ReleaseCheckError, match="non-extra dependencies"):
         verifier._verify_metadata(_metadata(dependency="requests>=2"))
 
-    verifier._verify_metadata(
-        _metadata(dependency='numpy>=1.24; extra == "science"')
-    )
+    verifier._verify_metadata(_metadata(dependency='numpy>=1.24; extra == "science"'))
 
 
 def test_release_workflow_keeps_source_build_and_offline_install_gates():

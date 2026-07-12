@@ -77,12 +77,11 @@ def test_store_wires_immutable_snapshot_and_recovery_repositories(tmp_path):
     assert reopened.get_snapshot_operation(operation["operation_id"])["preview"] == {
         "writes": ["analysis.csv"]
     }
-    assert reopened.list_snapshot_operations("root")[0]["operation_id"] == operation[
-        "operation_id"
-    ]
-    journal = reopened.list_recovery_events(
-        root_frame_id="root", newest=True
+    assert (
+        reopened.list_snapshot_operations("root")[0]["operation_id"]
+        == operation["operation_id"]
     )
+    journal = reopened.list_recovery_events(root_frame_id="root", newest=True)
     assert journal[0]["detail"] == {"missing": ["model"]}
     reopened.close()
 
@@ -228,11 +227,14 @@ def test_cursor_checkpoint_failure_is_audited_without_fork_claim(tmp_path):
         service.cas.capture = original_capture
 
     assert result is None
-    assert store.get_session_checkpoint_for_source(
-        root,
-        source_kind="message",
-        source_id="message-1",
-    ) is None
+    assert (
+        store.get_session_checkpoint_for_source(
+            root,
+            source_kind="message",
+            source_id="message-1",
+        )
+        is None
+    )
     groups = store.list_action_groups(root, include_events=True)
     assert groups[-1]["kind"] == "checkpoint"
     event = groups[-1]["events"][-1]
@@ -247,9 +249,7 @@ def test_session_domain_composes_checkpoint_branch_timeline_export_and_renderer(
     tmp_path,
 ):
     store = Store(tmp_path / "openai4s.db")
-    root = store.new_frame(
-        project_id="project-a", kind="turn", status="ready"
-    )
+    root = store.new_frame(project_id="project-a", kind="turn", status="ready")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     analysis = workspace / "analysis.txt"
@@ -337,7 +337,8 @@ def test_session_domain_composes_checkpoint_branch_timeline_export_and_renderer(
     # recipe stays empty rather than manufacturing a manual replay step.
     assert first["recovery_recipe"]["namespace_coverage"] == "empty"
     active_restore = next(
-        item for item in service.recovery_actions(root)["actions"]
+        item
+        for item in service.recovery_actions(root)["actions"]
         if item["id"] == "restore"
     )
     assert active_restore["enabled"] is False
@@ -348,7 +349,8 @@ def test_session_domain_composes_checkpoint_branch_timeline_export_and_renderer(
         reason="idle_ttl",
     )
     restore_action = next(
-        item for item in service.recovery_actions(root)["actions"]
+        item
+        for item in service.recovery_actions(root)["actions"]
         if item["id"] == "restore"
     )
     assert restore_action["enabled"] is True
@@ -442,11 +444,15 @@ def test_recovery_projection_is_redacted_and_actions_fail_closed_or_enable(
     assert status["state"] == "partial"
     assert status["current"]["events"][0]["detail"]["api_key"] == "<redacted>"
     assert "must-not-leak" not in repr(status)
-    assert store.list_recovery_events(
-        recovery_id="recovery-partial"
-    )[0]["detail"]["api_key"] == "<redacted>"
+    assert (
+        store.list_recovery_events(recovery_id="recovery-partial")[0]["detail"][
+            "api_key"
+        ]
+        == "<redacted>"
+    )
     retry = next(
-        item for item in service.recovery_actions(root)["actions"]
+        item
+        for item in service.recovery_actions(root)["actions"]
         if item["id"] == "retry"
     )
     assert retry["enabled"] is False

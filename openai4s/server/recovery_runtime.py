@@ -120,9 +120,7 @@ class SessionRecoveryRuntime:
             for manifest in plan.manifests
         }
         checkpoint = (
-            self.ports.checkpoint(plan.checkpoint_id)
-            if plan.checkpoint_id
-            else None
+            self.ports.checkpoint(plan.checkpoint_id) if plan.checkpoint_id else None
         )
         allowed_tree = checkpoint.get("workspace_tree_id") if checkpoint else None
         allowed_versions = (
@@ -157,9 +155,7 @@ class SessionRecoveryRuntime:
         def hydrate_artifact(_candidate, payload: Mapping[str, Any]) -> None:
             version_id = str(payload.get("version_id") or "")
             if version_id not in allowed_versions:
-                raise RuntimeError(
-                    "recovery recipe references an unexpected artifact"
-                )
+                raise RuntimeError("recovery recipe references an unexpected artifact")
             version = self.ports.artifact_version(version_id)
             if version is None:
                 raise RuntimeError(f"artifact version is missing: {version_id}")
@@ -174,17 +170,14 @@ class SessionRecoveryRuntime:
                 ) from error
             expected_digest = str(version.get("checksum") or "")
             if expected_digest and hashlib.sha256(data).hexdigest() != expected_digest:
-                raise RuntimeError(
-                    f"artifact version checksum mismatch: {version_id}"
-                )
+                raise RuntimeError(f"artifact version checksum mismatch: {version_id}")
             live = self._artifact_live_path(version)
             if (
                 live is None
                 or not live.is_file()
                 or (
                     expected_digest
-                    and hashlib.sha256(live.read_bytes()).hexdigest()
-                    != expected_digest
+                    and hashlib.sha256(live.read_bytes()).hexdigest() != expected_digest
                 )
             ):
                 raise RuntimeError(
@@ -238,9 +231,7 @@ class SessionRecoveryRuntime:
                 execute_cell=self._execute_cell,
                 inspect_symbols=self._inspect_symbols,
                 artifact_digest=self._artifact_digest,
-                inspect_environment=lambda candidate: (
-                    candidate.observed_environment
-                ),
+                inspect_environment=lambda candidate: (candidate.observed_environment),
                 publish_candidate=publish,
                 cancelled=self.ports.cancelled,
                 candidate_started=lambda candidate: self.ports.bind_candidate(
@@ -272,15 +263,11 @@ class SessionRecoveryRuntime:
             "python_generation_id": (
                 python.generation_id if python is not None else None
             ),
-            "r_generation_id": (
-                r_lease.generation_id if r_lease is not None else None
-            ),
+            "r_generation_id": (r_lease.generation_id if r_lease is not None else None),
             "recovery_id": recovery_id,
         }
 
-    def _build_candidate(
-        self, manifest: BootstrapManifest
-    ) -> _RecoveryKernelCandidate:
+    def _build_candidate(self, manifest: BootstrapManifest) -> _RecoveryKernelCandidate:
         if Path(manifest.working_directory).expanduser().resolve() != self.workspace:
             raise RuntimeError(
                 "checkpoint working directory does not match this session workspace"
@@ -315,9 +302,7 @@ class SessionRecoveryRuntime:
             from openai4s.kernel.r_kernel import spawn_r_kernel
 
             def factory() -> Kernel:
-                return spawn_r_kernel(
-                    cwd=str(self.workspace), rscript=str(interpreter)
-                )
+                return spawn_r_kernel(cwd=str(self.workspace), rscript=str(interpreter))
 
             key = str(env_name) if env_name else None
         else:
@@ -343,9 +328,7 @@ class SessionRecoveryRuntime:
         for index, hook in enumerate(manifest.init_hooks):
             result = candidate.kernel.execute(str(hook), origin="recovery")
             if result.get("error"):
-                raise RuntimeError(
-                    f"bootstrap hook {index} failed: {result['error']}"
-                )
+                raise RuntimeError(f"bootstrap hook {index} failed: {result['error']}")
         for sidecar in manifest.sidecars:
             source = frozen_sidecar_bootstrap_code(sidecar)
             result = candidate.kernel.execute(source, origin="recovery")
@@ -355,9 +338,7 @@ class SessionRecoveryRuntime:
                 )
 
         if manifest.language == "python":
-            payload = _probe_python_environment(
-                candidate.kernel, origin="recovery"
-            )
+            payload = _probe_python_environment(candidate.kernel, origin="recovery")
         else:
             payload = _probe_r_environment(
                 candidate.kernel,
@@ -424,8 +405,11 @@ class SessionRecoveryRuntime:
         recorded_path = version.get("path")
         if recorded_path:
             try:
-                relative = Path(str(recorded_path)).expanduser().resolve().relative_to(
-                    self.workspace
+                relative = (
+                    Path(str(recorded_path))
+                    .expanduser()
+                    .resolve()
+                    .relative_to(self.workspace)
                 )
                 return (self.workspace / relative).resolve()
             except (OSError, ValueError):
@@ -492,9 +476,7 @@ def _probe_python_environment(kernel: Kernel, *, origin: str) -> dict[str, Any]:
     )
     result = kernel.execute(source, origin=origin)
     if result.get("error"):
-        raise RuntimeError(
-            f"Python environment probe failed: {result['error']}"
-        )
+        raise RuntimeError(f"Python environment probe failed: {result['error']}")
     value = _json_after_marker(str(result.get("stdout") or ""), marker)
     if not isinstance(value, dict):
         raise RuntimeError("Python environment probe returned no object")
@@ -586,9 +568,7 @@ def bootstrap_r_generation(
     )
     manifest = base_manifest.with_observed_environment(observed)
     metadata = {**manifest.record(), "status": "active"}
-    kernels.record_bootstrap_if_current(
-        "r", lease.kernel, metadata, state="active"
-    )
+    kernels.record_bootstrap_if_current("r", lease.kernel, metadata, state="active")
     return metadata
 
 
@@ -625,9 +605,7 @@ def bootstrap_python_generation(
         }
         status = "failed"
         probe_error = str(error)[:500]
-        error_text = (
-            f"{error_text}; {probe_error}" if error_text else probe_error
-        )
+        error_text = f"{error_text}; {probe_error}" if error_text else probe_error
     base_manifest = BootstrapManifest(
         language="python",
         interpreter=str(
@@ -680,9 +658,7 @@ def python_runtime_spec(environment: Any) -> PythonRuntimeSpec:
         interpreter=str(environment.interpreter),
         runtime_version=str(environment.python_version() or "unknown"),
         environment_name=str(environment.name),
-        environment_root=(
-            str(environment.root) if environment.is_conda else None
-        ),
+        environment_root=(str(environment.root) if environment.is_conda else None),
         is_conda=bool(environment.is_conda),
         sdk_version=sdk_version,
     )

@@ -207,9 +207,11 @@ class BashExecutor:
     ) -> None:
         self._host_call = host_call
         self._authorization_call = authorization_call or host_call
-        self._generation = generation or os.environ.get(
-            "OPENAI4S_KERNEL_GENERATION"
-        ) or f"worker:{os.getpid()}"
+        self._generation = (
+            generation
+            or os.environ.get("OPENAI4S_KERNEL_GENERATION")
+            or f"worker:{os.getpid()}"
+        )
         self._used_tokens: set[str] = set()
         self._used_token_order: deque[str] = deque()
         self._lock = threading.Lock()

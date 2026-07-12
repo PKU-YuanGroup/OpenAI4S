@@ -43,9 +43,7 @@ CREATE INDEX IF NOT EXISTS ix_kernel_generation_live
     ON kernel_generations(state, ended_at, owner_instance_id);
 """
 
-LIVE_STATES = frozenset(
-    {"starting", "bootstrapping", "active", "busy", "recovering"}
-)
+LIVE_STATES = frozenset({"starting", "bootstrapping", "active", "busy", "recovering"})
 TERMINAL_STATES = frozenset(
     {
         "released",
@@ -244,9 +242,7 @@ class KernelGenerationRepository:
         if bootstrap is not _UNSET:
             bootstrap_json = _canonical_json(bootstrap)
             updates.extend(["bootstrap_json=?", "bootstrap_manifest_id=?"])
-            values.extend(
-                [bootstrap_json, _manifest_id("boot", bootstrap_json)]
-            )
+            values.extend([bootstrap_json, _manifest_id("boot", bootstrap_json)])
         with self._lock:
             row = self._row_locked(generation_id)
             if row["ended_at"] is not None:

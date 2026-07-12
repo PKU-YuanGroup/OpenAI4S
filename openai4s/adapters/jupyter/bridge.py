@@ -208,9 +208,7 @@ def create_kernel_class(
                 "user_expressions": {},
             }
 
-        async def interrupt_request(
-            self, stream: Any, ident: Any, parent: Any
-        ) -> Any:
+        async def interrupt_request(self, stream: Any, ident: Any, parent: Any) -> Any:
             # ``interrupt_mode=message`` means this handler owns delivery.
             # KernelBase.interrupt_request() sends SIGINT to the bridge (or its
             # whole process group); calling it after interrupting our exact

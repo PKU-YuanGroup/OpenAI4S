@@ -156,7 +156,9 @@ class Kernel:
             previous_context = getattr(self, "_active_action_context", marker)
             inherited_context = getattr(self._action_context_local, "value", None)
             self._active_action_context = dict(
-                action_context if action_context is not None else inherited_context or {}
+                action_context
+                if action_context is not None
+                else inherited_context or {}
             )
             try:
                 if not self.is_alive():
@@ -181,9 +183,7 @@ class Kernel:
 
                         _time.sleep(0.05)  # let the drain thread flush the last lines
                         err = "".join(getattr(self, "_stderr_tail", []) or [])
-                        raise RuntimeError(
-                            f"kernel worker exited unexpectedly: {err}"
-                        )
+                        raise RuntimeError(f"kernel worker exited unexpectedly: {err}")
                     ftype = frame.get("type")
                     if ftype == "response":
                         if stdout_chunks and not frame.get("stdout"):
@@ -249,9 +249,7 @@ class Kernel:
             if not self.is_alive():
                 raise RuntimeError("kernel worker is not alive")
             request_id = f"variables-{uuid.uuid4()}"
-            self._send(
-                {"type": "inspect_variables", "id": request_id, "limit": limit}
-            )
+            self._send({"type": "inspect_variables", "id": request_id, "limit": limit})
             diagnostic_frames = 0
             while True:
                 frame = self._readline()
@@ -331,9 +329,7 @@ class Kernel:
             )
             return
         try:
-            bind_generation = getattr(
-                self.dispatcher, "bind_bash_generation", None
-            )
+            bind_generation = getattr(self.dispatcher, "bind_bash_generation", None)
             bind_action = getattr(self.dispatcher, "bind_action_context", None)
             action_context = getattr(self, "_active_action_context", None)
             if callable(bind_generation) and callable(bind_action):

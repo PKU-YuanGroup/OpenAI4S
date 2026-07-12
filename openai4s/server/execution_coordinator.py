@@ -390,9 +390,7 @@ class WebExecutionCoordinator:
                 projected["reason"] = metadata["reason"]
             with self._lock:
                 if projected.get("queue_position") is not None:
-                    self._positions[execution_id] = int(
-                        projected["queue_position"]
-                    )
+                    self._positions[execution_id] = int(projected["queue_position"])
                 projected.setdefault(
                     "queue_position",
                     self._positions.get(
@@ -417,7 +415,10 @@ class WebExecutionCoordinator:
             projected["frame_id"] = session_id
             with self._lock:
                 for item in projected.get("queue") or ():
-                    if item.get("execution_id") and item.get("queue_position") is not None:
+                    if (
+                        item.get("execution_id")
+                        and item.get("queue_position") is not None
+                    ):
                         self._positions[str(item["execution_id"])] = int(
                             item["queue_position"]
                         )

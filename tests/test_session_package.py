@@ -11,13 +11,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from openai4s.config import Config, LLMConfig
 from openai4s.agent.ledger import restore_action_history
-from openai4s.server.execution_views import ExecutionViewService
+from openai4s.config import Config, LLMConfig
 from openai4s.server import gateway as gateway_mod
+from openai4s.server.execution_views import ExecutionViewService
 from openai4s.server.session_domain import SessionDomainService
-from openai4s.server.session_package import SessionPackageError
-from openai4s.server.session_package import session_import_quarantine_key
+from openai4s.server.session_package import (
+    SessionPackageError,
+    session_import_quarantine_key,
+)
 from openai4s.store import Store
 
 
@@ -79,9 +81,7 @@ def _corrupt_first_payload(data: bytes) -> bytes:
 def _source(tmp_path: Path):
     store = Store(tmp_path / "openai4s.db")
     project = store.create_project(name="Protein study")
-    root = store.new_frame(
-        project_id=project["project_id"], kind="turn", status="done"
-    )
+    root = store.new_frame(project_id=project["project_id"], kind="turn", status="done")
     workspace_root = tmp_path / "workspaces"
 
     def workspace(root_frame_id, branch_id):
@@ -244,7 +244,9 @@ def test_session_package_is_deterministic_and_round_trips_durable_state(tmp_path
         imported_path = store.resolve_artifact_path(artifacts[0]["artifact_id"])
         assert Path(imported_path).read_bytes() == b"id,score\n1,0.93\n"
         imported_workspace = workspace(new_root, imported["active_branch_id"])
-        assert (imported_workspace / "analysis.txt").read_text("utf-8") == "safe result\n"
+        assert (imported_workspace / "analysis.txt").read_text(
+            "utf-8"
+        ) == "safe result\n"
         assert not (imported_workspace / ".env").exists()
         assert store.list_session_checkpoints(new_root)
         assert len(store.list_session_branches(new_root)) == 2
@@ -262,7 +264,9 @@ def test_session_package_is_deterministic_and_round_trips_durable_state(tmp_path
             is False
         )
         review_steps = store.list_steps(new_root)
-        imported_review = next(item for item in review_steps if item["kind"] == "review")
+        imported_review = next(
+            item for item in review_steps if item["kind"] == "review"
+        )
         assert imported_review["output"]["verdict"] == "pass"
         imported_settings = next(
             item for item in review_steps if item["kind"] == "review_settings"
@@ -277,25 +281,25 @@ def test_session_package_is_deterministic_and_round_trips_durable_state(tmp_path
         )
         assert state_snapshot["trust_state"] == "quarantined_import"
         assert state_snapshot["state"]["plans"][0]["frame_id"] == new_root
-        assert state_snapshot["state"]["plans"][0]["project_id"] == imported[
-            "project_id"
-        ]
-        assert state_snapshot["state"]["plans"][0]["artifact_id"] == artifacts[0][
-            "artifact_id"
-        ]
+        assert (
+            state_snapshot["state"]["plans"][0]["project_id"] == imported["project_id"]
+        )
+        assert (
+            state_snapshot["state"]["plans"][0]["artifact_id"]
+            == artifacts[0]["artifact_id"]
+        )
         assert state_snapshot["state"]["review"]["settings"]["auto_review"] == {
             "present": True,
             "value": "0",
-            "updated_at": state_snapshot["state"]["review"]["settings"][
-                "auto_review"
-            ]["updated_at"],
+            "updated_at": state_snapshot["state"]["review"]["settings"]["auto_review"][
+                "updated_at"
+            ],
         }
-        assert state_snapshot["state"]["review"]["settings"][
-            "reviewer_model"
-        ]["present"] is False
-        assert state_snapshot["state"]["memory"]["project_id"] == imported[
-            "project_id"
-        ]
+        assert (
+            state_snapshot["state"]["review"]["settings"]["reviewer_model"]["present"]
+            is False
+        )
+        assert state_snapshot["state"]["memory"]["project_id"] == imported["project_id"]
         snapshot_text = repr(state_snapshot["state"])
         assert root not in snapshot_text
         assert project["project_id"] not in snapshot_text
@@ -323,9 +327,9 @@ def test_session_package_rejects_tamper_traversal_symlink_and_secret_payload(tmp
 
         corrupt_state = dict(files)
         snapshots = json.loads(corrupt_state["snapshots.json"])
-        snapshots["checkpoint_states"][0]["state"]["plans"][0]["title"] = (
-            "tampered checkpoint plan"
-        )
+        snapshots["checkpoint_states"][0]["state"]["plans"][0][
+            "title"
+        ] = "tampered checkpoint plan"
         corrupt_state["snapshots.json"] = _canonical(snapshots)
         with pytest.raises(SessionPackageError, match="checksum mismatch"):
             domain.session_import(_repack(corrupt_state))
@@ -355,10 +359,10 @@ def test_session_package_rejects_tamper_traversal_symlink_and_secret_payload(tmp
         store.close()
 
 
-def test_session_package_filters_provider_secrets_binary_large_and_env_variants(tmp_path):
-    store, domain, _project, root, _artifact, _checkpoint, workspace = _source(
-        tmp_path
-    )
+def test_session_package_filters_provider_secrets_binary_large_and_env_variants(
+    tmp_path,
+):
+    store, domain, _project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
     configured = "custom-secret-without-provider-prefix-123456"
     try:
         store.set_setting("llm_api_key", configured)
@@ -404,9 +408,9 @@ def test_session_package_rejects_version_filename_escape_and_corrupt_graph(tmp_p
 
         escaped = dict(files)
         artifact_manifest = json.loads(escaped["artifacts.json"])
-        artifact_manifest["artifacts"][0]["versions"][0]["filename"] = (
-            "../../escaped.txt"
-        )
+        artifact_manifest["artifacts"][0]["versions"][0][
+            "filename"
+        ] = "../../escaped.txt"
         escaped["artifacts.json"] = _canonical(artifact_manifest)
         with pytest.raises(SessionPackageError, match="unsafe artifact filename"):
             domain.session_import(_repack(escaped))
@@ -582,9 +586,7 @@ def test_session_package_preserves_revert_projection_without_reviving_abandoned_
         ] == ["Run the analysis", "continued after revert"]
         provider_users = [
             item["content"]
-            for item in restore_action_history(
-                store, new_root, branch_id=new_root
-            )
+            for item in restore_action_history(store, new_root, branch_id=new_root)
             if item.get("role") == "user"
         ]
         assert provider_users == ["Run the analysis", "continued after revert"]
@@ -714,7 +716,9 @@ def test_session_package_rejects_duplicate_and_dangling_identities(
         store.close()
 
 
-def test_session_package_maps_crc_compression_and_ratio_failures_to_validation(tmp_path):
+def test_session_package_maps_crc_compression_and_ratio_failures_to_validation(
+    tmp_path,
+):
     store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
         tmp_path
     )
@@ -724,7 +728,9 @@ def test_session_package_maps_crc_compression_and_ratio_failures_to_validation(t
             domain.session_import(_corrupt_first_payload(exported))
 
         unsupported = io.BytesIO()
-        with zipfile.ZipFile(unsupported, "w", compression=zipfile.ZIP_BZIP2) as archive:
+        with zipfile.ZipFile(
+            unsupported, "w", compression=zipfile.ZIP_BZIP2
+        ) as archive:
             archive.writestr("manifest.json", b"{}")
         with pytest.raises(SessionPackageError, match="compression method"):
             domain.session_import(unsupported.getvalue())
@@ -900,15 +906,23 @@ def test_session_package_export_refuses_silently_truncated_history(
         store.close()
 
 
-@pytest.mark.parametrize("failure_hook", ["_import_artifacts", "_import_plans_review_memory"])
+@pytest.mark.parametrize(
+    "failure_hook", ["_import_artifacts", "_import_plans_review_memory"]
+)
 def test_session_package_import_fault_rolls_back_database_workspace_env_and_cas(
     tmp_path, monkeypatch, failure_hook
 ):
     source_dir = tmp_path / "source"
     source_dir.mkdir()
-    source_store, source_domain, source_project, root, artifact, _checkpoint, _workspace = (
-        _source(source_dir)
-    )
+    (
+        source_store,
+        source_domain,
+        source_project,
+        root,
+        artifact,
+        _checkpoint,
+        _workspace,
+    ) = _source(source_dir)
     target_store = None
     try:
         env_id = source_store.upsert_env_snapshot(
@@ -953,9 +967,13 @@ def test_session_package_import_fault_rolls_back_database_workspace_env_and_cas(
             target_domain.session_import(package)
 
         assert target_store.list_projects() == []
-        assert target_store._conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 0
         assert (
-            target_store._conn.execute("SELECT COUNT(*) FROM env_snapshots").fetchone()[0]
+            target_store._conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 0
+        )
+        assert (
+            target_store._conn.execute("SELECT COUNT(*) FROM env_snapshots").fetchone()[
+                0
+            ]
             == 0
         )
         assert not any(path.is_file() for path in workspace_root.rglob("*"))
@@ -1046,13 +1064,14 @@ def test_session_package_gateway_routes_use_binary_export_and_raw_import(tmp_pat
         )[0]
         handler._body = lambda: {"content": "must not write"}
         with pytest.raises(gateway_mod.GatewayError) as blocked_artifact:
-            handler._api(
-                "POST", f"/artifacts/{imported_artifact['artifact_id']}/edit"
-            )
+            handler._api("POST", f"/artifacts/{imported_artifact['artifact_id']}/edit")
         assert blocked_artifact.value.code == 423
-        assert Path(runner.store.resolve_artifact_path(imported_artifact["artifact_id"])).read_text(
-            "utf-8"
-        ) == "route artifact\n"
+        assert (
+            Path(
+                runner.store.resolve_artifact_path(imported_artifact["artifact_id"])
+            ).read_text("utf-8")
+            == "route artifact\n"
+        )
 
         handler._api("GET", f"/frames/{imported_root}/session/export")
         assert replies.pop()[0] == 200
@@ -1061,9 +1080,10 @@ def test_session_package_gateway_routes_use_binary_export_and_raw_import(tmp_pat
         assert import_staging.is_dir()
         handler._api("DELETE", f"/frames/{imported_root}")
         assert replies.pop()[1] == {"ok": True}
-        assert runner.store.get_setting(
-            session_import_quarantine_key(imported_root)
-        ) is None
+        assert (
+            runner.store.get_setting(session_import_quarantine_key(imported_root))
+            is None
+        )
         assert not import_staging.exists()
     finally:
         runner.close()

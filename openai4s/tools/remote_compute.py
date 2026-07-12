@@ -87,7 +87,9 @@ class RemoteComputeStatusTool(Tool):
 
     name = "compute_status"
     host_method = "compute_status"
-    description = "Inspect remote-compute capacity and live-job counts for this session."
+    description = (
+        "Inspect remote-compute capacity and live-job counts for this session."
+    )
     parameters = {"properties": {}, "required": []}
     requires_approval = False
     resource_key_prefix = "remote_compute"

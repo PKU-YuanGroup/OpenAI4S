@@ -127,9 +127,7 @@ class PlanRepository:
         def add(column: str, value: Any, *, as_json: bool = False) -> None:
             sets.append(f"{column}=?")
             params.append(
-                json.dumps(value, ensure_ascii=False, default=str)
-                if as_json
-                else value
+                json.dumps(value, ensure_ascii=False, default=str) if as_json else value
             )
 
         if title is not None:

@@ -290,9 +290,7 @@ def test_durable_pending_request_survives_broker_restart_and_can_be_resolved(tmp
     st.close()
     st = _store(tmp_path)
     restarted = PermissionBroker()
-    restarted.register_channel(
-        "root-durable", lambda event: None, store=st
-    )
+    restarted.register_channel("root-durable", lambda event: None, store=st)
     assert restarted.pending_events("root-durable") == [payload]
     resolution = restarted.resolve_result(
         "perm-durable",
@@ -429,12 +427,15 @@ def test_restart_approval_requires_fresh_turn_and_never_replays_arguments(tmp_pa
         pattern="lab/send",
         decision="deny",
     )
-    assert restarted.gate(
-        store=st,
-        frame_id="root-restart",
-        method="mcp_call",
-        target="lab/send",
-    )["allow"] is False
+    assert (
+        restarted.gate(
+            store=st,
+            frame_id="root-restart",
+            method="mcp_call",
+            target="lab/send",
+        )["allow"]
+        is False
+    )
     assert st.get_permission_request("perm-restart")["continuation_consumed_at"] is None
     st.set_permission_rule(
         scope="conversation",
@@ -443,23 +444,29 @@ def test_restart_approval_requires_fresh_turn_and_never_replays_arguments(tmp_pa
         pattern="lab/send",
         decision="allow",
     )
-    assert restarted.gate(
-        store=st,
-        frame_id="root-restart",
-        method="mcp_call",
-        target="lab/send",
-    )["allow"] is True
+    assert (
+        restarted.gate(
+            store=st,
+            frame_id="root-restart",
+            method="mcp_call",
+            target="lab/send",
+        )["allow"]
+        is True
+    )
     assert st.get_permission_request("perm-restart")["continuation_consumed_at"] is None
     st.delete_permission_rule(standing)
 
     # A fresh, exact action consumes the durable once grant. No handler args
     # from the interrupted action are replayed by approval resolution itself.
-    assert restarted.gate(
-        store=st,
-        frame_id="root-restart",
-        method="mcp_call",
-        target="lab/send",
-    )["allow"] is True
+    assert (
+        restarted.gate(
+            store=st,
+            frame_id="root-restart",
+            method="mcp_call",
+            target="lab/send",
+        )["allow"]
+        is True
+    )
     assert st.get_permission_request("perm-restart")["continuation_consumed_at"]
     consumed_retry = restarted.resolve_result(
         "perm-restart",
@@ -741,8 +748,7 @@ def test_dispatcher_permission_carries_exact_action_attribution(tmp_path):
         assert request["side_effect_class"] == "workspace_write"
         assert request["resource_keys"] == ["workspace:attributed.txt"]
         assert [
-            event["type"]
-            for event in st.get_action_group(group["group_id"])["events"]
+            event["type"] for event in st.get_action_group(group["group_id"])["events"]
         ] == ["proposed", "permission_pending", "permission_resolved"]
         audit = st._conn.execute(
             "SELECT action_group_id,action_id,permission_decision_id,"

@@ -58,9 +58,7 @@ class WorkspaceFileService:
         workspace = (
             Path(explicit)
             if explicit is not None
-            else self._data_dir
-            / "agent-workspaces"
-            / (self._frame_id() or "default")
+            else self._data_dir / "agent-workspaces" / (self._frame_id() or "default")
         ).resolve()
         workspace.mkdir(parents=True, exist_ok=True)
         return workspace
@@ -119,5 +117,6 @@ class WorkspaceFileService:
 
     def list_dir(self, spec: dict) -> dict:
         return self._execute_compat("list_dir", spec)
+
 
 __all__ = ["WorkspaceFileService", "is_secret_path"]

@@ -150,13 +150,17 @@ def write_kernelspecs(
     targets = [(language, root / KERNEL_NAMES[language]) for language in selected]
     for _language_name, target in targets:
         if target.is_symlink():
-            raise KernelSpecError(f"KernelSpec destination must not be a symlink: {target}")
+            raise KernelSpecError(
+                f"KernelSpec destination must not be a symlink: {target}"
+            )
         if target.exists() and not replace:
             raise KernelSpecError(
                 f"KernelSpec destination already exists: {target}; use replace=True"
             )
         if target.exists() and not target.is_dir():
-            raise KernelSpecError(f"KernelSpec destination is not a directory: {target}")
+            raise KernelSpecError(
+                f"KernelSpec destination is not a directory: {target}"
+            )
 
     written: list[dict] = []
     for language, target in targets:

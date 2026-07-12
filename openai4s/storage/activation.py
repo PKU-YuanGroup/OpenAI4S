@@ -60,7 +60,10 @@ class SessionActivationRepository:
                 "SELECT frame_id,root_frame_id FROM frames WHERE frame_id=?",
                 (root_frame_id,),
             ).fetchone()
-            if frame is None or (frame["root_frame_id"] or root_frame_id) != root_frame_id:
+            if (
+                frame is None
+                or (frame["root_frame_id"] or root_frame_id) != root_frame_id
+            ):
                 raise ValueError("active branch selection requires a root frame")
             self._connection.execute(
                 "INSERT OR IGNORE INTO session_branches("
@@ -125,7 +128,9 @@ class SessionActivationRepository:
                 or checkpoint["root_frame_id"] != root_frame_id
                 or branch["head_checkpoint_id"] != checkpoint_id
             ):
-                raise ValueError("activation requires the selected branch head checkpoint")
+                raise ValueError(
+                    "activation requires the selected branch head checkpoint"
+                )
 
             current = self._connection.execute(
                 "SELECT current_branch_id FROM session_branch_selection "
@@ -159,9 +164,7 @@ class SessionActivationRepository:
             conversation_rules = self._conversation_rules(
                 permission_state, root_frame_id
             )
-            version_heads = self._artifact_heads(
-                root_frame_id, artifact_versions
-            )
+            version_heads = self._artifact_heads(root_frame_id, artifact_versions)
             python_env = environment_pins.get("python")
             if python_env is not None and not isinstance(python_env, str):
                 raise ValueError("checkpoint Python environment pin is invalid")
@@ -296,9 +299,7 @@ class SessionActivationRepository:
             result["partial"] = bool(state_projection.get("partial"))
         return result
 
-    def _artifact_heads(
-        self, root_frame_id: str, raw_versions: Any
-    ) -> dict[str, str]:
+    def _artifact_heads(self, root_frame_id: str, raw_versions: Any) -> dict[str, str]:
         if not isinstance(raw_versions, Sequence) or isinstance(
             raw_versions, (str, bytes)
         ):
@@ -374,7 +375,9 @@ class SessionActivationRepository:
             if not isinstance(row, Mapping):
                 raise ValueError("checkpoint permission row is invalid")
             if str(row.get("scope_id") or root_frame_id) != root_frame_id:
-                raise ValueError("checkpoint contains another conversation's permission")
+                raise ValueError(
+                    "checkpoint contains another conversation's permission"
+                )
             decision = str(row.get("decision") or "").lower()
             if decision not in {"allow", "ask", "deny"}:
                 raise ValueError("checkpoint permission decision is invalid")

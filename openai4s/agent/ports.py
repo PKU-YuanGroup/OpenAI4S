@@ -14,35 +14,42 @@ class ModelPort(Protocol):
         self,
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
-    ) -> ModelReply | Mapping[str, Any]: ...
+    ) -> ModelReply | Mapping[str, Any]:
+        ...
 
 
 class ContextPolicy(Protocol):
-    def prepare(self, state: RunState) -> Sequence[Mapping[str, Any]]: ...
+    def prepare(self, state: RunState) -> Sequence[Mapping[str, Any]]:
+        ...
 
 
 class ActionExecutor(Protocol):
     def execute(
         self, action: Action | None, reply: ModelReply, state: RunState
-    ) -> ExecutionOutcome: ...
+    ) -> ExecutionOutcome:
+        ...
 
 
 class EventSink(Protocol):
-    def emit(self, event: AgentEvent) -> None: ...
+    def emit(self, event: AgentEvent) -> None:
+        ...
 
 
 class CancellationPort(Protocol):
-    def cancelled(self) -> bool: ...
+    def cancelled(self) -> bool:
+        ...
 
 
 class CompletionPort(Protocol):
-    def completion(self) -> Any: ...
+    def completion(self) -> Any:
+        ...
 
 
 class ReplyInterceptor(Protocol):
     def intercept(
         self, reply: ModelReply, state: RunState
-    ) -> ModelReply | Mapping[str, Any] | None: ...
+    ) -> ModelReply | Mapping[str, Any] | None:
+        ...
 
 
 class PassthroughContext:

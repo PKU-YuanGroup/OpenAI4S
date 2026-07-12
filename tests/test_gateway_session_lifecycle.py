@@ -153,8 +153,7 @@ def test_gateway_idle_sweep_releases_both_slots_and_emits_ended(tmp_path):
     assert status["state"] == "ended"
     assert status["ended_reason"] == "idle_ttl"
     assert any(
-        event.get("type") == "kernel_status"
-        and event.get("status") == "ended"
+        event.get("type") == "kernel_status" and event.get("status") == "ended"
         for event in runner.hub.events
     )
     sandbox = runner.workbench.security(frame_id)["sandbox"]

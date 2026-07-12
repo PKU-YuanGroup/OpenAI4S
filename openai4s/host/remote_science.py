@@ -161,9 +161,7 @@ class RemoteScienceService:
         manifest_json = _block(
             output, "===FOLD_RESULT_JSON===", "===END_FOLD_RESULT_JSON==="
         )
-        pdb_base64 = _block(
-            output, "===FOLD_PDB_B64===", "===FOLD_PLDDT_CSV_B64==="
-        )
+        pdb_base64 = _block(output, "===FOLD_PDB_B64===", "===FOLD_PLDDT_CSV_B64===")
         plddt_base64 = _block(
             output,
             "===FOLD_PLDDT_CSV_B64===",
@@ -188,9 +186,7 @@ class RemoteScienceService:
             }
         try:
             manifest = json.loads(manifest_json.strip())
-            pdb_text = base64.b64decode(pdb_base64.strip()).decode(
-                "utf-8", "replace"
-            )
+            pdb_text = base64.b64decode(pdb_base64.strip()).decode("utf-8", "replace")
             plddt_csv = (
                 base64.b64decode(plddt_base64.strip()).decode("utf-8", "replace")
                 if plddt_base64
@@ -287,9 +283,7 @@ class RemoteScienceService:
                 timeout=1200,
             )
         except subprocess.TimeoutExpired:
-            return {
-                "error": f"score_mutations: timed out after 1200s on {host}"
-            }
+            return {"error": f"score_mutations: timed out after 1200s on {host}"}
         except OSError as error:
             return {"error": f"score_mutations: ssh to {host} failed: {error}"}
         output = process.stdout.decode("utf-8", "replace")
@@ -312,9 +306,7 @@ class RemoteScienceService:
             }
         try:
             summary = json.loads(summary_json.strip())
-            scores_csv = base64.b64decode(csv_base64.strip()).decode(
-                "utf-8", "replace"
-            )
+            scores_csv = base64.b64decode(csv_base64.strip()).decode("utf-8", "replace")
         except Exception as error:  # noqa: BLE001 - preserve soft-fail wire contract
             return {"error": f"score_mutations: could not parse output: {error}"}
         provenance_json = _block(

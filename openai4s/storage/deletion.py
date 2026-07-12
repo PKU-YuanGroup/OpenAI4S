@@ -89,9 +89,7 @@ class SessionDeletionRepository:
                         (project_id,),
                     ).fetchall()
                 )
-                artifact_ids = self._artifact_ids_locked(
-                    "project_id=?", (project_id,)
-                )
+                artifact_ids = self._artifact_ids_locked("project_id=?", (project_id,))
                 result = self._delete_aggregate_locked(
                     root_frame_ids=root_frame_ids,
                     frame_ids=frame_ids,
@@ -179,9 +177,7 @@ class SessionDeletionRepository:
                 ).fetchall()
             )
         env_snapshot_ids = self._unique(
-            row["env_snapshot_id"]
-            for row in version_rows
-            if row["env_snapshot_id"]
+            row["env_snapshot_id"] for row in version_rows if row["env_snapshot_id"]
         )
         path_candidates = self._unique(
             path
@@ -252,9 +248,7 @@ class SessionDeletionRepository:
                 lineage_clauses.append(f"frame_id IN {self._marks(frames)}")
                 lineage_params += frames
             if cell_ids:
-                lineage_clauses.append(
-                    f"producing_cell_id IN {self._marks(cell_ids)}"
-                )
+                lineage_clauses.append(f"producing_cell_id IN {self._marks(cell_ids)}")
                 lineage_params += cell_ids
             self._delete_counted(
                 deleted_rows,
@@ -370,14 +364,10 @@ class SessionDeletionRepository:
                     f"delegation:{root}",
                     f"session:import-quarantine:{root}",
                 ):
-                    self._delete_counted(
-                        deleted_rows, "settings", "key=?", (key,)
-                    )
+                    self._delete_counted(deleted_rows, "settings", "key=?", (key,))
         for frame_id in frames:
             escaped_frame_id = (
-                frame_id.replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
+                frame_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             )
             self._delete_counted(
                 deleted_rows,
@@ -393,9 +383,7 @@ class SessionDeletionRepository:
                 "plans",
                 "execution_log",
             ):
-                self._delete_counted(
-                    deleted_rows, table, "project_id=?", (project_id,)
-                )
+                self._delete_counted(deleted_rows, table, "project_id=?", (project_id,))
             self._delete_counted(
                 deleted_rows,
                 "capability_manifests",
@@ -457,9 +445,7 @@ class SessionDeletionRepository:
             ).fetchall()
         )
 
-    def _frame_ids_for_roots_locked(
-        self, roots: tuple[str, ...]
-    ) -> tuple[str, ...]:
+    def _frame_ids_for_roots_locked(self, roots: tuple[str, ...]) -> tuple[str, ...]:
         if not roots:
             return ()
         return self._unique(
@@ -478,9 +464,7 @@ class SessionDeletionRepository:
         where: str,
         params: tuple[Any, ...],
     ) -> None:
-        cursor = self._connection.execute(
-            f"DELETE FROM {table} WHERE {where}", params
-        )
+        cursor = self._connection.execute(f"DELETE FROM {table} WHERE {where}", params)
         totals[table] = totals.get(table, 0) + max(0, int(cursor.rowcount))
 
     @staticmethod

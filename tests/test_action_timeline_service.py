@@ -200,9 +200,7 @@ def test_timeline_public_projection_redacts_secrets_and_provider_ids(tmp_path):
 
 def test_timeline_reports_open_attempt_as_running(tmp_path):
     store = Store(tmp_path / "openai4s.db")
-    group = store.append_action_group(
-        root_frame_id="root", turn_id="turn", kind="code"
-    )
+    group = store.append_action_group(root_frame_id="root", turn_id="turn", kind="code")
     store.allocate_execution_attempt(
         group_id=group["group_id"], producing_cell_id="cell"
     )

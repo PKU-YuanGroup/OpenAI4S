@@ -68,9 +68,7 @@ class PeekBackgroundExecTool(Tool):
     host_method = "exec_peek"
     description = "Read accumulated stdout and status for one background job."
     parameters = {
-        "properties": {
-            "exec_id": {"type": "string", "minLength": 1, "maxLength": 256}
-        },
+        "properties": {"exec_id": {"type": "string", "minLength": 1, "maxLength": 256}},
         "required": ["exec_id"],
     }
     requires_approval = False
@@ -101,9 +99,7 @@ class InterruptBackgroundExecTool(Tool):
     host_method = "exec_interrupt"
     description = "Interrupt one running background job by exact execution ID."
     parameters = {
-        "properties": {
-            "exec_id": {"type": "string", "minLength": 1, "maxLength": 256}
-        },
+        "properties": {"exec_id": {"type": "string", "minLength": 1, "maxLength": 256}},
         "required": ["exec_id"],
     }
     read_only = False

@@ -22,9 +22,7 @@ def test_workspace_follows_frame_id_assigned_after_construction(tmp_path):
     default_workspace = dispatcher._workspace()
 
     dispatcher.frame_id = "frame-late"
-    result = dispatcher(
-        "write_file", [{"path": "result.txt", "content": "late-bound"}]
-    )
+    result = dispatcher("write_file", [{"path": "result.txt", "content": "late-bound"}])
 
     assert default_workspace.name == "default"
     assert result["path"] == "result.txt"
@@ -95,9 +93,7 @@ def test_read_file_preserves_text_window_and_binary_shapes(tmp_path):
     (workspace / "lines.txt").write_text("one\ntwo\nthree\n")
     (workspace / "binary.bin").write_bytes(b"\xff\x00")
 
-    text = dispatcher(
-        "read_file", [{"path": "lines.txt", "offset": -4, "limit": -1}]
-    )
+    text = dispatcher("read_file", [{"path": "lines.txt", "offset": -4, "limit": -1}])
     binary = dispatcher("read_file", [{"path": "binary.bin"}])
 
     assert text == {

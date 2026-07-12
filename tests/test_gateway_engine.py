@@ -83,9 +83,7 @@ def _prepare_message_runner(monkeypatch, tmp_path, dispatcher):
     cfg = _cfg(tmp_path)
     hub = _Hub()
     runner = gateway_mod.SessionRunner(cfg, hub)
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="default", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
     runner.store.update_frame(frame_id, name="Existing test session")
 
     def ensure_runtime(state):
@@ -100,9 +98,7 @@ def _prepare_message_runner(monkeypatch, tmp_path, dispatcher):
 
 def test_native_file_control_calls_create_versioned_artifacts(tmp_path):
     runner = gateway_mod.SessionRunner(_cfg(tmp_path), _Hub())
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="default", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
     state = runner._state(frame_id, "default")
     events = []
     target = state.workspace / "analysis.md"
@@ -122,9 +118,7 @@ def test_native_file_control_calls_create_versioned_artifacts(tmp_path):
         write_first,
     )
     assert first == ("ok", True)
-    artifact = runner.store.artifact_by_filename(
-        "analysis.md", frame_id, strict=True
-    )
+    artifact = runner.store.artifact_by_filename("analysis.md", frame_id, strict=True)
     assert artifact is not None
     first_version = artifact["latest_version_id"]
 
@@ -136,15 +130,16 @@ def test_native_file_control_calls_create_versioned_artifacts(tmp_path):
     )
     assert second == ("ok", True)
 
-    artifact = runner.store.artifact_by_filename(
-        "analysis.md", frame_id, strict=True
-    )
+    artifact = runner.store.artifact_by_filename("analysis.md", frame_id, strict=True)
     versions = runner.store.list_versions(artifact["artifact_id"])
     assert len(versions) == 2
     assert artifact["latest_version_id"] != first_version
-    assert Path(
-        runner.store.version_meta(first_version)["snapshot_path"]
-    ).read_text(encoding="utf-8") == "first"
+    assert (
+        Path(runner.store.version_meta(first_version)["snapshot_path"]).read_text(
+            encoding="utf-8"
+        )
+        == "first"
+    )
     assert any(event.get("type") == "artifact_created" for event in events)
 
 
@@ -161,9 +156,7 @@ def test_web_native_schema_history_and_cell_only_completion(monkeypatch, tmp_pat
             return {"entries": [{"name": "result.csv", "type": "file"}]}
 
     dispatcher = Dispatcher()
-    runner, _hub, frame_id = _prepare_message_runner(
-        monkeypatch, tmp_path, dispatcher
-    )
+    runner, _hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
     call = _native_call("call-list", "list_dir", {"path": "."})
     first_reply, assistant_message = _native_reply("Checking files.", [call])
     model_calls: list[list[dict]] = []
@@ -213,7 +206,9 @@ def test_web_native_schema_history_and_cell_only_completion(monkeypatch, tmp_pat
     assert dispatcher.calls == [("list_dir", [{"path": "."}])]
     assert dispatcher.output_seen == [None]
     assert all("list_dir" in names and "env_use" in names for names in tool_name_sets)
-    assert all("bash" not in names and "submit_output" not in names for names in tool_name_sets)
+    assert all(
+        "bash" not in names and "submit_output" not in names for names in tool_name_sets
+    )
     assert [message["role"] for message in model_calls[1][-2:]] == [
         "assistant",
         "tool",
@@ -222,9 +217,7 @@ def test_web_native_schema_history_and_cell_only_completion(monkeypatch, tmp_pat
 
 def test_cancel_after_llm_reply_prevents_returned_cell(monkeypatch, tmp_path):
     dispatcher = SimpleNamespace(last_output=None)
-    runner, hub, frame_id = _prepare_message_runner(
-        monkeypatch, tmp_path, dispatcher
-    )
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
     model_calls = []
 
     def fake_chat(messages, cfg, on_delta=None, **kwargs):
@@ -270,9 +263,7 @@ def test_plan_mode_blocks_code_and_native_tools_and_closes_history(
             raise AssertionError(f"plan mode dispatched {method!r} with {args!r}")
 
     dispatcher = RefusingDispatcher()
-    runner, hub, frame_id = _prepare_message_runner(
-        monkeypatch, tmp_path, dispatcher
-    )
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
     content = (
         "I will inspect the data first.\n\n"
         "```json\n"
@@ -369,9 +360,7 @@ def test_native_env_switch_rebinds_dispatcher_before_next_call(monkeypatch, tmp_
     state.dispatcher = Dispatcher("old")
     calls = [
         _native_call("env-call", "env_use", {"name": "struct"}),
-        _native_call(
-            "list-call", "list_dir", {"path": "."}, ordinal=1
-        ),
+        _native_call("list-call", "list_dir", {"path": "."}, ordinal=1),
     ]
     first_reply, _assistant = _native_reply("", calls)
     replies = iter(
@@ -430,9 +419,7 @@ def test_streamed_deltas_hide_fences_and_precede_tool_and_terminal_events(
     monkeypatch, tmp_path
 ):
     dispatcher = SimpleNamespace(last_output=None)
-    runner, hub, frame_id = _prepare_message_runner(
-        monkeypatch, tmp_path, dispatcher
-    )
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
     reply = (
         "Before.\n"
         "```python\n"
@@ -470,8 +457,7 @@ def test_streamed_deltas_hide_fences_and_precede_tool_and_terminal_events(
     text_events = [
         event
         for event in hub.events
-        if event.get("type") == "text_chunk"
-        and event.get("block_type") == "text"
+        if event.get("type") == "text_chunk" and event.get("block_type") == "text"
     ]
     visible = "".join(event["chunk"] for event in text_events)
     # Anything after the action fence was generated before the cell ran and
@@ -485,8 +471,7 @@ def test_streamed_deltas_hide_fences_and_precede_tool_and_terminal_events(
     text_indices = [
         index
         for index, event in enumerate(hub.events)
-        if event.get("type") == "text_chunk"
-        and event.get("block_type") == "text"
+        if event.get("type") == "text_chunk" and event.get("block_type") == "text"
     ]
     tool_index = next(
         index
@@ -496,8 +481,7 @@ def test_streamed_deltas_hide_fences_and_precede_tool_and_terminal_events(
     terminal_index = max(
         index
         for index, event in enumerate(hub.events)
-        if event.get("type") == "frame_update"
-        and event.get("status") == "completed"
+        if event.get("type") == "frame_update" and event.get("status") == "completed"
     )
     assert reset_index < min(text_indices) <= max(text_indices) < tool_index
     assert tool_index < terminal_index
@@ -508,9 +492,7 @@ def test_streamed_deltas_hide_fences_and_precede_tool_and_terminal_events(
 
 def test_code_only_failure_is_visible_after_real_cell_outcome(monkeypatch, tmp_path):
     dispatcher = SimpleNamespace(last_output=None)
-    runner, hub, frame_id = _prepare_message_runner(
-        monkeypatch, tmp_path, dispatcher
-    )
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
     reply = "```python\nprint(missing_name)\n```\nThis worked perfectly."
 
     def fake_chat(messages, cfg, on_delta=None, **kwargs):
@@ -538,8 +520,7 @@ def test_code_only_failure_is_visible_after_real_cell_outcome(monkeypatch, tmp_p
     visible = "".join(
         event.get("chunk", "")
         for event in hub.events
-        if event.get("type") == "text_chunk"
-        and event.get("block_type") == "text"
+        if event.get("type") == "text_chunk" and event.get("block_type") == "text"
     )
     assert "This cell failed" in visible
     assert "NameError" in visible
@@ -552,12 +533,10 @@ def test_conversational_json_fence_does_not_cut_off_later_public_prose(
     monkeypatch, tmp_path
 ):
     dispatcher = SimpleNamespace(last_output=None)
-    runner, hub, frame_id = _prepare_message_runner(
-        monkeypatch, tmp_path, dispatcher
-    )
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
     reply = (
         "The public response shape is:\n"
-        "```json\n{\"summary\": \"...\"}\n```\n"
+        '```json\n{"summary": "..."}\n```\n'
         "I will now verify the values.\n"
         "```python\nhost.submit_output({'summary': 'verified'}, ['Verified values'])\n```\n"
         "Unverified trailing claim."
@@ -587,8 +566,7 @@ def test_conversational_json_fence_does_not_cut_off_later_public_prose(
     visible = "".join(
         event.get("chunk", "")
         for event in hub.events
-        if event.get("type") == "text_chunk"
-        and event.get("block_type") == "text"
+        if event.get("type") == "text_chunk" and event.get("block_type") == "text"
     )
     assert "I will now verify the values." in visible
     assert '"summary": "..."' not in visible

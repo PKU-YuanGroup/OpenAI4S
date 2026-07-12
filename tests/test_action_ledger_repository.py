@@ -106,9 +106,7 @@ def test_canonical_groups_events_and_normalized_assistant_message_roundtrip(tmp_
         "proposed",
         "result",
     ]
-    assert tool_group["events"][1]["result"] == {
-        "items": [{"title": "NIF3"}]
-    }
+    assert tool_group["events"][1]["result"] == {"items": [{"title": "NIF3"}]}
 
     store.append_action_group(
         group_id="ag-fork",
@@ -146,9 +144,12 @@ def test_canonical_groups_events_and_normalized_assistant_message_roundtrip(tmp_
 
     store.close()
     reopened = Store(tmp_path / "openai4s.db")
-    assert reopened.get_action_group("ag-tools")["assistant_message"][
-        "tool_calls"
-    ][0]["id"] == "wire-call-1"
+    assert (
+        reopened.get_action_group("ag-tools")["assistant_message"]["tool_calls"][0][
+            "id"
+        ]
+        == "wire-call-1"
+    )
     reopened.close()
 
 
@@ -181,9 +182,10 @@ def test_groups_and_events_cannot_overwrite_and_tool_group_is_atomic(tmp_path):
             ordinal=0,
             kind="code",
         )
-    assert store.get_action_group("ag-original")["assistant_content"] == original[
-        "assistant_content"
-    ]
+    assert (
+        store.get_action_group("ag-original")["assistant_content"]
+        == original["assistant_content"]
+    )
 
     first_event = store.append_action_event(
         event_id="ae-original",
@@ -264,9 +266,10 @@ def test_execution_attempt_is_allocated_first_and_terminal_state_is_immutable(
     started = store.mark_execution_attempt_started("xa-1", started_at=101)
     assert started["started_at"] == 101
     # Repeated delivery is idempotent but cannot replace the first timestamp.
-    assert store.mark_execution_attempt_started("xa-1", started_at=999)[
-        "started_at"
-    ] == 101
+    assert (
+        store.mark_execution_attempt_started("xa-1", started_at=999)["started_at"]
+        == 101
+    )
     store.mark_execution_attempt_response("xa-1", response_at=102)
     store.mark_execution_attempt_capture("xa-1", capture_at=103)
     finished = store.finish_execution_attempt(

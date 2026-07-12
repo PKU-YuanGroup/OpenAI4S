@@ -167,9 +167,7 @@ def test_security_aggregates_python_and_r_to_the_weakest_truthful_claim():
         }
     )
 
-    result = _service(state=SimpleNamespace(kernel=python, r_kernel=r)).security(
-        "root"
-    )
+    result = _service(state=SimpleNamespace(kernel=python, r_kernel=r)).security("root")
 
     assert result["sandbox"]["state"] == "mixed"
     assert result["sandbox"]["backend"] == "mixed"

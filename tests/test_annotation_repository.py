@@ -81,8 +81,7 @@ def test_annotation_ordinals_are_atomic_with_concurrent_pins(tmp_path):
             results.append(annotation)
 
     threads = [
-        threading.Thread(target=add_pin, args=(index,))
-        for index in range(workers)
+        threading.Thread(target=add_pin, args=(index,)) for index in range(workers)
     ]
     for thread in threads:
         thread.start()

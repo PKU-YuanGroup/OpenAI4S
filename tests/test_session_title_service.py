@@ -142,17 +142,18 @@ def test_spawn_reads_placeholder_before_write_and_broadcasts_bare_event():
         events=events,
     )
 
-    assert service.spawn(
-        "frame-1",
-        "first message",
-        object(),
-        "Immediate placeholder",
-    ) is None
+    assert (
+        service.spawn(
+            "frame-1",
+            "first message",
+            object(),
+            "Immediate placeholder",
+        )
+        is None
+    )
 
     assert [event[0] for event in events] == ["chat", "get", "update", "broadcast"]
-    assert store.update_calls == [
-        ("frame-1", {"task_summary": "Concise title"})
-    ]
+    assert store.update_calls == [("frame-1", {"task_summary": "Concise title"})]
     assert broadcasts == [
         (
             "frame-1",
@@ -238,9 +239,7 @@ def test_spawn_resolves_replaced_store_when_background_work_starts():
 
     assert old_store.get_calls == []
     assert old_store.update_calls == []
-    assert new_store.update_calls == [
-        ("frame-4", {"task_summary": "Generated title"})
-    ]
+    assert new_store.update_calls == [("frame-4", {"task_summary": "Generated title"})]
 
 
 def test_spawn_uses_injected_summary_wrapper_for_runtime_overrides():

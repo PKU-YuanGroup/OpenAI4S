@@ -25,7 +25,6 @@ from typing import Any, Mapping
 
 from openai4s.config import Config, get_config
 
-
 MAX_SKILL_FILES = 256
 MAX_SKILL_FILE_BYTES = 2_000_000
 MAX_SKILL_PACKAGE_BYTES = 10_000_000
@@ -40,9 +39,7 @@ def _canonical_name(value: str) -> str:
 
 
 def _slug(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9_-]+", "-", str(value or "").strip().lower()).strip(
-        "-"
-    )
+    slug = re.sub(r"[^a-z0-9_-]+", "-", str(value or "").strip().lower()).strip("-")
     if not slug:
         raise ValueError("skill name is required")
     return slug[:64]
@@ -211,9 +208,7 @@ class SkillVersionService:
         metadata, _document = self._document_metadata(files["SKILL.md"])
         declared_name = str(metadata.get("name") or name).strip()
         if _canonical_name(declared_name) != _canonical_name(name):
-            raise ValueError(
-                f"SKILL.md declares {declared_name!r}, expected {name!r}"
-            )
+            raise ValueError(f"SKILL.md declares {declared_name!r}, expected {name!r}")
         origin = str(metadata.get("origin") or "draft").strip().lower()
         if origin not in {"draft", "personal", "user"}:
             raise PermissionError(
@@ -368,7 +363,11 @@ class SkillVersionService:
                 f"Skill directory {slug!r} is already active for "
                 f"{slug_owner['name']!r}"
             )
-        expected = actual if expected_active_version_id is _AUTO else expected_active_version_id
+        expected = (
+            actual
+            if expected_active_version_id is _AUTO
+            else expected_active_version_id
+        )
         if actual != expected:
             raise RuntimeError(
                 "Skill changed concurrently: expected active version "
@@ -488,15 +487,19 @@ class SkillVersionService:
             raise PermissionError("target version does not belong to this Skill")
         version = self.repository.get_version(version_id, include_files=True)
         current = installation.get("active_version_id")
-        expected = current if expected_active_version_id is _AUTO else expected_active_version_id
+        expected = (
+            current
+            if expected_active_version_id is _AUTO
+            else expected_active_version_id
+        )
         if current != expected:
             raise RuntimeError(
                 "Skill changed concurrently: expected active version "
                 f"{expected!r}, found {current!r}"
             )
-        target = self.scope_root(scope=scope, project_id=project_id) / installation[
-            "slug"
-        ]
+        target = (
+            self.scope_root(scope=scope, project_id=project_id) / installation["slug"]
+        )
         files = self._normalize_files(version["files"])
         with _MATERIALIZE_LOCK:
             stage = self._write_stage(target.parent, target.name, files)
@@ -547,9 +550,9 @@ class SkillVersionService:
         )
         if installation is None or not installation.get("active_version_id"):
             raise KeyError(f"no installed Skill: {name!r}")
-        target = self.scope_root(scope=scope, project_id=project_id) / installation[
-            "slug"
-        ]
+        target = (
+            self.scope_root(scope=scope, project_id=project_id) / installation["slug"]
+        )
         with _MATERIALIZE_LOCK:
             if target.is_symlink():
                 raise ValueError("unsafe user Skill path")

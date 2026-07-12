@@ -8,13 +8,17 @@ from openai4s.server.action_timeline import ActionTimelineService
 
 
 class GlobalViewStore(Protocol):
-    def browse_frames(self, **filters: Any) -> list[dict]: ...
+    def browse_frames(self, **filters: Any) -> list[dict]:
+        ...
 
-    def list_artifacts(self, filters: dict | None = None) -> list[dict]: ...
+    def list_artifacts(self, filters: dict | None = None) -> list[dict]:
+        ...
 
-    def list_versions(self, artifact_id: str) -> list[dict]: ...
+    def list_versions(self, artifact_id: str) -> list[dict]:
+        ...
 
-    def lineage_edges_for(self, version_id: str, direction: str) -> list[str]: ...
+    def lineage_edges_for(self, version_id: str, direction: str) -> list[str]:
+        ...
 
 
 class GlobalResearchViewService:
@@ -112,17 +116,13 @@ class GlobalResearchViewService:
                 if key in seen:
                     continue
                 seen.add(key)
-                edges.append(
-                    {"from": version_id, "to": output_id, "kind": key[2]}
-                )
+                edges.append({"from": version_id, "to": output_id, "kind": key[2]})
             cell_id = str(node.get("producing_cell_id") or "")
             if cell_id:
                 key = (f"cell:{cell_id}", version_id, "produced")
                 if key not in seen:
                     seen.add(key)
-                    edges.append(
-                        {"from": key[0], "to": version_id, "kind": key[2]}
-                    )
+                    edges.append({"from": key[0], "to": version_id, "kind": key[2]})
         cell_ids = sorted(
             {
                 str(node["producing_cell_id"])

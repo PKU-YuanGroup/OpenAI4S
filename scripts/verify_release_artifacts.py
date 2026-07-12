@@ -65,7 +65,9 @@ def _safe_names(names: list[str], *, archive: str) -> set[str]:
             raise ReleaseCheckError(f"{archive} contains unsafe path: {raw!r}")
         lowered = {part.casefold() for part in path.parts}
         if ".git" in lowered or "__pycache__" in lowered:
-            raise ReleaseCheckError(f"{archive} contains source-control/cache data: {raw}")
+            raise ReleaseCheckError(
+                f"{archive} contains source-control/cache data: {raw}"
+            )
         if path.suffix.casefold() in {".pyc", ".pyo"}:
             raise ReleaseCheckError(f"{archive} contains bytecode: {raw}")
         if path.name.casefold() == ".env" or path.name.casefold().startswith(".env."):
@@ -79,7 +81,9 @@ def _safe_names(names: list[str], *, archive: str) -> set[str]:
 def _missing(required: frozenset[str], names: set[str], *, label: str) -> None:
     missing = sorted(required - names)
     if missing:
-        raise ReleaseCheckError(f"{label} is missing required files: {', '.join(missing)}")
+        raise ReleaseCheckError(
+            f"{label} is missing required files: {', '.join(missing)}"
+        )
 
 
 def _verify_metadata(payload: bytes) -> None:
@@ -98,7 +102,8 @@ def _verify_metadata(payload: bytes) -> None:
             core_requirements.append(requirement)
     if core_requirements:
         raise ReleaseCheckError(
-            "core wheel declares non-extra dependencies: " + ", ".join(core_requirements)
+            "core wheel declares non-extra dependencies: "
+            + ", ".join(core_requirements)
         )
 
 
@@ -113,16 +118,28 @@ def verify_wheel(path: Path) -> set[str]:
         _missing(_WHEEL_REQUIRED, names, label="wheel")
         if any(name.startswith("tests/") for name in names):
             raise ReleaseCheckError("wheel must not ship the test suite")
-        metadata_names = [name for name in names if name.endswith(".dist-info/METADATA")]
+        metadata_names = [
+            name for name in names if name.endswith(".dist-info/METADATA")
+        ]
         if len(metadata_names) != 1:
             raise ReleaseCheckError("wheel must contain exactly one METADATA file")
         _verify_metadata(archive.read(metadata_names[0]))
-        entry_names = [name for name in names if name.endswith(".dist-info/entry_points.txt")]
-        if len(entry_names) != 1 or b"openai4s = openai4s.cli:main" not in archive.read(entry_names[0]):
-            raise ReleaseCheckError("wheel does not expose the openai4s console entry point")
+        entry_names = [
+            name for name in names if name.endswith(".dist-info/entry_points.txt")
+        ]
+        if len(entry_names) != 1 or b"openai4s = openai4s.cli:main" not in archive.read(
+            entry_names[0]
+        ):
+            raise ReleaseCheckError(
+                "wheel does not expose the openai4s console entry point"
+            )
         wheel_names = [name for name in names if name.endswith(".dist-info/WHEEL")]
-        if len(wheel_names) != 1 or b"Tag: py3-none-any" not in archive.read(wheel_names[0]):
-            raise ReleaseCheckError("wheel must remain platform-independent (py3-none-any)")
+        if len(wheel_names) != 1 or b"Tag: py3-none-any" not in archive.read(
+            wheel_names[0]
+        ):
+            raise ReleaseCheckError(
+                "wheel must remain platform-independent (py3-none-any)"
+            )
     return names
 
 

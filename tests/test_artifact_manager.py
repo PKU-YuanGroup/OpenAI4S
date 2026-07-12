@@ -32,11 +32,11 @@ class ArtifactHarness:
             data_dir=cfg.data_dir,
             store=self.store,
             workspace_for=lambda frame_id: self.workspace,
-            broadcast=lambda frame_id, event: self.broadcasts.append(
-                (frame_id, event)
-            ),
+            broadcast=lambda frame_id, event: self.broadcasts.append((frame_id, event)),
             environment_snapshot=self.environment_snapshot,
-            guess_content_type=lambda name: "text/csv" if name.endswith(".csv") else "application/octet-stream",
+            guess_content_type=lambda name: "text/csv"
+            if name.endswith(".csv")
+            else "application/octet-stream",
             checksum=lambda path: hashlib.sha256(path.read_bytes()).hexdigest(),
         )
         self.session = SimpleNamespace(
@@ -78,9 +78,12 @@ def test_register_freezes_version_before_emitting_event(tmp_path):
         (first["version_id"], b"ALPHA"),
         (second["version_id"], b"BETA"),
     ]
-    assert Path(
-        harness.store.version_meta(first["version_id"])["snapshot_path"]
-    ).read_bytes() == b"ALPHA"
+    assert (
+        Path(
+            harness.store.version_meta(first["version_id"])["snapshot_path"]
+        ).read_bytes()
+        == b"ALPHA"
+    )
 
 
 def test_capture_finalizes_provenance_version_without_duplicating_it(tmp_path):
@@ -163,17 +166,20 @@ def test_capture_finalizes_provenance_version_without_duplicating_it(tmp_path):
     second_version = second_capture.artifacts[0]["version_id"]
     assert second_version != provenance_version
     assert len(harness.store.list_versions(output["artifact_id"])) == 2
-    assert Path(harness.store.resolve_artifact_path(provenance_version)).read_text() == (
-        "SCIENCE"
-    )
+    assert Path(
+        harness.store.resolve_artifact_path(provenance_version)
+    ).read_text() == ("SCIENCE")
     assert Path(harness.store.resolve_artifact_path(second_version)).read_text() == (
         "science"
     )
-    assert len(
-        harness.store.list_artifacts(
-            {"root_frame_id": harness.frame_id, "filename": "derived.txt"}
+    assert (
+        len(
+            harness.store.list_artifacts(
+                {"root_frame_id": harness.frame_id, "filename": "derived.txt"}
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 def test_explicit_save_merges_provenance_and_capture_into_one_complete_version(
@@ -252,9 +258,7 @@ def test_explicit_save_merges_provenance_and_capture_into_one_complete_version(
         }
     ]
     assert (
-        harness.store.artifact_by_filename(
-            "manual.csv", harness.frame_id, strict=True
-        )
+        harness.store.artifact_by_filename("manual.csv", harness.frame_id, strict=True)
         is None
     )
 
@@ -296,8 +300,9 @@ def test_repeated_explicit_saves_remain_versions_and_capture_adds_no_third(tmp_p
         second_version,
     }
     assert all(
-        Path(harness.store.version_meta(version["version_id"])["snapshot_path"])
-        .is_file()
+        Path(
+            harness.store.version_meta(version["version_id"])["snapshot_path"]
+        ).is_file()
         for version in versions
     )
 
@@ -352,9 +357,7 @@ def test_restore_backfills_legacy_latest_before_broadcast(tmp_path):
             (
                 path.read_bytes(),
                 Path(legacy_meta["snapshot_path"]).read_bytes(),
-                harness.store.get_artifact(first["artifact_id"])[
-                    "latest_version_id"
-                ],
+                harness.store.get_artifact(first["artifact_id"])["latest_version_id"],
             )
         )
 
@@ -368,9 +371,7 @@ def test_restore_backfills_legacy_latest_before_broadcast(tmp_path):
         legacy["version_id"],
     }
     assert result["restored_from_version_id"] == first["version_id"]
-    assert checked_during_broadcast == [
-        (b"ALPHA", b"BETA", restored_version_id)
-    ]
+    assert checked_during_broadcast == [(b"ALPHA", b"BETA", restored_version_id)]
     assert harness.store.lineage_edges_for(restored_version_id, "up") == [
         first["version_id"]
     ]
@@ -393,9 +394,10 @@ def test_restore_rejects_corrupt_snapshot_and_workspace_drift(tmp_path):
     result = harness.manager.restore(first["artifact_id"], first["version_id"])
     assert "checksum verification failed" in result["error"]
     assert path.read_bytes() == b"BETA"
-    assert harness.store.get_artifact(first["artifact_id"])[
-        "latest_version_id"
-    ] == second["version_id"]
+    assert (
+        harness.store.get_artifact(first["artifact_id"])["latest_version_id"]
+        == second["version_id"]
+    )
     assert len(harness.store.list_versions(first["artifact_id"])) == 2
 
     outside = tmp_path / "outside-snapshot"
@@ -406,9 +408,7 @@ def test_restore_rejects_corrupt_snapshot_and_workspace_drift(tmp_path):
     assert path.read_bytes() == b"BETA"
 
     Path(source["snapshot_path"]).write_bytes(b"ALPHA")
-    harness.store.set_version_snapshot(
-        first["version_id"], source["snapshot_path"]
-    )
+    harness.store.set_version_snapshot(first["version_id"], source["snapshot_path"])
     path.write_bytes(b"external edit")
     result = harness.manager.restore(first["artifact_id"], first["version_id"])
     assert "unversioned changes" in result["error"]
@@ -452,16 +452,15 @@ def test_restore_expected_latest_cas_rolls_back_live_and_new_snapshot(
         )
         return original_record(**fields)
 
-    monkeypatch.setattr(
-        harness.store, "record_artifact_restore", race_then_record
-    )
+    monkeypatch.setattr(harness.store, "record_artifact_restore", race_then_record)
     result = harness.manager.restore(first["artifact_id"], first["version_id"])
 
     assert "changed concurrently" in result["error"]
     assert path.read_bytes() == b"BETA"
-    assert harness.store.get_artifact(first["artifact_id"])[
-        "latest_version_id"
-    ] == raced["version_id"]
+    assert (
+        harness.store.get_artifact(first["artifact_id"])["latest_version_id"]
+        == raced["version_id"]
+    )
     assert harness.store.version_meta(second["version_id"])["checksum"] == (
         hashlib.sha256(b"BETA").hexdigest()
     )

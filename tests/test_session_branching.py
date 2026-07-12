@@ -62,9 +62,10 @@ def test_checkpoint_projection_and_fork_keep_original_branch_immutable(tmp_path)
         )
         projection = service.projection("root")
 
-        assert repository.get_branch("root")["head_checkpoint_id"] == second[
-            "checkpoint_id"
-        ]
+        assert (
+            repository.get_branch("root")["head_checkpoint_id"]
+            == second["checkpoint_id"]
+        )
         assert fork["head_checkpoint_id"] == first["checkpoint_id"]
         assert {item["branch_id"] for item in projection["branches"]} == {
             "root",
@@ -133,9 +134,9 @@ def test_external_edit_blocks_revert_and_is_recorded(tmp_path):
         assert result["ok"] is False
         assert result["operation"]["status"] == "conflict"
         assert result["preview"]["workspace"]["conflicts"][0]["path"] == "analysis.txt"
-        assert (
-            workspace / "analysis.txt"
-        ).read_text(encoding="utf-8") == "researcher edit"
+        assert (workspace / "analysis.txt").read_text(
+            encoding="utf-8"
+        ) == "researcher edit"
         # A rejected preview does not append an undo/revert checkpoint.
         assert len(repository.list_checkpoints("root")) == 2
     finally:
@@ -162,9 +163,10 @@ def test_revert_and_undo_append_history_and_preserve_untracked_files(tmp_path):
         assert reverted["requires_kernel_recovery"] is True
 
         undo_target = reverted["undo_checkpoint_id"]
-        assert repository.get_checkpoint(undo_target)["parent_checkpoint_id"] == current[
-            "checkpoint_id"
-        ]
+        assert (
+            repository.get_checkpoint(undo_target)["parent_checkpoint_id"]
+            == current["checkpoint_id"]
+        )
         undone = service.undo_revert(
             "root",
             branch_id="root",

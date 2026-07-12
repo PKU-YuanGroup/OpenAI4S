@@ -809,12 +809,11 @@ class Store:
                 "replay_policy FROM execution_log WHERE code_hash IS NULL"
             ).fetchall()
             for cell in legacy_cells:
-                visibility = cell["visibility"] or default_visibility(
-                    cell["origin"]
-                )
-                if visibility == "scientific" and str(
-                    cell["origin"] or ""
-                ).lower() in {"system", "recovery"}:
+                visibility = cell["visibility"] or default_visibility(cell["origin"])
+                if visibility == "scientific" and str(cell["origin"] or "").lower() in {
+                    "system",
+                    "recovery",
+                }:
                     visibility = default_visibility(cell["origin"])
                 replay_policy = cell["replay_policy"]
                 if not replay_policy or visibility in {"system", "recovery"}:
@@ -1360,9 +1359,7 @@ class Store:
     def mark_execution_attempt_response(
         self, attempt_id: str, *, response_at: int | None = None
     ) -> dict:
-        return self._actions.mark_attempt_response(
-            attempt_id, response_at=response_at
-        )
+        return self._actions.mark_attempt_response(attempt_id, response_at=response_at)
 
     def mark_execution_attempt_capture(
         self, attempt_id: str, *, capture_at: int | None = None
@@ -1408,9 +1405,7 @@ class Store:
     def create_kernel_generation(self, **fields: Any) -> dict:
         return self._kernel_generations.create(**fields)
 
-    def touch_kernel_generation(
-        self, generation_id: str, **fields: Any
-    ) -> dict:
+    def touch_kernel_generation(self, generation_id: str, **fields: Any) -> dict:
         return self._kernel_generations.touch(generation_id, **fields)
 
     def compare_and_swap_kernel_bootstrap(
@@ -1880,9 +1875,7 @@ class Store:
     def set_priority(self, artifact_id: str, priority: int) -> dict | None:
         return self._artifacts.set_priority(artifact_id, priority)
 
-    def set_latest_version(
-        self, artifact_id: str, version_id: str
-    ) -> dict | None:
+    def set_latest_version(self, artifact_id: str, version_id: str) -> dict | None:
         return self._artifacts.set_latest_version(artifact_id, version_id)
 
     def add_lineage_edge(
@@ -2448,9 +2441,7 @@ class Store:
             **metadata,
         )
 
-    def list_compaction_archives(
-        self, frame_id: str, *, limit: int = 50
-    ) -> list[dict]:
+    def list_compaction_archives(self, frame_id: str, *, limit: int = 50) -> list[dict]:
         return self._compactions.list(frame_id, limit=limit)
 
     # --- endpoints ----------------------------------------------

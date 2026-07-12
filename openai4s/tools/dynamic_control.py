@@ -166,7 +166,9 @@ class ActivateDynamicToolVersion(Tool):
 class RollbackDynamicToolVersion(Tool):
     name = "rollback_dynamic_tool_version"
     host_method = "dynamic_tool_rollback"
-    description = "Roll back to the previously active project/global Dynamic Tool version."
+    description = (
+        "Roll back to the previously active project/global Dynamic Tool version."
+    )
     parameters = {
         "properties": {
             "name": {"type": "string", "minLength": 1, "maxLength": 64},

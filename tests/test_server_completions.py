@@ -71,10 +71,7 @@ def test_completion_message_has_bounded_json_fallback_and_completion_fallback():
     )
     assert "Metrics:\n- accuracy: 0.93" in rendered
 
-    assert (
-        completion_message(None, language="zh", require_fallback=True)
-        == "任务已完成。"
-    )
+    assert completion_message(None, language="zh", require_fallback=True) == "任务已完成。"
     assert completion_message(None, require_fallback=False) == ""
 
 

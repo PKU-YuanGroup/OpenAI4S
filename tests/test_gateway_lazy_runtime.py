@@ -54,9 +54,7 @@ def _cfg(tmp_path, *, max_turns: int = 1) -> Config:
 
 
 def _frame(runner) -> str:
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="default", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
     runner.store.update_frame(frame_id, name="Lazy runtime test")
     return frame_id
 
@@ -209,9 +207,7 @@ def test_session_creation_plan_and_native_tool_turn_do_not_spawn(monkeypatch, tm
 
 
 def test_session_runtime_reuses_delegation_tree_and_scoped_capabilities(tmp_path):
-    runner = gateway_mod.SessionRunner(
-        _cfg(tmp_path), _Hub(), start_idle_sweeper=False
-    )
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), _Hub(), start_idle_sweeper=False)
     frame_id = _frame(runner)
     state = runner._state(frame_id, "default")
 
@@ -352,9 +348,7 @@ def test_explicit_start_and_repl_spawn_but_repl_attempt_precedes_spawn(
     assert result["cell"]["generation_id"]
     assert len(kernels) == 2
     repl_events = [
-        event
-        for event in runner.hub.events
-        if event.get("root_frame_id") == repl_frame
+        event for event in runner.hub.events if event.get("root_frame_id") == repl_frame
     ]
     assert [
         event["type"]
@@ -365,9 +359,12 @@ def test_explicit_start_and_repl_spawn_but_repl_attempt_precedes_spawn(
         "notebook_cell_chunk",
         "notebook_cell_finished",
     ]
-    assert next(
-        event for event in repl_events if event["type"] == "notebook_cell_chunk"
-    )["chunk"] == "live output"
+    assert (
+        next(event for event in repl_events if event["type"] == "notebook_cell_chunk")[
+            "chunk"
+        ]
+        == "live output"
+    )
     start = next(
         event for event in repl_events if event["type"] == "notebook_cell_start"
     )
@@ -388,9 +385,7 @@ def test_explicit_start_and_repl_spawn_but_repl_attempt_precedes_spawn(
     assert attempts[0]["generation_id"] == start["generation_id"]
 
 
-def test_reopened_repl_allocates_after_durable_attempt_revision(
-    monkeypatch, tmp_path
-):
+def test_reopened_repl_allocates_after_durable_attempt_revision(monkeypatch, tmp_path):
     runner = gateway_mod.SessionRunner(_cfg(tmp_path), _Hub())
     _install_fake_runtime(monkeypatch, runner)
     frame_id = _frame(runner)
@@ -415,9 +410,10 @@ def test_reopened_repl_allocates_after_durable_attempt_revision(
     result = runner.run_repl(frame_id, "default", "print('after reopen')")
 
     assert result["cell"]["state_revision"] == 8
-    assert [
-        cell["state_revision"] for cell in runner.store.list_cells(frame_id)
-    ] == [5, 8]
+    assert [cell["state_revision"] for cell in runner.store.list_cells(frame_id)] == [
+        5,
+        8,
+    ]
     attempt = next(
         item
         for item in runner.store.list_execution_attempts(root_frame_id=frame_id)

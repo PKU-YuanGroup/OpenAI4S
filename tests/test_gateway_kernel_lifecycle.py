@@ -303,9 +303,7 @@ def test_environment_replacement_keeps_session_dispatcher_and_commits_active_env
     from openai4s.kernel import environments as envmod
 
     runner = _runner(tmp_path)
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="default", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
     st = runner._state(frame_id, "default")
     st.messages = [{"role": "system", "content": "test"}]
     envs = {

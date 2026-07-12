@@ -108,9 +108,7 @@ def _chat_responses(
                     "arguments": "",
                 },
             )
-            item["arguments"] = (item.get("arguments") or "") + (
-                evt.get("delta") or ""
-            )
+            item["arguments"] = (item.get("arguments") or "") + (evt.get("delta") or "")
         elif t == "response.function_call_arguments.done":
             index = evt.get("output_index")
             try:
@@ -147,9 +145,7 @@ def _chat_responses(
             err = (resp.get("error") or {}) if isinstance(resp, dict) else {}
             # a flat `error` event carries `message` at the top level, while
             # response.failed nests it under response.error
-            state["error"] = (
-                err.get("message") or evt.get("message") or str(evt)[:400]
-            )
+            state["error"] = err.get("message") or evt.get("message") or str(evt)[:400]
 
     # Idle (no-bytes) timeout for the stream. Respect the configured timeout so a
     # stalled/hung model finalises the turn promptly instead of "running forever";

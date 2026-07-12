@@ -38,7 +38,9 @@ class SkillCustomizationService:
             else loader
         )
         cfg = getattr(self.loader, "cfg", None)
-        self.versions = versions or (SkillVersionService(cfg) if cfg is not None else None)
+        self.versions = versions or (
+            SkillVersionService(cfg) if cfg is not None else None
+        )
         try:
             self.disabled_names = self.loader.capabilities.disabled_names("skill")
         except Exception:  # noqa: BLE001 - compatibility with simple test doubles
@@ -127,9 +129,7 @@ class SkillCustomizationService:
         user_directory.mkdir(parents=True, exist_ok=True)
         user_directory = user_directory.resolve()
         root = (
-            existing_skill.root
-            if existing_skill is not None
-            else user_directory / slug
+            existing_skill.root if existing_skill is not None else user_directory / slug
         )
         if root.is_symlink():
             return {"error": "unsafe user skill path"}
@@ -156,11 +156,7 @@ class SkillCustomizationService:
         content = frontmatter + (body or "").strip() + "\n"
         if self.versions is not None:
             try:
-                files = (
-                    self.versions.read_package(root)
-                    if document.exists()
-                    else {}
-                )
+                files = self.versions.read_package(root) if document.exists() else {}
                 files["SKILL.md"] = content.encode("utf-8")
                 self.versions.install(
                     document_name,
@@ -280,8 +276,7 @@ class SkillCustomizationService:
 
         try:
             editable = {
-                skill.name: not skill.read_only
-                for skill in self._all_skills().values()
+                skill.name: not skill.read_only for skill in self._all_skills().values()
             }
         except Exception:  # noqa: BLE001 - preserve compatibility with test doubles
             editable = {}

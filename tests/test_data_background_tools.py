@@ -132,15 +132,9 @@ def test_data_and_background_policy_taxonomy_and_resources():
     assert interrupt.read_only is False
     assert interrupt.requires_approval is False
     assert interrupt.side_effect_class == "runtime_mutation"
-    assert interrupt.resource_keys({"exec_id": "exec-1"}) == (
-        "background_exec:exec-1",
-    )
-    assert get_tool("query").resource_keys({"sql": "SELECT 1"}) == (
-        "database:query",
-    )
-    assert get_tool("frames").resource_keys({"project_id": "p-1"}) == (
-        "frame:p-1",
-    )
+    assert interrupt.resource_keys({"exec_id": "exec-1"}) == ("background_exec:exec-1",)
+    assert get_tool("query").resource_keys({"sql": "SELECT 1"}) == ("database:query",)
+    assert get_tool("frames").resource_keys({"project_id": "p-1"}) == ("frame:p-1",)
     assert get_tool("lineage_graph").resource_keys({"version_id": "v-1"}) == (
         "lineage:v-1",
     )
@@ -161,9 +155,7 @@ def test_native_query_remains_strictly_read_only_without_approval(tmp_path):
 
     # Read-only tools do not consult approval rules; the Store's query guard is
     # the non-bypassable boundary and still rejects every write statement.
-    assert dispatcher("query", [{"sql": "SELECT 7 AS value"}]) == [
-        {"value": 7}
-    ]
+    assert dispatcher("query", [{"sql": "SELECT 7 AS value"}]) == [{"value": 7}]
     with pytest.raises(ValueError, match="only allows read-only"):
         dispatcher("query", [{"sql": "DELETE FROM frames"}])
     assert "settings" not in dispatcher("query_schema", [])
@@ -199,9 +191,7 @@ def test_background_submit_is_gated_but_exact_interrupt_stays_available(tmp_path
         "exec_id": "exec-1",
         "status": "running",
     }
-    assert dispatcher("exec_list", []) == [
-        {"exec_id": "exec-1", "status": "running"}
-    ]
+    assert dispatcher("exec_list", []) == [{"exec_id": "exec-1", "status": "running"}]
     # Existing in-kernel Host SDK calls remain positional after registration.
     assert dispatcher("exec_peek", ["exec-1"])["stdout"] == "partial"
 

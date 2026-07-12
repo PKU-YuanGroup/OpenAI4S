@@ -62,8 +62,7 @@ def _definition(**overrides):
             "additionalProperties": False,
         },
         "implementation": (
-            "def execute(args):\n"
-            "    return {'total': sum(args['values'])}\n"
+            "def execute(args):\n" "    return {'total': sum(args['values'])}\n"
         ),
         "smoke_args": {"values": [1, 2]},
         "ttl_s": 60,
@@ -113,9 +112,7 @@ def test_dynamic_source_gate_rejects_host_escape_surfaces(source, message):
         validate_dynamic_source(source)
 
 
-def test_dynamic_worker_environment_does_not_inherit_host_secret(
-    tmp_path, monkeypatch
-):
+def test_dynamic_worker_environment_does_not_inherit_host_secret(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI4S_LLM_API_KEY", "must-not-cross")
     observed = {}
 

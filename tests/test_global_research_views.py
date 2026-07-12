@@ -27,9 +27,9 @@ def test_global_timeline_merges_sessions_without_raw_payloads(tmp_path):
         created_at=10,
     )
 
-    view = GlobalResearchViewService(
-        store, ActionTimelineService(store)
-    ).timeline_view("science")
+    view = GlobalResearchViewService(store, ActionTimelineService(store)).timeline_view(
+        "science"
+    )
 
     assert [group["root_frame_id"] for group in view["groups"]] == [first, second]
     assert [group["session"]["name"] for group in view["groups"]] == [
@@ -72,9 +72,9 @@ def test_global_lineage_connects_artifact_versions_and_cells(tmp_path):
         frame_id=root,
     )
 
-    view = GlobalResearchViewService(
-        store, ActionTimelineService(store)
-    ).lineage_view("science")
+    view = GlobalResearchViewService(store, ActionTimelineService(store)).lineage_view(
+        "science"
+    )
 
     ids = {node["id"] for node in view["nodes"]}
     assert first["version_id"] in ids

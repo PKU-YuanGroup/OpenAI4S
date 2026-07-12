@@ -42,9 +42,9 @@ def test_create_update_read_delete_writes_exact_user_document(tmp_path):
         "slug": "my-skill",
         "origin": "user",
     }
-    document = (
-        service.loader.user_skills_dir() / "my-skill" / "SKILL.md"
-    ).read_text("utf-8")
+    document = (service.loader.user_skills_dir() / "my-skill" / "SKILL.md").read_text(
+        "utf-8"
+    )
     assert document == (
         "---\nname: My Skill\ndescription: multi space description\n"
         "origin: user\n---\n\n# Recipe\nDo it.\n"
@@ -75,9 +75,7 @@ def test_create_update_read_delete_writes_exact_user_document(tmp_path):
 def test_validation_builtin_collision_and_read_only_delete_contract(tmp_path):
     _config, service = _service(tmp_path)
 
-    assert service.create_or_update("", "", "") == {
-        "error": "skill name is required"
-    }
+    assert service.create_or_update("", "", "") == {"error": "skill name is required"}
     assert service.create_or_update("Builtin", "custom", "body") == {
         "error": "'builtin' collides with a built-in skill — pick a different name"
     }
@@ -140,9 +138,7 @@ def test_customize_edits_host_draft_and_personal_skills_by_user_root(tmp_path):
         "slug": "host-draft-directory",
         "origin": "draft",
     }
-    document = (
-        user_directory / "host-draft-directory" / "SKILL.md"
-    ).read_text("utf-8")
+    document = (user_directory / "host-draft-directory" / "SKILL.md").read_text("utf-8")
     assert "origin: draft" in document
     assert document.endswith("# Updated\n")
 
@@ -191,9 +187,12 @@ def test_import_precedence_and_catalog_enablement(tmp_path):
     assert catalog["Imported"]["enabled"] is False
     assert catalog["Imported"]["editable"] is True
     assert service.set_enabled("Imported", True) == {"ok": True}
-    assert next(
-        item for item in service.catalog() if item["name"] == "Imported"
-    )["enabled"] is True
+    assert (
+        next(item for item in service.catalog() if item["name"] == "Imported")[
+            "enabled"
+        ]
+        is True
+    )
 
     class BrokenLoader:
         def catalog(self):
@@ -286,11 +285,7 @@ def test_gateway_skill_routes_keep_soft_errors_and_shared_enablement(tmp_path):
         first,
         "POST",
         "/skills/import",
-        {
-            "content": (
-                "---\nname: Route Import\ndescription: route\n---\n\nRoute body"
-            )
-        },
+        {"content": ("---\nname: Route Import\ndescription: route\n---\n\nRoute body")},
     )
     assert imported[0] == 200 and imported[1]["slug"] == "route-import"
     assert call(first, "GET", "/skills/Missing") == (

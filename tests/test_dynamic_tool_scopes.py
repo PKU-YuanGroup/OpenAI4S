@@ -39,8 +39,7 @@ def _definition(name: str, marker: str) -> dict:
             "additionalProperties": False,
         },
         "implementation": (
-            "def execute(args):\n"
-            f"    return {{'value': {marker!r}}}\n"
+            "def execute(args):\n" f"    return {{'value': {marker!r}}}\n"
         ),
         "smoke_args": {},
         "ttl_s": 600,
@@ -89,18 +88,14 @@ def test_promoted_versions_are_consumed_only_in_their_bound_scope(tmp_path):
 
     project_record = next(
         item
-        for item in author.versions(name="project_method", scope="project")[
-            "versions"
-        ]
+        for item in author.versions(name="project_method", scope="project")["versions"]
         if item["manifest_id"] == project_version.manifest_id
     )
     assert project_record["scope_id"] == "project-a"
     assert project_record["source_project_id"] == "project-a"
     assert project_record["source_root_frame_id"] == "root-author"
 
-    cross_project_global = other_project.versions(
-        name="global_method", scope="global"
-    )
+    cross_project_global = other_project.versions(name="global_method", scope="global")
     assert cross_project_global["versions"][0]["source_project_id"] is None
     assert cross_project_global["versions"][0]["source_root_frame_id"] is None
     assert cross_project_global["events"][0]["actor_project_id"] is None
@@ -248,7 +243,9 @@ def test_class_tools_gate_activation_and_rollback_through_host(tmp_path):
 
     consumer_registry = _registry(tmp_path, "root-host-consumer", "project-a")
     catalog = SessionToolCatalog(consumer_registry)
-    dispatcher = build_dispatcher(Config(data_dir=tmp_path / "data"), workspace=tmp_path)
+    dispatcher = build_dispatcher(
+        Config(data_dir=tmp_path / "data"), workspace=tmp_path
+    )
     dispatcher.frame_id = dispatcher.store.new_frame(project_id="project-a")
     dispatcher.tool_catalog = lambda: catalog
 

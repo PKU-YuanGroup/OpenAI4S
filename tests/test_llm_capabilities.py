@@ -181,9 +181,7 @@ def test_chat_enforces_output_limit_before_transport():
         ),
     ],
 )
-def test_usage_mapping_is_canonical_and_keeps_openai_aliases(
-    provider, raw, expected
-):
+def test_usage_mapping_is_canonical_and_keeps_openai_aliases(provider, raw, expected):
     usage = llm.normalize_usage(raw, provider)
     input_tokens, output_tokens, cache_read, cache_write, reasoning, total = expected
     assert usage == {

@@ -88,10 +88,7 @@ class MemoryRepository:
         sql += " GROUP BY block ORDER BY n DESC"
         with self._lock:
             rows = self._connection.execute(sql, params).fetchall()
-        return [
-            {"block": row["block"] or "general", "count": row["n"]}
-            for row in rows
-        ]
+        return [{"block": row["block"] or "general", "count": row["n"]} for row in rows]
 
     def _execute(self, sql: str, params: tuple = ()) -> None:
         with self._lock:

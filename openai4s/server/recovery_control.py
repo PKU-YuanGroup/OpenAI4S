@@ -47,17 +47,22 @@ class RecoveryActionPlan:
 
 
 class RecoveryStore(Protocol):
-    def append_recovery_event(self, **fields: Any) -> dict: ...
+    def append_recovery_event(self, **fields: Any) -> dict:
+        ...
 
-    def list_recovery_events(self, **filters: Any) -> list[dict]: ...
+    def list_recovery_events(self, **filters: Any) -> list[dict]:
+        ...
 
-    def get_session_branch(self, branch_id: str) -> dict | None: ...
+    def get_session_branch(self, branch_id: str) -> dict | None:
+        ...
 
-    def get_session_checkpoint(self, checkpoint_id: str) -> dict | None: ...
+    def get_session_checkpoint(self, checkpoint_id: str) -> dict | None:
+        ...
 
     def latest_kernel_generation(
         self, root_frame_id: str, language: str, *, branch_id: str | None = None
-    ) -> dict | None: ...
+    ) -> dict | None:
+        ...
 
 
 class RecoveryControlService:
@@ -94,9 +99,7 @@ class RecoveryControlService:
         stored = self.store.append_recovery_event(
             recovery_id=str(event["recovery_id"]),
             root_frame_id=str(event["root_frame_id"]),
-            branch_id=(
-                str(event["branch_id"]) if event.get("branch_id") else None
-            ),
+            branch_id=(str(event["branch_id"]) if event.get("branch_id") else None),
             source_generation_id=(
                 str(event["source_generation_id"])
                 if event.get("source_generation_id")
@@ -278,9 +281,7 @@ class RecoveryControlService:
         return {
             "root_frame_id": root_frame_id,
             "branch_id": branch_id,
-            "checkpoint_id": (
-                checkpoint.get("checkpoint_id") if checkpoint else None
-            ),
+            "checkpoint_id": (checkpoint.get("checkpoint_id") if checkpoint else None),
             "state": status["state"],
             "actions": actions,
         }
@@ -316,9 +317,7 @@ class RecoveryControlService:
                 str(action.get("reason") or "recovery action is disabled")
             )
         if action.get("requires_confirmation") and not confirmed:
-            raise RecoveryActionError(
-                f"{action_id} requires explicit confirmation"
-            )
+            raise RecoveryActionError(f"{action_id} requires explicit confirmation")
 
         checkpoint_id = projection.get("checkpoint_id")
         if action_id == "restart_fresh":

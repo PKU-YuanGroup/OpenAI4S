@@ -81,9 +81,11 @@ def test_delegated_agent_writes_its_own_canonical_ledger(monkeypatch):
     assert result["stop_reason"] == "submitted"
     child_frame_id = result["frame_id"]
     assert child_frame_id
-    assert [
-        group["kind"] for group in store.list_action_groups(child_frame_id)
-    ] == ["user", "finalize", "terminal"]
+    assert [group["kind"] for group in store.list_action_groups(child_frame_id)] == [
+        "user",
+        "finalize",
+        "terminal",
+    ]
 
 
 def test_nested_runners_share_one_tree_budget_and_stats(monkeypatch):
@@ -183,9 +185,7 @@ def test_depth_four_is_an_unconditional_leaf(monkeypatch):
     parent = DelegationRunner(get_config(), depth=3)
     parent({"request": "make a leaf"})
 
-    assert observed == [
-        {"depth": 4, "allow_delegate": False, "delegate_fn": None}
-    ]
+    assert observed == [{"depth": 4, "allow_delegate": False, "delegate_fn": None}]
     leaf = DelegationRunner(get_config(), depth=4)
     with pytest.raises(DelegationError, match="leaves and cannot delegate"):
         leaf({"request": "must not run"})
@@ -335,9 +335,7 @@ def test_parent_stop_propagates_to_running_descendants(monkeypatch):
     def cancellable_run(self, task):
         if self.delegate_depth == 1 and task == "parent child":
             nested_handle.update(
-                self.dispatcher._delegate_fn(
-                    {"request": "grandchild", "wait": False}
-                )
+                self.dispatcher._delegate_fn({"request": "grandchild", "wait": False})
             )
             child_ready.set()
             assert grandchild_ready.wait(2)
@@ -373,9 +371,7 @@ def test_parent_stop_propagates_to_running_descendants(monkeypatch):
     assert stats["running"] == 1
     assert runner._children[sibling["child_id"]].stop_event.is_set() is False
     descendants = runner._tree.descendants(parent["child_id"], include_self=False)
-    assert [child.child_id for child in descendants] == [
-        nested_handle["child_id"]
-    ]
+    assert [child.child_id for child in descendants] == [nested_handle["child_id"]]
     assert descendants[0].stop_event.is_set()
     release_sibling.set()
     sibling_result = runner.collect({"child_ids": [sibling["child_id"]]})[0]
@@ -424,15 +420,17 @@ def test_live_steering_is_delivered_at_next_turn_boundary(monkeypatch):
     assert snapshot["steering"]["delivered"] == 1
     assert snapshot["steering"]["messages"][0]["boundary"] == 2
     assert any(
-        message["role"] == "user"
-        and "Use the newer dataset" in message["content"]
+        message["role"] == "user" and "Use the newer dataset" in message["content"]
         for message in observed_messages
     )
     assert "steering_queued" in {event["event"] for event in events}
     assert "steering_delivered" in {event["event"] for event in events}
-    assert runner.send_message(
-        {"child_id": handle["child_id"], "message": "too late"}
-    )["status"] == "rejected"
+    assert (
+        runner.send_message({"child_id": handle["child_id"], "message": "too late"})[
+            "status"
+        ]
+        == "rejected"
+    )
 
 
 def test_child_model_steps_and_policy_overrides_remain_visible(monkeypatch):

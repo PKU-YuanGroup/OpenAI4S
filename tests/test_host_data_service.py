@@ -62,9 +62,7 @@ class FakeStore:
         return [{"frame_id": "search"}]
 
     def browse_frames(self, *, project_id, status, roots_only, limit):
-        self.calls.append(
-            ("browse_frames", project_id, status, roots_only, limit)
-        )
+        self.calls.append(("browse_frames", project_id, status, roots_only, limit))
         return [{"frame_id": "browse"}]
 
     def producing_cell_for_version(self, version_id):
@@ -193,7 +191,9 @@ def test_frames_modes_validate_before_store_access(tmp_path):
     assert service.frames({"frame_id": "f1", "page": 2, "page_size": 7}) == {
         "frame_id": "f1"
     }
-    assert service.frames({"pattern": "protein", "project_id": "all"})["mode"] == "search"
+    assert (
+        service.frames({"pattern": "protein", "project_id": "all"})["mode"] == "search"
+    )
     assert service.frames({"status": "done", "roots_only": False}) == {
         "mode": "browse",
         "frames": [{"frame_id": "browse"}],

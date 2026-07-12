@@ -38,18 +38,14 @@ def test_memory_repository_shares_store_boundary_and_preserves_filters(tmp_path)
         first["memory_id"],
         general["memory_id"],
     ]
-    assert store.list_memories(project_id=None) == store.list_memories(
-        project_id="all"
-    )
+    assert store.list_memories(project_id=None) == store.list_memories(project_id="all")
     assert [item["content"] for item in store.list_memories(project_id="a")] == [
         "second a",
         "first a",
     ]
     assert len(store.list_memories(block="research")) == 3
     assert store.list_memories(project_id="a", block="missing") == []
-    assert store.list_memories(project_id="a") == store._memories.list(
-        project_id="a"
-    )
+    assert store.list_memories(project_id="a") == store._memories.list(project_id="a")
 
 
 def test_memory_categories_legacy_default_delete_and_project_cascade(tmp_path):

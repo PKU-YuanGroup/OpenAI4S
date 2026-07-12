@@ -175,7 +175,5 @@ def test_native_batch_preserves_order_and_lossless_call_details():
     assert action.calls[0].wire_id is None
     assert action.calls[0].ordinal == 0
     assert action.calls[0].arguments is None
-    assert action.calls[0].parse_error == (
-        "Expecting value: line 1 column 9 (char 8)"
-    )
+    assert action.calls[0].parse_error == ("Expecting value: line 1 column 9 (char 8)")
     assert action.calls[0].provider_meta == malformed["provider_meta"]

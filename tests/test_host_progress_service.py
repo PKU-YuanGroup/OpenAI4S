@@ -122,9 +122,7 @@ def test_plan_error_precedence_explicit_lookup_and_status_normalization(tmp_path
     store = _store(tmp_path)
     state = {"frame_id": "missing", "sink": None}
     service = _service(store, state)
-    assert service.plan_update({}) == {
-        "error": "no active plan for this session"
-    }
+    assert service.plan_update({}) == {"error": "no active plan for this session"}
 
     current_frame = store.new_frame(project_id="science")
     current_plan = _plan(store, current_frame, "Current")
@@ -133,9 +131,9 @@ def test_plan_error_precedence_explicit_lookup_and_status_normalization(tmp_path
     events = []
     state.update(frame_id=current_frame, sink=events.append)
     assert service.plan_update({}) == {"error": "plan_update requires step_id"}
-    assert service.plan_update(
-        {"plan_id": "missing-plan", "step_id": "s1"}
-    ) == {"error": "no active plan for this session"}
+    assert service.plan_update({"plan_id": "missing-plan", "step_id": "s1"}) == {
+        "error": "no active plan for this session"
+    }
 
     result = service.plan_update(
         {
@@ -166,9 +164,12 @@ def test_plan_error_precedence_explicit_lookup_and_status_normalization(tmp_path
         get_frame_id=unexpected_frame_lookup,
         get_plan_sink=lambda: None,
     )
-    assert explicit_service.plan_update(
-        {"plan_id": other_plan["plan_id"], "step_id": "direct"}
-    )["plan_id"] == other_plan["plan_id"]
+    assert (
+        explicit_service.plan_update(
+            {"plan_id": other_plan["plan_id"], "step_id": "direct"}
+        )["plan_id"]
+        == other_plan["plan_id"]
+    )
 
     with pytest.raises(TypeError):
         service.plan_update({"step_id": "s1", "status": ["bad"]})

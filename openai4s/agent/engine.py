@@ -125,7 +125,9 @@ class AgentEngine:
 
     @staticmethod
     def _reply(value: ModelReply | Mapping[str, Any]) -> ModelReply:
-        return value if isinstance(value, ModelReply) else ModelReply.from_mapping(value)
+        return (
+            value if isinstance(value, ModelReply) else ModelReply.from_mapping(value)
+        )
 
     def _finish(
         self, state: RunState, completion: Any, stop_reason: str

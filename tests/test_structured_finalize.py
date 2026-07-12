@@ -74,14 +74,18 @@ class _NeverKernel:
     generation = 0
 
     def execute(self, *args, **kwargs):
-        raise AssertionError(f"structured finalization started a kernel: {args!r} {kwargs!r}")
+        raise AssertionError(
+            f"structured finalization started a kernel: {args!r} {kwargs!r}"
+        )
 
 
 class _NeverDispatcher:
     last_output = None
 
     def __call__(self, *args, **kwargs):
-        raise AssertionError(f"structured finalization dispatched a tool: {args!r} {kwargs!r}")
+        raise AssertionError(
+            f"structured finalization dispatched a tool: {args!r} {kwargs!r}"
+        )
 
 
 def _local_executor():
@@ -100,7 +104,9 @@ def _web_executor(*, cancelled=lambda: False, plan_mode=False):
     events = WebEventSink(sent.append, "frame-1", [], lambda usage: None)
 
     def unexpected(*args, **kwargs):
-        raise AssertionError(f"structured finalization ran Web work: {args!r} {kwargs!r}")
+        raise AssertionError(
+            f"structured finalization ran Web work: {args!r} {kwargs!r}"
+        )
 
     return WebActionExecutor(
         dispatcher=lambda: unexpected,
@@ -324,9 +330,7 @@ def test_finalize_ledger_roundtrip_and_timeline_projection(tmp_path):
     ledger.emit(ActionRouted(action, 0))
     ledger.emit(OutcomeProduced(outcome, 0))
     ledger.emit(
-        RunFinished(
-            EngineResult((), outcome.completion, "submitted", 1, reply)
-        )
+        RunFinished(EngineResult((), outcome.completion, "submitted", 1, reply))
     )
 
     groups = store.list_action_groups("root-final")
@@ -339,7 +343,9 @@ def test_finalize_ledger_roundtrip_and_timeline_projection(tmp_path):
     assert history[-1]["tool_call_id"] == call.id
 
     timeline = ActionTimelineService(store).get("root-final")
-    finalized = next(group for group in timeline["groups"] if group["kind"] == "finalize")
+    finalized = next(
+        group for group in timeline["groups"] if group["kind"] == "finalize"
+    )
     assert finalized["status"] == "completed"
     assert finalized["title"].startswith("The inspected evidence")
     store.close()

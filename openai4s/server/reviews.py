@@ -17,21 +17,29 @@ from typing import Any, Callable, Mapping, MutableMapping, Protocol
 
 
 class ReviewStore(Protocol):
-    def get_setting(self, key: str, default: str | None = None) -> str | None: ...
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        ...
 
-    def list_model_profiles(self) -> list[dict]: ...
+    def list_model_profiles(self) -> list[dict]:
+        ...
 
-    def add_step(self, **fields: Any) -> None: ...
+    def add_step(self, **fields: Any) -> None:
+        ...
 
-    def update_step(self, step_id: str, **fields: Any) -> None: ...
+    def update_step(self, step_id: str, **fields: Any) -> None:
+        ...
 
-    def list_artifacts(self, filters: dict) -> list[dict]: ...
+    def list_artifacts(self, filters: dict) -> list[dict]:
+        ...
 
-    def resolve_artifact_path(self, artifact_id: str) -> str | None: ...
+    def resolve_artifact_path(self, artifact_id: str) -> str | None:
+        ...
 
-    def list_cells(self, root_frame_id: str) -> list[dict]: ...
+    def list_cells(self, root_frame_id: str) -> list[dict]:
+        ...
 
-    def step_count(self, root_frame_id: str) -> int: ...
+    def step_count(self, root_frame_id: str) -> int:
+        ...
 
     def list_steps(
         self,
@@ -39,7 +47,8 @@ class ReviewStore(Protocol):
         *,
         start: int = 0,
         limit: int = 200,
-    ) -> list[dict]: ...
+    ) -> list[dict]:
+        ...
 
     def add_frame_tokens(
         self,
@@ -47,13 +56,17 @@ class ReviewStore(Protocol):
         *,
         input_tokens: int,
         output_tokens: int,
-    ) -> None: ...
+    ) -> None:
+        ...
 
-    def get_frame(self, frame_id: str) -> dict | None: ...
+    def get_frame(self, frame_id: str) -> dict | None:
+        ...
 
-    def update_frame(self, frame_id: str, **fields: Any) -> None: ...
+    def update_frame(self, frame_id: str, **fields: Any) -> None:
+        ...
 
-    def message_count(self, root_frame_id: str) -> int: ...
+    def message_count(self, root_frame_id: str) -> int:
+        ...
 
     def list_messages(
         self,
@@ -61,7 +74,8 @@ class ReviewStore(Protocol):
         *,
         start: int = 0,
         limit: int = 1000,
-    ) -> list[dict]: ...
+    ) -> list[dict]:
+        ...
 
 
 class ReviewState(Protocol):
@@ -69,7 +83,8 @@ class ReviewState(Protocol):
     cancel: threading.Event
     dispatcher: Any
 
-    def execution_barrier(self): ...
+    def execution_barrier(self):
+        ...
 
 
 class ReviewJob(Protocol):
@@ -82,7 +97,8 @@ class ReviewJob(Protocol):
         self,
         result: dict | None = None,
         error: str | None = None,
-    ) -> None: ...
+    ) -> None:
+        ...
 
 
 EventSink = Callable[[dict], None]
@@ -156,18 +172,14 @@ class ReviewService:
     def llm_config(self, state: ReviewState):
         """Resolve the Reviewer model while retaining the agent-model sentinel."""
         config = self.ports.llm_config_for(state)
-        local_model = self.store.get_setting(
-            f"review:model:{state.root_frame_id}"
-        )
+        local_model = self.store.get_setting(f"review:model:{state.root_frame_id}")
         if local_model == "__agent__":
             model = None
         else:
             model = local_model
         if local_model is None and not model:
             model = self.store.get_setting("reviewer_model")
-        overrides: dict = {
-            "timeout_s": min(float(config.timeout_s), 45.0)
-        }
+        overrides: dict = {"timeout_s": min(float(config.timeout_s), 45.0)}
         model = (model or "").strip()
         if model:
             profile = next(
@@ -200,9 +212,7 @@ class ReviewService:
             elif profile and profile.get("base_url"):
                 overrides["base_url"] = str(profile["base_url"]).strip()
             if profile and self.ports.clean_api_key(profile.get("api_key")):
-                overrides["api_key"] = self.ports.clean_api_key(
-                    profile.get("api_key")
-                )
+                overrides["api_key"] = self.ports.clean_api_key(profile.get("api_key"))
         try:
             return dataclasses.replace(config, **overrides)
         except Exception:  # noqa: BLE001 - preserve the agent config fallback
@@ -223,9 +233,7 @@ class ReviewService:
                 "application/xml",
                 "application/javascript",
             }
-            or filename.endswith(
-                (".md", ".txt", ".csv", ".tsv", ".json", ".py", ".r")
-            )
+            or filename.endswith((".md", ".txt", ".csv", ".tsv", ".json", ".py", ".r"))
         )
         if not readable:
             return None
@@ -272,9 +280,7 @@ class ReviewService:
             }
         )
         try:
-            artifacts = self.store.list_artifacts(
-                {"root_frame_id": root_frame_id}
-            )
+            artifacts = self.store.list_artifacts({"root_frame_id": root_frame_id})
             changed = []
             changed_total = 0
             for artifact in artifacts:
@@ -300,14 +306,12 @@ class ReviewService:
                     "content_type": artifact.get("content_type"),
                     "size_bytes": artifact.get("size_bytes"),
                     "latest_version_id": latest,
-                    "exists": bool(
-                        resolved_path and Path(resolved_path).is_file()
-                    ),
+                    "exists": bool(resolved_path and Path(resolved_path).is_file()),
                 }
                 excerpt = (
-                    (
-                        self.ports.artifact_excerpt or self.artifact_excerpt
-                    )(artifact_with_path)
+                    (self.ports.artifact_excerpt or self.artifact_excerpt)(
+                        artifact_with_path
+                    )
                     if len(changed) < 12
                     else None
                 )
@@ -454,9 +458,7 @@ class ReviewService:
                         step_id,
                         status="cancelled",
                         output=output,
-                        summary=(
-                            "Review cancelled · provider request finishing"
-                        ),
+                        summary=("Review cancelled · provider request finishing"),
                     )
                     emit(
                         {
@@ -539,9 +541,7 @@ class ReviewService:
             if root_frame_id in self.operations:
                 return True
             provider_call = self.provider_calls.get(root_frame_id)
-            return bool(
-                provider_call is not None and not provider_call.is_set()
-            )
+            return bool(provider_call is not None and not provider_call.is_set())
 
     def submit(self, root_frame_id: str, project_id: str) -> ReviewJob:
         """Run an on-demand Reviewer without adding conversation messages."""
@@ -595,12 +595,8 @@ class ReviewService:
                             "status": "processing",
                         }
                     )
-                    branch_reader = getattr(
-                        self.store, "list_branch_messages", None
-                    )
-                    active_branch = getattr(
-                        self.store, "active_session_branch", None
-                    )
+                    branch_reader = getattr(self.store, "list_branch_messages", None)
+                    active_branch = getattr(self.store, "active_session_branch", None)
                     if callable(branch_reader) and callable(active_branch):
                         messages = branch_reader(
                             root_frame_id,
@@ -643,9 +639,7 @@ class ReviewService:
                         step_count_before=0,
                         mode="manual",
                     )
-                    job_status = (
-                        "cancelled" if state.cancel.is_set() else "completed"
-                    )
+                    job_status = "cancelled" if state.cancel.is_set() else "completed"
                     job_result = {
                         "status": job_status,
                         "frame_id": root_frame_id,

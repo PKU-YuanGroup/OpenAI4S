@@ -87,9 +87,7 @@ class DelegationService:
     def delegate(self, spec: dict) -> Any:
         delegate = self._delegate()
         if delegate is None:
-            raise RuntimeError(
-                "host.delegate not available: no sub-agent runner wired"
-            )
+            raise RuntimeError("host.delegate not available: no sub-agent runner wired")
         name = spec.get("specialist") or spec.get("name")
         if name:
             if not self._specialist_enabled(str(name)):

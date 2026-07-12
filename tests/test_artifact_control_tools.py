@@ -37,9 +37,7 @@ class ArtifactControlHarness:
         def resolve(path: str, *, must_exist: bool = False) -> Path:
             candidate = Path(path)
             target = (
-                candidate
-                if candidate.is_absolute()
-                else self.workspace / candidate
+                candidate if candidate.is_absolute() else self.workspace / candidate
             ).resolve()
             target.relative_to(self.workspace.resolve())
             if must_exist and not target.exists():
@@ -86,21 +84,18 @@ class ArtifactControlHarness:
 
 def test_artifact_lifecycle_tools_own_schema_policy_and_behavior():
     assert isinstance(get_tool("get_artifact_metadata"), GetArtifactMetadataTool)
-    assert isinstance(
-        get_tool("list_artifact_versions"), ListArtifactVersionsTool
-    )
+    assert isinstance(get_tool("list_artifact_versions"), ListArtifactVersionsTool)
     restore = get_tool("restore_artifact_version")
     assert isinstance(restore, RestoreArtifactVersionTool)
     assert restore.requires_approval is True
     assert restore.read_only is False
     assert restore.dangerous is True
     assert restore.side_effect_class == "high_risk"
-    assert restore.permission_target(
-        {"artifact_id": "a-1", "version_id": "v-1"}
-    ) == "a-1@v-1"
-    assert restore.resource_keys(
-        {"artifact_id": "a-1", "version_id": "v-1"}
-    ) == (
+    assert (
+        restore.permission_target({"artifact_id": "a-1", "version_id": "v-1"})
+        == "a-1@v-1"
+    )
+    assert restore.resource_keys({"artifact_id": "a-1", "version_id": "v-1"}) == (
         "artifact:a-1",
         "artifact_version:v-1",
         "workspace:a-1",
@@ -113,9 +108,7 @@ def test_artifact_lifecycle_tools_own_schema_policy_and_behavior():
             calls.append((method, arguments))
             return {"ok": True}
 
-    restore.execute(
-        Runtime(), {"artifact_id": "a-1", "version_id": "v-1"}
-    )
+    restore.execute(Runtime(), {"artifact_id": "a-1", "version_id": "v-1"})
     assert calls == [
         (
             "restore_artifact_version",
@@ -141,9 +134,7 @@ def test_metadata_and_version_list_are_exact_scoped_and_path_free(tmp_path):
     assert "path" not in metadata["version"]
     assert "snapshot_path" not in metadata["version"]
 
-    versions = harness.service.artifact_versions(
-        {"artifact_id": first["artifact_id"]}
-    )
+    versions = harness.service.artifact_versions({"artifact_id": first["artifact_id"]})
     assert versions["count"] == 2
     assert versions["latest_version_id"] == second["version_id"]
     assert [item["version_id"] for item in versions["versions"]] == [
@@ -152,9 +143,7 @@ def test_metadata_and_version_list_are_exact_scoped_and_path_free(tmp_path):
     ]
     assert all(item["snapshot_available"] for item in versions["versions"])
 
-    other = harness.store.new_frame(
-        kind="turn", project_id="other", status="ready"
-    )
+    other = harness.store.new_frame(kind="turn", project_id="other", status="ready")
     foreign_service = harness.service_for(other)
     with pytest.raises(PermissionError, match="outside the current session"):
         foreign_service.artifact_metadata({"artifact_id": first["artifact_id"]})
@@ -188,9 +177,7 @@ def test_restore_copies_verified_snapshot_to_fresh_version_and_lineage(tmp_path)
         == restored["version_id"]
     )
     new_metadata = harness.store.version_meta(restored["version_id"])
-    assert Path(new_metadata["snapshot_path"]).parent == (
-        harness.config.artifacts_dir
-    )
+    assert Path(new_metadata["snapshot_path"]).parent == (harness.config.artifacts_dir)
     assert Path(new_metadata["snapshot_path"]).read_bytes() == b"alpha"
     assert harness.store.lineage_edges_for(restored["version_id"], "up") == [
         first["version_id"]

@@ -30,9 +30,7 @@ def _runner(tmp_path):
         hub,
         start_idle_sweeper=False,
     )
-    frame_id = runner.store.new_frame(
-        kind="turn", project_id="science", status="ready"
-    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="science", status="ready")
     state = SessionState(frame_id, "science", runner.workspace_for(frame_id))
     return runner, hub, state
 
@@ -92,9 +90,7 @@ def test_compaction_payload_is_linked_into_session_history(tmp_path):
                     {
                         "role": "tool",
                         "content": "preview",
-                        "artifact_refs": [
-                            {"artifact_id": "a-1", "version_id": "v-1"}
-                        ],
+                        "artifact_refs": [{"artifact_id": "a-1", "version_id": "v-1"}],
                     }
                 ],
             },

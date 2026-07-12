@@ -16,33 +16,43 @@ from typing import Any, Protocol
 class SessionControlStore(Protocol):
     """The narrow durable Store projection required by this service."""
 
-    def resolve_frame_scope(self, frame_id: str | None, **kwargs: Any) -> dict: ...
+    def resolve_frame_scope(self, frame_id: str | None, **kwargs: Any) -> dict:
+        ...
 
-    def get_frame(self, frame_id: str) -> dict | None: ...
+    def get_frame(self, frame_id: str) -> dict | None:
+        ...
 
-    def list_session_branches(self, root_frame_id: str) -> list[dict]: ...
+    def list_session_branches(self, root_frame_id: str) -> list[dict]:
+        ...
 
     def list_session_checkpoints(
         self, root_frame_id: str, **filters: Any
-    ) -> list[dict]: ...
+    ) -> list[dict]:
+        ...
 
     def list_permission_requests(
         self, *, root_frame_id: str | None = None, state: str | None = None
-    ) -> list[dict]: ...
+    ) -> list[dict]:
+        ...
 
 
 class SessionDomain(Protocol):
     """Filesystem-aware session-domain API supplied by the Web runtime."""
 
-    def branches(self, root_frame_id: str) -> dict[str, Any]: ...
+    def branches(self, root_frame_id: str) -> dict[str, Any]:
+        ...
 
-    def create_checkpoint(self, root_frame_id: str, **options: Any) -> dict: ...
+    def create_checkpoint(self, root_frame_id: str, **options: Any) -> dict:
+        ...
 
-    def fork_branch(self, root_frame_id: str, **options: Any) -> dict: ...
+    def fork_branch(self, root_frame_id: str, **options: Any) -> dict:
+        ...
 
-    def revert_preview(self, root_frame_id: str, **options: Any) -> dict: ...
+    def revert_preview(self, root_frame_id: str, **options: Any) -> dict:
+        ...
 
-    def recovery_status(self, root_frame_id: str, **filters: Any) -> dict: ...
+    def recovery_status(self, root_frame_id: str, **filters: Any) -> dict:
+        ...
 
 
 DomainProvider = Callable[[], SessionDomain | None]
@@ -111,9 +121,7 @@ class SessionControlService:
                 projection = domain.branches(root)
                 raw_branches = projection.get("branches") or []
                 capabilities = projection.get("capabilities") or {}
-                current_branch_id = str(
-                    projection.get("current_branch_id") or root
-                )
+                current_branch_id = str(projection.get("current_branch_id") or root)
                 recovery = domain.recovery_status(
                     root, branch_id=current_branch_id, limit=20
                 )
@@ -142,12 +150,8 @@ class SessionControlService:
                 "pending_permission_count": len(permissions),
                 "recovery": {
                     "state": recovery.get("state"),
-                    "recovery_id": (recovery.get("current") or {}).get(
-                        "recovery_id"
-                    ),
-                    "updated_at": (recovery.get("current") or {}).get(
-                        "updated_at"
-                    ),
+                    "recovery_id": (recovery.get("current") or {}).get("recovery_id"),
+                    "updated_at": (recovery.get("current") or {}).get("updated_at"),
                 },
                 "capabilities": capabilities,
             }
@@ -192,9 +196,7 @@ class SessionControlService:
                 "active": bool(result.get("active")),
                 "view_only": bool(result.get("view_only", True)),
                 "workspace_isolated": bool(result.get("workspace_isolated")),
-                "workspace_materialized": bool(
-                    result.get("workspace_materialized")
-                ),
+                "workspace_materialized": bool(result.get("workspace_materialized")),
             }
         except (KeyError, OSError, RuntimeError, TypeError, ValueError) as error:
             return {"error": f"session fork failed: {error}"}

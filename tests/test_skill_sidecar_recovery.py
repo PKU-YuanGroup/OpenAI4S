@@ -102,9 +102,7 @@ def test_only_successful_sidecars_are_frozen_and_recovery_ignores_changed_disk(
         (skills / "changed_early" / "kernel.py").write_text(
             "VALUE = 'changed-before-import'\n", encoding="utf-8"
         )
-        changed_early = kernel.execute(
-            "import changed_early.kernel", origin="agent"
-        )
+        changed_early = kernel.execute("import changed_early.kernel", origin="agent")
         assert "changed after bootstrap" in changed_early["error"]
         assert RESULT_KEY not in changed_early
 
@@ -218,7 +216,7 @@ def test_tampered_worker_sidecar_record_marks_generation_unrecoverable(tmp_path)
                 # Deliberately hash different bytes.
                 "sha256": hashlib.sha256(b"VALUE = 1\n").hexdigest(),
             }
-        ]
+        ],
     }
 
     GenerationSidecarRecorder(store).record_result(supervisor, lease, result)

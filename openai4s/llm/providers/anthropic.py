@@ -52,9 +52,7 @@ def _chat_anthropic(
     except (KeyError, TypeError) as e:
         raise LLMError(f"Unexpected Anthropic-wire response: {body}") from e
     calls: list[dict] = []
-    for ordinal, block in enumerate(
-        b for b in blocks if b.get("type") == "tool_use"
-    ):
+    for ordinal, block in enumerate(b for b in blocks if b.get("type") == "tool_use"):
         calls.append(
             _normalized_tool_call(
                 provider="anthropic",

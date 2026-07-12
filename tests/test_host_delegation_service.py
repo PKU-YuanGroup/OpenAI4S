@@ -22,9 +22,7 @@ class FakeStore:
 
 def test_delegate_injects_profile_into_string_without_mutating_input():
     submitted = []
-    store = FakeStore(
-        {"CHEMIST": {"system_prompt": "Think like a chemist."}}
-    )
+    store = FakeStore({"CHEMIST": {"system_prompt": "Think like a chemist."}})
     service = DelegationService(
         delegate=lambda spec: submitted.append(spec) or {"child": "c1"},
         steering={},

@@ -108,9 +108,7 @@ class _StreamStartError(Exception):
     to a blocking call (nothing was emitted to the client yet)."""
 
 
-def _chat_openai_stream(
-    url, payload, headers, cfg, on_delta, *, post_sse
-) -> dict:
+def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> dict:
     payload["stream"] = True
     # Ask for a usage row on the terminal chunk (ignored by proxies that don't
     # grok it; harmless when unsupported).

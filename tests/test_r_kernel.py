@@ -86,9 +86,9 @@ def test_r_variable_inspector_uses_dedicated_idle_protocol(fake_rscript, tmp_pat
 
 def test_r_variable_inspector_source_fails_closed_on_dynamic_bindings():
     source = _R_WORKER.read_text("utf-8")
-    inspector = source.split(
-        "# --- read-only variable inspection", 1
-    )[1].split("# --- protocol channels", 1)[0]
+    inspector = source.split("# --- read-only variable inspection", 1)[1].split(
+        "# --- protocol channels", 1
+    )[0]
 
     assert "bindingIsActive" in inspector
     assert "substitute" in inspector

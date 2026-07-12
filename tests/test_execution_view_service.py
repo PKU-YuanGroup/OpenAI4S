@@ -91,9 +91,7 @@ def test_execution_log_keeps_order_defaults_and_first_seen_kernels():
             "peak_rss_kb": 0,
         },
     ]
-    store.cursor_checkpoints[("frame", "cell")] = {
-        "legacy-cell-2": "cp-cell-2"
-    }
+    store.cursor_checkpoints[("frame", "cell")] = {"legacy-cell-2": "cp-cell-2"}
 
     payload = _service(store).execution_log("frame")
 

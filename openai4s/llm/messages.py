@@ -128,8 +128,7 @@ def _anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
         if role == "tool":
             block = {
                 "type": "tool_result",
-                "tool_use_id": message.get("wire_id")
-                or message.get("tool_call_id"),
+                "tool_use_id": message.get("wire_id") or message.get("tool_call_id"),
                 "content": _tool_result_text(message.get("content")),
             }
             if message.get("is_error"):
@@ -264,8 +263,7 @@ def _responses_input(messages: list[dict]) -> tuple[str, list[dict]]:
             items.append(
                 {
                     "type": "function_call_output",
-                    "call_id": message.get("wire_id")
-                    or message.get("tool_call_id"),
+                    "call_id": message.get("wire_id") or message.get("tool_call_id"),
                     "output": _tool_result_text(message.get("content")),
                 }
             )

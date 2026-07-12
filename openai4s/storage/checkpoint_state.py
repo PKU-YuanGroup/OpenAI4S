@@ -275,14 +275,8 @@ class CheckpointStateRepository:
         object_ids = [
             *(str(item["plan_id"]) for item in state["plans"]),
             *(str(item["step_id"]) for item in state["review"]["steps"]),
-            *(
-                str(item["annotation_id"])
-                for item in state["review"]["annotations"]
-            ),
-            *(
-                str(item["memory_id"])
-                for item in state["memory"]["entries"]
-            ),
+            *(str(item["annotation_id"]) for item in state["review"]["annotations"]),
+            *(str(item["memory_id"]) for item in state["memory"]["entries"]),
         ]
         if len(object_ids) != len(set(object_ids)):
             raise ValueError("checkpoint state identities are not globally unique")
@@ -984,13 +978,9 @@ class CheckpointStateRepository:
             ):
                 raise ValueError("checkpoint review setting is invalid")
 
-    def _restore_plans(
-        self, plans: list[dict[str, Any]], root_frame_id: str
-    ) -> None:
+    def _restore_plans(self, plans: list[dict[str, Any]], root_frame_id: str) -> None:
         self._reject_foreign_ids("plans", "plan_id", "frame_id", root_frame_id, plans)
-        self._connection.execute(
-            "DELETE FROM plans WHERE frame_id=?", (root_frame_id,)
-        )
+        self._connection.execute("DELETE FROM plans WHERE frame_id=?", (root_frame_id,))
         for item in plans:
             self._connection.execute(
                 "INSERT INTO plans(plan_id,frame_id,project_id,title,rationale,"
@@ -1153,9 +1143,7 @@ class CheckpointStateRepository:
             (checkpoint_id,),
         ).fetchone()
 
-    def _decode(
-        self, row: sqlite3.Row, *, include_state: bool
-    ) -> dict[str, Any]:
+    def _decode(self, row: sqlite3.Row, *, include_state: bool) -> dict[str, Any]:
         state = self._validated_state(row)
         result = {
             key: row[key]

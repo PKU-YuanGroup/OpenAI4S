@@ -29,9 +29,7 @@ def test_session_delete_cleans_new_aggregate_and_preserves_shared_cas(tmp_path):
     (deleted_workspace / "scratch.txt").write_text("delete", "utf-8")
     (kept_workspace / "scratch.txt").write_text("keep", "utf-8")
     branch_root = (
-        workspace_root
-        / ".branches"
-        / hashlib.sha256(deleted.encode()).hexdigest()[:24]
+        workspace_root / ".branches" / hashlib.sha256(deleted.encode()).hexdigest()[:24]
     )
     branch_root.mkdir(parents=True)
     (branch_root / "branch.txt").write_text("delete", "utf-8")
@@ -76,22 +74,34 @@ def test_session_delete_cleans_new_aggregate_and_preserves_shared_cas(tmp_path):
         db.executemany(
             "INSERT INTO action_events(event_id,group_id,sequence,type,created_at) "
             "VALUES(?,?,?,?,1)",
-            [("event-delete", "group-delete", 0, "proposed"), ("event-keep", "group-keep", 0, "proposed")],
+            [
+                ("event-delete", "group-delete", 0, "proposed"),
+                ("event-keep", "group-keep", 0, "proposed"),
+            ],
         )
         db.executemany(
             "INSERT INTO execution_attempts(attempt_id,group_id,producing_cell_id,"
             "attempt_ordinal,allocated_at) VALUES(?,?,?,?,1)",
-            [("attempt-delete", "group-delete", "cell-delete", 0), ("attempt-keep", "group-keep", "cell-keep", 0)],
+            [
+                ("attempt-delete", "group-delete", "cell-delete", 0),
+                ("attempt-keep", "group-keep", "cell-keep", 0),
+            ],
         )
         db.executemany(
             "INSERT INTO kernel_generations(generation_id,root_frame_id,branch_id,"
             "language,ordinal,state,started_at,last_activity_at) VALUES(?,?,?,?,0,'failed',1,1)",
-            [("generation-delete", deleted, deleted, "python"), ("generation-keep", kept, kept, "python")],
+            [
+                ("generation-delete", deleted, deleted, "python"),
+                ("generation-keep", kept, kept, "python"),
+            ],
         )
         db.executemany(
             "INSERT INTO recovery_journal(entry_id,recovery_id,root_frame_id,"
             "branch_id,sequence,phase,status,detail,created_at) VALUES(?,?,?,?,0,'plan','done','{}',1)",
-            [("journal-delete", "recovery-delete", deleted, deleted), ("journal-keep", "recovery-keep", kept, kept)],
+            [
+                ("journal-delete", "recovery-delete", deleted, deleted),
+                ("journal-keep", "recovery-keep", kept, kept),
+            ],
         )
         db.executemany(
             "INSERT INTO session_branches(branch_id,root_frame_id,created_at,updated_at) "
@@ -117,7 +127,10 @@ def test_session_delete_cleans_new_aggregate_and_preserves_shared_cas(tmp_path):
         db.executemany(
             "INSERT INTO permission_requests(decision_id,root_frame_id,frame_id,"
             "project_id,tool,target,state,created_at) VALUES(?,?,?,?,?,'','pending',1)",
-            [("request-delete", deleted, child, "science", "bash"), ("request-keep", kept, kept, "science", "bash")],
+            [
+                ("request-delete", deleted, child, "science", "bash"),
+                ("request-keep", kept, kept, "science", "bash"),
+            ],
         )
         db.executemany(
             "INSERT INTO host_call_log(call_id,frame_id,method,created_at) VALUES(?,?,?,1)",
@@ -137,10 +150,34 @@ def test_session_delete_cleans_new_aggregate_and_preserves_shared_cas(tmp_path):
             "INSERT INTO artifact_versions(version_id,artifact_id,path,snapshot_path,"
             "frame_id,created_at) VALUES(?,?,?,?,?,1)",
             [
-                ("version-delete", "artifact-delete", str(deleted_workspace / "delete.bin"), str(unique_snapshot), child),
-                ("version-outside", "artifact-outside", str(outside), str(outside), child),
-                ("version-delete-shared", "artifact-delete-shared", shared_alias, shared_alias, child),
-                ("version-keep", "artifact-keep", str(shared_snapshot), str(shared_snapshot), kept),
+                (
+                    "version-delete",
+                    "artifact-delete",
+                    str(deleted_workspace / "delete.bin"),
+                    str(unique_snapshot),
+                    child,
+                ),
+                (
+                    "version-outside",
+                    "artifact-outside",
+                    str(outside),
+                    str(outside),
+                    child,
+                ),
+                (
+                    "version-delete-shared",
+                    "artifact-delete-shared",
+                    shared_alias,
+                    shared_alias,
+                    child,
+                ),
+                (
+                    "version-keep",
+                    "artifact-keep",
+                    str(shared_snapshot),
+                    str(shared_snapshot),
+                    kept,
+                ),
             ],
         )
         db.execute(
@@ -176,7 +213,9 @@ def test_session_delete_cleans_new_aggregate_and_preserves_shared_cas(tmp_path):
     assert not deleted_workspace.exists() and not branch_root.exists()
     assert not dynamic_root.exists() and shared_dynamic_root.exists()
     assert kept_workspace.exists()
-    assert not unique_snapshot.exists() and shared_snapshot.exists() and outside.exists()
+    assert (
+        not unique_snapshot.exists() and shared_snapshot.exists() and outside.exists()
+    )
     assert not cas._tree_path(unique_tree["tree_id"]).exists()
     assert not cas._blob_path(unique_blob).exists()
     assert cas._tree_path(shared_tree["tree_id"]).exists()
@@ -194,22 +233,61 @@ def test_session_delete_cleans_new_aggregate_and_preserves_shared_cas(tmp_path):
             ("permission_requests", "root_frame_id"),
             ("artifacts", "root_frame_id"),
         ):
-            assert db.execute(f"SELECT COUNT(*) FROM {table} WHERE {column}=?", (deleted,)).fetchone()[0] == 0
-            assert db.execute(f"SELECT COUNT(*) FROM {table} WHERE {column}=?", (kept,)).fetchone()[0] >= 1
-        assert db.execute("SELECT COUNT(*) FROM action_events WHERE group_id='group-delete'").fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM execution_attempts WHERE group_id='group-delete'").fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM host_call_log WHERE frame_id=?", (child,)).fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM lineage_edges WHERE edge_id='edge-delete'").fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM capability_states WHERE scope_id=?", (deleted,)).fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM capability_manifests WHERE session_id=?", (deleted,)).fetchone()[0] == 0
+            assert (
+                db.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {column}=?", (deleted,)
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                db.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {column}=?", (kept,)
+                ).fetchone()[0]
+                >= 1
+            )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM action_events WHERE group_id='group-delete'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM execution_attempts WHERE group_id='group-delete'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM host_call_log WHERE frame_id=?", (child,)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM lineage_edges WHERE edge_id='edge-delete'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM capability_states WHERE scope_id=?", (deleted,)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM capability_manifests WHERE session_id=?",
+                (deleted,),
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_workspace_cas_public_writes_share_gc_lock_and_reject_released_blob(tmp_path):
     cas = WorkspaceCAS(tmp_path / "cas")
     blob = cas.put_blob(b"candidate")
-    tree = cas.put_tree(
-        [{"path": "value.bin", "blob": blob, "size": 9, "mode": 0o600}]
-    )
+    tree = cas.put_tree([{"path": "value.bin", "blob": blob, "size": 9, "mode": 0o600}])
     started = threading.Event()
 
     def write_while_locked():
@@ -225,9 +303,7 @@ def test_workspace_cas_public_writes_share_gc_lock_and_reject_released_blob(tmp_
 
     assert cas.release_trees([tree["tree_id"]])["blobs"] == 1
     with pytest.raises(ValueError, match="blob does not exist"):
-        cas.put_tree(
-            [{"path": "stale.bin", "blob": blob, "size": 9, "mode": 0o600}]
-        )
+        cas.put_tree([{"path": "stale.bin", "blob": blob, "size": 9, "mode": 0o600}])
 
 
 def test_cas_gc_waits_for_checkpoint_reference_publication(tmp_path):

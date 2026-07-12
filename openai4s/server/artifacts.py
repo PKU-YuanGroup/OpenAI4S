@@ -16,9 +16,7 @@ from typing import Any, Callable, Protocol
 from openai4s.artifact_restore import ArtifactRestoreService
 from openai4s.execution import CaptureResult
 
-_JUNK_DIR_SEGMENTS = frozenset(
-    {"__pycache__", "node_modules", "site-packages", "venv"}
-)
+_JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
 EventSink = Callable[[dict[str, Any]], None]
 Broadcast = Callable[[str, dict[str, Any]], None]
 
@@ -138,8 +136,10 @@ class ArtifactManager:
         raw_path = current.get("path") or artifact.get("filename") or ""
         candidate = Path(raw_path)
         target = (
-            candidate if candidate.is_absolute() else workspace / candidate
-        ).expanduser().resolve()
+            (candidate if candidate.is_absolute() else workspace / candidate)
+            .expanduser()
+            .resolve()
+        )
         try:
             target.relative_to(workspace)
         except ValueError as error:
@@ -192,9 +192,7 @@ class ArtifactManager:
                 if path.is_file():
                     self.write_version_snapshot(
                         version_id,
-                        meta.get("filename")
-                        or artifact.get("filename")
-                        or "artifact",
+                        meta.get("filename") or artifact.get("filename") or "artifact",
                         src_path=path,
                     )
             except Exception:  # noqa: BLE001
@@ -258,17 +256,13 @@ class ArtifactManager:
         artifact = self.store.get_artifact(artifact_id)
         if not artifact:
             raise ArtifactOperationError(404, "artifact not found")
-        if not is_text_editable(
-            artifact.get("filename"), artifact.get("content_type")
-        ):
+        if not is_text_editable(artifact.get("filename"), artifact.get("content_type")):
             raise ArtifactOperationError(415, "artifact is not text-editable")
 
         live = self.live_path(artifact)
         current_version_id = artifact.get("latest_version_id")
         current = (
-            self.store.version_meta(current_version_id)
-            if current_version_id
-            else None
+            self.store.version_meta(current_version_id) if current_version_id else None
         )
         try:
             if (
@@ -374,9 +368,7 @@ class ArtifactManager:
             raw = encoded.encode("utf-8") if isinstance(encoded, str) else b""
 
         workspace = (
-            self.workspace_for(frame_id)
-            if frame_id
-            else self.data_dir / "uploads"
+            self.workspace_for(frame_id) if frame_id else self.data_dir / "uploads"
         )
         workspace.mkdir(parents=True, exist_ok=True)
         target = workspace / Path(filename).name
@@ -443,11 +435,9 @@ class ArtifactManager:
                     lexical_root = Path(os.path.abspath(root))
                     resolved_root = root.resolve()
                     if (
-                        (candidate == lexical_root or lexical_root in candidate.parents)
-                        and (
-                            resolved == resolved_root
-                            or resolved_root in resolved.parents
-                        )
+                        candidate == lexical_root or lexical_root in candidate.parents
+                    ) and (
+                        resolved == resolved_root or resolved_root in resolved.parents
                     ):
                         allowed = True
                         break
@@ -573,7 +563,9 @@ class ArtifactManager:
             except Exception:  # noqa: BLE001 — capture is best-effort
                 figures = []
         after = self.snapshot(session.workspace)
-        changed = [Path(path) for path, mtime in after.items() if before.get(path) != mtime]
+        changed = [
+            Path(path) for path, mtime in after.items() if before.get(path) != mtime
+        ]
         figure_set = set(figures)
         files_written: list[str] = []
         artifacts: list[dict] = []

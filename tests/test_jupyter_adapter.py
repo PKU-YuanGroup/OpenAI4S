@@ -128,21 +128,30 @@ def test_prefix_install_and_platform_user_paths_are_stdlib_only(tmp_path):
     expected = tmp_path / "share" / "jupyter" / "kernels" / "openai4s-r"
     assert installed[0]["path"] == str(expected)
     assert (expected / "kernel.json").is_file()
-    assert default_user_kernels_dir(
-        home=tmp_path,
-        platform="darwin",
-        environ={},
-    ) == tmp_path / "Library" / "Jupyter" / "kernels"
-    assert default_user_kernels_dir(
-        home=tmp_path,
-        platform="linux",
-        environ={"XDG_DATA_HOME": str(tmp_path / "xdg")},
-    ) == tmp_path / "xdg" / "jupyter" / "kernels"
-    assert default_user_kernels_dir(
-        home=tmp_path,
-        platform="win32",
-        environ={"APPDATA": str(tmp_path / "appdata")},
-    ) == tmp_path / "appdata" / "jupyter" / "kernels"
+    assert (
+        default_user_kernels_dir(
+            home=tmp_path,
+            platform="darwin",
+            environ={},
+        )
+        == tmp_path / "Library" / "Jupyter" / "kernels"
+    )
+    assert (
+        default_user_kernels_dir(
+            home=tmp_path,
+            platform="linux",
+            environ={"XDG_DATA_HOME": str(tmp_path / "xdg")},
+        )
+        == tmp_path / "xdg" / "jupyter" / "kernels"
+    )
+    assert (
+        default_user_kernels_dir(
+            home=tmp_path,
+            platform="win32",
+            environ={"APPDATA": str(tmp_path / "appdata")},
+        )
+        == tmp_path / "appdata" / "jupyter" / "kernels"
+    )
 
 
 class _FakeBase:
@@ -308,9 +317,7 @@ def test_bridge_silent_execution_and_runtime_exception_are_protocol_safe():
 
 
 @pytest.mark.integration
-def test_bridge_executes_against_the_real_hardened_python_worker(
-    monkeypatch, tmp_path
-):
+def test_bridge_executes_against_the_real_hardened_python_worker(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     kernel_type = bridge.create_kernel_class("python", kernel_base=_FakeBase)
     kernel = kernel_type()
@@ -382,9 +389,7 @@ def test_bridge_wraps_a_broken_optional_install(monkeypatch):
         bridge._load_ipykernel()
 
 
-def test_cli_describe_and_export_work_without_ipykernel(
-    tmp_path, capsys, monkeypatch
-):
+def test_cli_describe_and_export_work_without_ipykernel(tmp_path, capsys, monkeypatch):
     daemon_state = tmp_path / "daemon-state"
     monkeypatch.setenv("OPENAI4S_DATA_DIR", str(daemon_state))
     assert cli_main(["jupyter", "describe", "--json"]) == 0

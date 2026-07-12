@@ -295,7 +295,7 @@ def test_restart_approval_is_explicitly_continued_instead_of_auto_replayed() -> 
     render_source = _extract_js_function(APP_JS, "renderPermissionCard")
     mark_source = _extract_js_function(APP_JS, "markPermCard")
     assert "resolution.ok !== true" in render_source
-    assert "resolution_context === \"after_restart\"" in mark_source
+    assert 'resolution_context === "after_restart"' in mark_source
     assert "requires_continue === true" in mark_source
     assert 'send(t("perm.continuePrompt"))' in mark_source
     assert "perm.status.afterRestartAllowed" in mark_source
@@ -427,10 +427,19 @@ def test_action_timeline_is_a_safe_allowlisted_projection() -> None:
     assert 'direction === "before"' in merger
     assert "currentFirst <= incomingFirst" in merger
     assert "first_ordinal: groups.length ? groups[0].ordinal : null" in merger
-    assert 'mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(timeline), "latest")' in loader
-    assert 'mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(m), "latest")' in events
+    assert (
+        'mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(timeline), "latest")'
+        in loader
+    )
+    assert (
+        'mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(m), "latest")'
+        in events
+    )
     assert "before_ordinal=${first}&limit=${ACTION_TIMELINE_PAGE_SIZE}" in earlier
-    assert 'mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(page), "before")' in earlier
+    assert (
+        'mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(page), "before")'
+        in earlier
+    )
     assert "if (timeline.has_more_before)" in renderer
     assert 'data-action", "load-earlier-timeline"' in renderer
     assert 't(loading ? "timeline.loadingEarlier" : "timeline.loadEarlier")' in renderer
@@ -445,7 +454,7 @@ def test_action_timeline_is_a_safe_allowlisted_projection() -> None:
         "recovery",
         "finalize",
     ):
-        assert f'timeline.kind.{kind}' in APP_JS
+        assert f"timeline.kind.{kind}" in APP_JS
     # Raw provider/audit payloads may be inspected only while deriving a tiny
     # Artifact-name allowlist; the stored group/event projection must not copy
     # these fields and the card must never render them.
@@ -641,7 +650,10 @@ def test_recovery_and_branch_mutations_are_safe_visible_workbench_controls() -> 
     assert 'base + "/recovery/actions"' in loader
     assert 'RECOVERY_ACTION_IDS = ["restore", "retry", "restart_fresh"]' in APP_JS
     assert "RECOVERY_ACTION_IDS.map" in recovery_sanitizer
-    assert "enabled: !!" in recovery_sanitizer and "reason: publicText" in recovery_sanitizer
+    assert (
+        "enabled: !!" in recovery_sanitizer
+        and "reason: publicText" in recovery_sanitizer
+    )
     for forbidden in ("detail", "events", "environment", "arguments", "wire_id"):
         assert forbidden not in recovery_sanitizer
         assert forbidden not in recovery_card
@@ -661,7 +673,7 @@ def test_recovery_and_branch_mutations_are_safe_visible_workbench_controls() -> 
     assert "body.name = name" in fork
     assert "/branches/${encodeURIComponent(branchId)}/activate" in activate
     assert "openConversation(frameId, S.project)" in activate
-    assert "branchCapability(\"activate\")" in activate
+    assert 'branchCapability("activate")' in activate
     assert "sanitizeRevertMutationResult(response)" in apply_revert
     assert "openConversation(frameId, S.project)" in apply_revert
     assert "/revert/undo" in undo and "revert_checkpoint_id" in undo
@@ -700,13 +712,16 @@ def test_imported_session_quarantine_is_visible_and_blocks_live_controls() -> No
         assert "explicit_recovery_required" in sanitizer
 
     assert "viewOnly, trustState" in summary
-    assert 'runtime.trust.quarantined' in summary_node
+    assert "runtime.trust.quarantined" in summary_node
     assert 'runtime.viewOnly && runtime.trustState === "quarantined"' in send
     assert 'hint(t("runtime.quarantineHint"), true)' in send
     assert 'st.view_only === true && st.trust_state === "quarantined"' in kernel
     assert "bStart.disabled = st.alive || quarantined" in kernel
     assert "st.alive || st.turn_running || quarantined" in kernel
-    assert 'st.repl_enabled && !(_kc.st.view_only && _kc.st.trust_state === "quarantined")' in notebook
+    assert (
+        'st.repl_enabled && !(_kc.st.view_only && _kc.st.trust_state === "quarantined")'
+        in notebook
+    )
     assert APP_JS.count('"runtime.trust.quarantined"') >= 2
     assert APP_JS.count('"runtime.quarantineHint"') >= 2
 
@@ -724,8 +739,8 @@ def test_variable_inspector_is_manual_read_only_and_strictly_sanitized() -> None
     assert "Array.isArray(source.variables)" in sanitizer
     assert ".slice(0, 500)" in sanitizer
     assert "Number.isSafeInteger(item.length)" in sanitizer
-    assert "typeof value === \"string\"" in sanitizer
-    assert "typeof value === \"number\"" in sanitizer
+    assert 'typeof value === "string"' in sanitizer
+    assert 'typeof value === "number"' in sanitizer
     assert "variables: available ? variables : []" in sanitizer
     for forbidden in ("innerHTML", "workspace", "detail", "arguments", "wire_id"):
         assert forbidden not in sanitizer
@@ -734,7 +749,7 @@ def test_variable_inspector_is_manual_read_only_and_strictly_sanitized() -> None
     assert 'method: "POST"' not in refresh
     assert "sanitizeVariableInspection(payload, frameId, language)" in refresh
     assert "request !== S.variableInspector.request" in refresh
-    assert 'data-variable-inspector' in renderer
+    assert "data-variable-inspector" in renderer
     assert 'data-action", "refresh-variables"' in renderer
     assert '[["python", "Python"], ["r", "R"]]' in renderer
     assert "nb.variables.generation" in renderer
@@ -763,7 +778,7 @@ def test_local_model_discovery_is_loopback_only_and_requires_explicit_add() -> N
     assert "LOCAL_MODEL_KINDS.has(kind)" in sanitizer
     assert "loopbackModelBase(raw.base_url)" in sanitizer
     assert 'raw.local !== true || raw.provider !== "chatgpt"' in sanitizer
-    assert "typeof value !== \"string\"" in sanitizer
+    assert 'typeof value !== "string"' in sanitizer
     assert ".slice(0, 500)" in sanitizer
     assert "mutated_settings: false" in sanitizer
     for forbidden in ("raw.api_key", "innerHTML", "fetch(", "raw.error"):
@@ -777,7 +792,9 @@ def test_local_model_discovery_is_loopback_only_and_requires_explicit_add() -> N
     assert "runLocalScan(false)" in models
     # Discovery itself is GET-only; profile mutation exists solely behind the
     # explicit per-endpoint Add button above.
-    scan = models[models.index("const runLocalScan") : models.index("// --- add / edit form")]
+    scan = models[
+        models.index("const runLocalScan") : models.index("// --- add / edit form")
+    ]
     assert 'method: "POST"' not in scan
     assert ".local-model-results" in STYLE_CSS
 

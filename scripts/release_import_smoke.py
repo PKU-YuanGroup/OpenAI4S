@@ -42,7 +42,10 @@ def main() -> int:
     )
     imported = [importlib.import_module(name) for name in modules]
     package_root = Path(imported[0].__file__).resolve().parent
-    if package_root == PROJECT_ROOT / "openai4s" or PROJECT_ROOT in package_root.parents:
+    if (
+        package_root == PROJECT_ROOT / "openai4s"
+        or PROJECT_ROOT in package_root.parents
+    ):
         raise RuntimeError(f"import smoke resolved the source checkout: {package_root}")
 
     _require(package_root / "kernel" / "r_worker.R", "R worker")

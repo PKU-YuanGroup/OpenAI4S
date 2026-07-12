@@ -282,17 +282,46 @@ def _emit_interleaved(on_event):
     events = [
         {"choices": [{"delta": {"content": "Checking "}}]},
         {
-            "choices": [{"delta": {"tool_calls": [
-                {"index": 1, "id": "call-stream-2", "type": "function",
-                 "function": {"name": "calculate", "arguments": '{"value":'}},
-                {"index": 0, "id": "call-stream-1", "type": "function",
-                 "function": {"name": "lookup", "arguments": '{"query":"ATP'}},
-            ]}}]
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 1,
+                                "id": "call-stream-2",
+                                "type": "function",
+                                "function": {
+                                    "name": "calculate",
+                                    "arguments": '{"value":',
+                                },
+                            },
+                            {
+                                "index": 0,
+                                "id": "call-stream-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": '{"query":"ATP',
+                                },
+                            },
+                        ]
+                    }
+                }
+            ]
         },
-        {"choices": [{"delta": {"content": "now.", "tool_calls": [
-            {"index": 0, "function": {"arguments": ' synthase"}'}},
-            {"index": 1, "function": {"arguments": "2}"}},
-        ]}}]},
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "content": "now.",
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": ' synthase"}'}},
+                            {"index": 1, "function": {"arguments": "2}"}},
+                        ],
+                    }
+                }
+            ]
+        },
         {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
         {"choices": [], "usage": {"prompt_tokens": 20, "completion_tokens": 9}},
     ]
@@ -319,28 +348,47 @@ def test_openai_chat_sse_aggregates_interleaved_calls_losslessly(monkeypatch):
 
     calls = [
         _call(
-            "call-stream-1", '{"query":"ATP synthase"}',
-            {"query": "ATP synthase"}, meta={"type": "function", "index": 0}
+            "call-stream-1",
+            '{"query":"ATP synthase"}',
+            {"query": "ATP synthase"},
+            meta={"type": "function", "index": 0},
         ),
         _call(
-            "call-stream-2", '{"value":2}', {"value": 2}, name="calculate",
-            ordinal=1, meta={"type": "function", "index": 1}
+            "call-stream-2",
+            '{"value":2}',
+            {"value": 2},
+            name="calculate",
+            ordinal=1,
+            meta={"type": "function", "index": 1},
         ),
     ]
     raw_calls = [
-        {"id": "call-stream-1", "type": "function", "function": {
-            "name": "lookup", "arguments": '{"query":"ATP synthase"}'
-        }},
-        {"id": "call-stream-2", "type": "function", "function": {
-            "name": "calculate", "arguments": '{"value":2}'
-        }},
+        {
+            "id": "call-stream-1",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"query":"ATP synthase"}'},
+        },
+        {
+            "id": "call-stream-2",
+            "type": "function",
+            "function": {"name": "calculate", "arguments": '{"value":2}'},
+        },
     ]
     assert captured["url"].endswith("/chat/completions")
     assert captured["payload"]["stream"] is True
     assert deltas == ["Checking ", "now."]
-    _assert_reply(result, "Checking now.", calls, {"openai_message": {
-        "role": "assistant", "content": "Checking now.", "tool_calls": raw_calls
-    }})
+    _assert_reply(
+        result,
+        "Checking now.",
+        calls,
+        {
+            "openai_message": {
+                "role": "assistant",
+                "content": "Checking now.",
+                "tool_calls": raw_calls,
+            }
+        },
+    )
     assert result["reasoning"] is None
     assert result["usage"] == {
         "input_tokens": 20,
@@ -357,16 +405,35 @@ def test_openai_chat_sse_aggregates_interleaved_calls_losslessly(monkeypatch):
 
 def test_openai_chat_sse_rejects_partial_call_without_terminal_event(monkeypatch):
     def partial(url, payload, headers, timeout, on_event):
-        on_event({"choices": [{"delta": {"tool_calls": [{
-            "index": 0, "id": "call_partial", "type": "function",
-            "function": {"name": "lookup", "arguments": '{"query":'},
-        }]}}]})
+        on_event(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_partial",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"query":',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
 
     monkeypatch.setattr(llm.transport, "post_sse", partial)
     with pytest.raises(llm.LLMError, match="terminal finish_reason"):
         llm.chat(
-            [{"role": "user", "content": "Use a tool."}], _cfg(),
-            tools=[_LOOKUP], on_delta=lambda _text: None
+            [{"role": "user", "content": "Use a tool."}],
+            _cfg(),
+            tools=[_LOOKUP],
+            on_delta=lambda _text: None,
         )
 
 
@@ -377,8 +444,10 @@ def test_openai_chat_sse_error_event_is_not_an_empty_success(monkeypatch):
     monkeypatch.setattr(llm.transport, "post_sse", error)
     with pytest.raises(llm.LLMError, match="provider overloaded"):
         llm.chat(
-            [{"role": "user", "content": "Use a tool."}], _cfg(),
-            tools=[_LOOKUP], on_delta=lambda _text: None
+            [{"role": "user", "content": "Use a tool."}],
+            _cfg(),
+            tools=[_LOOKUP],
+            on_delta=lambda _text: None,
         )
 
 

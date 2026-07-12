@@ -200,9 +200,7 @@ class KernelSupervisor:
                     if slot.generation_id is not None:
                         ended.append(slot.generation_id)
                 slot.manual_stop = manual
-                slot.ended_reason = reason or (
-                    "manual_stop" if manual else "released"
-                )
+                slot.ended_reason = reason or ("manual_stop" if manual else "released")
             for generation_id in ended:
                 self._finish_generation(
                     generation_id,
@@ -299,8 +297,7 @@ class KernelSupervisor:
             )
             self._finish_generation(
                 lease.generation_id,
-                state=terminal_state
-                or ("manually_stopped" if manual else "crashed"),
+                state=terminal_state or ("manually_stopped" if manual else "crashed"),
                 reason=slot.ended_reason,
             )
         self._shutdown(kernel)
@@ -469,9 +466,7 @@ class KernelSupervisor:
                         f"{language} kernel changed before recovery publish"
                     )
             elif not self._matches(slot, expected):
-                raise RuntimeError(
-                    f"{language} kernel changed before recovery publish"
-                )
+                raise RuntimeError(f"{language} kernel changed before recovery publish")
 
             old = slot.kernel
             old_generation_id = slot.generation_id
@@ -565,16 +560,13 @@ class KernelSupervisor:
                 dict(bootstrap)
                 if bootstrap is not None
                 else {
-                    "status": (
-                        "pending" if language == "python" else "not_applicable"
-                    ),
+                    "status": ("pending" if language == "python" else "not_applicable"),
                     "loaded_sidecars": [],
                 }
             ),
             worker_pid=self._pid(kernel),
             owner_instance_id=self._owner_instance_id,
-            state=state
-            or ("bootstrapping" if language == "python" else "active"),
+            state=state or ("bootstrapping" if language == "python" else "active"),
             recovered_from_generation_id=recovered_from_generation_id,
             started_at=now,
         )
@@ -627,9 +619,7 @@ class KernelSupervisor:
             return None
 
     @classmethod
-    def _environment_metadata(
-        cls, kernel: Any, key: Hashable | None
-    ) -> dict[str, Any]:
+    def _environment_metadata(cls, kernel: Any, key: Hashable | None) -> dict[str, Any]:
         mode = getattr(kernel, "mode", None)
         argv = getattr(kernel, "argv", None)
         interpreter = getattr(kernel, "python", None)
@@ -660,9 +650,7 @@ class KernelSupervisor:
         if isinstance(value, (list, tuple)):
             return [cls._json_safe(item) for item in value]
         if isinstance(value, dict):
-            return {
-                str(key): cls._json_safe(item) for key, item in value.items()
-            }
+            return {str(key): cls._json_safe(item) for key, item in value.items()}
         return repr(value)
 
     @staticmethod

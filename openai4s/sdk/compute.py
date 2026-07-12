@@ -292,8 +292,7 @@ class _ComputeInstance:
                     if attempt == 0:
                         print(f"[concurrency] {live}/{limit} full — waiting for a slot")
                     _time.sleep(
-                        min(2 * 1.5 ** min(attempt, 20), 20)
-                        + _random.uniform(0, 2)
+                        min(2 * 1.5 ** min(attempt, 20), 20) + _random.uniform(0, 2)
                     )
                     continue
                 if error_kind in {
@@ -516,9 +515,7 @@ def _normalize_provider_params(provider: str, pp: Any) -> dict | None:
         )
     family = provider.split(":", 1)[-1]
     strays = {
-        key: value
-        for key, value in pp.items()
-        if key != family and value is not None
+        key: value for key, value in pp.items() if key != family and value is not None
     }
     inner = pp.get(family)
     if inner is None:
@@ -544,9 +541,7 @@ def _compute_call(
     arg); surface as an exception unless it's a status-carrying result the
     caller is expected to inspect (.result()'s exit_code != 0)."""
     kw = {
-        key: value
-        for key, value in kw.items()
-        if value is not None and key != "self"
+        key: value for key, value in kw.items() if value is not None and key != "self"
     }
     result = host_call(f"compute_{op}", [kw])
     if isinstance(result, dict) and result.get("error") and "status" not in result:

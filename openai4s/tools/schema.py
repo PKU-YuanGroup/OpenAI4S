@@ -58,9 +58,7 @@ def normalize_object_schema(
 ) -> dict:
     """Return an isolated root-object schema with an explicit unknown policy."""
     if unknown_properties not in UNKNOWN_PROPERTY_POLICIES:
-        raise SchemaDefinitionError(
-            "unknown_properties must be 'allow' or 'forbid'"
-        )
+        raise SchemaDefinitionError("unknown_properties must be 'allow' or 'forbid'")
     if schema is None:
         normalized: dict = {}
     elif isinstance(schema, dict):
@@ -70,9 +68,7 @@ def normalize_object_schema(
     normalized.setdefault("type", "object")
     normalized.setdefault("properties", {})
     normalized.setdefault("required", [])
-    normalized.setdefault(
-        "additionalProperties", unknown_properties == "allow"
-    )
+    normalized.setdefault("additionalProperties", unknown_properties == "allow")
     validate_schema_definition(normalized)
     if normalized.get("type") != "object":
         raise SchemaDefinitionError("tool parameters must have type 'object'")
@@ -189,12 +185,8 @@ def _validate_schema_definition(schema: Any, *, path: str, depth: int) -> None:
 
     if "items" in schema:
         if declared_type not in (None, "array"):
-            raise SchemaDefinitionError(
-                f"{path}.items: only valid for an array schema"
-            )
-        _validate_schema_definition(
-            schema["items"], path=f"{path}[]", depth=depth + 1
-        )
+            raise SchemaDefinitionError(f"{path}.items: only valid for an array schema")
+        _validate_schema_definition(schema["items"], path=f"{path}[]", depth=depth + 1)
 
 
 def validate_json_schema(
@@ -257,9 +249,7 @@ def _validate_value(
     if "enum" in schema and not any(
         _json_equal(value, candidate) for candidate in schema["enum"]
     ):
-        issues.append(
-            ValidationIssue(path, f"must be one of {schema['enum']!r}")
-        )
+        issues.append(ValidationIssue(path, f"must be one of {schema['enum']!r}"))
         if len(issues) >= max_issues:
             return
 
@@ -276,15 +266,11 @@ def _validate_value(
         minimum = schema.get("minLength")
         maximum = schema.get("maxLength")
         if minimum is not None and len(value) < minimum:
-            issues.append(
-                ValidationIssue(path, f"length must be >= {minimum}")
-            )
+            issues.append(ValidationIssue(path, f"length must be >= {minimum}"))
         if len(issues) >= max_issues:
             return
         if maximum is not None and len(value) > maximum:
-            issues.append(
-                ValidationIssue(path, f"length must be <= {maximum}")
-            )
+            issues.append(ValidationIssue(path, f"length must be <= {maximum}"))
     if isinstance(value, list):
         minimum = schema.get("minItems")
         maximum = schema.get("maxItems")

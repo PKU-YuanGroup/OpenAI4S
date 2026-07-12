@@ -19,9 +19,9 @@ def test_success_commits_structured_output_and_clear_resets_state():
     bullets = ["Generated the model", "Measured its accuracy"]
 
     assert service.last_output is None
-    assert service.submit(
-        {"output": output, "completion_bullets": bullets}
-    ) == {"status": "ok"}
+    assert service.submit({"output": output, "completion_bullets": bullets}) == {
+        "status": "ok"
+    }
     assert service.last_output == {
         "output": output,
         "completion_bullets": bullets,

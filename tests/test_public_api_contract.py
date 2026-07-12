@@ -223,18 +223,14 @@ def test_run_task_keeps_positional_task_and_keyword_options():
 
 
 def test_host_and_server_facades_keep_calling_conventions():
-    host = _assert_parameter_prefix(
-        "openai4s.sdk", "build_host", ("host_call", "mode")
-    )
+    host = _assert_parameter_prefix("openai4s.sdk", "build_host", ("host_call", "mode"))
     assert host["host_call"].default is inspect.Parameter.empty
     assert host["mode"].default == "repl"
 
     build = _assert_parameter_prefix("openai4s.server", "build_server", ("cfg",))
     assert build["cfg"].default is None
 
-    serve = _assert_parameter_prefix(
-        "openai4s.server", "serve", ("cfg", "block")
-    )
+    serve = _assert_parameter_prefix("openai4s.server", "serve", ("cfg", "block"))
     assert serve["cfg"].default is None
     assert serve["block"].kind is inspect.Parameter.KEYWORD_ONLY
     assert serve["block"].default is True

@@ -426,9 +426,7 @@ def test_context_estimate_separates_tool_results_and_artifact_refs():
             {
                 "role": "tool",
                 "content": "large structured result",
-                "artifact_refs": [
-                    {"artifact_id": "a-1", "version_id": "v-1"}
-                ],
+                "artifact_refs": [{"artifact_id": "a-1", "version_id": "v-1"}],
             }
         ]
     )
@@ -497,8 +495,7 @@ def test_code_and_observation_are_one_atomic_compaction_segment():
 
     segments = comp_mod.segment_messages(messages)
     assert any(
-        segment.kind == "code_observation"
-        and (segment.start, segment.end) == (2, 4)
+        segment.kind == "code_observation" and (segment.start, segment.end) == (2, 4)
         for segment in segments
     )
     # A fixed two-message tail would begin at the observation; V2 expands it

@@ -675,6 +675,7 @@ def test_submit_manual_review_repairs_stale_processing_status(monkeypatch, tmp_p
 def test_submit_manual_review_reads_tail_of_long_conversation(monkeypatch, tmp_path):
     _cfg_obj, _hub, runner, store, fid, _st = _review_context(tmp_path)
     list_call: dict = {}
+
     def tail_messages(_fid, *, branch_id, limit):
         list_call.update(branch_id=branch_id, limit=limit)
         return [

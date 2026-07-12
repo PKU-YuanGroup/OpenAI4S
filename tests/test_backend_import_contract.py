@@ -32,9 +32,7 @@ _MODULE_REFERENCE = "<module>"
 # these names importable from the old path even when their implementations move.
 FACADE_EXPORTS: dict[str, frozenset[str]] = {
     "openai4s.host_dispatch": frozenset({"HostDispatcher", "build_dispatcher"}),
-    "openai4s.store": frozenset(
-        {"SECRET_ARG_HOST_CALLS", "Store", "get_store"}
-    ),
+    "openai4s.store": frozenset({"SECRET_ARG_HOST_CALLS", "Store", "get_store"}),
     "openai4s.llm": frozenset(
         {
             "ARK_PLAN_MODELS",
@@ -101,9 +99,7 @@ def _resolve_from(node: ast.ImportFrom, current: str, path: Path) -> str:
     if node.level == 0:
         return node.module or ""
     package = current if path.name == "__init__.py" else current.rpartition(".")[0]
-    return importlib.util.resolve_name(
-        "." * node.level + (node.module or ""), package
-    )
+    return importlib.util.resolve_name("." * node.level + (node.module or ""), package)
 
 
 def _dotted_name(node: ast.AST) -> str | None:
@@ -127,15 +123,15 @@ def _literal_import_module(node: ast.AST) -> str | None:
     return first.value if first.value in _FACADE_MODULES else None
 
 
-def _scan_backend_imports() -> tuple[dict[str, set[str]], dict[tuple[str, str], list[str]]]:
+def _scan_backend_imports() -> (
+    tuple[dict[str, set[str]], dict[tuple[str, str], list[str]]]
+):
     observed: dict[str, set[str]] = defaultdict(set)
     locations: dict[tuple[str, str], list[str]] = defaultdict(list)
 
     def record(module: str, name: str, path: Path, line: int) -> None:
         observed[module].add(name)
-        locations[(module, name)].append(
-            f"{path.relative_to(_REPO).as_posix()}:{line}"
-        )
+        locations[(module, name)].append(f"{path.relative_to(_REPO).as_posix()}:{line}")
 
     for root_name in _SOURCE_ROOTS:
         root = _REPO / root_name
@@ -179,7 +175,9 @@ def _scan_backend_imports() -> tuple[dict[str, set[str]], dict[tuple[str, str], 
                 imported = _literal_import_module(node.value)
                 if imported is None:
                     continue
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
                 for target in targets:
                     if isinstance(target, ast.Name):
                         module_aliases[target.id] = imported
@@ -234,6 +232,5 @@ def test_backend_facade_exports_remain_importable():
 
     assert not missing, (
         "Backend compatibility facades may forward to new implementations, but "
-        "must keep these currently consumed exports importable:\n"
-        + "\n".join(missing)
+        "must keep these currently consumed exports importable:\n" + "\n".join(missing)
     )

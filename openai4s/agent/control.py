@@ -17,9 +17,7 @@ from .models import ExecutionOutcome
 
 ToolInvoker = Callable[[NativeToolCall], tuple[str, bool]]
 ToolValidator = Callable[[str, object], str | None]
-ToolParallelPolicy = Callable[
-    [NativeToolCall], tuple[bool, tuple[str, ...]] | None
-]
+ToolParallelPolicy = Callable[[NativeToolCall], tuple[bool, tuple[str, ...]] | None]
 GroupPreparation = Callable[[], None]
 
 _MAX_PARALLEL_READS = 8
@@ -49,9 +47,7 @@ def execute_native_batch(
     are always written back by the provider's original ordinal.
     """
     results: list[tuple[str, bool] | None] = [None] * len(batch.calls)
-    scheduling: list[tuple[bool, tuple[str, ...]] | None] = [None] * len(
-        batch.calls
-    )
+    scheduling: list[tuple[bool, tuple[str, ...]] | None] = [None] * len(batch.calls)
     for index, call in enumerate(batch.calls):
         if index >= limit:
             results[index] = (
@@ -202,8 +198,7 @@ def _execute_read_only_waves(
             for index in wave:
                 call = calls[index]
                 results[index] = (
-                    f"[Tool error] {call.name or '<unnamed>'}: "
-                    f"{preparation_error}",
+                    f"[Tool error] {call.name or '<unnamed>'}: " f"{preparation_error}",
                     False,
                 )
             remaining = deferred

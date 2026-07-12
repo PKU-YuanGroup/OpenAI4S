@@ -56,9 +56,7 @@ def supports_vision(provider: str) -> bool:
     return get_model_capabilities(provider).vision
 
 
-def _guard_vision(
-    provider: str, messages: list[dict], *, capabilities=None
-) -> None:
+def _guard_vision(provider: str, messages: list[dict], *, capabilities=None) -> None:
     """Raise a clear error if image parts are sent to a text-only provider."""
     if (capabilities or get_model_capabilities(provider)).vision:
         return
@@ -91,9 +89,7 @@ def chat(
     spec = provider_spec(cfg.provider)
     base = cfg.base_url or spec["base_url"]
     model = cfg.model or spec["model"]
-    capabilities = get_model_capabilities(
-        cfg.provider, model, base_url=base
-    )
+    capabilities = get_model_capabilities(cfg.provider, model, base_url=base)
     if not cfg.api_key and not capabilities.local_endpoint:
         raise LLMError(
             f"no API key configured for provider {cfg.provider!r}: set the "
@@ -121,9 +117,7 @@ def chat(
     # deployment/model capability override explicitly enables tool calling,
     # keep that request on the Code-as-Action path instead of sending an
     # unsupported schema and failing the whole turn.
-    canonical_tools = (
-        _canonical_tool_specs(tools) if capabilities.tool_calling else []
-    )
+    canonical_tools = _canonical_tool_specs(tools) if capabilities.tool_calling else []
     if canonical_tools and not capabilities.strict_tool_schema:
         canonical_tools = [
             {**declaration, "strict": False} for declaration in canonical_tools
@@ -152,7 +146,5 @@ def chat(
         parallel_tool_calls=effective_parallel,
         **transport_args,
     )
-    reply["usage"] = normalize_usage(
-        reply.get("usage"), capabilities.usage_mapping
-    )
+    reply["usage"] = normalize_usage(reply.get("usage"), capabilities.usage_mapping)
     return reply

@@ -20,23 +20,31 @@ from openai4s.storage.branch_projection import project_branch_records
 class ExecutionViewStore(Protocol):
     def list_cells(
         self, root_frame_id: str, *, branch_id: str | None = None
-    ) -> list[dict]: ...
+    ) -> list[dict]:
+        ...
 
-    def get_session_branch(self, branch_id: str) -> dict | None: ...
+    def get_session_branch(self, branch_id: str) -> dict | None:
+        ...
 
-    def get_session_checkpoint(self, checkpoint_id: str) -> dict | None: ...
+    def get_session_checkpoint(self, checkpoint_id: str) -> dict | None:
+        ...
 
     def session_checkpoint_source_map(
         self, root_frame_id: str, *, source_kind: str
-    ) -> dict[str, str]: ...
+    ) -> dict[str, str]:
+        ...
 
-    def get_artifact(self, artifact_id: str) -> dict | None: ...
+    def get_artifact(self, artifact_id: str) -> dict | None:
+        ...
 
-    def version_meta(self, version_id: str) -> dict | None: ...
+    def version_meta(self, version_id: str) -> dict | None:
+        ...
 
-    def lineage_inputs(self, version_id: str) -> list[dict]: ...
+    def lineage_inputs(self, version_id: str) -> list[dict]:
+        ...
 
-    def cell_detail(self, producing_cell_id: str) -> dict | None: ...
+    def cell_detail(self, producing_cell_id: str) -> dict | None:
+        ...
 
 
 class ExecutionViewService:
@@ -68,9 +76,7 @@ class ExecutionViewService:
             for cell in self._branch_cells(root_frame_id, branch_id)
         ]
         stale_projection = compute_stale_cells(cells)
-        for ordinal, (cell, stale) in enumerate(
-            zip(cells, stale_projection), 1
-        ):
+        for ordinal, (cell, stale) in enumerate(zip(cells, stale_projection), 1):
             language = cell.get("language") or "python"
             if is_completion_only_cell(cell.get("code") or "", language):
                 continue
@@ -85,7 +91,9 @@ class ExecutionViewService:
             revision_of = None
             attempt_group_id = identity
             attempt = 1
-            if entries and _continues_failed_attempt(entries[-1], cell, kernel_id, language):
+            if entries and _continues_failed_attempt(
+                entries[-1], cell, kernel_id, language
+            ):
                 previous = entries[-1]
                 revision_of = previous["producing_cell_id"]
                 attempt_group_id = previous["attempt_group_id"]
@@ -187,9 +195,7 @@ class ExecutionViewService:
             version = self.store.version_meta(version_id)
             for item in self.store.lineage_inputs(version_id):
                 label = (
-                    item.get("filename")
-                    or item.get("path")
-                    or item.get("version_id")
+                    item.get("filename") or item.get("path") or item.get("version_id")
                 )
                 if label:
                     edge_inputs.append(str(label))
@@ -230,8 +236,7 @@ class ExecutionViewService:
             {
                 "kind": "save",
                 "at": self.format_timestamp(
-                    (version or {}).get("created_at")
-                    or artifact.get("created_at")
+                    (version or {}).get("created_at") or artifact.get("created_at")
                 ),
             }
         )
@@ -269,9 +274,7 @@ def _with_dependency_defaults(cell: dict) -> dict:
     visibility = projected.get("visibility") or default_visibility(
         projected.get("origin")
     )
-    projected["visibility"] = (
-        visibility if visibility in VISIBILITIES else "scientific"
-    )
+    projected["visibility"] = visibility if visibility in VISIBILITIES else "scientific"
     projected["pin"] = bool(projected.get("pin"))
     replay_policy = projected.get("replay_policy") or default_replay_policy(
         projected["visibility"]

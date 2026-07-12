@@ -157,9 +157,7 @@ def test_reused_slot_refreshes_factory_for_a_later_start():
     refreshed: list[FakeKernel] = []
     current = supervisor.ensure("python", "base", _factory(original, "old"))
 
-    assert (
-        supervisor.ensure("python", "base", _factory(refreshed, "new")) == current
-    )
+    assert supervisor.ensure("python", "base", _factory(refreshed, "new")) == current
     supervisor.stop("python")
     started = supervisor.restart("python")
 

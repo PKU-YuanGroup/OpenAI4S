@@ -78,9 +78,7 @@ def test_revert_restart_and_undo_restore_history_data_and_policy(tmp_path):
     managed = workspace / "analysis.txt"
     store = Store(database)
     store.create_project(name="Revert", project_id="project-revert")
-    root = store.new_frame(
-        project_id="project-revert", kind="turn", status="ready"
-    )
+    root = store.new_frame(project_id="project-revert", kind="turn", status="ready")
     service = SessionDomainService(
         store,
         data_dir=tmp_path,
@@ -155,15 +153,21 @@ def test_revert_restart_and_undo_restore_history_data_and_policy(tmp_path):
         version_one["version_id"]
     )
     assert store.get_frame(root)["runtime_env"] == "base"
-    assert store.capability_state(
-        project_id="project-revert", session_id=root
-    ).is_enabled("skill", "revert-skill") is False
-    assert store.resolve_permission(
-        root_frame_id=root,
-        project_id="project-revert",
-        tool="web_fetch",
-        pattern_input="example.org/item",
-    ) == "allow"
+    assert (
+        store.capability_state(project_id="project-revert", session_id=root).is_enabled(
+            "skill", "revert-skill"
+        )
+        is False
+    )
+    assert (
+        store.resolve_permission(
+            root_frame_id=root,
+            project_id="project-revert",
+            tool="web_fetch",
+            pattern_input="example.org/item",
+        )
+        == "allow"
+    )
 
     # Continue after the revert.  Physical ordinals/revisions remain above the
     # abandoned interval, but only this new tail joins the target prefix.
@@ -216,24 +220,28 @@ def test_revert_restart_and_undo_restore_history_data_and_policy(tmp_path):
         version_two["version_id"]
     )
     assert store.get_frame(root)["runtime_env"] == "science"
-    assert store.capability_state(
-        project_id="project-revert", session_id=root
-    ).is_enabled("skill", "revert-skill") is True
-    assert store.resolve_permission(
-        root_frame_id=root,
-        project_id="project-revert",
-        tool="web_fetch",
-        pattern_input="example.org/item",
-    ) == "deny"
+    assert (
+        store.capability_state(project_id="project-revert", session_id=root).is_enabled(
+            "skill", "revert-skill"
+        )
+        is True
+    )
+    assert (
+        store.resolve_permission(
+            root_frame_id=root,
+            project_id="project-revert",
+            tool="web_fetch",
+            pattern_input="example.org/item",
+        )
+        == "deny"
+    )
     store.close()
 
 
 def test_branch_message_projection_never_mixes_sibling_conversations(tmp_path):
     store = Store(tmp_path / "openai4s.db")
     store.create_project(name="Branches", project_id="project-revert")
-    root = store.new_frame(
-        project_id="project-revert", kind="turn", status="ready"
-    )
+    root = store.new_frame(project_id="project-revert", kind="turn", status="ready")
     workspaces = tmp_path / "workspaces"
 
     def workspace(_root: str, branch: str):

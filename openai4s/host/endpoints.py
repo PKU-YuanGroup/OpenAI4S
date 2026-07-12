@@ -14,9 +14,11 @@ from typing import Callable, Protocol
 
 
 class EndpointStore(Protocol):
-    def list_endpoints(self) -> list[dict]: ...
+    def list_endpoints(self) -> list[dict]:
+        ...
 
-    def upsert_endpoint(self, name: str, **fields) -> None: ...
+    def upsert_endpoint(self, name: str, **fields) -> None:
+        ...
 
 
 _FALLBACK_PORT_LOCK = threading.Lock()
@@ -61,8 +63,7 @@ def free_port(lo: int = 20000, hi: int = 29999, tries: int | None = None) -> int
 def endpoint_fingerprint(url, start, stop, live, skill, credential) -> str:
     """Hash every identity-bearing field used for no-op/change detection."""
     blob = "\x00".join(
-        str(value or "")
-        for value in (url, start, stop, live, skill, credential)
+        str(value or "") for value in (url, start, stop, live, skill, credential)
     )
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -108,7 +109,11 @@ class EndpointService:
         url = spec.get("url") or ""
         is_remote = url.startswith("https://")
         existing = next(
-            (endpoint for endpoint in self.store.list_endpoints() if endpoint["name"] == name),
+            (
+                endpoint
+                for endpoint in self.store.list_endpoints()
+                if endpoint["name"] == name
+            ),
             None,
         )
 
@@ -116,7 +121,9 @@ class EndpointService:
             start = stop = live = None
             port = None
         else:
-            port = spec.get("port") or (existing or {}).get("port") or self.allocate_port()
+            port = (
+                spec.get("port") or (existing or {}).get("port") or self.allocate_port()
+            )
             url = url or f"http://127.0.0.1:{port}"
             start = spec.get("start") or spec.get("start_script")
             stop = spec.get("stop") or spec.get("stop_script")
