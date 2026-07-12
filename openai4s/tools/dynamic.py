@@ -37,6 +37,10 @@ from openai4s.tools.dynamic_scopes import DynamicScopeStore
 from openai4s.tools.schema import validate_json_schema
 
 _TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
+# ``operator`` (attrgetter/methodcaller) and ``string`` (Formatter.get_field)
+# perform attribute access from *string literals* the AST attribute guard below
+# never sees, giving a full getattr-equivalent that escapes the restricted
+# builtins.  They are deliberately excluded from the safe import allowlist.
 _SAFE_IMPORTS = frozenset(
     {
         "collections",
@@ -50,11 +54,9 @@ _SAFE_IMPORTS = frozenset(
         "itertools",
         "json",
         "math",
-        "operator",
         "random",
         "re",
         "statistics",
-        "string",
     }
 )
 _BANNED_CALLS = frozenset(
@@ -84,6 +86,11 @@ _BANNED_ATTRIBUTES = frozenset(
         "__code__",
         "__closure__",
         "__getattribute__",
+        # String-literal-driven reflection helpers; defence in depth even though
+        # their host modules are no longer importable above.
+        "attrgetter",
+        "methodcaller",
+        "get_field",
     }
 )
 _MAX_SOURCE_CHARS = 100_000
@@ -153,12 +160,18 @@ def validate_dynamic_source(source: str) -> tuple[str, ...]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name == "execute"
     ]
-    if len(execute_functions) != 1 or isinstance(execute_functions[0], ast.AsyncFunctionDef):
-        raise ValueError("dynamic tool must define exactly one synchronous execute(args)")
+    if len(execute_functions) != 1 or isinstance(
+        execute_functions[0], ast.AsyncFunctionDef
+    ):
+        raise ValueError(
+            "dynamic tool must define exactly one synchronous execute(args)"
+        )
     function = execute_functions[0]
     positional = [*function.args.posonlyargs, *function.args.args]
     if len(positional) != 1 or function.args.vararg or function.args.kwarg:
-        raise ValueError("dynamic execute must accept exactly one positional args object")
+        raise ValueError(
+            "dynamic execute must accept exactly one positional args object"
+        )
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -235,7 +248,7 @@ class DynamicToolManifest:
         return record
 
 
-_WORKER_CODE = r'''
+_WORKER_CODE = r"""
 import builtins
 import json
 import sys
@@ -273,7 +286,7 @@ encoded = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(","
 if len(encoded) > 1000000:
     raise RuntimeError("dynamic tool output exceeds 1000000 characters")
 sys.stdout.write(encoded)
-'''.strip()
+""".strip()
 
 
 class DynamicToolWorker:
@@ -292,7 +305,9 @@ class DynamicToolWorker:
         )
         self.timeout_s = float(timeout_s)
 
-    def invoke(self, manifest: DynamicToolManifest, arguments: Mapping[str, Any]) -> Any:
+    def invoke(
+        self, manifest: DynamicToolManifest, arguments: Mapping[str, Any]
+    ) -> Any:
         payload = {
             "implementation": manifest.implementation,
             "arguments": dict(arguments),
@@ -421,7 +436,9 @@ class DynamicToolRegistry:
         imports = validate_dynamic_source(implementation)
         input_schema = self._schema(spec.get("input_schema"), "input_schema")
         output_schema = self._schema(spec.get("output_schema"), "output_schema")
-        permissions = tuple(sorted({str(item) for item in spec.get("permissions") or ()}))
+        permissions = tuple(
+            sorted({str(item) for item in spec.get("permissions") or ()})
+        )
         if permissions:
             raise ValueError(
                 "session dynamic tools cannot request Host/filesystem/network permissions"
@@ -550,9 +567,7 @@ class DynamicToolRegistry:
         self.scope_store.write_manifest(promoted.record())
         # Reuse the canonical immutable record when the exact content version
         # had already been promoted earlier (its original created_at wins).
-        promoted = self._scoped_version(
-            name, scope, scope_id, promoted.manifest_id
-        )
+        promoted = self._scoped_version(name, scope, scope_id, promoted.manifest_id)
         self.last_audit_event = self.scope_store.append_activation(
             operation="promote",
             scope=scope,
@@ -716,9 +731,7 @@ class DynamicToolRegistry:
                 if permissions:
                     raise ValueError("session manifest requests permissions")
                 name = str(record.get("name") or "")
-                description = " ".join(
-                    str(record.get("description") or "").split()
-                )
+                description = " ".join(str(record.get("description") or "").split())
                 if not _TOOL_NAME.fullmatch(name) or not description:
                     raise ValueError("manifest identity is invalid")
                 if name in {"bash", "submit_output", "finalize_response"}:
@@ -860,7 +873,11 @@ class DynamicToolRegistry:
         ttl = self._ttl(record.get("ttl_s"))
         created = float(record.get("created_at"))
         expires = float(record.get("expires_at"))
-        if not math.isfinite(created) or not math.isfinite(expires) or expires <= created:
+        if (
+            not math.isfinite(created)
+            or not math.isfinite(expires)
+            or expires <= created
+        ):
             raise ValueError("scoped manifest timestamps are invalid")
         if expires != _SCOPED_EXPIRES_AT:
             raise ValueError("scoped manifest expiry is invalid")

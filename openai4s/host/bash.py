@@ -13,6 +13,7 @@ outstanding capability, which is the safe recovery behaviour for shell work.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import math
 import re
@@ -37,9 +38,10 @@ _SECRET_ASSIGNMENT_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _CREDENTIAL_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:sk|ark|ghp|github_pat|hf|xox[baprs])-"
-    r"[A-Za-z0-9_\-]{8,}"
+    r"(?<![A-Za-z0-9])(?:sk|ark|ghp|github_pat|hf|xox[baprs])-" r"[A-Za-z0-9_\-]{8,}"
 )
+
+
 def redact_shell_text(value: Any, *, limit: int = 4000) -> str:
     """Return a bounded preview with common credential shapes removed.
 
@@ -56,19 +58,51 @@ def redact_shell_text(value: Any, *, limit: int = 4000) -> str:
     return text[: max(0, int(limit))]
 
 
+def _looks_secret_name(name: str) -> bool:
+    return (
+        name == ".env"
+        or name.startswith(".env.")
+        or name.endswith((".pem", ".key"))
+        or name in {"id_rsa", "id_ed25519", ".netrc", ".pgpass"}
+    )
+
+
+# Representative secret basenames a shell glob could expand to.  Used to reject
+# ``cat .e*`` / ``cat *.key`` whose literal token is not itself a secret name.
+_SECRET_SAMPLE_NAMES = (
+    ".env",
+    ".env.local",
+    ".env.production",
+    "id_rsa",
+    "id_ed25519",
+    ".netrc",
+    ".pgpass",
+    "server.pem",
+    "private.key",
+)
+
+
 def _contains_secret_path(command: str) -> bool:
     try:
         words = shlex.split(command, posix=True)
     except ValueError:
         words = re.split(r"\s+", command)
+    candidates: list[str] = []
     for raw in words:
         value = raw.strip("'\";|&<>")
+        candidates.append(value)
+        # ``VAR=path`` hides the real target on the value side of the token
+        # (e.g. ``f=.env; cat $f``); scan it too.
+        if "=" in value and not value.startswith("="):
+            candidates.append(value.split("=", 1)[1])
+    for value in candidates:
         name = Path(value).name.lower()
-        if (
-            name == ".env"
-            or name.startswith(".env.")
-            or name.endswith((".pem", ".key"))
-            or name in {"id_rsa", "id_ed25519", ".netrc", ".pgpass"}
+        if _looks_secret_name(name):
+            return True
+        # A shell glob (``.e*``, ``*.key``, ``.env*``) expands at runtime to a
+        # secret file even though the literal token is not one.
+        if any(ch in name for ch in "*?[") and any(
+            fnmatch.fnmatchcase(sample, name) for sample in _SECRET_SAMPLE_NAMES
         ):
             return True
     return False
@@ -250,8 +284,8 @@ class BashAuthorizationService:
         requested_workspace = spec.get("workspace")
         if requested_workspace:
             try:
-                worker_workspace = Path(str(requested_workspace)).expanduser().resolve(
-                    strict=True
+                worker_workspace = (
+                    Path(str(requested_workspace)).expanduser().resolve(strict=True)
                 )
             except (OSError, RuntimeError, ValueError):
                 return {"error": "bash authorization: worker workspace is invalid"}
@@ -512,16 +546,12 @@ class BashAuthorizationService:
             "duration_ms": duration_ms,
             "stdout": {
                 "chars": len(stdout),
-                "sha256": hashlib.sha256(
-                    stdout.encode("utf-8", "replace")
-                ).hexdigest(),
+                "sha256": hashlib.sha256(stdout.encode("utf-8", "replace")).hexdigest(),
                 "preview": redact_shell_text(stdout, limit=2000),
             },
             "stderr": {
                 "chars": len(stderr),
-                "sha256": hashlib.sha256(
-                    stderr.encode("utf-8", "replace")
-                ).hexdigest(),
+                "sha256": hashlib.sha256(stderr.encode("utf-8", "replace")).hexdigest(),
                 "preview": redact_shell_text(stderr, limit=1200),
             },
             "workspace_diff": {
@@ -549,10 +579,7 @@ class BashAuthorizationService:
         stale = [
             token
             for token, capability in self._issued.items()
-            if (
-                capability.consumed_at is None
-                and now >= capability.expires_at
-            )
+            if (capability.consumed_at is None and now >= capability.expires_at)
             or (
                 capability.recorded_at is not None
                 and now - capability.recorded_at >= _RESULT_RETENTION_SECONDS

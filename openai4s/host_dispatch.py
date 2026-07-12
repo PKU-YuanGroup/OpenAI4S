@@ -499,7 +499,10 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
         if method == "skills_history":
             versions = r.get("versions") or []
             return (
-                {"name": (r.get("installation") or {}).get("name"), "versions": versions},
+                {
+                    "name": (r.get("installation") or {}).get("name"),
+                    "versions": versions,
+                },
                 _plural(len(versions), "version"),
             )
         if method == "skills_rollback":
@@ -554,9 +557,7 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
                 {
                     "artifact_id": r.get("artifact_id"),
                     "version_id": r.get("version_id"),
-                    "restored_from_version_id": r.get(
-                        "restored_from_version_id"
-                    ),
+                    "restored_from_version_id": r.get("restored_from_version_id"),
                 },
                 "restored as new version",
             )
@@ -819,9 +820,7 @@ class HostDispatcher:
 
         self._session_service.set_domain(domain)
 
-    def set_child_execution_policy(
-        self, policy: ChildExecutionPolicy | None
-    ) -> None:
+    def set_child_execution_policy(self, policy: ChildExecutionPolicy | None) -> None:
         """Bind one additional fail-closed policy for a delegated child."""
 
         self._child_execution_policy = policy
@@ -1048,7 +1047,7 @@ class HostDispatcher:
                 permission_decision_id = gate.get("decision_id") or gate.get(
                     "continuation_decision_id"
                 )
-                if not gate.get("allow", True):
+                if not gate.get("allow", False):
                     msg = gate.get("message") or "denied by user"
                     result = {"error": f"Permission denied: {msg}"}
                     ok = False
@@ -1262,9 +1261,7 @@ class HostDispatcher:
         return self._remote_capability_service.register(spec)
 
     def _m_search_capabilities(self, spec: dict) -> dict:
-        return self.tool_catalog().search_capabilities(
-            str(spec.get("query") or "")
-        )
+        return self.tool_catalog().search_capabilities(str(spec.get("query") or ""))
 
     # --- current-session orchestration ---------------------------------
     def _m_session_status(self, spec: dict | None = None) -> dict:
@@ -1393,10 +1390,7 @@ class HostDispatcher:
                 "network": "network",
             }
             for key, alias in aliases.items():
-                if (
-                    not policy.allows_alias(alias)
-                    or policy.decision(alias) == "deny"
-                ):
+                if not policy.allows_alias(alias) or policy.decision(alias) == "deny":
                     result[key] = False
             result["delegated_policy"] = policy.public()
         return result

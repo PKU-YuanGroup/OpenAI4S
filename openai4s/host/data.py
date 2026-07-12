@@ -20,33 +20,47 @@ from openai4s.artifact_restore import ArtifactRestoreService
 class HostDataStore(Protocol):
     """Persistence surface required by :class:`HostDataService`."""
 
-    def query(self, sql: str, *, params=None, limit=None, timeout_s=5.0): ...
+    def query(self, sql: str, *, params=None, limit=None, timeout_s=5.0):
+        ...
 
-    def schema(self) -> dict: ...
+    def schema(self) -> dict:
+        ...
 
-    def list_artifacts(self, filters: dict | None = None) -> list[dict]: ...
+    def list_artifacts(self, filters: dict | None = None) -> list[dict]:
+        ...
 
-    def get_artifact(self, artifact_id: str) -> dict | None: ...
+    def get_artifact(self, artifact_id: str) -> dict | None:
+        ...
 
-    def list_versions(self, artifact_id: str) -> list[dict]: ...
+    def list_versions(self, artifact_id: str) -> list[dict]:
+        ...
 
-    def resolve_frame_scope(self, frame_id: str | None) -> dict: ...
+    def resolve_frame_scope(self, frame_id: str | None) -> dict:
+        ...
 
-    def resolve_artifact_path(self, ident: str) -> str | None: ...
+    def resolve_artifact_path(self, ident: str) -> str | None:
+        ...
 
-    def record_cell_artifact(self, **fields: Any) -> dict: ...
+    def record_cell_artifact(self, **fields: Any) -> dict:
+        ...
 
-    def record_artifact_restore(self, **fields: Any) -> dict: ...
+    def record_artifact_restore(self, **fields: Any) -> dict:
+        ...
 
-    def version_meta(self, version_id: str) -> dict | None: ...
+    def version_meta(self, version_id: str) -> dict | None:
+        ...
 
-    def set_version_snapshot(self, version_id: str, snapshot_path: str) -> None: ...
+    def set_version_snapshot(self, version_id: str, snapshot_path: str) -> None:
+        ...
 
-    def set_priority(self, artifact_id: str, priority: int) -> dict | None: ...
+    def set_priority(self, artifact_id: str, priority: int) -> dict | None:
+        ...
 
-    def frame_detail(self, frame_id: str, *, page: int, page_size: int): ...
+    def frame_detail(self, frame_id: str, *, page: int, page_size: int):
+        ...
 
-    def search_frames(self, pattern: str, *, project_id: str, limit: int): ...
+    def search_frames(self, pattern: str, *, project_id: str, limit: int):
+        ...
 
     def browse_frames(
         self,
@@ -55,15 +69,20 @@ class HostDataStore(Protocol):
         status: str | None,
         roots_only: bool,
         limit: int,
-    ): ...
+    ):
+        ...
 
-    def producing_cell_for_version(self, version_id: str) -> dict | None: ...
+    def producing_cell_for_version(self, version_id: str) -> dict | None:
+        ...
 
-    def lineage_inputs(self, version_id: str) -> list[dict]: ...
+    def lineage_inputs(self, version_id: str) -> list[dict]:
+        ...
 
-    def lineage_edges_for(self, version_id: str, direction: str) -> list[dict]: ...
+    def lineage_edges_for(self, version_id: str, direction: str) -> list[dict]:
+        ...
 
-    def version_for_path(self, path: str) -> str | None: ...
+    def version_for_path(self, path: str) -> str | None:
+        ...
 
 
 StoreProvider = Callable[[], HostDataStore]
@@ -71,9 +90,7 @@ ConfigProvider = Callable[[], Any]
 FrameIdProvider = Callable[[], str | None]
 PathResolver = Callable[..., Path]
 
-FRAME_STATUSES = frozenset(
-    {"processing", "done", "failed", "awaiting_user_response"}
-)
+FRAME_STATUSES = frozenset({"processing", "done", "failed", "awaiting_user_response"})
 
 _VALID_MARKER_ID = re.compile(
     r"^(v-)?[0-9a-fA-F]{8,}$|"
@@ -90,9 +107,7 @@ def rank_artifacts(items: list[dict], query: str) -> list[dict]:
     for item in items:
         name = str(item.get("filename", "")).lower()
         content_type = str(item.get("content_type", "") or "").lower()
-        haystack_tokens = set(
-            re.findall(r"[a-z0-9]+", f"{name} {content_type}")
-        )
+        haystack_tokens = set(re.findall(r"[a-z0-9]+", f"{name} {content_type}"))
         score = 0.0
         if normalized and normalized in name:
             score += 3.0
@@ -154,6 +169,18 @@ class HostDataService:
     def artifacts(self, filters: dict | None = None) -> dict:
         filters = filters or {}
         search = filters.pop("search", None) if isinstance(filters, dict) else None
+        # Confine enumeration to the caller's own session/project scope — the
+        # same isolation get_artifact_metadata/restore enforce via
+        # _scoped_artifact.  Otherwise a model can enumerate every session's
+        # artifacts by omitting filters or naming another root_frame_id/project.
+        if isinstance(filters, dict):
+            frame_id = self._frame_id()
+            resolver = getattr(self._store(), "resolve_frame_scope", None)
+            if frame_id is not None and callable(resolver):
+                scope = resolver(frame_id) or {}
+                if scope.get("root_frame_id"):
+                    filters["root_frame_id"] = scope["root_frame_id"]
+                    filters["project_id"] = scope.get("project_id")
         items = self._store().list_artifacts(filters)
         if search:
             items = rank_artifacts(items, str(search))
@@ -217,9 +244,7 @@ class HostDataService:
             for field in fields
             if field in version or field != "ordinal"
         }
-        projected["is_latest"] = (
-            version.get("version_id") == latest_version_id
-        )
+        projected["is_latest"] = version.get("version_id") == latest_version_id
         projected["snapshot_available"] = bool(version.get("snapshot_path"))
         return projected
 
@@ -305,9 +330,7 @@ class HostDataService:
         data = source.read_bytes()
         checksum = hashlib.sha256(data).hexdigest()
         version_stub = uuid.uuid4().hex[:12]
-        safe_filename = re.sub(
-            r"[^A-Za-z0-9._-]+", "_", filename or "artifact"
-        )
+        safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
         config = self._config()
         config.artifacts_dir.mkdir(parents=True, exist_ok=True)
         destination = config.artifacts_dir / f"v-{version_stub}__{safe_filename}"
