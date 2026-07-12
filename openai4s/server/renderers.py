@@ -92,7 +92,11 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
     Renderer(
         "pdf",
         "PDF document",
-        kinds=("pdf", "paper", "report"),
+        # ``report`` also belongs to the markdown renderer; since ``kind`` wins
+        # over content-type and pdf precedes markdown, keeping it here routed
+        # every markdown/text report to the PDF viewer.  Real PDFs still match
+        # via content-type/extension.
+        kinds=("pdf", "paper"),
         content_types=("application/pdf",),
         extensions=(".pdf",),
         interactive=True,

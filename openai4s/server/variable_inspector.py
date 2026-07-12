@@ -143,8 +143,12 @@ def _safe_payload(payload: Any) -> dict[str, Any]:
     variables = source.get("variables")
     safe: list[dict[str, Any]] = []
     for raw in variables if isinstance(variables, list) else ():
-        if len(safe) >= 500 or type(raw) is not dict:
+        if len(safe) >= 500:
             break
+        if type(raw) is not dict:
+            # Skip a single malformed element; ``break`` here would silently
+            # drop every remaining (valid) variable after it.
+            continue
         name = _text(raw.get("name"), 160)
         type_name = _text(raw.get("type"), 160)
         if not name or not type_name:

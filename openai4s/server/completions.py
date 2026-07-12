@@ -33,7 +33,8 @@ _STRUCTURED_KEYS = set(
     (*_SUMMARY_KEYS, *_FINDING_KEYS, *_METRIC_KEYS, *_LIMITATION_KEYS)
 )
 _ERROR_SECTION = re.compile(
-    r"(?:^|\n)ERROR(?: \(cell line \d+\))?:\n(?P<body>.*?)(?=\n\[system\]|\n\[usage|\Z)",
+    r"(?:^|\n)ERROR(?P<annotated> \(cell line \d+\))?:\n"
+    r"(?P<body>.*?)(?=\n\[system\]|\n\[usage|\Z)",
     re.DOTALL,
 )
 _SECRET_ASSIGNMENT = re.compile(
@@ -292,6 +293,15 @@ def _compact_value(value: Any) -> str:
 def _error_headline(observation: str) -> str:
     match = _ERROR_SECTION.search(observation)
     if not match:
+        return ""
+    # ``format_observation`` only emits a real ERROR section when the cell
+    # actually raised, and it is always either annotated with a cell line or
+    # immediately followed by the "[system] The cell stopped" block.  A
+    # *successful* cell that merely prints an "ERROR:" line to stdout has
+    # neither, and must not be narrated as a failure.
+    if not match.group("annotated") and not observation[match.end() :].startswith(
+        "\n[system]"
+    ):
         return ""
     lines = [line.strip() for line in match.group("body").splitlines() if line.strip()]
     if not lines:

@@ -17,7 +17,8 @@ from openai4s.llm.capabilities import get_model_capabilities
 
 
 class WorkbenchStore(Protocol):
-    def get_frame(self, frame_id: str) -> dict | None: ...
+    def get_frame(self, frame_id: str) -> dict | None:
+        ...
 
     def latest_kernel_generation(
         self,
@@ -25,15 +26,17 @@ class WorkbenchStore(Protocol):
         language: str,
         *,
         branch_id: str | None = None,
-    ) -> dict | None: ...
+    ) -> dict | None:
+        ...
 
-    def active_session_branch(self, root_frame_id: str) -> str: ...
+    def active_session_branch(self, root_frame_id: str) -> str:
+        ...
 
-    def list_compaction_archives(
-        self, frame_id: str, *, limit: int = 50
-    ) -> list[dict]: ...
+    def list_compaction_archives(self, frame_id: str, *, limit: int = 50) -> list[dict]:
+        ...
 
-    def delegation_tree(self, root_frame_id: str) -> dict: ...
+    def delegation_tree(self, root_frame_id: str) -> dict:
+        ...
 
 
 StateProvider = Callable[[str], Any | None]
@@ -173,9 +176,11 @@ class SessionWorkbenchStateService:
             network_policy = egress.egress_mode()
         except Exception:  # noqa: BLE001 - unknown is safer than a false claim
             network_policy = "unknown"
-        sandbox["network_policy"] = (
-            sandbox.get("network_policy") or network_policy
-        )
+        current = sandbox.get("network_policy")
+        # ``"unknown"`` is a truthy placeholder used before a kernel starts; it
+        # must not shadow the real process-wide egress mode computed above.
+        if not current or current == "unknown":
+            sandbox["network_policy"] = network_policy
         return {
             "root_frame_id": root_frame_id,
             "sandbox": sandbox,
@@ -186,9 +191,7 @@ class SessionWorkbenchStateService:
             },
             "notebook": {
                 "interactive": bool(
-                    str(os.environ.get("OPENAI4S_NOTEBOOK_REPL", ""))
-                    .strip()
-                    .lower()
+                    str(os.environ.get("OPENAI4S_NOTEBOOK_REPL", "")).strip().lower()
                     in {"1", "true", "yes", "on"}
                 )
             },
@@ -226,9 +229,7 @@ class SessionWorkbenchStateService:
             raise ValueError("workbench projections require a root frame")
         return frame
 
-    def _sandbox(
-        self, root_frame_id: str, state: Any | None
-    ) -> dict[str, Any]:
+    def _sandbox(self, root_frame_id: str, state: Any | None) -> dict[str, Any]:
         runtimes: list[dict[str, Any]] = []
         for language, attribute in (("python", "kernel"), ("r", "r_kernel")):
             try:
@@ -281,7 +282,9 @@ class SessionWorkbenchStateService:
         if not isinstance(generation, Mapping):
             return None
         environment = generation.get("environment")
-        status = environment.get("sandbox") if isinstance(environment, Mapping) else None
+        status = (
+            environment.get("sandbox") if isinstance(environment, Mapping) else None
+        )
         if not isinstance(status, Mapping):
             return None
         ended_at = generation.get("ended_at")
@@ -330,9 +333,7 @@ class SessionWorkbenchStateService:
         for runtime in runtimes:
             detail = runtime.get("detail") or runtime.get("warning")
             if detail:
-                details.append(
-                    f"{runtime['language']}: {str(detail)[:200]}"
-                )
+                details.append(f"{runtime['language']}: {str(detail)[:200]}")
             if runtime.get("generation_ended") is True:
                 reason = runtime.get("generation_ended_reason") or "ended"
                 details.append(
