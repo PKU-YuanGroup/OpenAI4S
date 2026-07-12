@@ -317,20 +317,43 @@ An R Cell runs on a **persistent R kernel** — `kernel/r_worker.R` spawned by [
 
 The web UI's right-hand Notebook is, by default, a **read-only scientific execution trace** of the kernel: it renders analysis cells with their stdout/stderr/artifacts, but hides a direct protocol-only `host.submit_output(...)` Cell. The raw execution record remains available for auditing. Arbitrary in-Notebook entry is gated behind `OPENAI4S_NOTEBOOK_REPL` (see [Security](security.md)); when explicitly enabled, the developer input is multiline, selects Python or R, and uses Shift+Enter to append a new Cell through the same execution queue. Executed source and older revisions remain immutable. Runtime segments in the trace are labeled by `kernel_id`: `python` for the default env, `python — struct` / `python — phylo` etc. when the agent switches conda env, so a single session's trace shows which environment each cell ran under.
 
+While the model is still streaming its first Python/R fence, the Notebook shows
+one transient, replace-in-place draft block. It is neither an execution attempt
+nor history: it may change until the response closes, disappears when no valid
+action is routed, and is replaced by the immutable server-identified Cell at
+execution start. Incomplete fences never execute. Reconnect replay retains only
+the newest draft revision plus the structured live-Cell lifecycle.
+
 The selected conda env is **persisted per-session** in `frames.runtime_env` and used on the next lazy start. Each worker generation has a durable UUID, parent identity, bootstrap/environment manifests, state, and activity timestamps; an optional idle TTL never releases an active, approval-paused, recovery, or background session. Mind the persistence boundary: **workspace files persist** across a restart, but **in-memory Python/R variables do not** unless a verified recovery recipe rebuilds them.
+
+## Optional Jupyter adapter
+
+[`adapters/jupyter/`](../openai4s/adapters/jupyter) is a standalone ecosystem
+adapter, not another core runtime. Its pure-stdlib layer describes, exports, and
+installs standard `openai4s-python` / `openai4s-r` KernelSpecs. When one is
+launched, the bridge lazily imports the optional `ipykernel`/ZeroMQ stack and
+maps Jupyter execute/stream/error/interrupt/shutdown messages onto the existing
+Python or R `Kernel` manager. The manager/worker JSON-line protocol is unchanged.
+
+The adapter intentionally owns an independent namespace and has no
+`HostDispatcher`: it does not attach to a Web session, expose Host RPC, capture
+Gateway Artifacts, or participate in the Action Ledger/recovery pipeline. Core
+imports and daemon startup still succeed when Jupyter is absent. See
+[Optional Jupyter compatibility](jupyter.md).
 
 ## Checkpoint, recovery, export, and renderer status
 
-The domain foundations are implemented but their product integration is not
-uniform yet:
+The domain foundations and their primary product controls are implemented;
+remaining limits are stated explicitly rather than presented as recovered
+state:
 
 | Capability | Implemented now | Still partial / not wired |
 |---|---|---|
 | Action Timeline | Append-only ledger, redacted/field-bounded projection, maximum-500 latest windows with older/newer cursors, `GET /frames/{id}/action-timeline`, safe Timeline cards with runtime/queue status, and an explicit UI control that pages backward from the first loaded ordinal. | Incremental WS action replay remains limited; the browser keeps a bounded recent window while preserving the latest actions. |
-| Checkpoint / branch / revert | SQLite repositories, workspace content-addressed snapshots, immutable checkpoints, branch/checkpoint routes, conflict-aware revert preview/apply/undo, plus visible checkpoint and preview/apply controls. | Fork accepts checkpoints only; fork-from-cell is unsupported, and the static UI has no checkpoint-fork, undo, or branch-navigation control yet. |
-| Kernel recovery | Python and R generations persist complete versioned bootstrap manifests. `POST /frames/{id}/recovery/actions/{restore\|retry\|restart_fresh}` re-checks the advertised action after exact FIFO admission, enters the recovery scope, builds a separate worker, restores the checkpoint CAS tree, verifies referenced Artifact-version bytes, replays only classifier-approved Cells, validates runtime/symbol/hash requirements, and atomically publishes through `KernelSupervisor.publish_candidate`. Journal and WS recovery events cover every phase; `restart_fresh` requires `{"confirm":true}`. | Recovery mutations currently target the root/current branch only. A checkpoint with prior Cells defaults to `namespace_coverage=unverified`; without an explicit replay/symbol coverage recipe it ends Partial rather than claiming an empty namespace is recovered. CAS conflicts, unavailable historical interpreters/helpers, unsafe Cells, or unverifiable objects likewise produce Failed/Partial and never replace the existing worker. Artifact-version hydration verifies immutable bytes and their materialized checkpoint workspace file; it does not rewrite historical Artifact lineage heads. |
-| Notebook export | Deterministic Python and R `.ipynb` generation, a stable ZIP bundle, `GET /frames/{id}/notebook/export`, and a visible bundle download in the Notebook header and provenance execution view. | Separate Python/R single-notebook selectors remain API-only. |
-| Scientific renderers | Safe catalog/selection routes bind image/table/3D molecule/2D chemistry/genome/sequence/MSA/PDF/LaTeX/text/download descriptors to Artifact versions. | The existing UI renders image, table, Markdown/text, PDF/HTML preview and 3Dmol paths; most new specialized descriptors are not yet connected to dedicated UI components. |
+| Checkpoint / branch / revert | SQLite repositories, workspace content-addressed snapshots, immutable checkpoints, conflict-aware revert preview/apply/undo, visible branch activation, and one shared append-only history projector for provider messages, UI conversation, and Notebook Cells. New checkpoints atomically capture full plan/review/memory state; activation restores that state together with workspace, Artifact heads, environment and policy. Every durable Cell and user-message boundary best-effort captures an internal cursor checkpoint. | Old checkpoints without the structured state sidecar remain usable but activation reports `Partial` and preserves live plan/review/memory instead of guessing. Assistant-message fork and a dedicated message-level fork control are not yet wired. |
+| Kernel recovery | Python and R generations persist versioned bootstrap manifests. The exact worker records interpreter/runtime, prefix, complete installed-package manifest, locale, SDK/provenance/Host protocol versions and a content hash. Successfully imported Python Skill sidecars are captured from executed bytes, hash-checked, ordered, and reloaded from the frozen manifest. `POST /frames/{id}/recovery/actions/{restore\|retry\|restart_fresh}` performs exact FIFO admission, build-first candidate restore, CAS/Artifact validation, replay-safety checks, state validation, and atomic publish. | A checkpoint with prior Cells still defaults to `namespace_coverage=unverified`; without an explicit replay/symbol coverage recipe it ends Partial. Arbitrary namespace objects are never serialized or claimed as restored. |
+| Notebook / Jupyter compatibility | Deterministic Python and R `.ipynb` generation, a stable ZIP bundle, visible download, pure-stdlib KernelSpec export/install, and an optional standalone `ipykernel` wire bridge over the unchanged Python/R manager protocol. | Separate single-notebook selectors remain API-only. The Jupyter bridge has an independent namespace and does not expose Web-session sharing, Host RPC, Gateway artifacts/ledger/recovery, rich display/comm, debugger, completion, inspection, or history. |
+| Scientific renderers | Safe catalog/selection routes bind image/table/3D molecule/2D chemistry/genome/sequence/MSA/PDF/LaTeX/text/download descriptors to immutable Artifact versions; dedicated chemistry, genome, sequence/MSA and LaTeX components consume those descriptors in the UI. | Renderer availability remains data- and browser-dependent; unsupported kinds fall back to a safe metadata/download view and never execute Artifact content. |
 
 These boundaries are intentionally usable independently: completing Gateway
 and UI wiring should add adapters, not move checkpoint, recovery, export, or

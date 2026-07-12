@@ -139,6 +139,7 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 | [**Skills**](docs/skills.md) | the 24 bundled Skills + how to write your own |
 | [**Remote compute**](docs/compute.md) | BYOC GPU jobs, `host.fold`, auto-provisioning |
 | [**Web app**](docs/webapp.md) | UI features, Action Timeline, read-only Notebook, artifacts, and implementation status |
+| [**Jupyter adapter**](docs/jupyter.md) | optional standalone Python/R KernelSpecs, install commands, and compatibility limits |
 | [**Configuration**](docs/configuration.md) | model providers, env vars, conda envs, CLI |
 | [**Security**](docs/security.md) | defense-in-depth safety layers & remote-access notes |
 
@@ -146,9 +147,13 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 
 ## 🗺️ Roadmap
 
-- [ ] Finish the remaining product layer: an explicit verified-recovery action,
-  fork-from-cell semantics plus visible branch fork/undo/navigation controls,
-  and dedicated 2D chemistry/genome/sequence/MSA/LaTeX renderers.
+- [x] Ship the next-generation workbench foundation: branch activation and
+  append-only Revert/Undo projections, verified recovery with explicit
+  Partial/Failed state, dependency-level stale propagation, durable delegation,
+  quarantined portable Session packages, checkpointed plan/review/memory state,
+  and dedicated 2D chemistry/genome/sequence/MSA/LaTeX renderers. Arbitrary
+  in-memory namespace objects are deliberately not serialized; recovery remains
+  Partial unless a safe recipe can rebuild and verify them.
 - [ ] Add stronger Linux isolation beyond bubblewrap where available (for example seccomp) and expand packaged sandbox smoke coverage.
 - [ ] Keyless `web_search` beyond DuckDuckGo (rate-limit resilience).
 - [ ] More BYOC providers (Modal / SLURM) beyond SSH + NVIDIA NIM.

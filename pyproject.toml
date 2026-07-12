@@ -30,9 +30,34 @@ openai4s = "openai4s.cli:main"
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["openai4s*", "openai4s_compute_provider*", "openai4s_worker_runtime*"]
+include = [
+    "openai4s*",
+    "openai4s_compute_provider*",
+    "openai4s_worker_runtime*",
+    # These are data-only namespace packages. Keeping them beside the installed
+    # openai4s package preserves Config.skills_dir and `openai4s setup` without
+    # adding a runtime resource-loader dependency.
+    "skills*",
+    "envs*",
+]
+
+[tool.setuptools.package-data]
+openai4s = [
+    "compute/templates/*.tmpl",
+    "kernel/*.R",
+    "server/webui/*.css",
+    "server/webui/*.gif",
+    "server/webui/*.html",
+    "server/webui/*.js",
+    "server/webui/vendor/*.js",
+    "server/webui/vendor/fonts/*.woff2",
+]
+"*" = ["*.html", "*.json", "*.lock", "*.md", "*.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

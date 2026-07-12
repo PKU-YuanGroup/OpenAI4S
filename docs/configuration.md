@@ -31,7 +31,28 @@ The agent kernel uses a scientific stack (numpy / pandas / scipy / matplotlib / 
 
 `OPENAI4S_HOST` (`127.0.0.1`) · `OPENAI4S_PORT` (`8760`) · `OPENAI4S_DATA_DIR` (`~/.openai4s`, holds the SQLite db, artifacts, logs, pidfile). See [Security](security.md) for remote / SSH-tunnel access.
 
+`OPENAI4S_SEED_DEMO` (`1`) — set to `0` to skip the first-boot live
+UniProt/RCSB demo. This is useful for CI, air-gapped deployments, or an
+intentionally empty workbench; it does not affect existing sessions.
+
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
+
+## Optional Jupyter adapter
+
+The daemon and KernelSpec tooling remain zero-dependency. Install the optional
+wire stack only when an external Jupyter client should launch a standalone
+OpenAI4S Python/R worker:
+
+```bash
+python -m pip install 'ipykernel>=7,<8'
+openai4s jupyter describe
+openai4s jupyter install
+```
+
+`openai4s jupyter export <directory>` writes specs without installing them;
+`install --prefix <prefix>` targets `<prefix>/share/jupyter/kernels`. See
+[Optional Jupyter compatibility](jupyter.md) for the independent-namespace and
+Host-RPC limitations.
 
 ## CLI
 
@@ -41,4 +62,7 @@ openai4s status    # is it up?
 openai4s stop      # stop the daemon
 openai4s run "…"   # one Code-as-Action task in-process, no daemon
 openai4s setup     # build the four conda kernel environments
+openai4s jupyter describe               # inspect optional bridge availability
+openai4s jupyter export ./kernel-specs  # pure-stdlib KernelSpec export
+openai4s jupyter install                # install user KernelSpecs
 ```

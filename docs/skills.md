@@ -29,3 +29,60 @@ Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to 
 3. That's it — the loader discovers it on the next run and surfaces its one-line summary to the agent. Bundled skills (`origin: openai4s`) are read-only; skills you author or import are editable from the UI (**Customize → Skills**).
 
 GPU/model Skills (`requirements: [gpu]`) run their heavy step on a remote GPU through [`host.compute`](compute.md); everything else runs directly in the kernel.
+
+## Writable Skill versions and rollback
+
+Bundled `openai4s` Skills remain authoritative and read-only. Writable Skills
+have two explicit distribution scopes:
+
+- `personal` lives under `<data_dir>/user-skills` and is available to every
+  project unless capability policy disables it;
+- `project` lives in a project-identity-isolated overlay and is discovered only
+  by a `SkillLoader` scoped to that project. A project Skill overrides a
+  same-named personal Skill, but neither can shadow a bundled Skill.
+
+`SkillVersionService` is the narrow stdlib API for installing, upgrading,
+publishing, listing history, and rolling back these packages. Every operation
+captures `SKILL.md`, the exact `kernel.py` bytes, and bounded resource files.
+SQLite stores immutable SHA-256-addressed blobs, an immutable canonical
+manifest, and append-only installation events. The active version is changed
+with compare-and-swap semantics; the runtime directory is staged and verified
+before replacement, and a failed pointer update restores the prior directory.
+Newer versions are retained after rollback or deletion.
+
+```python
+from openai4s.skills_loader import SkillVersionService
+
+versions = SkillVersionService()
+installed = versions.install(
+    "assay-qc",
+    {
+        "SKILL.md": "---\nname: assay-qc\norigin: personal\n---\nQC recipe\n",
+        "kernel.py": "def accepted(x): return x >= 0.9\n",
+    },
+)
+history = versions.history("assay-qc")
+versions.rollback("assay-qc", installed["version_id"])
+```
+
+For project-local content, pass `scope="project", project_id="..."` to the
+same methods and construct the runtime loader with the matching `project_id`.
+Package ingestion rejects traversal paths, symlinks, oversized files/packages,
+invalid UTF-8 documents, trusted-origin claims, and (for install/publish) a
+`kernel.py` that fails the compile gate. Draft editors may retain a broken
+sidecar as a versioned draft, but publishing still fails closed until it
+compiles.
+
+The same lifecycle is available through three named JSON control-tool classes:
+`skill_status`, `skill_history`, and `rollback_skill_version`. Status/history
+are read-only; rollback declares a runtime mutation, requires approval, is
+audited by `HostDispatcher`, and can address only `personal` or the dispatcher's
+current `project` scope. Python cells expose the matching
+`host.skills.status(...)`, `host.skills.history(...)`, and
+`host.skills.rollback(...)` methods.
+
+Customize uses narrow HTTP routes. Personal history/rollback lives at
+`/api/skills/<name>/versions` and `/api/skills/<name>/rollback`; project-local
+state uses `/api/projects/<project_id>/skills/<name>/versions` and
+`.../rollback`. Project IDs are path-scoped and checked against the Store;
+bundled Skills never expose a rollback action.

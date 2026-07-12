@@ -26,7 +26,8 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
   return `404 {"error": "not found"}`.
 - All JSON responses are `application/json; charset=utf-8` with
   `Cache-Control: no-cache` and an explicit `Content-Length`.
-- Request bodies are JSON. `Handler._body()` tolerates an empty or unparsable
+- Request bodies are JSON except the explicitly documented Session-package
+  import route, which consumes raw ZIP bytes. `Handler._body()` tolerates an empty or unparsable
   body by returning `{}` — a malformed JSON body is **silently treated as
   empty**, not rejected with 400.
 - Query strings are parsed with `parse_qs` (every value is a list;
@@ -75,6 +76,7 @@ or stored `Content-Type`:
 | `GET /api/frames/{fid}/artifacts.zip` | ZIP bytes | Current Artifact versions for one session. |
 | `GET /api/projects/{pid}/artifacts.zip` | ZIP bytes | Current Artifact versions across one project. |
 | `GET /api/frames/{fid}/notebook/export?language=` | `.ipynb` or ZIP bytes | `python`/`r` returns one Notebook; omitted/`bundle` returns both plus a manifest. |
+| `GET /api/frames/{fid}/session/export` | Session ZIP bytes | Deterministic `application/vnd.openai4s.session+zip`; carries schema and SHA-256 headers. |
 | `GET /preview/{ident}` | artifact bytes | Same resolution, but `Content-Type` is **forced** to `text/html; charset=utf-8` (sandboxed iframe preview). Not under `/api`. |
 | `GET /ketcher` | HTML | Static placeholder page. |
 
@@ -112,6 +114,7 @@ success response body. Serializer shapes are in §4.
 | `GET /models` | `{"models":{"default":[{id,name,description}…]},"default_model_id"}` — live model first, then profile models, then provider defaults, deduped. |
 | `GET /models/default` | `{"default_model_id"}`. |
 | `POST /models/default` (any non-GET) | Body `{model_id}` → persists as `llm_model` setting → `{"default_model_id"}`. |
+| `GET /model-endpoints/discover?force=1` | Explicitly probes the fixed loopback catalogue for Ollama, LM Studio, vLLM, and llama.cpp, with environment proxies disabled. Returns sanitized profile suggestions plus `mutated_settings:false`; it never accepts a caller-supplied URL and never creates or activates a profile. `force=1` bypasses the short in-process cache. A discovered endpoint is keyless, but vendor capabilities are not inferred: until an explicit override exists it uses conservative Code-as-Action (no inherited vision/tool/schema claim). |
 | `GET /model-profiles` | Seeds built-in presets on first call, then `{"profiles":[masked…],"active_id","known_providers"}`. Profiles are **masked**: `{id,name,provider,base_url,model,has_api_key}` — the API key is never echoed. |
 | `POST /model-profiles` | Body `{name,provider?,base_url?,model?,api_key?}`; missing `name` → `400 {"error":"name required"}`; success → `201` masked profile. |
 | `POST /model-profiles/{id}/activate` | Copies the profile's fields into the live `llm_*` settings, moves it to the front of the list → `{"ok":true,"active_id","has_api_key"}`; unknown id → 404. |
@@ -125,6 +128,8 @@ success response body. Serializer shapes are in §4.
 | `GET /projects` | `{"projects":[project…],"total":n}`. **No pagination:** the frontend sends `?limit=100&offset=0` but the handler ignores both parameters and always returns *all* projects; `total` is just `len(projects)`. Do not document or rely on offset semantics — they do not exist. |
 | `POST /projects` | Body `{name?,description?,context?}` → project JSON (with `conversation_count: 0`). |
 | `GET /projects/{pid}` | Project JSON, or `{}` when not found (**not** a 404). |
+| `GET /projects/{pid}/action-timeline?limit=` | Bounded cross-session safe Timeline projection with session labels. |
+| `GET /projects/{pid}/lineage?limit=` | Project-wide Artifact/version lineage graph with bounded nodes/edges. |
 | `PUT|PATCH /projects/{pid}` | Updates `name`/`description`/`context` → project JSON. |
 | `DELETE /projects/{pid}` | Deletes project + frames, unlinks artifact files and session workspaces → `{"ok":true,"freed_files","freed_sessions"}`. |
 | `GET /projects/{pid}/notes` | `{"notes":[note…]}`. |
@@ -145,7 +150,7 @@ success response body. Serializer shapes are in §4.
 | `GET /frames/{fid}` | Frame JSON, or `{}` when not found. |
 | `PATCH /frames/{fid}` | Updates `name`/`task_summary`, broadcasts `frame_update` → frame JSON. |
 | `DELETE /frames/{fid}` | `{"ok":true}`. |
-| `GET /frames/{fid}/messages?from=&limit=` | `{"messages":[{role,content,created_at}…]}`. `from` (default 0) and `limit` (default 300) are real slice parameters here. |
+| `GET /frames/{fid}/messages?from=&limit=&branch_id=` | Branch-projected `{"messages":[{message_id,role,content,created_at,fork_checkpoint_id}…]}`. Omitted `branch_id` selects the durable active branch; its inherited prefix and post-Revert continuation are included, while sibling/abandoned rows remain only in the audit source. `from` (default 0) and `limit` (default 300) are real slice parameters. |
 | `GET /frames/{fid}/steps` | `{"steps":[…]}` (persisted semantic steps). |
 | `POST /frames/{fid}/message` | Starts a turn. Body `{request}` (or `{input_data:{request}}`), optional `model`, `plan`, `explore`, `annotation_ids`. With `wait:false` → `202 {"status":"accepted","frame_id","job_id","execution_id","owner":{"kind","id"},"queue_position"}`; default (`wait` omitted/true) blocks for the turn result. A valid sole `finalize_response` is an Engine completion (even if an earlier step ran a Cell); `host.submit_output(...)` is the only completion emitted from inside a Python Cell. Ordinary prose/results and max-turn exhaustion are not success. |
 | `GET /frames/{fid}/execution` | Authoritative FIFO snapshot: `{root_frame_id,owner,queue,queued_count,active_count,closed,close_reason}`. Owner/queue entries include `execution_id`, `{kind,id}` owner, status, position, branch/language/generation and resource keys when known. |
@@ -153,6 +158,8 @@ success response body. Serializer shapes are in §4.
 | `GET /frames/{fid}/status` | `{"frame_id","running",kernel:{…kernel status…}}`. |
 | `POST /frames/{fid}/feedback` | Body `{key,rating}` → `{"ok":true}`. |
 | `GET /frames/{fid}/feedback` | `{"feedback":[…]}`. |
+| `GET /frames/{fid}/session/export` | Raw deterministic Session-package ZIP with `X-Content-SHA256` and `X-OpenAI4S-Session-Schema`. It contains branch-owned messages, complete sanitized provider groups/wire state, Notebook and Artifact/lineage records, Revert cursors, evidence reviews and checkpoint plan/review/memory snapshots; secret material is rejected. |
+| `POST /sessions/import` | Raw Session ZIP body (not JSON, maximum archive 128 MiB) → HTTP 201 with new `{project_id,root_frame_id,active_branch_id,kernel_state:"ended",view_only:true,trust_state:"quarantined",explicit_recovery_required:true,…}`. The entire archive is preflighted as untrusted input, all identities are remapped, permissions are downgraded, review automation is disabled, and no Kernel/hook/package code starts. The quarantine is durable: frame-scoped mutations return HTTP 423 until the user calls `POST /frames/{fid}/recovery/actions/restart_fresh` with `{"confirm":true}`; read/export/delete remain available. |
 
 ### Plan mode
 
@@ -191,7 +198,7 @@ The first Agent/user Cell starts only the selected language; a native-tool or
 | Method & path | Behavior |
 | --- | --- |
 | `GET /frames/{fid}/execution-log` | `{"kernels":[id…],"entries":[cell…]}`; entries include stable `producing_cell_id`, `cell_index`, session-monotonic `state_revision`, attempt-derived `generation_id` (nullable for legacy rows or when no worker was acquired), `kernel_id`, `language`, `origin`, source/output/error, files/figures, usage, and immutable retry metadata when recorded. |
-| `POST /frames/{fid}/kernel/execute` | Body `{code,language?,execution_id?}` where language is `python` (default) or `r`; the shipped UI supplies a portable execution ID so its queued ticket is addressable before the blocking response returns. Runs a new FIFO-owned user Cell and never edits history. A completed execution returns `{status,execution_id,owner,cell:{cell_index,state_revision,generation_id,kernel_id,language,source,stdout,stderr,status,error,figures,files_written,files_read}}`; cancellation while still queued returns the smaller `{status:"cancelled",frame_id,reason}` shape. |
+| `POST /frames/{fid}/kernel/execute` | Body `{code,language?,execution_id?,wait?}` where language is `python` (default) or `r`; the shipped UI supplies a portable execution ID. Default/`wait:false` returns HTTP 202 `{status:"accepted",job_id,execution_id,owner,queue_position}` immediately, so a queued cell remains addressable. `wait:true` blocks for the completed FIFO-owned Cell result. Execution always appends and never edits history. |
 | `POST /frames/{fid}/kernel/restart` | → `{"ok":true,"status":"restarted","generation","generation_id","frame_id"}` + `kernel_status` WS event. |
 | `POST /frames/{fid}/kernel/stop` | → `{"ok":true,"state":"stopped"|"none","frame_id"}`. |
 | `POST /frames/{fid}/kernel/start` | → `{"ok":true,"state":"running","generation","frame_id",…}`. |
@@ -229,20 +236,25 @@ These routes are thin Gateway adapters over `SessionDomainService` and
 
 | Method & path | Behavior |
 |---|---|
-| `GET /frames/{fid}/action-timeline?branch_id=&before_ordinal=&after_ordinal=&limit=` | Researcher-facing Action Ledger projection. `limit` defaults to 500 and must be 1–500. Without a cursor it returns the latest window; `before_ordinal` moves older and `after_ordinal` moves newer. Cursors must be non-negative and mutually exclusive (invalid values → 400). Fields are bounded/redacted and raw arguments/provider wire state are omitted. Response metadata includes `count`, `total_count`, `truncated`, `has_earlier`, `has_more`, `first_ordinal`, and `last_ordinal`. |
+| `GET /frames/{fid}/action-timeline?branch_id=&before_ordinal=&after_ordinal=&limit=` | Researcher-facing Action Ledger projection. `limit` defaults to 500 and must be 1–500. Without a cursor it returns the latest window; `before_ordinal` moves older and `after_ordinal` moves newer. Cursors must be non-negative and mutually exclusive (invalid values → 400). Fields are bounded/redacted and raw arguments/provider wire state are omitted. Canonical usage is included; `cost` is non-null only when explicit deployment price metadata was recorded. Response metadata includes `count`, `total_count`, `truncated`, `has_earlier`, `has_more`, `first_ordinal`, and `last_ordinal`. |
 | `GET /frames/{fid}/execution-queue` | Alias of the authoritative execution snapshot (`/execution`). |
 | `GET /frames/{fid}/context` | Safe token-composition projection: totals/limit, message count, handoff/compaction state, and text/image/tool/wire token layers; no message content. |
 | `GET /frames/{fid}/security` | Aggregate sandbox self-test projection plus per-language `sandbox.runtimes[]`, durable-permission pending count, and Notebook interactive flag. Python-only and R-only sessions report the worker that actually ran; before either worker starts, state is truthfully `not_started`, not inferred. |
+| `GET /frames/{fid}/delegations` | Safe durable child-agent tree, shared spawn budget, progress/terminal status, enforced override summary, and steering delivery counters. Result/output bodies and steering text are excluded from the browser projection. |
 | `GET /frames/{fid}/branches` | Branch tree plus checkpoints and capability descriptors. A GET does not create the initial branch/checkpoint. |
 | `GET|POST /frames/{fid}/checkpoints` | List or create immutable checkpoints. `/branches/checkpoints` is an alias. POST accepts `branch_id`, `reason`, `expected_head`. |
-| `POST /frames/{fid}/branches/fork` | Fork from `from_checkpoint_id`; optional `branch_id`/`name`. `from_cell_id` without a checkpoint returns 409 because fork-from-cell is not implemented. |
+| `POST /frames/{fid}/branches/fork` | Body must select exactly one of `from_checkpoint_id`, `from_cell_id`, or `from_message_id`; optional `name`. Cell/message sources resolve only through an exact boundary checkpoint in this root session. Old history without one returns 409. The new branch has an independent workspace and remains inactive/view-only. |
+| `POST /frames/{fid}/branches/{branch_id}/activate` | Exact FIFO lifecycle mutation. Stops the old branch runtime, atomically selects the requested branch/checkpoint side-state, and returns `status: active|partial|failed` plus per-dimension apply/recovery details. It never mutates the old branch history. |
 | `POST /frames/{fid}/revert/preview` | Body `{target_checkpoint_id,branch_id?}` → `{preview}` including workspace/message/action/Notebook/artifact/env/permission differences and conflicts. `/branches/revert-preview` is an alias. |
 | `POST /frames/{fid}/revert/apply` | Conflict-checked append-only revert, invalidates live kernels, returns 409 when it cannot safely apply. `/branches/revert` is an alias. |
 | `POST /frames/{fid}/revert/undo` | Body `{revert_checkpoint_id,branch_id?}` — reverts to the recorded pre-revert checkpoint. |
 | `GET /frames/{fid}/revert/operations` | Durable revert operation history. |
 | `GET /frames/{fid}/recovery` | Safe Recovery Journal status projection. |
-| `GET /frames/{fid}/recovery/actions` | Describes availability/reasons for `restore`, `retry`, `inspect_log`, `continue_view_only`, and `restart_fresh`. There is no cancel action and no mutating route that runs the full verified recovery pipeline yet. |
+| `GET /frames/{fid}/recovery/actions` | Describes enabled/disabled reasons for `restore`, `retry`, and `restart_fresh` on the current root branch. |
+| `POST /frames/{fid}/recovery/actions/{restore\|retry\|restart_fresh}` | Runs the advertised verified-recovery action under an exact recovery execution ticket. `restart_fresh` requires `{"confirm":true}` and never claims namespace restoration. |
+| `GET /frames/{fid}/kernel/variables?language=python|r` | Bounded idle-only Variable Inspector projection. It never starts a stopped language worker and returns explicit Busy/Restoring/Ended/Not Started states. |
 | `GET /frames/{fid}/notebook/export?language=` | Raw deterministic `.ipynb` for `python`/`r`; omitted or `bundle` returns a stable ZIP containing both plus a manifest. Includes `Content-Disposition` and `X-Content-SHA256`. |
+| `GET /frames/{fid}/session/export` | Raw deterministic, manifest-hashed Session package. |
 | `GET /renderers` | Safe scientific renderer descriptor catalog. |
 | `GET /artifacts/{aid}/renderer?version=&root_frame_id=` | Selects a version-bound renderer descriptor plus immutable checksum/size/provenance metadata; it never executes Artifact content. |
 
@@ -283,6 +295,11 @@ available through the query parameter.
 | `POST /skills` | Create a Web-authored `user` Skill under `<data_dir>/user-skills`: `{name,description?,body|content}`. Bundled-name collisions and unsafe paths are rejected. |
 | `POST /skills/import` | Accepts a raw `SKILL.md` in `content` (frontmatter parsed) or explicit fields, then writes a normalized `user` document; imported frontmatter cannot claim bundled trust. |
 | `GET|PUT|PATCH|DELETE /skills/{name}` | Read / update / delete a user Skill (URL-encoded name). Bundled `openai4s` Skills remain non-editable/non-deletable. |
+| `GET /skills/{name}/versions` | Personal immutable version/event history plus safe active manifest; never returns stored source bytes. |
+| `POST /skills/{name}/rollback` | Body `{version_id}` atomically activates a retained personal version. |
+| `GET /projects/{project_id}/skills/catalog` | Project-owned Skill overlays only; personal fallbacks and bundled entries are omitted. |
+| `GET /projects/{project_id}/skills/{name}/versions` | Exact project-scoped immutable history. Unknown projects fail closed. |
+| `POST /projects/{project_id}/skills/{name}/rollback` | Body `{version_id}` activates a retained version in that project only. |
 | `GET /agents` | Bare array of built-in agent descriptors (with `enabled`). |
 | `PUT|PATCH /agents/{name}/enabled` | `{"ok":true}`. This legacy built-in-agent roster toggle remains process-local; persisted Specialist capability policy is enforced in delegation separately. |
 | `GET /agents/{name}` | Agent descriptor or `404 {"error":"unknown agent"}`. |

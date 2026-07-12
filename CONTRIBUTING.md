@@ -150,7 +150,9 @@ for each of these):
 
 - Releases are cut from `main` only, as annotated tags `vMAJOR.MINOR.PATCH`.
 - A release requires: green `uv run pytest`, green
-  `uv run pre-commit run --all-files`, and docs that match behavior.
+  `uv run pre-commit run --all-files`, green source/artifact/install gates
+  described in [`docs/release-validation.md`](docs/release-validation.md), and
+  docs that match behavior.
 - Tags are immutable. A bad release is followed by a new patch release, never
   a force-pushed tag.
 - Compatibility promises (e.g. `openai4s_compute_provider` import paths during

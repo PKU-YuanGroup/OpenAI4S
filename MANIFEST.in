@@ -2,3 +2,11 @@
 # `openai4s setup` (and scripts/setup_envs.sh) work from a source distribution.
 include envs/*.yml
 include scripts/setup_envs.sh
+include scripts/*.py
+recursive-include docs *.md
+recursive-include skills *.html *.json *.lock *.md *.py
+recursive-include openai4s/compute/templates *.tmpl
+recursive-include openai4s/kernel *.R
+recursive-include openai4s/server/webui *.css *.gif *.html *.js *.woff2
+global-exclude *.py[cod]
+global-exclude __pycache__
