@@ -2,12 +2,26 @@
 <html lang="zh">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
   <title>OpenAI4S</title>
   <link rel="icon" href="/static/favicon_anim_64.gif" />
   <link rel="stylesheet" href="/static/style.css" />
+  <!-- Apply theme before paint to avoid a light-flash on dark-mode reloads -->
+  <script>
+  (function () {
+    try {
+      var t = localStorage.getItem("os-theme");
+      if (t !== "dark" && t !== "light" && t !== "system") t = "system";
+      var dark = t === "dark" || (t === "system" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      document.documentElement.style.colorScheme = dark ? "dark" : "light";
+    } catch (e) {}
+  })();
+  </script>
 </head>
 <body>
+  <a class="skip-link" href="#messages">Skip to content</a>
   <!-- ============ DASHBOARD (home) ============ -->
   <div id="dashboard" class="dashboard">
     <header class="dash-head">
@@ -20,6 +34,7 @@
           <button class="lang-btn" data-lang="zh">中文</button>
           <button class="lang-btn" data-lang="en">EN</button>
         </div>
+        <button id="dash-theme" class="icon-ghost lg" data-i18n-title="theme.toggle" title="主题" data-icon="moon" data-icon-size="20" aria-label="Theme"></button>
         <button id="dash-settings" class="icon-ghost lg" data-i18n-title="common.settings" title="设置" data-icon="settings" data-icon-size="20"></button>
         <button id="dash-import-session" class="outline-btn"><span class="ic" data-icon="cloud-upload" data-icon-size="16"></span><span data-i18n="sessionPackage.import">Import session</span></button>
         <input id="session-package-input" type="file" accept=".zip,.openai4s-session.zip,application/vnd.openai4s.session+zip" style="display:none" />
@@ -57,6 +72,7 @@
       <div id="session-list" class="session-list"></div>
       <div class="side-foot">
         <button id="settings-gear" class="icon-ghost" data-i18n-title="common.settings" title="设置" data-icon="settings" data-icon-size="20"></button>
+        <button id="ws-theme" class="icon-ghost" data-i18n-title="theme.toggle" title="主题" data-icon="moon" data-icon-size="20" aria-label="Theme"></button>
         <div class="lang-seg" role="group" aria-label="Language / 语言">
           <button class="lang-btn" data-lang="zh">中文</button>
           <button class="lang-btn" data-lang="en">EN</button>
@@ -134,15 +150,15 @@
   </div>
 
   <!-- Preview modal -->
-  <div id="modal" class="modal hidden"><div class="modal-box"><div class="modal-head"><span id="modal-title" data-i18n="modal.title.preview">预览</span><div class="modal-actions"><a id="modal-download" class="outline-btn small" download><span class="ic" data-icon="download" data-icon-size="14"></span><span data-i18n="common.download">下载</span></a><button id="modal-close" class="icon-ghost" data-icon="x" data-icon-size="16"></button></div></div><div id="modal-body" class="modal-body"></div></div></div>
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-box"><div class="modal-head"><span id="modal-title" data-i18n="modal.title.preview">预览</span><div class="modal-actions"><a id="modal-download" class="outline-btn small" download><span class="ic" data-icon="download" data-icon-size="14"></span><span data-i18n="common.download">下载</span></a><button id="modal-close" class="icon-ghost" data-icon="x" data-icon-size="16" aria-label="Close"></button></div></div><div id="modal-body" class="modal-body"></div></div></div>
 
   <!-- Customize modal -->
-  <div id="cust" class="modal hidden"><div class="modal-box cust-box"><div class="modal-head"><span data-i18n="common.settings">设置</span><button id="cust-close" class="icon-ghost" data-icon="x" data-icon-size="16"></button></div><div class="cust-body"><nav class="cust-tabs">
-    <button class="cust-tab active" data-tab="general" data-i18n="cust.general.title">通用</button><button class="cust-tab" data-tab="skills" data-i18n="palette.group.skills">Skills</button><button class="cust-tab" data-tab="specialists" data-i18n="cust.tab.specialists">Specialists</button><button class="cust-tab" data-tab="connectors" data-i18n="cust.tab.connectors">Connectors</button><button class="cust-tab" data-tab="compute" data-i18n="cust.compute.title">Compute</button><button class="cust-tab" data-tab="permissions" data-i18n="cust.perm.title">权限</button><button class="cust-tab" data-tab="network" data-i18n="cust.network.title">Network</button><button class="cust-tab" data-tab="memory" data-i18n="cust.memory.title">Memory</button><button class="cust-tab" data-tab="models" data-i18n="cust.tab.models">Models</button>
-  </nav><div id="cust-content" class="cust-content"></div></div></div></div>
+  <div id="cust" class="modal hidden" role="dialog" aria-modal="true" aria-label="Settings"><div class="modal-box cust-box"><div class="modal-head"><span data-i18n="common.settings">设置</span><button id="cust-close" class="icon-ghost" data-icon="x" data-icon-size="16" aria-label="Close"></button></div><div class="cust-body"><nav class="cust-tabs" role="tablist" aria-label="Settings sections">
+    <button class="cust-tab active" data-tab="general" role="tab" aria-selected="true" data-i18n="cust.general.title">通用</button><button class="cust-tab" data-tab="skills" role="tab" data-i18n="palette.group.skills">Skills</button><button class="cust-tab" data-tab="specialists" role="tab" data-i18n="cust.tab.specialists">Specialists</button><button class="cust-tab" data-tab="connectors" role="tab" data-i18n="cust.tab.connectors">Connectors</button><button class="cust-tab" data-tab="compute" role="tab" data-i18n="cust.compute.title">Compute</button><button class="cust-tab" data-tab="permissions" role="tab" data-i18n="cust.perm.title">权限</button><button class="cust-tab" data-tab="network" role="tab" data-i18n="cust.network.title">Network</button><button class="cust-tab" data-tab="memory" role="tab" data-i18n="cust.memory.title">Memory</button><button class="cust-tab" data-tab="models" role="tab" data-i18n="cust.tab.models">Models</button>
+  </nav><div id="cust-content" class="cust-content" role="tabpanel"></div></div></div></div>
 
   <!-- New project modal -->
-  <div id="proj-modal" class="modal hidden"><div class="modal-box small-box"><div class="modal-head"><span data-i18n="projModal.title">New Project</span><button id="proj-modal-close" class="icon-ghost" data-icon="x" data-icon-size="16"></button></div><div class="form">
+  <div id="proj-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="proj-modal-title"><div class="modal-box small-box"><div class="modal-head"><span id="proj-modal-title" data-i18n="projModal.title">New Project</span><button id="proj-modal-close" class="icon-ghost" data-icon="x" data-icon-size="16" aria-label="Close"></button></div><div class="form">
     <label data-i18n="skill.label.name">Name</label><input id="pm-name" type="text" data-i18n-ph="projModal.name.placeholder" placeholder="Project name" />
     <label data-i18n="skill.label.desc">Description</label><textarea id="pm-desc" rows="2" data-i18n-ph="projModal.desc.placeholder" placeholder="Shown in the project list"></textarea>
     <label data-i18n="projModal.ctx.label">Agent Context</label><textarea id="pm-ctx" rows="3" data-i18n-ph="projModal.ctx.placeholder" placeholder="Included in every agent's prompt for this project"></textarea>

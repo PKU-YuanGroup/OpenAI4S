@@ -1308,3 +1308,126 @@ body.sidebar-collapsed .col-resizer-side{display:none}
   .col-resizer{display:none}
   .zoom-bar button{width:34px;height:32px}
 }
+
+/* ============================================================
+   THEME · SEND · A11Y · MOBILE POLISH (2026-07-09)
+   Dark mode via data-theme on <html>; send button; skip-link;
+   safe-area insets; skeleton placeholders; modal focus ring.
+   ============================================================ */
+
+/* ---- skip link (keyboard first stop) ---- */
+.skip-link{position:absolute;left:12px;top:-48px;z-index:200;background:var(--ink);color:var(--bg-000);
+  padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;
+  transition:top .15s}
+.skip-link:focus{top:12px;outline:2px solid var(--accent-fill);outline-offset:2px}
+
+/* ---- dark theme tokens ---- */
+html[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#141412; --bg-000:#1c1c19; --bg-100:#1a1a17; --bg-200:#242421; --bg-300:#2c2c28;
+  --panel:#1c1c19; --card:#1c1c19; --hover:#242421;
+  --ink:#f0efe9; --text-000:#f0efe9; --text-200:#c8c6bc; --text-400:#8e8c82;
+  --muted:#8e8c82; --faint:#8e8c82;
+  --clay:hsl(16 62% 58%); --clay-em:hsl(16 58% 52%);
+  --accent:#6ba3e8; --accent-fill:#4a8fd9; --accent-line:#3a6fa8;
+  --success:#3db83d; --danger:#e07070; --danger-bg:#3a1f1f; --success-bg:#1c3320; --success-text:#7ddea0;
+  --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.12); --border:rgba(255,255,255,.09);
+  --border-card:rgba(255,255,255,.12); --border-btn:rgba(255,255,255,.22);
+  --shadow-card:0 0 0 1px hsl(0 0% 100%/.05),0 4px 24px hsl(0 0% 0%/.35);
+  --shadow-pop:0 8px 28px hsl(0 0% 0%/.45),0 1px 3px hsl(0 0% 0%/.3);
+  --shadow-soft:0 0 0 .5px hsl(0 0% 100%/.05),0 1px 2px hsl(0 0% 0%/.25),0 2px 8px hsl(0 0% 0%/.2);
+  --shadow-raise:0 0 0 .5px hsl(0 0% 100%/.07),0 2px 6px hsl(0 0% 0%/.3),0 8px 28px hsl(0 0% 0%/.4);
+  --k-search:#6ba3e8; --k-fetch:#4db8d4; --k-plan:#9b8ef5; --k-env:#d4a84b;
+  --k-skill:#2dd4bf; --k-bash:#94a3b8; --k-code:#a78bfa; --k-write:#4ade80;
+  --k-read:#94a3b8; --k-edit:#fb923c; --k-files:#94a3b8; --k-artifact:#f0a070;
+  --k-delegate:#c084fc; --k-mcp:#2dd4bf;
+}
+html[data-theme="dark"] body{background:var(--bg);color:var(--ink)}
+html[data-theme="dark"] .solid-btn{background:var(--ink);color:var(--bg)}
+html[data-theme="dark"] .approve-btn{color:#fff}
+html[data-theme="dark"] .nb-icon.on{color:#fff}
+html[data-theme="dark"] .md .tok-kw{color:#c678dd}
+html[data-theme="dark"] .md .tok-str{color:#98c379}
+html[data-theme="dark"] .md .tok-com{color:#7f848e;font-style:italic}
+html[data-theme="dark"] .md .tok-num{color:#d19a66}
+html[data-theme="dark"] .md .tok-fn{color:#61afef}
+html[data-theme="dark"] .md :not(pre)>code{background:rgba(255,255,255,.06);border-color:var(--border)}
+html[data-theme="dark"] .md .codeblock{background:var(--bg-200);border-color:var(--border)}
+html[data-theme="dark"] .md .cb-head{background:rgba(255,255,255,.03)}
+html[data-theme="dark"] .md a{border-bottom-color:rgba(107,163,232,.35)}
+html[data-theme="dark"] .msg.user .bubble{background:var(--bg-200)}
+html[data-theme="dark"] .activity{background:rgba(255,255,255,.03)}
+html[data-theme="dark"] .activity .a-head:hover{background:rgba(255,255,255,.04)}
+html[data-theme="dark"] .toggle{background:rgba(255,255,255,.18)}
+html[data-theme="dark"] .toggle.on{background:var(--clay)}
+html[data-theme="dark"] .modal{background:rgba(0,0,0,.55)}
+html[data-theme="dark"] .mobile-scrim{background:rgba(0,0,0,.55)}
+html[data-theme="dark"] .lang-btn.active,.seg-btn.active{background:var(--bg-300);box-shadow:0 1px 2px rgba(0,0,0,.35)}
+html[data-theme="dark"] .thumb .molmini,.a-thumb .molmini{background:radial-gradient(circle at 50% 42%,var(--bg-000),var(--bg-300))}
+html[data-theme="dark"] .thumb .txt,.a-thumb .txt{-webkit-mask-image:linear-gradient(180deg,#fff 62%,transparent);mask-image:linear-gradient(180deg,#fff 62%,transparent)}
+html[data-theme="dark"] .nbc-err-type{color:#fff}
+html[data-theme="dark"] .run-card:hover{box-shadow:var(--shadow-raise)}
+html[data-theme="dark"] .tile:hover,.art:hover{box-shadow:var(--shadow-raise)}
+/* smooth theme flips without janking reduced-motion users */
+html:not([data-theme-instant]) body,html:not([data-theme-instant]) .dashboard,html:not([data-theme-instant]) .workspace,
+html:not([data-theme-instant]) .modal-box,html:not([data-theme-instant]) .nb-card,html:not([data-theme-instant]) .dash-card{
+  transition:background-color .18s ease,color .18s ease,border-color .18s ease,box-shadow .18s ease}
+
+/* ---- skeleton loaders (dashboard / lists) ---- */
+.skeleton{position:relative;overflow:hidden;background:var(--bg-200);border-radius:8px;color:transparent!important;pointer-events:none;user-select:none}
+.skeleton::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--bg-000) 55%,transparent),transparent);
+  animation:skel 1.2s ease-in-out infinite}
+@keyframes skel{0%{transform:translateX(-60%)}100%{transform:translateX(60%)}}
+.d-row.skeleton-row{cursor:default;pointer-events:none}
+.d-row.skeleton-row .d-name,.d-row.skeleton-row .d-sub,.d-row.skeleton-row .d-meta{height:12px;border-radius:6px;background:var(--bg-300);color:transparent}
+.d-row.skeleton-row .d-name{width:42%}
+.d-row.skeleton-row .d-sub{width:68%;margin-top:6px}
+.d-row.skeleton-row .d-meta{width:48px}
+
+/* ---- modal a11y polish ---- */
+.modal.hidden{display:none!important}
+.modal:not(.hidden){animation:modalIn .14s ease}
+@keyframes modalIn{from{opacity:0}to{opacity:1}}
+.modal-box{animation:modalBoxIn .16s ease}
+@keyframes modalBoxIn{from{opacity:0;transform:translateY(6px) scale(.985)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){
+  .modal:not(.hidden),.modal-box{animation:none}
+  .skeleton::after{animation:none}
+  html:not([data-theme-instant]) body,html:not([data-theme-instant]) .dashboard,html:not([data-theme-instant]) .workspace,
+  html:not([data-theme-instant]) .modal-box,html:not([data-theme-instant]) .nb-card,html:not([data-theme-instant]) .dash-card{transition:none}
+}
+
+/* ---- mobile safe-area + denser chrome ---- */
+@supports (padding: max(0px)) {
+  .dashboard{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right));
+    padding-bottom:max(48px,env(safe-area-inset-bottom))}
+  .composer-wrap{padding-bottom:max(14px,env(safe-area-inset-bottom))}
+  #sidebar{padding-bottom:max(12px,env(safe-area-inset-bottom))}
+  .side-foot{padding-bottom:max(0px,env(safe-area-inset-bottom))}
+  .rightdock .dock-body{padding-bottom:max(0px,env(safe-area-inset-bottom))}
+  .modal{padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right))
+    max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))}
+}
+@media (max-width:900px){
+  .nb-icon{width:36px;height:36px}
+  .composer-wrap{padding-bottom:max(12px,env(safe-area-inset-bottom))}
+  .workspace,#main{height:100dvh}
+  #sidebar{height:100dvh}
+  /* prevent iOS zoom on focus: inputs >= 16px */
+  #composer,input,textarea,select{font-size:16px}
+  .nb-model select{font-size:15px;max-width:120px}
+}
+
+/* ---- content-visibility for long transcripts (perf) ---- */
+.msg.assistant > .activity,
+.msg.assistant > .step,
+.msg.assistant > .plan-card,
+.msg.assistant > .perm-card{content-visibility:auto;contain-intrinsic-size:auto 72px}
+
+/* ---- sticky composer elevation when scrolled ---- */
+.composer-wrap{position:relative;z-index:5;background:linear-gradient(180deg,transparent,var(--bg) 28%)}
+html[data-theme="dark"] .composer-wrap{background:linear-gradient(180deg,transparent,var(--bg) 28%)}
+
+/* ---- theme toggle active affordance ---- */
+#dash-theme,#ws-theme{position:relative}
+body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
