@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>SAC dissolution-potential screening (demo shell)</title>
+<style>
+body { margin:0; font-family:"Source Sans 3","Segoe UI",sans-serif; color:#1c2b24;
+  background:linear-gradient(180deg,#eef4f1 0%,transparent 28%), #f4f7f5; }
+header, main { max-width:1100px; margin:0 auto; padding:1.5rem; }
+h1 { font-family:Georgia,serif; font-weight:600; }
+.panel { background:#fff; border:1px solid #d5ddd8; border-radius:14px; padding:1rem; margin:1rem 0; }
+.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:.75rem; }
+.kpi span { display:block; color:#5a6b62; font-size:.82rem; }
+.kpi strong { font-size:1.3rem; }
+table { width:100%; border-collapse:collapse; font-size:.9rem; }
+th, td { text-align:left; padding:.4rem; border-bottom:1px solid #d5ddd8; }
+.figure-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem; }
+.figure-grid img { width:100%; height:auto; border:1px solid #d5ddd8; border-radius:10px; }
+code { font-family:ui-monospace,monospace; font-size:.84em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SAC dissolution-potential screening (demo shell)</h1>
+  <p>Required report contents: computation model, statistical figures, structure renders, SAR insights.</p>
+</header>
+<main>
+  <section class="panel" id="computation-model-panel">
+    <h2>Computation model</h2>
+    <ul>
+      <li>Calculator: <code>uma</code></li>
+      <li>MLIP model: <strong>uma-s-1p1</strong></li>
+      <li>FAIRChem task: <code>oc20</code></li>
+      <li>Protocol: <code>catalyst-design-agent/uma-s-1p1+oc20</code></li>
+    </ul>
+  </section>
+  <section class="kpis">
+    <div class="kpi panel"><span>Structures</span><strong>3</strong></div>
+    <div class="kpi panel"><span>Converged</span><strong>0</strong></div>
+    <div class="kpi panel"><span>Passing</span><strong>0</strong></div>
+    <div class="kpi panel"><span>Mode</span><strong>dissolution</strong></div>
+  </section>
+  <section class="panel" id="figures-panel">
+    <h2>Figures &amp; structure renders</h2>
+    <div class="figure-grid" id="structure-renders-panel"></div>
+  </section>
+  <section class="panel">
+    <h2>SAR insights</h2>
+    <ul><li>Synthetic demo fixture only — not experimental results.</li><li>Live runs must call run_pipeline into a fresh workdir and present only that run&#x27;s deliverables.</li><li>Example prompt metals: Mn-N4, Fe-N4, Cu-N4 on graphene (pyridineN).</li><li>Synthetic developer demo only — not experimental results. Figures and metrics for a real request are written under the run workdir deliverables, never as metal_center_dissolution_* demo files.</li></ul>
+  </section>
+  <section class="panel">
+    <h2>Ranked candidates</h2>
+    <table>
+      <thead><tr><th>Rank</th><th>Name</th><th>Metal</th><th>Source</th><th>OP</th><th>U_diss</th><th>Filter</th></tr></thead>
+      <tbody><tr><td>1</td><td><code>Mn-N4</code></td><td>Mn</td><td>catalog</td><td>n/a</td><td>n/a</td><td>fail</td></tr><tr><td>2</td><td><code>Fe-N4</code></td><td>Fe</td><td>catalog</td><td>n/a</td><td>n/a</td><td>fail</td></tr><tr><td>3</td><td><code>Cu-N4</code></td><td>Cu</td><td>catalog</td><td>n/a</td><td>n/a</td><td>fail</td></tr></tbody>
+    </table>
+  </section>
+</main>
+<script type="application/json" id="sar-data">{"mode": "dissolution", "metrics": ["dissolution"], "computation": {"calculator": "uma", "protocol": "catalyst-design-agent/uma-s-1p1+oc20", "mlip_model": "uma-s-1p1", "mlip_task": "oc20", "reference": "Catalyst-Design-Agent CalculationTools (FAIRChem UMA / OC20)", "conda_env": "catagent"}, "ranked": [{"name": "Mn-N4", "metal": "Mn", "source": "catalog", "rank": 1, "converged": false, "passes_filters": false, "dissolution_potential": null, "overpotential": null}, {"name": "Fe-N4", "metal": "Fe", "source": "catalog", "rank": 2, "converged": false, "passes_filters": false, "dissolution_potential": null, "overpotential": null}, {"name": "Cu-N4", "metal": "Cu", "source": "catalog", "rank": 3, "converged": false, "passes_filters": false, "dissolution_potential": null, "overpotential": null}], "insights": ["Synthetic demo fixture only \u2014 not experimental results.", "Live runs must call run_pipeline into a fresh workdir and present only that run's deliverables.", "Example prompt metals: Mn-N4, Fe-N4, Cu-N4 on graphene (pyridineN).", "Synthetic developer demo only \u2014 not experimental results. Figures and metrics for a real request are written under the run workdir deliverables, never as metal_center_dissolution_* demo files."], "figures": [], "structure_renders": []}</script>
+</body>
+</html>
