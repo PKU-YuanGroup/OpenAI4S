@@ -90,7 +90,8 @@ Run locally and make sure everything is green:
 
 ```bash
 uv run pytest                       # full offline suite — no network, no keys
-uv run pre-commit run --all-files   # black · isort --profile black · ruff
+uv run mypy                         # strict agent core + typed Host dispatcher
+uv run pre-commit run --all-files   # black · isort · ruff · mypy · hygiene
 ```
 
 The default test suite is **offline by design**: `tests/conftest.py` redirects
