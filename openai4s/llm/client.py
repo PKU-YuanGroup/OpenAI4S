@@ -7,46 +7,16 @@ from typing import Any
 from openai4s.config import LLMConfig
 
 from .capabilities import (
-    bind_provider_registry,
     get_model_capabilities,
-    legacy_provider_specs,
     normalize_usage,
     validate_model_request,
 )
+from .catalog import ARK_PLAN_MODELS
 from .messages import _is_parts
 from .models import LLMError
 from .providers import _WIRE_DISPATCH
+from .registry import PROVIDERS, provider_spec
 from .tooling import _canonical_tool_specs
-
-# Keep the original mutable registry shape as a compatibility facade.  The
-# immutable, queryable source of truth lives in ``llm.capabilities``.
-PROVIDERS: dict[str, dict[str, Any]] = legacy_provider_specs()
-bind_provider_registry(PROVIDERS)
-
-# Model ids served by the Ark plan/v3 gateway (all share the `ark` provider's
-# endpoint + key). Surfaced as ready-to-pick model profiles in Customize → Models.
-ARK_PLAN_MODELS: tuple[tuple[str, str], ...] = (
-    ("doubao-seed-2.0-pro", "Doubao Seed 2.0 Pro"),
-    ("doubao-seed-2.0-code", "Doubao Seed 2.0 Code"),
-    ("doubao-seed-2.0-lite", "Doubao Seed 2.0 Lite"),
-    ("doubao-seed-2.0-mini", "Doubao Seed 2.0 Mini"),
-    ("glm-5.2", "GLM 5.2"),
-    ("kimi-k2.7-code", "Kimi K2.7 Code"),
-    ("deepseek-v4-pro", "DeepSeek V4 Pro"),
-    ("deepseek-v4-flash", "DeepSeek V4 Flash"),
-    ("minimax-m3", "MiniMax M3"),
-    ("minimax-m2.7", "MiniMax M2.7"),
-    ("kimi-k2.6", "Kimi K2.6"),
-)
-
-
-def provider_spec(name: str) -> dict[str, Any]:
-    spec = PROVIDERS.get(name.lower())
-    if spec is None:
-        raise LLMError(
-            f"unknown provider {name!r}; known: {', '.join(sorted(PROVIDERS))}"
-        )
-    return spec
 
 
 def supports_vision(provider: str) -> bool:

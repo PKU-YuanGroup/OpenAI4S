@@ -105,7 +105,7 @@ host.submit_output(...)                         # scientific-cell completion
   an exact owner, queue positions, and scoped cancellation; interrupts target an
   execution ID, owner, and frozen kernel lease rather than a session-global PID.
 
-The engine is **pure Python stdlib**: the kernel is a subprocess speaking a hardened JSON-per-line protocol, the LLM client speaks OpenAI / Anthropic / Gemini wires over `urllib`, and the daemon is `http.server` + a hand-rolled WebSocket — no framework, no third-party dependency in the core.
+The engine is **pure Python stdlib**: the kernel is a subprocess speaking a hardened JSON-per-line protocol, the LLM client speaks OpenAI Chat-compatible, OpenAI Responses, Anthropic, and Gemini wires over `urllib`, and the daemon is `http.server` + a hand-rolled WebSocket — no framework, no third-party dependency in the core. Provider identities and model-profile presets live in validated process-local catalogs above those four adapters, so a deployment can add an endpoint or model without adding a router branch; a genuinely new wire still requires a focused adapter.
 
 At spawn, each worker environment is rebuilt from a strict allowlist rather
 than copied from the daemon, so provider/API/cloud secrets and loader injection

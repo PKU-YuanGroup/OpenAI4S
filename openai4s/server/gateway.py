@@ -53,7 +53,7 @@ from openai4s.agent.ledger import (
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
-from openai4s.config import Config, get_config, is_placeholder_api_key
+from openai4s.config import Config, get_config
 from openai4s.execution import (
     CaptureResult,
     CellRequest,
@@ -62,7 +62,7 @@ from openai4s.execution import (
 )
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
-from openai4s.llm import ARK_PLAN_MODELS, PROVIDERS, chat, get_model_capabilities
+from openai4s.llm import PROVIDERS, chat, get_model_capabilities, provider_specs
 from openai4s.review import review_evidence
 from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.server.agent_run import EventCancellation
@@ -82,6 +82,9 @@ from openai4s.server.execution_coordinator import (
 from openai4s.server.execution_views import ExecutionViewService
 from openai4s.server.global_views import GlobalResearchViewService
 from openai4s.server.model_discovery import LocalModelDiscoveryService
+from openai4s.server.model_profiles import ModelProfileError, ModelProfileService
+from openai4s.server.model_profiles import clean_api_key as _clean_api_key
+from openai4s.server.model_profiles import migrate_provider_alias
 
 # Keep the former gateway helper names as compatibility aliases; plan behavior
 # itself now lives together in PlanService.
@@ -5521,12 +5524,6 @@ class GatewayError(Exception):
         self.message = message
 
 
-def _clean_api_key(value: str | None) -> str:
-    """Trim API keys and collapse obvious template stubs to empty."""
-    key = str(value or "").strip()
-    return "" if is_placeholder_api_key(key) else key
-
-
 def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     store = get_store(cfg.db_path)
     model_discovery = LocalModelDiscoveryService()
@@ -5540,6 +5537,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     skill_customization = SkillCustomizationService(SkillLoader(cfg=cfg))
     _disabled_skills = skill_customization.disabled_names
     _default_model = {"id": cfg.llm.model or "default"}
+    model_profiles = ModelProfileService(
+        store,
+        cfg,
+        providers=provider_specs,
+    )
 
     def _project_skill_customization(project_id: str) -> SkillCustomizationService:
         project_id = str(project_id or "").strip()
@@ -5575,16 +5577,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 "imported Session is quarantined and view-only; use the "
                 "confirmed restart_fresh recovery action before " + operation,
             )
-
-    def _effective_model_id(provider, model):
-        """The model id actually used for a (provider, model) pair: the explicit
-        model, else the provider's built-in default, else the base cfg model.
-        Keeps the header selector honest when a profile leaves model blank."""
-        m = (model or "").strip()
-        if m:
-            return m
-        spec = PROVIDERS.get((provider or "").strip().lower(), {})
-        return spec.get("model") or cfg.llm.model or "default"
 
     from openai4s.jobs import JobManager
 
@@ -6153,116 +6145,42 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json(self._model_profiles_payload())
                 return
             if sub == "/model-profiles" and method == "POST":
-                b = self._body()
-                nm = (b.get("name") or "").strip()
-                if not nm:
-                    self._json({"error": "name required"}, 400)
-                    return
-                prof = {
-                    "id": "mp-" + uuid.uuid4().hex[:8],
-                    "name": nm,
-                    "provider": (b.get("provider") or "").strip(),
-                    "base_url": (b.get("base_url") or "").strip(),
-                    "model": (b.get("model") or "").strip(),
-                    "api_key": _clean_api_key(b.get("api_key")),
-                }
-                store.mutate_model_profiles(lambda ps: ps.append(prof))
-                self._json(self._mask_profile(prof), 201)
+                try:
+                    self._json(model_profiles.create(self._body()), 201)
+                except ModelProfileError as exc:
+                    self._json({"error": str(exc)}, exc.status_code)
                 return
             m = re.fullmatch(r"/model-profiles/([^/]+)/activate", sub)
             if m and method == "POST":
-                prof = next(
-                    (
-                        p
-                        for p in store.list_model_profiles()
-                        if p.get("id") == m.group(1)
-                    ),
-                    None,
-                )
-                if not prof:
-                    self._json({"error": "profile not found"}, 404)
+                try:
+                    payload, effective_model = model_profiles.activate(m.group(1))
+                except ModelProfileError as exc:
+                    self._json({"error": str(exc)}, exc.status_code)
                     return
-                # Always write all four so switching cleanly swaps the previous
-                # profile's provider/base_url/key (empty = fall back to defaults).
-                store.set_setting(
-                    "llm_provider", str(prof.get("provider") or "").strip()
-                )
-                store.set_setting(
-                    "llm_base_url", str(prof.get("base_url") or "").strip()
-                )
-                store.set_setting("llm_model", str(prof.get("model") or "").strip())
-                store.set_setting("llm_api_key", _clean_api_key(prof.get("api_key")))
-                store.set_setting("active_model_profile", prof["id"])
-                # Promote the newly-active profile to the top of the list so the
-                # configured APIs display it first (others shift down). In-place
-                # under the store lock; a no-op if it's already #1.
-                _pid = prof["id"]
-
-                def _to_front(ps):
-                    i = next((k for k, p in enumerate(ps) if p.get("id") == _pid), -1)
-                    if i > 0:
-                        ps.insert(0, ps.pop(i))
-
-                store.mutate_model_profiles(_to_front)
-                # Track the EFFECTIVE model id so the header selector matches what
-                # requests actually use: profile model → provider default → cfg.
-                _default_model["id"] = (
-                    _effective_model_id(prof.get("provider"), prof.get("model"))
-                    or _default_model["id"]
-                )
+                _default_model["id"] = effective_model or _default_model["id"]
                 self._json(
                     {
-                        "ok": True,
-                        "active_id": prof["id"],
+                        **payload,
                         "has_api_key": bool(runner.effective_api_key()),
                     }
                 )
                 return
             m = re.fullmatch(r"/model-profiles/([^/]+)", sub)
             if m and method in ("PUT", "PATCH"):
-                pid = m.group(1)
-                b = self._body()
-
-                def _edit(ps):
-                    p = next((x for x in ps if x.get("id") == pid), None)
-                    if p is None:
-                        return None
-                    for f in ("name", "provider", "base_url", "model"):
-                        if f in b and b[f] is not None:
-                            p[f] = str(b[f]).strip()
-                    if b.get("api_key"):  # only overwrite when a non-empty key is sent
-                        p["api_key"] = _clean_api_key(b["api_key"])
-                    if b.get("clear_api_key"):
-                        p["api_key"] = ""
-                    return dict(p)  # snapshot for use after the lock is released
-
-                prof = store.mutate_model_profiles(_edit)
-                if prof is None:
-                    self._json({"error": "profile not found"}, 404)
+                try:
+                    profile, effective_model = model_profiles.edit(
+                        m.group(1), self._body()
+                    )
+                except ModelProfileError as exc:
+                    self._json({"error": str(exc)}, exc.status_code)
                     return
-                # keep the live config in sync when editing the active profile
-                if store.get_setting("active_model_profile") == prof["id"]:
-                    store.set_setting("llm_provider", str(prof.get("provider") or ""))
-                    store.set_setting("llm_base_url", str(prof.get("base_url") or ""))
-                    store.set_setting("llm_model", str(prof.get("model") or ""))
-                    store.set_setting(
-                        "llm_api_key", _clean_api_key(prof.get("api_key"))
-                    )
-                    _default_model["id"] = _effective_model_id(
-                        prof.get("provider"), prof.get("model")
-                    )
-                self._json(self._mask_profile(prof))
+                if effective_model:
+                    _default_model["id"] = effective_model
+                self._json(profile)
                 return
             m = re.fullmatch(r"/model-profiles/([^/]+)", sub)
             if m and method == "DELETE":
-                pid = m.group(1)
-                store.mutate_model_profiles(
-                    lambda ps: ps.__setitem__(
-                        slice(None), [p for p in ps if p.get("id") != pid]
-                    )
-                )
-                if store.get_setting("active_model_profile") == pid:
-                    store.set_setting("active_model_profile", "")
+                model_profiles.delete(m.group(1))
                 self._json({"ok": True})
                 return
 
@@ -8027,124 +7945,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- payload builders ------------------------------------------
         def _models_payload(self) -> dict:
-            # Header selector: the live model first, then every saved profile's
-            # model, then the built-in provider defaults — deduped by model id.
-            live = store.get_setting("llm_model") or cfg.llm.model or "default"
-            seen: set[str] = set()
-            models: list[dict] = []
-
-            def _add(mid: str, name: str, desc: str) -> None:
-                mid = (mid or "").strip()
-                if mid and mid not in seen:
-                    seen.add(mid)
-                    models.append({"id": mid, "name": name or mid, "description": desc})
-
-            _add(
-                live,
-                live,
-                f"{store.get_setting('llm_provider') or cfg.llm.provider}" " (当前)",
-            )
-            for p in store.list_model_profiles():
-                _add(p.get("model"), p.get("model"), p.get("name") or "profile")
-            for prov, spec in PROVIDERS.items():
-                _add(spec.get("model"), spec.get("model"), prov)
-            return {
-                "models": {"default": models},
-                "default_model_id": _default_model["id"],
-            }
+            return model_profiles.models_payload(_default_model["id"])
 
         def _mask_profile(self, p: dict) -> dict:
-            """Public view of a profile — never leaks the raw API key."""
-            return {
-                "id": p.get("id"),
-                "name": p.get("name") or "",
-                "provider": p.get("provider") or "",
-                "base_url": p.get("base_url") or "",
-                "model": p.get("model") or "",
-                "has_api_key": bool(_clean_api_key(p.get("api_key"))),
-            }
+            return model_profiles.public_profile(p)
 
         def _model_profiles_payload(self) -> dict:
-            # Seed the built-in presets the FIRST time (once, gated by a flag so
-            # later user edits/deletes are respected): every Ark plan/v3 model
-            # plus an official OpenAI/Anthropic/Gemini entry. The Ark presets
-            # inherit the shared endpoint + key from the live config, so they work
-            # out of the box; the official ones start keyless for the user to fill.
-            # The empty-check + append run atomically under the store lock so a
-            # concurrent POST-add isn't clobbered by this read.
-            seeded = {"done": False}
-
-            def _seed_builtins(ps):
-                if store.get_setting("builtin_profiles_seeded"):
-                    return
-                ark_base = (
-                    store.get_setting("llm_base_url") or PROVIDERS["ark"]["base_url"]
-                )
-                ark_key = _clean_api_key(
-                    store.get_setting("llm_api_key")
-                ) or _clean_api_key(cfg.llm.api_key)
-                have = {(p.get("provider"), p.get("model")) for p in ps}
-                for model, label in ARK_PLAN_MODELS:
-                    if ("ark", model) in have:
-                        continue
-                    ps.append(
-                        {
-                            "id": "mp-" + uuid.uuid4().hex[:8],
-                            "name": "Ark · " + label,
-                            "provider": "ark",
-                            "base_url": ark_base,
-                            "model": model,
-                            "api_key": ark_key,
-                        }
-                    )
-                for prov, label in (
-                    ("chatgpt", "OpenAI GPT (official)"),
-                    ("claude", "Anthropic Claude (official)"),
-                    ("gemini", "Google Gemini (official)"),
-                ):
-                    if any(p.get("provider") == prov for p in ps):
-                        continue
-                    ps.append(
-                        {
-                            "id": "mp-" + uuid.uuid4().hex[:8],
-                            "name": label,
-                            "provider": prov,
-                            "base_url": "",
-                            "model": "",
-                            "api_key": "",
-                        }
-                    )
-                seeded["done"] = True
-
-            store.mutate_model_profiles(_seed_builtins)
-            if seeded["done"]:
-                store.set_setting("builtin_profiles_seeded", "1")
-                if not store.get_setting("active_model_profile"):
-                    cur = store.get_setting("llm_model") or cfg.llm.model
-                    pick = next(
-                        (
-                            p
-                            for p in store.list_model_profiles()
-                            if p.get("provider") == "ark" and p.get("model") == cur
-                        ),
-                        next(
-                            (
-                                p
-                                for p in store.list_model_profiles()
-                                if p.get("provider") == "ark"
-                            ),
-                            None,
-                        ),
-                    )
-                    if pick:
-                        store.set_setting("active_model_profile", pick["id"])
-            profs = store.list_model_profiles()
-            active = store.get_setting("active_model_profile") or ""
-            return {
-                "profiles": [self._mask_profile(p) for p in profs],
-                "active_id": active,
-                "known_providers": sorted(PROVIDERS.keys()),
-            }
+            payload, selected_model = model_profiles.profiles_payload()
+            if selected_model:
+                _default_model["id"] = selected_model
+            return payload
 
         def _skills_catalog(self, disabled: set[str]) -> list[dict]:
             return skill_customization.catalog(disabled)
@@ -8692,21 +8502,12 @@ def _migrate_legacy_provider(cfg: Config) -> None:
     runtime setting or saved model profile, so an install created before the Ark
     plan/v3 switch keeps working (an unknown provider would raise on chat).
     Idempotent: no-op once nothing references ``doubao``."""
-    store = get_store(cfg.db_path)
-    ark_base = PROVIDERS["ark"]["base_url"]
-    if (store.get_setting("llm_provider") or "").strip() == "doubao":
-        store.set_setting("llm_provider", "ark")
-        if not (store.get_setting("llm_base_url") or "").strip():
-            store.set_setting("llm_base_url", ark_base)
-
-    def _fix(ps):
-        for p in ps:
-            if (p.get("provider") or "").strip() == "doubao":
-                p["provider"] = "ark"
-                if not (p.get("base_url") or "").strip():
-                    p["base_url"] = ark_base
-
-    store.mutate_model_profiles(_fix)
+    migrate_provider_alias(
+        get_store(cfg.db_path),
+        provider_specs(),
+        old="doubao",
+        new="ark",
+    )
 
 
 def _seed_example_project(cfg: Config) -> None:

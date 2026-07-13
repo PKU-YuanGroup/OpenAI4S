@@ -124,7 +124,9 @@ class LLMConfig:
     timeout_s: float = float(os.environ.get("OPENAI4S_LLM_TIMEOUT", "120"))
 
     def __post_init__(self) -> None:
-        p = self.provider.strip().upper()
+        # Provider ids may be hyphenated; environment-variable names use the
+        # shell-safe underscore form (``lab-openai`` -> ``LAB_OPENAI``).
+        p = self.provider.strip().upper().replace("-", "_")
 
         def _resolve(field_val: str, specific: str, generic: str) -> str:
             if field_val:

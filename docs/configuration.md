@@ -18,6 +18,36 @@ One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_u
 
 Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
 
+### Extending the provider catalog
+
+Provider identity, model presets, capabilities, and wire transport are separate.
+A deployment or plugin can register another provider over one of the four
+shipped wires without editing the chat router:
+
+```python
+from openai4s.llm import register_model_preset, register_provider
+
+register_provider(
+    "lab_openai",
+    wire="openai",
+    base_url="http://127.0.0.1:11434/v1",
+    model="science-model",
+    tool_calling=False,
+    context_window_tokens=16_384,
+)
+register_model_preset(
+    "lab_openai",
+    "science-model",
+    "Local science model",
+)
+```
+
+Registration is validated, process-local, and limited to the shipped
+`openai`, `responses`, `anthropic`, and `gemini` adapters; it cannot load
+arbitrary transport code. Use a startup plugin or deployment composition layer
+to repeat registrations after restart. `provider_specs()`, `model_presets()`,
+and `get_model_capabilities()` expose detached or immutable catalog views.
+
 ## Kernel environments (conda)
 
 The agent kernel uses a scientific stack (numpy / pandas / scipy / matplotlib / scikit-learn / biopython / …) that installs automatically in the background on first `serve`. For heavier toolchains, four ready-to-use conda specs let the agent pick per task — create them with `openai4s setup` (`--dry-run` to preview, `--only <name>` for one). Specs live in [`envs/`](../envs):
