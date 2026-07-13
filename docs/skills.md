@@ -10,17 +10,20 @@ skills/example_stats/
 
 Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to the model via *progressive disclosure* (only a one-line summary up front; the full doc is fetched on demand with `host.search_skills(query)`), the kernel adds `skills/` to `sys.path`, and the agent runs e.g. `from example_stats.kernel import summary`. A Skill's capability lands as **callable Python inside the kernel** — the same principle as the core paradigm, not another tool schema.
 
-## Bundled Skills (24)
+## Bundled Skills (30)
 
 | category | Skills |
 |---|---|
 | **Structure prediction** (GPU) | `alphafold2` · `openfold3` · `boltz` · `chai1` · `esmfold2` |
 | **Sequence / omics / docking** (GPU) | `fair-esm2` · `evo2` · `borzoi` · `scgpt` · `scvi-tools` · `diffdock` |
 | **Protein design** (GPU) | `proteinmpnn` · `ligandmpnn` · `solublempnn` |
+| **Chemistry / domain analysis** | `admet_genetic` · `retrosynthesis_planning` · `mineral_spectra_analysis` |
 | **Research workflow** | `literature-review` · `pdf-explore` · `paper-narrative` · `figure-composer` · `figure-style` · `indication-dossier` |
+| **Analysis / reproducibility** | `example_stats` · `audit-dataset` · `evaluate-model` · `plan-ml-experiment` |
 | **Platform** | `remote-compute-nvidia` · `remote-compute-ssh` · `using-model-endpoint` |
 
-`example_stats` is the reference example Skill (pure-stdlib descriptive-statistics helpers).
+The four analysis/reproducibility Skills use pure-stdlib sidecars and run in the
+local persistent Python kernel without a separate environment.
 
 ## Writing a Skill
 
