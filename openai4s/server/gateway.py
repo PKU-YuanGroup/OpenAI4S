@@ -68,7 +68,11 @@ from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.server.agent_run import EventCancellation
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
 from openai4s.server.agent_run import WebActionExecutor, WebEventSink
-from openai4s.server.artifacts import ArtifactManager, ArtifactOperationError
+from openai4s.server.artifacts import (
+    ArtifactManager,
+    ArtifactOperationError,
+    PromotionTarget,
+)
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.server.completions import completion_message, response_language
 from openai4s.server.execution_coordinator import (
@@ -6754,6 +6758,38 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     store.list_artifacts({"project_id": pid}),
                     f"project-{pid}-artifacts.zip",
                 )
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/artifacts/promote", sub)
+            if m and method == "POST":
+                fid = m.group(1)
+                frame = store.get_frame(fid)
+                if frame is None:
+                    raise GatewayError(404, "unknown session")
+                cell_id = str(self._body().get("cell_id") or "").strip()
+                if not cell_id:
+                    raise GatewayError(400, "cell_id is required")
+                cell = next(
+                    (
+                        c
+                        for c in self._exec_log(fid).get("entries", [])
+                        if str(c.get("producing_cell_id")) == cell_id
+                    ),
+                    None,
+                )
+                if cell is None:
+                    raise GatewayError(404, "unknown cell")
+                metadata = runner.artifacts.promote_cell(
+                    PromotionTarget(
+                        root_frame_id=fid,
+                        project_id=str(frame.get("project_id") or ""),
+                        workspace=runner.active_workspace_for(fid),
+                    ),
+                    cell,
+                    runner.hub.emitter(fid),
+                )
+                if metadata is None:
+                    raise GatewayError(500, "promotion failed")
+                self._json(metadata)
                 return
             m = re.fullmatch(r"/frames/([^/]+)/artifacts", sub)
             if m and method == "GET":
