@@ -14,6 +14,7 @@ filesystem fallback for unpacked source archives.
 
 ```bash
 python scripts/source_secret_scan.py
+python scripts/verify_release_tag.py v0.1.0
 uv build --no-sources --out-dir dist --clear
 python scripts/verify_release_artifacts.py dist
 ```
@@ -56,11 +57,34 @@ The normal CI browser smoke and nightly macOS Seatbelt smoke remain separate
 because they exercise runtime/browser and operating-system boundaries rather
 than archive integrity.
 
+## Trusted publication
+
+Publishing is isolated in `.github/workflows/release.yml`. A non-prerelease
+GitHub Release whose tag starts with `v` builds from that immutable tag. The
+build job requires an exact `vMAJOR.MINOR.PATCH` match in both `pyproject.toml`
+and `openai4s.__version__`, scans the sources, builds and verifies the wheel and
+sdist, then uploads those exact files as a short-lived Actions artifact. A
+separate `publish` job can only download that artifact and invoke PyPA's
+publisher. Only this final job receives `id-token: write`.
+
+Before the first publication, a repository administrator must:
+
+1. create the protected GitHub environment `pypi` and require a maintainer
+   review;
+2. configure a PyPI pending/trusted publisher for repository
+   `PKU-YuanGroup/OpenAI4S`, workflow `release.yml`, environment `pypi`;
+3. protect `v*` tags and the release workflow through repository rules;
+4. create an annotated tag from a green `main` commit, then publish the GitHub
+   Release for that tag.
+
+The workflow uses GitHub/PyPI OIDC and does not accept a long-lived PyPI token.
+Its publish job also creates PyPI's default provenance attestations through the
+official PyPA action.
+
 ## Deliberate remaining external gates
 
-This repository does not claim that offline CI performs package publication,
-release signing/notarization, vulnerability-database lookup, or live-provider,
-GPU, SSH, and laboratory validation. Those operations require an explicit
-release identity, network service, credential, or hardware and must stay out
-of secret-free pull-request execution. A maintainer must perform them in a
-separately authorized release workflow before public distribution.
+Pull-request CI does not publish packages, sign/notarize native executables, or
+perform live-provider, GPU, SSH, and laboratory validation. Publication needs
+an approved GitHub Release and the separately protected OIDC environment above;
+the other operations require an explicit identity, network service, or
+hardware and remain outside the secret-free default gate.

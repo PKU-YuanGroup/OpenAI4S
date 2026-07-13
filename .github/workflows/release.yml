@@ -1,0 +1,65 @@
+name: Publish release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build verified distributions
+    if: startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the immutable release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+      - name: Match the tag to both version declarations
+        run: uv run --locked python scripts/verify_release_tag.py "${GITHUB_REF_NAME}"
+      - name: Require an annotated tag on main
+        run: |
+          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" != "tag" ]; then
+            echo "::error::Release tags must be annotated."
+            exit 1
+          fi
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Scan release sources
+        run: uv run --locked python scripts/source_secret_scan.py
+      - name: Build wheel and source distribution
+        run: uv build --no-sources --out-dir dist --clear
+      - name: Verify metadata and packaged runtime resources
+        run: uv run --locked python scripts/verify_release_artifacts.py dist
+      - name: Upload the exact distributions for publication
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish to PyPI with OIDC
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/openai4s/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download verified distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish package distributions
+        uses: pypa/gh-action-pypi-publish@release/v1

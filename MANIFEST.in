@@ -1,6 +1,8 @@
 # Ship the default conda env specs and the setup wrapper in the sdist so
 # `openai4s setup` (and scripts/setup_envs.sh) work from a source distribution.
 include envs/*.yml
+include CODE_OF_CONDUCT.md
+include SECURITY.md
 include scripts/setup_envs.sh
 include scripts/*.py
 recursive-include docs *.md

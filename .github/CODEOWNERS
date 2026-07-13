@@ -31,6 +31,7 @@
 /openai4s_compute_provider/         @Nobody-Zhang
 /openai4s_worker_runtime/           @Nobody-Zhang
 /docs/security.md                   @Nobody-Zhang
+/SECURITY.md                        @Nobody-Zhang
 
 # ---- Web app: gateway, REST/WebSocket API, frontend --------------------------
 /openai4s/server/                   @Nobody-Zhang @difficulttopickaname
@@ -50,6 +51,7 @@
 # ---- Governance and CI: changes to the rules need the lead -------------------
 /.github/                           @Nobody-Zhang
 /CONTRIBUTING.md                    @Nobody-Zhang
+/CODE_OF_CONDUCT.md                 @Nobody-Zhang
 /CLAUDE.md                          @Nobody-Zhang
 /AGENTS.md                          @Nobody-Zhang
 /pyproject.toml                     @Nobody-Zhang

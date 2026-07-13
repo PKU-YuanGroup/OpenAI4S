@@ -5,6 +5,9 @@ defines the minimal governance rules for multi-person contribution: branch
 naming, the PR checklist, review policy, release policy, and the offline-test
 policy. The technical conventions live in [`CLAUDE.md`](CLAUDE.md) /
 [`AGENTS.md`](AGENTS.md) and are binding for all contributors, human or agent.
+Community participation is also governed by
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md); suspected vulnerabilities follow
+the private process in [`SECURITY.md`](SECURITY.md).
 
 ## Ground rules
 
@@ -154,6 +157,10 @@ for each of these):
   `uv run pre-commit run --all-files`, green source/artifact/install gates
   described in [`docs/release-validation.md`](docs/release-validation.md), and
   docs that match behavior.
+- PyPI publication is performed only by `.github/workflows/release.yml` from a
+  non-prerelease GitHub Release. The protected `pypi` environment and PyPI
+  Trusted Publisher must match that workflow; long-lived upload tokens are not
+  accepted.
 - Tags are immutable. A bad release is followed by a new patch release, never
   a force-pushed tag.
 - Compatibility promises (e.g. `openai4s_compute_provider` import paths during

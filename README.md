@@ -184,7 +184,7 @@ not runtime requirements.
 
 OpenAI4S is a community effort to keep the **Code-as-Action** paradigm open.
 
-Before opening a PR, please read [`CONTRIBUTING.md`](CONTRIBUTING.md) — it defines branch naming, the PR checklist ([`.github/pull_request_template.md`](.github/pull_request_template.md)), code ownership ([`.github/CODEOWNERS`](.github/CODEOWNERS)), review & release policy, and the offline-test policy.
+Before opening a PR, please read [`CONTRIBUTING.md`](CONTRIBUTING.md) and the [`Code of Conduct`](CODE_OF_CONDUCT.md). Security vulnerabilities belong in the private process described by [`SECURITY.md`](SECURITY.md), never a public issue. The contribution guide defines branch naming, the PR checklist ([`.github/pull_request_template.md`](.github/pull_request_template.md)), code ownership ([`.github/CODEOWNERS`](.github/CODEOWNERS)), review & release policy, and the offline-test policy.
 
 ### Development setup
 

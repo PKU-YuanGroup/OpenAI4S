@@ -158,7 +158,7 @@ OS 沙箱基于 Unix，暂不支持 Windows 原生运行。从源码参与开发
 
 OpenAI4S 是一个让 **Code-as-Action** 范式保持开源的社区项目。
 
-提 PR 前请先阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) —— 它定义了分支命名、PR 检查清单([`.github/pull_request_template.md`](.github/pull_request_template.md))、代码所有权([`.github/CODEOWNERS`](.github/CODEOWNERS))、评审与发布政策,以及离线测试政策。
+提 PR 前请先阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) 与 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)。安全漏洞必须按 [`SECURITY.md`](SECURITY.md) 私下报告，不要提交公开 issue。贡献指南定义了分支命名、PR 检查清单([`.github/pull_request_template.md`](.github/pull_request_template.md))、代码所有权([`.github/CODEOWNERS`](.github/CODEOWNERS))、评审与发布政策,以及离线测试政策。
 
 ### 开发环境配置
 
