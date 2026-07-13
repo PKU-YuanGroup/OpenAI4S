@@ -106,13 +106,26 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## ⚡ 快速开始
 
+发布包没有必需的运行时依赖。任选一种隔离启动方式；两者都无需克隆仓库，也不要求预装 `uv`：
+
 ```bash
-git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
-./setup.sh     # 一次性:用 uv 创建环境
-./start.sh     # 启动 Web UI(http://127.0.0.1:8760/)
+# 持久安装命令
+pipx install openai4s
+openai4s init                 # 可选：引导式模型配置
+openai4s serve
+
+# 零安装试用（数据目录仍保存在 ~/.openai4s）
+uvx openai4s serve
 ```
 
-`setup.sh` 用 **uv** 创建 `.venv`;`start.sh` 从中启动守护进程 + Web UI。启动无需 API Key —— **在 UI 里设置你的模型**(Customize → Models)。不启动 UI 跑单个任务:`uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`。
+也支持普通的 `python -m pip install openai4s`。启动无需 API Key：可以运行
+`openai4s init`，也可以直接启动后在 **Customize → Models** 中配置模型。
+不启动 UI 跑单个任务：`openai4s run "Compute the mean of
+[4,8,15,16,23,42] and submit it." -v`。
+
+原生支持 Linux 与 macOS。Windows 请使用 **WSL2**；当前科学内核协议和
+OS 沙箱基于 Unix，暂不支持 Windows 原生运行。从源码参与开发时仍可使用
+`./setup.sh` 与 `./start.sh`，它们是开发便利脚本，并非运行时依赖。
 
 ---
 

@@ -92,6 +92,24 @@ def _verify_metadata(payload: bytes) -> None:
         raise ReleaseCheckError("wheel metadata Name must be openai4s")
     if not message.get("Version"):
         raise ReleaseCheckError("wheel metadata has no Version")
+    if not (message.get("Summary") or "").strip():
+        raise ReleaseCheckError("wheel metadata has no Summary")
+    if message.get("License-Expression") != "MIT":
+        raise ReleaseCheckError("wheel metadata License-Expression must be MIT")
+    description_type = (message.get("Description-Content-Type") or "").partition(";")[0]
+    if description_type.strip().casefold() != "text/markdown":
+        raise ReleaseCheckError("wheel long description must be Markdown")
+    project_urls = {
+        value.partition(",")[0].strip(): value.partition(",")[2].strip()
+        for value in message.get_all("Project-URL", [])
+    }
+    missing_urls = sorted(
+        {"Homepage", "Documentation", "Issues", "Source"} - project_urls.keys()
+    )
+    if missing_urls:
+        raise ReleaseCheckError(
+            "wheel metadata is missing Project-URL entries: " + ", ".join(missing_urls)
+        )
     requires_python = message.get("Requires-Python") or ""
     if ">=3.10" not in requires_python.replace(" ", ""):
         raise ReleaseCheckError("wheel metadata must preserve Requires-Python >=3.10")

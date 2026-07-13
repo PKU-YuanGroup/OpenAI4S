@@ -60,6 +60,19 @@ def test_console_and_module_entrypoints_target_the_same_main():
             ["run", "analyze data", "-v"],
             {"cmd": "run", "task": "analyze data", "json": False, "verbose": True},
         ),
+        (
+            ["init", "--provider", "claude", "--non-interactive"],
+            {
+                "cmd": "init",
+                "provider": "claude",
+                "model": None,
+                "base_url": None,
+                "api_key_stdin": False,
+                "clear_api_key": False,
+                "non_interactive": True,
+                "json": False,
+            },
+        ),
         (["setup"], {"cmd": "setup", "only": None, "dry_run": False}),
         (
             ["setup", "--only", "r", "--dry-run"],
@@ -109,6 +122,7 @@ def test_setup_only_accepts_each_documented_environment(name):
         (["serve", "--help"], "--no-open"),
         (["run", "--help"], "--json"),
         (["run", "--help"], "--verbose"),
+        (["init", "--help"], "--api-key-stdin"),
         (["setup", "--help"], "--only"),
         (["setup", "--help"], "--dry-run"),
         (["jupyter", "describe", "--help"], "--json"),
@@ -133,8 +147,17 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "{serve,status,stop,url,run,setup,jupyter}" in proc.stdout
-    for command in ("serve", "status", "stop", "url", "run", "setup", "jupyter"):
+    assert "{serve,status,stop,url,run,init,setup,jupyter}" in proc.stdout
+    for command in (
+        "serve",
+        "status",
+        "stop",
+        "url",
+        "run",
+        "init",
+        "setup",
+        "jupyter",
+    ):
         assert command in proc.stdout
 
 

@@ -64,13 +64,20 @@ def test_source_secret_scan_rejects_credential_files(tmp_path):
     ]
 
 
-def _metadata(*, dependency: str | None = None) -> bytes:
+def _metadata(*, dependency: str | None = None, summary: str = "OpenAI4S") -> bytes:
     requires = f"Requires-Dist: {dependency}\n" if dependency else ""
     return (
-        "Metadata-Version: 2.1\n"
+        "Metadata-Version: 2.4\n"
         "Name: openai4s\n"
         "Version: 0.1.0\n"
+        f"Summary: {summary}\n"
+        "License-Expression: MIT\n"
+        "Project-URL: Homepage, https://github.com/PKU-YuanGroup/OpenAI4S\n"
+        "Project-URL: Documentation, https://github.com/PKU-YuanGroup/OpenAI4S/tree/main/docs\n"
+        "Project-URL: Issues, https://github.com/PKU-YuanGroup/OpenAI4S/issues\n"
+        "Project-URL: Source, https://github.com/PKU-YuanGroup/OpenAI4S\n"
         "Requires-Python: >=3.10\n"
+        "Description-Content-Type: text/markdown\n"
         f"{requires}\n"
     ).encode()
 
@@ -128,6 +135,13 @@ def test_release_artifact_verifier_rejects_core_dependency():
         verifier._verify_metadata(_metadata(dependency="requests>=2"))
 
     verifier._verify_metadata(_metadata(dependency='numpy>=1.24; extra == "science"'))
+
+
+def test_release_artifact_verifier_requires_publishable_metadata():
+    verifier = _load_script("verify_release_artifacts")
+
+    with pytest.raises(verifier.ReleaseCheckError, match="no Summary"):
+        verifier._verify_metadata(_metadata(summary=""))
 
 
 def test_release_workflow_keeps_source_build_and_offline_install_gates():

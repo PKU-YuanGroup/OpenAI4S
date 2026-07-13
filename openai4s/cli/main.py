@@ -1,16 +1,18 @@
-"""openai4s CLI: serve / status / stop / url / run / setup.
+"""openai4s CLI: serve / status / stop / url / run / init / setup.
 
   openai4s serve    start the daemon (foreground; use & or nohup to background)
   openai4s status   is the daemon up? (reads pidfile + /health)
   openai4s stop     stop the running daemon
   openai4s url      print the local web UI url
   openai4s run "<task>"   run one Code-as-Action task (in-process, no daemon)
+  openai4s init     guided first-run model configuration
   openai4s setup    create the four default conda envs from envs/*.yml
   openai4s jupyter  describe/export/install the optional Jupyter bridge
 """
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import shutil
@@ -166,6 +168,81 @@ def cmd_run(args) -> int:
             )
         if result.get("final_message"):
             print("final:", result["final_message"])
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+#  init — guided first-run configuration without checkout-local files
+# --------------------------------------------------------------------------- #
+
+
+def _onboarding_service():
+    from openai4s.llm import PROVIDERS
+    from openai4s.onboarding import OnboardingService
+    from openai4s.store import get_store
+
+    cfg = get_config()
+    cfg.ensure_dirs()
+    store = get_store(cfg.db_path)
+    return OnboardingService(cfg, store, PROVIDERS), store
+
+
+def _prompt_value(label: str, default: str) -> str:
+    suffix = f" [{default}]" if default else ""
+    return input(f"{label}{suffix}: ").strip() or default
+
+
+def cmd_init(args) -> int:
+    service, store = _onboarding_service()
+    try:
+        defaults = service.defaults(args.provider)
+        interactive = (
+            not args.non_interactive and not args.api_key_stdin and sys.stdin.isatty()
+        )
+        provider = args.provider or defaults["provider"]
+        model = args.model
+        base_url = args.base_url
+        api_key = None
+
+        if interactive:
+            known = ", ".join(sorted(service.providers))
+            print("OpenAI4S first-run setup")
+            print(f"Available providers: {known}")
+            provider = _prompt_value("Provider", provider).lower()
+            defaults = service.defaults(provider)
+            model = model or _prompt_value("Model", defaults["model"])
+            base_url = base_url or _prompt_value("Base URL", defaults["base_url"])
+            if not args.clear_api_key:
+                answer = input("Configure an API key now? [y/N]: ").strip().lower()
+                if answer in {"y", "yes"}:
+                    api_key = getpass.getpass("API key (input hidden): ")
+        elif args.api_key_stdin:
+            api_key = sys.stdin.readline().rstrip("\r\n")
+
+        result = service.configure(
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            clear_api_key=args.clear_api_key,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+
+    payload = result.as_dict()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Configured {result.provider} / {result.model}")
+        print(f"Settings stored in {result.data_dir}")
+        if not result.has_api_key:
+            print("No API key stored; add one in Customize → Models after launch.")
+        if not result.native_runtime_supported:
+            print("Native Windows kernels are unsupported; run OpenAI4S under WSL2.")
+        print("Next: openai4s serve")
     return 0
 
 
@@ -385,6 +462,28 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--json", action="store_true", help="emit full JSON result")
     pr.add_argument("-v", "--verbose", action="store_true", help="stream turns")
     pr.set_defaults(fn=cmd_run)
+
+    pi = sub.add_parser("init", help="guided first-run model configuration")
+    pi.add_argument("--provider", help="provider id (default: current provider)")
+    pi.add_argument("--model", help="model id (default: provider default)")
+    pi.add_argument("--base-url", help="provider API base URL")
+    pi.add_argument(
+        "--api-key-stdin",
+        action="store_true",
+        help="read one API-key line from stdin (never from command arguments)",
+    )
+    pi.add_argument(
+        "--clear-api-key",
+        action="store_true",
+        help="remove the stored API key for the selected profile",
+    )
+    pi.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="accept supplied options and provider defaults without prompting",
+    )
+    pi.add_argument("--json", action="store_true", help="emit secret-free JSON")
+    pi.set_defaults(fn=cmd_init)
 
     pu = sub.add_parser(
         "setup", help="create the four default conda envs from envs/*.yml"

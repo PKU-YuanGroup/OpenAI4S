@@ -57,6 +57,7 @@ Host-RPC limitations.
 ## CLI
 
 ```bash
+openai4s init      # guided first-run model configuration (headless-friendly)
 openai4s serve     # daemon + web UI (foreground)
 openai4s status    # is it up?
 openai4s stop      # stop the daemon
@@ -66,3 +67,17 @@ openai4s jupyter describe               # inspect optional bridge availability
 openai4s jupyter export ./kernel-specs  # pure-stdlib KernelSpec export
 openai4s jupyter install                # install user KernelSpecs
 ```
+
+`openai4s init` stores the selected provider/model/base URL in the normal
+OpenAI4S settings database. Interactive API-key input is hidden; automation may
+pipe one line to `openai4s init --api-key-stdin --non-interactive`. An API key
+is never accepted as a command-line value or returned by `--json`, keeping it
+out of shell history and structured command output.
+
+## Platform support
+
+The native runtime is supported on Linux and macOS. Windows users should run
+the Linux package under WSL2. The current persistent-kernel transport, resource
+accounting, process interruption, and OS sandbox adapters depend on Unix
+primitives; installing the wheel with native Windows Python does not imply that
+scientific Cell execution is supported there.

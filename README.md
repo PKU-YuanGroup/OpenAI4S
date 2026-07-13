@@ -120,13 +120,29 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 
 ## ⚡ Quickstart
 
+The published package has no required runtime dependencies. Choose an isolated
+launcher; neither path requires cloning the repository or preinstalling `uv`:
+
 ```bash
-git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
-./setup.sh     # one-time: build the environment with uv
-./start.sh     # launch the web UI at http://127.0.0.1:8760/
+# persistent command
+pipx install openai4s
+openai4s init                 # optional guided model setup
+openai4s serve
+
+# zero-install trial (the data directory remains at ~/.openai4s)
+uvx openai4s serve
 ```
 
-`setup.sh` creates the `.venv` with **uv**; `start.sh` launches the daemon + web UI from it. No API key is needed to boot — **set your model in the UI** (Customize → Models). One-shot without the UI: `uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`.
+Plain `python -m pip install openai4s` is also supported. No API key is needed
+to boot: use `openai4s init`, or launch directly and configure a model in
+**Customize → Models**. One-shot without the UI: `openai4s run "Compute the
+mean of [4,8,15,16,23,42] and submit it." -v`.
+
+Native Linux and macOS are supported. On Windows, use **WSL2**; the current
+scientific-kernel protocol and OS sandbox are Unix-based and native Windows is
+not yet a supported runtime. Contributors working from a clone can continue to
+use `./setup.sh` and `./start.sh`; those scripts are development conveniences,
+not runtime requirements.
 
 ---
 
