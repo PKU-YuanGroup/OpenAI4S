@@ -176,8 +176,9 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 ### 欢迎的贡献
 
 - **新 Skill** —— 在 `skills/` 下放一个 `SKILL.md`(+ 可选 `kernel.py`)—— 代码配方,而非 schema。
-- **新供应商** —— 在 [`openai4s/llm.py`](openai4s/llm.py) 里加一个协议适配器,或一个 BYOC 计算提供方。
+- **新模型供应商** —— 优先通过 [Provider 目录](docs/configuration.md#extending-the-provider-catalog)复用现有 wire 注册端点/模型；只有真正新增 wire 时才添加独立适配器。BYOC 计算提供方是另一类扩展。
 - **引擎与 UI** —— 核心是纯标准库、可读性强;Web 应用无框架。
+- **评审贡献** —— 复现契约、审计聚焦 diff，或按[评审者成长路径](CONTRIBUTING.md#reviewer-pathway)成为 runtime、安全、科学或 Web 方向的长期 reviewer。
 
 请保持核心零依赖,把可选科学库导入包在 `try/except ImportError` 里,并在提 PR 前确保 `uv run pytest` 与 `uv run pre-commit run --all-files` 通过。
 

@@ -202,8 +202,9 @@ Style is enforced by **pre-commit** — `black`, `isort` (`--profile black`), an
 ### What we welcome
 
 - **New Skills** — a `SKILL.md` (+ optional `kernel.py`) under `skills/` — recipes of code, not schemas.
-- **New providers** — a wire adapter under [`openai4s/llm/`](openai4s/llm/), or a BYOC compute provider.
+- **New model providers** — register an endpoint/model over a shipped wire through the [provider catalog](docs/configuration.md#extending-the-provider-catalog); add a focused adapter only for a genuinely new wire. BYOC compute providers remain a separate extension kind.
 - **Engine & UI** — the core is pure stdlib and readable; the web app is framework-free.
+- **Reviews** — reproduce a contract, audit a focused diff, or become a recurring reviewer for runtime, security, science, or Web paths through the [reviewer pathway](CONTRIBUTING.md#reviewer-pathway).
 
 Keep the core dependency-free, guard optional science imports behind `try/except ImportError`, and make sure `uv run pytest` and `uv run pre-commit run --all-files` pass before opening a PR.
 

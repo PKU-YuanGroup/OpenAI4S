@@ -150,6 +150,30 @@ for each of these):
 - Keep PRs small and single-purpose. Large mechanical diffs (formatting,
   vendored assets) must be separated from behavior changes.
 
+### Reviewer pathway
+
+Review is a first-class contribution and does not require repository write
+access. We especially welcome recurring reviewers in four areas:
+
+- agent engine, Python/R protocol, and recovery semantics;
+- security boundaries, permissions, secret handling, and release provenance;
+- scientific connectors, analysis Skills, and result-validity checks;
+- Web session services, REST/WebSocket contracts, and browser smoke tests.
+
+Start by reproducing the reported behavior and leaving one evidence-backed,
+read-only review on a small PR. State the invariant you checked, the command or
+browser flow you ran, and any path you did not assess. After several substantive
+reviews in one area, ask a maintainer to list you as a recurring reviewer in the
+relevant issue/PR templates. CODEOWNERS membership is a later trust decision:
+it requires sustained review activity, familiarity with the path's threat and
+compatibility boundaries, and repository write access. It is never granted only
+to make a branch-protection check pass.
+
+Maintainers should route review rather than defaulting every change to the lead:
+request the narrowest relevant area reviewer first, keep security ownership
+separate for sensitive paths, and record an unowned area as a contributor need
+instead of silently weakening the review rule.
+
 ## Release policy
 
 - Releases are cut from `main` only, as annotated tags `vMAJOR.MINOR.PATCH`.
