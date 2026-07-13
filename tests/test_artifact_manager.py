@@ -584,3 +584,71 @@ def test_snapshot_ignores_hidden_junk_and_nested_git_repositories(tmp_path):
     snapshot = harness.manager.snapshot(harness.workspace)
 
     assert set(snapshot) == {str(harness.workspace / "deliverable.txt")}
+
+
+def test_promote_cell_freezes_code_and_output_as_markdown_artifact(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    events: list[dict] = []
+    cell = {
+        "producing_cell_id": "cell-abc",
+        "cell_index": 2,
+        "language": "python",
+        "source": "print('hi')\ndf.to_csv('out.csv')",
+        "stdout": "hi",
+        "figures": ["figure_cell2_1.png"],
+        "files_written": ["out.csv"],
+    }
+
+    meta = harness.manager.promote_cell(harness.session, cell, events.append)
+
+    assert meta is not None
+    assert meta["filename"].endswith(".md")
+    promoted = list((harness.workspace / "promoted").glob("*.md"))
+    assert len(promoted) == 1
+    text = promoted[0].read_text("utf-8")
+    assert "```python" in text
+    assert "print('hi')" in text
+    assert "## Output" in text and "hi" in text
+    assert "figure_cell2_1.png" in text  # figure reference preserved
+    assert "`out.csv`" in text  # produced-file pointer preserved
+    # A real artifact_created event fires so the Files panel refreshes.
+    assert any(event.get("type") == "artifact_created" for event in events)
+
+
+def test_promote_cell_reuses_one_artifact_and_versions_on_change(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    cell = {"producing_cell_id": "cell-x", "cell_index": 1, "source": "x = 1"}
+
+    first = harness.manager.promote_cell(harness.session, cell, lambda event: None)
+    same = harness.manager.promote_cell(harness.session, cell, lambda event: None)
+
+    # Re-promoting the identical cell rewrites the same stable path: one
+    # artifact, one file, no duplicate (identical bytes dedupe to one version).
+    assert same["artifact_id"] == first["artifact_id"]
+    assert same["version_id"] == first["version_id"]
+    assert len(list((harness.workspace / "promoted").glob("*.md"))) == 1
+
+    # An edited cell (same id) writes a fresh version of that same artifact.
+    cell["source"] = "x = 2"
+    changed = harness.manager.promote_cell(harness.session, cell, lambda event: None)
+    assert changed["artifact_id"] == first["artifact_id"]
+    assert changed["version_id"] != first["version_id"]
+    assert len(list((harness.workspace / "promoted").glob("*.md"))) == 1
+
+
+def test_promote_cell_fences_longer_than_backtick_runs_in_output(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    # A cell whose output contains a Markdown fence must not break out of the
+    # code block — the surrounding fence has to be longer than any run inside.
+    cell = {
+        "producing_cell_id": "cell-md",
+        "cell_index": 3,
+        "source": "print('markdown')",
+        "stdout": "```\nnested fence\n```",
+    }
+
+    meta = harness.manager.promote_cell(harness.session, cell, lambda event: None)
+
+    assert meta is not None
+    text = list((harness.workspace / "promoted").glob("*.md"))[0].read_text("utf-8")
+    assert "````" in text  # output fence grew to 4 backticks around the 3-run body

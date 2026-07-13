@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -75,6 +76,26 @@ class ArtifactSession(Protocol):
     root_frame_id: str
     project_id: str
     workspace: Path
+
+
+@dataclass(frozen=True)
+class PromotionTarget:
+    """A minimal ArtifactSession for REST-time cell promotion.
+
+    Promoting a cell happens outside any live kernel session, so the gateway
+    supplies just the three fields ``register_file`` needs rather than reviving
+    a full SessionState.
+    """
+
+    root_frame_id: str
+    project_id: str
+    workspace: Path
+
+
+def _md_fence(body: str) -> str:
+    """A backtick fence guaranteed longer than any backtick run in ``body``."""
+    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    return "`" * max(3, longest + 1)
 
 
 class ArtifactManager:
@@ -538,6 +559,62 @@ class ArtifactManager:
             "checksum": checksum,
             "storage_path": record.get("path"),
         }
+
+    def promote_cell(
+        self,
+        session: ArtifactSession,
+        cell: dict,
+        emit: EventSink,
+    ) -> dict | None:
+        """Freeze one notebook cell as a self-contained Markdown artifact.
+
+        A cell's *files* are already captured as artifacts when it runs (see
+        ``capture``); promotion fixes the analysis *step* itself — its code,
+        stdout, and pointers to what it produced — into a shareable, versioned
+        document the Files panel manages like any other artifact. The target
+        path is derived from the cell id, so re-promoting the same cell rewrites
+        the same file and the store versions it in place instead of spawning a
+        duplicate.
+        """
+        cell_id = str(cell.get("producing_cell_id") or "").strip() or None
+        index = cell.get("cell_index")
+        stem = f"cell-{index}" if index is not None else "cell"
+        token = hashlib.sha1((cell_id or stem).encode("utf-8")).hexdigest()[:8]
+        target = session.workspace / "promoted" / f"{stem}-{token}.md"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(self._render_cell_markdown(cell), encoding="utf-8")
+        except OSError:
+            return None
+        return self.register_file(session, target, cell_id, emit)
+
+    @staticmethod
+    def _render_cell_markdown(cell: dict) -> str:
+        """Render a cell (code + output + produced files) as Markdown."""
+        index = cell.get("cell_index")
+        language = str(cell.get("language") or cell.get("kernel_id") or "python")
+        heading = f"Cell {index}" if index is not None else "Notebook cell"
+        source = (cell.get("source") or "").rstrip("\n")
+        fence = _md_fence(source)
+        lines: list[str] = [f"# {heading}", "", f"{fence}{language}", source, fence]
+        stdout = (cell.get("stdout") or "").rstrip("\n")
+        if stdout:
+            out_fence = _md_fence(stdout)
+            lines += ["", "## Output", "", out_fence, stdout, out_fence]
+        error = (cell.get("error") or "").rstrip("\n")
+        if error:
+            err_fence = _md_fence(error)
+            lines += ["", "## Error", "", err_fence, error, err_fence]
+        figures = [str(fig) for fig in (cell.get("figures") or []) if fig]
+        if figures:
+            lines += ["", "## Figures", ""]
+            lines += [f"![{fig.split('/')[-1]}]({fig})" for fig in figures]
+        files = [str(name) for name in (cell.get("files_written") or []) if name]
+        if files:
+            lines += ["", "## Produced files", ""]
+            lines += [f"- `{name}`" for name in files]
+        lines.append("")
+        return "\n".join(lines)
 
     def capture(
         self,

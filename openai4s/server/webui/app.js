@@ -592,6 +592,7 @@ Object.assign(I18N.zh, {
   "nb.action.rerun": "作为新单元运行",
   "nb.action.fork": "从此前 Fork",
   "nb.action.promote": "提升为 Artifact",
+  "nb.action.promoted": "已提升为制品 · {0}",
   "nb.action.unavailable": "当前服务尚未提供此操作；历史单元不会被修改。",
   "nb.action.failed": "Notebook 操作失败：{0}",
   "nb.interrupt.noOwner": "当前没有可精确中断的 execution owner。",
@@ -1399,6 +1400,7 @@ Object.assign(I18N.en, {
   "nb.action.rerun": "Rerun as new",
   "nb.action.fork": "Fork from before",
   "nb.action.promote": "Promote to Artifact",
+  "nb.action.promoted": "Promoted to Artifact · {0}",
   "nb.action.unavailable": "This operation is not exposed by the current server; history will not be modified.",
   "nb.action.failed": "Notebook action failed: {0}",
   "nb.interrupt.noOwner": "There is no exact execution owner to interrupt.",
@@ -6082,7 +6084,7 @@ async function forkNotebookCell(cell) {
 }
 async function promoteNotebookCell(cell) {
   if (!S.currentId || !branchCapability("promote")) return;
-  try { await api(`/frames/${S.currentId}/artifacts/promote`, { method: "POST", body: JSON.stringify({ cell_id: nbCellKey(cell) }) }); loadArtifacts(S.currentId); scheduleWorkbenchRefresh(); }
+  try { const art = await api(`/frames/${S.currentId}/artifacts/promote`, { method: "POST", body: JSON.stringify({ cell_id: nbCellKey(cell) }) }); loadArtifacts(S.currentId); scheduleWorkbenchRefresh(); hint(t("nb.action.promoted", (art && art.filename) || "")); }
   catch (error) { hint(t("nb.action.failed", error.message), true); }
 }
 function cellNode(e) {

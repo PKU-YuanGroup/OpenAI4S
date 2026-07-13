@@ -384,6 +384,11 @@ class SessionDomainService:
                             else "create a checkpoint before activating a branch"
                         ),
                     },
+                    # Promotion freezes a notebook cell (code + output) into a
+                    # shareable Markdown artifact; always available on a live
+                    # research session (the cell's own files are already captured
+                    # at execution time — see ArtifactManager.promote_cell).
+                    "promote": {"enabled": True, "reason": None},
                 },
             }
         )
