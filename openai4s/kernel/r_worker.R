@@ -369,7 +369,7 @@ evalq({
   inspect <- function(limit) {
     names <- ls(envir = globalenv(), all.names = TRUE, sorted = TRUE)
     names <- names[!startsWith(names, ".oai4s_") & !(names %in% hidden)]
-    selected <- head(names, limit)
+    selected <- names[seq_len(min(length(names), limit))]
     list(
       variables = lapply(selected, inspect_one),
       truncated = length(names) > length(selected),
