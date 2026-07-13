@@ -247,7 +247,7 @@ def test_python_bootstrap_runs_outside_supervisor_lock(monkeypatch, tmp_path):
                 "base_prefix": "/test-env",
                 "sdk_version": "0.1.0",
                 "provenance_version": "1",
-                "host_capability_version": "1",
+                "host_capability_version": "2",
                 "package_manifest": [],
                 "locale": {"preferred_encoding": "UTF-8"},
             }

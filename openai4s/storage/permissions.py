@@ -39,6 +39,7 @@ DEFAULT_PERMISSION_RULES = (
     ("env_setup", "*", "allow"),
     ("web_fetch", "*", "allow"),
     ("web_search", "*", "allow"),
+    ("science_search", "*", "allow"),
     ("skills_edit", "*", "allow"),
     ("mcp_call", "*", "ask"),
     # Reading a resource / rendering a prompt pulls attacker-controllable

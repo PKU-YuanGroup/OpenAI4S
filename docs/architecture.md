@@ -79,6 +79,7 @@ host.web_search(...)   host.web_fetch(...)                           # networked
 host.bash(...)          # shell — runs INSIDE the kernel process, never on the host
 host.read_file / write_file / edit_file / grep / glob / list_dir     # filesystem (workspace-jailed)
 host.llm(...)          host.delegate(...)    host.collect(...)       # models & sub-agents
+host.science.list_databases(...) / search(...)                       # structured public science APIs
 host.compute.create(...).submit_job(...)   host.fold(...)            # remote GPU (BYOC) + folding
 host.save_artifact(...) host.artifacts(...) host.view_image(...)     # versioned artifacts
 host.skills.*  host.env.use(...)  host.mcp.call(...)  host.query(...) # skills, envs, MCP, read-only SQL
@@ -158,6 +159,15 @@ kernel, and real scientific work continues through persistent Python/R cells.
 The old fenced `tool`-block parser remains a
 silent compatibility path for saved prompts and older clients, but it is no
 longer advertised to the refactored agent.
+
+Scientific database breadth does not expand the model's tool count. The
+registry exposes only `science_list_dbs` and `science_search`; a connector
+service normalizes UniProt, RCSB PDB, Ensembl, ChEMBL, PubChem, arXiv, and
+OpenAlex records behind that pair. The same operations are available as
+`host.science.*` for loop/join-heavy code cells. Fixed HTTPS endpoints still
+pass through the normal network switch, SSRF and redirect guards, egress
+allowlist, permission/audit envelope, and untrusted-output screening. See
+[Scientific database connectors](science-connectors.md).
 
 Native `Tool` classes that declare `writes_files=True` are wrapped by the Web
 adapter in a per-call workspace transaction. Every write/edit is diffed and

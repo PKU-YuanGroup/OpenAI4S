@@ -110,6 +110,24 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     if method == "web_fetch":
         url = a.get("url", "")
         return ("fetch", f"Reading {_domain(url) or url}", {"url": url})
+    if method == "science_list_dbs":
+        return (
+            "science",
+            "Listing scientific databases",
+            {"domain": a.get("domain") or "all"},
+        )
+    if method == "science_search":
+        database = a.get("database") or "scientific database"
+        return (
+            "search",
+            f"Searching {database}",
+            {
+                "database": database,
+                "query": a.get("query", ""),
+                "limit": a.get("limit"),
+                "filters": a.get("filters", {}),
+            },
+        )
     if method == "request_network_access":
         dom = a.get("domain", "")
         return (
@@ -453,6 +471,9 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
     if kind == "fetch":
         text = r.get("content") or r.get("text") or r.get("markdown") or ""
         return ({"content": text[:8000], "url": r.get("url")}, f"{len(text):,} chars")
+    if kind == "science":
+        databases = r.get("databases") or []
+        return ({"databases": databases}, _plural(len(databases), "database"))
     if kind == "edit":
         return (
             {"path": r.get("path"), "replaced": r.get("replaced")},
@@ -1363,6 +1384,7 @@ class HostDispatcher:
             "todo": True,
             "web_search": webtools.network_allowed(),
             "web_fetch": webtools.network_allowed(),
+            "science": webtools.network_allowed(),
             "network": webtools.network_allowed(),
             "model": self.cfg.llm.model,
             "context_window": self.cfg.context_window_tokens,
@@ -1387,6 +1409,7 @@ class HostDispatcher:
                 "todo": "workflow",
                 "web_search": "web",
                 "web_fetch": "web",
+                "science": "science",
                 "network": "network",
             }
             for key, alias in aliases.items():

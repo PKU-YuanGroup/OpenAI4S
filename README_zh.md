@@ -81,6 +81,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 - **🔌 一行切换多供应商** —— `ark`(doubao · glm · kimi · deepseek · minimax)加官方 `chatgpt · claude · gemini`,都由一个 `host.llm` 统一封装;在 UI 里即可切换。
 - **🖥️ 完整科研 Web 应用** —— 实时流式 turn、**版本化产物**(`.pdb`/`.cif` 内置 3Dmol 查看器)、共享 Agent 内核的实时 Notebook、后台运行与恢复。
 - **🔬 24 个内置 Skill** —— 14 个 GPU/模型科学 Skill(AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock ……)+ 科研工作流 Skill。Skill 是**代码配方**,不是 JSON schema。
+- **🗃️ 结构化科学连接器** —— 两个扁平工具统一覆盖 UniProt、RCSB PDB、Ensembl、ChEMBL、PubChem、arXiv 与 OpenAlex；`host.science` 让多来源连接仍在持久单元格中完成。
 - **☁️ BYOC 远程计算** —— 通过 `ssh:<alias>` 或内置 **NVIDIA NIM** 提供方把 GPU 作业投送到你自己的机器;真实的 `host.fold`(单序列 Protenix / AF3 级),受严格的不伪造策略约束。
 
 ---
@@ -135,6 +136,7 @@ OS 沙箱基于 Unix，暂不支持 Windows 原生运行。从源码参与开发
 |---|---|
 | [**架构**](docs/architecture.md) | Code-as-Action 双循环、`host` API、内核设计 |
 | [**Skills**](docs/skills.md) | 24 个内置 Skill + 如何自撰 |
+| [**科学数据库**](docs/science-connectors.md) | 统一结构的 UniProt/PDB/Ensembl/化学与文献检索 |
 | [**远程计算**](docs/compute.md) | BYOC GPU 作业、`host.fold`、自动预置 |
 | [**Web 应用**](docs/webapp.md) | UI 功能、实时 Notebook、产物、演示会话 |
 | [**配置**](docs/configuration.md) | 模型供应商、环境变量、conda 环境、CLI |
