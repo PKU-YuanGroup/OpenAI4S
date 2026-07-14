@@ -1,4 +1,5 @@
 """Offline tests for the retrosynthesis_planning skill."""
+import base64
 import importlib.util
 import json
 import re
@@ -57,6 +58,13 @@ def _graph_payload(html):
     )
     assert match
     return json.loads(match.group(1))["graph"]
+
+
+def _svg_source_text(source):
+    """Decode the self-contained SVG payload used by dashboard structure images."""
+    prefix = "data:image/svg+xml;base64,"
+    assert source.startswith(prefix)
+    return base64.b64decode(source.removeprefix(prefix)).decode("utf-8")
 
 
 def _assert_no_duplicate_structure_uris(html):
@@ -187,6 +195,16 @@ def test_aspirin_example_dashboard_is_documented():
         n for n in graph["nodes"] if n.get("smiles") == "CC(=O)Oc1ccccc1C(=O)O"
     )
     assert target["className"] == "target"
+    molecule_sources = [
+        node["structureSrc"]
+        for node in graph["nodes"]
+        if node.get("kind") == "molecule"
+    ]
+    assert molecule_sources
+    assert all(
+        "structure renderer fallback" not in _svg_source_text(source)
+        for source in molecule_sources
+    )
     _assert_no_duplicate_structure_uris(html)
 
 
@@ -303,6 +321,18 @@ def test_molecule_briefs_and_query_urls():
     assert funcs["build_molecule_structure_src"]("unknown-intermediate").startswith(
         "data:image/svg+xml;base64,"
     )
+
+
+def test_rdkit_structure_depiction_when_available():
+    if importlib.util.find_spec("rdkit") is None:
+        pytest.skip("RDKit is an optional science dependency")
+
+    funcs = _import_skill()
+    svg = _svg_source_text(
+        funcs["build_molecule_structure_src"]("CC(=O)Oc1ccccc1C(=O)O")
+    )
+    assert "structure renderer fallback" not in svg
+    assert "#FFFFFF" not in svg.upper()
 
 
 def test_llm_annotations_drive_reaction_and_molecule_html():

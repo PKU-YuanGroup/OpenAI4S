@@ -12,7 +12,12 @@ lookup, or a medicinal chemistry synthesis feasibility summary.
 
 The recommended backend is AiZynthFinder running in a separate environment. This
 skill keeps OpenAI4S core dependency-free: the helper module is pure stdlib and
-only optionally uses RDKit if it is already installed in the active kernel.
+uses RDKit from the optional science environment for transparent-background 2D
+molecule depictions. Install the science extra before generating visual reports:
+
+```bash
+uv sync --extra science
+```
 
 ## Capability summary
 
@@ -229,9 +234,9 @@ uv run python skills/retrosynthesis_planning/examples/build_example.py
 ```
 
 `aspirin_routes.json` holds the route trees and `aspirin_annotations.json` the
-deterministic demonstration annotations. **The committed dashboard was rendered
-without RDKit**, so its molecule images are the transparent placeholder SVG, not
-real depictions. Install RDKit before regenerating to get real structures.
+deterministic demonstration annotations. The committed dashboard is rendered
+with RDKit depictions. To regenerate it with the same molecule rendering, first
+install the science extra and then run the build command above.
 
 Open it directly in a browser, or serve the skill directory locally:
 

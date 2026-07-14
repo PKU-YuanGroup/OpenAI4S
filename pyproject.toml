@@ -36,6 +36,9 @@ science = [
     "numpy>=1.24",
     "pandas>=2.0",
     "matplotlib>=3.7",
+    # Optional cheminformatics support for transparent 2D molecule depictions
+    # in the retrosynthesis planning skill.
+    "rdkit>=2024.9",
 ]
 
 [dependency-groups]
