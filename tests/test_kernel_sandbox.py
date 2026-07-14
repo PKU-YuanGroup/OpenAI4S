@@ -66,6 +66,7 @@ def test_seatbelt_profile_escapes_paths_and_blocks_network_by_default():
     assert "(deny network*)" in profile
     assert '(subpath "/tmp/project with space/quote\\"\\\\tail) ' in profile
     assert '(subpath "/tmp/private temp")' in profile
+    assert '(literal "/dev/fd/3")' in profile
     assert profile.count("(allow default)") == 1
     # The path stays one quoted Scheme string; its quote cannot terminate the
     # path and inject the attacker-shaped policy text that follows it.

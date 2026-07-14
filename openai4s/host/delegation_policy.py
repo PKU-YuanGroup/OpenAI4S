@@ -17,10 +17,17 @@ _ALWAYS = frozenset(
     }
 )
 _ALIASES: dict[str, frozenset[str]] = {
-    "web": frozenset({"web_search", "web_fetch", "egress_check"}),
+    "web": frozenset({"web_search", "web_fetch", "science_search", "egress_check"}),
     "network": frozenset(
-        {"web_search", "web_fetch", "egress_check", "request_network_access"}
+        {
+            "web_search",
+            "web_fetch",
+            "science_search",
+            "egress_check",
+            "request_network_access",
+        }
     ),
+    "science": frozenset({"science_list_dbs", "science_search"}),
     "read_file": frozenset(
         {
             "read_file",

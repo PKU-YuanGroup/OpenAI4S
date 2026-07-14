@@ -6,10 +6,12 @@ import base64
 import binascii
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import shutil
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -17,6 +19,10 @@ from openai4s.artifact_restore import ArtifactRestoreService
 from openai4s.execution import CaptureResult
 
 _JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
+_EMBEDDED_IMAGE_TYPES = frozenset(
+    {"image/gif", "image/jpeg", "image/png", "image/webp"}
+)
+_MAX_EMBEDDED_FIGURE_BYTES = 8 * 1024 * 1024
 EventSink = Callable[[dict[str, Any]], None]
 Broadcast = Callable[[str, dict[str, Any]], None]
 
@@ -75,6 +81,67 @@ class ArtifactSession(Protocol):
     root_frame_id: str
     project_id: str
     workspace: Path
+
+
+@dataclass(frozen=True)
+class PromotionTarget:
+    """A minimal ArtifactSession for REST-time cell promotion.
+
+    Promoting a cell happens outside any live kernel session, so the gateway
+    supplies just the three fields ``register_file`` needs rather than reviving
+    a full SessionState.
+    """
+
+    root_frame_id: str
+    project_id: str
+    workspace: Path
+
+
+def _md_fence(body: str) -> str:
+    """A backtick fence guaranteed longer than any backtick run in ``body``."""
+    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _write_confined_text(workspace: Path, relative: Path, content: str) -> Path:
+    """Write under ``workspace`` without following a final-component symlink."""
+    root = workspace.expanduser().resolve()
+    directory = root / relative.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    if directory.is_symlink():
+        raise OSError("artifact directory must not be a symlink")
+    resolved_directory = directory.resolve(strict=True)
+    resolved_directory.relative_to(root)
+    target = resolved_directory / relative.name
+    if target.is_symlink():
+        raise OSError("artifact target must not be a symlink")
+    target.resolve(strict=False).relative_to(root)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    directory_descriptor: int | None = None
+    try:
+        if os.open in os.supports_dir_fd:
+            directory_flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            directory_descriptor = os.open(resolved_directory, directory_flags)
+            descriptor = os.open(
+                relative.name,
+                flags,
+                0o600,
+                dir_fd=directory_descriptor,
+            )
+        else:  # pragma: no cover - native Windows kernels are unsupported
+            descriptor = os.open(target, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    finally:
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+    if target.is_symlink() or not target.resolve(strict=True).is_relative_to(root):
+        raise OSError("artifact target escaped its workspace")
+    return target
 
 
 class ArtifactManager:
@@ -538,6 +605,89 @@ class ArtifactManager:
             "checksum": checksum,
             "storage_path": record.get("path"),
         }
+
+    def promote_cell(
+        self,
+        session: ArtifactSession,
+        cell: dict,
+        emit: EventSink,
+    ) -> dict | None:
+        """Freeze one notebook cell as a self-contained Markdown artifact.
+
+        A cell's *files* are already captured as artifacts when it runs (see
+        ``capture``); promotion fixes the analysis *step* itself — its code,
+        stdout, and pointers to what it produced — into a shareable, versioned
+        document the Files panel manages like any other artifact. The target
+        path is derived from the cell id, so re-promoting the same cell rewrites
+        the same file and the store versions it in place instead of spawning a
+        duplicate.
+        """
+        cell_id = str(cell.get("producing_cell_id") or "").strip() or None
+        index = cell.get("cell_index")
+        stem = f"cell-{index}" if index is not None else "cell"
+        token = hashlib.sha1((cell_id or stem).encode("utf-8")).hexdigest()[:8]
+        relative = Path("promoted") / f"{stem}-{token}.md"
+        try:
+            _write_confined_text(
+                session.workspace,
+                relative,
+                self._render_cell_markdown(cell, session.workspace),
+            )
+        except (OSError, ValueError):
+            return None
+        # _write_confined_text returns a fully-resolved path, but register_file
+        # relativizes against the unresolved session.workspace; hand it the
+        # unresolved path (same on-disk file) so relative_to() cannot raise when
+        # the workspace prefix contains a symlink (e.g. /tmp -> /private/tmp).
+        return self.register_file(session, session.workspace / relative, cell_id, emit)
+
+    def _render_cell_markdown(self, cell: dict, workspace: Path) -> str:
+        """Render a cell (code + output + produced files) as Markdown."""
+        index = cell.get("cell_index")
+        language = str(cell.get("language") or cell.get("kernel_id") or "python")
+        heading = f"Cell {index}" if index is not None else "Notebook cell"
+        source = (cell.get("source") or "").rstrip("\n")
+        fence = _md_fence(source)
+        lines: list[str] = [f"# {heading}", "", f"{fence}{language}", source, fence]
+        stdout = (cell.get("stdout") or "").rstrip("\n")
+        if stdout:
+            out_fence = _md_fence(stdout)
+            lines += ["", "## Output", "", out_fence, stdout, out_fence]
+        error = (cell.get("error") or "").rstrip("\n")
+        if error:
+            err_fence = _md_fence(error)
+            lines += ["", "## Error", "", err_fence, error, err_fence]
+        figures = [str(fig) for fig in (cell.get("figures") or []) if fig]
+        if figures:
+            lines += ["", "## Figures", ""]
+            lines += [self._render_promoted_figure(workspace, fig) for fig in figures]
+        files = [str(name) for name in (cell.get("files_written") or []) if name]
+        if files:
+            lines += ["", "## Produced files", ""]
+            lines += [f"- `{name}`" for name in files]
+        lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _render_promoted_figure(workspace: Path, figure: str) -> str:
+        """Embed a confined raster figure so the Markdown stays shareable."""
+        label = Path(figure).name or "figure"
+        try:
+            root = workspace.expanduser().resolve()
+            candidate = (root / figure).resolve(strict=True)
+            candidate.relative_to(root)
+            media_type = mimetypes.guess_type(candidate.name)[0] or ""
+            size = candidate.stat().st_size
+            if media_type not in _EMBEDDED_IMAGE_TYPES or not (
+                0 < size <= _MAX_EMBEDDED_FIGURE_BYTES
+            ):
+                raise ValueError("figure is not an embeddable raster image")
+            encoded = base64.b64encode(candidate.read_bytes()).decode("ascii")
+            return f"![{label}](data:{media_type};base64,{encoded})"
+        except (OSError, ValueError):
+            # Preserve a useful, non-broken pointer when a historical figure is
+            # missing, too large, unsupported, or outside the workspace.
+            return f"- Figure artifact: `{figure}`"
 
     def capture(
         self,

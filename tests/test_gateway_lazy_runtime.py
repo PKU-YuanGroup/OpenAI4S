@@ -109,7 +109,7 @@ def _install_fake_runtime(monkeypatch, runner, *, expect_attempt_for=None):
                     "base_prefix": "/test-env",
                     "sdk_version": "0.1.0",
                     "provenance_version": "1",
-                    "host_capability_version": "1",
+                    "host_capability_version": "2",
                     "package_manifest": [],
                     "locale": {"preferred_encoding": "UTF-8"},
                 }

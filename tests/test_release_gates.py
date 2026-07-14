@@ -64,13 +64,20 @@ def test_source_secret_scan_rejects_credential_files(tmp_path):
     ]
 
 
-def _metadata(*, dependency: str | None = None) -> bytes:
+def _metadata(*, dependency: str | None = None, summary: str = "OpenAI4S") -> bytes:
     requires = f"Requires-Dist: {dependency}\n" if dependency else ""
     return (
-        "Metadata-Version: 2.1\n"
+        "Metadata-Version: 2.4\n"
         "Name: openai4s\n"
         "Version: 0.1.0\n"
+        f"Summary: {summary}\n"
+        "License-Expression: MIT\n"
+        "Project-URL: Homepage, https://github.com/PKU-YuanGroup/OpenAI4S\n"
+        "Project-URL: Documentation, https://github.com/PKU-YuanGroup/OpenAI4S/tree/main/docs\n"
+        "Project-URL: Issues, https://github.com/PKU-YuanGroup/OpenAI4S/issues\n"
+        "Project-URL: Source, https://github.com/PKU-YuanGroup/OpenAI4S\n"
         "Requires-Python: >=3.10\n"
+        "Description-Content-Type: text/markdown\n"
         f"{requires}\n"
     ).encode()
 
@@ -130,6 +137,42 @@ def test_release_artifact_verifier_rejects_core_dependency():
     verifier._verify_metadata(_metadata(dependency='numpy>=1.24; extra == "science"'))
 
 
+def test_release_artifact_verifier_requires_publishable_metadata():
+    verifier = _load_script("verify_release_artifacts")
+
+    with pytest.raises(verifier.ReleaseCheckError, match="no Summary"):
+        verifier._verify_metadata(_metadata(summary=""))
+
+
+def _write_versions(root: Path, project: str, package: str) -> None:
+    (root / "openai4s").mkdir()
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "openai4s"\nversion = "{project}"\n',
+        encoding="utf-8",
+    )
+    (root / "openai4s" / "__init__.py").write_text(
+        f'__version__ = "{package}"\n',
+        encoding="utf-8",
+    )
+
+
+def test_release_tag_verifier_requires_exact_semver_and_matching_sources(tmp_path):
+    verifier = _load_script("verify_release_tag")
+    _write_versions(tmp_path, "1.2.3", "1.2.3")
+
+    assert verifier.verify(tmp_path, "v1.2.3") == "1.2.3"
+    with pytest.raises(verifier.ReleaseTagError, match="vMAJOR.MINOR.PATCH"):
+        verifier.verify(tmp_path, "release-1.2.3")
+
+
+def test_release_tag_verifier_rejects_version_drift(tmp_path):
+    verifier = _load_script("verify_release_tag")
+    _write_versions(tmp_path, "1.2.3", "1.2.4")
+
+    with pytest.raises(verifier.ReleaseTagError, match="openai4s/__init__.py=1.2.4"):
+        verifier.verify(tmp_path, "v1.2.3")
+
+
 def test_release_workflow_keeps_source_build_and_offline_install_gates():
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text("utf-8")
 
@@ -142,6 +185,28 @@ def test_release_workflow_keeps_source_build_and_offline_install_gates():
         "scripts/release_import_smoke.py",
     ):
         assert contract in workflow
+
+
+def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+
+    for contract in (
+        "types: [published]",
+        "scripts/verify_release_tag.py",
+        "git cat-file -t",
+        "git merge-base --is-ancestor HEAD origin/main",
+        "scripts/source_secret_scan.py",
+        "scripts/verify_release_artifacts.py",
+        "python-package-distributions",
+        "needs: build",
+        "environment:",
+        "name: pypi",
+        "id-token: write",
+        "pypa/gh-action-pypi-publish@7f25271a4aa483500f742f9492b2ab5648d61011",
+    ):
+        assert contract in workflow
+
+    assert workflow.index("id-token: write") > workflow.index("publish:")
 
 
 def test_distribution_manifest_keeps_release_and_runtime_resources():

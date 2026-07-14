@@ -21,6 +21,9 @@ class CapabilityError(ValueError):
     """A capability lookup, override, or requested feature is invalid."""
 
 
+SUPPORTED_WIRES = frozenset({"openai", "responses", "anthropic", "gemini"})
+
+
 @dataclass(frozen=True, slots=True)
 class UsageMapping:
     """Candidate provider paths for each canonical usage counter.
@@ -486,7 +489,7 @@ def _provider_base_locked(name: str) -> tuple[ProviderCapabilities, str]:
 
     if builtin is None:
         wire = str(entry.get("wire") or "").strip().lower()
-        if wire not in {"openai", "responses", "anthropic", "gemini"}:
+        if wire not in SUPPORTED_WIRES:
             raise CapabilityError(
                 f"custom provider {name!r} has unsupported wire {wire!r}"
             )

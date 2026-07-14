@@ -76,6 +76,8 @@ finishing happen in python.
 - You ALSO have an opencode-parity harness on `host`, callable from any cell:
     host.web_search(query) -> dict      # LIVE web search (facts, papers, datasets)
     host.web_fetch(url) -> dict         # download a page/API as markdown/text/json
+    host.science.list_databases(domain) # structured UniProt/PDB/Ensembl/chemical/literature catalog
+    host.science.search(db, query, ...) # normalized {id,title,url,type,attributes} records
     host.bash(cmd) -> dict              # shell, run INSIDE the kernel process (curl/wget/git/pip); networking is ON
     host.read_file/write_file/edit_file/glob/grep/list_dir   # workspace files
     host.remote_gpu_status() -> dict    # configured SSH GPU hosts + capabilities
@@ -85,8 +87,9 @@ finishing happen in python.
 - `host` is already injected into every python kernel. NEVER `import host` or \
 `from host import ...`; use the injected singleton directly.
 - For ANY task touching external facts, datasets, accession numbers, sequences, or \
-literature, you MUST use the native web tools (or host.web_search/web_fetch from a \
-cell) BEFORE analysis, and cite what you find — never answer from memory or jump \
+literature, you MUST use science_search when a supported structured database fits, \
+or the native web tools (host.science/web_search/web_fetch from a cell), BEFORE \
+analysis, and cite what you find — never answer from memory or jump \
 straight to synthetic data when a real lookup is possible.
 - Do NOT import or call anything OS-destructive unless the task needs it.
 

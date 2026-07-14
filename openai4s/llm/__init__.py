@@ -12,6 +12,7 @@ import openai4s.llm.transport as transport
 from openai4s.config import LLMConfig
 
 from .capabilities import (
+    SUPPORTED_WIRES,
     CapabilityCacheInfo,
     CapabilityError,
     CostMetadata,
@@ -31,11 +32,24 @@ from .capabilities import (
     set_capability_override,
     validate_model_request,
 )
-from .client import ARK_PLAN_MODELS, PROVIDERS
+from .catalog import (
+    ARK_PLAN_MODELS,
+    ModelPreset,
+    model_presets,
+    register_model_preset,
+    unregister_model_preset,
+)
 from .client import chat as _client_chat
-from .client import provider_spec, supports_vision
+from .client import supports_vision
 from .models import LLMError
 from .providers.anthropic import _ANTHROPIC_VERSION
+from .registry import (
+    PROVIDERS,
+    provider_spec,
+    provider_specs,
+    register_provider,
+    unregister_provider,
+)
 
 ANTHROPIC_VERSION = _ANTHROPIC_VERSION
 
@@ -46,8 +60,10 @@ __all__ = [
     "CostMetadata",
     "LLMError",
     "ModelCapabilities",
+    "ModelPreset",
     "PROVIDERS",
     "ProviderCapabilities",
+    "SUPPORTED_WIRES",
     "UsageMapping",
     "bind_provider_registry",
     "calculate_usage_cost_usd",
@@ -58,11 +74,17 @@ __all__ = [
     "get_model_capabilities",
     "get_provider_capabilities",
     "model_capabilities",
+    "model_presets",
     "normalize_usage",
     "provider_spec",
     "provider_capabilities",
+    "provider_specs",
+    "register_model_preset",
+    "register_provider",
     "set_capability_override",
     "supports_vision",
+    "unregister_model_preset",
+    "unregister_provider",
     "validate_model_request",
 ]
 

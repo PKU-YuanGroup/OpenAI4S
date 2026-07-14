@@ -65,6 +65,13 @@ const ICONS = {
   "minus": '<path d="M5 12h14"/>',
   "zoom-in": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M11 8v6"/><path d="M8 11h6"/>',
   "zoom-out": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M8 11h6"/>',
+  "arrow-up": '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  "chevron-right": '<path d="m9 18 6-6-6-6"/>',
+  "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  "sparkles": '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/>',
+  "moon": '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  "monitor": '<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
 };
 const icon = (name, size, cls) => `<svg class="ic-svg${cls ? " " + cls : ""}" width="${size || 16}" height="${size || 16}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
 const iconEl = (name, size, cls) => { const s = el("span", "ic"); s.innerHTML = icon(name, size, cls); return s.firstChild; };
@@ -120,8 +127,71 @@ function refreshLangToggle() { document.querySelectorAll(".lang-btn").forEach(b 
 function setLang(lang) {
   LANG = lang === "en" ? "en" : "zh"; try { localStorage.setItem("os-lang", LANG); } catch {}
   document.documentElement.lang = LANG === "en" ? "en" : "zh";
-  applyStaticI18n(document); refreshLangToggle(); rerenderI18n();
+  applyStaticI18n(document); refreshLangToggle(); refreshThemeToggle(); rerenderI18n();
 }
+
+/* ---------- theme (light / dark / system) ---------- */
+let THEME = (() => {
+  try { const s = localStorage.getItem("os-theme"); if (s === "dark" || s === "light" || s === "system") return s; } catch {}
+  return "system";
+})();
+function themeIsDark() {
+  if (THEME === "dark") return true;
+  if (THEME === "light") return false;
+  try { return !!(window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches); } catch { return false; }
+}
+function applyTheme(mode, opts) {
+  if (mode === "dark" || mode === "light" || mode === "system") THEME = mode;
+  const dark = themeIsDark();
+  const root = document.documentElement;
+  if (opts && opts.instant) root.setAttribute("data-theme-instant", "");
+  root.setAttribute("data-theme", dark ? "dark" : "light");
+  root.style.colorScheme = dark ? "dark" : "light";
+  document.body.classList.toggle("theme-dark", dark);
+  refreshThemeToggle();
+  // Retheme live 3Dmol canvases if any
+  try {
+    if (S._molViewer && S._molViewer.setBackgroundColor) {
+      S._molViewer.setBackgroundColor(dark ? "#1c1c19" : "white");
+      S._molViewer.render && S._molViewer.render();
+    }
+  } catch {}
+  if (opts && opts.instant) {
+    requestAnimationFrame(() => { try { root.removeAttribute("data-theme-instant"); } catch {} });
+  }
+}
+function setTheme(mode) {
+  THEME = (mode === "dark" || mode === "light" || mode === "system") ? mode : "system";
+  try { localStorage.setItem("os-theme", THEME); } catch {}
+  applyTheme(THEME);
+  hint(t("toast.theme", t("theme." + THEME)));
+}
+function cycleTheme() {
+  // Quick toggle: light ↔ dark; from system, pick the opposite of the resolved value.
+  if (THEME === "system") setTheme(themeIsDark() ? "light" : "dark");
+  else setTheme(THEME === "dark" ? "light" : "dark");
+}
+function refreshThemeToggle() {
+  const dark = themeIsDark();
+  const name = dark ? "sun" : "moon";
+  const title = t("theme.toggle");
+  ["#dash-theme", "#ws-theme"].forEach(sel => {
+    const b = $(sel); if (!b) return;
+    b.dataset.icon = name; b._painted = false; b.title = title;
+    b.setAttribute("aria-label", title);
+    b.innerHTML = icon(name, +b.dataset.iconSize || 20);
+    b._painted = true;
+  });
+}
+// Follow OS theme changes while the preference is "system"
+try {
+  const mq = window.matchMedia && matchMedia("(prefers-color-scheme: dark)");
+  if (mq) {
+    const onChange = () => { if (THEME === "system") applyTheme("system", { instant: true }); };
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  }
+} catch {}
 // Re-render the dynamic (JS-built) views currently on screen after a language switch.
 function rerenderI18n() {
   try { if (!$("#dashboard").classList.contains("hidden")) loadDashboard(); } catch {}
@@ -137,6 +207,13 @@ function rerenderI18n() {
 Object.assign(I18N.zh, {
   "cust.general.language": "语言",
   "cust.general.languageDesc": "界面显示语言（保存在本机浏览器）",
+  "cust.general.themeName": "外观主题",
+  "cust.general.themeDesc": "浅色 / 深色 / 跟随系统（保存在本机浏览器）",
+  "theme.light": "浅色",
+  "theme.dark": "深色",
+  "theme.system": "系统",
+  "theme.toggle": "切换主题",
+  "toast.theme": "主题：{0}",
   "annot.added": "已添加标注 · 发送消息时会一并提交给智能体",
   "annot.artifactFallback": "artifact",
   "annot.attachCount": " 附带 {0} 条图像标注",
@@ -515,6 +592,7 @@ Object.assign(I18N.zh, {
   "nb.action.rerun": "作为新单元运行",
   "nb.action.fork": "从此前 Fork",
   "nb.action.promote": "提升为 Artifact",
+  "nb.action.promoted": "已提升为制品 · {0}",
   "nb.action.unavailable": "当前服务尚未提供此操作；历史单元不会被修改。",
   "nb.action.failed": "Notebook 操作失败：{0}",
   "nb.interrupt.noOwner": "当前没有可精确中断的 execution owner。",
@@ -937,6 +1015,13 @@ Object.assign(I18N.zh, {
 Object.assign(I18N.en, {
   "cust.general.language": "Language",
   "cust.general.languageDesc": "Interface display language (saved in this browser)",
+  "cust.general.themeName": "Appearance",
+  "cust.general.themeDesc": "Light / dark / follow system (saved in this browser)",
+  "theme.light": "Light",
+  "theme.dark": "Dark",
+  "theme.system": "System",
+  "theme.toggle": "Toggle theme",
+  "toast.theme": "Theme: {0}",
   "annot.added": "Annotation added · will be submitted to the agent with your next message",
   "annot.artifactFallback": "artifact",
   "annot.attachCount": " {0} image annotations attached",
@@ -1315,6 +1400,7 @@ Object.assign(I18N.en, {
   "nb.action.rerun": "Rerun as new",
   "nb.action.fork": "Fork from before",
   "nb.action.promote": "Promote to Artifact",
+  "nb.action.promoted": "Promoted to Artifact · {0}",
   "nb.action.unavailable": "This operation is not exposed by the current server; history will not be modified.",
   "nb.action.failed": "Notebook action failed: {0}",
   "nb.interrupt.noOwner": "There is no exact execution owner to interrupt.",
@@ -2809,30 +2895,89 @@ function appendLiveOutput(current, chunk) {
 // Batch markdown re-renders onto animation frames: a fast token stream would
 // otherwise reparse the whole message on every chunk (janky, and it makes the
 // caret strobe as the subtree is torn down each token).
-function flushRender(st) {
+// Streaming markdown: re-parse only the unstable tail once the sealed prefix
+// is long enough. Full re-parse of multi-kB streams every frame is the main
+// main-thread cost during long agent turns.
+function _mdStableCut(text) {
+  // Seal only top-level blank lines or completed fences. A blank line inside
+  // code is not a stable Markdown boundary, and an opening fence must never be
+  // mistaken for a closing one. Keep the final ~120 chars soft for streaming.
+  const limit = Math.max(0, text.length - 120);
+  if (limit < 80) return 0;
+  const lines = text.split("\n");
+  let offset = 0, stable = 0, openFence = null;
+  for (let i = 0; i < lines.length - 1; i++) {
+    const line = lines[i];
+    const boundary = offset + line.length + 1;
+    if (boundary > limit) break;
+    if (openFence) {
+      const trimmed = line.trim();
+      const closes = trimmed.length >= openFence.length && [...trimmed].every(ch => ch === openFence.char);
+      if (closes) { openFence = null; if (boundary >= 60) stable = boundary; }
+    } else {
+      const match = line.match(/^\s*(`{3,}|~{3,})[ \t]*[\w+#.\-]*[ \t]*$/);
+      if (match) openFence = { char: match[1][0], length: match[1].length };
+      else if (!line.trim() && boundary >= 60) stable = boundary;
+    }
+    offset = boundary;
+  }
+  return stable;
+}
+function flushRender(st, finalRender) {
   if (!st) return;
   if (st._raf) { cancelAnimationFrame(st._raf); st._raf = null; }
-  if (st._dirty && st.md) { st._dirty = false; st.md.innerHTML = renderMd(st.text); }
+  if (!st.md || (!st._dirty && !finalRender)) return;
+  st._dirty = false;
+  const text = st.text || "";
+  st._lastFlush = performance.now();
+  if (finalRender) {
+    st.md.innerHTML = renderMd(text);
+    st._stableAt = 0; st._stableHtml = "";
+    return;
+  }
+  // Grow the sealed prefix when a stable boundary appears further along.
+  const cut = _mdStableCut(text);
+  if (cut > (st._stableAt || 0) + 40) {
+    st._stableAt = cut;
+    st._stableHtml = renderMd(text.slice(0, cut));
+  }
+  if (st._stableAt && st._stableHtml && text.length > st._stableAt) {
+    st.md.innerHTML = st._stableHtml + renderMd(text.slice(st._stableAt));
+  } else {
+    st.md.innerHTML = renderMd(text);
+  }
 }
 function scheduleRender(st) {
   st._dirty = true;
   if (st._raf) return;
-  st._raf = requestAnimationFrame(() => { st._raf = null; flushRender(st); down(); });
+  st._raf = requestAnimationFrame(() => {
+    st._raf = null;
+    // Long streams: cap MD reparse to ~20/s (rAF still coalesces tokens; we only
+    // skip the expensive innerHTML when the previous flush was very recent).
+    const now = performance.now();
+    if (st.text && st.text.length > 600 && st._lastFlush && (now - st._lastFlush) < 48) {
+      st._raf = requestAnimationFrame(() => { st._raf = null; flushRender(st); down(); });
+      return;
+    }
+    flushRender(st); down();
+  });
 }
 // Freeze the current text block: flush any pending render and drop its blinking
 // caret. Called whenever the stream moves on to non-text content (a tool card, a
 // step) so the caret never lingers on an already-finished paragraph.
 function sealText(st) {
   if (!st || !st.md) return;
-  flushRender(st);
+  flushRender(st, true);
   st.md.classList.remove("cursor");
+  // Next text block starts fresh (don't carry sealed prefix across tool cards).
+  st._stableAt = 0; st._stableHtml = "";
 }
 function startStream() {
   const g = $(".generated"); if (g) g.remove();
   const es = $(".empty-session"); if (es) es.remove();  // clear starter card on any (resumed) stream
   const wrap = el("div", "msg assistant");
   const md = el("div", "md cursor"); wrap.appendChild(md);
-  $("#messages").appendChild(wrap); S.stream = { wrap, md, text: "", full: "", toolPre: null, toolCard: null };
+  $("#messages").appendChild(wrap); S.stream = { wrap, md, text: "", full: "", toolPre: null, toolCard: null, _stableAt: 0, _stableHtml: "" };
   S.stepEls = {};
   S.liveCells = []; S._liveCell = null; down();
 }
@@ -2861,6 +3006,7 @@ function feed(kind, chunk, event) {
       st.wrap.appendChild(card); st.toolPre = pre; st.toolMeta = meta;
       if (!suba) { st.toolCard = card; card._demoted = false; }
       st.md = el("div", "md"); st.wrap.appendChild(st.md); st.text = "";
+      st._stableAt = 0; st._stableHtml = ""; st._lastFlush = 0;
       // Structured notebook_cell_* events own Notebook state on new daemons.
       // Keep sentinel parsing only as a compatibility fallback for old replays.
       if (!suba && !structuredCellId) nbLiveStart(tool, raw, event && event.kernel_id, event && event.cell_index, event && event.language);
@@ -2874,9 +3020,8 @@ function feed(kind, chunk, event) {
   down();
 }
 function turnDone(status) {
-  S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");
-  clearTimeout(S._resumeTimer); S._resumeTok = (S._resumeTok || 0) + 1;  // retire the resume-watchdog (incl. any in-flight tick) so it can't bleed into the next turn
-  if (S.stream) { flushRender(S.stream); S.stream.md.classList.remove("cursor"); addMsgActions(S.stream.wrap, S.stream.full || S.stream.text); }
+  S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");  clearTimeout(S._resumeTimer); S._resumeTok = (S._resumeTok || 0) + 1;  // retire the resume-watchdog (incl. any in-flight tick) so it can't bleed into the next turn
+  if (S.stream) { flushRender(S.stream, true); S.stream.md.classList.remove("cursor"); addMsgActions(S.stream.wrap, S.stream.full || S.stream.text); }
   // Belt-and-suspenders: a completed turn must leave nothing blinking, even on
   // text blocks orphaned earlier by a tool/step that started mid-stream.
   const mm = $("#messages"); if (mm) mm.querySelectorAll(".md.cursor").forEach(n => n.classList.remove("cursor"));
@@ -3459,7 +3604,23 @@ function resolvePermissionCard(m) {
 }
 
 /* ---------- dashboard ---------- */
+function paintDashSkeleton() {
+  const skel = (n) => {
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < n; i++) {
+      const row = el("div", "d-row skeleton-row");
+      const main = el("div", "d-main");
+      main.appendChild(el("div", "d-name", "·")); main.appendChild(el("div", "d-sub", "·"));
+      row.appendChild(main); row.appendChild(el("div", "d-meta", "·"));
+      frag.appendChild(row);
+    }
+    return frag;
+  };
+  const pc = $("#dash-projects"); if (pc && !pc.childElementCount) pc.appendChild(skel(3));
+  const sc = $("#dash-sessions"); if (sc && !sc.childElementCount) sc.appendChild(skel(4));
+}
 async function loadDashboard() {
+  paintDashSkeleton();
   await loadProjects();
   let frames = [];
   try { frames = (await api("/frames?limit=50")).filter?.(f => !f.parent_frame_id) || []; } catch {}
@@ -3536,12 +3697,23 @@ function renderDashRunning(frames) {
 // started elsewhere (or before this page loaded) shows up live without a WS sub.
 async function refreshDashRunning() {
   if ($("#dashboard").classList.contains("hidden")) { stopDashPoll(); return; }
+  // Skip work while the tab is backgrounded; the next visible tick will catch up.
+  if (typeof document.hidden === "boolean" && document.hidden) return;
   let frames = [];
   try { frames = (await api("/frames?limit=50")).filter?.(f => !f.parent_frame_id) || []; } catch { return; }
   if ($("#dashboard").classList.contains("hidden")) return;
   renderDashRunning(frames);
 }
-function startDashPoll() { stopDashPoll(); S._dashPoll = setInterval(refreshDashRunning, 4000); }
+function startDashPoll() {
+  stopDashPoll();
+  S._dashPoll = setInterval(refreshDashRunning, 4000);
+  if (!startDashPoll._visBound) {
+    startDashPoll._visBound = true;
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && !$("#dashboard").classList.contains("hidden")) refreshDashRunning();
+    });
+  }
+}
 function stopDashPoll() { if (S._dashPoll) { clearInterval(S._dashPoll); S._dashPoll = null; } }
 
 /* ---------- projects ---------- */
@@ -3651,7 +3823,7 @@ async function createProject(name, description, context) {
   await loadProjects(); openProject(p.project_id || p.id);
 }
 function closeProjectModal() {
-  $("#proj-modal").classList.add("hidden");
+  closeModalEl($("#proj-modal"));
   S.editingProject = null;
 }
 function openProjectModal(project) {
@@ -3664,7 +3836,7 @@ function openProjectModal(project) {
   $("#pm-ctx").value = p ? (p.context || p.agent_context || "") : "";
   $("#pm-create").textContent = t(p ? "common.save" : "projModal.create");
   $("#pm-delete").classList.toggle("hidden", !p);
-  $("#proj-modal").classList.remove("hidden");
+  openModalEl($("#proj-modal"));
   requestAnimationFrame(() => $("#pm-name").focus());
 }
 async function submitProjectModal() {
@@ -3718,10 +3890,15 @@ function sessionRow(f) {
   if (f.running) { const b = el("span", "s-badge run", t("dash.badge.running")); b.title = t("session.badge.runningTip"); d.appendChild(b); }
   else if (f.kernel_alive) { const b = el("span", "s-badge live"); b.title = t("session.badge.liveTip"); d.appendChild(b); }
   const menu = el("button", "s-menu"); menu.appendChild(iconEl("more-horizontal", 16)); menu.title = t("session.menu.tip"); menu.onclick = (e) => { e.stopPropagation(); sessionMenu(menu, f.id); }; d.appendChild(menu);
+  d.setAttribute("role", "button"); d.tabIndex = 0;
+  d.setAttribute("aria-current", f.id === S.currentId ? "page" : "false");
+  d.onkeydown = (e) => { if (e.target === d && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openConversation(f.id, f.project_id); } };
   d.onclick = () => openConversation(f.id, f.project_id); return d;
 }
 function renderSessions() {
-  const list = $("#session-list"); if (!list) return; list.innerHTML = "";
+  const list = $("#session-list"); if (!list) return;
+  list.innerHTML = "";
+  const frag = document.createDocumentFragment();
   let ss = S.sessions; if (S.project) ss = ss.filter(f => f.project_id === S.project);
   ss = ss.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
   if (!ss.length && !(S.folders || []).length) { list.appendChild(el("div", "side-label", t("session.empty.label"))); return; }
@@ -3734,13 +3911,16 @@ function renderSessions() {
     head.appendChild(iconEl("folder", 14)); head.appendChild(el("span", "folder-name", fold.name)); head.appendChild(el("span", "folder-count", String(inFold.length)));
     const menu = el("button", "s-menu"); menu.appendChild(iconEl("more-horizontal", 15)); menu.onclick = (e) => { e.stopPropagation(); folderMenu(menu, fold); }; head.appendChild(menu);
     head.onclick = () => { S._folderCollapsed[fold.folder_id] = !collapsed; renderSessions(); };
-    list.appendChild(head);
-    if (!collapsed) inFold.forEach(f => { const r = sessionRow(f); r.style.paddingLeft = "20px"; list.appendChild(r); });
+    head.setAttribute("role", "button"); head.tabIndex = 0;
+    head.onkeydown = (e) => { if (e.target === head && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); head.click(); } };
+    frag.appendChild(head);
+    if (!collapsed) inFold.forEach(f => { const r = sessionRow(f); r.style.paddingLeft = "20px"; frag.appendChild(r); });
   });
   // ungrouped, by date
   const ungrouped = ss.filter(f => !f.folder_id || !(S.folders || []).some(x => x.folder_id === f.folder_id));
   let lastBucket = null;
-  ungrouped.forEach(f => { const b = dateBucket(f.updated_at); if (b !== lastBucket) { lastBucket = b; list.appendChild(el("div", "side-label", b)); } list.appendChild(sessionRow(f)); });
+  ungrouped.forEach(f => { const b = dateBucket(f.updated_at); if (b !== lastBucket) { lastBucket = b; frag.appendChild(el("div", "side-label", b)); } frag.appendChild(sessionRow(f)); });
+  list.appendChild(frag);
 }
 async function newFolder() {
   const name = prompt(t("folder.new.prompt")); if (!name || !S.project) return;
@@ -4153,8 +4333,7 @@ async function send(text, opts) {
   }
   if (skillDirective) payload += skillDirective;
   S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true);
-  $("#composer").value = ""; grow();
-  const annIds = anns.map(x => x.id);
+  $("#composer").value = ""; grow(); const annIds = anns.map(x => x.id);
   if (annIds.length) { setLocalAnnotationStatus(annIds, "sent"); refreshAllStages(); updateAnnotBadge(); }
   sub(S.currentId);  // guarantee this client is subscribed BEFORE the POST spawns the
                      // turn thread. On the FIRST turn opened via newSession(), S.currentId
@@ -5019,7 +5198,7 @@ function openArtifact(a) {
   $("#modal-title").textContent = a.filename || t("modal.title.preview");
   const dl = $("#modal-download"); dl.style.display = ""; dl.href = `/api/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact");
   renderArtifactBody($("#modal-body"), a);
-  $("#modal").classList.remove("hidden");
+  openModalEl($("#modal"));
 }
 /* Artifact click → dock Viewer tab. */
 function openViewer(a) { S.dockArtifact = a; S.provMode = false; addOpenTab(a); setActiveTab(a.id); }
@@ -5136,7 +5315,7 @@ async function showVersions(a) {
   $("#modal-title").textContent = t("versions.modal.title", (a.filename || ""));
   $("#modal-download").style.display = "none";
   const body = $("#modal-body"); body.innerHTML = "<div class='dock-empty'>" + t("common.loading") + "</div>";
-  $("#modal").classList.remove("hidden");
+  openModalEl($("#modal"));
   const render = async () => {
     let d; try { d = await api(`/artifacts/${a.id}/versions`); } catch (e) { body.textContent = t("versions.load.err", e.message); return; }
     const vs = (d && d.versions) || []; body.innerHTML = "";
@@ -5200,7 +5379,7 @@ function molecule(container, url, nm) {
   };
   const boot = () => fetch(url).then(r => r.text()).then(data => {
     try {
-      viewer = window.$3Dmol.createViewer(view, { backgroundColor: "white" });
+      viewer = window.$3Dmol.createViewer(view, { backgroundColor: themeIsDark() ? "#1c1c19" : "white" });
       S._molViewer = viewer; S._molView = view;
       const model = viewer.addModel(data, fmt);
       let atoms = []; try { atoms = model.selectedAtoms ? model.selectedAtoms({}) : []; } catch {}
@@ -5921,7 +6100,7 @@ async function forkNotebookCell(cell) {
 }
 async function promoteNotebookCell(cell) {
   if (!S.currentId || !branchCapability("promote")) return;
-  try { await api(`/frames/${S.currentId}/artifacts/promote`, { method: "POST", body: JSON.stringify({ cell_id: nbCellKey(cell) }) }); loadArtifacts(S.currentId); scheduleWorkbenchRefresh(); }
+  try { const art = await api(`/frames/${S.currentId}/artifacts/promote`, { method: "POST", body: JSON.stringify({ cell_id: nbCellKey(cell) }) }); loadArtifacts(S.currentId); scheduleWorkbenchRefresh(); hint(t("nb.action.promoted", (art && art.filename) || "")); }
   catch (error) { hint(t("nb.action.failed", error.message), true); }
 }
 function cellNode(e) {
@@ -6133,7 +6312,7 @@ function renderProvReview(body, a, lin) {
   const save = inter.find(i => i.kind === "save");
   if (save && save.at) body.appendChild(el("div", "prov-meta", t("prov.review.saved", ago(save.at))));
 }
-function openKetcher() { $("#modal-title").textContent = t("ketcher.modalTitle"); $("#modal-download").style.display = "none"; const body = $("#modal-body"); body.innerHTML = ""; const f = el("iframe"); f.src = (S.sandboxOrigin || "") + "/ketcher"; f.setAttribute("allow", "clipboard-read; clipboard-write"); body.appendChild(f); $("#modal").classList.remove("hidden"); }
+function openKetcher() { $("#modal-title").textContent = t("ketcher.modalTitle"); $("#modal-download").style.display = "none"; const body = $("#modal-body"); body.innerHTML = ""; const f = el("iframe"); f.src = (S.sandboxOrigin || "") + "/ketcher"; f.setAttribute("allow", "clipboard-read; clipboard-write"); body.appendChild(f); openModalEl($("#modal")); }
 
 /* ---------- upload ---------- */
 function uploadFiles(files) {
@@ -6205,6 +6384,7 @@ function palActions() {
     { group: t("palette.group.commands"), label: t("palette.action.newProject"), icon: "plus", run: () => openProjectModal() },
     { group: t("palette.group.commands"), label: t("palette.action.openNotebook"), icon: "notebook", run: () => setActiveTab("notebook") },
     { group: t("palette.group.commands"), label: t("palette.action.customize"), icon: "sliders", run: () => openCust() },
+    { group: t("palette.group.commands"), label: t("theme.toggle"), icon: themeIsDark() ? "sun" : "moon", run: () => cycleTheme() },
     { group: t("palette.group.commands"), label: t("palette.action.backHome"), icon: "arrow-left", run: () => showDashboard() },
   ];
 }
@@ -6245,9 +6425,79 @@ function palRender() {
 }
 function palPick(i) { const it = PAL.items[i]; if (it && it.run) it.run(); }
 
-function openCust(tab) { $("#cust").classList.remove("hidden"); custTab(tab || "general"); }
-function custTab(tab) { document.querySelectorAll(".cust-tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab)); const c = $("#cust-content"); c.innerHTML = t("common.loading");
-  ({ general: custGeneral, skills: custSkills, specialists: custSpecialists, connectors: custConnectors, agents: custSpecialists, permissions: custPermissions, compute: custCompute, network: custNetwork, memory: custMemory, models: custModels }[tab])(c); }
+/* ---------- modal focus trap + Escape ---------- */
+const _modalFocus = { stack: [] };
+function _focusables(root) {
+  if (!root) return [];
+  return [...root.querySelectorAll('a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')]
+    .filter(n => !n.hasAttribute("disabled") && n.offsetParent !== null && !n.classList.contains("hidden"));
+}
+function openModalEl(modal) {
+  if (!modal) return;
+  const wasHidden = modal.classList.contains("hidden");
+  modal.classList.remove("hidden");
+  if (wasHidden) {
+    _modalFocus.stack.push({ el: modal, prev: document.activeElement });
+    // Defer focus until content paints (cust tabs fill async)
+    requestAnimationFrame(() => {
+      const box = modal.querySelector(".modal-box") || modal;
+      if (box && !box.hasAttribute("tabindex")) box.setAttribute("tabindex", "-1");
+      const list = _focusables(box);
+      const prefer = modal.querySelector("[data-autofocus]") || list.find(n => !n.classList.contains("icon-ghost")) || list[0];
+      try { (prefer || box).focus({ preventScroll: true }); } catch { try { (prefer || box).focus(); } catch {} }
+    });
+  }
+}
+function closeModalEl(modal) {
+  if (!modal || modal.classList.contains("hidden")) return;
+  modal.classList.add("hidden");
+  // Pop matching stack entry (or top if this is the topmost)
+  let entry = null;
+  for (let i = _modalFocus.stack.length - 1; i >= 0; i--) {
+    if (_modalFocus.stack[i].el === modal) { entry = _modalFocus.stack.splice(i, 1)[0]; break; }
+  }
+  const prev = entry && entry.prev;
+  if (prev && typeof prev.focus === "function" && document.contains(prev)) {
+    try { prev.focus({ preventScroll: true }); } catch { try { prev.focus(); } catch {} }
+  }
+}
+function trapModalKeydown(e) {
+  if (e.key !== "Tab" && e.key !== "Escape") return;
+  // topmost open modal (stack) or first visible modal
+  let modal = null;
+  if (_modalFocus.stack.length) modal = _modalFocus.stack[_modalFocus.stack.length - 1].el;
+  if (!modal || modal.classList.contains("hidden")) {
+    modal = ["#cust", "#modal", "#proj-modal"].map(s => $(s)).find(m => m && !m.classList.contains("hidden")) || null;
+  }
+  if (!modal) return;
+  if (e.key === "Escape") {
+    // Don't steal Escape from nested popovers / composer autocomplete
+    if (PAL.open) return;
+    if (ac.open) return;
+    e.preventDefault();
+    closeModalEl(modal);
+    return;
+  }
+  // Tab cycle within the modal
+  const box = modal.querySelector(".modal-box") || modal;
+  const list = _focusables(box);
+  if (!list.length) return;
+  const first = list[0], last = list[list.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  else if (!box.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+}
+
+function openCust(tab) { openModalEl($("#cust")); custTab(tab || "general"); }
+function custTab(tab) {
+  document.querySelectorAll(".cust-tab").forEach(btn => {
+    const on = btn.dataset.tab === tab;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  const c = $("#cust-content"); c.innerHTML = t("common.loading");
+  ({ general: custGeneral, skills: custSkills, specialists: custSpecialists, connectors: custConnectors, agents: custSpecialists, permissions: custPermissions, compute: custCompute, network: custNetwork, memory: custMemory, models: custModels }[tab])(c);
+}
 // Permissions — manage the opencode-style tool-call approval rules per scope.
 async function custPermissions(c) {
   c.innerHTML = ""; c.appendChild(hdr(t("cust.perm.title"), t("cust.perm.desc")));
@@ -6312,6 +6562,17 @@ function permResetRow() {
 // General / global preferences — the dashboard 设置 (settings) entry lands here.
 async function custGeneral(c) {
   c.innerHTML = ""; c.appendChild(hdr(t("cust.general.title"), t("cust.general.desc")));
+  // Appearance theme
+  const trow = el("div", "cust-row"); const tinfo = el("div", "info");
+  tinfo.appendChild(el("div", "nm", t("cust.general.themeName"))); tinfo.appendChild(el("div", "ds", t("cust.general.themeDesc")));
+  trow.appendChild(tinfo);
+  const tseg = el("div", "seg");
+  [["light", t("theme.light")], ["dark", t("theme.dark")], ["system", t("theme.system")]].forEach(([val, label]) => {
+    const b = el("button", "seg-btn" + (THEME === val ? " active" : ""), label);
+    b.onclick = () => { setTheme(val); custTab("general"); };
+    tseg.appendChild(b);
+  });
+  trow.appendChild(tseg); c.appendChild(trow);
   // Layout density (was the old 布局 cycler; now an explicit, labeled choice)
   const row = el("div", "cust-row"); const info = el("div", "info");
   info.appendChild(el("div", "nm", t("cust.general.layoutName"))); info.appendChild(el("div", "ds", t("cust.general.layoutDesc")));
@@ -6396,7 +6657,7 @@ async function skillVersionHistory(name, scope, projectId) {
 // Insert a "/skillname" mention into the composer from the Skills settings tab,
 // close settings, and focus the composer so the skill can be invoked directly.
 function insertSkillMention(name) {
-  $("#cust").classList.add("hidden");
+  closeModalEl($("#cust"));
   if ($("#workspace").classList.contains("hidden")) { hint(t("skill.insertedToast", name)); return; }
   const c = $("#composer"); if (!c) return;
   const cur = c.value || "";
@@ -6419,9 +6680,9 @@ async function skillEditor(name, seed) {
   form.appendChild(el("label", "skill-lbl", t("skill.label.desc"))); form.appendChild(descIn);
   form.appendChild(el("label", "skill-lbl", t("skill.label.body"))); form.appendChild(bodyIn);
   const save = el("button", "solid-btn", t("skill.saveBtn"));
-  save.onclick = async () => { const nm = nameIn.value.trim(); if (!nm) { hint(t("toast.skill.enterName"), true); return; } save.disabled = true; save.textContent = t("common.saving"); try { if (name) await api(`/skills/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify({ description: descIn.value, body: bodyIn.value }) }); else await api("/skills", { method: "POST", body: JSON.stringify({ name: nm, description: descIn.value, body: bodyIn.value }) }); S.skillsCatalog = null; $("#modal").classList.add("hidden"); hint(t("toast.skill.saved", nm)); custTab("skills"); } catch (e) { save.disabled = false; save.textContent = t("skill.saveBtn"); hint(t("artifact.save.err", e.message), true); } };
+  save.onclick = async () => { const nm = nameIn.value.trim(); if (!nm) { hint(t("toast.skill.enterName"), true); return; } save.disabled = true; save.textContent = t("common.saving"); try { if (name) await api(`/skills/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify({ description: descIn.value, body: bodyIn.value }) }); else await api("/skills", { method: "POST", body: JSON.stringify({ name: nm, description: descIn.value, body: bodyIn.value }) }); S.skillsCatalog = null; closeModalEl($("#modal")); hint(t("toast.skill.saved", nm)); custTab("skills"); } catch (e) { save.disabled = false; save.textContent = t("skill.saveBtn"); hint(t("artifact.save.err", e.message), true); } };
   const fa = el("div", "form-actions"); fa.appendChild(save); form.appendChild(fa);
-  body.appendChild(form); $("#modal").classList.remove("hidden");
+  body.appendChild(form); openModalEl($("#modal"));
 }
 async function skillImport() {
   S._modalMode = "skill-import";
@@ -6432,9 +6693,9 @@ async function skillImport() {
   const ta = el("textarea", "skill-body"); ta.placeholder = t("skill.importPlaceholder"); ta.style.minHeight = "260px";
   form.appendChild(el("label", "skill-lbl", t("skill.importLabel"))); form.appendChild(ta);
   const save = el("button", "solid-btn", t("skill.importBtn"));
-  save.onclick = async () => { if (!ta.value.trim()) return; save.disabled = true; save.textContent = t("cust.importing"); try { const r = await api("/skills/import", { method: "POST", body: JSON.stringify({ content: ta.value }) }); if (r.error) throw new Error(r.error); S.skillsCatalog = null; $("#modal").classList.add("hidden"); hint(t("toast.skill.imported", (r.name || ""))); custTab("skills"); } catch (e) { save.disabled = false; save.textContent = t("skill.importBtn"); hint(t("toast.importFailed", e.message), true); } };
+  save.onclick = async () => { if (!ta.value.trim()) return; save.disabled = true; save.textContent = t("cust.importing"); try { const r = await api("/skills/import", { method: "POST", body: JSON.stringify({ content: ta.value }) }); if (r.error) throw new Error(r.error); S.skillsCatalog = null; closeModalEl($("#modal")); hint(t("toast.skill.imported", (r.name || ""))); custTab("skills"); } catch (e) { save.disabled = false; save.textContent = t("skill.importBtn"); hint(t("toast.importFailed", e.message), true); } };
   const fa = el("div", "form-actions"); fa.appendChild(save); form.appendChild(fa);
-  body.appendChild(form); $("#modal").classList.remove("hidden");
+  body.appendChild(form); openModalEl($("#modal"));
 }
 async function custSpecialists(c) { try {
   const d = await api("/specialists"); const builtin = (d && d.builtin) || []; const custom = (d && d.specialists) || [];
@@ -6454,8 +6715,8 @@ async function specialistEditor(name) {
   const descIn = el("input", "cust-input"); descIn.placeholder = t("specialist.descPlaceholder"); descIn.value = cur.description || "";
   const spIn = el("textarea", "skill-body"); spIn.placeholder = t("specialist.promptPlaceholder"); spIn.value = cur.system_prompt || "";
   form.appendChild(el("label", "skill-lbl", t("cust.connectors.namePlaceholder"))); form.appendChild(nameIn); form.appendChild(el("label", "skill-lbl", t("skill.label.desc"))); form.appendChild(descIn); form.appendChild(el("label", "skill-lbl", t("specialist.label.systemPrompt"))); form.appendChild(spIn);
-  const save = el("button", "solid-btn", t("specialist.saveBtn")); save.onclick = async () => { const nm = nameIn.value.trim(); if (!nm) { hint(t("toast.specialist.enterName"), true); return; } save.disabled = true; save.textContent = t("common.saving"); const b = { name: nm, description: descIn.value, system_prompt: spIn.value }; try { if (name) await api(`/specialists/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(b) }); else await api("/specialists", { method: "POST", body: JSON.stringify(b) }); $("#modal").classList.add("hidden"); hint(t("toast.specialist.saved", nm)); custTab("specialists"); } catch (e) { save.disabled = false; save.textContent = t("specialist.saveBtn"); hint(t("artifact.save.err", e.message), true); } };
-  const fa = el("div", "form-actions"); fa.appendChild(save); form.appendChild(fa); body.appendChild(form); $("#modal").classList.remove("hidden");
+  const save = el("button", "solid-btn", t("specialist.saveBtn")); save.onclick = async () => { const nm = nameIn.value.trim(); if (!nm) { hint(t("toast.specialist.enterName"), true); return; } save.disabled = true; save.textContent = t("common.saving"); const b = { name: nm, description: descIn.value, system_prompt: spIn.value }; try { if (name) await api(`/specialists/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(b) }); else await api("/specialists", { method: "POST", body: JSON.stringify(b) }); closeModalEl($("#modal")); hint(t("toast.specialist.saved", nm)); custTab("specialists"); } catch (e) { save.disabled = false; save.textContent = t("specialist.saveBtn"); hint(t("artifact.save.err", e.message), true); } };
+  const fa = el("div", "form-actions"); fa.appendChild(save); form.appendChild(fa); body.appendChild(form); openModalEl($("#modal"));
 }
 async function custConnectors(c) { try {
   const d = await api("/connectors"); const conns = (d && d.connectors) || [];
@@ -6529,7 +6790,7 @@ async function refreshJobList(list) {
 async function showJobOutput(id) {
   const mode = "job:" + id; S._modalMode = mode;
   $("#modal-title").textContent = t("job.outputTitle", id); $("#modal-download").style.display = "none";
-  const body = $("#modal-body"); body.innerHTML = "<div class='dock-empty'>" + t("common.loading") + "</div>"; $("#modal").classList.remove("hidden");
+  const body = $("#modal-body"); body.innerHTML = "<div class='dock-empty'>" + t("common.loading") + "</div>"; openModalEl($("#modal"));
   const load = async () => { if (S._modalMode !== mode || $("#modal").classList.contains("hidden")) return; let d; try { d = await api(`/compute/jobs/${id}`); } catch (e) { body.innerHTML = t("job.outputLoadFailed"); return; } if (S._modalMode !== mode) return; body.innerHTML = ""; const pre = el("pre", "job-output", d.output || t("job.outputEmpty")); body.appendChild(pre); if (d.status === "running" || d.status === "queued") setTimeout(load, 1200); };
   load();
 }
@@ -6778,8 +7039,13 @@ function mdInline(t) {
   var codes = [];
   t = t.replace(/`([^`]+)`/g, function (m, c) { codes.push(c); return MDC0 + (codes.length - 1) + MDC1; });
   t = esc(t);
-  t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, '<img alt="$1" src="$2">');
-  t = t.replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // esc() escapes &<> but not quotes, so any capture group interpolated into a
+  // double-quoted HTML attribute must additionally neutralize " to prevent an
+  // alt/href/src value from closing the attribute and injecting new ones.
+  var escQuote = function (s) { return String(s).replace(/"/g, "&quot;"); };
+  t = t.replace(/!\[([^\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g, function (m, alt, src) { return '<img alt="' + escQuote(alt) + '" src="' + src + '">'; });
+  t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, function (m, alt, src) { return '<img alt="' + escQuote(alt) + '" src="' + escQuote(src) + '">'; });
+  t = t.replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g, function (m, text, href) { return '<a href="' + escQuote(href) + '" target="_blank" rel="noopener">' + text + '</a>'; });
   t = t.replace(/\*\*\*([^*]+?)\*\*\*/g, "<strong><em>$1</em></strong>");
   t = t.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
   t = t.replace(/(^|[^\w*])__([^_]+?)__(?!\w)/g, "$1<strong>$2</strong>");
@@ -6881,7 +7147,9 @@ function csv(line) { const o = []; let cur = "", q = false; for (let i = 0; i < 
 function ago(iso) { if (!iso) return ""; const t = new Date(iso).getTime(); if (isNaN(t)) return ""; const d = (Date.now() - t) / 1000; if (d < 60) return "just now"; if (d < 3600) return (d / 60 | 0) + "m"; if (d < 86400) return (d / 3600 | 0) + "h"; return (d / 86400 | 0) + "d"; }
 function bytes(b) { b = b || 0; if (b < 1024) return b + " B"; if (b < 1048576) return (b / 1024).toFixed(1) + " KB"; return (b / 1048576).toFixed(1) + " MB"; }
 function hint(t, err, spin) { const h = $("#composer-hint"); h.innerHTML = ""; if (!t) return; if (spin) { h.appendChild(iconEl("loader", 13, "spin")); h.appendChild(document.createTextNode(" ")); } const s = el("span", null, t); if (err) s.style.color = "var(--danger)"; h.appendChild(s); }
-function enableComposer(on) { $("#composer").disabled = !on; }
+function enableComposer(on) {
+  const c = $("#composer"); if (c) c.disabled = !on;
+}
 function messagesAtBottom(m, pad) { return !m || (m.scrollHeight - m.scrollTop - m.clientHeight) < (pad || 80); }
 function paintJumpPill() { const m = $("#messages"), pill = $("#jump-pill"); if (!m || !pill) return; pill.classList.toggle("hidden", messagesAtBottom(m, 60)); }
 function down(force) {
@@ -7147,6 +7415,7 @@ async function init() {
   paintIcons();
   document.documentElement.lang = LANG === "en" ? "en" : "zh";
   applyStaticI18n(document); refreshLangToggle();
+  applyTheme(THEME, { instant: true });  // re-sync body class + theme icons after paintIcons
   document.querySelectorAll(".lang-btn").forEach(b => b.onclick = () => setLang(b.dataset.lang));
   applyLayout(localStorage.getItem("os-layout") || "comfortable");
   restoreColWidths(); initColResizers();
@@ -7171,6 +7440,9 @@ async function init() {
   $("#sidebar-collapse").onclick = () => setSidebar(true);
   $("#sidebar-reopen").onclick = () => setSidebar(false);
   $("#mic-btn").onclick = micDictate;
+  const themeClick = () => cycleTheme();
+  const dt = $("#dash-theme"); if (dt) dt.onclick = themeClick;
+  const wt = $("#ws-theme"); if (wt) wt.onclick = themeClick;
   $("#dash-settings").onclick = () => openCust("general");
   $("#customize-btn").onclick = openCust;
   $("#files-btn").onclick = () => { loadNotes(); $("#notes-block").classList.remove("hidden"); dockTab("files"); };
@@ -7184,10 +7456,14 @@ async function init() {
   $("#dock-collapse").onclick = dockClose;
   // ⌘K / Ctrl-K global command palette (advertised in the composer placeholder)
   document.addEventListener("keydown", (e) => {
+    // Modal Escape / Tab trap first (so it wins over other shortcuts)
+    if (e.key === "Escape" || e.key === "Tab") trapModalKeydown(e);
     if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) { if (PAL.open) { e.preventDefault(); closePalette(); return; } const modalOpen = ["#cust", "#modal", "#proj-modal"].some(s => { const m = $(s); return m && !m.classList.contains("hidden"); }); if (modalOpen) return; e.preventDefault(); openPalette(); }
     // ⌘/Ctrl+B toggles the sidebar — a reliable escape hatch so a collapsed
     // sidebar can always be brought back even if the expand icon is missed.
     if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "B")) { e.preventDefault(); setSidebar(!document.body.classList.contains("sidebar-collapsed")); }
+    // ⌘/Ctrl+Shift+L cycles light/dark (common editor convention)
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "l" || e.key === "L")) { e.preventDefault(); cycleTheme(); }
   });
   // Composer "Notebook" tray opens the live notebook panel
   const nbTray = $(".nb-tray");
@@ -7196,10 +7472,11 @@ async function init() {
   $("#messages").addEventListener("scroll", updateJumpPill);
   $("#cancel-btn").onclick = cancelTurn;
   $("#settings-gear").onclick = openCust;
-  $("#cust-close").onclick = () => $("#cust").classList.add("hidden");
+  $("#cust-close").onclick = () => closeModalEl($("#cust"));
+  $("#cust").onclick = (e) => { if (e.target.id === "cust") closeModalEl($("#cust")); };
   document.querySelectorAll(".cust-tab").forEach(t => t.onclick = () => custTab(t.dataset.tab));
-  $("#modal-close").onclick = () => $("#modal").classList.add("hidden");
-  $("#modal").onclick = (e) => { if (e.target.id === "modal") $("#modal").classList.add("hidden"); };
+  $("#modal-close").onclick = () => closeModalEl($("#modal"));
+  $("#modal").onclick = (e) => { if (e.target.id === "modal") closeModalEl($("#modal")); };
   $("#attach-btn").onclick = (e) => addToMessageMenu(e.currentTarget);
   $("#session-options-btn").onclick = (e) => sessionOptionsMenu(e.currentTarget);
   $("#file-input").onchange = (e) => uploadFiles(e.target.files);
@@ -7207,6 +7484,7 @@ async function init() {
   $("#explore-toggle").onclick = () => { S.exploreMode = !S.exploreMode; if (S.exploreMode) { S.planMode = false; $("#plan-toggle").classList.remove("on"); } $("#explore-toggle").classList.toggle("on", S.exploreMode); hint(S.exploreMode ? t("explore.toggle.on") : ""); };
   $("#note-save").onclick = addNote;
   $("#proj-modal-close").onclick = $("#pm-cancel").onclick = closeProjectModal;
+  $("#proj-modal").onclick = (e) => { if (e.target.id === "proj-modal") closeProjectModal(); };
   $("#pm-create").onclick = submitProjectModal;
   const c = $("#composer");
   c.addEventListener("input", () => { grow(); acUpdate(); });
@@ -7220,8 +7498,7 @@ async function init() {
     }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); acClose(); send(c.value); }
   });
-  c.addEventListener("blur", () => setTimeout(acClose, 120));
-  // paste images/files directly into the composer
+  c.addEventListener("blur", () => setTimeout(acClose, 120));  // paste images/files directly into the composer
   c.addEventListener("paste", (e) => {
     const items = (e.clipboardData || {}).items || []; const files = [];
     for (const it of items) { if (it.kind === "file") { const f = it.getAsFile(); if (f) files.push(f); } }

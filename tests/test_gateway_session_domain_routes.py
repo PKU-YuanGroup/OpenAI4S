@@ -104,6 +104,7 @@ def test_checkpoint_fork_and_workbench_routes_share_domain_service(tmp_path):
     assert code == 200
     assert branches["current_branch_id"] == frame_id
     assert branches["capabilities"]["checkpoint"]["enabled"] is True
+    assert branches["capabilities"]["promote"]["enabled"] is True
 
     code, checkpoint = _call(
         handler,
@@ -149,6 +150,56 @@ def test_checkpoint_fork_and_workbench_routes_share_domain_service(tmp_path):
     assert delegations["children"] == []
     code, recovery = _call(handler, "GET", f"/frames/{frame_id}/recovery")
     assert code == 200 and recovery["root_frame_id"] == frame_id
+    runner.close()
+
+
+def test_promote_route_freezes_scientific_cell_as_markdown_artifact(tmp_path):
+    runner, handler, frame_id = _setup(tmp_path)
+    cell_id = runner.store.log_cell(
+        frame_id=frame_id,
+        code="print('hi')\ndf.to_csv('out.csv')",
+        result={"stdout": "hi", "stderr": "", "error": None},
+        root_frame_id=frame_id,
+        project_id="project-domain",
+        cell_index=1,
+        visibility="scientific",
+        files_written=["out.csv"],
+    )
+
+    # The cell must surface in the scientific execution log the route reads —
+    # this is the exact contract (entries[].producing_cell_id) the handler hangs
+    # on, so assert it before promoting.
+    code, log = _call(handler, "GET", f"/frames/{frame_id}/execution-log")
+    assert code == 200
+    assert any(entry["producing_cell_id"] == cell_id for entry in log["entries"])
+
+    code, meta = _call(
+        handler,
+        "POST",
+        f"/frames/{frame_id}/artifacts/promote",
+        body={"cell_id": cell_id},
+    )
+    assert code == 200
+    assert meta["filename"].endswith(".md")
+    promoted = list((runner.workspace_for(frame_id) / "promoted").glob("*.md"))
+    assert len(promoted) == 1
+    text = promoted[0].read_text("utf-8")
+    assert "print('hi')" in text  # cell source frozen
+    assert "hi" in text  # stdout preserved
+    assert "`out.csv`" in text  # produced-file pointer preserved
+    runner.close()
+
+
+def test_promote_route_rejects_unknown_cell(tmp_path):
+    runner, handler, frame_id = _setup(tmp_path)
+    with pytest.raises(gateway_mod.GatewayError) as excinfo:
+        _call(
+            handler,
+            "POST",
+            f"/frames/{frame_id}/artifacts/promote",
+            body={"cell_id": "does-not-exist"},
+        )
+    assert excinfo.value.code == 404
     runner.close()
 
 

@@ -89,7 +89,7 @@ def test_only_successful_sidecars_are_frozen_and_recovery_ignores_changed_disk(
     assert len(bootstrap["environment_hash"]) == 64
     assert bootstrap["package_manifest"]
     assert bootstrap["locale"]["filesystem_encoding"]
-    assert bootstrap["host_capability_version"] == "1"
+    assert bootstrap["host_capability_version"] == "2"
     assert bootstrap["provenance_version"] == "1"
     assert supervisor.record_bootstrap_if_current(
         "python", kernel, bootstrap, state="active"

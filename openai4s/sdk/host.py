@@ -26,7 +26,7 @@ from openai4s.sdk.compute import (
 # Kernel bootstrap manifest.  Bump this only for a compatibility-affecting
 # surface change; recovery compares the value observed inside the candidate
 # worker with the frozen checkpoint value.
-HOST_CAPABILITY_VERSION = "1"
+HOST_CAPABILITY_VERSION = "2"
 
 # --- wire codec: SDK snake_case <-> wire camelCase (strict) -----
 #
@@ -435,6 +435,44 @@ class _App:
         return self._call("app_tiles", [])
 
 
+class _Science:
+    """Structured public database discovery and search.
+
+    Results share a stable ``{id,title,url,type,attributes}`` record shape so a
+    code cell can join sources without scraping provider-specific pages.
+    """
+
+    def __init__(self, host_call: Callable[[str, list], Any]):
+        self._call = host_call
+
+    def list_databases(self, domain: str = "all") -> dict:
+        return self._call("science_list_dbs", [{"domain": domain}])
+
+    def search(
+        self,
+        database: str,
+        query: str,
+        *,
+        limit: int = 10,
+        cursor: str | None = None,
+        filters: dict[str, Any] | None = None,
+        timeout: float = 30.0,
+    ) -> dict:
+        return self._call(
+            "science_search",
+            [
+                {
+                    "database": database,
+                    "query": query,
+                    "limit": int(limit),
+                    "cursor": cursor,
+                    "filters": filters,
+                    "timeout": float(timeout),
+                }
+            ],
+        )
+
+
 # --- remote compute (host.compute) -----------------------------------
 #
 # Gated on the host advertising a remote-compute provider. Installs
@@ -487,6 +525,7 @@ class _Host:
         self.credentials = _Credentials(self._call)
         self.app = _App(self._call)
         self.env = _Env(self._call)
+        self.science = _Science(self._call)
 
     def __getattribute__(self, name: str) -> Any:
         # Enforce the splice gate: a denied control-plane symbol is absent,

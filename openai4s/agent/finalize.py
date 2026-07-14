@@ -145,7 +145,7 @@ def validate_finalize_arguments(arguments: Any) -> str | None:
     # express the cardinality and non-empty strings, while this semantic guard
     # verifies that the bullets describe completed work.
     bullet_error = validate_completion_bullets(arguments["completion_bullets"])
-    return bullet_error
+    return str(bullet_error) if bullet_error is not None else None
 
 
 def _completion_record(arguments: Mapping[str, Any]) -> CompletionRecord:

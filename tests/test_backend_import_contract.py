@@ -40,6 +40,7 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             "PROVIDERS",
             "chat",
             "get_model_capabilities",
+            "provider_specs",
             "supports_vision",
         }
     ),

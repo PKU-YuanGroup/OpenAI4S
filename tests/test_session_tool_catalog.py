@@ -183,6 +183,19 @@ def test_progressive_specs_keep_core_dynamic_and_activate_relevant_groups(tmp_pa
         "exec_interrupt",
     } <= data_and_background
 
+    scientific = {
+        spec.name
+        for spec in catalog.specs_for(
+            [
+                {
+                    "role": "user",
+                    "content": "Search UniProt and PubChem scientific databases.",
+                }
+            ]
+        )
+    }
+    assert {"science_list_dbs", "science_search"} <= scientific
+
     catalog.activate_groups("remote")
     assert "remote_gpu_status" in {spec.name for spec in catalog.specs_for([])}
     groups = {item["id"]: item for item in catalog.group_metadata()}
@@ -190,3 +203,4 @@ def test_progressive_specs_keep_core_dynamic_and_activate_relevant_groups(tmp_pa
     assert groups["remote"]["active"] is True
     assert groups["data"]["active"] is True
     assert groups["background"]["active"] is True
+    assert groups["science"]["active"] is True

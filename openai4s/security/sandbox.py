@@ -218,7 +218,13 @@ def build_seatbelt_profile(
         f"    (subpath {workspace_q})",
         f"    (subpath {temp_q})",
         '    (literal "/dev/null")',
-        '    (literal "/dev/zero"))',
+        '    (literal "/dev/zero")',
+        # The R worker opens its already-inherited protocol output descriptor
+        # through this fd path.  Seatbelt otherwise treats that open as a new
+        # filesystem write and blocks the worker before its first frame.  This
+        # grants no path outside the inherited pipe and keeps stdout/stderr
+        # separate from the protocol channel.
+        '    (literal "/dev/fd/3"))',
     ]
     if not allow_raw_network:
         lines.insert(2, "(deny network*)")

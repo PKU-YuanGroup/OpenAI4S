@@ -121,6 +121,7 @@ def test_control_tool_classes_own_their_security_policy():
         "env_setup",
         "web_search",
         "web_fetch",
+        "science_search",
         "save_artifact",
         "restore_artifact_version",
         "delegate",

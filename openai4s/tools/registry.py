@@ -90,6 +90,7 @@ from openai4s.tools.remote_compute import (
     SubmitRemoteComputeJobTool,
 )
 from openai4s.tools.schema import SchemaDefinitionError
+from openai4s.tools.science import ScienceListDatabasesTool, ScienceSearchTool
 from openai4s.tools.session import (
     CreateCheckpointTool,
     ForkSessionTool,
@@ -125,6 +126,8 @@ TOOL_TYPES: tuple[type[Tool], ...] = (
     EnvCreateTool,
     WebSearchTool,
     WebFetchTool,
+    ScienceListDatabasesTool,
+    ScienceSearchTool,
     SearchCapabilitiesTool,
     SearchSkillsTool,
     LoadSkillTool,

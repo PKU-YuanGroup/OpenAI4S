@@ -30,6 +30,9 @@ def test_seed_defaults_and_fallback(tmp_path):
     assert st.resolve_permission(tool="write_file", pattern_input="out.txt") == "allow"
     assert st.resolve_permission(tool="edit_file", pattern_input="out.txt") == "allow"
     assert st.resolve_permission(tool="web_search", pattern_input="x") == "allow"
+    assert (
+        st.resolve_permission(tool="science_search", pattern_input="uniprot") == "allow"
+    )
     assert st.resolve_permission(tool="env_setup", pattern_input="numpy") == "allow"
     # genuinely risky ones still ask
     assert st.resolve_permission(tool="bash", pattern_input="ls -la") == "ask"

@@ -15,6 +15,7 @@ from openai4s.config import get_config
 from openai4s.host_dispatch import HostDispatcher, build_dispatcher
 from openai4s.kernel import Kernel
 from openai4s.sdk.host import decode_args, encode_args
+from openai4s.tools.registry import BUILTIN_CONTROL_HOST_METHODS
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -152,12 +153,15 @@ def test_wire_codec_passes_non_dict_args_through():
 # --- SDK <-> dispatcher parity ----------------------------------------------
 
 
-def test_every_sdk_host_call_has_a_dispatcher_handler():
-    """Every method name the in-kernel SDK puts on the wire must have a
-    matching _m_<name> handler on HostDispatcher — the drift guard for
-    splitting host_dispatch.py later."""
+def test_every_sdk_host_call_has_a_dispatch_route():
+    """Every SDK wire method must resolve through a legacy or native route."""
     src = (_REPO / "openai4s" / "sdk" / "host.py").read_text(encoding="utf-8")
     names = sorted(set(re.findall(r'self\._call\(\s*"([A-Za-z0-9_]+)"', src)))
     assert len(names) >= 60  # the SDK surface as of PR 10
-    missing = [n for n in names if not hasattr(HostDispatcher, f"_m_{n}")]
-    assert missing == [], f"SDK methods without dispatcher handlers: {missing}"
+    missing = [
+        name
+        for name in names
+        if not hasattr(HostDispatcher, f"_m_{name}")
+        and name not in BUILTIN_CONTROL_HOST_METHODS
+    ]
+    assert missing == [], f"SDK methods without dispatcher routes: {missing}"
