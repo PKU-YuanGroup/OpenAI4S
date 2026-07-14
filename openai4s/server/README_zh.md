@@ -47,7 +47,7 @@ gateway.py
 | [`gateway.py`](gateway.py) | HTTP/WebSocket 的主组合门面。协议 frame 的编解码、hub 与续传缓冲、`SessionState` 与 `SessionRunner`、REST 路由、静态资源和安全检查都落在这里，本表所列全部 service 的装配也在这里。 |
 | [`global_views.py`](global_views.py) | 组合跨会话的项目级研究 Timeline 与 Artifact 血缘视图。 |
 | [`model_discovery.py`](model_discovery.py) | 探测一小份固定的 loopback URL 名录，找出 OpenAI-compatible 的模型服务；探测时关闭代理、拒绝重定向，调用方无法把它变成通用的 SSRF 原语。结果只是一个 profile 建议：不会改动模型设置，也不会存下凭据。 |
-| [`model_profiles.py`](model_profiles.py) | 一个模型供应商 profile 进来时要过这里，被校验和迁移；落库、激活、删除时还要再过一次。凡是要公开出去的东西，凭据都会被清掉。 |
+| [`model_profiles.py`](model_profiles.py) | 一个模型供应商 profile 进来时要过这里，被校验和迁移；落库、激活、删除时还要再过一次。凡是要公开出去的东西，凭据都会被清掉。顶部的模型选择器也由它构建：只列当前模型和已保存的 profile，别的一概不列——没人配过的 endpoint 不该出现在那里，选了也只会在发消息时失败。 |
 | [`notebook_export.py`](notebook_export.py) | 把原始的不可变 Python 或 R 执行历史确定性地导出为只读 `.ipynb` 文件和带 checksum 描述的 bundle。它不套用 Notebook 投影那道过滤，所以只含协议调用的 completion Cell 仍可能出现在导出结果里。 |
 | [`plans.py`](plans.py) | 管理结构化计划的生命周期。planner 的回复先被解析、规范化，草稿和它的 JSON Artifact 落库，公开的审阅形态由此暴露，通过审阅的计划再被带到执行。实时的 `host.plan_update` 变更仍留在 `HostDispatcher`。 |
 | [`recovery_control.py`](recovery_control.py) | 投影恢复 journal 与 generation 状态，并组合出当前可行的、经校验和脱敏的恢复 Action 计划。只有在工作区目录树和完整的 bootstrap 清单都在的前提下，它才会说某个 checkpoint 可恢复。 |
