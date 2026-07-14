@@ -20,12 +20,12 @@ Each of api_key / base_url / model resolves **per-provider var → generic var �
 
 ## Kernel environments (conda)
 
-The agent kernel uses a scientific stack (numpy / pandas / scipy / matplotlib / scikit-learn / biopython / …) that installs automatically in the background on first `serve`. For heavier toolchains, four ready-to-use conda specs let the agent pick per task — create them with `openai4s setup` (`--dry-run` to preview, `--only <name>` for one). Specs live in [`envs/`](../envs):
+The lightweight control environment remains optional-dependency and stdlib-core. Comprehensive scientific packages live in ready-to-use Conda specs so native dependencies are solved for the user's macOS or Linux platform instead of copying one machine's build strings. Create the everyday Python + R pair with `./setup.sh --with-kernel-envs` or `openai4s setup --profile standard`; use `--update` (or `./setup.sh --update-kernel-envs`) to synchronize an existing environment without pruning user-installed packages. `openai4s setup` with no profile preserves the historical behavior of creating all four environments. Use `--dry-run` to preview and `--only <name>` for one. Specs live in [`envs/`](../envs):
 
-- **`python`** *(default)* — scanpy / anndata / leiden / UMAP / scikit-learn / RDKit / fair-esm / pandas / matplotlib.
+- **`python`** *(default)* — NumPy / pandas / SciPy / matplotlib / seaborn / Pillow / PDFium / SOCKS, plus scanpy / anndata / Leiden / UMAP / scikit-learn / RDKit / fair-esm.
 - **`struct`** — torch + fair-esm + biotite.
 - **`phylo`** — MAFFT / IQ-TREE / FastTree / trimAl / BioPython / ete3.
-- **`r`** — tidyverse.
+- **`r`** — R 4.5 / tidyverse / data.table / ggplot2 / R Markdown / knitr / jsonlite / Pandoc.
 
 ## Ports & data
 
@@ -61,7 +61,9 @@ openai4s serve     # daemon + web UI (foreground)
 openai4s status    # is it up?
 openai4s stop      # stop the daemon
 openai4s run "…"   # one Code-as-Action task in-process, no daemon
-openai4s setup     # build the four conda kernel environments
+openai4s setup --profile standard          # build Python + R
+openai4s setup --profile standard --update # sync Python + R, no pruning
+openai4s setup                             # build all four environments
 openai4s jupyter describe               # inspect optional bridge availability
 openai4s jupyter export ./kernel-specs  # pure-stdlib KernelSpec export
 openai4s jupyter install                # install user KernelSpecs

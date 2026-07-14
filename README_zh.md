@@ -112,7 +112,7 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 ./start.sh     # 启动 Web UI(http://127.0.0.1:8760/)
 ```
 
-`setup.sh` 用 **uv** 创建 `.venv`;`start.sh` 从中启动守护进程 + Web UI。启动无需 API Key —— **在 UI 里设置你的模型**(Customize → Models)。不启动 UI 跑单个任务:`uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`。
+`setup.sh` 用 **uv** 创建轻量控制面 `.venv`。如需完整的 Python + R 科学计算内核，请先安装 `micromamba`、`mamba` 或 `conda`，然后改用 `./setup.sh --with-kernel-envs`；已有环境可用 `./setup.sh --update-kernel-envs` 同步，且不会删除用户自行安装的包。`start.sh` 从环境中启动守护进程 + Web UI。启动无需 API Key —— **在 UI 里设置你的模型**(Customize → Models)。不启动 UI 跑单个任务:`uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`。
 
 ---
 
@@ -151,7 +151,8 @@ OpenAI4S 是一个让 **Code-as-Action** 范式保持开源的社区项目。
 
 ```bash
 git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
-./setup.sh                          # uv sync --extra science + 安装 pre-commit hook
+./setup.sh                          # uv sync --locked --extra science + pre-commit hook
+./setup.sh --with-kernel-envs       # 可选：完整 Python + R 内核环境
 uv run pytest                       # 离线测试套件(LLM 被 mock)
 uv run pre-commit run --all-files   # 全量格式化 + lint
 ```

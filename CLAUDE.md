@@ -13,14 +13,17 @@ Keep future guidance platform-neutral unless a section explicitly calls out a Cl
 ## Commands
 
 ```bash
-./setup.sh                          # one-time: uv sync --extra science + install pre-commit hook
+./setup.sh                          # one-time: locked lightweight .venv + pre-commit hook
+./setup.sh --with-kernel-envs       # also create comprehensive Python + R envs
+./setup.sh --update-kernel-envs     # sync existing Python + R envs, without pruning
 ./start.sh                          # launch daemon + web UI at http://127.0.0.1:8760/
 uv run pytest                       # full offline test suite (LLM is mocked — no network, no keys)
 uv run pytest tests/test_agent.py::test_max_turns_stop   # a single test
 uv run pytest tests/test_kernel.py -k background         # tests matching a pattern
 uv run pre-commit run --all-files   # format + lint (black · isort --profile black · ruff)
 uv run openai4s run "…" -v          # run one Code-as-Action task in-process, no daemon
-openai4s setup                      # build the 4 conda kernel envs from envs/*.yml (--dry-run to preview)
+openai4s setup --profile standard   # build Python + R from envs/*.yml
+openai4s setup                      # build all 4 envs (--dry-run to preview)
 ```
 
 CLI subcommands (`openai4s <cmd>`): `serve` · `status` · `stop` · `url` · `run` · `setup`. `start.sh` just runs `openai4s serve`.

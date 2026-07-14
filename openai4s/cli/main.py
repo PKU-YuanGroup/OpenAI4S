@@ -6,7 +6,7 @@
   openai4s url      print the local web UI url
   openai4s run "<task>"   run one Code-as-Action task (in-process, no daemon)
   openai4s init     guided first-run model configuration
-  openai4s setup    create the four default conda envs from envs/*.yml
+  openai4s setup    create/update conda envs from envs/*.yml
   openai4s jupyter  describe/export/install the optional Jupyter bridge
 """
 from __future__ import annotations
@@ -316,6 +316,13 @@ def cmd_jupyter_install(args) -> int:
 # default kernel env). Names must match the `name:` in each envs/<name>.yml.
 _DEFAULT_ENVS = ["python", "phylo", "r", "struct"]
 
+# Named setup profiles. The standard profile is the broad, everyday Python/R
+# stack used by setup.sh; full preserves the historical four-env setup.
+_ENV_PROFILES = {
+    "standard": ["python", "r"],
+    "full": list(_DEFAULT_ENVS),
+}
+
 # Conda-family tools we know how to drive, fastest first.
 _CONDA_TOOLS = ["micromamba", "mamba", "conda"]
 
@@ -378,6 +385,15 @@ def _create_cmd(tool: str, name: str, yml: Path) -> list[str]:
     return [tool, "env", "create", "-f", str(yml)]
 
 
+def _update_cmd(tool: str, name: str, yml: Path) -> list[str]:
+    """Non-destructively update an existing env from ``yml``.
+
+    Deliberately omit ``--prune`` so setup never removes packages the user
+    installed after the initial environment creation.
+    """
+    return [tool, "env", "update", "-f", str(yml)]
+
+
 def cmd_setup(args) -> int:
     tool = _find_conda_tool()
     if not tool:
@@ -402,16 +418,21 @@ def cmd_setup(args) -> int:
             )
             return 1
         wanted = [args.only]
+    elif getattr(args, "profile", None):
+        wanted = list(_ENV_PROFILES[args.profile])
     else:
         wanted = list(_DEFAULT_ENVS)
 
-    existing = set() if args.dry_run else _existing_env_names()
+    existing = _existing_env_names()
+    update_existing = bool(getattr(args, "update", False))
 
     print(
-        f"using '{tool}' to create envs from {envs_dir}"
+        f"using '{tool}' to manage envs from {envs_dir}"
         + (" (dry-run)" if args.dry_run else "")
     )
     created = 0
+    updated = 0
+    skipped = 0
     failed = 0
     for name in wanted:
         yml = envs_dir / f"{name}.yml"
@@ -419,14 +440,21 @@ def cmd_setup(args) -> int:
             print(f"  [{name}] skip: spec file missing ({yml})")
             failed += 1
             continue
-        if name in existing:
-            print(f"  [{name}] already exists — skipping")
+        exists = name in existing
+        if exists and not update_existing:
+            print(f"  [{name}] already exists — skipping (use --update to sync)")
+            skipped += 1
             continue
-        cmd = _create_cmd(tool, name, yml)
+        cmd = (
+            _update_cmd(tool, name, yml)
+            if exists
+            else _create_cmd(tool, name, yml)
+        )
+        action = "update" if exists else "create"
         if args.dry_run:
-            print(f"  [{name}] would run: {' '.join(cmd)}")
+            print(f"  [{name}] would {action}: {' '.join(cmd)}")
             continue
-        print(f"  [{name}] creating… ({' '.join(cmd)})")
+        print(f"  [{name}] {action}… ({' '.join(cmd)})")
         try:
             rc = subprocess.run(cmd).returncode
         except Exception as exc:  # noqa: BLE001
@@ -434,15 +462,21 @@ def cmd_setup(args) -> int:
             failed += 1
             continue
         if rc == 0:
-            print(f"  [{name}] created")
-            created += 1
+            print(f"  [{name}] {action}d")
+            if exists:
+                updated += 1
+            else:
+                created += 1
         else:
             print(f"  [{name}] FAILED (exit {rc})", file=sys.stderr)
             failed += 1
 
     if args.dry_run:
         return 0
-    print(f"done: {created} created, {failed} failed")
+    print(
+        f"done: {created} created, {updated} updated, "
+        f"{skipped} skipped, {failed} failed"
+    )
     return 1 if failed else 0
 
 
@@ -486,18 +520,29 @@ def build_parser() -> argparse.ArgumentParser:
     pi.set_defaults(fn=cmd_init)
 
     pu = sub.add_parser(
-        "setup", help="create the four default conda envs from envs/*.yml"
+        "setup", help="create or update conda envs from envs/*.yml"
     )
-    pu.add_argument(
+    setup_selection = pu.add_mutually_exclusive_group()
+    setup_selection.add_argument(
         "--only",
         metavar="NAME",
         choices=_DEFAULT_ENVS,
         help="create just one env (%(choices)s)",
     )
+    setup_selection.add_argument(
+        "--profile",
+        choices=tuple(_ENV_PROFILES),
+        help="environment profile: standard=python+r, full=all four",
+    )
     pu.add_argument(
         "--dry-run",
         action="store_true",
         help="print the commands that would run, without executing",
+    )
+    pu.add_argument(
+        "--update",
+        action="store_true",
+        help="update existing envs without pruning user-installed packages",
     )
     pu.set_defaults(fn=cmd_setup)
 

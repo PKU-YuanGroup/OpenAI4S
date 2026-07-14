@@ -1,8 +1,9 @@
 # r — R data science (R 4.5.3)
 #
-# Derived from all_env_packages.csv. Lists the headline R packages only; conda
-# resolves the full dependency tree. conda-forge only (no bioconda) for the R
-# stack. Versions match the CSV where they are meaningful top-level packages.
+# Portable top-level manifest matching Claude Science's R environment, with
+# OpenAI4S's reporting packages made explicit. r-tidyverse resolves the full R
+# package family; Conda resolves platform-specific compilers and native system
+# libraries, which must not be copied from a single-machine full export.
 name: r
 channels:
   - conda-forge
@@ -14,3 +15,5 @@ dependencies:
   - r-rmarkdown
   - r-knitr
   - r-jsonlite
+  # rmarkdown needs a real renderer, not just the R package.
+  - pandoc=3.10

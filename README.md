@@ -126,7 +126,7 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 ./start.sh     # launch the web UI at http://127.0.0.1:8760/
 ```
 
-`setup.sh` creates the `.venv` with **uv**; `start.sh` launches the daemon + web UI from it. No API key is needed to boot — **set your model in the UI** (Customize → Models). One-shot without the UI: `uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`.
+`setup.sh` creates the lightweight control `.venv` with **uv**. For the comprehensive Python + R scientific kernels, install a Conda-family manager (`micromamba`, `mamba`, or `conda`) and run `./setup.sh --with-kernel-envs` instead. Existing kernel environments can be synchronized with `./setup.sh --update-kernel-envs`; updates do not prune user-installed packages. `start.sh` launches the daemon + web UI. No API key is needed to boot — **set your model in the UI** (Customize → Models). One-shot without the UI: `uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`.
 
 ---
 
@@ -174,7 +174,8 @@ Requires **Python ≥ 3.10** and [**uv**](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
-./setup.sh                          # uv sync --extra science + pre-commit hook
+./setup.sh                          # uv sync --locked --extra science + pre-commit hook
+./setup.sh --with-kernel-envs       # optional: full Python + R kernel stacks
 uv run pytest                       # offline test suite (LLM mocked)
 uv run pre-commit run --all-files   # format + lint everything
 ```
