@@ -177,6 +177,17 @@ class ScienceConnectorService:
                 "science timeout must be between 1 and 120 seconds"
             )
         clean_filters = self._filters(filters)
+        active_filters = {
+            key: value
+            for key, value in clean_filters.items()
+            if value not in (None, "")
+        }
+        unsupported_filters = sorted(set(active_filters) - set(metadata.filters))
+        if unsupported_filters:
+            raise ScienceConnectorError(
+                f"{metadata.label} does not support filter(s): "
+                + ", ".join(unsupported_filters)
+            )
 
         adapter = getattr(self, f"_search_{database_id}")
         try:
@@ -184,7 +195,7 @@ class ScienceConnectorService:
                 normalized_query,
                 requested_limit,
                 str(cursor or ""),
-                clean_filters,
+                active_filters,
                 requested_timeout,
             )
         except ScienceConnectorError:

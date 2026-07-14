@@ -242,6 +242,14 @@ def test_ensembl_uses_symbol_endpoint_and_only_returns_stable_ids():
             },
             "unknown science filters",
         ),
+        (
+            {
+                "database": "pubchem",
+                "query": "aspirin",
+                "filters": {"year_from": 2024},
+            },
+            "PubChem does not support filter.*year_from",
+        ),
     ],
 )
 def test_invalid_searches_fail_before_network(kwargs, message):

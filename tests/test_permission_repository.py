@@ -186,6 +186,28 @@ def test_scope_projection_and_default_seed_reset_semantics(tmp_path):
     assert grouped["global"]
 
 
+def test_seed_upgrade_adds_only_new_defaults_to_existing_stores(tmp_path):
+    store, repository = _repository(tmp_path)
+    for tool, pattern, decision in DEFAULT_PERMISSION_RULES:
+        if tool not in {"mcp_call", "science_search"}:
+            repository.set_rule(
+                scope="global",
+                tool=tool,
+                pattern=pattern,
+                decision=decision,
+            )
+    store.set_setting("perm_seeded", "1")
+
+    repository.seed_defaults()
+
+    assert repository.resolve(tool="science_search", pattern_input="uniprot") == "allow"
+    assert repository.resolve(tool="mcp_call", pattern_input="server/tool") == "ask"
+    assert not any(
+        rule["tool"] == "mcp_call" for rule in repository.get_rules(scope="global")
+    )
+    assert store.get_setting("perm_seed_version") == "2"
+
+
 def test_seed_rules_commit_before_marker_and_recover_after_marker_failure(tmp_path):
     store, _unused_repository = _repository(tmp_path)
 

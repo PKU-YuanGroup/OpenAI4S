@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
-from openai4s.config import Config, is_placeholder_api_key
+from openai4s.config import Config, LLMConfig, is_placeholder_api_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +87,9 @@ class OnboardingService:
         clear_api_key: bool = False,
     ) -> OnboardingResult:
         selected = self._provider(provider)
+        previous_provider = self._provider(
+            self._stored("llm_provider") or self.cfg.llm.provider
+        )
         spec = self.providers[selected]
         chosen_model = str(model or spec.get("model") or "").strip()
         chosen_url = str(base_url or spec.get("base_url") or "").strip().rstrip("/")
@@ -110,13 +113,25 @@ class OnboardingService:
             self.store.set_setting("llm_api_key", "")
         elif key is not None:
             self.store.set_setting("llm_api_key", key)
+        elif selected != previous_provider:
+            # Stored keys are provider credentials, not a transferable default.
+            # Clearing the runtime override lets LLMConfig resolve the newly
+            # selected provider's own environment variables instead of sending
+            # the previous provider's secret to a different endpoint.
+            self.store.set_setting("llm_api_key", "")
         self.store.set_setting("onboarding_complete", "1")
         return self.status()
 
     def status(self) -> OnboardingResult:
         defaults = self.defaults()
         stored_key = (self._stored("llm_api_key") or "").strip()
-        has_key = not is_placeholder_api_key(stored_key or self.cfg.llm.api_key)
+        configured_provider = str(self.cfg.llm.provider or "").strip().lower()
+        fallback_key = (
+            self.cfg.llm.api_key
+            if defaults["provider"] == configured_provider
+            else LLMConfig(provider=defaults["provider"]).api_key
+        )
+        has_key = not is_placeholder_api_key(stored_key or fallback_key)
         system = platform.system() or "Unknown"
         return OnboardingResult(
             provider=defaults["provider"],

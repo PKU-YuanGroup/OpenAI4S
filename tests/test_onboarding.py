@@ -121,6 +121,24 @@ def test_switching_provider_does_not_reuse_previous_provider_defaults(tmp_path):
     }
 
 
+def test_switching_provider_drops_the_previous_provider_key(tmp_path, monkeypatch):
+    onboarding, settings = service(tmp_path)
+    settings.values.update(
+        {
+            "llm_provider": "alpha",
+            "llm_api_key": "alpha-secret",
+        }
+    )
+    monkeypatch.delenv("OPENAI4S_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI4S_BETA_API_KEY", raising=False)
+
+    result = onboarding.configure(provider="beta")
+
+    assert settings.values["llm_api_key"] == ""
+    assert result.provider == "beta"
+    assert result.has_api_key is False
+
+
 def test_clear_api_key_is_explicit(tmp_path):
     onboarding, settings = service(tmp_path)
     settings.values["llm_api_key"] = "keep-me"

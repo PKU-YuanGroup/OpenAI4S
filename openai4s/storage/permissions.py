@@ -54,6 +54,15 @@ DEFAULT_PERMISSION_RULES = (
     ("skills_publish", "*", "ask"),
 )
 
+# ``perm_seeded`` predates versioned defaults and remains a compatibility
+# marker.  New releases advance this separate version and list only the rules
+# introduced by that version, so upgrades add new defaults without restoring a
+# default that an operator deliberately deleted or changed.
+_DEFAULT_PERMISSION_RULE_VERSION = 2
+_DEFAULT_PERMISSION_RULE_ADDITIONS = {
+    2: (("science_search", "*", "allow"),),
+}
+
 
 class PermissionRuleRepository:
     """Own persisted permission rules and their precedence semantics.
@@ -215,12 +224,29 @@ class PermissionRuleRepository:
         return best["decision"] if best else "ask"
 
     def seed_defaults(self, *, force: bool = False) -> None:
-        """Idempotently insert defaults or restore them during a reset."""
-        if not force and self._get_setting("perm_seeded", None):
-            return
+        """Insert fresh defaults, additive upgrades, or a forced reset."""
+        seeded = bool(self._get_setting("perm_seeded", None))
+        try:
+            seeded_version = int(
+                self._get_setting("perm_seed_version", None) or (1 if seeded else 0)
+            )
+        except (TypeError, ValueError):
+            seeded_version = 1 if seeded else 0
+        if force or not seeded:
+            rules = DEFAULT_PERMISSION_RULES
+        else:
+            rules = tuple(
+                rule
+                for version in range(
+                    seeded_version + 1, _DEFAULT_PERMISSION_RULE_VERSION + 1
+                )
+                for rule in _DEFAULT_PERMISSION_RULE_ADDITIONS.get(version, ())
+            )
+            if not rules:
+                return
         now = self._clock_ms()
         with self._lock:
-            for tool, pattern, decision in DEFAULT_PERMISSION_RULES:
+            for tool, pattern, decision in rules:
                 row = self._connection.execute(
                     "SELECT rule_id, decision FROM permission_rules "
                     "WHERE scope='global' AND scope_id='' AND tool=? AND pattern=?",
@@ -250,6 +276,7 @@ class PermissionRuleRepository:
                 )
             self._connection.commit()
         self._set_setting("perm_seeded", "1")
+        self._set_setting("perm_seed_version", str(_DEFAULT_PERMISSION_RULE_VERSION))
 
     # --- durable per-action approval requests --------------------------
     def create_request(
