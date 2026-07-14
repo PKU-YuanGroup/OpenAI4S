@@ -57,19 +57,27 @@ fi
 uv sync --locked --extra science
 echo "· environment ready → .venv/"
 
-# 3) optionally build the comprehensive, persistent Python + R kernel envs
-case "$kernel_envs_mode" in
-  create)
-    uv run openai4s setup --profile standard
-    echo "· Python + R kernel environments ready"
-    ;;
-  update)
-    uv run openai4s setup --profile standard --update
-    echo "· Python + R kernel environments synchronized"
-    ;;
-esac
-
-# 4) enable the git pre-commit hook (black · isort · ruff) for contributors
+# 3) enable the git pre-commit hook (black · isort · ruff) for contributors.
+#    Runs before the optional conda step below: a failed env solve must not cost
+#    a contributor their git hook — the control .venv is already complete here.
 uv run pre-commit install >/dev/null 2>&1 && echo "· pre-commit hook installed" || true
+
+# 4) optionally build the comprehensive, persistent Python + R kernel envs
+if [ "$kernel_envs_mode" != "none" ]; then
+  setup_args=(setup --profile standard)
+  if [ "$kernel_envs_mode" = "update" ]; then
+    setup_args+=(--update)
+  fi
+
+  if uv run openai4s "${setup_args[@]}"; then
+    echo "· Python + R kernel environments ready"
+  else
+    echo "warn: kernel environments are incomplete (see above)." >&2
+    echo "      the control .venv is ready — ./start.sh still works, and the" >&2
+    echo "      agent falls back to the base kernel. retry with:" >&2
+    echo "        uv run openai4s ${setup_args[*]}" >&2
+    exit 1
+  fi
+fi
 
 echo "· setup complete — launch with ./start.sh"

@@ -18,6 +18,10 @@ dependencies:
   - python-igraph
   - umap-learn
   - numba
+  # cheminformatics — conda-forge, NOT the pip `rdkit-pypi` wheel: that project
+  # is frozen at 2022.9.5 and is built against the NumPy 1.x C ABI, so it
+  # segfaults the kernel worker against the NumPy 2.x this spec now resolves.
+  - rdkit
   # machine learning + numerics
   - scikit-learn
   - numpy
@@ -46,7 +50,5 @@ dependencies:
   - pip
   - pip:
       - fair-esm==2.0.0
-      - rdkit-pypi==2022.9.5
-      # Claude Science installs pypdfium2 from PyPI so pip can select the
-      # matching bundled PDFium wheel for macOS or Linux.
+      # from PyPI so pip selects the bundled PDFium wheel matching this platform.
       - pypdfium2==5.9.0

@@ -340,41 +340,48 @@ def _find_conda_tool() -> str | None:
     return None
 
 
-def _existing_env_names() -> set[str]:
-    """Names of conda envs that already exist.
+def _existing_envs() -> dict[str, Path]:
+    """Existing conda envs, mapped name → prefix.
 
     Prefers the daemon's own discovery (:mod:`openai4s.kernel.environments`,
     which honours ``OPENAI4S_ENV_ROOTS`` and the reference-daemon envs dir);
-    falls back to ``conda env list`` parsing if that import isn't available."""
+    falls back to ``conda env list`` parsing if that import isn't available.
+
+    The prefix matters: we decide create-vs-update from *these* roots, so an
+    update has to name the very prefix we found. Passing only the spec file
+    would make the conda tool re-resolve the yml's ``name:`` inside its own
+    root prefix, which is a different namespace — see :func:`_update_cmd`."""
     try:
         from openai4s.kernel.environments import discover_environments
 
-        return {e.name for e in discover_environments(force=True)}
+        return {e.name: e.root for e in discover_environments(force=True) if e.is_conda}
     except Exception:  # noqa: BLE001 — fall back to CLI probing
         pass
     tool = _find_conda_tool()
     if not tool:
-        return set()
+        return {}
     try:
         out = subprocess.run(
             [tool, "env", "list"], capture_output=True, text=True, timeout=30
         )
     except Exception:  # noqa: BLE001
-        return set()
-    names: set[str] = set()
+        return {}
+    envs: dict[str, Path] = {}
     for line in out.stdout.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         # rows look like:  "python   *  /path/to/envs/python"
-        first = line.split()[0]
+        fields = line.split()
+        path = fields[-1]
+        if os.sep not in path:
+            continue
+        prefix = Path(path)
+        envs.setdefault(prefix.name, prefix)
+        first = fields[0]
         if first and first != "*":
-            names.add(first)
-        # also take the leaf dir of the prefix path, if any
-        path = line.split()[-1]
-        if os.sep in path:
-            names.add(Path(path).name)
-    return names
+            envs.setdefault(first, prefix)
+    return envs
 
 
 def _create_cmd(tool: str, name: str, yml: Path) -> list[str]:
@@ -385,13 +392,20 @@ def _create_cmd(tool: str, name: str, yml: Path) -> list[str]:
     return [tool, "env", "create", "-f", str(yml)]
 
 
-def _update_cmd(tool: str, name: str, yml: Path) -> list[str]:
-    """Non-destructively update an existing env from ``yml``.
+def _update_cmd(tool: str, prefix: Path, yml: Path) -> list[str]:
+    """Non-destructively update the env at ``prefix`` from ``yml``.
 
-    Deliberately omit ``--prune`` so setup never removes packages the user
+    ``-p`` is not optional. Without it, micromamba/mamba/conda resolve the
+    yml's ``name:`` against *their own* root prefix — but we chose "update"
+    because :func:`_existing_envs` found the env somewhere else (a second conda
+    root, ``OPENAI4S_ENV_ROOTS``, …). conda would then happily build a brand-new
+    env under its own root and report success while the env the agent actually
+    runs in stays untouched; micromamba would abort with "Prefix does not exist".
+
+    ``--prune`` is deliberately omitted so setup never removes packages the user
     installed after the initial environment creation.
     """
-    return [tool, "env", "update", "-f", str(yml)]
+    return [tool, "env", "update", "-p", str(prefix), "-f", str(yml)]
 
 
 def cmd_setup(args) -> int:
@@ -423,7 +437,7 @@ def cmd_setup(args) -> int:
     else:
         wanted = list(_DEFAULT_ENVS)
 
-    existing = _existing_env_names()
+    existing = _existing_envs()
     update_existing = bool(getattr(args, "update", False))
 
     print(
@@ -440,17 +454,17 @@ def cmd_setup(args) -> int:
             print(f"  [{name}] skip: spec file missing ({yml})")
             failed += 1
             continue
-        exists = name in existing
-        if exists and not update_existing:
+        prefix = existing.get(name)
+        if prefix is not None and not update_existing:
             print(f"  [{name}] already exists — skipping (use --update to sync)")
             skipped += 1
             continue
         cmd = (
-            _update_cmd(tool, name, yml)
-            if exists
+            _update_cmd(tool, prefix, yml)
+            if prefix is not None
             else _create_cmd(tool, name, yml)
         )
-        action = "update" if exists else "create"
+        action = "update" if prefix is not None else "create"
         if args.dry_run:
             print(f"  [{name}] would {action}: {' '.join(cmd)}")
             continue
@@ -463,7 +477,7 @@ def cmd_setup(args) -> int:
             continue
         if rc == 0:
             print(f"  [{name}] {action}d")
-            if exists:
+            if prefix is not None:
                 updated += 1
             else:
                 created += 1
@@ -519,9 +533,7 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--json", action="store_true", help="emit secret-free JSON")
     pi.set_defaults(fn=cmd_init)
 
-    pu = sub.add_parser(
-        "setup", help="create or update conda envs from envs/*.yml"
-    )
+    pu = sub.add_parser("setup", help="create or update conda envs from envs/*.yml")
     setup_selection = pu.add_mutually_exclusive_group()
     setup_selection.add_argument(
         "--only",

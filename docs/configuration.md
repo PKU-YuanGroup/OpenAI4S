@@ -20,7 +20,9 @@ Each of api_key / base_url / model resolves **per-provider var → generic var �
 
 ## Kernel environments (conda)
 
-The lightweight control environment remains optional-dependency and stdlib-core. Comprehensive scientific packages live in ready-to-use Conda specs so native dependencies are solved for the user's macOS or Linux platform instead of copying one machine's build strings. Create the everyday Python + R pair with `./setup.sh --with-kernel-envs` or `openai4s setup --profile standard`; use `--update` (or `./setup.sh --update-kernel-envs`) to synchronize an existing environment without pruning user-installed packages. `openai4s setup` with no profile preserves the historical behavior of creating all four environments. Use `--dry-run` to preview and `--only <name>` for one. Specs live in [`envs/`](../envs):
+The core engine stays stdlib-only, and the control `.venv` carries just the optional `science` extra (numpy / pandas / matplotlib). On top of that, the daemon still pip-installs a baseline scientific stack (scipy / seaborn / scikit-learn / biopython / httpx / …, see `CORE_PACKAGES` in [`openai4s/kernel/preinstall.py`](../openai4s/kernel/preinstall.py)) into that `.venv` in the background on every `serve` — it is idempotent, so it is a no-op on warm starts.
+
+Heavier toolchains live in ready-to-use Conda specs instead, so native dependencies are solved for the user's own macOS or Linux platform rather than copying one machine's build strings. Create the everyday Python + R pair with `./setup.sh --with-kernel-envs` or `openai4s setup --profile standard`; use `--update` (or `./setup.sh --update-kernel-envs`) to synchronize an existing environment without pruning user-installed packages. `openai4s setup` with no profile preserves the historical behavior of creating all four environments. Use `--dry-run` to preview and `--only <name>` for one. Specs live in [`envs/`](../envs):
 
 - **`python`** *(default)* — NumPy / pandas / SciPy / matplotlib / seaborn / Pillow / PDFium / SOCKS, plus scanpy / anndata / Leiden / UMAP / scikit-learn / RDKit / fair-esm.
 - **`struct`** — torch + fair-esm + biotite.
