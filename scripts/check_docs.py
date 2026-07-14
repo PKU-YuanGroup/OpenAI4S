@@ -7,7 +7,6 @@ import re
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 
@@ -64,9 +63,7 @@ def _structure(text: str) -> tuple[list[str], list[str], int]:
     headings = re.findall(r"^(#{1,6})\s+", text, flags=re.MULTILINE)
     fences = re.findall(r"^```([^\n]*)$", text, flags=re.MULTILINE)
     table_rows = sum(
-        1
-        for line in text.splitlines()
-        if line.startswith("|") and line.endswith("|")
+        1 for line in text.splitlines() if line.startswith("|") and line.endswith("|")
     )
     return headings, fences, table_rows
 
@@ -122,9 +119,7 @@ def main() -> int:
 
     public_sources = [ROOT / "README.md", ROOT / "README_zh.md"]
     public_sources.extend(DOCS.rglob("*.md"))
-    public_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in public_sources
-    )
+    public_text = "\n".join(path.read_text(encoding="utf-8") for path in public_sources)
     # Deployment aliases and developer-machine paths must never enter public docs.
     for secret_shape in ("ssh bandwagon", "/Users/gongbozhang/"):
         if secret_shape.casefold() in public_text.casefold():
@@ -135,7 +130,9 @@ def main() -> int:
     match = re.search(r"## Bundled Skills \((\d+)\)", skill_doc)
     if match is None or int(match.group(1)) != len(skills):
         stated = match.group(1) if match else "missing"
-        errors.append(f"Skill inventory count is {stated}; repository has {len(skills)}")
+        errors.append(
+            f"Skill inventory count is {stated}; repository has {len(skills)}"
+        )
     for name in skills:
         if f"`{name}`" not in skill_doc:
             errors.append(f"bundled Skill missing from docs/skills.md: {name}")

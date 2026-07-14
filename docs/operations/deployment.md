@@ -53,7 +53,8 @@ location = /docs {
 
 location /docs/ {
     # The server document root contains docs -> /srv/openai4s-docs/current.
-    try_files $uri $uri.html $uri/ =404;
+    # Prefer the generated clean-URL HTML file over a same-named section directory.
+    try_files $uri.html $uri $uri/ =404;
 }
 ```
 
