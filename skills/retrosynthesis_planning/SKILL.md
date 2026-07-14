@@ -89,10 +89,12 @@ from retrosynthesis_planning.kernel import (
     build_pubchem_query_url,
     canonicalize_smiles,
     collect_molecule_briefs,
+    collect_reaction_evidence,
     collect_reaction_briefs,
     command_to_shell,
     load_aizynth_routes,
     normalize_routes,
+    OpenAI4SLLMReactionEvidenceProvider,
     rank_routes,
     render_route_tree_html,
 )
@@ -215,6 +217,44 @@ the selected reaction node of the knowledge graph. The displayed coverage score
 is a retrieval-completeness heuristic, not a probability of experimental
 success. LLM-generated conditions and yields never become evidence records
 automatically.
+
+### Source retrieval with OpenAI4S skills
+
+Use `OpenAI4SLLMReactionEvidenceProvider` when a live evidence sweep is
+appropriate. It explicitly composes the configured conversation model with the
+existing `host.web_search` and optional `host.web_fetch` skills: the LLM drafts
+reaction-aware search queries, OpenAI4S retrieves the pages, and a second LLM
+pass can select **only** returned source IDs. This is intentionally not an
+implicit tool-call: `host.llm` is a text-completion API, so the provider keeps
+all network activity observable and auditable.
+
+If the `literature-review` skill is active in the same kernel, pass its
+`verify_dois` helper as shown below. It verifies whether a DOI resolves, but it
+does not prove that the paper supports the proposed substrate scope. The output
+is therefore marked as a *retrieved source candidate*, receives capped coverage,
+and never becomes verified exact-substrate precedent without reviewer or ELN
+confirmation.
+
+```python
+# Load/use the literature-review skill first when DOI verification is needed;
+# its kernel makes verify_dois available in the active science environment.
+provider = OpenAI4SLLMReactionEvidenceProvider(
+    llm=host.llm,
+    search=host.web_search,
+    fetch=host.web_fetch,
+    doi_verifier=verify_dois,  # optional; omit when literature-review is not active
+    max_reactions=10,
+    max_queries_per_reaction=2,
+    results_per_query=5,
+)
+reaction_evidence = collect_reaction_evidence(ranked[:10], [provider])
+```
+
+The provider never accepts an LLM-supplied URL or title: every card is built
+from a retrieved `host.web_search` result. It also never auto-populates
+conditions, yields, or `verified=True`. A chemist should promote a reviewed
+candidate by adding a source record with explicit scope, conditions, yield, and
+verification status before using it in execution scoring.
 
 ### Phase 4 — Visualize and report
 

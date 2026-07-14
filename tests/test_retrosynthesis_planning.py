@@ -20,6 +20,7 @@ def _llm_prompt(request):
 def _import_skill():
     sys.path.insert(0, str(get_config().skills_dir))
     from retrosynthesis_planning.kernel import (  # noqa: PLC0415
+        OpenAI4SLLMReactionEvidenceProvider,
         annotate_routes_with_llm,
         build_aizynth_command,
         build_llm_annotation_prompt,
@@ -29,6 +30,7 @@ def _import_skill():
         build_pubchem_structure_image_url,
         collect_molecule_briefs,
         collect_reaction_briefs,
+        collect_reaction_evidence,
         command_to_shell,
         normalize_routes,
         parse_llm_annotations,
@@ -46,8 +48,10 @@ def _import_skill():
         "build_pubchem_structure_image_url": build_pubchem_structure_image_url,
         "command_to_shell": command_to_shell,
         "collect_molecule_briefs": collect_molecule_briefs,
+        "collect_reaction_evidence": collect_reaction_evidence,
         "collect_reaction_briefs": collect_reaction_briefs,
         "normalize_routes": normalize_routes,
+        "OpenAI4SLLMReactionEvidenceProvider": OpenAI4SLLMReactionEvidenceProvider,
         "parse_llm_annotations": parse_llm_annotations,
         "rank_routes": rank_routes,
         "render_route_tree_html": render_route_tree_html,
@@ -387,6 +391,119 @@ def test_route_step_evidence_cards_are_source_backed_and_graph_visible():
     assert matched["details"]["Supporting evidence"][0]["Identifier"] == (
         "DOI:10.0000/example"
     )
+
+
+def test_openai4s_llm_evidence_provider_only_links_retrieved_sources():
+    funcs = _import_skill()
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+    calls = {"searches": []}
+
+    def fake_llm(request):
+        prompt = _llm_prompt(request)
+        if "planning source retrieval" in prompt:
+            briefs = json.loads(prompt.split("Reaction briefs:\n", 1)[1])
+            return json.dumps(
+                {
+                    "queries": [
+                        {
+                            "reaction_key": briefs[0]["reaction_key"],
+                            "query": "aspirin O-acylation synthesis precedent",
+                        }
+                    ]
+                }
+            )
+        if "screening retrieved sources" in prompt:
+            sources = json.loads(prompt.split("Retrieved sources:\n", 1)[1])
+            source = sources[0]
+            return json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "reaction_key": source["reaction_key"],
+                            "source_id": source["source_id"],
+                            "match_level": "exact_substrate",
+                            "rationale": "Retrieved title and snippet indicate a close precedent.",
+                        },
+                        {
+                            "reaction_key": source["reaction_key"],
+                            "source_id": "invented-source-id",
+                            "match_level": "exact_substrate",
+                        },
+                    ]
+                }
+            )
+        raise AssertionError("unexpected LLM prompt")
+
+    def fake_search(query, **kwargs):
+        calls["searches"].append((query, kwargs))
+        return {
+            "results": [
+                {
+                    "title": "Retrieved O-acylation precedent",
+                    "url": "https://doi.org/10.5555/retrosynthesis",
+                    "snippet": "Source snippet returned by the search skill.",
+                }
+            ]
+        }
+
+    provider = funcs["OpenAI4SLLMReactionEvidenceProvider"](
+        llm=fake_llm,
+        search=fake_search,
+        doi_verifier=lambda dois: {doi: {"ok": True} for doi in dois},
+        max_queries_per_reaction=1,
+    )
+    evidence = funcs["collect_reaction_evidence"](ranked, [provider])
+
+    assert calls["searches"][0][0] == "aspirin O-acylation synthesis precedent"
+    assert len(evidence) == 1
+    record = next(iter(evidence.values()))[0]
+    assert record["title"] == "Retrieved O-acylation precedent"
+    assert record["url"] == "https://doi.org/10.5555/retrosynthesis"
+    assert record["identifier"] == "10.5555/retrosynthesis"
+    assert record["candidate"] is True
+    assert record["verified"] is False
+    assert record["identifier_verified"] is True
+
+    html = funcs["render_route_tree_html"](ranked, reaction_evidence=evidence)
+    assert "Retrieved source candidates need review" in html
+    assert "30/100 coverage" in html
+    assert "Retrieved O-acylation precedent" in html
+    assert "invented-source-id" not in html
+
+
+def test_execution_scoring_keeps_candidate_evidence_and_constraints_auditable():
+    funcs = _import_skill()
+    routes = funcs["normalize_routes"](ROUTE_PAYLOAD)
+    first_reaction = funcs["collect_reaction_briefs"](routes)[0]
+    evidence = {
+        first_reaction["reaction_key"]: [
+            {
+                "source_type": "literature",
+                "title": "Retrieved candidate only",
+                "url": "https://doi.org/10.5555/candidate",
+                "match_level": "exact_substrate",
+                "candidate": True,
+            }
+        ]
+    }
+    ranked = funcs["rank_routes"](
+        routes,
+        reaction_evidence=evidence,
+        constraints={
+            "require_solved": True,
+            "minimum_evidence_coverage": 40,
+            "forbidden_starting_materials": ["CC(=O)O"],
+        },
+        decision_weights={"evidence_coverage": 40},
+    )
+
+    first = next(route for route in ranked if "CC(=O)O" in route["starting_materials"])
+    second = next(route for route in ranked if not route["solved"])
+    assert first["decision_breakdown"]["evidence_coverage"]["value"] == 30
+    assert "forbidden starting material: CC(=O)O" in first["constraint_violations"]
+    assert "route is not solved" in second["constraint_violations"]
+    assert any("evidence coverage" in item for item in second["constraint_violations"])
+    assert sum(item["weight"] for item in first["decision_breakdown"].values()) == 100
 
 
 def test_llm_annotations_drive_reaction_and_molecule_html():
