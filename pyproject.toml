@@ -1,9 +1,31 @@
 [project]
 name = "openai4s"
 version = "0.1.0"
-description = "A minimal Code-as-Action autonomous agent system (Linux daemon form-factor)."
+description = "A pure-stdlib hybrid Code-as-Action scientific research agent."
+readme = { file = "README.md", content-type = "text/markdown" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = []   # pure stdlib by design; LLM client uses urllib
+keywords = ["agent", "scientific-computing", "code-as-action", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+Homepage = "https://github.com/PKU-YuanGroup/OpenAI4S"
+Documentation = "https://github.com/PKU-YuanGroup/OpenAI4S/tree/main/docs"
+Issues = "https://github.com/PKU-YuanGroup/OpenAI4S/issues"
+Source = "https://github.com/PKU-YuanGroup/OpenAI4S"
 
 [project.optional-dependencies]
 # The kernel is spawned with sys.executable, so anything in the active venv is
@@ -27,7 +49,7 @@ dev = [
 openai4s = "openai4s.cli:main"
 
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
