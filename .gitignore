@@ -8,6 +8,8 @@ __pycache__/
 !.env.example
 *.egg-info/
 node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
 
 # macOS
 .DS_Store

@@ -1,4 +1,17 @@
+---
+title: Optional Jupyter compatibility
+description: Standalone Jupyter bridge behavior and the boundaries it does not cross.
+outline: deep
+status: current
+audience: [contributors, operators, users]
+verified_commit: a92e736
+last_verified: 2026-07-14
+owner: OpenAI4S maintainers
+---
+
 # Optional Jupyter compatibility
+
+> Verified against repository revision `a92e736` on 2026-07-14.
 
 OpenAI4S can expose its existing Python/R scientific workers to ordinary
 Jupyter clients through an **optional standalone adapter**. The adapter is not

@@ -1,4 +1,17 @@
+---
+title: Release validation
+description: Source, archive, wheel, and isolated-install validation gates.
+outline: deep
+status: current
+audience: [contributors, operators]
+verified_commit: a92e736
+last_verified: 2026-07-14
+owner: OpenAI4S maintainers
+---
+
 # Release validation
+
+> Verified against repository revision `a92e736` on 2026-07-14.
 
 OpenAI4S treats the installable artifacts as a separate contract from the
 source checkout. A passing source-tree test run is not sufficient: the wheel

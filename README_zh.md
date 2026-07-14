@@ -70,18 +70,18 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## 📣 更新
 
-- **`2026-07-06`** 🎉 **代码开源** —— 纯标准库 Code-as-Action 引擎、科研 Web 应用、24 个科学 Skill、BYOC 远程计算。
+- **`2026-07-06`** 🎉 **代码开源** —— 纯标准库 Code-as-Action 引擎、科研 Web 应用、内置科学 Skill 与 BYOC 远程计算基础能力。
 
 ---
 
 ## 😮 亮点
 
-- **🧬 Code-as-Action 引擎** —— 以 Jupyter 式**持久内核**作为动作空间。命名空间跨 cell 保持;大对象常驻,只有摘要进上下文。
+- **🧬 混合动作引擎** —— 原生 JSON Tool 负责编排与权限控制，Python/R **持久内核**负责科学执行。命名空间跨 Cell 保持；Tool/Finalize-only 轮次不会启动内核。
 - **🐍 纯标准库内核** —— 引擎**和** Web 服务器都是纯标准库(`http.server` + 手写 WebSocket,无框架、无依赖)。LLM 客户端仅用 `urllib` 直接对接 OpenAI / Anthropic / Gemini。
 - **🔌 一行切换多供应商** —— `ark`(doubao · glm · kimi · deepseek · minimax)加官方 `chatgpt · claude · gemini`,都由一个 `host.llm` 统一封装;在 UI 里即可切换。
-- **🖥️ 完整科研 Web 应用** —— 实时流式 turn、**版本化产物**(`.pdb`/`.cif` 内置 3Dmol 查看器)、共享 Agent 内核的实时 Notebook、后台运行与恢复。
-- **🔬 24 个内置 Skill** —— 14 个 GPU/模型科学 Skill(AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock ……)+ 科研工作流 Skill。Skill 是**代码配方**,不是 JSON schema。
-- **☁️ BYOC 远程计算** —— 通过 `ssh:<alias>` 或内置 **NVIDIA NIM** 提供方把 GPU 作业投送到你自己的机器;真实的 `host.fold`(单序列 Protenix / AF3 级),受严格的不伪造策略约束。
+- **🖥️ 科研 Web 工作台** —— 实时流式轮次、**版本化产物**、Action Timeline、默认只读 Notebook，以及带明确状态的检查点与恢复流程。
+- **🔬 32 个内置 Skill** —— 覆盖 GPU/模型、科研工作流与数据/模型评估。Skill 是**代码配方**，不是 JSON schema。
+- **☁️ BYOC 远程计算基础能力** —— 已实现提供方注册、策略和作业记录，并提供 SSH 与 **NVIDIA NIM** 配方；通用暂存、生命周期和结果回收仍为部分实现，使用前请查看实现状态文档。
 
 ---
 
@@ -118,11 +118,14 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 
 ## 📚 文档
 
+持续维护的中英双语文档发布在
+[**openai4s.org/docs/**](https://openai4s.org/docs/)，下表链接到仓库中的可编辑源文件。
+
 | 文档 | 内容 |
 |---|---|
 | [**架构**](docs/architecture.md) | Code-as-Action 双循环、`host` API、内核设计 |
-| [**Skills**](docs/skills.md) | 24 个内置 Skill + 如何自撰 |
-| [**远程计算**](docs/compute.md) | BYOC GPU 作业、`host.fold`、自动预置 |
+| [**Skills**](docs/skills.md) | 32 个内置 Skill + 如何自撰 |
+| [**远程计算**](docs/compute.md) | 已实现边界、部分实现路径与 `host.fold` 策略 |
 | [**Web 应用**](docs/webapp.md) | UI 功能、实时 Notebook、产物、演示会话 |
 | [**配置**](docs/configuration.md) | 模型供应商、环境变量、conda 环境、CLI |
 | [**安全**](docs/security.md) | 纵深防御安全层与远程访问说明 |
@@ -131,7 +134,7 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 
 ## 🗺️ 路线图
 
-- [ ] 本地内核的 OS 级沙箱对齐(Seatbelt / bubblewrap + seccomp)。
+- [ ] 在 bubblewrap 之外增加更强的 Linux 隔离（例如可用时启用 seccomp），并扩展发行包沙箱冒烟测试。
 - [ ] DuckDuckGo 之外的免密钥 `web_search`(抗限流)。
 - [ ] SSH + NVIDIA NIM 之外的更多 BYOC 提供方(Modal / SLURM)。
 - [ ] 端到端科研工作流的公开基准。
@@ -161,7 +164,7 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 ### 欢迎的贡献
 
 - **新 Skill** —— 在 `skills/` 下放一个 `SKILL.md`(+ 可选 `kernel.py`)—— 代码配方,而非 schema。
-- **新供应商** —— 在 [`openai4s/llm.py`](openai4s/llm.py) 里加一个协议适配器,或一个 BYOC 计算提供方。
+- **新供应商** —— 在 [`openai4s/llm/`](openai4s/llm/) 里增加协议适配器，或增加一个 BYOC 计算提供方。
 - **引擎与 UI** —— 核心是纯标准库、可读性强;Web 应用无框架。
 
 请保持核心零依赖,把可选科学库导入包在 `try/except ImportError` 里,并在提 PR 前确保 `uv run pytest` 与 `uv run pre-commit run --all-files` 通过。

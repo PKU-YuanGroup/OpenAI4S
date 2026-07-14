@@ -1,0 +1,127 @@
+:root {
+  --vp-c-brand-1: #a86312;
+  --vp-c-brand-2: #c47e21;
+  --vp-c-brand-3: #de9b3d;
+  --vp-c-brand-soft: rgba(196, 126, 33, 0.14);
+  --vp-c-tip-1: #197c92;
+  --vp-c-tip-2: #2498ac;
+  --vp-c-tip-3: #55b6c7;
+  --vp-font-family-base: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --vp-font-family-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --vp-layout-max-width: 1540px;
+}
+
+.dark {
+  --vp-c-bg: #050505;
+  --vp-c-bg-alt: #0a0a0b;
+  --vp-c-bg-elv: #101012;
+  --vp-c-bg-soft: #111114;
+  --vp-c-brand-1: #e8b860;
+  --vp-c-brand-2: #d99f47;
+  --vp-c-brand-3: #bc7d29;
+  --vp-c-brand-soft: rgba(232, 184, 96, 0.12);
+}
+
+.VPNavBarTitle .title {
+  font-family: var(--vp-font-family-mono);
+  letter-spacing: -0.02em;
+}
+
+.VPHomeHero .name,
+.VPHomeHero .text {
+  max-width: 860px;
+}
+
+.VPHomeHero .name {
+  background: linear-gradient(110deg, #e8b860 5%, #a0afc3 55%, #c8d2b4 95%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  letter-spacing: -0.02em;
+}
+
+.vp-doc table {
+  display: table;
+  width: 100%;
+}
+
+.verification-meta {
+  margin-bottom: 18px;
+  color: var(--vp-c-text-2);
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.76rem;
+  letter-spacing: 0.015em;
+}
+
+.verification-meta a {
+  color: var(--vp-c-brand-1);
+  font-weight: 650;
+}
+
+.mermaid {
+  margin: 24px 0;
+  padding: 20px;
+  overflow-x: auto;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: #0b0b0d;
+  text-align: center;
+}
+
+.mermaid svg {
+  min-width: 680px;
+  max-width: 100%;
+  height: auto;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 999px;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.status.contract,
+.status.implemented {
+  color: #4cae7a;
+  border-color: rgba(76, 174, 122, 0.42);
+  background: rgba(76, 174, 122, 0.08);
+}
+
+.status.partial,
+.status.best-effort {
+  color: #d99f47;
+  border-color: rgba(217, 159, 71, 0.45);
+  background: rgba(217, 159, 71, 0.08);
+}
+
+.status.prototype,
+.status.planned {
+  color: #8da2bd;
+  border-color: rgba(141, 162, 189, 0.42);
+  background: rgba(141, 162, 189, 0.08);
+}
+
+@media (max-width: 720px) {
+  .mermaid {
+    margin-inline: -12px;
+    padding: 14px 10px;
+    border-radius: 8px;
+  }
+
+  .mermaid svg {
+    min-width: 620px;
+  }
+}

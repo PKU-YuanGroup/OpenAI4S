@@ -1,8 +1,22 @@
+---
+title: Web workbench
+description: Implemented browser workbench behavior and its explicit runtime limits.
+outline: deep
+status: current
+audience: [contributors, operators, users]
+verified_commit: a92e736
+last_verified: 2026-07-14
+owner: OpenAI4S maintainers
+---
+
 # The web app
+
+> Verified against repository revision `a92e736` on 2026-07-14.
 
 `openai4s serve` starts a pure-stdlib scientific workbench at
 `http://127.0.0.1:8760/`: `http.server`, a hand-rolled WebSocket, and static
-HTML/CSS/JavaScript served directly from the working tree.
+HTML/CSS/JavaScript served from the working tree in a source checkout, or from
+package-local static assets in an installed wheel.
 
 ## Available now
 
@@ -12,9 +26,11 @@ HTML/CSS/JavaScript served directly from the working tree.
 - **Live turns** — prose, semantic steps, permission pauses, plans, Cell output,
   and artifacts stream over WebSocket. Reopening an in-flight session replays
   the bounded current-turn buffer; completed history reloads over REST.
-- **Versioned artifacts** — file writes become immutable versions with
-  provenance, environment snapshots, lineage, annotations, priority, edit,
-  rename, restore, and artifact/project ZIP download. The current viewers cover
+- **Versioned artifacts** — file writes create append-oriented version records,
+  and the server attempts to bind each one to an immutable snapshot. A version
+  is restore-grade immutable only when that copy/binding succeeded. Versions
+  carry provenance, environment snapshots, lineage, annotations, priority,
+  edit, rename, restore, and artifact/project ZIP download. Current viewers cover
   images, CSV/TSV tables, Markdown/text, HTML/PDF previews, and 3D molecular
   structures through vendored 3Dmol. Restore verifies a trusted immutable
   snapshot and appends a fresh version plus source→restored lineage; it never
@@ -39,9 +55,10 @@ HTML/CSS/JavaScript served directly from the working tree.
   and finalization, plus a Recovery card with restore/retry/fresh-restart action
   availability and a Branch panel with checkpoint fork/activate/revert/undo
   controls. Branch activation is an explicit FIFO lifecycle mutation: it stops
-  the old runtime, atomically publishes the selected checkpoint side-state, and
-  reports `Active`, `Partial`, or `Failed` recovery instead of pretending that
-  arbitrary memory survived. Context, child-agent, and Sandbox containers remain separate. Permission
+  the old runtime and atomically selects the checkpoint's structured side-state.
+  Workspace materialization remains file-by-file, and runtime recovery reports
+  `Active`, `Partial`, or `Failed` instead of pretending that arbitrary memory
+  survived. Context, child-agent, and Sandbox containers remain separate. Permission
   waits still use their existing interactive prompt rather than a persisted
   Timeline card. The frontend starts
   from the latest 500 actions, can explicitly load earlier 500-action pages,

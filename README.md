@@ -82,7 +82,7 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 
 ## 📣 News
 
-- **`2026-07-06`** 🎉 **Open-sourced** — the pure-stdlib Code-as-Action engine, the scientific web app, 24 science Skills, and BYOC remote compute.
+- **`2026-07-06`** 🎉 **Open-sourced** — the pure-stdlib Code-as-Action engine, the scientific web app, bundled science Skills, and the BYOC remote-compute foundation.
 
 ---
 
@@ -94,8 +94,8 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 - **🔌 One-line multi-provider** — `ark` (doubao · glm · kimi · deepseek · minimax) plus official `chatgpt · claude · gemini`, behind a single `host.llm`; switch from the UI.
 - **🖥️ Scientific workbench** — live streaming, versioned artifacts, provenance, an Action Timeline surface, and a **read-only-by-default Notebook**. An explicit developer flag enables multiline Python/R input against the shared kernels.
 - **🔐 Hardened local execution** — strict child-environment allowlists, durable approvals, one-shot generation-bound `host.bash` capabilities, and OS sandbox adapters (Seatbelt on macOS, bubblewrap on Linux) with visible degraded/fail-closed modes.
-- **🔬 24 bundled Skills** — 14 GPU/model science Skills (AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock …) + research-workflow Skills. Skills are **recipes of code**, not JSON schemas; user-authored Skills stay under the data directory and cannot shadow bundled trust.
-- **☁️ BYOC remote compute** — dispatch GPU jobs to your own machines via `ssh:<alias>` or the bundled **NVIDIA NIM** provider; real `host.fold` (single-sequence Protenix / AF3-class) under a strict no-fabrication policy.
+- **🔬 32 bundled Skills** — GPU/model, research-workflow, and data/model-evaluation recipes. Skills are **recipes of code**, not JSON schemas; user-authored Skills stay under the data directory and cannot shadow bundled trust.
+- **☁️ BYOC remote-compute foundation** — provider registration, policy, and job records are implemented, with SSH and **NVIDIA NIM** recipes. Generic staging, lifecycle, and result retrieval remain partial; see the implementation-status documentation before operational use.
 
 ---
 
@@ -132,12 +132,16 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 
 ## 📚 Documentation
 
+The maintained bilingual documentation is published at
+[**openai4s.org/docs/**](https://openai4s.org/docs/). The repository paths below
+are the editable source.
+
 | doc | what's inside |
 |---|---|
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
-| [**Skills**](docs/skills.md) | the 24 bundled Skills + how to write your own |
-| [**Remote compute**](docs/compute.md) | BYOC GPU jobs, `host.fold`, auto-provisioning |
+| [**Skills**](docs/skills.md) | the 32 bundled Skills + how to write your own |
+| [**Remote compute**](docs/compute.md) | implemented provider boundaries, partial paths, and `host.fold` policy |
 | [**Web app**](docs/webapp.md) | UI features, Action Timeline, read-only Notebook, artifacts, and implementation status |
 | [**Jupyter adapter**](docs/jupyter.md) | optional standalone Python/R KernelSpecs, install commands, and compatibility limits |
 | [**Configuration**](docs/configuration.md) | model providers, env vars, conda envs, CLI |

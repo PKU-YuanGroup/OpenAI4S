@@ -1,6 +1,25 @@
+---
+title: Configuration
+description: Model, kernel, network, data-directory, and CLI configuration.
+outline: deep
+status: current
+audience: [operators, contributors, users]
+verified_commit: a92e736
+last_verified: 2026-07-14
+owner: OpenAI4S maintainers
+---
+
 # Configuration
 
-Config is via env vars (all have working defaults), read from the environment or a git-ignored `.env` at the repo root. **You rarely need to touch files** — set your model from the UI (**Customize → Models**). To configure by env instead, copy `.env.example` to `.env`.
+> Verified against repository revision `a92e736` on 2026-07-14. Provider
+> defaults are convenience defaults, not an availability guarantee.
+
+Configuration is read from environment variables or a git-ignored `.env` at
+the repository root. Non-secret settings generally have usable defaults; model
+API keys intentionally do not. The daemon can start without a key, but a live
+provider call fails until the selected provider is configured. **You rarely
+need to touch files** — set your model from the UI (**Customize → Models**). To
+configure by environment instead, copy `.env.example` to `.env`.
 
 ## Model providers
 
@@ -16,11 +35,23 @@ One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_u
 
 `ark` is Volcengine's plan/v3 gateway — one endpoint + key serving `doubao-seed-2.0-{pro,code,lite,mini}`, `glm-5.2`, `kimi-k2.7-code`, `kimi-k2.6`, `deepseek-v4-{pro,flash}`, `minimax-{m3,m2.7}` — all pre-registered as switchable model profiles. Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
 
-Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
+`base_url` and `model` resolve **explicit value → per-provider OpenAI4S var →
+generic OpenAI4S var → provider built-in default**. `api_key` resolves the
+explicit value, per-provider OpenAI4S var, and generic OpenAI4S var, then tries
+the provider's conventional native variable (for example `ANTHROPIC_API_KEY`);
+it has no credential default. The `openai_responses` provider uses the
+stateless Responses API wire and preserves function-call/reasoning output items
+across turns; its current adapter is text/tool-only.
 
 ## Kernel environments (conda)
 
-The agent kernel uses a scientific stack (numpy / pandas / scipy / matplotlib / scikit-learn / biopython / …) that installs automatically in the background on first `serve`. For heavier toolchains, four ready-to-use conda specs let the agent pick per task — create them with `openai4s setup` (`--dry-run` to preview, `--only <name>` for one). Specs live in [`envs/`](../envs):
+The Gateway currently attempts to install a baseline scientific stack in the
+background on first `serve`; this is application startup behavior, not a core
+runtime dependency. Operators should prebuild and validate the environment
+instead of relying on that networked, best-effort startup path. For heavier
+toolchains, four conda specs let the agent pick per task — create them with
+`openai4s setup` (`--dry-run` to preview, `--only <name>` for one). Specs live
+in [`envs/`](https://github.com/PKU-YuanGroup/OpenAI4S/tree/main/envs):
 
 - **`python`** *(default)* — scanpy / anndata / leiden / UMAP / scikit-learn / RDKit / fair-esm / pandas / matplotlib.
 - **`struct`** — torch + fair-esm + biotite.

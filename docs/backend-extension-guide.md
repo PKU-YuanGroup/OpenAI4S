@@ -1,4 +1,17 @@
+---
+title: Backend extension guide
+description: Where new control-plane, kernel, storage, and Web behavior belongs.
+outline: deep
+status: current
+audience: [contributors]
+verified_commit: a92e736
+last_verified: 2026-07-14
+owner: OpenAI4S maintainers
+---
+
 # Backend extension guide
+
+> Verified against repository revision `a92e736` on 2026-07-14.
 
 OpenAI4S has two action planes and one rule decides where new behaviour belongs:
 
@@ -234,9 +247,10 @@ Checkpoint/revert, recovery projection, Timeline, Notebook export, and renderer
 selection belong behind `SessionDomainService`. Their algorithms are already
 implemented independently of HTTP, and the Gateway routes are thin adapters to
 that service. Extend those adapters instead of duplicating CAS, journal,
-`.ipynb`, Timeline, or renderer logic in `gateway.py`. Recovery status/actions
-are public, but actually running the verified pipeline still needs an explicit
-coordinated Gateway operation.
+`.ipynb`, Timeline, or renderer logic in `gateway.py`. Recovery status and all
+five action descriptors are public. Only `restore`, `retry`, and
+`restart_fresh` are mutating operations; they must continue to enter through
+an exact coordinated Gateway execution ticket.
 
 ## Definition of done
 

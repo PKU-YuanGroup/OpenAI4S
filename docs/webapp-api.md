@@ -1,4 +1,18 @@
+---
+title: Web App API
+description: Descriptive HTTP and WebSocket contract implemented by the local workbench Gateway.
+outline: deep
+status: current
+audience: [contributors, operators]
+verified_commit: a92e736
+last_verified: 2026-07-14
+owner: OpenAI4S maintainers
+---
+
 # Web App API Contract (as implemented)
+
+> Verified against repository revision `a92e736` on 2026-07-14. This is a
+> descriptive implementation contract, not a stable public Internet API.
 
 This document records the **actual** HTTP/WebSocket contract between
 `openai4s/server/gateway.py` (backend) and `openai4s/server/webui/app.js`
@@ -20,7 +34,8 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
 - REST lives under `/api/*`. The handler strips the `/api` prefix and matches
   the remainder (`sub`) with a long `if`/`re.fullmatch` chain in
   `Handler._api` — there is no route table or OpenAPI spec.
-- The frontend is a single-page app served from the working tree
+- The frontend is a single-page app served from the working tree in a source
+  checkout or package-local assets in an installed wheel
   (`/`, `/index.html`, `/static/*`). Any unknown non-API `GET` serves the SPA
   shell (`index.html`) to support deep links. Unknown non-GET, non-API paths
   return `404 {"error": "not found"}`.
@@ -250,7 +265,7 @@ These routes are thin Gateway adapters over `SessionDomainService` and
 | `POST /frames/{fid}/revert/undo` | Body `{revert_checkpoint_id,branch_id?}` — reverts to the recorded pre-revert checkpoint. |
 | `GET /frames/{fid}/revert/operations` | Durable revert operation history. |
 | `GET /frames/{fid}/recovery` | Safe Recovery Journal status projection. |
-| `GET /frames/{fid}/recovery/actions` | Describes enabled/disabled reasons for `restore`, `retry`, and `restart_fresh` on the current root branch. |
+| `GET /frames/{fid}/recovery/actions` | Describes five choices on the current root branch: ticketed mutations `restore`, `retry`, and `restart_fresh`, plus the non-mutating guidance choices `inspect_log` and `continue_view_only`. |
 | `POST /frames/{fid}/recovery/actions/{restore\|retry\|restart_fresh}` | Runs the advertised verified-recovery action under an exact recovery execution ticket. `restart_fresh` requires `{"confirm":true}` and never claims namespace restoration. |
 | `GET /frames/{fid}/kernel/variables?language=python|r` | Bounded idle-only Variable Inspector projection. It never starts a stopped language worker and returns explicit Busy/Restoring/Ended/Not Started states. |
 | `GET /frames/{fid}/notebook/export?language=` | Raw deterministic `.ipynb` for `python`/`r`; omitted or `bundle` returns a stable ZIP containing both plus a manifest. Includes `Content-Disposition` and `X-Content-SHA256`. |
@@ -488,7 +503,9 @@ compatibility; keep both when touching these serializers.
 - Structured `notebook_cell_*` events are live projections; reconnect safety
   still relies on the compatibility `text_chunk` stream and authoritative
   `/execution-log` reload rather than a durable per-Cell WS backlog.
-- Workbench read/write routes are public, but no mutating endpoint runs the
-  verified recovery pipeline. Fork-from-cell, visible checkpoint-fork/undo/
-  branch-navigation controls and most specialized renderer UI components are
-  also still absent (§2).
+- The workbench has verified recovery mutations, checkpoint/Cell fork,
+  activation, Revert/Undo, Notebook export, and specialized renderer controls.
+  The API nevertheless remains a local-workbench implementation surface:
+  message-boundary fork remains less complete than Cell/checkpoint flows, the
+  UI exposes only the three mutating recovery actions, and there is no
+  compatibility/version-negotiation layer for third-party clients.
