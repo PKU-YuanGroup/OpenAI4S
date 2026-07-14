@@ -91,8 +91,17 @@ class OnboardingService:
             self._stored("llm_provider") or self.cfg.llm.provider
         )
         spec = self.providers[selected]
-        chosen_model = str(model or spec.get("model") or "").strip()
-        chosen_url = str(base_url or spec.get("base_url") or "").strip().rstrip("/")
+        # Fall back to the currently persisted configuration, not the raw provider
+        # spec: a non-interactive call that only touches the key (model/base_url
+        # left None) must not silently reset an operator's stored model/base_url.
+        # defaults() already returns the spec values when the provider changed.
+        current = self.defaults(selected)
+        chosen_model = str(model or current["model"] or spec.get("model") or "").strip()
+        chosen_url = (
+            str(base_url or current["base_url"] or spec.get("base_url") or "")
+            .strip()
+            .rstrip("/")
+        )
         if not chosen_model:
             raise ValueError("model must not be empty")
         parsed = urlsplit(chosen_url)

@@ -6765,6 +6765,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 frame = store.get_frame(fid)
                 if frame is None:
                     raise GatewayError(404, "unknown session")
+                _require_session_writable(fid, "promoting a cell to an Artifact")
                 cell_id = str(self._body().get("cell_id") or "").strip()
                 if not cell_id:
                     raise GatewayError(400, "cell_id is required")

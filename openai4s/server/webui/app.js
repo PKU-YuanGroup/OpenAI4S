@@ -7039,9 +7039,13 @@ function mdInline(t) {
   var codes = [];
   t = t.replace(/`([^`]+)`/g, function (m, c) { codes.push(c); return MDC0 + (codes.length - 1) + MDC1; });
   t = esc(t);
-  t = t.replace(/!\[([^\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g, '<img alt="$1" src="$2">');
-  t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, '<img alt="$1" src="$2">');
-  t = t.replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // esc() escapes &<> but not quotes, so any capture group interpolated into a
+  // double-quoted HTML attribute must additionally neutralize " to prevent an
+  // alt/href/src value from closing the attribute and injecting new ones.
+  var escQuote = function (s) { return String(s).replace(/"/g, "&quot;"); };
+  t = t.replace(/!\[([^\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g, function (m, alt, src) { return '<img alt="' + escQuote(alt) + '" src="' + src + '">'; });
+  t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, function (m, alt, src) { return '<img alt="' + escQuote(alt) + '" src="' + escQuote(src) + '">'; });
+  t = t.replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g, function (m, text, href) { return '<a href="' + escQuote(href) + '" target="_blank" rel="noopener">' + text + '</a>'; });
   t = t.replace(/\*\*\*([^*]+?)\*\*\*/g, "<strong><em>$1</em></strong>");
   t = t.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
   t = t.replace(/(^|[^\w*])__([^_]+?)__(?!\w)/g, "$1<strong>$2</strong>");

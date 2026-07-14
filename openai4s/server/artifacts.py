@@ -628,14 +628,18 @@ class ArtifactManager:
         token = hashlib.sha1((cell_id or stem).encode("utf-8")).hexdigest()[:8]
         relative = Path("promoted") / f"{stem}-{token}.md"
         try:
-            target = _write_confined_text(
+            _write_confined_text(
                 session.workspace,
                 relative,
                 self._render_cell_markdown(cell, session.workspace),
             )
         except (OSError, ValueError):
             return None
-        return self.register_file(session, target, cell_id, emit)
+        # _write_confined_text returns a fully-resolved path, but register_file
+        # relativizes against the unresolved session.workspace; hand it the
+        # unresolved path (same on-disk file) so relative_to() cannot raise when
+        # the workspace prefix contains a symlink (e.g. /tmp -> /private/tmp).
+        return self.register_file(session, session.workspace / relative, cell_id, emit)
 
     def _render_cell_markdown(self, cell: dict, workspace: Path) -> str:
         """Render a cell (code + output + produced files) as Markdown."""

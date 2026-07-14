@@ -62,4 +62,4 @@ jobs:
           name: python-package-distributions
           path: dist/
       - name: Publish package distributions
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7f25271a4aa483500f742f9492b2ab5648d61011 # v1.12.4

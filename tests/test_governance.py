@@ -39,12 +39,15 @@ def test_gitleaks_scans_history_with_a_checksum_pinned_binary():
     )
 
 
-def test_release_publish_action_is_the_only_documented_moving_action_ref():
+def test_release_workflow_pins_every_action_to_a_commit():
     workflow = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
     uses = [line for line in workflow.splitlines() if line.lstrip().startswith("uses:")]
 
+    assert uses
+    # No moving refs: the OIDC-privileged PyPI publish step must be SHA-pinned
+    # like every other action so a mutable upstream branch cannot inject code.
     moving = [line for line in uses if not PINNED_ACTION.fullmatch(line)]
-    assert moving == ["        uses: pypa/gh-action-pypi-publish@release/v1"]
+    assert moving == []
 
 
 def test_dependabot_tracks_uv_hooks_and_workflow_actions():

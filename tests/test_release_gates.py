@@ -202,7 +202,7 @@ def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
         "environment:",
         "name: pypi",
         "id-token: write",
-        "pypa/gh-action-pypi-publish@release/v1",
+        "pypa/gh-action-pypi-publish@7f25271a4aa483500f742f9492b2ab5648d61011",
     ):
         assert contract in workflow
 
