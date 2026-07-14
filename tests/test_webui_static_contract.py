@@ -291,6 +291,44 @@ def test_send_starts_an_async_background_turn() -> None:
     ), "a 202 acknowledgement is not completion; wait for the terminal WS event"
 
 
+def test_streaming_markdown_seals_only_complete_blocks_and_fully_renders_on_finish() -> (
+    None
+):
+    stable_cut = APP_JS[
+        APP_JS.index("function _mdStableCut") : APP_JS.index("function flushRender")
+    ]
+    flush = _extract_js_function(APP_JS, "flushRender")
+    seal = _extract_js_function(APP_JS, "sealText")
+    done = _extract_js_function(APP_JS, "turnDone")
+
+    assert "openFence" in stable_cut
+    assert "if (openFence)" in stable_cut
+    assert "if (closes)" in stable_cut
+    assert "else if (!line.trim()" in stable_cut
+    assert "if (finalRender)" in flush
+    assert "renderMd(text)" in flush
+    assert "flushRender(st, true)" in seal
+    assert "flushRender(S.stream, true)" in done
+
+
+def test_promoted_markdown_allows_only_safe_raster_data_images() -> None:
+    inline = _extract_js_function(APP_JS, "mdInline")
+
+    assert "data:image\\/(?:png|jpeg|gif|webp);base64" in inline
+    assert "svg" not in inline
+
+
+def test_session_list_replaces_empty_state_and_keeps_nested_menus_keyboard_safe() -> (
+    None
+):
+    row = _extract_js_function(APP_JS, "sessionRow")
+    sessions = _extract_js_function(APP_JS, "renderSessions")
+
+    assert sessions.index('list.innerHTML = ""') < sessions.index("if (!ss.length")
+    assert "e.target === d" in row
+    assert "e.target === head" in sessions
+
+
 def test_restart_approval_is_explicitly_continued_instead_of_auto_replayed() -> None:
     render_source = _extract_js_function(APP_JS, "renderPermissionCard")
     mark_source = _extract_js_function(APP_JS, "markPermCard")

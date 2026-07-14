@@ -2899,27 +2899,42 @@ function appendLiveOutput(current, chunk) {
 // is long enough. Full re-parse of multi-kB streams every frame is the main
 // main-thread cost during long agent turns.
 function _mdStableCut(text) {
-  // Prefer a blank-line boundary well before the live caret; fall back to a
-  // closed fence. Never seal the final ~120 chars so incomplete tokens stay soft.
+  // Seal only top-level blank lines or completed fences. A blank line inside
+  // code is not a stable Markdown boundary, and an opening fence must never be
+  // mistaken for a closing one. Keep the final ~120 chars soft for streaming.
   const limit = Math.max(0, text.length - 120);
   if (limit < 80) return 0;
-  const blank = text.lastIndexOf("\n\n", limit);
-  if (blank >= 60) return blank + 2;
-  // Closed fence ending before the live edge
-  const fence = text.lastIndexOf("\n```", limit);
-  if (fence >= 60) {
-    const after = text.indexOf("\n", fence + 4);
-    if (after > 0 && after <= limit) return after + 1;
+  const lines = text.split("\n");
+  let offset = 0, stable = 0, openFence = null;
+  for (let i = 0; i < lines.length - 1; i++) {
+    const line = lines[i];
+    const boundary = offset + line.length + 1;
+    if (boundary > limit) break;
+    if (openFence) {
+      const trimmed = line.trim();
+      const closes = trimmed.length >= openFence.length && [...trimmed].every(ch => ch === openFence.char);
+      if (closes) { openFence = null; if (boundary >= 60) stable = boundary; }
+    } else {
+      const match = line.match(/^\s*(`{3,}|~{3,})[ \t]*[\w+#.\-]*[ \t]*$/);
+      if (match) openFence = { char: match[1][0], length: match[1].length };
+      else if (!line.trim() && boundary >= 60) stable = boundary;
+    }
+    offset = boundary;
   }
-  return 0;
+  return stable;
 }
-function flushRender(st) {
+function flushRender(st, finalRender) {
   if (!st) return;
   if (st._raf) { cancelAnimationFrame(st._raf); st._raf = null; }
-  if (!(st._dirty && st.md)) return;
+  if (!st.md || (!st._dirty && !finalRender)) return;
   st._dirty = false;
   const text = st.text || "";
   st._lastFlush = performance.now();
+  if (finalRender) {
+    st.md.innerHTML = renderMd(text);
+    st._stableAt = 0; st._stableHtml = "";
+    return;
+  }
   // Grow the sealed prefix when a stable boundary appears further along.
   const cut = _mdStableCut(text);
   if (cut > (st._stableAt || 0) + 40) {
@@ -2952,7 +2967,7 @@ function scheduleRender(st) {
 // step) so the caret never lingers on an already-finished paragraph.
 function sealText(st) {
   if (!st || !st.md) return;
-  flushRender(st);
+  flushRender(st, true);
   st.md.classList.remove("cursor");
   // Next text block starts fresh (don't carry sealed prefix across tool cards).
   st._stableAt = 0; st._stableHtml = "";
@@ -3006,7 +3021,7 @@ function feed(kind, chunk, event) {
 }
 function turnDone(status) {
   S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");  clearTimeout(S._resumeTimer); S._resumeTok = (S._resumeTok || 0) + 1;  // retire the resume-watchdog (incl. any in-flight tick) so it can't bleed into the next turn
-  if (S.stream) { flushRender(S.stream); S.stream.md.classList.remove("cursor"); addMsgActions(S.stream.wrap, S.stream.full || S.stream.text); }
+  if (S.stream) { flushRender(S.stream, true); S.stream.md.classList.remove("cursor"); addMsgActions(S.stream.wrap, S.stream.full || S.stream.text); }
   // Belt-and-suspenders: a completed turn must leave nothing blinking, even on
   // text blocks orphaned earlier by a tool/step that started mid-stream.
   const mm = $("#messages"); if (mm) mm.querySelectorAll(".md.cursor").forEach(n => n.classList.remove("cursor"));
@@ -3877,11 +3892,12 @@ function sessionRow(f) {
   const menu = el("button", "s-menu"); menu.appendChild(iconEl("more-horizontal", 16)); menu.title = t("session.menu.tip"); menu.onclick = (e) => { e.stopPropagation(); sessionMenu(menu, f.id); }; d.appendChild(menu);
   d.setAttribute("role", "button"); d.tabIndex = 0;
   d.setAttribute("aria-current", f.id === S.currentId ? "page" : "false");
-  d.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openConversation(f.id, f.project_id); } };
+  d.onkeydown = (e) => { if (e.target === d && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openConversation(f.id, f.project_id); } };
   d.onclick = () => openConversation(f.id, f.project_id); return d;
 }
 function renderSessions() {
   const list = $("#session-list"); if (!list) return;
+  list.innerHTML = "";
   const frag = document.createDocumentFragment();
   let ss = S.sessions; if (S.project) ss = ss.filter(f => f.project_id === S.project);
   ss = ss.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
@@ -3896,7 +3912,7 @@ function renderSessions() {
     const menu = el("button", "s-menu"); menu.appendChild(iconEl("more-horizontal", 15)); menu.onclick = (e) => { e.stopPropagation(); folderMenu(menu, fold); }; head.appendChild(menu);
     head.onclick = () => { S._folderCollapsed[fold.folder_id] = !collapsed; renderSessions(); };
     head.setAttribute("role", "button"); head.tabIndex = 0;
-    head.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); } };
+    head.onkeydown = (e) => { if (e.target === head && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); head.click(); } };
     frag.appendChild(head);
     if (!collapsed) inFold.forEach(f => { const r = sessionRow(f); r.style.paddingLeft = "20px"; frag.appendChild(r); });
   });
@@ -3904,7 +3920,7 @@ function renderSessions() {
   const ungrouped = ss.filter(f => !f.folder_id || !(S.folders || []).some(x => x.folder_id === f.folder_id));
   let lastBucket = null;
   ungrouped.forEach(f => { const b = dateBucket(f.updated_at); if (b !== lastBucket) { lastBucket = b; frag.appendChild(el("div", "side-label", b)); } frag.appendChild(sessionRow(f)); });
-  list.innerHTML = ""; list.appendChild(frag);
+  list.appendChild(frag);
 }
 async function newFolder() {
   const name = prompt(t("folder.new.prompt")); if (!name || !S.project) return;
@@ -7023,6 +7039,7 @@ function mdInline(t) {
   var codes = [];
   t = t.replace(/`([^`]+)`/g, function (m, c) { codes.push(c); return MDC0 + (codes.length - 1) + MDC1; });
   t = esc(t);
+  t = t.replace(/!\[([^\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g, '<img alt="$1" src="$2">');
   t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, '<img alt="$1" src="$2">');
   t = t.replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   t = t.replace(/\*\*\*([^*]+?)\*\*\*/g, "<strong><em>$1</em></strong>");
