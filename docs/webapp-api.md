@@ -111,7 +111,7 @@ success response body. Serializer shapes are in §4.
 
 | Method & path | Behavior |
 | --- | --- |
-| `GET /models` | `{"models":{"default":[{id,name,description}…]},"default_model_id"}` — live model first, then profile models, then provider defaults, deduped. |
+| `GET /models` | `{"models":{"default":[{id,name,description}…]},"default_model_id"}` — the live model first, then the saved profiles' models, deduped. Built-in provider defaults are not listed: an endpoint the user never configured must not be selectable. A profile that leaves `model` blank is resolved through its protocol's default. |
 | `GET /models/default` | `{"default_model_id"}`. |
 | `POST /models/default` (any non-GET) | Body `{model_id}` → persists as `llm_model` setting → `{"default_model_id"}`. |
 | `GET /model-endpoints/discover?force=1` | Explicitly probes the fixed loopback catalogue for Ollama, LM Studio, vLLM, and llama.cpp, with environment proxies disabled. Returns sanitized profile suggestions plus `mutated_settings:false`; it never accepts a caller-supplied URL and never creates or activates a profile. `force=1` bypasses the short in-process cache. A discovered endpoint is keyless, but vendor capabilities are not inferred: until an explicit override exists it uses conservative Code-as-Action (no inherited vision/tool/schema claim). |

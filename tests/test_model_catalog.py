@@ -209,6 +209,39 @@ def test_profile_service_removes_previously_seeded_endpoints_once(tmp_path):
     ]
 
 
+def test_header_selector_hides_endpoints_the_user_never_configured(tmp_path):
+    # Removing the seeded profiles was only half the job: the header selector
+    # used to list every built-in provider's default model as well, so an
+    # endpoint the user never configured stayed pickable and failed at send
+    # time for want of a key.
+    store, service = _service(tmp_path)
+    builtin_models = {
+        str(spec.get("model"))
+        for spec in llm.provider_specs().values()
+        if spec.get("model")
+    }
+    assert builtin_models, "expected the catalog to ship provider defaults"
+
+    # The live model is whatever the daemon is actually configured with, so it
+    # belongs in the selector. Every *other* built-in default does not.
+    live = store.get_setting("llm_model") or service.cfg.llm.model or "default"
+    empty = service.models_payload("default")
+    offered = {item["id"] for item in empty["models"]["default"]}
+    assert offered == {live}
+    assert not (offered & (builtin_models - {live}))
+
+    # A profile that leaves `model` blank still appears, resolved through the
+    # default of the protocol it selected.
+    provider, spec = next(
+        (name, spec) for name, spec in llm.provider_specs().items() if spec.get("model")
+    )
+    created = service.create({"name": "Blank model", "provider": provider})
+    resolved = service.models_payload("default")
+    offered = {item["id"] for item in resolved["models"]["default"]}
+    assert str(spec["model"]) in offered
+    assert created["model"] == ""
+
+
 def test_profile_service_crud_activation_and_header_projection(tmp_path):
     store, service = _service(tmp_path)
     with pytest.raises(ModelProfileError, match="name required"):

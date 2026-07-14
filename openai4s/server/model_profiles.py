@@ -66,7 +66,13 @@ class ModelProfileService:
         }
 
     def models_payload(self, default_model_id: str) -> dict[str, Any]:
-        """Build the header selector from live, saved, and provider defaults."""
+        """Build the header selector from the live model and the saved profiles.
+
+        Built-in provider defaults are deliberately absent. An endpoint the user
+        never configured must not be selectable: picking it would only fail at
+        send time for want of a key. A profile that leaves `model` blank still
+        appears, resolved through its protocol's default.
+        """
         live = self.store.get_setting("llm_model") or self.cfg.llm.model or "default"
         seen: set[str] = set()
         models: list[dict[str, str]] = []
@@ -89,13 +95,10 @@ class ModelProfileService:
             f"{self.store.get_setting('llm_provider') or self.cfg.llm.provider} (当前)",
         )
         for profile in self.store.list_model_profiles():
-            add(
-                profile.get("model"),
-                profile.get("model"),
-                profile.get("name") or "profile",
+            model_id = self.effective_model_id(
+                profile.get("provider"), profile.get("model")
             )
-        for provider, spec in self._providers().items():
-            add(spec.get("model"), spec.get("model"), provider)
+            add(model_id, model_id, profile.get("name") or "profile")
         return {"models": {"default": models}, "default_model_id": default_model_id}
 
     def profiles_payload(self) -> tuple[dict[str, Any], str | None]:
