@@ -155,7 +155,9 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
   quarantined portable Session packages, checkpointed plan/review/memory state,
   and dedicated 2D chemistry/genome/sequence/MSA/LaTeX renderers. Arbitrary
   in-memory namespace objects are deliberately not serialized; recovery remains
-  Partial unless a safe recipe can rebuild and verify them.
+  Partial unless a safe recipe can rebuild and verify them, and Fork is offered
+  only on records that carry a proven checkpoint mapping, so older history
+  returns 409.
 - [ ] Add stronger Linux isolation beyond bubblewrap where available (for example seccomp) and expand packaged sandbox smoke coverage.
 - [ ] Keyless `web_search` beyond DuckDuckGo (rate-limit resilience).
 - [ ] More BYOC providers (Modal / SLURM) beyond SSH + NVIDIA NIM.
@@ -186,7 +188,7 @@ Style is enforced by **pre-commit** — `black`, `isort` (`--profile black`), an
 ### What we welcome
 
 - **New Skills** — a `SKILL.md` (+ optional `kernel.py`) under `skills/` — recipes of code, not schemas.
-- **New providers** — a wire adapter under [`openai4s/llm/`](openai4s/llm/), or a BYOC compute provider.
+- **New providers** — a wire adapter under [`openai4s/llm/providers/`](openai4s/llm/providers/) plus its provider definition and registry entry, or a BYOC compute provider.
 - **Engine & UI** — the core is pure stdlib and readable; the web app is framework-free.
 
 Keep the core dependency-free, guard optional science imports behind `try/except ImportError`, and make sure `uv run pytest` and `uv run pre-commit run --all-files` pass before opening a PR.
