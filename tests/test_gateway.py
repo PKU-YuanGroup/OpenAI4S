@@ -1045,7 +1045,7 @@ def test_llm_cfg_ignores_persisted_placeholder_runtime_key(tmp_path):
     assert runner._llm_cfg().api_key == "test-key"
 
 
-def test_model_profile_mask_and_seed_ignore_placeholder_keys(tmp_path):
+def test_model_profile_mask_and_empty_defaults_ignore_placeholder_keys(tmp_path):
     cfg = _cfg(tmp_path)
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
@@ -1056,12 +1056,10 @@ def test_model_profile_mask_and_seed_ignore_placeholder_keys(tmp_path):
     assert handler._mask_profile({"api_key": "sk-real"})["has_api_key"]
 
     store.set_setting("llm_api_key", "your-api-key-here")
-    handler._model_profiles_payload()
-    profiles = store.list_model_profiles()
-    ark_keys = [p.get("api_key") for p in profiles if p.get("provider") == "ark"]
-    assert ark_keys
-    assert "your-api-key-here" not in ark_keys
-    assert set(ark_keys) == {"test-key"}
+    payload = handler._model_profiles_payload()
+    assert payload["profiles"] == []
+    assert payload["protocols"] == ["chatgpt", "claude", "ark"]
+    assert store.list_model_profiles() == []
 
 
 def test_model_profile_activate_moves_to_front_and_sanitizes_key(tmp_path):

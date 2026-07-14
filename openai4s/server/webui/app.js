@@ -373,8 +373,8 @@ Object.assign(I18N.zh, {
   "cust.models.addBtn": "新增",
   "cust.models.addHeading": "新增模型 / API",
   "cust.models.available": "可选模型",
-  "cust.models.baseUrl.placeholder": "Base URL（留空用该 provider 默认）",
-  "cust.models.baseUrlPlaceholder": "Base URL（留空用该 provider 默认）",
+  "cust.models.baseUrl.placeholder": "Base URL（留空用该协议默认）",
+  "cust.models.baseUrlPlaceholder": "Base URL（留空用该协议默认）",
   "cust.models.cancelEdit": "取消编辑",
   "cust.models.configuredHeading": "已配置的模型 / API",
   "cust.models.editHeading": "编辑：{0}",
@@ -389,9 +389,10 @@ Object.assign(I18N.zh, {
   "cust.models.label.apiKey": "API Key",
   "cust.models.label.baseUrl": "Base URL",
   "cust.models.label.defaultModel": "默认模型",
-  "cust.models.label.provider": "Provider",
-  "cust.models.model.placeholder": "模型 id（留空用 provider 默认）",
-  "cust.models.modelPlaceholder2": "模型 id（留空用该 provider 默认）",
+  "cust.models.label.provider": "兼容协议",
+  "cust.models.label.protocol": "兼容协议",
+  "cust.models.model.placeholder": "模型 id（留空用该协议默认）",
+  "cust.models.modelPlaceholder2": "模型 id（留空用该协议默认）",
   "cust.models.namePlaceholder": "名称（如 DeepSeek 生产 / 本地 vLLM）",
   "cust.models.local.title": "本地推理服务",
   "cust.models.local.desc": "自动扫描本机固定端口上的 Ollama、LM Studio、vLLM 与 llama.cpp；扫描不会修改当前模型，未知能力默认走保守的 Code-as-Action。",
@@ -405,8 +406,9 @@ Object.assign(I18N.zh, {
   "cust.models.local.error": "本地模型扫描失败：{0}",
   "cust.models.local.keyless": "本机 · 无需 API Key",
   "cust.models.noKey": "⚠️ 无 Key",
-  "cust.models.provider.placeholder": "provider（如 ark / chatgpt / claude / gemini）",
-  "cust.models.providerPlaceholder2": "provider（如 ark / chatgpt / claude / gemini）",
+  "cust.models.protocol.openai": "OpenAI 兼容协议",
+  "cust.models.protocol.anthropic": "Anthropic 兼容协议",
+  "cust.models.protocol.ark": "ark 兼容协议",
   "cust.search.name": "搜索 API Key（Tavily）",
   "cust.search.desc": "用于联网搜索的 Tavily 密钥；接入点固定为 api.tavily.com。",
   "cust.search.set": "已配置",
@@ -418,8 +420,8 @@ Object.assign(I18N.zh, {
   "cust.models.save": "保存并生效",
   "cust.models.setActive": "设为当前",
   "cust.models.setDefault": "设为默认",
-  "cust.models.subtitle": "配置 LLM 提供商、Base URL、模型与 API Key（保存后立即生效）",
-  "cust.models.subtitle2": "配置多套 LLM API（provider / Base URL / 模型 / Key），随时新增、切换或删除，方便对接不同接口",
+  "cust.models.subtitle": "配置 LLM 兼容协议、Base URL、模型与 API Key（保存后立即生效）",
+  "cust.models.subtitle2": "配置多套 LLM API（兼容协议 / Base URL / 模型 / Key），随时新增、切换或删除，方便对接不同接口",
   "cust.models.updateBtn": "更新",
   "cust.network.allowName": "允许联网",
   "cust.network.desc": "联网访问（智能体的 web_search / web_fetch / bash 与代码请求）",
@@ -1181,8 +1183,8 @@ Object.assign(I18N.en, {
   "cust.models.addBtn": "Add",
   "cust.models.addHeading": "Add model / API",
   "cust.models.available": "Available models",
-  "cust.models.baseUrl.placeholder": "Base URL (leave blank to use the provider default)",
-  "cust.models.baseUrlPlaceholder": "Base URL (leave blank for the provider default)",
+  "cust.models.baseUrl.placeholder": "Base URL (leave blank to use the protocol default)",
+  "cust.models.baseUrlPlaceholder": "Base URL (leave blank for the protocol default)",
   "cust.models.cancelEdit": "Cancel edit",
   "cust.models.configuredHeading": "Configured models / APIs",
   "cust.models.editHeading": "Edit: {0}",
@@ -1197,9 +1199,10 @@ Object.assign(I18N.en, {
   "cust.models.label.apiKey": "API Key",
   "cust.models.label.baseUrl": "Base URL",
   "cust.models.label.defaultModel": "Default model",
-  "cust.models.label.provider": "Provider",
-  "cust.models.model.placeholder": "Model id (leave blank to use the provider default)",
-  "cust.models.modelPlaceholder2": "Model id (leave blank for the provider default)",
+  "cust.models.label.provider": "Compatible protocol",
+  "cust.models.label.protocol": "Compatible protocol",
+  "cust.models.model.placeholder": "Model id (leave blank to use the protocol default)",
+  "cust.models.modelPlaceholder2": "Model id (leave blank for the protocol default)",
   "cust.models.namePlaceholder": "Name (e.g. DeepSeek Prod / Local vLLM)",
   "cust.models.local.title": "Local inference servers",
   "cust.models.local.desc": "Automatically scans fixed loopback ports for Ollama, LM Studio, vLLM, and llama.cpp. Scanning never changes the active model; unknown capabilities default to conservative Code-as-Action.",
@@ -1213,8 +1216,9 @@ Object.assign(I18N.en, {
   "cust.models.local.error": "Local model discovery failed: {0}",
   "cust.models.local.keyless": "local · no API key required",
   "cust.models.noKey": "⚠️ No key",
-  "cust.models.provider.placeholder": "provider (e.g. ark / chatgpt / claude / gemini)",
-  "cust.models.providerPlaceholder2": "provider (e.g. ark / chatgpt / claude / gemini)",
+  "cust.models.protocol.openai": "OpenAI-compatible protocol",
+  "cust.models.protocol.anthropic": "Anthropic-compatible protocol",
+  "cust.models.protocol.ark": "Ark-compatible protocol",
   "cust.search.name": "Search API key (Tavily)",
   "cust.search.desc": "Tavily key for web search; the endpoint is fixed to api.tavily.com.",
   "cust.search.set": "Configured",
@@ -1226,8 +1230,8 @@ Object.assign(I18N.en, {
   "cust.models.save": "Save and apply",
   "cust.models.setActive": "Set active",
   "cust.models.setDefault": "Set as default",
-  "cust.models.subtitle": "Configure the LLM provider, Base URL, model, and API Key (takes effect immediately after saving)",
-  "cust.models.subtitle2": "Configure multiple LLM APIs (provider / Base URL / model / key); add, switch, or remove anytime to work with different endpoints",
+  "cust.models.subtitle": "Configure the LLM-compatible protocol, Base URL, model, and API Key (takes effect immediately after saving)",
+  "cust.models.subtitle2": "Configure multiple LLM APIs (compatible protocol / Base URL / model / key); add, switch, or remove anytime to work with different endpoints",
   "cust.models.updateBtn": "Update",
   "cust.network.allowName": "Allow network access",
   "cust.network.desc": "Network access (the agent's web_search / web_fetch / bash and code requests)",
@@ -6894,9 +6898,19 @@ function renderLocalModelEndpoints(root, discovery, profiles) {
 }
 async function custModels(c) {
   c.innerHTML = ""; c.appendChild(hdr(t("cust.tab.models"), t("cust.models.subtitle2")));
-  let data = { profiles: [], active_id: "", known_providers: [] };
+  let data = { profiles: [], active_id: "", protocols: [] };
   try { data = await api("/model-profiles"); } catch (e) { c.appendChild(el("div", "dock-empty", t("versions.load.err", e.message))); return; }
   let editing = null;  // set to a profile object when editing that row
+  const protocols = [
+    ["chatgpt", "cust.models.protocol.openai"],
+    ["claude", "cust.models.protocol.anthropic"],
+    ["ark", "cust.models.protocol.ark"],
+  ];
+  const protocolIds = new Set(protocols.map(item => item[0]));
+  const protocolLabel = provider => {
+    const match = protocols.find(item => item[0] === provider);
+    return match ? t(match[1]) : provider;
+  };
 
   // Local discovery is a read-only, fixed-loopback scan. The endpoint must be
   // explicitly added before it can affect model settings.
@@ -6921,26 +6935,27 @@ async function custModels(c) {
   c.appendChild(head);
   const form = el("div", "skill-form");
   const nameIn = el("input", "cust-input"); nameIn.placeholder = t("cust.models.namePlaceholder");
-  const provIn = el("input", "cust-input"); provIn.placeholder = t("cust.models.providerPlaceholder2"); provIn.setAttribute("list", "os-provs");
-  const dl = el("datalist"); dl.id = "os-provs"; (data.known_providers || []).forEach(p => { const o = el("option"); o.value = p; dl.appendChild(o); });
+  const provIn = el("select", "cust-input");
+  protocols.forEach(([value, labelKey]) => { const option = el("option"); option.value = value; option.textContent = t(labelKey); provIn.appendChild(option); });
   const baseIn = el("input", "cust-input"); baseIn.placeholder = t("cust.models.baseUrlPlaceholder");
   const modelIn = el("input", "cust-input"); modelIn.placeholder = t("cust.models.modelPlaceholder2");
   const keyIn = el("input", "cust-input"); keyIn.type = "password"; keyIn.placeholder = "API Key"; keyIn.autocomplete = "off";
-  form.appendChild(dl);
   form.appendChild(el("label", "skill-lbl", t("cust.connectors.namePlaceholder"))); form.appendChild(nameIn);
-  form.appendChild(el("label", "skill-lbl", t("label.provider"))); form.appendChild(provIn);
+  form.appendChild(el("label", "skill-lbl", t("cust.models.label.protocol"))); form.appendChild(provIn);
   form.appendChild(el("label", "skill-lbl", "Base URL")); form.appendChild(baseIn);
   form.appendChild(el("label", "skill-lbl", t("label.model"))); form.appendChild(modelIn);
   form.appendChild(el("label", "skill-lbl", "API Key")); form.appendChild(keyIn);
   const save = el("button", "solid-btn", t("cust.models.addBtn"));
   const cancel = el("button", "outline-btn small", t("cust.models.cancelEdit")); cancel.style.display = "none";
-  const resetForm = () => { editing = null; nameIn.value = provIn.value = baseIn.value = modelIn.value = keyIn.value = ""; keyIn.placeholder = "API Key"; save.textContent = t("cust.models.addBtn"); head.textContent = t("cust.models.addHeading"); cancel.style.display = "none"; };
-  const startEdit = (p) => { editing = p; nameIn.value = p.name || ""; provIn.value = p.provider || ""; baseIn.value = p.base_url || ""; modelIn.value = p.model || ""; keyIn.value = ""; keyIn.placeholder = p.has_api_key ? t("cust.models.keyPlaceholderSet") : t("cust.models.keyPlaceholderUnset"); save.textContent = t("cust.models.updateBtn"); head.textContent = t("cust.models.editHeading", (p.name || p.id)); cancel.style.display = ""; nameIn.focus(); c.scrollTop = 0; };
+  const clearLegacyProtocol = () => provIn.querySelectorAll("option[data-legacy]").forEach(option => option.remove());
+  const resetForm = () => { editing = null; clearLegacyProtocol(); nameIn.value = baseIn.value = modelIn.value = keyIn.value = ""; provIn.value = "chatgpt"; keyIn.placeholder = "API Key"; save.textContent = t("cust.models.addBtn"); head.textContent = t("cust.models.addHeading"); cancel.style.display = "none"; };
+  const startEdit = (p) => { editing = p; clearLegacyProtocol(); nameIn.value = p.name || ""; if (protocolIds.has(p.provider)) { provIn.value = p.provider; } else { const legacy = el("option"); legacy.value = p.provider || ""; legacy.textContent = p.provider || "—"; legacy.disabled = true; legacy.dataset.legacy = "true"; provIn.appendChild(legacy); provIn.value = legacy.value; } baseIn.value = p.base_url || ""; modelIn.value = p.model || ""; keyIn.value = ""; keyIn.placeholder = p.has_api_key ? t("cust.models.keyPlaceholderSet") : t("cust.models.keyPlaceholderUnset"); save.textContent = t("cust.models.updateBtn"); head.textContent = t("cust.models.editHeading", (p.name || p.id)); cancel.style.display = ""; nameIn.focus(); c.scrollTop = 0; };
   cancel.onclick = resetForm;
   save.onclick = async () => {
     const nm = nameIn.value.trim(); if (!nm) { hint(t("toast.specialist.enterName"), true); nameIn.focus(); return; }
     save.disabled = true; const label = save.textContent; save.textContent = t("common.saving");
-    const body = { name: nm, provider: provIn.value.trim(), base_url: baseIn.value.trim(), model: modelIn.value.trim() };
+    const body = { name: nm, base_url: baseIn.value.trim(), model: modelIn.value.trim() };
+    if (protocolIds.has(provIn.value)) body.provider = provIn.value;
     if (keyIn.value) body.api_key = keyIn.value;
     try {
       if (editing) { await api(`/model-profiles/${editing.id}`, { method: "PATCH", body: JSON.stringify(body) }); hint(t("toast.models.updated", nm)); }
@@ -6962,7 +6977,7 @@ async function custModels(c) {
     const isActive = p.id === data.active_id;
     if (isActive) { nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", t("cust.models.activePill"))); }
     info.appendChild(nm);
-    const bits = []; if (p.provider) bits.push(p.provider); if (p.model) bits.push(p.model); bits.push(p.has_api_key ? t("cust.models.hasKey") : (loopbackModelBase(p.base_url) ? t("cust.models.local.keyless") : t("cust.models.noKey")));
+    const bits = []; if (p.provider) bits.push(protocolLabel(p.provider)); if (p.model) bits.push(p.model); bits.push(p.has_api_key ? t("cust.models.hasKey") : (loopbackModelBase(p.base_url) ? t("cust.models.local.keyless") : t("cust.models.noKey")));
     info.appendChild(el("div", "ds", bits.join(" · ") + (p.base_url ? "  ·  " + p.base_url : "")));
     row.appendChild(info);
     if (!isActive) { const use = el("button", "outline-btn small", t("cust.models.setActive")); use.onclick = async () => { use.disabled = true; try { await api(`/model-profiles/${p.id}/activate`, { method: "POST" }); hint(t("toast.models.switched", (p.name || p.id))); S.defaultModel = p.model || S.defaultModel; await loadModels(); refreshKeyBanner(); custTab("models"); } catch (e) { use.disabled = false; hint(t("toast.switchFailed", e.message), true); } }; row.appendChild(use); } else { row.appendChild(el("div", "col-spacer")); }

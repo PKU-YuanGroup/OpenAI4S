@@ -9,6 +9,7 @@ import pytest
 from openai4s import llm
 from openai4s.config import Config, LLMConfig
 from openai4s.server.model_profiles import (
+    PROFILE_PROTOCOLS,
     ModelProfileError,
     ModelProfileService,
     migrate_provider_alias,
@@ -156,25 +157,64 @@ def _service(tmp_path, *, provider="ark"):
     return store, service
 
 
-def test_profile_service_seeds_catalog_once_without_exposing_keys(tmp_path):
+def test_profile_service_starts_without_default_endpoints(tmp_path):
     store, service = _service(tmp_path)
     payload, selected_model = service.profiles_payload()
-    assert len(payload["profiles"]) == len(llm.model_presets())
-    assert payload["known_providers"] == sorted(llm.PROVIDERS)
-    assert selected_model == "doubao-seed-2.0-pro"
-    assert all("api_key" not in profile for profile in payload["profiles"])
-    assert any(profile["has_api_key"] for profile in payload["profiles"])
+    assert payload == {
+        "profiles": [],
+        "active_id": "",
+        "protocols": list(PROFILE_PROTOCOLS),
+    }
+    assert selected_model is None
+    assert store.list_model_profiles() == []
 
-    first_ids = [profile["id"] for profile in store.list_model_profiles()]
-    repeated, selected_again = service.profiles_payload()
-    assert [profile["id"] for profile in repeated["profiles"]] == first_ids
-    assert selected_again is None
+
+def test_profile_service_removes_previously_seeded_endpoints_once(tmp_path):
+    store, service = _service(tmp_path)
+    seeded = llm.model_presets()[0]
+    generated = {
+        "id": "mp-generated",
+        "name": seeded.profile_name,
+        "provider": seeded.provider,
+        "base_url": "https://generated.example/v1",
+        "model": seeded.model,
+        "api_key": "copied-key",
+    }
+    custom = {
+        "id": "mp-custom",
+        "name": "My endpoint",
+        "provider": "chatgpt",
+        "base_url": "https://custom.example/v1",
+        "model": "custom-model",
+        "api_key": "custom-key",
+    }
+    store.set_model_profiles([generated, custom])
+    store.set_setting("builtin_profiles_seeded", "1")
+    store.set_setting("active_model_profile", generated["id"])
+
+    payload, selected_model = service.profiles_payload()
+
+    assert payload["profiles"] == [service.public_profile(custom)]
+    assert payload["active_id"] == ""
+    assert selected_model is None
+    assert store.get_setting("builtin_profiles_removed") == "1"
+
+    # The migration is one-shot: a later user-created row with the same visible
+    # fields is not mistaken for an old generated endpoint.
+    store.set_model_profiles([generated, custom])
+    repeated, _ = service.profiles_payload()
+    assert [profile["id"] for profile in repeated["profiles"]] == [
+        "mp-generated",
+        "mp-custom",
+    ]
 
 
 def test_profile_service_crud_activation_and_header_projection(tmp_path):
     store, service = _service(tmp_path)
     with pytest.raises(ModelProfileError, match="name required"):
         service.create({})
+    with pytest.raises(ModelProfileError, match="protocol must be one of"):
+        service.create({"name": "Unsupported", "provider": "gemini"})
     created = service.create(
         {
             "name": "Local",

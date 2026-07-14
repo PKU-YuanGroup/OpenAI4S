@@ -9,6 +9,11 @@ from typing import Any
 from openai4s.config import Config, is_placeholder_api_key
 from openai4s.llm.catalog import ModelPreset, model_presets
 
+# Model profiles select a transport contract, not an arbitrary vendor name.
+# Keep the persisted ids compatible with the existing LLM registry while the
+# UI presents these as human-readable protocol choices.
+PROFILE_PROTOCOLS = ("chatgpt", "claude", "ark")
+
 
 class ModelProfileError(ValueError):
     def __init__(self, message: str, status_code: int = 400) -> None:
@@ -23,7 +28,7 @@ def clean_api_key(value: Any) -> str:
 
 
 class ModelProfileService:
-    """Own seed, CRUD, activation, and public projection of model profiles."""
+    """Own migration, CRUD, activation, and public projection of model profiles."""
 
     def __init__(
         self,
@@ -94,96 +99,58 @@ class ModelProfileService:
         return {"models": {"default": models}, "default_model_id": default_model_id}
 
     def profiles_payload(self) -> tuple[dict[str, Any], str | None]:
-        """Seed presets once and return their secret-free public projection."""
-        seeded = False
+        """Return saved profiles without materializing built-in endpoints.
 
-        def seed(profiles: list[dict[str, Any]]) -> None:
-            nonlocal seeded
+        Older releases seeded the model catalog into every user's saved profile
+        list. Remove rows matching those generated preset identities once,
+        while preserving profiles with customized names, providers, or models.
+        """
+        if not self.store.get_setting("builtin_profiles_removed"):
+            removed_ids: set[str] = set()
             if self.store.get_setting("builtin_profiles_seeded"):
-                return
-            providers = self._providers()
-            live_base = self.store.get_setting("llm_base_url")
-            live_key = clean_api_key(
-                self.store.get_setting("llm_api_key")
-            ) or clean_api_key(self.cfg.llm.api_key)
-            have = {
-                (str(profile.get("provider") or ""), str(profile.get("model") or ""))
-                for profile in profiles
-            }
-            have_provider = {provider for provider, _model in have}
-            for preset in self._presets():
-                if preset.model:
-                    if preset.key in have:
-                        continue
-                elif preset.provider in have_provider:
-                    continue
-                spec = providers.get(preset.provider, {})
-                profiles.append(
-                    {
-                        "id": self._id_factory(),
-                        "name": preset.profile_name,
-                        "provider": preset.provider,
-                        "base_url": (
-                            live_base or str(spec.get("base_url") or "")
-                            if preset.inherit_live_config
-                            else ""
-                        ),
-                        "model": preset.model,
-                        "api_key": live_key if preset.inherit_live_config else "",
-                    }
-                )
-                have.add(preset.key)
-                have_provider.add(preset.provider)
-            seeded = True
+                seeded_signatures = {
+                    (preset.profile_name, preset.provider, preset.model)
+                    for preset in self._presets()
+                }
 
-        self.store.mutate_model_profiles(seed)
-        selected_model: str | None = None
-        if seeded:
-            self.store.set_setting("builtin_profiles_seeded", "1")
-            if not self.store.get_setting("active_model_profile"):
-                current_model = (
-                    self.store.get_setting("llm_model") or self.cfg.llm.model
-                )
-                profiles = self.store.list_model_profiles()
-                preferred_provider = next(
-                    (
-                        preset.provider
-                        for preset in self._presets()
-                        if preset.inherit_live_config
-                    ),
-                    "",
-                )
-                selected = next(
-                    (
-                        profile
-                        for profile in profiles
-                        if profile.get("provider") == preferred_provider
-                        and profile.get("model") == current_model
-                    ),
-                    next(
-                        (
-                            profile
-                            for profile in profiles
-                            if profile.get("provider") == preferred_provider
-                        ),
-                        None,
-                    ),
-                )
-                if selected:
-                    self.store.set_setting("active_model_profile", selected["id"])
-                    selected_model = self.effective_model_id(
-                        selected.get("provider"), selected.get("model")
-                    )
+                def remove_seeded(profiles: list[dict[str, Any]]) -> None:
+                    kept = []
+                    for profile in profiles:
+                        signature = (
+                            str(profile.get("name") or ""),
+                            str(profile.get("provider") or ""),
+                            str(profile.get("model") or ""),
+                        )
+                        if signature in seeded_signatures:
+                            removed_ids.add(str(profile.get("id") or ""))
+                        else:
+                            kept.append(profile)
+                    profiles[:] = kept
+
+                self.store.mutate_model_profiles(remove_seeded)
+            active_id = self.store.get_setting("active_model_profile") or ""
+            if active_id in removed_ids:
+                self.store.set_setting("active_model_profile", "")
+            self.store.set_setting("builtin_profiles_removed", "1")
 
         profiles = self.store.list_model_profiles()
         return (
             {
                 "profiles": [self.public_profile(profile) for profile in profiles],
                 "active_id": self.store.get_setting("active_model_profile") or "",
-                "known_providers": sorted(self._providers()),
+                "protocols": list(PROFILE_PROTOCOLS),
             },
-            selected_model,
+            None,
         )
+
+    @staticmethod
+    def _protocol(value: Any) -> str:
+        protocol = str(value or "").strip().lower()
+        if protocol not in PROFILE_PROTOCOLS:
+            raise ModelProfileError(
+                "protocol must be one of: " + ", ".join(PROFILE_PROTOCOLS)
+            )
+        return protocol
 
     def create(self, body: Mapping[str, Any]) -> dict[str, Any]:
         name = str(body.get("name") or "").strip()
@@ -192,7 +159,7 @@ class ModelProfileService:
         profile = {
             "id": self._id_factory(),
             "name": name,
-            "provider": str(body.get("provider") or "").strip(),
+            "provider": self._protocol(body.get("provider")),
             "base_url": str(body.get("base_url") or "").strip(),
             "model": str(body.get("model") or "").strip(),
             "api_key": clean_api_key(body.get("api_key")),
@@ -237,15 +204,19 @@ class ModelProfileService:
     def edit(
         self, profile_id: str, body: Mapping[str, Any]
     ) -> tuple[dict[str, Any], str | None]:
+        protocol = self._protocol(body["provider"]) if "provider" in body else None
+
         def mutate(profiles: list[dict[str, Any]]) -> dict[str, Any] | None:
             profile = next(
                 (item for item in profiles if item.get("id") == profile_id), None
             )
             if profile is None:
                 return None
-            for field in ("name", "provider", "base_url", "model"):
+            for field in ("name", "base_url", "model"):
                 if field in body and body[field] is not None:
                     profile[field] = str(body[field]).strip()
+            if protocol is not None:
+                profile["provider"] = protocol
             if body.get("api_key"):
                 profile["api_key"] = clean_api_key(body["api_key"])
             if body.get("clear_api_key"):
@@ -310,6 +281,7 @@ def migrate_provider_alias(
 __all__ = [
     "ModelProfileError",
     "ModelProfileService",
+    "PROFILE_PROTOCOLS",
     "clean_api_key",
     "migrate_provider_alias",
 ]
