@@ -1,30 +1,26 @@
 # Skill 加载与版本管理
 
-[English](./README.md)
+[English](README.md)
 
-**状态：已实现。** 本包发现以 recipe 为中心的 Skill，在请求渐进披露前只暴露摘要，对可选 Python sidecar 做结构校验，并通过原子 materialized view 管理不可变的用户 Skill 版本。
+这里管两件事：Skill 的发现，和 Skill 的版本。loader 找到以 recipe 为中心的 Skill，在渐进披露真正来取全文之前，只把摘要交给外层循环；版本服务把可写 Skill 的包体作为不可变版本存进 Store，磁盘上的目录视图则整体原子替换。两条路径都会先对可选的 Python sidecar 做编译检查，之后内核才可能 import 它。
 
-## 架构位置
+## 在架构中的位置
 
-Skill 是 Code-as-Action 的扩展面，不是原生 JSON 工具 schema。一个 Skill 目录包含 `SKILL.md`、可选 `kernel.py` 和可选资源。外层循环 prompt 只看到名称/摘要元数据；[`../tools/skills.py`](../tools/skills.py) 和 Host 服务按需加载完整 recipe。Agent 编写的 Python 随后可以在科学 Worker 内导入已校验 sidecar。
+Skill 是 Code-as-Action 的扩展面，不是原生 JSON 工具 schema。一个 Skill 目录里放着 `SKILL.md`、可选的 `kernel.py` sidecar 和可选资源。外层循环的 prompt 只看得到名称和一行摘要；[`../tools/skills.py`](../tools/skills.py) 与 Host 服务会在任务确实需要时才取回完整 recipe。Agent 写出的 Python 随后就能在科学 worker 里导入这个已通过编译检查的 sidecar。
 
-内置 Skill 为只读，并在名称冲突时优先。可写用户 Skill 位于配置的数据/project root 下，通过 Store 进行版本管理。能力状态针对当前 Store generation 解析，而不是保留已关闭 Store 的引用。
+内置 Skill 是只读的，名称冲突时也由它胜出。可写 Skill 位于配置好的数据目录和 project root 下，版本由 Store 管理。默认 loader 自己不持有仓储对象，每次读写能力状态都重新向当前的 Store generation 要一次：一个 loader 完全可能活得比创建它的那个 Store 更久，否则就会指向一条已经关闭的连接。
 
-## 本目录直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`__init__.py`](./__init__.py) | 说明 Skill 目录契约，并重新导出 discovery、loader、value 和 version service API。 |
-| [`loader.py`](./loader.py) | 解析 frontmatter，发现内置/用户 Skill，计算摘要/搜索匹配，解析能力状态，渐进暴露完整 recipe，构建 import 元数据，并编译检查 `kernel.py` sidecar。 |
-| [`versions.py`](./versions.py) | 校验有界、无 symlink 的 Skill package；存储不可变版本；在旁路构建 personal/project view；并通过文件系统与数据库 compare-and-swap 恢复来激活或回滚。 |
-
-## 直属子目录
-
-无。
+| [`__init__.py`](./__init__.py) | 用 docstring 写清 Skill 目录的约定，并重新导出公开名字：`Skill`、`SkillLoader`、`SkillVersionService` 和 `discover_skills`。 |
+| [`loader.py`](./loader.py) | 负责找到 Skill，并决定露出多少。它解析 `SKILL.md` 的 frontmatter，扫描内置、project 与用户三个 root，解析能力状态，并按关键词重合度给搜索结果打分。系统 prompt 只拿得到摘要；完整 recipe、sidecar 的 import 提示，以及内核启动用的 bootstrap manifest 都按需生成。`kernel.py` sidecar 在被任何人 import 之前，先过一遍编译检查。 |
+| [`versions.py`](./versions.py) | 可写 Skill 的安装、升级、发布、回滚与删除。包体先校验（大小有界、不含 symlink、路径不得越出目录），再作为不可变版本存起来；磁盘上的 personal/project 目录只是一份视图，先在旁边重建好再整体换入。数据库侧的激活走 compare-and-swap；这一步失败时，会先把原来的目录换回来，错误才向上抛。 |
 
 ## Skill 编写与安全契约
 
-- 把 `SKILL.md` 视为生成代码的 recipe，而不是可执行控制工具声明。
-- sidecar 编译检查只能证明 Python 语法/结构；执行时仍适用正常 kernel 沙箱、权限和 import 规则。
-- materialize 前拒绝不安全路径、symlink、超大文件/package 和非法规范名称。
-- 保持内置 root 只读，并保留其相对可写名称的优先级。
+- `SKILL.md` 是给 Agent 照着写代码的 recipe，不是可执行的控制工具声明。
+- 编译检查只能证明 sidecar 语法和结构没问题，证明不了它到底会做什么：真正执行时，内核沙箱、Host 权限和正常的 import 规则一样都不会少。
+- 不安全路径、symlink、超限的单个文件或整个包、非法的规范名称，都会在写成可用的 Skill 目录之前被挡掉。
+- 内置 root 保持只读；名称撞车时，内置的一方永远优先于可写的一方。

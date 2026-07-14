@@ -1,20 +1,20 @@
 # Mineral Spectra 示例
 
-本目录记录一个 synthetic evaluation case。Blind-analysis summary 与 hidden answer key 分开 committed，使报告可以演示评测，同时不允许 inference loop 读取 truth。
+一个录下来的合成评测算例。盲分析摘要与隐藏的真值答案分别 commit 成两份文件，这样报告既能演示与真值的对比，推断循环又始终读不到真值。
 
-## 直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`build_example.py`](build_example.py) | 纯标准库 report rebuilder：读取 committed analysis/components/truth JSON，格式化 prediction、diagnostic、truth metric 与 iteration history，不重新运行可选科学 pipeline。 |
-| [`case1_analysis.json`](case1_analysis.json) | 录制的 blind-pipeline config、三个预测 mineral phase/fraction/support peak、residual diagnostic、evaluation metric、iteration history 与 Artifact 名称。 |
-| [`case1_components.json`](case1_components.json) | 人类可读 synthetic-generation summary，定义三个 mineral phase、true fraction、RRUFF source role、noise/spike count 与 baseline strength。 |
-| [`case1_mineral_spectra_report.md`](case1_mineral_spectra_report.md) | 对比 blind prediction 与 hidden truth 的生成报告，包含 reliability diagnostic、evaluation metric、iteration trace 与文件角色。 |
+| [`build_example.py`](build_example.py) | 只用标准库，从 commit 下来的 analysis / components / truth 三份 JSON 重建示例报告：格式化预测结果、诊断、真值指标和迭代历史。它不会重跑那套可选的科学 pipeline。 |
+| [`case1_analysis.json`](case1_analysis.json) | 盲 pipeline 录下来的结果：运行时用的配置、三个预测矿物相及其比例与支持峰、残差诊断、评测指标、迭代历史，以及这次运行涉及的 Artifact 文件名。 |
+| [`case1_components.json`](case1_components.json) | 可读的合成过程说明。三个矿物相各自的真实比例、分别取自哪条 RRUFF 参考谱，以及污染这条混合谱时用的噪声水平、尖峰个数和基线强度。 |
+| [`case1_mineral_spectra_report.md`](case1_mineral_spectra_report.md) | 生成的报告：盲预测与隐藏真值并排放，附可信度诊断、评测指标、迭代轨迹，以及算例里每个文件各自是干什么的。 |
 
-## 直属子目录
+## 子目录
 
 | 目录 | 职责 |
 | --- | --- |
-| [`case1/`](case1/) | Synthetic case 的 observable spectrum/plot 与单独保存的 hidden truth。 |
+| [`case1/`](case1/) | 可观测的谱与其图像，隐藏真值放在同一目录，但单独成文件。 |
 
-Perfect component F1 只是这个录制 synthetic case 的属性，不是一般性能声明。
+成分识别 F1 满分只是这一个录制算例的属性，不是一般性的性能声明。

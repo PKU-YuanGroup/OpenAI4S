@@ -1,17 +1,17 @@
 # ESMFold2 Skill
 
-这个渐进披露 recipe 覆盖外部 Biohub ESMFold2/ESMFold2-Fast co-folding 模型与 ESMC 蛋白语言模型。本目录不捆绑代码、weights、Hugging Face 访问或 GPU 环境。
+面向 Biohub ESMFold2 / ESMFold2-Fast co-folding 模型的渐进披露 recipe，同一批发布的 ESMC 蛋白语言模型也一并覆盖。这里不带任何实现：没有代码，没有权重，没有 Hugging Face 访问，也没有 GPU 环境。
 
-必须在活动环境检查 model/backend/version 可用性。Structure、mutation、contact 与 interpretability 输出属于计算结果，不能表述为经实验验证。
+模型、后端、版本到底有没有，必须到运行环境里现查。论文自己给的 FoldBench 数字里，抗体-抗原界面的 DockQ 通过率是 50%–55%，也就是说将近一半是错的；而这类数字背后的跑法是 25 个 seed 乘 5 个扩散样本，再从这 125 个结果里挑最好的一个当答案——只跑一次、再按 ipTM 自排的结果，分量要比这个数字听上去的轻。PDB 的训练截止时间是 2021 年 9 月，此后解出的结构，模型一个也没见过。结构、突变打分、残基接触和可解释性特征都是模型算出来的预测，不能当成经过实验验证的结论来讲。
 
-## 直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`SKILL.md`](SKILL.md) | Entity/input format、single-sequence 与 MSA mode、kernel backend/diffusion step、输出/confidence 解读、性能、模型选择及上游许可/weight 来源的主 recipe。 |
+| [`SKILL.md`](SKILL.md) | 完整的 recipe：蛋白、DNA、RNA、配体输入怎么描述，什么时候单序列模式就够、什么时候要喂 MSA，以及扩散步数和 trunk recycle 次数怎么设才能复现论文里的数字。此外还讲了切到 fused kernel backend 到底能换来什么：trunk 大约快 1.5–6 倍，序列越长收益越大，但短序列的折叠受扩散步主导，要到 L≈300–400 才追平。（gotchas 一节笼统地写成“比论文慢约 12 倍”，该信的是详细那一节。）fused 与参考实现的结构在噪声范围内一致。再往后是 confidence 输出怎么读、几个模型变体怎么选、上游权重和许可的出处。 |
 
-## 直属子目录
+## 子目录
 
 | 目录 | 职责 |
 | --- | --- |
-| [`references/`](references/) | 按需读取的 experimental design-hook 说明与 ESMC language-model recipe。 |
+| [`references/`](references/) | 按需读取：实验性 design hook 的说明，以及 ESMC 语言模型的 recipe。 |

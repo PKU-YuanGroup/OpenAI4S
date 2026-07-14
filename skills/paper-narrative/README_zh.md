@@ -1,16 +1,12 @@
 # Paper Narrative Skill
 
-这个渐进披露 Skill 审阅 manuscript 与 figure deck 讲述的故事：hook、claim arc、panel 归属、缺失分析与可删除材料。它生成编辑提案，而不是科学证据或接收概率预测。
+三个渐进披露 figure Skill 里最外层的一个：审阅论文稿和整套 figure 讲出来的故事，并重新安排它。输入就是工作本身，一位“责任编辑”角色的评审会给出 hook 是否立得住、从 hook 到应用的叙事弧、哪些 panel 放错了 figure、还缺哪些 panel、哪些材料该砍掉。它给的是编辑意见，既不是科学证据，也不是接收概率的预测。
 
-## 直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`SKILL.md`](SKILL.md) | 定义何时加载，以及从 abstract/caption 到 brief、整套图 review、figure move/missing panel 和移交 composer 的工作流。 |
-| [`kernel.py`](kernel.py) | 可选 sidecar：提供可重新绑定 SDK；paper brief 与 narrative review 的 JSON schema；用 `derive_paper_brief` 提取 pitch/vision/figure claim；用 `narrative_review_task` 构造 handling-editor review prompt。 |
+| [`SKILL.md`](SKILL.md) | 说明什么时候加载（写稿或改稿阶段，早于 `figure-composer`），以及整个流程：从 abstract 和图注推导出 brief，以责任编辑的身份评审整套图，按叙事弧、figure 之间的搬迁、缺失 panel 和删除清单动手，把每张留下的 figure 的 claim 交给 `figure-composer`，最后对新一版重新评审。 |
+| [`kernel.py`](kernel.py) | 可选 sidecar：`pn_sdk` 取得的 `host` 句柄不会因为内核里这个名字被重新绑定而失效；`paper_brief_schema` 与 `narrative_review_schema` 是两份结构化输出的 schema；`derive_paper_brief` 用一次强制走工具的 `host.llm` 调用，从 abstract 加图注里提取 pitch、vision 和逐图 claim；`narrative_review_task` 构造针对整套图的责任编辑 prompt。 |
 
-## 直属子目录
-
-无。
-
-模型生成的 missing-panel 建议只是待考虑分析，不能算作已完成分析。
+模型给出的缺失 panel 建议，只是指出一项值得做的分析。它不等于这项分析已经做过。

@@ -1,19 +1,15 @@
 # Harness smoke checks
 
-[中文](README_zh.md)
+[中文说明](README_zh.md)
 
-This directory contains small, explicitly opt-in checks that cross a real runtime or platform boundary. They are not imported by the offline core and are not part of default pytest collection.
+Small checks that cross a real runtime or platform boundary, which is why they only run when you ask for them. The offline core never imports this package, and default pytest collection never picks it up.
 
-## Direct files
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`__init__.py`](__init__.py) | Marks the opt-in smoke package; contains no automatic execution. |
-| [`macos_sandbox.py`](macos_sandbox.py) | Fail-closed Darwin/Seatbelt smoke: requires enforced sandboxing, proves outside-workspace writes and network are blocked, proves workspace writes work, and verifies secrets are absent from worker subprocesses. |
+| [`__init__.py`](__init__.py) | Marks the opt-in smoke package; importing it runs nothing. |
+| [`macos_sandbox.py`](macos_sandbox.py) | The Darwin/Seatbelt check, and it fails closed: the sandbox must come out enforced and pass its self-test, or the program raises. It then proves from inside the worker that writes outside the workspace and outbound network are blocked, that a workspace write still works, and that a subprocess the worker spawns cannot see the daemon's secrets. |
 | [`.gitkeep`](.gitkeep) | Keeps the smoke extension directory present. |
 
-## Direct subdirectories
-
-None.
-
-Run the macOS check only on Darwin in its scheduled/explicit environment; it intentionally raises on unsupported or degraded sandbox state. See the root [Harness rules](../README.md#ground-rules).
+Run the macOS check on Darwin only, in the scheduled or explicitly dispatched environment it was written for. It raises rather than warns when the platform is wrong or the sandbox comes back degraded. See the [ground rules](../README.md#ground-rules) in the Harness root.

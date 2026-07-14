@@ -1,27 +1,27 @@
 # Ecosystem adapters
 
-[中文](./README_zh.md)
+[中文说明](README_zh.md)
 
-**Status: Implemented extension boundary.** This package contains optional integrations that adapt external ecosystems to existing OpenAI4S runtime contracts. Importing the package does not add third-party dependencies to the standard-library core.
+This package is the extension boundary: optional integrations that attach an external ecosystem to runtime contracts OpenAI4S already has. Importing this package adds no third-party dependency to the standard-library core.
 
-## Architectural position
+## Where this fits
 
-Adapters sit at ecosystem boundaries and do not own either loop. They may drive an existing outer-loop or kernel interface, but they must not duplicate orchestration, bypass Host policy, or silently broaden completion guarantees. Optional imports belong at the point where an adapter is actually launched.
+An adapter sits at the edge of the system and owns neither loop. It may drive an outer-loop or kernel interface that already exists, but it must not reimplement orchestration, route around Host policy, or quietly widen what counts as completion. Third-party imports belong at the point where the adapter is actually launched.
 
-## Files directly in this directory
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`__init__.py`](./__init__.py) | Marks the optional-adapter namespace and deliberately exports no eager integrations. |
+| [`__init__.py`](./__init__.py) | Marks the namespace for optional adapters. It exports nothing eagerly, on purpose. |
 
-## Direct subdirectories
+## Subdirectories
 
-| Directory | Place in the architecture |
+| Directory | Responsibility |
 | --- | --- |
-| [`jupyter/`](./jupyter/) | Optional Jupyter wire bridge and pure-stdlib KernelSpec generation around existing Python/R worker managers. |
+| [`jupyter/`](./jupyter/) | The optional Jupyter wire bridge, which drives the Python and R worker managers that already exist, plus pure-stdlib KernelSpec generation that writes the `kernel.json` files launching it. |
 
 ## Extension contract
 
-- Reuse a core port or manager instead of introducing a second execution engine.
-- Keep third-party imports lazy so normal `openai4s` imports remain stdlib-only.
-- State unsupported integration semantics explicitly; an adapter is not automatically equivalent to the Web workbench.
+- Reuse a core port or manager. Do not stand up a second execution engine.
+- Keep third-party imports lazy, so a plain `openai4s` import stays stdlib-only.
+- Say plainly what an integration does not support. An adapter is not automatically equivalent to the Web workbench.

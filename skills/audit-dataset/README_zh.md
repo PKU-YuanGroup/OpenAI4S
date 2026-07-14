@@ -1,16 +1,12 @@
 # Audit Dataset Skill
 
-这个渐进披露 Skill 为 row-oriented 表格数据提供纯标准库结构审计 recipe。加载后，其 [`kernel.py`](kernel.py) sidecar 向持久 Python 内核加入可复用 helper；它不会自动读取数据集，也不会替用户决定如何处理领域特定异常。
+在下游任何环节开始信任数据之前，先对行式表格数据做一次结构审计，全部用标准库写成。`plan-ml-experiment` 决定的是独立单元应该是什么，这个 Skill 则盯着你手上真实的行，问那条边界经不经得起它们的检验。Skill 加载后，[`kernel.py`](kernel.py) sidecar 会把可复用的辅助函数装进常驻的 Python 内核。它不会自己去读数据集，也不会替你决定某个领域特有的异常该怎么处理。
 
-## 直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`SKILL.md`](SKILL.md) | 定义 schema drift、missingness、duplicate、target balance 与 split leakage 的分析前流程、解读规则和必需 machine-readable 输出。 |
-| [`kernel.py`](kernel.py) | 以 `audit_rows` 为核心的可选 sidecar：校验 row/column 参数，建立确定性比较表示，汇总 missing/type/unique 值，检测重复 row/ID，统计 target，并在无 pandas/numpy 情况下报告跨 split entity overlap。 |
+| [`SKILL.md`](SKILL.md) | 分析前的流程，核心是泄漏这一问：同一个病人、同一个分子骨架、同一条时间序列，或者一对近似重复的记录，只要横跨了 split 的两侧，之后测出来的每个数字都会被抬高——哪怕行 ID 各不相同也一样。围绕它还有：schema 漂移和混合类型往往是解析或哨兵值的 bug，缺失要当成采集过程的事实来读而不是急着填补，重复 ID 未必是重复观测（也可能是合理的重复测量），target 是否均衡，以及审计必须留下的那份机器可读输出——没有说清查过哪些泄漏键、缺失值按什么策略处理，就不能把一份数据称作干净。 |
+| [`kernel.py`](kernel.py) | 以 `audit_rows` 为核心的可选 sidecar：校验传入的行与列参数，把值规整成确定性表示以便比较，逐列汇总缺失、观察到的类型和唯一值个数，统计重复行和不唯一的 ID，统计 target 的分布，并找出同时出现在 split 两侧的实体。不用 pandas，也不用 numpy。 |
 
-## 直属子目录
-
-无。
-
-结构检查通过不能证明 representativeness、label quality 或不存在 near-duplicate leakage；这些仍需领域审阅。
+结构上干净，不等于数据有代表性、标注可靠，也不等于不存在近似重复带来的泄漏。这些仍然要靠领域审阅。

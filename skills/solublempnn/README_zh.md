@@ -1,15 +1,11 @@
 # SolubleMPNN Skill
 
-这个渐进披露 recipe 说明外部 ProteinMPNN/LigandMPNN 仓库暴露的 soluble-biased ProteinMPNN weights。它是模型选择与执行指南，不是捆绑 runtime。
+SolubleMPNN 不是一个独立的包。它就是在可溶 PDB 子集上重训过的 ProteinMPNN，权重随外部 ProteinMPNN 仓库一起发布，LigandMPNN 也对外暴露同一套权重。这份渐进披露 recipe 讲的是怎么选中这套先验、怎么把它跑起来；本目录不捆绑任何运行时。
 
-Soluble prior 可能以 native recovery 换取表面组成 bias；生成序列仍需结构、表达、聚集、功能与实验验证。
+可溶性先验拿几个点的天然回收率，换来表面组成上的偏置，回收率掉下来是先验在起作用，不是出了 bug。但这套权重训练用的是「能结晶出来、说明足够可溶」的结构，这和「在大肠杆菌 37 °C 下能可溶表达」并不是同一句话。所以 SolubleMPNN 给的序列，只是比普通 ProteinMPNN 更值得押注，表达这道题并没有被解掉。它照样要折叠、要表达、别进包涵体、还得干成设计它时想让它干的事，后三件事只有实验说了算。
 
-## 直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`SKILL.md`](SKILL.md) | 记录仓库 setup、`--use_soluble_model`/`soluble_mpnn` 选择、chain/sampling flag、输出、CPU/GPU 选择、与 ProteinMPNN/LigandMPNN 的比较及验证限制。 |
-
-## 直属子目录
-
-无。
+| [`SKILL.md`](SKILL.md) | 说明仓库怎么装，以及选中可溶权重的两条路：ProteinMPNN 的 runner 加 `--use_soluble_model`，或者用 LigandMPNN 的 runner 加 `--model_type soluble_mpnn`，后者还会把设计好的序列贴回主链。两处硬边界单独讲。仓库只发布了 `v_48_010` 和 `v_48_020` 这两个可溶 checkpoint，所以 `--model_name v_48_002 --use_soluble_model` 会因为找不到文件直接报错——`--model_name` 保持默认就好。还有：某块表面每次都长出疏水残基，并不是先验失效，多半是这块正撑着整个折叠；用 `--omit_AAs` 硬把它改成极性的，之后必须重折一遍，确认这个约束不是白加的。其余部分：为什么那句 `cd` 进仓库不能省、为什么对天然序列的回收率会掉几个点，以及为什么「能结晶」的训练集并不是对你那个表达宿主的承诺。 |

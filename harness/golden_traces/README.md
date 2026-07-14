@@ -1,19 +1,19 @@
 # Golden traces
 
-[中文](README_zh.md)
+[中文说明](README_zh.md)
 
-This directory holds reviewed, canonical comparison data. A golden trace freezes normalized observations of a named contract or production characterization; it is never executable history and must never be used to replay side effects.
+Reviewed reference data lives here. A golden trace freezes the normalized observations of a named contract or of a production characterization, so a later run can be compared against it byte for byte. It is not executable history, and nothing may replay side effects out of it.
 
-## Direct files
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`.gitkeep`](.gitkeep) | Keeps the versioned golden root present. |
+| [`.gitkeep`](.gitkeep) | Keeps this root tracked in git; the traces themselves live one level down, under a schema-version directory. |
 
-## Direct subdirectories
+## Subdirectories
 
 | Directory | Responsibility |
 | --- | --- |
-| [`v1/`](v1/) | Schema-version-1 reviewed trace assets, currently the r5 pre-change production characterization. |
+| [`v1/`](v1/) | Reviewed trace assets at schema version 1. Today that is the r5 pre-change production characterization and nothing else. |
 
-Golden updates are explicit: run `uv run python -m harness.cli characterize --write`, then review the byte diff together with `current_behavior`, `desired_contract`, and `known_bug` fields.
+Updating a golden is always deliberate: run `uv run python -m harness.cli characterize --write`, then read the byte diff alongside the `current_behavior`, `desired_contract`, and `known_bug` fields it moved.

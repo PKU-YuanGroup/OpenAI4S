@@ -1,27 +1,23 @@
 # Command-line interface
 
-[中文](./README_zh.md)
+[中文说明](README_zh.md)
 
-**Status: Implemented.** This package exposes daemon lifecycle, local task execution, first-run model setup, scientific environment setup, and the optional Jupyter adapter from one `openai4s` command.
+The `openai4s` command lives here: daemon lifecycle (`serve`, `status`, `stop`, `url`), one-shot local task execution (`run`), first-run model configuration (`init`), scientific environment creation (`setup`), and the optional Jupyter adapter commands.
 
-## Architectural position
+## Where this fits
 
-The CLI is a composition adapter, not an orchestration engine. `openai4s run` builds the local outer loop from [`../agent/`](../agent/) and starts persistent kernels lazily only when a code cell is routed. `openai4s serve` delegates to the HTTP/WebSocket server. Setup and status commands operate outside active agent turns.
+The CLI composes; it does not orchestrate. `openai4s run` builds the local outer loop out of [`../agent/`](../agent/), and a persistent kernel only starts if a turn actually routes a code cell. `openai4s serve` hands off to the HTTP/WebSocket server. The setup and status commands run outside any agent turn.
 
-## Files directly in this directory
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`__init__.py`](./__init__.py) | Exposes `main` as the package-level CLI entry point. |
-| [`main.py`](./main.py) | Defines argument parsing and handlers for `serve`, `status`, `stop`, `url`, `run`, `init`, `setup`, and Jupyter describe/export/install operations; manages daemon state files and conda-environment creation. |
-
-## Direct subdirectories
-
-None.
+| [`__init__.py`](./__init__.py) | Re-exports `main`, so the package itself is the CLI entry point. |
+| [`main.py`](./main.py) | One argparse tree plus its handlers: `serve`, `status`, `stop`, `url`, `run`, `init`, `setup`, and the Jupyter describe/export/install subcommands. It also owns the daemon pidfile and statefile, and drives conda when creating the environments. |
 
 ## Operational contract
 
-- `run` is in-process and uses the same Engine action/completion rules as the local Agent facade.
-- `serve` should remain bound according to `Config`; the secure default is loopback, with external exposure handled by a trusted reverse proxy or SSH tunnel.
-- Optional Jupyter imports stay behind the Jupyter command path.
-- CLI output and exit codes are operator interfaces; update tests and documentation when changing them.
+- `run` executes in-process and follows the same Engine action and completion rules as the local Agent facade.
+- `serve` must keep taking its bind address from `Config`, and the default must stay on loopback — do not hardcode a bind. Exposing the daemon beyond this machine is a job for a trusted reverse proxy or an SSH tunnel. Bind off loopback and the gateway mints one access token for the life of the process and demands it on every path except `/health`, which stays unauthenticated. That token is a thin last line, not the reason it is safe to expose the port.
+- The optional Jupyter imports happen only inside the Jupyter command handlers.
+- CLI output and exit codes are an operator interface. Change them and you change the tests and the documentation with them.

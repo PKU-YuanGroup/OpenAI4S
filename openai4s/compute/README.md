@@ -2,44 +2,44 @@
 
 [中文说明](README_zh.md)
 
-This directory is the host-side backend for the evolving `host.compute` job surface and the separate registry used by purpose-built remote-science services. Heavy work runs through either a discovered `byoc:<id>` provider or an existing `ssh:<alias>` connection; this package is orchestration/transport code, not a scheduler, GPU runtime, or scientific model implementation.
+The host side of the evolving `host.compute` job surface lives here, together with the separate registry that the purpose-built remote-science services use to find a real GPU host. Heavy work leaves the machine one of two ways: through a discovered `byoc:<id>` provider, or over an `ssh:<alias>` connection the user already has. This is orchestration and transport code. There is no scheduler here, no GPU runtime, and no scientific model.
 
-## Place in the architecture
+## Where this fits
 
-The Python [`host.compute` SDK](../sdk/compute.py) emits `compute_<operation>` Host RPCs. [`HostDispatcher`](../host_dispatch.py) lazily creates one [`ComputeManager`](manager.py) for the session and maps `ComputeError` into a structured soft failure. Native `compute_submit`, `compute_result`, `compute_cancel`, and `compute_close` tools expose a bounded control-plane subset; richer SDK compatibility calls still reach the same manager.
+The Python [`host.compute` SDK](../sdk/compute.py) turns every call into a `compute_<operation>` Host RPC. [`HostDispatcher`](../host_dispatch.py) creates one [`ComputeManager`](manager.py) per session on first use and maps `ComputeError` into a structured soft failure. The native `compute_submit`, `compute_result`, `compute_cancel` and `compute_close` tools expose a bounded slice of that control plane; the richer SDK compatibility calls reach the same manager.
 
-For `byoc:*`, the manager discovers provider shims under `skills/remote-compute-<id>/`, stages a job archive, and invokes the confined [`openai4s_compute_provider`](../../openai4s_compute_provider) helper with credentials on stdin. For `ssh:*`, it calls local `ssh`/`scp` against a user-configured alias. Harvested files are placed below the configured data directory's `hpc/<job_id>/` tree.
+For `byoc:*`, the manager looks for provider shims under `skills/remote-compute-<id>/`, stages a job archive, and runs the confined [`openai4s_compute_provider`](../../openai4s_compute_provider) helper with credentials on stdin. For `ssh:*`, it shells out to local `ssh`/`scp` against a user-configured alias. Harvested files land below the configured data directory, in `hpc/<job_id>/`.
 
 ## Files
 
 | File | Responsibility |
-|---|---|
-| [`__init__.py`](__init__.py) | Exports the host backend's `ComputeManager` and structured `ComputeError`. |
-| [`manager.py`](manager.py) | Discovers BYOC provider Skills, routes `byoc:*` and `ssh:*`, enforces an in-memory session concurrency limit, stages input/templates, supplies only provider-declared credentials to the helper, tracks live jobs/sandboxes, polls/cancels/closes them, and harvests outputs. |
-| [`registry.py`](registry.py) | Atomically stores SSH host aliases, default selection, and `fold`/`score_mutations`-style capability metadata in `<data_dir>/remote_compute.json`; native registration probes before marking verification, while legacy environment seeding may remain unverified. It stores no SSH private keys or provider tokens. |
+| --- | --- |
+| [`__init__.py`](__init__.py) | Exports the two names the rest of the host needs: `ComputeManager` and the structured `ComputeError`. |
+| [`manager.py`](manager.py) | Both transports. It discovers BYOC provider Skills, routes `byoc:*` and `ssh:*`, refuses a submission once the session's in-memory concurrency limit is reached, stages inputs and the job templates, and tracks live jobs and warm sandboxes through poll, cancel, close and harvest. The credential is picked out by the environment-variable names the provider declares, and it reaches the helper on stdin rather than through the environment. The helper's environment is otherwise the daemon's own, minus every name beginning `NGC_`, `NVIDIA_` or `HF_`. |
+| [`registry.py`](registry.py) | Remembers which SSH host aliases exist, which one is the default, and what `fold`/`score_mutations`-style capability metadata has been provisioned on each, written atomically to `<data_dir>/remote_compute.json`. Native registration probes the host before it records verification; a host seeded from the legacy environment variable may sit there unverified. It stores no SSH private keys and no provider tokens. |
 
 ## Subdirectories
 
 | Directory | Responsibility |
-|---|---|
-| [`templates/`](templates/) | Shell templates staged into a BYOC job to run the submitted command, enforce time/deadline handling, and package output/logs for harvest. See its [README](templates/README.md). |
+| --- | --- |
+| [`templates/`](templates/) | Shell templates staged into a BYOC job. They run the submitted command, handle the time and deadline limits, and package output and logs for harvest. See its [README](templates/README.md). |
 
 ## Current lifecycle
 
-1. `submit` validates the provider family and the manager's session-local concurrency count.
-2. A BYOC submission creates/reuses a provider sandbox, builds `in.tar.gz` from the wrapper, command, and inputs, and calls the helper's create/submit operations. An SSH submission creates a remote work directory and starts `run.sh` with `nohup`.
-3. `result` polls the exact in-memory job. BYOC wait stages `out.tar.gz`, which the manager extracts under `hpc/<job_id>/`; the SSH compatibility path copies logs and leaves its work directory remote.
-4. `cancel` signals the remote process or terminates the BYOC sandbox; `close` releases a known provider handle and marks named live handles closed.
+1. `submit` validates the provider family and checks the manager's session-local concurrency count.
+2. A BYOC submission creates or reuses a provider sandbox, builds `in.tar.gz` from the wrapper, the command and the inputs, and calls the helper's create and submit operations. An SSH submission creates a remote work directory and starts `run.sh` under `nohup`.
+3. `result` polls the exact in-memory job. On the BYOC path the helper's wait stages `out.tar.gz`, which the manager extracts under `hpc/<job_id>/`; the SSH compatibility path copies the logs back and leaves its work directory on the remote host.
+4. `cancel` signals the remote process or terminates the BYOC sandbox. `close` releases a known provider handle and marks the named live handles closed.
 
 ## Persistence, approval, and maturity boundaries
 
-- **Prototype status:** `ComputeManager` job records, concurrency limits, and warm-sandbox handles are in memory. A daemon/manager restart cannot attach to those records through this implementation, even if remote work or harvested files still exist. [`registry.py`](registry.py) persists only the specialized SSH capability catalogue.
-- Native `compute_submit` is approval-gated. Result harvesting, cancel, and close intentionally do not request a second approval for an already-authorized exact job. The richer direct `compute_ssh`/`compute_scp` compatibility methods are not equivalent to that bounded native-tool gate and must not be treated as newly approved authority.
-- BYOC confinement is enforced by the provider runtime/provider combination and must be measured, not assumed. Credentials are selected by declared environment-variable names and sent over the helper's auth input; unknown secret names can escape name-based scrubbing.
-- The current SSH job path is intentionally basic: job bookkeeping is local memory, the remote directory is left behind, declared output patterns are not fully harvested, and terminal exit-status reporting is not a durable scheduler-grade contract.
-- Harvested bytes, SQLite metadata, remote provider state, and the running scientific kernel do not share one transaction. Partial staging/harvest or a process crash can leave one layer ahead of another.
-- The native registration path probes before recording `verified_at`; the legacy `OPENAI4S_FOLD_SSH` seed and caller-supplied metadata may be unverified. Resolution does not prove current reachability, so [`host/remote_science.py`](../host/remote_science.py) must check and fail honestly when the remote service is unavailable.
-- Provider discovery is limited to installed Skill directories with both `provider.json` and `provider.py`. No SLURM, Kubernetes, or general cluster scheduler is implemented here.
+- **Prototype status:** `ComputeManager` job records, concurrency limits, and warm-sandbox handles all live in memory. Restart the daemon or the manager and this implementation cannot attach to those records again, even when the remote work and the harvested files are still there. [`registry.py`](registry.py) persists only the specialized SSH capability catalogue.
+- Native `compute_submit` is approval-gated. Harvesting a result, cancelling, and closing deliberately do not ask a second time for a job that was already authorized. The richer direct `compute_ssh`/`compute_scp` compatibility methods are wider than that bounded native-tool gate, and approval of the latter must not be read as approval of them.
+- BYOC confinement comes from the provider runtime and the provider shim together. Measure it, do not assume it. Credentials are selected by declared environment-variable name and sent on the helper's auth input, so a secret sitting in a name nobody declared can slip past name-based scrubbing.
+- The current SSH job path is basic on purpose: bookkeeping is local memory, the remote directory is left behind, declared output patterns are not fully harvested, and the terminal exit status it reports is not a durable scheduler-grade contract.
+- Harvested bytes, SQLite metadata, remote provider state, and the running scientific kernel are not in one transaction. A partial stage or harvest, or a process crash, can leave one layer ahead of another.
+- The native registration path probes before it writes `verified_at`; the legacy `OPENAI4S_FOLD_SSH` seed and caller-supplied metadata may never have been checked. Resolving a capability says nothing about whether the host answers right now, so [`host/remote_science.py`](../host/remote_science.py) must check and fail honestly when the remote service is unavailable.
+- Provider discovery only sees installed Skill directories that have both a `provider.json` and a `provider.py`. No SLURM, no Kubernetes, no general cluster scheduler is implemented here.
 
 ## Related documentation
 

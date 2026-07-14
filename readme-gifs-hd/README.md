@@ -1,21 +1,22 @@
 # README demonstration media
 
-[简体中文](README_zh.md)
+[中文说明](README_zh.md)
 
-This directory contains committed high-resolution GIFs embedded by the project
-READMEs. They demonstrate product behavior and are not loaded by the daemon.
+The committed high-resolution GIFs that the root READMEs embed. They show what
+the product does; the daemon never loads them.
 
 ## Files
 
 | File | Purpose |
-|---|---|
-| `demo-01-hd.gif` | First high-resolution segment of the guided product demonstration. |
-| `demo-02-hd.gif` | Second demonstration segment. |
-| `demo-03-hd.gif` | Third demonstration segment. |
-| `demo-04-hd.gif` | Fourth demonstration segment. |
-| `demo-05-hd.gif` | Fifth demonstration segment. |
-| `demo-06-hd.gif` | Sixth demonstration segment. |
-| `openai4s_penta.gif` | Composite overview animation used to present the OpenAI4S workflow. |
+| --- | --- |
+| `demo-01-hd.gif` | Live API workflow: from UniProt / RCSB to a 3D structure and a report. |
+| `demo-02-hd.gif` | Visual artifact editing: raising a confidence cutoff to 75 in one line. |
+| `demo-03-hd.gif` | Plan-mode research: artemisinin and paclitaxel solubility prediction. |
+| `demo-04-hd.gif` | Protein engineering: from a sequence to ranked mutants and a structural rationale. |
+| `demo-05-hd.gif` | Real-data analysis: human insulin INS (UniProt P01308), from UniProt / RCSB to a reproducible report. |
+| `demo-06-hd.gif` | Annotation-driven chart editing: lasso a region, recolor the legend. |
+| `openai4s_penta.gif` | The animated banner at the top of both root READMEs. |
 
-Treat these as documentation assets: optimize replacements for repository size
-and readability, and update both root-language READMEs when references change.
+These are documentation assets, and they are large. Optimize a replacement for
+repository size as well as readability, and update both root-language READMEs
+whenever a reference changes.

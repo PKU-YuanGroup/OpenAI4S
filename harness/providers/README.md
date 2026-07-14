@@ -1,19 +1,15 @@
 # Harness providers
 
-[中文](README_zh.md)
+[中文说明](README_zh.md)
 
-This directory contains deterministic substitutes for external platform boundaries. They consume declared inputs, never contact a live service, and retain inspectable call records so scenarios can assert orchestration rather than transport availability.
+The fake providers a scenario runs against. Each one stands in for an external platform boundary: it answers only from what the scenario declared, never opens a connection to a live service, and keeps an inspectable record of the calls it received. That is what lets a scenario assert what the orchestration did instead of whether some service happened to be up.
 
-## Direct files
+## Files
 
 | File | Responsibility |
 | --- | --- |
 | [`__init__.py`](__init__.py) | Exports the scripted LLM and its structured error type. |
-| [`scripted_llm.py`](scripted_llm.py) | Implements a queue-backed model callable: deep-copies messages, returns declared normalized responses in order, raises declared provider errors, exposes remaining steps, and fails on script exhaustion. |
-| [`.gitkeep`](.gitkeep) | Keeps the provider extension directory present when no additional fake provider is committed. |
+| [`scripted_llm.py`](scripted_llm.py) | A model callable backed by a queue of scripted steps. It returns the declared normalized responses in order (filling in the usual `reasoning`, `usage`, `finish_reason` and `raw` defaults), raises `ScriptedProviderError` wherever the script declared an error, and reports how many steps are left; every incoming message list is deep-copied into `calls`, so a scenario can inspect the prompt afterwards. Running off the end of the script raises `AssertionError` rather than repeating the last reply. |
+| [`.gitkeep`](.gitkeep) | Keeps the directory tracked in git so the next fake provider has somewhere to land. |
 
-## Direct subdirectories
-
-None.
-
-Provider scripts are defined by [`../schema.py`](../schema.py) and consumed by [`../runner.py`](../runner.py). Future compute, endpoint, or lab fakes belong here only when they remain offline by default.
+The script a provider replays is the `provider_script` field validated by [`../schema.py`](../schema.py), and [`../runner.py`](../runner.py) is what drives it. A future compute, endpoint, or lab fake belongs here too, as long as it stays offline by default.

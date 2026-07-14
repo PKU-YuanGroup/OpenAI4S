@@ -2,16 +2,12 @@
 
 [English](README.md)
 
-本目录是经审阅 Harness trace 数据的第一个版本 namespace。
+经审阅的 Harness trace 数据的第一个版本目录，里面的资产都在 schema 版本 1 上。
 
-## 直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`r5_prechange.json`](r5_prechange.json) | 选定 r5 生产行为的 canonical 规范化 snapshot：CLI max turns、传输重试/部分流故障、provider compaction 投影、超大 observation、headless 权限拒绝及 disabled MCP 处理。每个 case 都记录 current behavior、desired contract 以及 snapshot 是否捕获已知缺陷。 |
+| [`r5_prechange.json`](r5_prechange.json) | 选定 r5 生产行为的经审阅快照，规范化成可逐字节比较的字节流：CLI max turns、限流后哪怕响应里带了 Retry-After 也只做一次传输尝试就报错、已经提交过一个 delta 之后断掉的流、compaction 摘要如何投影进各 provider 的请求体、超大 observation、headless 下的权限拒绝，以及被禁用的 MCP connector。每个 case 都记录生产现在的实际行为、期望的契约，以及这份快照是不是在冻结一个已知缺陷。 |
 
-## 直属子目录
-
-无。
-
-使用 `uv run python -m harness.cli characterize` 只比较而不写入。Mismatch 是审阅信号，不是自动覆盖 golden 的许可。
+`uv run python -m harness.cli characterize` 只比较，不写入。对不上是需要人去看的信号，不是自动覆盖 golden 的许可。

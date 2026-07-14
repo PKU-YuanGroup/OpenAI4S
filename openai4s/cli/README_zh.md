@@ -1,27 +1,23 @@
 # 命令行接口
 
-[English](./README.md)
+[English](README.md)
 
-**状态：已实现。** 本包通过一个 `openai4s` 命令提供 daemon 生命周期、本地任务执行、首次模型配置、科学环境配置和可选 Jupyter 适配器。
+`openai4s` 命令都放在这里：daemon 生命周期（`serve`、`status`、`stop`、`url`）、本地一次性任务执行（`run`）、首次模型配置（`init`）、科学计算环境创建（`setup`），以及可选的 Jupyter 适配器命令。
 
-## 架构位置
+## 在架构中的位置
 
-CLI 是组合适配器，不是编排引擎。`openai4s run` 从 [`../agent/`](../agent/) 构建本地外层循环，并且只在路由到代码 Cell 后延迟启动持久 kernel。`openai4s serve` 委托给 HTTP/WebSocket server。setup 和 status 命令位于活动 Agent 回合之外。
+CLI 只负责组合，不负责编排。`openai4s run` 用 [`../agent/`](../agent/) 搭出本地的外层循环，只有当某个回合真的路由到代码 Cell 时，常驻内核才会启动。`openai4s serve` 把活交给 HTTP/WebSocket server。setup 和 status 这类命令都跑在 Agent 回合之外。
 
-## 本目录直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`__init__.py`](./__init__.py) | 将 `main` 暴露为包级 CLI 入口。 |
-| [`main.py`](./main.py) | 定义 `serve`、`status`、`stop`、`url`、`run`、`init`、`setup` 以及 Jupyter describe/export/install 操作的参数解析与 handler；管理 daemon 状态文件和 conda 环境创建。 |
-
-## 直属子目录
-
-无。
+| [`__init__.py`](./__init__.py) | 重新导出 `main`，包本身就是 CLI 入口。 |
+| [`main.py`](./main.py) | 一棵 argparse 树和它的 handler：`serve`、`status`、`stop`、`url`、`run`、`init`、`setup`，以及 Jupyter 的 describe/export/install 子命令。daemon 的 pidfile 与 statefile 也归它管，创建 conda 环境时同样是它在调 conda。 |
 
 ## 运维契约
 
-- `run` 在进程内执行，并使用与本地 Agent facade 相同的 Engine 动作/完成规则。
-- `serve` 应按 `Config` 绑定；安全默认值是 loopback，对外暴露应由可信反向代理或 SSH tunnel 处理。
-- 可选 Jupyter import 保持在 Jupyter 命令路径之后。
-- CLI 输出和退出码是运维接口；修改它们时同步更新测试和文档。
+- `run` 在进程内跑完，动作路由与完成判定用的是与本地 Agent facade 相同的一套 Engine 规则。
+- `serve` 的绑定地址必须始终取自 `Config`，默认也必须留在 loopback 上，不要写死。要把 daemon 暴露到本机之外，应该交给可信的反向代理或 SSH tunnel。一旦绑到非 loopback 地址，Gateway 会签发一个随进程存活的 access token，除 `/health` 之外的每条路径都要带上它才放行，而 `/health` 本身不做鉴权。这个 token 只是最后一道薄薄的防线，不能把它当成可以放心暴露端口的理由。
+- 可选的 Jupyter import 只发生在 Jupyter 子命令的 handler 里。
+- CLI 的输出和退出码是运维接口。改动它们，就要连测试和文档一起改。

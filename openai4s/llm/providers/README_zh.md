@@ -1,30 +1,26 @@
 # LLM wire 适配器
 
-[English](./README.md)
+[English](README.md)
 
-**状态：四种 wire 协议已实现。** 这些模块把标准化客户端契约转换为具体 HTTP payload，并把供应商响应/事件转换回统一的 assistant-message 形状。
+四种 wire 协议放在这里，一种一个模块。每个模块把标准化的客户端请求翻译成自己那家供应商的 HTTP payload，再把该供应商的响应或流式事件翻译回引擎其余部分统一使用的 assistant-message 形状。
 
-## 架构位置
+## 在架构中的位置
 
-wire adapter 是 [`../client.py`](../client.py) 下方的叶子模块。它们可以了解供应商 endpoint 形状、header、stream event 和 usage 字段，但不负责 provider 注册、配置优先级、动作路由、权限检查或 kernel 执行。
+wire adapter 是 [`../client.py`](../client.py) 之下的叶子模块。endpoint 形状、header、stream event 和 usage 字段是它们该知道的；provider 注册、配置优先级、动作路由、权限检查和内核执行不是，这些都在本目录之上。
 
-## 本目录直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`__init__.py`](./__init__.py) | 暴露内部 wire 到 adapter 的 dispatch map。 |
-| [`anthropic.py`](./anthropic.py) | 构建非流式 Anthropic Messages 请求，应用原生工具/tool choice，解析 content block，并标准化工具调用与 usage。 |
-| [`gemini.py`](./gemini.py) | 构建 Gemini `generateContent` 请求，映射 system/history/tool 声明，并标准化 candidate、function call、文本和 usage。 |
-| [`openai.py`](./openai.py) | 实现 OpenAI-compatible Chat Completions，包括在 stream 尚未输出内容就初始化失败时回退到非流式请求。 |
-| [`responses.py`](./responses.py) | 实现 OpenAI Responses wire，包括 input/tool 映射、output item 解析以及流式文本/工具调用组装。 |
-
-## 直属子目录
-
-无。
+| [`__init__.py`](./__init__.py) | 把每个 wire 名字（`openai`、`anthropic`、`gemini`、`responses`）映射到对应的 adapter 函数。这张内部 dispatch 表就是本模块的全部内容。 |
+| [`anthropic.py`](./anthropic.py) | Anthropic Messages 这条 wire，只有非流式一条路径。它把 system 消息提到顶层 `system` 字段，应用原生工具与 tool choice，再把返回的 content block 读成文本、标准化的工具调用和 usage。 |
+| [`gemini.py`](./gemini.py) | 构造 Gemini `generateContent` 请求，映射 system 指令、历史消息和工具声明。返回后取第一个 candidate，从中解析出文本、function call 和 usage。 |
+| [`openai.py`](./openai.py) | OpenAI-compatible Chat Completions 这条 wire。调用方传了 delta 回调时逐 token 流式输出；流在吐出任何内容之前就失败，会退回阻塞式请求重发一次；已经吐过 token 之后再出错，就直接抛出，不再回退。 |
+| [`responses.py`](./responses.py) | OpenAI Responses 这条 wire，始终走 SSE。它负责 input 与工具的映射，从 output item 事件里拼出文本和 function call 参数；流在 `response.completed` 之前结束即视为失败。 |
 
 ## 适配器契约
 
-- 使用 [`../messages.py`](../messages.py) 和 [`../tooling.py`](../tooling.py) 中的辅助函数，不创建第二种标准化格式。
-- 通过 [`LLMError`](../models.py) 报告标准化失败，并保留有界、可用于诊断的供应商细节。
-- streaming 与 non-streaming 路径必须产生语义相同的标准化结果。
-- provider-specific 行为放在这里；可复用 HTTP 机制放在 [`../transport.py`](../transport.py)。
+- 复用 [`../messages.py`](../messages.py) 和 [`../tooling.py`](../tooling.py) 里的辅助函数，不要另起一套标准化格式。
+- 失败统一抛 [`LLMError`](../models.py)，并带上有界的供应商细节：够定位问题，又不至于把整个响应体倒进日志。
+- 流式与非流式两条路径必须给出语义相同的标准化结果。
+- 供应商特有的行为写在这里；可复用的 HTTP 机制放到 [`../transport.py`](../transport.py)。

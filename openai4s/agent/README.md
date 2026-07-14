@@ -1,10 +1,10 @@
 # Agent outer loop
 
-[中文](./README_zh.md)
+[中文说明](README_zh.md)
 
-**Status: Implemented.** This package owns the provider-neutral outer-loop state machine and the adapters that compose it for local/CLI execution. The Web session runner uses the same action-routing and engine contracts through its own server composition.
+The outer-loop state machine lives here, together with the adapters that compose it for local/CLI runs. The machine itself knows nothing about any particular provider. The Web session runner builds its own composition inside the server package, but it routes actions and drives the Engine through the same contracts defined here.
 
-## Architectural position
+## Where this fits
 
 Each model reply is routed to at most one action kind:
 
@@ -14,33 +14,29 @@ Each model reply is routed to at most one action kind:
 
 Native calls take priority over code. A mixed or malformed finalizer is not completion. `host.submit_output(...)` is the only completion that can fire inside a Python Cell; a later sole valid `finalize_response` may still close the Engine after earlier Cells. Plain prose, ordinary tool observations, R cells, cancellation, and max-turn exhaustion remain non-completing outcomes.
 
-The outer loop invokes its foreground inner-loop kernel manager only for code. Tool-only and finalizer-only routing therefore does not start that worker; an individual control tool may still manage a separate dedicated worker as part of its own capability.
+The outer loop reaches for its foreground inner-loop kernel manager only when the action is code. A tool-only or finalizer-only turn therefore never starts that worker. An individual control tool can still manage a dedicated worker of its own, as part of what that tool does.
 
-## Files directly in this directory
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`__init__.py`](./__init__.py) | Re-exports the Engine, local `Agent` facade, result values, finalization helpers, and `run_task`. |
-| [`actions.py`](./actions.py) | Single action parser/router: normalizes native calls, recognizes Python/R fences, enforces native-call priority, and identifies a sole Engine finalizer. |
-| [`compaction.py`](./compaction.py) | Estimates context budgets, keeps action/result pairs indivisible, externalizes oversized outputs by digest, produces structured handoffs, and archives compacted slices. |
-| [`control.py`](./control.py) | Validates and executes native-tool batches, including cancellation, resource-conflict checks, and safe read-only parallel waves while preserving ordered results. |
-| [`delegation.py`](./delegation.py) | Implements bounded sub-agent trees, fan-out/session/depth budgets, exact descendant cancellation, result collection, and turn-boundary steering. |
-| [`engine.py`](./engine.py) | Pure provider-neutral outer state machine over model, context, action-executor, completion, cancellation, interceptor, and event ports. |
-| [`events.py`](./events.py) | Defines typed lifecycle events emitted by `AgentEngine`. |
-| [`finalize.py`](./finalize.py) | Defines and validates the Engine-owned `finalize_response` schema and converts a valid sole call into a structured completion record. It is not registered as a control `Tool`. |
-| [`ledger.py`](./ledger.py) | Persists typed engine events to the append-only Action Ledger, redacts declared secrets, and reduces incomplete groups into provider-safe restart history. |
-| [`loop.py`](./loop.py) | Backward-compatible local `Agent` facade that composes the Engine with model, dispatcher, lazy persistent kernels, ledger, delegation, and process lifecycle. |
-| [`models.py`](./models.py) | Provider-neutral immutable/mutable values for model replies, run state, execution outcomes, and final Engine results. |
-| [`ports.py`](./ports.py) | Protocol definitions and no-op defaults that isolate the pure Engine from concrete models, storage, kernels, and UI code. |
-| [`runtime.py`](./runtime.py) | Local adapters for the blocking LLM client, compaction, native tools, Python/R kernels, transcript projection, and completion capture. |
-
-## Direct subdirectories
-
-None.
+| [`__init__.py`](./__init__.py) | The package surface: the Engine, the local `Agent` facade and `run_task`, the result values, and the finalization helpers. |
+| [`actions.py`](./actions.py) | The one place a reply becomes an action. It normalizes native calls and recognizes Python/R fences; where both appear, the native calls win. A `finalize_response` is picked out as the Engine finalizer only when it is the sole native call. Both outer loops route through this module, so they cannot drift apart. |
+| [`compaction.py`](./compaction.py) | Decides when the context is too large and what leaves it. Text, images, native calls, and provider wire state are budgeted separately, and every action/result pair stays indivisible. An oversized output moves into a digest-addressed archive and leaves a bounded preview plus a SHA-256 reference in its place. The slice that gets compacted away becomes a structured handoff; the raw slice is also archived as its own record, carrying the branch, ledger, and recovery metadata that ties it back to the run. |
+| [`control.py`](./control.py) | Runs one native-tool batch and closes every declaration with exactly one result, cancellation included. A leading run of read-only calls with non-conflicting resources may go in parallel; the first mutating or unclassified call is a barrier, and results are always written back in the provider's original order. |
+| [`delegation.py`](./delegation.py) | The sub-agent tree behind `host.delegate`. The tree owns the fan-out, session, and depth budgets; each runner owns only its direct children, their executor, and their collected results. Cancelling reaches a child and exactly its descendants, and a stopped child can never publish a late output. Steering messages wait in memory and are consumed at a child's next turn boundary. |
+| [`engine.py`](./engine.py) | The state machine itself. Pure and provider-neutral, it speaks only to ports: model, context, action executor, completion, cancellation, reply interceptor, and events. |
+| [`events.py`](./events.py) | The typed lifecycle events `AgentEngine` emits. |
+| [`finalize.py`](./finalize.py) | Owns the `finalize_response` schema. Providers see a metadata-only spec, the Host revalidates the same closed schema before accepting anything, and one valid sole call becomes a structured completion record. It is deliberately not registered as a control `Tool`. |
+| [`ledger.py`](./ledger.py) | Writes typed engine events into the append-only Action Ledger, redacting declared secrets on the way in. Reading back, it reduces groups into a restart history a provider will accept, closing any tool call that a crash left without a result. |
+| [`loop.py`](./loop.py) | The backward-compatible local `Agent` facade, and the owner of local process lifecycle. It wires the Engine to the model, the dispatcher, the ledger, delegation, and persistent kernels that only start once a turn actually runs code. |
+| [`models.py`](./models.py) | The provider-neutral values that cross the Engine: a normalized model reply, mutable run state, one execution outcome, and the final result. |
+| [`ports.py`](./ports.py) | The protocols the Engine depends on, plus a no-op default for each. This is what keeps `engine.py` from importing a concrete model, storage, kernel, or UI. |
+| [`runtime.py`](./runtime.py) | The local side of those ports. A blocking LLM client, compaction, native tools, Python/R cell execution, the CLI transcript projection, and the read-back of a completion — one adapter each, and the Engine sees none of them directly. |
 
 ## Extension and verification contract
 
-- Add a new action kind only through `actions.py`, typed models/events, and both local and Web compositions; ordering must remain deterministic.
+- A new action kind goes through `actions.py`, the typed models and events, and both compositions, local and Web. Routing order must stay deterministic.
 - Keep `engine.py` free of concrete provider, kernel, Store, and Gateway dependencies.
-- Preserve provider tool-call/result atomicity in the ledger, including synthetic closure after crashes.
-- Re-run agent tests after routing, completion, compaction, or delegation changes; kernel tests are also required when the execution protocol changes.
+- The ledger must keep every provider tool call paired with its result, including the synthetic results it writes to close a group after a crash.
+- Re-run the agent tests after any change to routing, completion, compaction, or delegation. A change to the execution protocol needs the kernel tests as well.

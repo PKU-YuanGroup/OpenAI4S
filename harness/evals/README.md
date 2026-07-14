@@ -1,19 +1,15 @@
 # Harness evaluations
 
-[中文](README_zh.md)
+[中文说明](README_zh.md)
 
-This directory contains reviewable, offline evaluation fixtures and scorers. Evaluations measure an architecture or quality boundary across a set of cases; they complement, but do not replace, focused assertions in [`../../tests/`](../../tests/).
+Offline eval fixtures and the code that scores them. An eval measures one architecture or quality boundary across a whole set of cases, which is a different job from the focused assertions in [`../../tests/`](../../tests/); it complements them and does not replace them.
 
-## Direct files
+## Files
 
 | File | Responsibility |
 | --- | --- |
 | [`__init__.py`](__init__.py) | Exports the action-routing evaluation surface. |
-| [`action_routing.py`](action_routing.py) | Defines recorded model-reply cases for native Tool batches, Python/R Cells, Engine finalization, prose/no-action, unsupported fences, and priority rules; scores `route_action` and reports accuracy/confusion/failures. |
-| [`.gitkeep`](.gitkeep) | Keeps the evaluation extension directory present independently of the current scorer set. |
+| [`action_routing.py`](action_routing.py) | Scores the deterministic router, `route_action`. Each fixture is one recorded model reply standing for a task class: a native Tool batch, a Python or R Cell, an Engine finalization, prose that must not be read as completion, an unsupported fence, and the two priority rules — a native Tool batch beats a fenced Cell, and only the first Cell in a reply is routed. The report carries accuracy, a confusion map, and every case with its pass/fail. |
+| [`.gitkeep`](.gitkeep) | Keeps the directory tracked in git, whatever the current set of scorers happens to be. |
 
-## Direct subdirectories
-
-None.
-
-The evaluator is deterministic and requires no provider key, network, kernel, or optional package. Its pytest contract is [`../../tests/test_action_routing_eval.py`](../../tests/test_action_routing_eval.py).
+The evaluator is deterministic and needs no provider key, no network, no kernel, and no optional package. Its pytest contract is [`../../tests/test_action_routing_eval.py`](../../tests/test_action_routing_eval.py).

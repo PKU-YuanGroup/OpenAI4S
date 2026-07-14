@@ -1,35 +1,31 @@
-# 远程 Job Shell 模板
+# 远程 job 的 shell 模板
 
 [English](README.md)
 
-这些 template 由 [`ComputeManager`](../manager.py) 复制到每个 job 的 staging tree。它们在 BYOC provider sandbox 内运行；不是 daemon startup script，也不用于直接 SSH 兼容路径。
+[`ComputeManager`](../manager.py) 会把这两个模板复制进它为每个 job 搭好的 staging 目录，它们在 BYOC provider 的沙箱里运行。它们不是 daemon 的启动脚本，直接 SSH 的兼容路径也完全用不到它们。
 
 ## 文件
 
 | 文件 | 职责 |
-|---|---|
-| [`run.sh.tmpl`](run.sh.tmpl) | 最小 job 入口：启用严格 Bash 模式、切换到 staged work directory，并在 `{{COMMAND}}` 处替换提交的 command。 |
-| [`wrapper.sh.tmpl`](wrapper.sh.tmpl) | 在独立 process group 中监督 `run.sh`，分离 stdout/stderr，执行 job 与 sandbox-deadline 终止、回收后代进程、写入 phase/deadline marker，并无条件尝试把 `out/` 和日志归档为 `out.tar.gz`。 |
-
-## 子目录
-
-这里没有受跟踪的子目录。
+| --- | --- |
+| [`run.sh.tmpl`](run.sh.tmpl) | job 的入口，有意写得极小：开启严格 Bash 模式，切到 staged 的工作目录，然后在 `{{COMMAND}}` 处替换掉提交上来的命令。 |
+| [`wrapper.sh.tmpl`](wrapper.sh.tmpl) | 在独立的 process group 里监督 `run.sh`：分离 stdout 与 stderr，执行 job 超时和沙箱 deadline 两道终止，回收残留的后代进程，写入 phase 与 deadline 标记文件，并且无论如何都会尝试把 `out/` 连同日志打包成 `out.tar.gz`。 |
 
 ## 运行时契约
 
-- 用户代码必须把期望结果放到 `./out/`；目录为空只会产生 warning。
-- Deadline-control 环境值会在 source `.job_env` 前读取并设为只读，防止 job 提供的变量放宽这些限制。
-- Workload 在独立 session/process group 中运行。TERM、grace、再 KILL 的处理会在 stage 结果前尽力停止后代进程。
-- `.phase` 记录 `done:<rc>:<wall>` 或 `harvest_failed:<rc>:<wall>`。Deadline/job-timeout sentinel 的写入顺序是 Host/provider 分类契约的一部分。
-- 即使 timeout 或 workload 非零退出，也会尝试 stage output，以便 harvest 日志和部分结果。
+- 结果必须写到 `./out/` 下面。`out/` 为空只会产生一条 warning。
+- deadline 控制相关的环境值在 source `.job_env` 之前就已读入并设为只读，job 没法用自己的变量把这些限制放宽。
+- workload 跑在独立的 session 和 process group 里。先 TERM，等一段 grace，再 KILL；在 stage 结果之前，wrapper 会尽力把后代进程一并停掉。
+- `.phase` 记录 `done:<rc>:<wall>` 或 `harvest_failed:<rc>:<wall>`。deadline 与 job 超时这两个 sentinel 的写入顺序，是 Host 和 provider 用来判断 job 如何结束的契约的一部分。
+- 即使发生超时，或者 workload 以非零码退出，也照样会尝试 stage 输出，好让日志和部分结果仍然能被取回。
 
 ## 安全与可移植性边界
 
-- `{{COMMAND}}` 有意作为可执行 job 内容，而不是经过 shell escaping 的数据。安全性依赖 provider sandbox 及 submission 时授予的权限。
-- Wrapper 假设 Linux/GNU 风格环境，具备 Bash、`setsid`、`timeout`、`tar`、process group 和 `/proc/<pid>/stat`；它不是可移植的本地 shell wrapper。
-- `.job_env` 在已授权 sandbox 内被 source。控制变量受到保护，但任意 job environment value 仍对 workload 可用。
-- Marker 文件是防御性协调信号，不是 cryptographic attestation。Wrapper 会缩小伪造窗口；Host 仍必须把远程输出视为不可信。
-- Template 只生成单个 job archive。Host-side 解包、路径校验、持久化注册、Artifact versioning 和科学验证都是独立职责，并可独立失败。
+- `{{COMMAND}}` 有意作为可执行的 job 内容存在，而不是经过 shell 转义的数据。它的安全性取决于 provider 沙箱，以及提交时授予的权限。
+- wrapper 假定运行在 Linux/GNU 风格的环境里：Bash、`setsid`、`timeout`、`tar`、process group 和 `/proc/<pid>/stat` 都得具备。它不是一个可移植的本地 shell wrapper。
+- `.job_env` 是在已经获得授权的沙箱内部被 source 的。控制变量受到保护，但其余任意的 job 环境值对 workload 依然可用。
+- 标记文件是防御性的协调信号，不是密码学意义上的证明。wrapper 只能把伪造窗口压得更窄；Host 仍然必须把远程输出当作不可信数据。
+- 模板产出的只是单个 job 的归档包。Host 侧的解包、路径校验、持久化注册、Artifact 版本管理和科学性验证都是各自独立的职责，也会各自独立地失败。
 
 ## 相关文档
 

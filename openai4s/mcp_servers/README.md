@@ -1,27 +1,23 @@
 # Bundled MCP servers
 
-[中文](./README_zh.md)
+[中文说明](README_zh.md)
 
-**Status: Implemented example, not a production connector catalogue.** This package contains a small pure-stdlib stdio server used to demonstrate and test OpenAI4S MCP discovery and calls end to end.
+One small pure-stdlib stdio server lives here, so that MCP discovery and calls have a real server to be demonstrated and tested against end to end. It is an example, not a production connector catalogue.
 
-## Architectural position
+## Where this fits
 
-The server runs as an external child process. [`../mcp_client.py`](../mcp_client.py) owns the Host-side connection, while [`../tools/mcp.py`](../tools/mcp.py) exposes connector discovery/read/call operations to the native control plane through normal permission, audit, and untrusted-output policy. The example server is not loaded into scientific kernels.
+The server runs as an external child process, never inside a scientific kernel. [`../mcp_client.py`](../mcp_client.py) spawns it and owns the Host-side connection; [`../tools/mcp.py`](../tools/mcp.py) is what the model sees, exposing connector discovery, resource reads, and tool calls to the native control plane under the usual permission, audit, and untrusted-output policy.
 
-## Files directly in this directory
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`__init__.py`](./__init__.py) | Documents the bundled-example namespace. |
-| [`example_server.py`](./example_server.py) | Implements newline-delimited MCP JSON-RPC over stdin/stdout with initialize, four sample tools, one text resource, and one parameterized prompt. |
-
-## Direct subdirectories
-
-None.
+| [`__init__.py`](./__init__.py) | A docstring, nothing more: this is the bundled-example namespace. |
+| [`example_server.py`](./example_server.py) | Speaks newline-delimited MCP JSON-RPC on stdin/stdout: `initialize`, four sample tools (`echo`, `now`, `calc`, `random_int`), one text resource, and one parameterized summarization prompt. `calc` walks a restricted AST instead of calling `eval`. |
 
 ## Scope and extension notes
 
-- This implementation is a fixture/reference server. Real connectors should be separately configured child processes with explicit credentials and permissions.
-- Keep stdout reserved for protocol frames; diagnostics belong on stderr.
-- Match the protocol version and response shapes expected by [`../mcp_client.py`](../mcp_client.py).
-- Server-initiated sampling is outside the current client contract.
+- Treat this as a fixture and a reference, not a starting point for production. A real connector is a separately configured child process with its own explicit credentials and permissions.
+- stdout carries protocol frames and nothing else. Diagnostics go to stderr.
+- The protocol version and response shapes have to match what [`../mcp_client.py`](../mcp_client.py) expects; both sides currently declare `2024-11-05`.
+- Sampling and other server-initiated requests are deliberately outside the current client contract.

@@ -2,44 +2,40 @@
 
 [English](README.md)
 
-本包是 Python 内核侧的内层循环实现。[`worker.py`](../kernel/worker.py) 调用 `build_host(host_call, ...)`，并把返回的 singleton 注入为 `host`。大多数方法都是轻量同步 facade：编码公开 Python 参数，向 daemon 发送一个 `host_call`，等待匹配的 `host_response`，解码结果，并返回或在软错误时抛出异常。
+这里放的是 Agent 代码在 Python Cell 里拿到的那个 `host` 对象，也就是内层循环在 worker 一侧的实现。[`worker.py`](../kernel/worker.py) 调用 `build_host(host_call, ...)`，把返回的单例注入为 `host`。大多数方法都很薄，而且是同步的：把公开的 Python 参数编码好，向 daemon 发出一个 `host_call`，阻塞等待对应的 `host_response`，解码结果，然后返回值，或者在软失败时抛出异常。
 
 ## 在架构中的位置
 
-SDK 不是授权边界，通常也不实现 capability 的具体行为。[`HostDispatcher`](../host_dispatch.py) 与 [`openai4s/host`](../host) 中的 service 负责校验、权限、审批、审计、筛查和 Host 侧工作。有两个重要的 worker-local 例外：
+SDK 不是授权边界，通常也不实现 capability 的具体行为。校验、权限、审批、审计、筛查以及真正的工作都在 Host 侧，由 [`HostDispatcher`](../host_dispatch.py) 和 [`openai4s/host`](../host) 下的各个 service 负责。只有两件事确实在 worker 里跑，而且都很关键：
 
-- `host.bash(...)` 在 sandboxed scientific worker 内执行子进程，但必须先由 Host 签发并原子消费精确的一次性 capability。
-- `host.compute` 在本地创建 Python handle object，而所有 provider 发现、job submission、status、cancel 和 harvest 都通过 Host call 完成。
+- `host.bash(...)` 在科学 worker 内执行子进程，而且必须先由 Host 签发一个精确的一次性 capability 并原子地消费掉。这个 worker 本身是否受操作系统层面的约束，是另一个问题：要看沙箱模式，也要看约束是否真的建立起来。默认模式是 `auto`，探测或自检失败时它照样把 worker 拉起来，只报一个 `state="unavailable"`，所以子进程完全可能跑在没有沙箱的环境里。
+- `host.compute` 只在本地创建 Python 句柄对象。provider 发现、job 提交、状态查询、取消和结果回收全都是 Host call。
 
-R 分析 worker 不导入本包，也没有 `host` singleton。
+R 分析 worker 从不导入本包，那边也没有 `host` 单例。
 
 ## 文件
 
 | 文件 | 职责 |
-|---|---|
-| [`__init__.py`](__init__.py) | 导出 Python worker 使用的组合入口 `build_host`。 |
-| [`bash.py`](bash.py) | Worker-local shell executor：提交精确 command/cwd/generation/challenge proposal，校验返回的 capability，仅消费一次，抓取有界 workspace 元数据快照，启动子进程，并向 Host 上报脱敏/有界结果及文件 diff。 |
-| [`compute.py`](compute.py) | 实现 `host.compute` namespace 和本地 instance/job handle，规范化 provider 参数与路径，把操作映射为 `compute_<op>` RPC，并提供 status/wait/result/cancel/close/attach 语义而不嵌入 provider transport。 |
-| [`host.py`](host.py) | 定义公开 `host.*` facade、严格的顶层 snake_case/camelCase wire codec，以及 skills/query/lineage/endpoints/credentials/MCP/environments/science/compute namespace、文件/网络/delegation/session helper 和 `host.submit_output`。 |
-
-## 子目录
-
-本包没有受跟踪的子目录。
+| --- | --- |
+| [`__init__.py`](__init__.py) | 导出 `build_host`，即 Python worker 调用的组合入口。 |
+| [`bash.py`](bash.py) | 在 worker 里执行 shell 命令，而且只在拿到自己无法签发的授权之后才执行。它提交精确的命令、cwd、内核 generation 和 challenge，再逐项校验返回的 capability 上的每一处绑定，token 只花一次。执行前后各抓一份有界的工作区文件元数据快照。有界的结果和文件增删改清单会上报给 Host，其中形似机密的路径已被遮蔽。 |
+| [`compute.py`](compute.py) | 支撑 `host.compute` 命名空间以及本地的 instance 与 job 句柄。它规范化 provider 参数和路径，把每个操作映射为一次 `compute_<op>` RPC，并在此之上提供 status/wait/result/cancel/close/attach 语义。provider 的传输层不在这里。 |
+| [`host.py`](host.py) | 公开的 `host.*` 门面。最上面是严格的 wire 编解码，负责 snake_case 与 camelCase 之间的映射。它下面是 skills/query/lineage/endpoints/credentials/MCP/environments/science/compute 等命名空间，文件、网络、委派与会话辅助方法，以及 `host.submit_output`。 |
 
 ## RPC 与完成契约
 
-- 每次调用在 Python Cell 内同步执行。即使用户代码创建线程，worker 的 Host-call transaction lock 也只允许一个请求处于 in-flight 状态。
-- 值为 `None` 的可选字段会被省略，而不是编码为 JSON `null`，因为严格 Host schema 会区分“未提供”和非法 null。
-- Host soft-error object 会转换为 `RuntimeError`。Provider/compute 错误可能携带结构化 error-kind 或 concurrency 信息，但仍然是失败。
-- `host.submit_output(...)` 是唯一能把 Python Cell 标记为成功完成的 SDK 方法。打印、返回 Python value、R 结果或普通 Host call 成功都不会结束外层 Agent run。
+- 每次调用都在 Python Cell 内阻塞。即使用户代码自己起了线程，worker 的 Host-call 事务锁也只允许一个请求同时在飞。
+- 值为 `None` 的可选字段会被直接省略，而不是发成 JSON `null`。严格的 Host schema 会区分“字段没给”和“给了一个非法的 null”，后者会被拒绝。
+- Host 返回的软失败对象会转成 `RuntimeError`。provider 与 compute 的错误可能带上结构化的错误类别或并发信息，但它们仍然是失败。
+- `host.submit_output(...)` 是唯一能把 Python Cell 标记为成功完成的 SDK 方法。打印、返回一个 Python 值、产出 R 结果，或者一次普通的 Host call 调成功了，都不会结束外层的 Agent run。
 
 ## 安全与失败边界
 
-- SDK 是运行在强大 Python 进程中的受信任代码。其参数检查有助于协议完整性，但不能替代 dispatcher 权限或 OS sandbox。
-- Shell 授权把 token、command digest、canonical cwd、workspace root、worker generation、challenge 和过期时间绑定在一起。Worker 校验与 Host 消费都会 fail closed；daemon 重启会使未消费的内存 capability 失效。
-- Shell stdout/stderr 脱敏是防御性且基于形状的，无法保证经刻意变换或未识别的 secret 不出现在输出中。
-- Compute handle 是便利投影，并非持久化 Python object。Cell/kernel 重启后必须按 job ID 重建或 attach；可用性取决于 manager/provider 的持久化或内存状态。
-- `host.compute` 是持续演进的集成面。存在公开 SDK 方法本身并不保证 provider 已配置、隔离成功、有远程容量、harvest 成功，或每个后续操作都有第二次审批。
+- SDK 是运行在一个本就很强大的 Python 进程里的受信任代码。它的参数检查有助于保住协议完整性，但替代不了 dispatcher 的权限判断，也替代不了 OS 沙箱。
+- Shell 授权把 token 与命令摘要、canonical cwd、工作区根目录、worker generation、challenge 和过期时间绑在一起。worker 侧校验和 Host 侧消费都是失败即拒绝；daemon 重启会让所有还留在内存里的 capability 失效。
+- 对 shell stdout/stderr 的脱敏是防御性的，靠的是形状匹配。它没法保证一个被刻意变换过、或者根本不认识的 secret 不出现在输出里。
+- compute 句柄只是便利投影，不是持久化的 Python 对象。Cell 或内核重启之后，必须按 job ID 重新构造句柄或者重新挂回去；能不能挂回，取决于 manager 或 provider 还留着多少持久化或内存中的状态。
+- `host.compute` 仍是一个在演进中的集成面。有一个公开的 SDK 方法，本身并不保证 provider 已经配好、隔离确实生效、远端还有容量、结果能成功回收，也不保证后续每一步操作都还会再走一次审批。
 
 ## 相关文档
 

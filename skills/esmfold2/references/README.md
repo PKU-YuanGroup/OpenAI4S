@@ -1,14 +1,10 @@
 # ESMFold2 References
 
-These files are supplementary progressive-disclosure material for specialized model surfaces. They describe upstream APIs whose availability may change with installed versions.
+Two files the main recipe pulls in only when a task reaches one of the more specialized model surfaces. Both describe upstream APIs, and what is actually there depends on the version installed.
 
-## Direct files
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`design-hook.md`](design-hook.md) | Describes the experimental design hook and its fused-kernel backend caveat; this is explicitly experimental guidance rather than a guaranteed stable API. |
-| [`esmc.md`](esmc.md) | Gives ESMC loading and examples for MLM logits/hidden states, zero-shot mutation scoring, sparse-autoencoder features, and contact prediction with expected tensor shapes. |
-
-## Direct subdirectories
-
-None.
+| [`design-hook.md`](design-hook.md) | The gradient hook the ESMFold2-Experimental variants expose for design, and why the fused kernel backend must not be turned on for them. This is explicitly experimental guidance, not a promise that the API stays put. |
+| [`esmc.md`](esmc.md) | How to load ESMC. Two of its four surfaces come with runnable code annotated with the tensor shapes you get back: MLM logits plus hidden states, and sparse-autoencoder features at layer 60. The other two are prose guidance with no code and no shapes. Zero-shot mutation scoring describes the paper's Alg 14; contact prediction gives P@L-LR benchmark numbers and points at the `esm.models.esmc` module for the regression head. |

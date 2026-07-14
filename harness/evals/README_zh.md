@@ -2,18 +2,14 @@
 
 [English](README.md)
 
-本目录保存可审阅的离线评测 fixture 与 scorer。Eval 跨一组 case 衡量架构或质量边界；它补充但不替代 [`../../tests/`](../../tests/) 中的聚焦断言。
+离线 eval fixture 和给它们打分的代码放在这里。一次 eval 衡量的是一整组 case 上的某条架构或质量边界，这和 [`../../tests/`](../../tests/) 里那些聚焦断言不是一回事；它补充断言，不替代断言。
 
-## 直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`__init__.py`](__init__.py) | 导出 Action routing 评测接口。 |
-| [`action_routing.py`](action_routing.py) | 定义原生 Tool batch、Python/R Cell、Engine finalization、prose/no-action、不支持 fence 与优先级规则的录制 model-reply case；为 `route_action` 计分并报告 accuracy/confusion/failure。 |
-| [`.gitkeep`](.gitkeep) | 使评测扩展目录不依赖当前 scorer 集合而保持存在。 |
+| [`__init__.py`](__init__.py) | 导出 Action routing 评测的接口。 |
+| [`action_routing.py`](action_routing.py) | 给确定性路由函数 `route_action` 打分。每条 fixture 是一份录制下来的模型回复，各代表一类任务：原生 Tool batch、Python 或 R Cell、Engine finalization、不能被当成完成信号的普通散文、不支持的 fence，以及两条优先级规则——原生 Tool batch 优先于 fence 里的 Cell，一条回复里也只路由第一个 Cell。报告给出准确率、混淆情况，以及每条 case 的通过与否。 |
+| [`.gitkeep`](.gitkeep) | 把目录留在 git 里，与当前有哪些计分代码无关。 |
 
-## 直属子目录
-
-无。
-
-该 evaluator 完全确定性运行，无需 provider key、网络、内核或可选依赖；pytest 契约位于 [`../../tests/test_action_routing_eval.py`](../../tests/test_action_routing_eval.py)。
+这个 evaluator 完全确定性，不需要 provider key、网络、内核，也不需要任何可选依赖；对应的 pytest 契约是 [`../../tests/test_action_routing_eval.py`](../../tests/test_action_routing_eval.py)。

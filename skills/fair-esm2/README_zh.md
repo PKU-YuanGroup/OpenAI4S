@@ -1,15 +1,11 @@
 # fair-esm2 Skill
 
-本目录保存通过外部 `fair-esm` package 使用 Meta ESM-2 embedding、masked-language-model score、mutation effect 与 contact prediction 的渐进披露 recipe。
+通过外部 `fair-esm` 依赖包使用 Meta ESM-2：逐残基与整条序列的嵌入表示、掩码语言模型打分、突变效应，以及残基接触。ESM-2 只读序列。它拿不到结构，也不做反向折叠——接触图是纯从残基推出来的，方向和 MPNN 那几个 Skill 正好相反。开工前先绕开一个依赖包的坑：`fair-esm` 和 Biohub 的 ESM 分支都以 `esm` 的名字导入，却是两个不同的库。这份 recipe 讲的是 Meta 那个，分支那条路见 `esmfold2`。
 
-它不捆绑 checkpoint，也不保证 CPU/GPU 容量。模型 likelihood/contact 输出属于计算预测，需要针对任务验证。
+本目录不捆绑任何权重，也不会替你留出它所需要的 CPU 或 GPU 容量。模型给出的似然与接触图都属于计算预测，它们对你的具体任务是否成立，要靠与任务匹配的验证来确认。
 
-## 直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`SKILL.md`](SKILL.md) | 说明 checkpoint 选择、alphabet/batch conversion、representation layer、pooled/per-residue embedding、mask-based mutation scoring、contact、批处理、内存与模型限制。 |
-
-## 直属子目录
-
-无。
+| [`SKILL.md`](SKILL.md) | 先选权重（8M 用来冒烟，默认 650M，要最好的嵌入就上 3B），再依次讲 alphabet 与 batch 转换怎么做、取哪一层的表示、整条序列池化的向量和逐残基向量的区别、怎么用掩码给突变打分、怎么拿接触图。批处理、内存开销和模型本身的限制放在最后。 |

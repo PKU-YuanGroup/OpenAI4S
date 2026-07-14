@@ -1,15 +1,11 @@
 # Mineral Spectra Case 1
 
-This directory separates observable synthetic input from its evaluation-only answer key.
+The observable input of the synthetic case, with its answer key kept in a separate file that only the evaluation step may open.
 
-## Direct files
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`spectrum.csv`](spectrum.csv) | Observable 626-row two-column `raman_shift,intensity` dirty mixed-mineral Raman spectrum consumed by the blind pipeline. |
-| [`input.png`](input.png) | 1200×360 RGBA plot of the same dirty input spectrum for visual inspection; it is presentation, not an additional measurement. |
-| [`truth.json`](truth.json) | Hidden synthetic answer key naming Clinoptilolite-Ca, Bertrandite, and Diopside with their true fractions and generation noise/spike/baseline metadata; evaluation code may read it only after blind inference. |
-
-## Direct subdirectories
-
-None.
+| [`spectrum.csv`](spectrum.csv) | The dirty mixed-mineral Raman spectrum the blind pipeline consumes: 626 rows of two-column `raman_shift,intensity` data. |
+| [`input.png`](input.png) | A 1200×360 RGBA plot of that same dirty spectrum, for eyeballing the input. It is a picture of the data, not a second measurement. |
+| [`truth.json`](truth.json) | The hidden answer key: Clinoptilolite-Ca, Bertrandite and Diopside with their true fractions, plus the noise, spike and baseline settings the case was generated with. Evaluation code may read it only once blind inference has finished. |

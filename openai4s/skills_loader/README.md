@@ -1,30 +1,26 @@
 # Skill loading and versioning
 
-[中文](./README_zh.md)
+[中文说明](README_zh.md)
 
-**Status: Implemented.** This package discovers recipe-centric Skills, exposes only summaries until progressive disclosure is requested, validates optional Python sidecars structurally, and manages immutable user Skill versions with atomic materialized views.
+Skill discovery and Skill versioning live here. The loader finds recipe-centric Skills and gives the outer loop nothing but their summaries until progressive disclosure asks for the full text; the version service keeps writable Skill packages as immutable versions in the Store and swaps their on-disk views into place atomically. Optional Python sidecars are compile-checked before either path lets a kernel import one.
 
-## Architectural position
+## Where this fits
 
-Skills are an extension plane for Code-as-Action, not native JSON tool schemas. A Skill directory contains `SKILL.md`, optionally `kernel.py`, and optional resources. The outer-loop prompt sees name/summary metadata; [`../tools/skills.py`](../tools/skills.py) and Host services load full recipes on demand. Agent-authored Python can then import a validated sidecar inside the scientific worker.
+A Skill extends Code-as-Action; it is not a native JSON tool schema. A Skill directory holds `SKILL.md`, an optional `kernel.py` sidecar, and optional resources. The outer-loop prompt only ever sees the name and the one-line summary; [`../tools/skills.py`](../tools/skills.py) and the Host services pull the full recipe when a task calls for it. Agent-authored Python then imports the compile-checked sidecar inside the scientific worker.
 
-Bundled Skills are read-only and win name collisions. Writable user Skills live under configured data/project roots and are versioned through the Store. Capability state is resolved against the current Store generation rather than retained from a closed Store.
+Bundled Skills are read-only and win name collisions. Writable Skills live under the configured data and project roots, and the Store versions them. The default loader holds no repository of its own: it asks the current Store generation on every capability call, because a loader can outlive the Store that created it and would otherwise be left pointing at a closed connection.
 
-## Files directly in this directory
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`__init__.py`](./__init__.py) | Documents the Skill directory contract and re-exports discovery, loader, value, and version-service APIs. |
-| [`loader.py`](./loader.py) | Parses frontmatter, discovers bundled/user Skills, computes summaries/search matches, resolves capability state, exposes full recipes progressively, builds import metadata, and compile-checks `kernel.py` sidecars. |
-| [`versions.py`](./versions.py) | Validates bounded, symlink-free Skill packages; stores immutable versions; materializes personal/project views off to the side; and activates or rolls back them with filesystem and database compare-and-swap recovery. |
-
-## Direct subdirectories
-
-None.
+| [`__init__.py`](./__init__.py) | States the Skill directory contract in its docstring and re-exports the public names: `Skill`, `SkillLoader`, `SkillVersionService`, and `discover_skills`. |
+| [`loader.py`](./loader.py) | Finds the Skills and decides how much of one to reveal. It parses `SKILL.md` frontmatter, scans the bundled, project and user roots, resolves capability state, and scores searches by keyword overlap. The system prompt gets summaries; the full recipe, the sidecar import hint, and the in-kernel bootstrap manifest are produced on demand. A `kernel.py` sidecar is compile-checked before anything imports it. |
+| [`versions.py`](./versions.py) | Installs, upgrades, publishes, rolls back and deletes writable Skills. A package is validated first (bounded size, no symlinks, no paths escaping the directory) and stored as an immutable version; the personal or project directory on disk is only a materialized view, rebuilt off to the side and swapped in. Activation in the database is compare-and-swap, and if that switch fails the previous directory is restored before the error escapes. |
 
 ## Skill authoring and safety contract
 
-- Treat `SKILL.md` as a recipe for generated code, not as an executable control-tool declaration.
-- Compile-checking a sidecar proves only Python syntax/structure; normal kernel sandbox, permission, and import rules still apply at execution time.
-- Reject unsafe paths, symlinks, oversized files/packages, and invalid canonical names before materialization.
-- Keep bundled roots read-only and preserve their precedence over writable names.
+- `SKILL.md` is a recipe the agent writes code from. It is not an executable control-tool declaration.
+- The compile gate proves that a sidecar parses. It proves nothing about what the sidecar does: the kernel sandbox, the Host permissions, and the normal import rules all still apply when it runs.
+- Unsafe paths, symlinks, oversized files or packages, and invalid canonical names are rejected before anything is materialized.
+- Bundled roots stay read-only, and a bundled name always takes precedence over a writable one.

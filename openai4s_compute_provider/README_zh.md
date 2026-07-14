@@ -2,39 +2,35 @@
 
 [English](README.md)
 
-尽管包名是历史遗留名称，本包实际是 stdlib-only **worker runtime**，而不是具体 compute provider。Provider-specific shim 位于 `skills/remote-compute-<id>/provider.py`，实现这里的协议，也是唯一预期导入第三方 provider SDK 的层。Runtime 提供共享 authentication、secret 环境清理、ownership 检查、lifecycle operation、staging、output cap 和错误规范化。
+包名是历史遗留。这里放的其实是一个只依赖标准库的 **worker runtime**，而不是某个具体的 compute provider。一个 provider 就是 `skills/remote-compute-<id>/provider.py` 下的一层 shim，它实现本包定义的协议，也是整个系统里唯一预期会导入第三方 provider SDK 的地方。这些 shim 共用的东西都在本包：认证、清理环境里的 secret、所有权检查、生命周期操作、暂存、输出上限，以及错误规范化。
 
 ## 在架构中的位置
 
-[`ComputeManager`](../openai4s/compute/manager.py) 以 Python isolated mode 启动 [`__main__.py`](__main__.py) 执行 BYOC operation。在当前使用的 oneshot 路径中，request/reply 文件经过私有 staging directory，credential 通过 stdin 到达，从不放入子进程 environment。Runtime 加载一个 provider shim，在操作已有 sandbox 前验证 ownership，并把实际 sandbox create/exec/list/terminate 行为委托给该 provider。
+[`ComputeManager`](../openai4s/compute/manager.py) 以 Python 的 isolated 模式启动 [`__main__.py`](__main__.py) 来执行 BYOC 操作。目前走的是 oneshot 路径：请求和回复以文件形式经过一个私有暂存目录，凭据从 stdin 进来，从不放进子进程的环境变量。runtime 只加载一个 provider shim，在操作已有沙箱之前先验证所有权，真正的沙箱创建/执行/枚举/终止行为则交给该 provider。
 
-Runtime 还实现了 long-lived REPL mode，使用 fd-3 control/auth channel 和公共 Python Cell 协议。存在这项支持并不证明所有 Host 路径或 UI 已端到端接好持久 provider kernel。
+runtime 还实现了一个长驻的 REPL 模式，用 fd-3 作为控制/认证通道，走的是公共的 Python Cell 协议。这项支持存在归存在，但不能据此认为所有 Host 路径或 UI 都已经端到端接好了常驻的 provider 内核。
 
 ## 文件
 
 | 文件 | 职责 |
-|---|---|
-| [`__init__.py`](__init__.py) | 说明包契约，并导出 provider protocol、resident、channel helper、limit、error kind、path 和 secret-scrub function。 |
-| [`__main__.py`](__main__.py) | 通用 isolated 入口：在导入 `provider.py` 前执行 baseline 环境清理，按精确文件路径加载 `PROVIDER`，然后启动 oneshot 或 REPL mode。 |
-| [`_channel.py`](_channel.py) | 实现有上限的 newline-framed fd-3 ready/event/auth message、stdin/fd-3 authentication 解析、字节格式化和防止意外输出 token 的 stdout/stderr courtesy scrubber。 |
-| [`_constants.py`](_constants.py) | 集中 stream/harvest cap、idle timeout、stage/work path、协议 exit code、fd/line limit、已识别 credential-name pattern、provider-secret prefix 和规范化 error kind。 |
-| [`_protocol.py`](_protocol.py) | 定义 `ByocProvider`、运行中 `ExecResult` 的 structural contract 和 typed `ByocError`；provider 可以不实现可选的 persistent-store browsing method。 |
-| [`_resident.py`](_resident.py) | 运行强化 prologue 与 oneshot/REPL lifecycle；通过 owner-tag 检查、有界传输、脱敏、deadline 和结构化 reply 处理 create、submit、wait/harvest、batch probe、reconcile、tail、browse/read 和 terminate。 |
-
-## 子目录
-
-本包没有受跟踪的子目录。
+| --- | --- |
+| [`__init__.py`](__init__.py) | 对外的门面。说明本包的契约，并导出 provider 协议、resident、channel 辅助函数、各类上限、错误类别、路径以及清理 secret 的函数。 |
+| [`__main__.py`](__main__.py) | 所有 provider 共用的唯一入口。它先做一遍基线的环境清理，再导入 `provider.py`，按精确的文件路径加载 `PROVIDER`，然后启动 oneshot 或 REPL 模式。 |
+| [`_channel.py`](_channel.py) | 底层传输管道，不认识 provider，也不认识具体操作：带上限的、按换行分帧的 fd-3 ready/event/auth 消息，从 stdin 或 fd-3 读取的认证握手，字节数格式化，以及一个防止 token 被顺手打印出去的 stdout/stderr scrubber。 |
+| [`_constants.py`](_constants.py) | 把 resident、控制通道和各个 shim 必须取得一致的数值集中在一处：流与回收的字节上限、空闲超时、stage 与 work 路径、协议退出码、fd 与行长上限、已识别的凭据命名模式、provider secret 前缀，以及规范化后的错误类别。 |
+| [`_protocol.py`](_protocol.py) | `ByocProvider` 与运行中 `ExecResult` 的结构化契约，外加带类型的 `ByocError`。没有可浏览持久存储的 provider，直接不实现那几个可选的浏览方法即可。 |
+| [`_resident.py`](_resident.py) | 承载 provider 的受限进程：先跑强化 prologue，再进入 oneshot 或 REPL 生命周期。创建、提交、等待/回收、批量探测、对账、tail、浏览/读取、终止都由它处理，一路带着所有者标签检查、有界传输、脱敏、超时期限和结构化回复。 |
 
 ## 生命周期与信任边界
 
-- Secret 清理分两阶段：provider-agnostic baseline 在 provider import **之前**运行，随后在读取 credential 前清理 provider 声明的 prefix。这是基于名称的 heuristic；以未识别名称保存的 secret 不会被移除。
-- Credential 会被有意传给 `provider.apply_auth`，因此 provider shim 具备该 credential 表示的权限。Stdout scrubber 只是防止意外打印的 courtesy protection，不能约束恶意 provider。
-- Isolated mode（`python -I`）防止 provider sibling file 劫持 import，但不是 OS sandbox。Confinement 必须由启动 Host 提供并验证。只有调用方请求 `expect_confined` 且 runtime probe 失败时，oneshot mode 才以 exit 71 fail closed；未请求的调用方没有建立该边界。
-- Linux confinement probe 比较 network-namespace identity；macOS probe 依赖 home-directory read denial。Probe 成功只验证这些 invariant，不代表完整隔离。
-- Sandbox owner tag 把 operation 绑定到一个 OpenAI4S installation。Runtime 拒绝 ownership mismatch；新建 sandbox 无法正确回读 ownership 时会 best-effort terminate。
-- Request/reply staging path 必须解析到预期 temp prefix 下。Transfer 和 log tail 有上限，但 harvest 的 provider 字节仍是不可信内容，需要 Host 侧安全解包/Artifact 处理。
-- REPL idle/auth 过期会退出 resident。Oneshot signal 与协议错误使用专用 exit code；可能时，失败会规范化为有界 `ByocError` kind/message。
-- 本 runtime 支持 provider contract，但不会让 `host.compute` 自动达到 scheduler-grade 或 durable。Host job record 与 warm-sandbox handle 仍可能只在内存中，provider/cloud 行为也可独立失败。
+- 清理 secret 分两阶段：与 provider 无关的基线清理在导入 provider **之前**跑，随后在读取凭据之前，再按 provider 自己声明的前缀清理一遍。这是基于名称的启发式判断；以未被识别的名称保存的 secret 不会被清掉。
+- 凭据是有意交给 `provider.apply_auth` 的，因此 provider shim 就拥有这份凭据所代表的权限。stdout 的 scrubber 只挡意外打印，挡不住一个恶意的 provider。
+- isolated 模式（`python -I`）能防止 provider 目录里的同级文件劫持 import，但它不是 OS 沙箱。隔离必须由启动它的 Host 提供，而且必须验证。只有当调用方要求 `expect_confined` 且 runtime 的探测失败时，oneshot 模式才会以退出码 71 失败即拒绝；没有提出这个要求的调用方，等于没有建立这条边界。
+- Linux 上的隔离探测比较的是网络命名空间的身份，macOS 上则依赖对 home 目录的读取被拒绝。探测通过只说明这些不变量成立，不代表隔离是完整的。
+- 沙箱的所有者标签把每个操作绑定到某一个 OpenAI4S 安装实例。所有权对不上时 runtime 直接拒绝；新建的沙箱如果回读不到正确的所有权，runtime 会尽力而为地把它终止掉。
+- 请求/回复的暂存路径必须解析到预期的临时目录前缀之下。传输和日志 tail 都有上限，但从 provider 回收来的字节仍然是不可信内容，需要 Host 侧安全地解包并按 Artifact 处理。
+- REPL 空闲超时或认证过期都会让 resident 退出。oneshot 收到信号或遇到协议违规时使用专门的退出码；在可能的情况下，失败会被规范化成有界的 `ByocError` 类别与消息。
+- 本 runtime 支持的是一份 provider 契约。它不会让 `host.compute` 变成调度器级别的、可持久化的东西：Host 侧的任务记录和热沙箱句柄仍可能只存在于内存中，provider 与云端本身也可能各自出问题。
 
 ## 相关文档
 

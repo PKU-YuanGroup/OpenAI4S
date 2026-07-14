@@ -2,49 +2,45 @@
 
 [中文说明](README_zh.md)
 
-This directory contains focused host-side capability services. They are composed by [`HostDispatcher`](../host_dispatch.py), which remains the shared RPC envelope for argument validation, permission/approval checks, audit records, untrusted-output screening, activity events, and soft-error routing. These services implement domain behavior; they are not independently exposed network endpoints.
+The host-side capability services live here, one class per domain, from shell authorization to Skill editing. [`HostDispatcher`](../host_dispatch.py) composes them and stays wrapped around every call as the shared RPC envelope: argument validation, permission and approval checks, audit records, untrusted-output screening, activity events, and soft-error routing. Nothing in this package is a network endpoint of its own; each service only implements the behavior of its own domain.
 
-## Place in the architecture
+## Where this fits
 
-Python's worker-side [`host` facade](../sdk/host.py) emits a synchronous `host_call`. [`kernel/manager.py`](../kernel/manager.py) hands it to `HostDispatcher`, which applies policy and invokes one of the services below. The returned value is sent in the matching `host_response`, allowing the blocked Cell to resume. Native control tools also use the dispatcher where their capability overlaps, keeping control-plane and in-kernel policy consistent.
+Python's worker-side [`host` facade](../sdk/host.py) emits a synchronous `host_call`. [`kernel/manager.py`](../kernel/manager.py) hands it to `HostDispatcher`, which applies policy and invokes one of the services below. The returned value goes back in the matching `host_response`, so the blocked Cell can resume. Native control tools go through the same dispatcher where their capability overlaps, which keeps control-plane and in-kernel policy consistent.
 
-A service may return the single-key shape `{"error": message}` as a soft failure. The Python worker converts that result to `RuntimeError`; it is not a successful scientific result or task completion. Most services deliberately leave permission, replay, audit, and injection policy to the dispatcher rather than duplicating it.
+A service can fail softly by returning the single-key shape `{"error": message}`. The Python worker turns that into a `RuntimeError`; it is never a successful scientific result or a task completion. Permission, replay, audit, and injection policy stay in the dispatcher, and most services deliberately do not reimplement them.
 
 ## Files
 
 | File | Responsibility |
-|---|---|
-| [`__init__.py`](__init__.py) | Re-exports the principal service classes used by composition code. |
-| [`bash.py`](bash.py) | Authorizes kernel-local `host.bash`: classifies/redacts proposals, issues short-lived generation/challenge/command/cwd-bound capabilities, consumes each token once, and records a bounded worker-reported result. It never imports `subprocess` or executes the command. |
-| [`completion.py`](completion.py) | Validates the sole in-Cell success contract (`output` plus 1–4 completed-action bullets and an optional schema) and stores one submission for the active dispatch context. |
-| [`credentials.py`](credentials.py) | Keeps session-local credentials and short-lived, action-bound, single-use leases in memory; rotation invalidates leases and no raw value is persisted here. |
-| [`data.py`](data.py) | Store-backed read-only SQL/schema access, scoped Artifact metadata/version/path/save/restore operations, image projection, frame browsing, and provenance/lineage reads and reports. |
-| [`delegation.py`](delegation.py) | Applies stored agent-profile overrides, injects built-in specialist context, and forwards delegate/children/collect/stop/message/stat operations to the session's delegation runtime. |
-| [`delegation_policy.py`](delegation_policy.py) | Parses and freezes child-Agent method/capability policy, including aliases, per-method decisions, and tool visibility; explicitly restricted policies allowlist operations, while the separate unrestricted mode remains explicit in the projection. |
-| [`endpoints.py`](endpoints.py) | Allocates loopback ports, stores endpoint metadata/start-stop scripts, and probes readiness. Registration does not execute the stored lifecycle scripts or introduce a separate egress policy. |
-| [`files.py`](files.py) | Resolves the late-bound session workspace, confines relative paths to it, rejects secret basenames, and provides compatibility dispatch to class-based file tools where concrete I/O behavior lives. |
-| [`llm.py`](llm.py) | Performs synchronous configured-model calls from a running Cell, including bounded concurrent batch fan-out, and projects current/listed model metadata. |
-| [`mcp.py`](mcp.py) | Resolves persisted MCP connectors and forwards list/tools/call/resource/prompt operations to the MCP manager; permission and untrusted-output screening remain in the dispatcher. |
-| [`progress.py`](progress.py) | Maintains transient per-dispatcher todos and updates/reads persisted approved-plan steps and reviewer progress. |
-| [`remote_capabilities.py`](remote_capabilities.py) | Normalizes narrowly structured SSH verification probes, checks remote capability availability, and registers verified service metadata in the remote-compute registry. |
-| [`remote_science.py`](remote_science.py) | Invokes registered SSH folding and mutation-scoring wrappers, parses explicit result markers, and records remote provenance. Missing or failed services return errors rather than fabricated science. |
-| [`science.py`](science.py) | Builds allowlisted public scientific-database requests through the shared fetch path and normalizes UniProt, PDB, Ensembl, ChEMBL, PubChem, arXiv, and OpenAlex responses. |
-| [`session.py`](session.py) | Constrains control operations to the current root session, reads durable branch/checkpoint/permission status, and delegates filesystem-aware checkpoint/fork/revert/recovery operations to an attached Web session-domain service. |
-| [`skills.py`](skills.py) | Searches, reads, edits, publishes, versions, rolls back, and deletes scoped Code-as-Action Skills while preserving bundled-skill precedence and filesystem confinement. |
-
-## Subdirectories
-
-There are no tracked child directories in this package.
+| --- | --- |
+| [`__init__.py`](__init__.py) | Re-exports most of the service classes used by composition code. `BashAuthorizationService` and `ScienceConnectorService` are not in `__all__`; callers import those from their own modules. |
+| [`bash.py`](bash.py) | Authorizes kernel-local `host.bash` without ever running it; the module does not import `subprocess`. The trusted host repeats the safety and egress checks the worker already did, redacts the proposal, then mints a short-lived token bound to the command digest, cwd, worker generation, and challenge. That token can be redeemed exactly once. Whatever the worker reports back is bounded and redacted before it is recorded. |
+| [`completion.py`](completion.py) | The only success contract a Cell has. It validates an `output`, one to four completed-action bullets, and an optional output schema, and keeps one valid submission for the active dispatch context. |
+| [`credentials.py`](credentials.py) | Session-local credentials, held in memory and handed out as short-lived, action-bound, single-use leases. Rotating a credential invalidates its outstanding leases. No raw value is persisted here. |
+| [`data.py`](data.py) | The Store-backed data surface. Read-only SQL, schema access, and frame browsing sit on one side; Artifact metadata, versions, paths, save, restore, and image projection on the other, together with provenance and lineage reads and reports. Enumeration and lookup of Artifacts stay inside the caller's own session and project. The current frame is only the handle that resolves that `root_frame_id`/`project_id` scope, so Artifacts written by earlier Cells of the same session stay reachable. |
+| [`delegation.py`](delegation.py) | The front of the session's delegation runtime. It applies a stored agent profile's overrides and injects the built-in specialist context; the delegate, children, collect, stop, message, and stats calls themselves pass through to the runtime that owns the children. |
+| [`delegation_policy.py`](delegation_policy.py) | Parses a child Agent's method and capability policy once, then freezes it. Naming any capability makes the policy restricted. Even then, five methods (`submit_output`, `prov_record`, `prov_resolve_path`, `search_capabilities`, `capabilities`) are allowed on top of the listed capabilities and their aliases — under every restricted policy, including one whose capability list is empty. Per-method allow/ask/deny decisions and tool visibility ride along, and the separate unrestricted mode stays explicit in the projection rather than being implied. |
+| [`endpoints.py`](endpoints.py) | Loopback port allocation, endpoint metadata with its start and stop scripts, and a readiness probe against the live route. Registration stores those lifecycle scripts; it does not run them, and it introduces no egress policy of its own. |
+| [`files.py`](files.py) | The workspace path boundary, and only that. It resolves the late-bound session workspace, keeps relative paths inside it, and rejects secret basenames. The remaining methods are compatibility dispatch into the class-based file tools, which is where concrete I/O behavior lives. |
+| [`llm.py`](llm.py) | Calls the configured model synchronously from a running Cell. A batch request fans out concurrently under the fan-out cap. The service also reports the current model, and its model listing is not a catalogue: it returns exactly one entry, the configured model plus its context window. |
+| [`mcp.py`](mcp.py) | Resolves a persisted MCP connector by id first, then by exact display name, and hands list/tools/call/resource/prompt operations to the MCP manager. Screening what comes back is not its job. Permission and untrusted-output checks stay in the dispatcher. |
+| [`progress.py`](progress.py) | Todos live in memory here; plan steps and reviewer progress live in the Store. Approval is not a precondition for ticking a step: absent an explicit `plan_id`, the plan it updates is whatever the Store returns for the frame, which is the newest plan that has not been discarded. |
+| [`remote_capabilities.py`](remote_capabilities.py) | Registration is gated on evidence. A narrowly structured probe spec is normalized into one safe remote command and run to check that the remote capability is actually there; only then does the verified service metadata enter the remote-compute registry. |
+| [`remote_science.py`](remote_science.py) | Runs the registered folding and mutation-scoring wrappers over SSH, parses their explicit result markers, and buffers remote provenance for the producing cell. A missing or failed service returns an error. It does not fabricate science. |
+| [`science.py`](science.py) | Seven public databases behind one envelope: UniProt, PDB, Ensembl, ChEMBL, PubChem, arXiv, and OpenAlex. Requests are built against the allowlist and go out through the shared fetch path, and each response is normalized into the same record shape. |
+| [`session.py`](session.py) | Pins control operations to the dispatcher's current root session, so no call can reach into another conversation. Checkpoints and pending permission requests always come from Store. Branch and recovery status come from the attached Web session-domain service, which is the normal Web runtime; with no domain attached, the status projection falls back to a read-only branch list from Store and reports recovery as unavailable. The filesystem-aware checkpoint, fork, revert, and recovery operations are delegated to that same domain service. |
+| [`skills.py`](skills.py) | The Skill lifecycle end to end: search, read, edit, publish, version, roll back, delete. Scope decides which directory on disk owns a Skill; bundled Skills keep precedence over user ones, and writes stay confined to the skill directories. |
 
 ## Control, security, and failure boundaries
 
 - [`HostDispatcher`](../host_dispatch.py), not an individual service, is the authorization and audit boundary. Calling a service directly is trusted in-process composition and bypasses that envelope.
-- Shell execution stays inside the scientific worker through [`sdk/bash.py`](../sdk/bash.py). This package only mints and consumes one-shot capabilities; reported stdout/stderr is bounded and redacted before persistence.
-- Credential values are memory-only in [`credentials.py`](credentials.py), but any consumer that receives a redeemed value has the power associated with it. Name-based redaction is not a proof that arbitrary output contains no secret.
-- [`files.py`](files.py) confines paths, while the actual Tool classes own read/write behavior. Artifact snapshots and provenance registration are separate, best-effort persistence steps and are not a global filesystem/SQLite transaction.
+- `host.bash` never runs here. Its shell execution stays inside the scientific worker through [`sdk/bash.py`](../sdk/bash.py), and [`bash.py`](bash.py) only mints and redeems the one-shot capability; reported stdout/stderr is bounded and redacted before persistence. Do not read that as a package-wide property. [`remote_science.py`](remote_science.py) and [`remote_capabilities.py`](remote_capabilities.py) each default their runner to `subprocess.run` and shell out from the trusted host process, running `ssh -o ConnectTimeout=15 -o BatchMode=yes <host> <command>` to reach a registered remote GPU host.
+- Credential values are memory-only in [`credentials.py`](credentials.py), but any consumer that receives a redeemed value holds the power that goes with it. Name-based redaction is not a proof that arbitrary output contains no secret.
+- [`files.py`](files.py) confines paths, while the actual Tool classes own read/write behavior. Artifact snapshots and provenance registration are separate persistence steps that try but do not guarantee; they are not one global filesystem/SQLite transaction.
 - Endpoint start/stop scripts are metadata only. A successful readiness probe does not establish tenant isolation, authentication, or safe public exposure.
 - General `host.compute`, remote capability provisioning, folding, and mutation scoring are evolving integration surfaces. A registered route or service class does not prove that provider credentials, remote software, GPU capacity, or end-to-end UI recovery are configured.
-- Public-database, MCP, LLM, and remote SSH calls can fail independently or return hostile content; dispatcher screening is an additional layer, not validation of scientific correctness.
+- Public-database, MCP, LLM, and remote SSH calls can fail independently or return hostile content. Dispatcher screening is one more layer, not a check on scientific correctness.
 
 ## Related documentation
 

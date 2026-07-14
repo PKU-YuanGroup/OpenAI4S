@@ -1,17 +1,17 @@
 # Indication Dossier Skill
 
-这个渐进披露 Skill 组织涵盖 patient population、epidemiology、biology、standard of care、regulatory precedent 与 clinical trial 的治疗适应症研究 dossier。它是研究/写作 recipe，不是医疗建议或自动核验的证据数据库。
+针对单个治疗适应症做研究、并写成一份 dossier。这里把适应症当成一个患者群体来看，而不是一个疾病实体：这些患者是谁、有多少、生物学上出了什么问题、今天怎么治、监管机构此前认可过什么、哪些临床试验改变了这个领域。有些群体根本对不上任何一个可计费的诊断，把这一点讲明白也是分内事，因为它会改变监管路径。这是一份研究与写作的 recipe，不给医疗建议，产出的内容也没有和任何已核验的证据数据库比对过。
 
-Agent 必须检索当前权威来源、精确引用、保留不确定性/冲突，并遵守 reference phase 中的 anti-fabrication gate。本目录不捆绑 sidecar 或实时数据源。
+检索由 Agent 自己完成。它必须找到当前的权威来源、精确引用，把不确定性和来源之间的分歧原样留在文里而不是抹平，并遵守各阶段参考文档里禁止捏造的硬性规则。本 Skill 不附带 sidecar，也不附带实时数据源。
 
-## 直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`SKILL.md`](SKILL.md) | 编排 phased waypoint workflow、progress/resume 行为、来源收集、综合、输出文件与质量检查。 |
+| [`SKILL.md`](SKILL.md) | 驱动整轮研究：五个阶段，每个阶段写一个 waypoint 文件；第 1 阶段结束后有一次身份确认，工作目录里已经有 waypoint 时可以续跑。它同时规定输入、Skill 期望的工具（以及某个 MCP 未连接时的退路）、输出布局，以及综合阶段还允许补取什么、什么只能记成缺口。 |
 
-## 直属子目录
+## 子目录
 
 | 目录 | 职责 |
 | --- | --- |
-| [`references/`](references/) | 按需读取的研究标准、phase instruction、写作规则与 machine-readable waypoint schema。 |
+| [`references/`](references/) | 按需加载：跨阶段通用的研究标准、每个阶段一份的操作说明、写作规则，以及 waypoint 文件的 JSON schema。 |

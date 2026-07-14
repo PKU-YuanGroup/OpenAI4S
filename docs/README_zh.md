@@ -2,31 +2,31 @@
 
 [English](README.md)
 
-此目录保存随 OpenAI4S 源码分发的文档，并维持历史兼容链接。公开双语网站由
+随 OpenAI4S 源码一起分发的文档放在这里，历史遗留的兼容链接也保留在这里。公开的双语网站由
 [`Nobody-Zhang/openai4s-docs`](https://github.com/Nobody-Zhang/openai4s-docs)
-单独维护；此目录中的内部计划不会发布到该网站。
+单独维护；本目录里的内部计划不会发布到那个网站。
 
 ## 文件
 
 | 文件 | 职责与状态 |
-|---|---|
-| `architecture.md` | 当前 dual-loop 架构与 Host API 概览，也是贡献者使用的兼容入口。 |
+| --- | --- |
+| `architecture.md` | 当前的双循环架构与 Host API 概览，也是贡献者使用的兼容入口。 |
 | `ark-agent-plan-9.9.png` | 源码仓库根 README 展示的火山方舟 Agent 套餐价格截图。 |
-| `backend-extension-guide.md` | Tool、Host service、storage、provider、Skill 与 Web session service 的当前扩展接缝。 |
-| `backend-refactor-architecture.md` | 历史 backend-refactor 设计记录；不能证明当前已端到端实现。 |
-| `compute.md` | Remote compute、BYOC provider 与 `host.fold` 的行为及限制。 |
-| `configuration.md` | Provider、environment、daemon、kernel 与 data directory 配置。 |
-| `jupyter.md` | Jupyter adapter 行为、执行边界与兼容说明。 |
-| `package-architecture.md` | 分解工作期间使用的历史 package/ownership inventory。 |
-| `plan-corecoder-refactor.md` | 内部历史重构计划；不进入公开网站内容。 |
-| `refactor-plan.md` | 为决策上下文保留的历史迁移计划。 |
-| `release-validation.md` | 离线 CI、package artifact、import 与外部 release gate。 |
-| `security.md` | 威胁模型、信任边界、enforcement layer 与已知覆盖缺口。 |
-| `skills.md` | Bundled/user Skill 格式、加载、sidecar 与生命周期。 |
-| `webapp-api.md` | 详细 REST/WebSocket 功能面与兼容行为。 |
-| `webapp.md` | Web workbench 概念、projection、状态与运维行为。 |
+| `backend-extension-guide.md` | 当前的扩展接缝：新增一个 Tool、Host 服务、存储仓储、provider、Skill 或 Web 会话服务时，各自该接在哪里。 |
+| `backend-refactor-architecture.md` | backend refactor 的历史设计记录。它记的是当时定下的方案，不能用来证明当前已经端到端实现。 |
+| `compute.md` | 远程计算、BYOC provider 与 `host.fold` 的行为和限制。 |
+| `configuration.md` | provider、环境、daemon、内核与数据目录分别怎么配置。 |
+| `jupyter.md` | 可选的 Jupyter 适配器：它对外暴露什么、执行边界划在哪里，以及相关的兼容说明。 |
+| `package-architecture.md` | 分解工作期间使用的历史清单，记录包与归属关系。 |
+| `plan-corecoder-refactor.md` | 内部的历史重构计划；不进入公开网站的内容。 |
+| `refactor-plan.md` | 为保留决策上下文而留存的历史迁移计划。 |
+| `release-validation.md` | 发布要过的几道关卡：离线 CI、发布包检查、import 冒烟，以及有意留在 CI 之外的外部关卡。 |
+| `security.md` | 威胁模型、信任边界、各层防护与已知的覆盖缺口。 |
+| `skills.md` | 内置与用户 Skill 的格式、加载方式、sidecar 与生命周期。 |
+| `webapp-api.md` | REST/WebSocket 功能面的详细契约与兼容行为。 |
+| `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
 
-## 与框架的关系
+## 在架构中的位置
 
-可执行行为与测试优先于 prose。历史计划若与 `openai4s/` 或 `tests/` 冲突，应以实现和
-contract test 为当前事实，并更新独立文档仓库。
+可执行行为与测试优先于文字描述。历史计划若与 `openai4s/` 或 `tests/` 冲突，以实现和契约测试为
+当前事实，并去更新独立的文档仓库。

@@ -1,20 +1,16 @@
 # Indication Dossier References
 
-These on-demand documents split a long evidence workflow into auditable phases and persistent waypoint contracts. They guide retrieval and synthesis; none is itself a source for a disease claim.
+The documents the Skill loads on demand. Between them they cut a long evidence workflow into auditable phases and pin down the waypoint files that carry state from one phase to the next. They tell the agent how to search and how to write. None of them is itself a source for a claim about a disease.
 
-## Direct files
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`00-research-standards.md`](00-research-standards.md) | Cross-phase citation, anti-fabrication, tool-use, source-quality, and confidence-calibration rules. |
-| [`01-meta-initialization.md`](01-meta-initialization.md) | Phase 1 instructions for resolving indication identity/scope, aliases, diagnostic frame, geography/time cutoff, and initial metadata waypoint. |
-| [`02-epidemiology-research.md`](02-epidemiology-research.md) | Phase 2 instructions for diagnostic criteria, prevalence/incidence, demographics, risk factors, natural history, and epidemiology sources. |
-| [`03-biology-soc-research.md`](03-biology-soc-research.md) | Phase 3 instructions for disease mechanism, biomarkers, approved/current care, guidelines, outcomes, and unmet need. |
-| [`04-regulatory-trials-research.md`](04-regulatory-trials-research.md) | Phase 4 instructions for endpoints, regulatory precedents, landmark/failed trials, designs, eligibility, and source capture. |
-| [`05-synthesis.md`](05-synthesis.md) | Phase 5 dossier structure and actions for reconciling waypoint evidence into a cited report and structured output. |
-| [`06-writing-style.md`](06-writing-style.md) | Inline citation placement, link specificity, conflict wording, prose discipline, and final source checks. |
-| [`waypoint-schemas.md`](waypoint-schemas.md) | JSON/file contracts for progress, identity, epidemiology, biology/standard-of-care, regulatory/trial, evaluated-source, report, and research-output waypoints. |
-
-## Direct subdirectories
-
-None.
+| [`00-research-standards.md`](00-research-standards.md) | The rules every phase inherits. Each finding carries a `source_url`, a `source_type` and a verbatim `quote`; URLs are only ever ones that were actually fetched, never constructed or guessed. Nothing may be fabricated or inferred, and a number that cannot be found in the canonical primary source is recorded as a gap rather than a placeholder. Also covers when to prefer an MCP tool, how to get at PDFs and the figures inside them, and how to tell an insight from context. |
+| [`01-meta-initialization.md`](01-meta-initialization.md) | Phase 1. Establish what the indication actually is: clinical definition, ICD-10 codes, aliases, parent indication, and whether it is a recognized diagnostic entity at all. A quick CT.gov landscape scan gives a first sense of how mature the indication is clinically. Writes `meta.json` and initializes `sources_evaluated.json`. |
+| [`02-epidemiology-research.md`](02-epidemiology-research.md) | Phase 2. Characterize the population: diagnostic criteria, prevalence and incidence, demographics and risk factors, natural history. Systematic reviews and meta-analyses come first, and the evidence quality behind an estimate has to be named. Writes `epidemiology.json`. |
+| [`03-biology-soc-research.md`](03-biology-soc-research.md) | Phase 3. Pathophysiology, biomarkers, approved therapies, treatment guidelines, and the unmet need the current therapies leave behind. Writes `biology_soc.json`. |
+| [`04-regulatory-trials-research.md`](04-regulatory-trials-research.md) | Phase 4. What regulators accept as an endpoint, which approvals set the precedent, what a Phase 3 in this indication typically looks like (size, duration, comparator), which trials changed practice, and which failures taught something at the mechanism level. Writes `regulatory_trials.json`, trial-landscape counts included. |
+| [`05-synthesis.md`](05-synthesis.md) | Phase 5. The report skeleton section by section, plus the discipline for turning four waypoint files into a cited narrative: no new research threads, one targeted fetch to fill a specific missing value, and a figure that tells the reader nothing the prose already says gets deleted rather than regenerated. Produces the report, `research_output.json`, and the final `progress.json`. |
+| [`06-writing-style.md`](06-writing-style.md) | How the prose cites. Every factual claim carries an inline markdown link, written as the claim text over the source URL, pointing at the exact page and never a homepage. When sources disagree, both are cited and the report says which one it uses and why. Before finalizing, every number, date, stage and efficacy figure has to carry a specific link, with no "studies show" that does not name the studies and no citations backfilled after the writing. |
+| [`waypoint-schemas.md`](waypoint-schemas.md) | The JSON shape of every waypoint file: loop progress, indication identity, epidemiology, biology and standard of care, regulatory and trials, evaluated sources, and the two synthesis outputs. |

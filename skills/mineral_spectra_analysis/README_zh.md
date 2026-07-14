@@ -1,18 +1,18 @@
 # Mineral Spectra Analysis Skill
 
-这个渐进披露 Skill 描述 Raman mixed-mineral 工作流：只预处理一次，针对 reference library 迭代匹配/扣除 residual peak，以 NNLS unmix，诊断可靠性，并可用 hidden truth 评估 synthetic case。
+读取未知混合矿物 Raman 谱。先对谱做一次预处理，然后在残差上循环：寻峰、拿这些峰去参考谱库里匹配、用 NNLS 把已选成分整体重新拟合、相减，再来一轮。最后给出成分列表、估计比例、每个成分的支持峰，以及一个可信度判定。这个循环在设计上就是盲的——带隐藏真值的合成算例可以生成、也可以打分，但分析过程中绝不读 `truth.json`，这条路径刻意不参与推断。
 
-Sidecar 包含数值 pipeline，但使用可选 numpy/scipy/pybaselines/matplotlib，并可能在获准时下载/缓存 RRUFF 数据。当前 library/pipeline 明确是 prototype-oriented；synthetic score 很高不能证明真实样本矿物鉴定。
+数值 pipeline 放在 sidecar 里：运行时需要 numpy、scipy、pybaselines 和 matplotlib，获准时还会下载并缓存 RRUFF 数据。目前的谱库和 pipeline 都还是原型级的，在合成算例上分数很高，并不能证明真实样本的矿物鉴定是对的。
 
-## 直属文件
+## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`SKILL.md`](SKILL.md) | Observable input、dependency/data 准备、一次性 preprocessing、blind residual loop、NNLS、diagnostic、report、synthetic evaluation 隔离、输出与解读限制的主 recipe。 |
-| [`kernel.py`](kernel.py) | 可选 sidecar：检查 optional dependency/config；解析/下载/构建对齐 RRUFF library；读取/resample spectrum；despike、denoise、baseline-correct、normalize；检测/匹配 peak；排序 reference；执行 NNLS reconstruction；运行 blind-loop diagnostic；渲染 figure/report；计算 truth metric；生成/保存 synthetic benchmark case。 |
+| [`SKILL.md`](SKILL.md) | pipeline 的顺序本身就是内容，而且必须原样保住：两列的谱进来，对齐到谱库网格，去尖峰、去噪、扣基线、归一化，这一整套只做一次——然后残差循环把这份洗干净的谱读回去，一直迭代到残差里没有峰了、相关性掉得太低了，或者再来一轮也捞不到什么为止。围绕它的是：依赖与 RRUFF 数据怎么准备、要产出的诊断与报告、输出目录长什么样、合成算例的评测为什么必须与推断路径隔开，以及这种基于谱库的拟合结果诚实地能读到什么程度。 |
+| [`kernel.py`](kernel.py) | 可选 sidecar，数值计算都在这里。它报告哪些可选依赖可以导入、给出固定配置，把 RRUFF ZIP 下载并解析成对齐到同一网格的谱库，再把输入谱重采样到该网格并只预处理一次；之后驱动残差循环（二阶导数寻峰 → 按峰预筛并对参考谱排序匹配 → NNLS 重拟合 → 相减），循环结束后诊断残差、画图、写报告。生成带隐藏真值的合成算例、以及对真值打分也在这里，但与循环隔开。科学库一律推迟到调用时才 import，所以缺 numpy 时模块照样能导入。 |
 
-## 直属子目录
+## 子目录
 
 | 目录 | 职责 |
 | --- | --- |
-| [`examples/`](examples/) | Committed synthetic case 输入、hidden truth、录制 blind-analysis 输出、派生报告与纯标准库报告重建器。 |
+| [`examples/`](examples/) | 一个 committed 的合成算例：可观测输入、单独存放的隐藏真值、录下来的盲分析结果、由它们派生的报告，以及重建报告的纯标准库脚本。 |

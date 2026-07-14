@@ -2,44 +2,44 @@
 
 [English](README.md)
 
-本目录是持续演进的 `host.compute` job surface 的 Host 侧后端，也是专用 remote-science service 使用的独立 registry。重型工作通过发现的 `byoc:<id>` provider 或已有 `ssh:<alias>` 连接运行；本包是 orchestration/transport 代码，不是 scheduler、GPU runtime 或科学模型实现。
+持续演进中的 `host.compute` job 通道，其 Host 侧实现放在这里；专用 remote-science service 用来找到真实 GPU 主机的那份独立注册表也在这里。重活离开本机只有两条路：走发现到的 `byoc:<id>` provider，或者走用户已经配好的 `ssh:<alias>` 连接。本包只做编排与传输，里面没有调度器，没有 GPU 运行时，也没有任何科学模型的实现。
 
 ## 在架构中的位置
 
-Python [`host.compute` SDK](../sdk/compute.py) 发出 `compute_<operation>` Host RPC。[`HostDispatcher`](../host_dispatch.py) 为 session 惰性创建一个 [`ComputeManager`](manager.py)，并把 `ComputeError` 映射为结构化软失败。Native `compute_submit`、`compute_result`、`compute_cancel` 和 `compute_close` tool 暴露有界控制平面子集；更丰富的 SDK 兼容调用仍进入同一 manager。
+Python 的 [`host.compute` SDK](../sdk/compute.py) 把每次调用变成一个 `compute_<operation>` Host RPC。[`HostDispatcher`](../host_dispatch.py) 在第一次用到时为 session 建一个 [`ComputeManager`](manager.py)，并把 `ComputeError` 映射成结构化的软失败。native 的 `compute_submit`、`compute_result`、`compute_cancel`、`compute_close` 只暴露这个控制平面里有界的一小块；SDK 那些更丰富的兼容调用最终也落到同一个 manager。
 
-对于 `byoc:*`，manager 在 `skills/remote-compute-<id>/` 下发现 provider shim、stage job archive，并调用受限的 [`openai4s_compute_provider`](../../openai4s_compute_provider) helper，通过 stdin 传入 credential。对于 `ssh:*`，它针对用户配置的 alias 调用本地 `ssh`/`scp`。Harvest 后的文件放在已配置数据目录的 `hpc/<job_id>/` 树中。
+走 `byoc:*` 时，manager 到 `skills/remote-compute-<id>/` 下面找 provider shim，把 job 归档暂存好，再运行受限的 [`openai4s_compute_provider`](../../openai4s_compute_provider) helper，credential 从 stdin 递进去。走 `ssh:*` 时，它就是对着用户配置的 alias 调本地的 `ssh`/`scp`。回收下来的文件一律落在已配置数据目录下的 `hpc/<job_id>/`。
 
 ## 文件
 
 | 文件 | 职责 |
-|---|---|
-| [`__init__.py`](__init__.py) | 导出 Host 后端的 `ComputeManager` 和结构化 `ComputeError`。 |
-| [`manager.py`](manager.py) | 发现 BYOC provider Skill，路由 `byoc:*` 与 `ssh:*`，执行内存中的 session concurrency limit，stage input/template，只向 helper 提供 provider 声明的 credential，跟踪 live job/sandbox，并负责 poll/cancel/close 与 output harvest。 |
-| [`registry.py`](registry.py) | 将 SSH host alias、默认选择及 `fold`/`score_mutations` 类 capability 元数据原子保存到 `<data_dir>/remote_compute.json`；native 注册在标记验证前会 probe，legacy 环境变量 seed 可能仍未验证。它不存储 SSH private key 或 provider token。 |
+| --- | --- |
+| [`__init__.py`](__init__.py) | 对外只导出 Host 后端要用的两个名字：`ComputeManager` 和结构化的 `ComputeError`。 |
+| [`manager.py`](manager.py) | 两条传输路径都在这里。它发现 BYOC 的 provider Skill，路由 `byoc:*` 与 `ssh:*`，并在 session 内存中的并发上限达到时拒绝新的提交，暂存输入与 job 模板，并跟踪在跑的 job 和预热的沙箱，负责轮询、取消、关闭与产物回收。credential 是按 provider 自己声明的那几个环境变量名挑出来的，而且走 helper 的 stdin 递进去，不进它的环境变量。helper 的环境其余部分就是 daemon 自己那一份，只摘掉了以 `NGC_`、`NVIDIA_`、`HF_` 开头的名字。 |
+| [`registry.py`](registry.py) | 记住有哪些 SSH 主机 alias、默认用哪一台、每台上开通了 `fold`/`score_mutations` 这类 capability 元数据，原子写入 `<data_dir>/remote_compute.json`。native 注册会先探测主机，通过之后才写下验证时间；用旧环境变量 seed 出来的主机则可能一直没验证过。它不存 SSH private key，也不存 provider token。 |
 
 ## 子目录
 
 | 目录 | 职责 |
-|---|---|
-| [`templates/`](templates/) | Stage 到 BYOC job 中的 shell template，用于运行提交的 command、处理 timeout/deadline，并打包 output/log 供 harvest。参见其 [README](templates/README_zh.md)。 |
+| --- | --- |
+| [`templates/`](templates/) | 暂存进 BYOC job 的 shell 模板：运行提交的 command，处理超时与 deadline，并把输出和日志打包好供回收。参见其 [README](templates/README_zh.md)。 |
 
 ## 当前生命周期
 
-1. `submit` 校验 provider family 和 manager 的 session-local concurrency count。
-2. BYOC submission 创建/复用 provider sandbox，根据 wrapper、command 和 input 构建 `in.tar.gz`，然后调用 helper 的 create/submit 操作。SSH submission 创建远程工作目录，并用 `nohup` 启动 `run.sh`。
-3. `result` poll 精确的内存 job。BYOC wait 会 stage `out.tar.gz`，manager 将其解包到 `hpc/<job_id>/`；SSH 兼容路径复制日志并在远端保留工作目录。
-4. `cancel` 向远程进程发信号或终止 BYOC sandbox；`close` 释放已知 provider handle，并把指定 live handle 标为 closed。
+1. `submit` 校验 provider 家族，并检查 manager 在 session 内维护的并发计数。
+2. BYOC 提交会新建或复用一个 provider 沙箱，用 wrapper、command 和输入拼出 `in.tar.gz`，然后调用 helper 的 create 与 submit 操作。SSH 提交则建一个远程工作目录，用 `nohup` 起 `run.sh`。
+3. `result` 轮询内存里那个确切的 job。BYOC 路径上，helper 的 wait 会暂存出 `out.tar.gz`，由 manager 解包到 `hpc/<job_id>/`；SSH 兼容路径只把日志拷回来，工作目录留在远端。
+4. `cancel` 给远程进程发信号，或者终止 BYOC 沙箱；`close` 释放已知的 provider handle，并把点名的 live handle 标成 closed。
 
 ## 持久化、审批与成熟度边界
 
-- **Prototype 状态：** `ComputeManager` 的 job record、concurrency limit 和 warm-sandbox handle 都在内存中。Daemon/manager 重启后，本实现无法 attach 这些 record，即使远端工作或 harvest 文件仍存在。[`registry.py`](registry.py) 只持久化专用 SSH capability catalogue。
-- Native `compute_submit` 需要审批。对于已经授权的精确 job，result harvest、cancel 和 close 有意不请求第二次审批。更丰富的直接 `compute_ssh`/`compute_scp` 兼容方法并不等价于该有界 native-tool gate，不能被视为新批准的权限。
-- BYOC confinement 由 provider runtime/provider 组合执行，必须实测而不能假定。Credential 依据声明的环境变量名选择，并通过 helper auth input 传递；未知 secret 名称可能逃过基于名称的清理。
-- 当前 SSH job 路径有意保持基础实现：job bookkeeping 位于本地内存，远程目录会保留，声明的 output pattern 尚未完整 harvest，terminal exit status 也不是持久化 scheduler-grade 契约。
-- Harvest 字节、SQLite 元数据、远程 provider state 与运行中的科学内核不共享同一事务。部分 stage/harvest 或进程崩溃可能让某一层领先于其他层。
-- Native 注册路径会在写入 `verified_at` 前 probe；legacy `OPENAI4S_FOLD_SSH` seed 和调用方提供的元数据可能未验证。解析不能证明当前 reachability，因此远程服务不可用时，[`host/remote_science.py`](../host/remote_science.py) 必须检查并如实失败。
-- Provider 发现仅限同时包含 `provider.json` 与 `provider.py` 的已安装 Skill 目录。本包未实现 SLURM、Kubernetes 或通用 cluster scheduler。
+- **Prototype 状态：** `ComputeManager` 的 job 记录、并发上限和预热沙箱的 handle 全都只在内存里。daemon 或 manager 一重启，本实现就再也接不回这些记录，哪怕远端的任务和回收下来的文件都还在。[`registry.py`](registry.py) 持久化的只有那份专用的 SSH capability 目录。
+- native 的 `compute_submit` 需要审批。对已经授权过的那个确切 job，回收结果、取消和关闭有意不再问第二次。更丰富的直接调用 `compute_ssh`/`compute_scp` 比这道有界的 native tool 审批门宽，不能拿后者的批准当它们的批准。
+- BYOC 的隔离由 provider 运行时和 provider 自身共同实现，只能实测，不能假定。credential 是按声明的环境变量名挑出来的，通过 helper 的 auth 输入传过去；如果 secret 藏在没人声明的变量名里，基于名称的清理就拦不住它。
+- 当前的 SSH job 路径有意做得很基础：记账只在本地内存，远程目录用完不删，声明的 output pattern 没有完整回收，报出来的终止退出码也不是持久的、调度器级别的契约。
+- 回收下来的字节、SQLite 元数据、远端 provider 的状态、正在跑的科学内核，这几层不在同一个事务里。暂存或回收做了一半，或者进程崩了，都可能让某一层跑到另一层前面。
+- native 注册路径会先探测、再写 `verified_at`；旧的 `OPENAI4S_FOLD_SSH` seed 和调用方自己填的元数据则可能从未验证过。解析出一个 capability 并不能证明那台主机此刻还连得上，所以远程服务不可用时，[`host/remote_science.py`](../host/remote_science.py) 必须自己去查，并如实报错。
+- provider 发现只认同时带着 `provider.json` 和 `provider.py` 的已安装 Skill 目录。这里没有实现 SLURM、Kubernetes，也没有任何通用的集群调度器。
 
 ## 相关文档
 

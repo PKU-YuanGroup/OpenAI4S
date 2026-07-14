@@ -2,44 +2,40 @@
 
 [中文说明](README_zh.md)
 
-This package is the Python-kernel side of the inner loop. [`worker.py`](../kernel/worker.py) calls `build_host(host_call, ...)` and injects the returned singleton as `host`. Most methods are thin, synchronous facades: encode the public Python arguments, send one `host_call` to the daemon, wait for the matching `host_response`, decode the result, and either return it or raise on a soft error.
+This is the `host` object that agent code touches inside a Python Cell, and the worker's half of the inner loop. [`worker.py`](../kernel/worker.py) calls `build_host(host_call, ...)` and injects the returned singleton as `host`. Most methods are thin and synchronous: encode the public Python arguments, send one `host_call` to the daemon, block until the matching `host_response` comes back, decode it, and either return the value or raise on a soft error.
 
-## Place in the architecture
+## Where this fits
 
-The SDK is not the authorization boundary and normally does not implement capability behavior. [`HostDispatcher`](../host_dispatch.py) and services in [`openai4s/host`](../host) own validation, permissions, approvals, auditing, screening, and host-side work. Two worker-local exceptions are important:
+The SDK is not the authorization boundary, and it normally does not implement capability behavior at all. Validation, permissions, approvals, auditing, screening and the real work belong to [`HostDispatcher`](../host_dispatch.py) and the services under [`openai4s/host`](../host). Two pieces genuinely run in the worker, and both matter:
 
-- `host.bash(...)` executes the subprocess inside the sandboxed scientific worker, but only after the host issues and atomically consumes an exact, one-shot capability.
-- `host.compute` creates Python handle objects locally while all provider discovery, job submission, status, cancellation, and harvesting are host calls.
+- `host.bash(...)` runs the subprocess inside the scientific worker, and only after the host has issued an exact, one-shot capability and atomically consumed it. Whether that worker is confined by the OS is a separate question: it depends on the sandbox mode and on whether confinement was actually established. The default mode is `auto`, which stays up and reports `state="unavailable"` when detection or the self-test fails, so the subprocess may well run unconfined.
+- `host.compute` builds its Python handle objects locally. Provider discovery, job submission, status, cancellation and harvesting are all host calls.
 
-The R analysis worker does not import this package and has no `host` singleton.
+The R analysis worker never imports this package and has no `host` singleton.
 
 ## Files
 
 | File | Responsibility |
-|---|---|
-| [`__init__.py`](__init__.py) | Exports `build_host`, the composition entry point used by the Python worker. |
-| [`bash.py`](bash.py) | Worker-local shell executor: proposes an exact command/cwd/generation/challenge, validates the returned capability, consumes it once, snapshots bounded workspace metadata, launches the subprocess, and reports a redacted/bounded result and file diff to the host. |
-| [`compute.py`](compute.py) | Implements the `host.compute` namespace and local instance/job handles, normalizes provider parameters and paths, maps operations to `compute_<op>` RPCs, and exposes status/wait/result/cancel/close/attach semantics without embedding provider transports. |
-| [`host.py`](host.py) | Defines the public `host.*` facade, strict top-level snake_case/camelCase wire codec, namespaces for skills/query/lineage/endpoints/credentials/MCP/environments/science/compute, file/network/delegation/session helpers, and `host.submit_output`. |
-
-## Subdirectories
-
-There are no tracked child directories in this package.
+| --- | --- |
+| [`__init__.py`](__init__.py) | Exports `build_host`, the composition entry point the Python worker calls. |
+| [`bash.py`](bash.py) | Runs shell commands in the worker, and only under an authorization it cannot grant itself. It proposes an exact command, cwd, kernel generation and challenge, then checks every binding on the capability that comes back and spends the token once. Around the run it snapshots bounded workspace file metadata. The bounded result and the file diff go back to the host, with secret-looking paths masked. |
+| [`compute.py`](compute.py) | Backs the `host.compute` namespace and the local instance and job handles. It normalizes provider parameters and paths, maps each operation onto a `compute_<op>` RPC, and offers status/wait/result/cancel/close/attach on top. No provider transport lives here. |
+| [`host.py`](host.py) | The public `host.*` facade. A strict wire codec sits at the top and maps snake_case against camelCase. Under it: the skills/query/lineage/endpoints/credentials/MCP/environments/science/compute namespaces, the file, network, delegation and session helpers, and `host.submit_output`. |
 
 ## RPC and completion contract
 
-- Each call is synchronous inside the Python Cell. The worker's Host-call transaction lock allows only one request in flight, even if user code creates threads.
-- Optional fields whose value is `None` are omitted rather than encoded as JSON `null`, because the strict Host schema distinguishes omission from an invalid null value.
-- A host soft-error object is converted into `RuntimeError`. Provider/compute errors may carry structured error-kind or concurrency information, but are still failures.
-- `host.submit_output(...)` is the only SDK method that can mark a Python Cell as successfully complete. Printing, returning a Python value, an R result, or a successful ordinary Host call does not complete the outer agent run.
+- Every call blocks inside the Python Cell. The worker's Host-call transaction lock allows only one request in flight, even if user code spins up threads.
+- An optional field whose value is `None` is omitted from the wire rather than sent as JSON `null`. The strict Host schema distinguishes an absent field from an invalid null one, and rejects the null.
+- A host soft-error object arrives back as a `RuntimeError`. Provider and compute errors may carry a structured error kind or concurrency detail, but they are still failures.
+- `host.submit_output(...)` is the only SDK method that can mark a Python Cell as successfully complete. Printing, returning a Python value, producing an R result, or making an ordinary Host call that merely succeeds does not end the outer agent run.
 
 ## Security and failure boundaries
 
-- The SDK is trusted code inside an already powerful Python process. Its argument checks improve protocol integrity but do not replace dispatcher permission or the OS sandbox.
-- Shell authorization binds token, command digest, canonical cwd, workspace root, worker generation, challenge, and expiry. Both worker validation and host consumption fail closed; daemon restart invalidates outstanding in-memory capabilities.
-- Shell stdout/stderr redaction is defensive and shape-based. It cannot guarantee that an intentionally transformed or unrecognized secret will not appear in output.
-- Compute handles are convenience projections, not durable Python objects. A restarted Cell/kernel must reconstruct or attach by job ID, and availability depends on the manager/provider's persisted or in-memory state.
-- `host.compute` is an evolving integration surface. A public SDK method does not by itself guarantee a configured provider, confinement, remote capacity, successful harvest, or a second approval for every follow-up operation.
+- The SDK is trusted code inside an already powerful Python process. Its argument checks help protocol integrity; they do not replace dispatcher permissions or the OS sandbox.
+- Shell authorization binds the token to the command digest, canonical cwd, workspace root, worker generation, challenge and expiry. Worker validation and host consumption both fail closed, and a daemon restart invalidates every capability still outstanding in memory.
+- Redaction of shell stdout/stderr is defensive and shape-based. It cannot guarantee that a deliberately transformed or simply unrecognized secret stays out of the output.
+- Compute handles are convenience projections, not durable Python objects. After a Cell or kernel restart you have to rebuild the handle or attach by job ID, and whether that works depends on what the manager or provider still holds in memory or on disk.
+- `host.compute` is an evolving integration surface. The existence of a public SDK method does not by itself guarantee a configured provider, working confinement, remote capacity, a successful harvest, or a second approval for every follow-up operation.
 
 ## Related documentation
 

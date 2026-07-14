@@ -1,17 +1,17 @@
 # DiffDock Skill
 
-This progressive-disclosure recipe guides external DiffDock-L blind small-molecule pose prediction. It does not bundle the DiffDock repository, weights, receptor preparation, or a GPU environment.
+DiffDock-L docks blind. It samples ligand placements across the whole protein surface with a diffusion model, without a search box or a declared pocket, then ranks the samples with a separately trained confidence head. Reach for it to dock a SMILES or an SDF against a PDB, or to get a starting pose for something that will rescore it. The DiffDock repository, the weights, receptor preparation and a GPU environment all have to be arranged separately; none of them are bundled here.
 
-DiffDock confidence ranks pose plausibility, not binding affinity. Poses require chemistry checks and usually downstream scoring/refinement; sequence-only receptor folding adds another model-dependent uncertainty layer.
+DiffDock confidence ranks pose plausibility, not binding affinity. A pose still needs chemistry checks and, usually, downstream scoring or refinement. Folding the receptor from sequence adds another layer of model-dependent uncertainty on top of that.
 
-## Direct files
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`SKILL.md`](SKILL.md) | Main runbook for single-complex CLI input, SMILES/SDF/PDB handling, ranked pose/confidence outputs, interpretation, resource needs, and separation of geometry from affinity. |
+| [`SKILL.md`](SKILL.md) | The runbook for the single-complex CLI path: how to pass SMILES, SDF and PDB inputs, what the ranked pose files and their confidence logits do and do not tell you, what hardware the run needs, and which failures are worth recognizing on sight. Geometry and affinity are kept apart throughout. |
 
-## Direct subdirectories
+## Subdirectories
 
 | Directory | Responsibility |
 | --- | --- |
-| [`references/`](references/) | On-demand batch/library and sequence-only receptor workflows. |
+| [`references/`](references/) | Read on demand: batch and library docking, and the sequence-only receptor path. |

@@ -1,17 +1,13 @@
 # Golden trace schema v1
 
-[中文](README_zh.md)
+[中文说明](README_zh.md)
 
-This directory is the first versioned namespace for reviewed Harness trace data.
+The first versioned namespace for reviewed Harness trace data. Everything here is at schema version 1.
 
-## Direct files
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`r5_prechange.json`](r5_prechange.json) | Canonical normalized snapshot of selected r5 production behavior: CLI max turns, transport retry/partial-stream behavior, provider compaction projection, oversized observations, headless permission denial, and disabled MCP handling. Each case records current behavior, desired contract, and whether the snapshot captures a known bug. |
+| [`r5_prechange.json`](r5_prechange.json) | The reviewed snapshot of selected r5 production behavior, normalized to canonical bytes: CLI max turns, a rate-limited request that gives up after a single transport attempt even though the response carried a Retry-After, a stream that fails after a delta has already been committed, how the compaction summary projects onto provider payloads, an oversized observation, headless permission denial, and a disabled MCP connector. Each case records what production does today, the contract that is wanted instead, and whether the snapshot is freezing a known bug. |
 
-## Direct subdirectories
-
-None.
-
-Compare without writing via `uv run python -m harness.cli characterize`. A mismatch is a review signal, not permission to overwrite the golden automatically.
+`uv run python -m harness.cli characterize` compares without writing. A mismatch means someone has to look at it; it is not permission to overwrite the golden automatically.
