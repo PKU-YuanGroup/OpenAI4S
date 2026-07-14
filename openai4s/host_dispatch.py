@@ -21,7 +21,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from openai4s.config import Config, get_config
 from openai4s.host.bash import BashAuthorizationService, redact_shell_text
@@ -750,7 +750,7 @@ class HostDispatcher:
         )
 
     @property
-    def compute(self):
+    def compute(self) -> Any:
         """Lazy ComputeManager — owns provider discovery + byoc/ssh transport.
         Built on first compute_* dispatch so a session that never touches
         remote compute pays nothing."""
@@ -765,8 +765,12 @@ class HostDispatcher:
         """Latest successful ``host.submit_output`` payload, if any."""
         return self._completion_service.last_output
 
+    @last_output.setter
+    def last_output(self, value: dict | None) -> None:
+        self._completion_service.last_output = value
+
     @property
-    def skill_loader(self):
+    def skill_loader(self) -> Any:
         """The dispatcher-scoped loader shared by prompt and host retrieval."""
 
         return self._skill_service.loader
@@ -789,7 +793,7 @@ class HostDispatcher:
         )
 
     @contextmanager
-    def bind_bash_generation(self, generation: str | int):
+    def bind_bash_generation(self, generation: str | int) -> Iterator[None]:
         """Bind Host authorization to one manager reader thread/worker."""
 
         marker = object()
@@ -807,7 +811,7 @@ class HostDispatcher:
                 self._bash_generation_local.generation = previous
 
     @contextmanager
-    def bind_action_context(self, context: dict[str, Any] | None):
+    def bind_action_context(self, context: dict[str, Any] | None) -> Iterator[None]:
         """Attribute Host calls to one immutable action-ledger declaration."""
 
         marker = object()
@@ -827,10 +831,6 @@ class HostDispatcher:
     def _current_action_context(self) -> dict[str, Any]:
         value = getattr(self._action_context_local, "value", None)
         return dict(value) if isinstance(value, dict) else {}
-
-    @last_output.setter
-    def last_output(self, value: dict | None) -> None:
-        self._completion_service.last_output = value
 
     def set_workspace(self, path: str | Path) -> None:
         """Bind host-side file operations to the kernel's actual cwd."""
@@ -924,6 +924,7 @@ class HostDispatcher:
     def __call__(self, method: str, args: list) -> Any:
         control_tool = get_tool_by_host_method(method)
         dynamic_catalog = None
+        handler: Callable[..., Any]
         if control_tool is None and method.startswith("dynamic:"):
             dynamic_catalog = self.tool_catalog()
             control_tool = dynamic_catalog.get_by_host_method(method)
@@ -938,7 +939,7 @@ class HostDispatcher:
                     f"host method {method!r}"
                 )
 
-            def handler(spec: dict | None = None) -> Any:
+            def control_handler(spec: dict | None = None) -> Any:
                 if dynamic_catalog is not None:
                     return dynamic_catalog.execute(
                         control_tool.name,
@@ -947,10 +948,12 @@ class HostDispatcher:
                     )
                 return control_tool.execute(self._tool_context, spec or {})
 
+            handler = control_handler
+
         else:
-            handler = legacy_handler
-            if handler is None:
+            if legacy_handler is None:
                 raise ValueError(f"unknown host method: {method!r}")
+            handler = legacy_handler
         # wire codec: the SDK put camelCase keys on the wire (dropping
         # None-valued keys); decode back to snake_case so handlers are unaware
         # of the wire convention. Top-level keys only — nested user payloads
@@ -1101,7 +1104,12 @@ class HostDispatcher:
                 side_effect_class=audit_side_effect,
                 resource_keys=audit_resources,
             )
-            if step_id is not None and self.on_step is not None and not deferred_step:
+            if (
+                step_id is not None
+                and self.on_step is not None
+                and not deferred_step
+                and view is not None
+            ):
                 try:
                     output, summary = _step_end(method, view[0], result, ok)
                     self.on_step(
@@ -1581,7 +1589,7 @@ class HostDispatcher:
     def _m_env_list(self, spec: dict | None = None) -> dict:
         return self._execute_control_tool("env_list", spec or {})
 
-    def _m_env_use(self, spec: dict | str) -> dict:
+    def _m_env_use(self, spec: dict) -> dict:
         return self._execute_control_tool("env_use", spec)
 
     def _m_env_setup(self, spec: dict) -> dict:
@@ -1810,14 +1818,14 @@ class HostDispatcher:
         return self._mcp_service.call(spec)
 
     # --- background exec: peek / interrupt -----------------------
-    def _new_background_kernel(self):
+    def _new_background_kernel(self) -> Any:
         if self.background_kernel_factory is not None:
             return self.background_kernel_factory()
         from openai4s.kernel import Kernel
 
         return Kernel(dispatcher=self)
 
-    def _bg(self):
+    def _bg(self) -> Any:
         """Lazily build the background executor (one per dispatcher).
 
         Each backgrounded cell runs in its OWN kernel subprocess bound to THIS

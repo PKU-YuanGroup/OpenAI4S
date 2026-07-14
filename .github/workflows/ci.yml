@@ -68,8 +68,21 @@ jobs:
           python-version: "3.12"
       - name: Install dev dependencies
         run: uv sync --locked
-      - name: pre-commit (black, isort, ruff, hygiene hooks)
+      - name: pre-commit (black, isort, ruff, mypy, hygiene hooks)
         run: uv run pre-commit run --all-files
+
+  type-check:
+    name: Type safety (core orchestration boundary)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked development dependencies
+        run: uv sync --locked
+      - name: Check the strict agent core and typed Host dispatcher
+        run: uv run mypy
 
   source-security:
     name: Source credential scan
