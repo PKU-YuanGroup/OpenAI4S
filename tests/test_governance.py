@@ -12,7 +12,10 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 PINNED_ACTION = re.compile(r"^\s*uses:\s*[^@\s]+@[0-9a-f]{40}(?:\s+#.*)?$")
 
 
-@pytest.mark.parametrize("name", ["codeql.yml", "scorecard.yml"])
+# CodeQL scanning is provided by the repository's CodeQL default setup, not an
+# advanced workflow file (the two are mutually exclusive on GitHub). Only the
+# scorecard workflow is a repo-managed security scanner here.
+@pytest.mark.parametrize("name", ["scorecard.yml"])
 def test_security_scanners_pin_every_action_to_a_commit(name):
     lines = (WORKFLOWS / name).read_text(encoding="utf-8").splitlines()
     uses = [line for line in lines if line.lstrip().startswith("uses:")]
