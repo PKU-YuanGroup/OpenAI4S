@@ -1,11 +1,15 @@
 # Harness
 
-This directory is the versioned, stdlib-only scenario layer for scripted
-providers, deterministic fault injection, normalized traces, offline contract
-evals, and opt-in smoke tests. Runtime implementation remains in `openai4s/`;
-the harness only drives it or supplies fakes.
+Chinese version: [`README_zh.md`](README_zh.md)
 
-The deterministic `tier:pr` scenarios are a required CI contract gate. The
+This directory is the versioned, stdlib-only prototype scenario layer for
+scripted providers, deterministic fault injection, normalized traces, offline
+contract evals, and opt-in smoke tests. The generic runner validates the
+Harness schema/event/fault loop itself and deliberately does not import the
+production runtime; `characterize.py` and the action-routing eval are the
+current paths that exercise selected production entry points behind fakes.
+
+The deterministic `tier:pr` scenarios are a required Harness self-contract gate. The
 pytest suite also exercises the CLI gate in-process
 (`tests/test_harness_contract.py`); the separate CI step keeps the contract
 gate independent of pytest collection (`pyproject.toml` intentionally collects
@@ -19,10 +23,12 @@ on every PR. It asserts current behavior of the runtime (kernel protocol,
 host API, gateway serializers, security gates) with fakes and tmp data dirs.
 It never needs network, secrets, GPUs, SSH, lab hardware, or a live LLM.
 
-`harness/` is the **evaluation and scenario layer**: infrastructure for
-exercising the agent as a whole — end-to-end scenarios, normalized traces,
-quality evals, and fake platform providers that those scenarios plug in.
-Scripted contract runs are pass/fail and required. Scored quality runs may be
+`harness/` is the **prototype evaluation and scenario layer**: infrastructure
+for scripted-loop scenarios, normalized traces, quality evals, and fake
+platform-provider data. Today the generic runner is not an end-to-end
+Agent/Gateway adapter: `surface`, permissions, and fixtures are validated
+scenario fields rather than executed production integrations. Scripted
+self-contract runs are pass/fail and required. Scored quality runs may be
 slower and may use external resources only when explicitly opted in.
 
 Rule of thumb:
@@ -31,20 +37,27 @@ Rule of thumb:
 - A reusable fake provider, a replayable scenario, a golden trajectory, or a
   scored eval belongs in `harness/`.
 
-## Layout
+## Direct files
+
+| File | Responsibility |
+| --- | --- |
+| [`__init__.py`](__init__.py) | Public harness facade exporting the scenario schema, loader, result, and runner. Production packages never import it. |
+| [`characterize.py`](characterize.py) | Drives selected production entry points behind stdlib fakes, normalizes their observed behavior, and emits the reviewed r5 pre-change characterization—including explicitly labelled known bugs. |
+| [`cli.py`](cli.py) | Implements `run` scenario selection/validation and `characterize` compare/write commands with deterministic exit codes and summaries. |
+| [`faults.py`](faults.py) | Supplies fake monotonic time, stable UUIDs, exact-occurrence fault schedules, and structured injected failures. |
+| [`normalize.py`](normalize.py) | Replaces volatile UUID/time/path/port values in traces while preserving event and causal order, then emits canonical bytes. |
+| [`runner.py`](runner.py) | Executes the Harness's production-independent scripted loop, records canonical events, applies scheduled faults, checks Harness invariants, and returns a trace digest; it does not import or drive Agent/Gateway runtime code. |
+| [`schema.py`](schema.py) | Defines and strictly validates versioned JSON contracts for scenarios, provider steps, faults, expectations, and event envelopes. |
+
+## Direct subdirectories
 
 | Directory | Intended contents |
 | --- | --- |
-| `schema.py` | Strict JSON scenario/event contracts with an explicit schema version. |
-| `runner.py` | Deterministic scripted contract runner and invariant checks. |
-| `normalize.py` | UUID/time/path/port normalization that preserves event order. |
-| `faults.py` | Fake clock/UUID sources and exact-occurrence fault schedules. |
-| `characterize.py` | Offline-faked probes of selected production behavior before runtime migration. |
-| `scenarios/` | Declarative end-to-end agent scenarios (task prompt, fixtures, expected outcome shape) runnable against a fake or live backend. |
-| `providers/` | Fake/offline platform providers (compute, model endpoints, lab) implementing the same contracts as real ones, for use by scenarios and tests. |
-| `golden_traces/` | Captured reference trajectories (turn/frame sequences) used for replay comparison and drift detection. |
-| `evals/` | Offline eval definitions and scoring code for agent output quality. |
-| `smoke/` | Minimal smoke scripts (e.g. one-shot `openai4s run` drivers) for quick manual or CI-optional verification. |
+| [`scenarios/`](scenarios/) | Declarative Harness scenarios: prompt, validated fixture/permission metadata, scripted provider steps, faults, tags, and expected outcomes. They are not yet end-to-end Agent/Gateway runs. |
+| [`providers/`](providers/) | Fake/offline platform providers implementing test-facing equivalents of model, compute, endpoint, or lab boundaries. |
+| [`golden_traces/`](golden_traces/) | Reviewed reference trajectories used for exact comparison and intentional drift review; they are data, not executable replay. |
+| [`evals/`](evals/) | Offline eval fixtures and scoring code, including deterministic action-routing quality/contract evaluation. |
+| [`smoke/`](smoke/) | Explicitly opt-in runtime smoke programs for platform or external-resource checks. |
 
 ## Ground rules
 
@@ -56,7 +69,9 @@ Rule of thumb:
 - **No secrets.** Harness content must run without secrets by default, and
   default PR CI never provides any.
 - **No production code.** Runtime implementation stays in `openai4s/` (and
-  `openai4s_compute_provider/`); harness code only drives or fakes it.
+  `openai4s_compute_provider/`). The generic runner remains self-contained;
+  explicitly named characterization/eval adapters may import selected public
+  production entry points behind deterministic fakes.
 - **No order laundering.** Normalization may replace volatile values, but it
   never sorts event lists. Concurrent scenarios compare explicit causal and
   per-stream relationships rather than manufacturing a total order.

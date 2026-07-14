@@ -23,7 +23,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/PKU-YuanGroup/OpenAI4S"
-Documentation = "https://github.com/PKU-YuanGroup/OpenAI4S/tree/main/docs"
+Documentation = "https://openai4s.org/docs/"
 Issues = "https://github.com/PKU-YuanGroup/OpenAI4S/issues"
 Source = "https://github.com/PKU-YuanGroup/OpenAI4S"
 

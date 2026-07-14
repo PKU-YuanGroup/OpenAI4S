@@ -61,9 +61,9 @@ Engine after earlier Cells have run.
 <tr><th></th><th>JSON control plane</th><th>Python/R science plane</th></tr>
 <tr><td align="right"><b>Best for</b></td><td>workflow, permissions, metadata, services</td><td>computation, analysis, simulation</td></tr>
 <tr><td align="right"><b>Action unit</b></td><td>One ordered native-tool batch</td><td><b>One complete code cell</b></td></tr>
-<tr><td align="right"><b>Composition</b></td><td>auditable schemas and resource policy</td><td><code>for</code>, <code>if</code>, libraries, mid-cell Host RPC</td></tr>
+<tr><td align="right"><b>Composition</b></td><td>auditable schemas and resource policy</td><td><code>for</code>, <code>if</code>, libraries; Python also has mid-cell Host RPC</td></tr>
 <tr><td align="right"><b>State</b></td><td>append-only Action Ledger</td><td>kernel memory + versioned artifacts</td></tr>
-<tr><td align="right"><b>Completion</b></td><td>Engine-owned <code>finalize_response</code></td><td><code>host.submit_output(...)</code></td></tr>
+<tr><td align="right"><b>Completion</b></td><td>Engine-owned <code>finalize_response</code></td><td>Python: <code>host.submit_output(...)</code>; R: no in-cell completion</td></tr>
 <tr><td align="right"><b>Extending</b></td><td>named <code>Tool</code> subclass</td><td>import a library or load a Skill</td></tr>
 <tr><td colspan="3">
 
@@ -88,14 +88,14 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 
 ## 😮 Highlights
 
-- **🧬 Hybrid action engine** — class-based native JSON tools orchestrate while persistent Python/R kernels execute science. CLI and Web adapters start a language lazily, so tool/finalize-only runs do not spawn a kernel.
+- **🧬 Hybrid action engine** — class-based native JSON tools orchestrate while persistent Python/R kernels execute science. CLI and Web adapters start foreground language slots lazily, so tool/finalize routing itself does not spawn one; individual tools may still manage dedicated workers.
 - **📒 Ledger-first runtime** — action groups/events and terminal facts are append-only; execution attempts, generation lifecycle, usage, and completion records remain durable and reconstructable.
 - **🐍 Pure-stdlib core** — the engine **and** the web server are stdlib-only (`http.server` + hand-rolled WebSocket, no framework, no deps). The LLM client speaks OpenAI / Anthropic / Gemini over `urllib` alone.
 - **🔌 One-line multi-provider** — `ark` (doubao · glm · kimi · deepseek · minimax) plus official `chatgpt · claude · gemini`, behind a single `host.llm`; switch from the UI.
 - **🖥️ Scientific workbench** — live streaming, versioned artifacts, provenance, an Action Timeline surface, and a **read-only-by-default Notebook**. An explicit developer flag enables multiline Python/R input against the shared kernels.
 - **🔐 Hardened local execution** — strict child-environment allowlists, durable approvals, one-shot generation-bound `host.bash` capabilities, and OS sandbox adapters (Seatbelt on macOS, bubblewrap on Linux) with visible degraded/fail-closed modes.
-- **🔬 24 bundled Skills** — 14 GPU/model science Skills (AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock …) + research-workflow Skills. Skills are **recipes of code**, not JSON schemas; user-authored Skills stay under the data directory and cannot shadow bundled trust.
-- **☁️ BYOC remote compute** — dispatch GPU jobs to your own machines via `ssh:<alias>` or the bundled **NVIDIA NIM** provider; real `host.fold` (single-sequence Protenix / AF3-class) under a strict no-fabrication policy.
+- **🔬 32 bundled Skills** — GPU/model science Skills (AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock …) + research-workflow Skills. Skills are **recipes of code**, not JSON schemas; user-authored Skills stay under the data directory and cannot shadow bundled trust.
+- **☁️ BYOC remote compute** — with a configured, reachable provider, dispatch GPU jobs via `ssh:<alias>` or the bundled **NVIDIA NIM** integration. General remote compute remains a Prototype surface; `host.fold` uses a strict no-fabrication policy.
 
 ---
 
@@ -132,11 +132,13 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 
 ## 📚 Documentation
 
+The canonical bilingual documentation is published at **[openai4s.org/docs](https://openai4s.org/docs/)**. Its public source and issue tracker live in [Nobody-Zhang/openai4s-docs](https://github.com/Nobody-Zhang/openai4s-docs); the links below point to the code-adjacent copies kept with this repository.
+
 | doc | what's inside |
 |---|---|
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
-| [**Skills**](docs/skills.md) | the 24 bundled Skills + how to write your own |
+| [**Skills**](docs/skills.md) | the 32 bundled Skills + how to write your own |
 | [**Remote compute**](docs/compute.md) | BYOC GPU jobs, `host.fold`, auto-provisioning |
 | [**Web app**](docs/webapp.md) | UI features, Action Timeline, read-only Notebook, artifacts, and implementation status |
 | [**Jupyter adapter**](docs/jupyter.md) | optional standalone Python/R KernelSpecs, install commands, and compatibility limits |
