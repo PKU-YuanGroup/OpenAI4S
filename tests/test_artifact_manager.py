@@ -652,3 +652,55 @@ def test_promote_cell_fences_longer_than_backtick_runs_in_output(tmp_path):
     assert meta is not None
     text = list((harness.workspace / "promoted").glob("*.md"))[0].read_text("utf-8")
     assert "````" in text  # output fence grew to 4 backticks around the 3-run body
+
+
+def test_promote_cell_rejects_symlinked_output_directory(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (harness.workspace / "promoted").symlink_to(outside, target_is_directory=True)
+
+    result = harness.manager.promote_cell(
+        harness.session,
+        {"producing_cell_id": "cell-link", "cell_index": 4, "source": "x = 1"},
+        lambda event: None,
+    )
+
+    assert result is None
+    assert list(outside.iterdir()) == []
+
+
+def test_promote_cell_rejects_symlinked_output_file(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    cell = {"producing_cell_id": "cell-link", "cell_index": 4, "source": "x = 1"}
+    first = harness.manager.promote_cell(harness.session, cell, lambda event: None)
+    assert first is not None
+    target = next((harness.workspace / "promoted").glob("*.md"))
+    outside = tmp_path / "outside.md"
+    outside.write_text("keep", encoding="utf-8")
+    target.unlink()
+    target.symlink_to(outside)
+
+    result = harness.manager.promote_cell(harness.session, cell, lambda event: None)
+
+    assert result is None
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_promote_cell_embeds_workspace_figures_as_safe_data_urls(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    figure = harness.workspace / "figure_cell5_1.png"
+    figure.write_bytes(b"\x89PNG\r\n\x1a\nfigure-bytes")
+    cell = {
+        "producing_cell_id": "cell-figure",
+        "cell_index": 5,
+        "source": "plot()",
+        "figures": [figure.name],
+    }
+
+    result = harness.manager.promote_cell(harness.session, cell, lambda event: None)
+
+    assert result is not None
+    text = next((harness.workspace / "promoted").glob("*.md")).read_text("utf-8")
+    assert f"![{figure.name}](data:image/png;base64," in text
+    assert f"]({figure.name})" not in text
