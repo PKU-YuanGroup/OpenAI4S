@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Demo figure PNGs must never live in this skill root — agents mistake them
+# for user deliverables. Live runs write figures only under the run workdir.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
