@@ -70,6 +70,8 @@ jobs:
         run: uv sync --locked
       - name: pre-commit (black, isort, ruff, mypy, hygiene hooks)
         run: uv run pre-commit run --all-files
+      - name: Verify bilingual per-directory documentation coverage
+        run: uv run python scripts/check_directory_readmes.py
 
   type-check:
     name: Type safety (core orchestration boundary)

@@ -35,8 +35,14 @@ def test_gitleaks_scans_history_with_a_checksum_pinned_binary():
     assert "gitleaks git --redact --verbose" in workflow
     assert "pull_request_target" not in workflow
 
+    # Every allowlisted fingerprint has to be argued for in review, so the count
+    # is pinned here: adding one means editing this test. The six README rows are
+    # star-history.com `sealed_token` values (three English, three Chinese) — an
+    # encrypted wrapper around a metadata-read-only GitHub token, which
+    # star-history decrypts per request and which is designed to be published in
+    # a README. gitleaks flags them on entropy alone.
     ignored = (ROOT / ".gitleaksignore").read_text(encoding="utf-8").splitlines()
-    assert len(ignored) == 5
+    assert len(ignored) == 8
     assert all(
         re.fullmatch(r"[0-9a-f]{40}:.+:[a-z0-9-]+:\d+", item) for item in ignored
     )
