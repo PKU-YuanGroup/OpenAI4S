@@ -3,6 +3,14 @@ name: Publish release
 on:
   release:
     types: [published]
+  # Dry run: build and verify every artifact for a tag or branch without
+  # publishing anything. Nothing in this path touches PyPI or the Release.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or branch to build (dry run — nothing is published)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -10,13 +18,15 @@ permissions:
 jobs:
   build:
     name: Build verified distributions
-    if: startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the immutable release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.ref || github.ref }}
           fetch-depth: 0
           persist-credentials: false
       - name: Install uv
@@ -24,8 +34,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Match the tag to both version declarations
+        if: github.event_name == 'release'
         run: uv run --locked python scripts/verify_release_tag.py "${GITHUB_REF_NAME}"
       - name: Require an annotated tag on main
+        if: github.event_name == 'release'
         run: |
           if [ "$(git cat-file -t "$GITHUB_REF_NAME")" != "tag" ]; then
             echo "::error::Release tags must be annotated."
@@ -46,8 +58,73 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  macos-app:
+    name: Build the macOS app image (arm64)
+    # The DMG embeds a relocatable CPython plus the native science wheels, so it
+    # cannot be cross-built: this must run on an Apple Silicon runner.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
+    runs-on: macos-14
+    steps:
+      - name: Checkout the immutable release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.ref || github.ref }}
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - name: Build the .app and .dmg
+        run: bash scripts/build_macos_dmg.sh
+      - name: Verify the image
+        # Fails closed on a runtime that did not relocate, an incomplete science
+        # stack, a missing Web UI / R worker, a broken signature, or any
+        # credential material swept into the bundle.
+        run: python3 scripts/verify_macos_bundle.py dist/*.dmg
+      - name: Upload the verified app image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-app-image
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  attach:
+    name: Attach assets to the GitHub Release
+    if: github.event_name == 'release'
+    needs: [build, macos-app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the verified distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-package-distributions
+          path: assets/
+      - name: Download the verified app image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: macos-app-image
+          path: assets/
+      - name: Publish one checksum file covering every asset
+        run: |
+          cd assets
+          rm -f OpenAI4S-*.dmg.sha256   # the per-image sidecar is folded into SHA256SUMS
+          sha256sum openai4s-*.whl openai4s-*.tar.gz OpenAI4S-*.dmg > SHA256SUMS
+          cat SHA256SUMS
+      - name: Upload the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" assets/* --clobber
+
   publish:
     name: Publish to PyPI with OIDC
+    if: github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
     environment:

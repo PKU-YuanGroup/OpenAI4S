@@ -105,7 +105,13 @@ def candidate_files(root: Path) -> list[Path]:
 
     root = root.resolve()
     candidates = _git_candidates(root)
-    if candidates is None:
+    # An *empty* git listing must fall back too, not just a failed one. Scanning
+    # a directory that is inside a repository but entirely ignored by it — a
+    # staged release bundle under .build/, say — makes `git ls-files` exit 0 with
+    # no output, and taking that at face value scans zero files and reports a
+    # clean pass. This scanner has to fail closed, so treat "git told me nothing"
+    # exactly like "git told me it could not help".
+    if not candidates:
         candidates = list(root.rglob("*"))
     selected: list[Path] = []
     for path in candidates:

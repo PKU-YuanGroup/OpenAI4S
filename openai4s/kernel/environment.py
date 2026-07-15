@@ -63,6 +63,14 @@ _RUNTIME_ALLOWLIST = frozenset(
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",
         "CURL_CA_BUNDLE",
+        # Where on-demand ``pip install`` puts packages, so a cell can import
+        # what the Host just installed.  Distributions that cannot write to
+        # their own interpreter (the signed macOS .app) redirect pip to a
+        # private user site; the worker must resolve that same directory or the
+        # install is invisible to the code that asked for it.  It carries no
+        # credential.  (``PYTHONPATH`` stays excluded and is synthesized below:
+        # an inherited one is arbitrary import-time code injection.)
+        "PYTHONUSERBASE",
         # Reproducible/headless scientific runtime controls.
         "MPLBACKEND",
         "MPLCONFIGDIR",

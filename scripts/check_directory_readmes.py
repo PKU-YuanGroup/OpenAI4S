@@ -21,7 +21,15 @@ EXCLUDED_PREFIXES = (
 EXCLUDED_PARTS = frozenset(
     {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".build"}
 )
-README_NAMES = frozenset({"README.md", "README_zh.md"})
+# A directory documents itself with README.md + README_zh.md, or — where a
+# README.md would collide with the way a tool treats the folder, as
+# `.github/README.md` does on GitHub (it overrides the repository's displayed
+# profile) — with CONTENTS.md + CONTENTS_zh.md. Either bilingual pair satisfies
+# coverage; the first pair present (README preferred) is the one checked.
+DOC_PAIRS = (("README.md", "README_zh.md"), ("CONTENTS.md", "CONTENTS_zh.md"))
+# Every doc-file name, so a directory's own documentation is never counted among
+# the direct files its documentation must list.
+DOC_NAMES = frozenset(name for pair in DOC_PAIRS for name in pair)
 
 
 def _excluded(path: PurePosixPath) -> bool:
@@ -88,13 +96,18 @@ def main() -> int:
 
     for directory in sorted(directories, key=str):
         local_dir = ROOT / directory
-        english_path = local_dir / "README.md"
-        chinese_path = local_dir / "README_zh.md"
-        if not english_path.is_file():
+        english_path = None
+        chinese_path = None
+        for english_name, chinese_name in DOC_PAIRS:
+            if (local_dir / english_name).is_file():
+                english_path = local_dir / english_name
+                chinese_path = local_dir / chinese_name
+                break
+        if english_path is None:
             errors.append(f"missing {directory}/README.md")
             continue
         if not chinese_path.is_file():
-            errors.append(f"missing {directory}/README_zh.md")
+            errors.append(f"missing {directory}/{chinese_path.name}")
             continue
 
         english = english_path.read_text(encoding="utf-8")
@@ -116,14 +129,18 @@ def main() -> int:
         direct_files = sorted(
             path.name
             for path in files
-            if path.parent == directory and path.name not in README_NAMES
+            if path.parent == directory and path.name not in DOC_NAMES
         )
         for name in direct_files:
             marker = f"`{name}`"
             if marker not in english:
-                errors.append(f"{directory}/README.md does not mention {marker}")
+                errors.append(
+                    f"{directory}/{english_path.name} does not mention {marker}"
+                )
             if marker not in chinese:
-                errors.append(f"{directory}/README_zh.md does not mention {marker}")
+                errors.append(
+                    f"{directory}/{chinese_path.name} does not mention {marker}"
+                )
 
         children = sorted(
             child.name for child in directories if child.parent == directory
@@ -131,9 +148,13 @@ def main() -> int:
         for name in children:
             marker = f"`{name}/`"
             if marker not in english:
-                errors.append(f"{directory}/README.md does not mention {marker}")
+                errors.append(
+                    f"{directory}/{english_path.name} does not mention {marker}"
+                )
             if marker not in chinese:
-                errors.append(f"{directory}/README_zh.md does not mention {marker}")
+                errors.append(
+                    f"{directory}/{chinese_path.name} does not mention {marker}"
+                )
 
     if errors:
         for error in errors:
@@ -143,7 +164,7 @@ def main() -> int:
     documented_files = {
         path
         for path in files
-        if path.parent in directories and path.name not in README_NAMES
+        if path.parent in directories and path.name not in DOC_NAMES
     }
     print(
         f"directory docs: {len(directories)} maintained directories, "
