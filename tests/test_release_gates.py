@@ -202,7 +202,10 @@ def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
         "environment:",
         "name: pypi",
         "id-token: write",
-        "pypa/gh-action-pypi-publish@7f25271a4aa483500f742f9492b2ab5648d61011",
+        # A Docker-container action PyPA only publishes tagged by release ref,
+        # so this one is intentionally on `release/v1` rather than a SHA pin
+        # (see the justification comment in release.yml and test_governance.py).
+        "pypa/gh-action-pypi-publish@release/v1",
     ):
         assert contract in workflow
 
