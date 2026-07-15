@@ -1,6 +1,6 @@
 # Repository governance
 
-[中文说明](README_zh.md)
+[中文说明](CONTENTS_zh.md)
 
 GitHub's own policy and automation live here: who reviews which paths, how
 dependency updates arrive, and what a pull request has to account for. None of

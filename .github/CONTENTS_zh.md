@@ -1,6 +1,6 @@
 # 仓库治理
 
-[English](README.md)
+[English](CONTENTS.md)
 
 面向 GitHub 的政策与自动化都放在这里：哪些路径由谁评审、依赖更新怎么进来、一个
 PR 需要交代清楚哪些事。这些东西都不在 OpenAI4S daemon、Agent Engine 或内核里运行，
