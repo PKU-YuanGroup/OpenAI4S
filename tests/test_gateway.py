@@ -1540,6 +1540,64 @@ def test_ws_upgrade_allows_absent_and_same_origin(tmp_path):
         assert upgraded == [True]
 
 
+def test_dns_rebinding_host_header_is_rejected(tmp_path):
+    """DNS-rebinding defense (GHSA-fm3g-2c7x-8qj8): the Origin==Host CSRF guard
+    alone is bypassed when an attacker rebinds evil.test→127.0.0.1 so the browser
+    sends Origin==Host==evil.test (equal → the guard passes) while the request
+    still lands on the loopback daemon. A Host-header allowlist, checked on EVERY
+    request BEFORE routing, rejects any Host that is not a loopback address we
+    bind — closing the path to the unauthenticated /compute/jobs command sink."""
+    cfg = _cfg(tmp_path)  # default bind 127.0.0.1:8760
+    assert (cfg.host, cfg.port) == ("127.0.0.1", 8760)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+
+    def _run(headers, method, path):
+        handler = object.__new__(handler_cls)
+        handler.headers = headers
+        replies = []
+        api_calls = []
+        handler._json = lambda obj, code=200: replies.append((code, obj))
+        handler._api = lambda m, sub: api_calls.append((m, sub))
+        handler.path = path
+        handler._route(method)
+        return replies, api_calls
+
+    # the exact bypass: forged Host == Origin == an attacker rebind domain.
+    # Origin==Host, so the CSRF guard would pass, but the Host is not a loopback
+    # address we serve → 403 "host not allowed", BEFORE the command sink runs.
+    replies, api_calls = _run(
+        {"Host": "evil.test:8760", "Origin": "http://evil.test:8760"},
+        "POST",
+        "/api/compute/jobs",
+    )
+    assert replies == [(403, {"error": "host not allowed"})]
+    assert api_calls == []  # the command sink is never reached
+
+    # the allowlist covers GET too: a rebound page is same-origin and can read
+    # GET bodies, and origin-less GETs skip the Origin guard entirely
+    replies, api_calls = _run({"Host": "evil.test:8760"}, "GET", "/api/frames")
+    assert replies == [(403, {"error": "host not allowed"})]
+    assert api_calls == []
+
+    # legitimate loopback Hosts on the bound port reach routing (incl. IPv6)
+    for host in ("127.0.0.1:8760", "localhost:8760", "[::1]:8760", "LocalHost:8760"):
+        replies, api_calls = _run({"Host": host}, "GET", "/api/frames")
+        assert api_calls == [("GET", "/frames")], f"{host} should route"
+        assert replies == []
+
+    # right hostname, wrong port → still rejected
+    replies, api_calls = _run({"Host": "127.0.0.1:9999"}, "GET", "/api/frames")
+    assert replies == [(403, {"error": "host not allowed"})]
+    assert api_calls == []
+
+    # absent Host (non-browser client: curl/CLI) passes — a browser rebind
+    # always carries a Host, so an empty Host is not the attack vector
+    replies, api_calls = _run({}, "GET", "/api/frames")
+    assert api_calls == [("GET", "/frames")]
+    assert replies == []
+
+
 def test_execution_log_route_serializer_contract(tmp_path):
     """GET /api/frames/{fid}/execution-log — the Notebook data contract: each
     entry carries immutable identity plus source/stdout/stderr/error/status,

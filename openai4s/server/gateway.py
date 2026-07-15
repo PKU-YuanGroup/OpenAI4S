@@ -5603,6 +5603,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     if store.get_setting("network_enabled") == "0":
         os.environ["OPENAI4S_ALLOW_NETWORK"] = "0"
 
+    # DNS-rebinding defense (CWE-346 / CWE-350): the Origin==Host guard in
+    # _route() stops classic cross-origin CSRF, but DNS rebinding defeats it —
+    # an attacker points evil.test at 127.0.0.1, so the browser sends
+    # Origin==Host==evil.test (equal → that check passes) while the write still
+    # lands on this loopback daemon (→ unauthenticated RCE via /compute/jobs and
+    # the other exec endpoints). Pin the Host header to an address we actually
+    # bind and reject the rest before routing.
+    _bind_is_wildcard = cfg.host in ("0.0.0.0", "::", "")
+    _allowed_hostnames = {"127.0.0.1", "localhost", "::1"}
+    if not _bind_is_wildcard:
+        _allowed_hostnames.add(cfg.host.strip().strip("[]").lower())
+    _allowed_port = int(cfg.port)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "openai4s-gateway/1.0"
         protocol_version = "HTTP/1.1"
@@ -5755,6 +5768,67 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         def do_DELETE(self):
             self._route("DELETE")
 
+        @staticmethod
+        def _split_host_header(raw: str):
+            """(hostname_lower, port|None); (None, None) if missing/malformed.
+
+            Handles IPv6 bracket forms ([::1], [::1]:8760), ordinary host:port,
+            bare hostnames, and case-insensitivity.
+            """
+            h = (raw or "").strip()
+            if not h:
+                return (None, None)
+            if h.startswith("["):
+                end = h.find("]")
+                if end == -1:
+                    return (None, None)  # unterminated IPv6 literal
+                host = h[1:end].lower()
+                rest = h[end + 1 :]
+                if rest == "":
+                    return (host, None)
+                if not rest.startswith(":"):
+                    return (None, None)
+                port_s = rest[1:]
+            else:
+                # A bare unbracketed IPv6 address (>1 colon) is an invalid Host
+                # per RFC 7230 — reject rather than mis-split on the last colon.
+                if h.count(":") > 1:
+                    return (None, None)
+                if ":" in h:
+                    host, port_s = h.rsplit(":", 1)
+                    host = host.lower()
+                else:
+                    return (h.lower(), None)
+            if port_s == "":
+                return (host, None)
+            try:
+                return (host, int(port_s))
+            except ValueError:
+                return (None, None)
+
+        def _host_header_allowed(self) -> bool:
+            # Wildcard bind (0.0.0.0/::): the set of valid external Host names is
+            # unknowable, so the token gate — always required on a non-loopback
+            # bind — is the authoritative control and we don't second-guess Host.
+            if _bind_is_wildcard:
+                return True
+            raw = self.headers.get("Host", "")
+            if not (raw or "").strip():
+                # Absent Host: a browser (the only rebinding vector) ALWAYS sends
+                # one, so an empty Host is a non-browser local client (curl/CLI).
+                # Pass it, mirroring the Origin guard's "curl with no Origin
+                # passes" stance — the rebind defense targets forged Host values.
+                return True
+            host, port = self._split_host_header(raw)
+            if host is None or host not in _allowed_hostnames:
+                return False
+            if port is None:
+                # A portless Host is only legitimate when we serve the scheme's
+                # default port (80); on any other port a real browser always
+                # sends the port, so treat portless as a mismatch.
+                return _allowed_port == 80
+            return port == _allowed_port
+
         def _route(self, method: str) -> None:
             self._request_body_tracking_active = True
             self._request_body_ready = False
@@ -5763,6 +5837,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             parsed = urlparse(self.path)
             path = parsed.path
             try:
+                # DNS-rebinding defense: pin the Host header to an address we
+                # bind, on EVERY request (GET included) and BEFORE the Origin/
+                # token checks. A rebound page is same-origin, so it can also
+                # read GET response bodies, and origin-less GETs skip the Origin
+                # guard entirely — so the Host allowlist must cover all methods.
+                if not self._host_header_allowed():
+                    self.close_connection = True
+                    self._json({"error": "host not allowed"}, 403)
+                    return
                 # CSRF guard: the daemon exposes unauthenticated code-exec endpoints
                 # (kernel/execute, compute/jobs, host.bash). A malicious page the
                 # user visits could POST to them cross-origin (CORS "simple" request,
