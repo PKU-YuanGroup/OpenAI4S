@@ -25,6 +25,7 @@ and the internal plans in this directory are not published by that site.
 | `release-validation.md` | The gates a release passes: offline CI, package artifacts, import smoke, and the external gates that deliberately stay outside CI. |
 | `security.md` | Threat model, trust boundaries, enforcement layers, and known coverage gaps. |
 | `skills.md` | Bundled/user Skill format, loading, sidecars, and lifecycle. |
+| `startup-guide.md` | Bilingual macOS `.dmg` walkthrough: install, Gatekeeper, and configuring the model + Tavily search keys in the UI. |
 | `webapp-api.md` | Detailed REST/WebSocket surface and compatibility behavior. |
 | `webapp.md` | Web workbench concepts, projections, status, and operator-facing behavior. |
 

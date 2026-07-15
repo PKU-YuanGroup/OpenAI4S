@@ -53,9 +53,18 @@ def test_release_workflow_pins_every_action_to_a_commit():
     uses = [line for line in workflow.splitlines() if line.lstrip().startswith("uses:")]
 
     assert uses
-    # No moving refs: the OIDC-privileged PyPI publish step must be SHA-pinned
-    # like every other action so a mutable upstream branch cannot inject code.
-    moving = [line for line in uses if not PINNED_ACTION.fullmatch(line)]
+    # Every action is SHA-pinned so a mutable upstream branch cannot inject code.
+    # The one documented exception is pypa/gh-action-pypi-publish: it is a
+    # Docker-container action whose image PyPA publishes tagged by RELEASE ref
+    # only (never by commit SHA), so a SHA pin fails the image pull with
+    # `manifest unknown` before the OIDC exchange starts. It must stay on PyPA's
+    # documented `release/v1` image-backed ref — and nothing else may move.
+    moving = [
+        line
+        for line in uses
+        if not PINNED_ACTION.fullmatch(line)
+        and line.strip() != "uses: pypa/gh-action-pypi-publish@release/v1"
+    ]
     assert moving == []
 
 

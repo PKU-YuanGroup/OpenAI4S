@@ -71,6 +71,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## 📣 更新
 
+- **`2026-07-15`** 🍎 **`v0.1.0` —— macOS 应用** —— 一键、免工具链的 Apple Silicon `.dmg`，内嵌 Python 与完整默认内核科学栈（rdkit · scanpy · 单细胞栈），并支持 PyPI 安装（`pip install openai4s`）与自动化发布。**第一次用？→ [上手指南](docs/startup-guide.md)。**
 - **`2026-07-06`** 🎉 **代码开源** —— 纯标准库 Code-as-Action 引擎、科研 Web 应用、24 个科学 Skill、BYOC 远程计算。
 
 ---
@@ -123,6 +124,13 @@ Apple Silicon 用户可以完全跳过 clone：从 [最新 Release](https://gith
 
 该构建仅做 ad-hoc 签名、**未做公证（notarization）**，所以首次打开会被 Gatekeeper 拦下。**macOS 15+**：先双击一次，关掉提示，再到「系统设置 → 隐私与安全性」点 **仍要打开**；**macOS 12–14**：右键点应用 → **打开** → **打开**。两个版本都可以直接用 `xattr -dr com.apple.quarantine /Applications/OpenAI4S.app` 解除。
 
+**首次运行 —— 先配模型，再配搜索。** 启动应用后会打开工作台 `http://127.0.0.1:8760/`。启动不带任何 Key，因此：
+
+1. **模型 API** —— 打开 **设置 ⚙ → 模型**，选协议（**ark 兼容协议** 对应豆包/GLM/Kimi/DeepSeek/MiniMax，或 **OpenAI** / **Anthropic 兼容协议**），粘贴 **API Key**，点 **新增**，再点 **设为当前**。最省钱：用火山方舟 ¥9.9/月 套餐的 `ark` 协议。
+2. **搜索 API** *（可选、推荐）* —— 打开 **设置 ⚙ → 网络**，保持 **允许联网** 打开，到 **[tavily.com](https://tavily.com)** 注册，把 Key 粘进 **搜索 API Key（Tavily）** → **保存**。不填 Key，联网搜索仍会退回免密钥抓取。
+
+完整流程（安装 → Gatekeeper → 模型 → 搜索 → R 内核）见：**[上手指南](docs/startup-guide.md)**。
+
 命令行随应用一起打包，想挂到 PATH 上就建个软链：
 
 ```bash
@@ -140,6 +148,7 @@ R 内核未被打包（它需要一个 conda 环境）。Intel Mac 与 Linux 请
 
 | 文档 | 内容 |
 |---|---|
+| [**上手指南**](docs/startup-guide.md) | macOS `.dmg` 全流程：安装、Gatekeeper，以及配置模型 + Tavily 搜索 Key |
 | [**架构**](docs/architecture.md) | 混合动作路由、Action Ledger、`host` RPC 与惰性内核 |
 | [**后端扩展指南**](docs/backend-extension-guide.md) | 新 Tool、Host service、repository 与 session 行为应归属的位置 |
 | [**Skills**](docs/skills.md) | 32 个内置 Skill + 如何自撰 |
@@ -249,5 +258,5 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 ---
 
 <div align="center">
-<sub><b>OpenAI4S</b> · 代码即行动,内核即环境。 · <a href="README.md">English</a></sub>
+<sub><b>OpenAI4S</b> · 代码即行动,内核即环境。 · <a href="README.md">English</a> · 友情链接 https://linux.do </sub>
 </div>
