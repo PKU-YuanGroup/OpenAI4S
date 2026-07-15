@@ -117,6 +117,21 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 
 `setup.sh` 用 **uv** 创建轻量控制面 `.venv`。如需完整的 Python + R 科学计算内核，请先安装 `micromamba`、`mamba` 或 `conda`，然后改用 `./setup.sh --with-kernel-envs`；已有环境可用 `./setup.sh --update-kernel-envs` 同步，且不会删除用户自行安装的包。`start.sh` 从环境中启动守护进程 + Web UI。启动无需 API Key —— **在 UI 里设置你的模型**(Customize → Models)。不启动 UI 跑单个任务:`uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`。
 
+### macOS 应用（无需任何工具链）
+
+Apple Silicon 用户可以完全跳过 clone：从 [最新 Release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest) 下载 `OpenAI4S-<version>-macos-arm64.dmg`，拖进「应用程序」即可启动。镜像内嵌了自带的 Python 以及默认内核科学栈——numpy · pandas · scipy · matplotlib · scikit-learn · **rdkit**（化学信息学）· **scanpy** 及单细胞栈 · umap · numba · biopython——首次启动不联网、不 `pip`。数据仍写在 `~/.openai4s`。
+
+该构建仅做 ad-hoc 签名、**未做公证（notarization）**，所以首次打开会被 Gatekeeper 拦下。**macOS 15+**：先双击一次，关掉提示，再到「系统设置 → 隐私与安全性」点 **仍要打开**；**macOS 12–14**：右键点应用 → **打开** → **打开**。两个版本都可以直接用 `xattr -dr com.apple.quarantine /Applications/OpenAI4S.app` 解除。
+
+命令行随应用一起打包，想挂到 PATH 上就建个软链：
+
+```bash
+sudo ln -sf /Applications/OpenAI4S.app/Contents/Resources/runtime/bin/openai4s /usr/local/bin/openai4s
+openai4s setup        # 仅当你需要 R 内核：需要先装 micromamba/mamba/conda
+```
+
+R 内核未被打包（它需要一个 conda 环境）。Intel Mac 与 Linux 请改用 PyPI 安装（`pip install openai4s`）。
+
 ---
 
 ## 📚 文档

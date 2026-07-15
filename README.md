@@ -128,6 +128,21 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 
 `setup.sh` creates the lightweight control `.venv` with **uv**. For the comprehensive Python + R scientific kernels, install a Conda-family manager (`micromamba`, `mamba`, or `conda`) and run `./setup.sh --with-kernel-envs` instead. Existing kernel environments can be synchronized with `./setup.sh --update-kernel-envs`; updates do not prune user-installed packages. `start.sh` launches the daemon + web UI. No API key is needed to boot — **set your model in the UI** (Customize → Models). One-shot without the UI: `uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`.
 
+### macOS app (no toolchain required)
+
+Apple Silicon users can skip the checkout entirely: download `OpenAI4S-<version>-macos-arm64.dmg` from the [latest release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest), drag it to Applications, and launch. The image embeds its own Python plus the default kernel science stack — numpy · pandas · scipy · matplotlib · scikit-learn · **rdkit** (cheminformatics) · **scanpy** and the single-cell stack · umap · numba · biopython — so the first launch needs no network and no `pip`. Data lives in `~/.openai4s`.
+
+The build is ad-hoc signed but **not notarized**, so Gatekeeper refuses it the first time. On **macOS 15+**, open it once, then allow it under System Settings → Privacy & Security → **Open Anyway**; on **macOS 12–14**, right-click the app → **Open** → **Open**. Either way, `xattr -dr com.apple.quarantine /Applications/OpenAI4S.app` also clears it.
+
+The CLI ships inside the app — symlink it if you want it on your PATH:
+
+```bash
+sudo ln -sf /Applications/OpenAI4S.app/Contents/Resources/runtime/bin/openai4s /usr/local/bin/openai4s
+openai4s setup        # only if you want the R kernel: needs micromamba/mamba/conda
+```
+
+The R kernel is not bundled (it needs a conda environment). On Intel Macs and Linux, install from PyPI (`pip install openai4s`) instead.
+
 ---
 
 ## 📚 Documentation
