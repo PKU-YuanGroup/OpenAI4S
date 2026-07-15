@@ -23,6 +23,7 @@
 | `release-validation.md` | 发布要过的几道关卡：离线 CI、发布包检查、import 冒烟，以及有意留在 CI 之外的外部关卡。 |
 | `security.md` | 威胁模型、信任边界、各层防护与已知的覆盖缺口。 |
 | `skills.md` | 内置与用户 Skill 的格式、加载方式、sidecar 与生命周期。 |
+| `startup-guide.md` | 双语 macOS `.dmg` 上手全流程：安装、Gatekeeper，以及在 UI 里配置模型 + Tavily 搜索 Key。 |
 | `webapp-api.md` | REST/WebSocket 功能面的详细契约与兼容行为。 |
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
 

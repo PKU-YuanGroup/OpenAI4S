@@ -82,6 +82,7 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 
 ## 📣 News
 
+- **`2026-07-15`** 🍎 **`v0.1.0` — macOS app** — a one-click, no-toolchain Apple Silicon `.dmg` with an embedded Python and the full default kernel science stack (rdkit · scanpy · the single-cell stack), plus PyPI packaging (`pip install openai4s`) and release automation. **New here? → [Startup guide](docs/startup-guide.md).**
 - **`2026-07-06`** 🎉 **Open-sourced** — the pure-stdlib Code-as-Action engine, the scientific web app, 24 science Skills, and BYOC remote compute.
 
 ---
@@ -134,6 +135,13 @@ Apple Silicon users can skip the checkout entirely: download `OpenAI4S-<version>
 
 The build is ad-hoc signed but **not notarized**, so Gatekeeper refuses it the first time. On **macOS 15+**, open it once, then allow it under System Settings → Privacy & Security → **Open Anyway**; on **macOS 12–14**, right-click the app → **Open** → **Open**. Either way, `xattr -dr com.apple.quarantine /Applications/OpenAI4S.app` also clears it.
 
+**First run — point it at a model, then at search.** Launching the app opens the workbench at `http://127.0.0.1:8760/`. No key ships, so:
+
+1. **Model API** — open **Settings ⚙ → Models**, pick a protocol (**Ark-compatible** for Doubao/GLM/Kimi/DeepSeek/MiniMax, or **OpenAI-** / **Anthropic-compatible**), paste your **API Key**, click **Add**, then **Set active**. Cheapest path: the `ark` protocol on Volcengine Ark's ¥9.9/mo plan.
+2. **Search API** *(optional, recommended)* — open **Settings ⚙ → Network**, keep **Allow network access** on, register at **[tavily.com](https://tavily.com)**, and paste the key into **Search API key (Tavily)** → **Save**. Without a key, web search still falls back to keyless scrapers.
+
+Full walkthrough (install → Gatekeeper → model → search → R kernel): **[Startup guide](docs/startup-guide.md)**.
+
 The CLI ships inside the app — symlink it if you want it on your PATH:
 
 ```bash
@@ -151,6 +159,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 
 | doc | what's inside |
 |---|---|
+| [**Startup guide**](docs/startup-guide.md) | macOS `.dmg` walkthrough: install, Gatekeeper, and configuring the model + Tavily search keys |
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
 | [**Skills**](docs/skills.md) | the 32 bundled Skills + how to write your own |
