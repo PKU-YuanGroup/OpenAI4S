@@ -139,4 +139,11 @@ jobs:
           name: python-package-distributions
           path: dist/
       - name: Publish package distributions
-        uses: pypa/gh-action-pypi-publish@7f25271a4aa483500f742f9492b2ab5648d61011 # v1.12.4
+        # NOT SHA-pinned, unlike every other action here: this one is a Docker
+        # container action whose generated Dockerfile does
+        # `FROM ghcr.io/pypa/gh-action-pypi-publish:${action_ref}`. PyPA publishes
+        # that image tagged by RELEASE ref only, never by commit SHA, so a
+        # SHA pin makes the image pull fail with `manifest unknown` before the
+        # container (and the OIDC exchange) ever starts. `release/v1` is PyPA's
+        # documented, image-backed ref.
+        uses: pypa/gh-action-pypi-publish@release/v1
