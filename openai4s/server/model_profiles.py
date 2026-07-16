@@ -8,6 +8,7 @@ from typing import Any
 
 from openai4s.config import Config, is_placeholder_api_key
 from openai4s.llm.catalog import ModelPreset, model_presets
+from openai4s.security.secret_broker import is_ref
 
 # Model profiles select a transport contract, not an arbitrary vendor name.
 # Keep the persisted ids compatible with the existing LLM registry while the
@@ -25,6 +26,29 @@ def clean_api_key(value: Any) -> str:
     """Trim API keys and collapse obvious template stubs to empty."""
     key = str(value or "").strip()
     return "" if is_placeholder_api_key(key) else key
+
+
+def resolve_profile_key(store: Any, profile: Mapping[str, Any]) -> str:
+    """A profile's actual API key, whether brokered or legacy plaintext.
+
+    Module-level because two unrelated scopes need it — the profile service and
+    SessionRunner's review ports — and a second copy of this rule is exactly how
+    one of them would end up shipping a reference to a provider.
+
+    Every read of ``profile["api_key"]`` must come through here. Once migrated
+    the field holds a broker reference: a truthy string that is not a key.
+    Handed to a provider it fails auth in a way that looks like a bad key;
+    tested with ``if key:`` it reports a revoked credential as present.
+    """
+    raw = str(profile.get("api_key") or "")
+    if not raw:
+        return ""
+    if not is_ref(raw):
+        return clean_api_key(raw)
+    try:
+        return clean_api_key(store.secrets.get(raw))
+    except Exception:  # noqa: BLE001 - an unreadable secret is an absent one
+        return ""
 
 
 class ModelProfileService:
@@ -53,16 +77,46 @@ class ModelProfileService:
         spec = self._providers().get(provider_id, {})
         return str(spec.get("model") or self.cfg.llm.model or "default")
 
-    @staticmethod
-    def public_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
-        """Return a profile projection that never includes the raw API key."""
+    # --- credentials -----------------------------------------------------
+    PROFILE_SCOPE = "model_profile"
+
+    def resolve_key(self, profile: Mapping[str, Any]) -> str:
+        """See :func:`resolve_profile_key`."""
+        return resolve_profile_key(self.store, profile)
+
+    def _store_key(self, profile_id: str, key: str) -> str:
+        """Put a profile's key behind a reference. Returns what to persist."""
+        if not key:
+            return ""
+        ref = self.store.secrets.put(self.PROFILE_SCOPE, profile_id, key)
+        if self.store.secrets.get(ref) != key:
+            raise ModelProfileError(
+                "could not store the API key securely; it was not saved", 500
+            )
+        return ref
+
+    def _forget_key(self, profile: Mapping[str, Any]) -> None:
+        raw = str(profile.get("api_key") or "")
+        if is_ref(raw):
+            try:
+                self.store.secrets.delete(raw)
+            except Exception:  # noqa: BLE001 - removing the row still matters
+                pass
+
+    def public_profile(self, profile: Mapping[str, Any]) -> dict[str, Any]:
+        """Return a profile projection that never includes the raw API key.
+
+        ``has_api_key`` resolves rather than testing the field, so a profile
+        whose keychain entry was revoked reports honestly instead of claiming a
+        credential it can no longer produce.
+        """
         return {
             "id": profile.get("id"),
             "name": profile.get("name") or "",
             "provider": profile.get("provider") or "",
             "base_url": profile.get("base_url") or "",
             "model": profile.get("model") or "",
-            "has_api_key": bool(clean_api_key(profile.get("api_key"))),
+            "has_api_key": bool(self.resolve_key(profile)),
         }
 
     def models_payload(self, default_model_id: str) -> dict[str, Any]:
@@ -159,13 +213,15 @@ class ModelProfileService:
         name = str(body.get("name") or "").strip()
         if not name:
             raise ModelProfileError("name required")
+        profile_id = self._id_factory()
         profile = {
-            "id": self._id_factory(),
+            "id": profile_id,
             "name": name,
             "provider": self._protocol(body.get("provider")),
             "base_url": str(body.get("base_url") or "").strip(),
             "model": str(body.get("model") or "").strip(),
-            "api_key": clean_api_key(body.get("api_key")),
+            # The blob records a reference; the key itself goes to the broker.
+            "api_key": self._store_key(profile_id, clean_api_key(body.get("api_key"))),
         }
         self.store.mutate_model_profiles(lambda profiles: profiles.append(profile))
         return self.public_profile(profile)
@@ -187,8 +243,10 @@ class ModelProfileService:
             ("model", "llm_model"),
         ):
             self.store.set_setting(setting, str(profile.get(field) or "").strip())
+        # resolve_key, not the raw field: activating must copy the *key* into
+        # llm_api_key, not the reference that stands for it.
         self.store.set_secret_setting(
-            "llm_api_key", clean_api_key(profile.get("api_key")), scope="llm"
+            "llm_api_key", self.resolve_key(profile), scope="llm"
         )
         self.store.set_setting("active_model_profile", profile["id"])
 
@@ -223,8 +281,12 @@ class ModelProfileService:
             if protocol is not None:
                 profile["provider"] = protocol
             if body.get("api_key"):
-                profile["api_key"] = clean_api_key(body["api_key"])
+                self._forget_key(profile)
+                profile["api_key"] = self._store_key(
+                    profile_id, clean_api_key(body["api_key"])
+                )
             if body.get("clear_api_key"):
+                self._forget_key(profile)
                 profile["api_key"] = ""
             return dict(profile)
 
@@ -240,7 +302,7 @@ class ModelProfileService:
             ):
                 self.store.set_setting(setting, str(profile.get(field) or ""))
             self.store.set_secret_setting(
-                "llm_api_key", clean_api_key(profile.get("api_key")), scope="llm"
+                "llm_api_key", self.resolve_key(profile), scope="llm"
             )
             selected_model = self.effective_model_id(
                 profile.get("provider"), profile.get("model")
@@ -248,14 +310,48 @@ class ModelProfileService:
         return self.public_profile(profile), selected_model
 
     def delete(self, profile_id: str) -> None:
-        self.store.mutate_model_profiles(
-            lambda profiles: profiles.__setitem__(
-                slice(None),
-                [profile for profile in profiles if profile.get("id") != profile_id],
-            )
-        )
+        removed: list[dict[str, Any]] = []
+
+        def drop(profiles: list[dict[str, Any]]) -> None:
+            removed.extend(p for p in profiles if p.get("id") == profile_id)
+            profiles[:] = [p for p in profiles if p.get("id") != profile_id]
+
+        self.store.mutate_model_profiles(drop)
+        # Deleting the row must delete the credential. Otherwise a profile the
+        # user removed leaves its key sitting in the keychain forever, with
+        # nothing left in the app that refers to it.
+        for profile in removed:
+            self._forget_key(profile)
         if self.store.get_setting("active_model_profile") == profile_id:
             self.store.set_setting("active_model_profile", "")
+
+    def migrate_profile_keys(self) -> dict:
+        """Move any plaintext profile key behind a reference.
+
+        Same ordering as every other credential migration: write, verify by
+        reading back, and only then replace the field. A profile whose key
+        cannot be stored keeps its plaintext and keeps working.
+        """
+        migrated: list[str] = []
+        failed: list[dict] = []
+
+        def convert(profiles: list[dict[str, Any]]) -> None:
+            for profile in profiles:
+                raw = str(profile.get("api_key") or "")
+                if not raw or is_ref(raw):
+                    continue
+                profile_id = str(profile.get("id") or "")
+                if not profile_id:
+                    continue
+                try:
+                    profile["api_key"] = self._store_key(profile_id, raw)
+                    migrated.append(profile_id)
+                except Exception as e:  # noqa: BLE001 - one bad key must not
+                    # strand the others, and the plaintext stays authoritative.
+                    failed.append({"id": profile_id, "error": str(e)[:200]})
+
+        self.store.mutate_model_profiles(convert)
+        return {"migrated": migrated, "failed": failed}
 
 
 def migrate_provider_alias(

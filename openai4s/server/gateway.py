@@ -85,6 +85,7 @@ from openai4s.server.model_discovery import LocalModelDiscoveryService
 from openai4s.server.model_profiles import ModelProfileError, ModelProfileService
 from openai4s.server.model_profiles import clean_api_key as _clean_api_key
 from openai4s.server.model_profiles import migrate_provider_alias
+from openai4s.server.model_profiles import resolve_profile_key as _resolve_profile_key
 
 # Keep the former gateway helper names as compatibility aliases; plan behavior
 # itself now lives together in PlanService.
@@ -1440,6 +1441,9 @@ class SessionRunner:
                 ),
                 providers=lambda: PROVIDERS,
                 clean_api_key=lambda value: _clean_api_key(value),
+                resolve_profile_key=lambda profile: _resolve_profile_key(
+                    self.store, profile
+                ),
                 job_factory=lambda job_id, root_frame_id: MessageJob(
                     job_id, root_frame_id
                 ),
@@ -8590,6 +8594,25 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
             print(
                 f"[openai4s] could not migrate {_failure['key']}: "
                 f"{_failure['error']} — it remains stored in plaintext",
+                file=sys.stderr,
+            )
+
+        # Each saved model profile carries its own key inside the
+        # model_profiles blob; the active one is only mirrored into
+        # llm_api_key, so migrating that alone would leave every other
+        # configured endpoint's key in the clear.
+        _profiles = ModelProfileService(_store, cfg, providers=lambda: PROVIDERS)
+        _pr = _profiles.migrate_profile_keys()
+        if _pr["migrated"]:
+            print(
+                f"[openai4s] moved {len(_pr['migrated'])} model-profile key(s) "
+                f"into {_store.secrets.posture()['backend']}",
+                file=sys.stderr,
+            )
+        for _failure in _pr["failed"]:
+            print(
+                f"[openai4s] could not migrate profile {_failure['id']}: "
+                f"{_failure['error']} — its key remains in plaintext",
                 file=sys.stderr,
             )
     except Exception:  # noqa: BLE001 - never block startup on this

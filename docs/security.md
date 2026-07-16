@@ -120,11 +120,21 @@ Credential values passed to `host.credentials.set(name, value)` are held only in
 
 ### Credentials at rest
 
-`llm_api_key` and `tavily_api_key` are held by a **SecretBroker**
-([`security/secret_broker.py`](../openai4s/security/secret_broker.py)): the
-`settings` row stores an opaque reference such as `secret://v1/llm/llm_api_key`
-and the value lives in the system keychain. The reference is not derived from
-the value, so it is safe to log and safe to sit in a row.
+Model and search credentials are held by a **SecretBroker**
+([`security/secret_broker.py`](../openai4s/security/secret_broker.py)): the row
+stores an opaque reference such as `secret://v1/llm/llm_api_key` and the value
+lives in the system keychain. The reference is not derived from the value, so it
+is safe to log and safe to sit in a row. Covered today: `llm_api_key`,
+`tavily_api_key`, and the per-profile `api_key` of every saved model profile
+(`secret://v1/model_profile/<id>`).
+
+A reference is a truthy string that is not a key, which sets one trap worth
+knowing about: `if profile["api_key"]:` reports a revoked credential as present,
+and handing that field to a provider fails auth in a way that looks like a bad
+key. Every read goes through `resolve_profile_key` /
+`Store.get_secret_setting`, which resolve the value and report absence honestly.
+Deleting a profile deletes its credential, so a removed endpoint does not leave
+its key in the keychain with nothing left that refers to it.
 
 | mode (`OPENAI4S_SECRET_STORE`) | behaviour |
 |---|---|
@@ -156,14 +166,18 @@ working, reported on stderr.
 
 Still outstanding, and stated plainly rather than left implied:
 
-- **Connector `env` and model-profile keys are still plaintext.** `settings`'
-  two named keys are migrated; `connectors.env` and the per-profile `api_key`
-  inside the `model_profiles` JSON blob are not yet. Anything that copies the
-  data dir still copies those in the clear.
+- **Connector `env` is still plaintext** in the `connectors` table. Its values
+  are no longer echoed to the browser (see below), but anything that copies the
+  data dir still copies them in the clear.
 - **Windows has no backend**, so it resolves to plaintext under `auto`.
+  `security` and `secret-tool` cover macOS and Linux desktops; DPAPI would need
+  a `ctypes` shim.
 - **The file mode is the only barrier for what is not yet migrated.** The data
   dir is `0700` and the database `0600` (see the table above), which removes the
   trivial read by another local account — but a mode is not encryption.
+- **Rotation and recovery have no owner yet.** Nothing re-keys or expires a
+  stored credential, and a keychain entry deleted out from under the app reports
+  as "not configured" and must be re-entered.
 
 What *is* enforced throughout is that credentials do not leave over the API:
 connector and model-profile responses are allowlist projections (`env_keys` /

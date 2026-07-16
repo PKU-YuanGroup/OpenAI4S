@@ -132,10 +132,18 @@ def test_upsert_response_projection_never_contains_the_canary(store):
 # --------------------------------------------------------------------------
 
 
-def test_public_profile_drops_the_api_key():
+def _profile_service(store):
+    from openai4s.config import Config
+    from openai4s.llm import PROVIDERS
     from openai4s.server.model_profiles import ModelProfileService
 
-    pub = ModelProfileService.public_profile(
+    return ModelProfileService(
+        store, Config(data_dir=store.db_path.parent), providers=lambda: PROVIDERS
+    )
+
+
+def test_public_profile_drops_the_api_key(store):
+    pub = _profile_service(store).public_profile(
         {
             "id": "p1",
             "name": "prod",
@@ -147,3 +155,23 @@ def test_public_profile_drops_the_api_key():
     )
     assert _CANARY not in json.dumps(pub)
     assert pub["has_api_key"] is True
+
+
+def test_public_profile_of_a_brokered_key_leaks_neither_key_nor_ref_value(store):
+    """A migrated profile holds a reference. The projection must still report
+    has_api_key by *resolving* it, and must not echo either the key or anything
+    derived from it."""
+    service = _profile_service(store)
+    ref = store.secrets.put("model_profile", "p1", _CANARY)
+    pub = service.public_profile({"id": "p1", "name": "prod", "api_key": ref})
+    assert _CANARY not in json.dumps(pub)
+    assert pub["has_api_key"] is True
+
+
+def test_public_profile_reports_a_revoked_key_as_absent(store):
+    """The reference is truthy whether or not the value behind it exists."""
+    service = _profile_service(store)
+    ref = store.secrets.put("model_profile", "p1", _CANARY)
+    store.secrets.delete(ref)
+    pub = service.public_profile({"id": "p1", "name": "prod", "api_key": ref})
+    assert pub["has_api_key"] is False

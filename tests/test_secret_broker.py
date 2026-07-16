@@ -365,6 +365,101 @@ def test_a_revoked_secret_is_not_reported_as_configured(store, tmp_path):
 
 
 # --------------------------------------------------------------------------
+# model profiles: each carries its own key inside the blob
+# --------------------------------------------------------------------------
+
+
+def _profiles(store, tmp_path):
+    from openai4s.llm import PROVIDERS
+    from openai4s.server.model_profiles import ModelProfileService
+
+    return ModelProfileService(
+        store, Config(data_dir=tmp_path), providers=lambda: PROVIDERS
+    )
+
+
+def test_a_new_profile_stores_only_a_reference(store, tmp_path):
+    service = _profiles(store, tmp_path)
+    service.create({"name": "prod", "provider": "claude", "api_key": _CANARY})
+    saved = store.list_model_profiles()[0]
+    assert is_ref(saved["api_key"])
+    assert _CANARY not in json.dumps(store.list_model_profiles())
+
+
+def test_the_profile_key_is_still_usable(store, tmp_path):
+    service = _profiles(store, tmp_path)
+    service.create({"name": "prod", "provider": "claude", "api_key": _CANARY})
+    assert service.resolve_key(store.list_model_profiles()[0]) == _CANARY
+
+
+def test_activating_a_profile_copies_the_key_not_the_reference(store, tmp_path):
+    """The trap: activate mirrors the profile's key into llm_api_key. Copying
+    the reference instead would send it to the provider as an API key."""
+    service = _profiles(store, tmp_path)
+    created = service.create({"name": "prod", "provider": "claude", "api_key": _CANARY})
+    service.activate(created["id"])
+    assert store.get_secret_setting("llm_api_key") == _CANARY
+
+
+def test_legacy_plaintext_profile_keys_migrate(store, tmp_path):
+    service = _profiles(store, tmp_path)
+    store.mutate_model_profiles(
+        lambda profiles: profiles.append(
+            {"id": "mp-old", "name": "legacy", "provider": "claude", "api_key": _CANARY}
+        )
+    )
+    report = service.migrate_profile_keys()
+    assert report["migrated"] == ["mp-old"]
+    saved = store.list_model_profiles()[0]
+    assert is_ref(saved["api_key"])
+    assert service.resolve_key(saved) == _CANARY
+    assert _CANARY not in json.dumps(store.list_model_profiles())
+
+
+def test_profile_migration_is_idempotent(store, tmp_path):
+    service = _profiles(store, tmp_path)
+    store.mutate_model_profiles(
+        lambda profiles: profiles.append(
+            {"id": "mp-old", "name": "legacy", "api_key": _CANARY}
+        )
+    )
+    service.migrate_profile_keys()
+    assert service.migrate_profile_keys()["migrated"] == []
+
+
+def test_a_legacy_profile_key_keeps_working_before_migration(store, tmp_path):
+    """An install that has not migrated must not lose its endpoints."""
+    service = _profiles(store, tmp_path)
+    assert service.resolve_key({"id": "mp-x", "api_key": _CANARY}) == _CANARY
+
+
+def test_deleting_a_profile_deletes_its_credential(store, tmp_path):
+    """Otherwise the key outlives the row that referred to it, with nothing
+    left in the app that knows it exists."""
+    service = _profiles(store, tmp_path)
+    created = service.create({"name": "prod", "provider": "claude", "api_key": _CANARY})
+    ref = store.list_model_profiles()[0]["api_key"]
+    service.delete(created["id"])
+    assert store.secrets.get(ref) is None
+
+
+def test_clearing_a_profile_key_removes_it_from_the_store(store, tmp_path):
+    service = _profiles(store, tmp_path)
+    created = service.create({"name": "prod", "provider": "claude", "api_key": _CANARY})
+    ref = store.list_model_profiles()[0]["api_key"]
+    service.edit(created["id"], {"clear_api_key": True})
+    assert store.secrets.get(ref) is None
+    assert store.list_model_profiles()[0]["api_key"] == ""
+
+
+def test_replacing_a_profile_key_does_not_strand_the_old_one(store, tmp_path):
+    service = _profiles(store, tmp_path)
+    created = service.create({"name": "prod", "provider": "claude", "api_key": _CANARY})
+    service.edit(created["id"], {"api_key": "sk-rotated"})
+    assert service.resolve_key(store.list_model_profiles()[0]) == "sk-rotated"
+
+
+# --------------------------------------------------------------------------
 # the plaintext backend is honest about what it is
 # --------------------------------------------------------------------------
 
