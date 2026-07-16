@@ -11,12 +11,24 @@ module owns the real work the SDK only describes:
     handing the credential on the helper's stdin so the process environment is
     never a secret carrier.
   * ssh transport       — run a job script / one-off command over an SSH alias.
-  * a background poller  — harvest terminal jobs into ``hpc/<job_id>/`` and mark
-    them done so ``.result()`` can read them non-blocking.
+  * on-demand harvest   — ``result()`` polls the remote and unpacks terminal
+    outputs into ``hpc/<job_id>/``.
 
 Two provider families share one manager:
   "byoc:<id>"  bring-your-own-compute sandbox (e.g. "byoc:nvidia").
   "ssh:<alias>" a job over an existing SSH connection.
+
+Terminal states are mutually exclusive and never optimistic:
+``done`` (verified rc==0 and outputs harvested), ``failed`` (verified rc!=0),
+``timed_out`` (a deadline/job-timeout sentinel fired), ``incomplete`` (the job
+itself succeeded but its outputs could not be verified), ``cancelled``, and
+``unknown``. ``unknown`` means the outcome could not be established — it is
+*not* a synonym for failure, and it must never be resolved to success by
+default. Every path that cannot produce an exit code lands there deliberately.
+
+Known limits, stated so they are not mistaken for guarantees: job records live
+only in this process (a daemon restart strands in-flight remote work), and no
+OS boundary is applied to the byoc helper — see ``confinement_status``.
 """
 from __future__ import annotations
 
@@ -34,6 +46,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from openai4s.compute.safe_archive import UnsafeArchiveError, safe_extract_tar
+
 # Repo-root openai4s_compute_provider (the confined helper package).
 _HELPER_MAIN = str(
     Path(__file__).resolve().parent.parent.parent
@@ -43,6 +57,22 @@ _HELPER_MAIN = str(
 
 # Job-wrapper templates (ported alongside this module).
 _TMPL_DIR = Path(__file__).resolve().parent / "templates"
+
+# Mirrors OPENAI4S_KERNEL_SANDBOX's vocabulary: auto | enforce | off.
+_CONFINEMENT_ENV = "OPENAI4S_COMPUTE_CONFINEMENT"
+_VALID_CONFINEMENT = frozenset({"auto", "enforce", "off"})
+
+
+def _confinement_mode(value: str | None = None) -> str:
+    mode = str(value if value is not None else os.environ.get(_CONFINEMENT_ENV, "auto"))
+    mode = mode.strip().lower() or "auto"
+    if mode not in _VALID_CONFINEMENT:
+        raise ComputeError(
+            f"{_CONFINEMENT_ENV} must be one of "
+            f"{', '.join(sorted(_VALID_CONFINEMENT))}; got {mode!r}",
+            "invalid_request",
+        )
+    return mode
 
 
 class ComputeError(RuntimeError):
@@ -95,6 +125,10 @@ class ComputeManager:
     lazy background poller. Thread-safe for the handful of ops the dispatcher
     drives."""
 
+    # Hard host-side ceiling on one helper op. The helper's own poll budget
+    # bounds its .phase loop, not a wedged provider SDK socket.
+    _HELPER_TIMEOUT_S = 300.0
+
     def __init__(self, cfg: Any):
         self.cfg = cfg
         self._providers = _discover_providers(Path(cfg.skills_dir))
@@ -106,6 +140,50 @@ class ComputeManager:
         self._limit: int | None = None
         self._hpc_root = Path(cfg.data_dir) / "hpc"
         self._hpc_root.mkdir(parents=True, exist_ok=True)
+        self._confinement_mode = _confinement_mode()
+        # See _confinement_gate: no host-side byoc boundary exists yet, so the
+        # helper is never asked to assert one it cannot have.
+        self._require_confinement = False
+
+    def confinement_status(self) -> dict:
+        """Machine-readable posture for the UI/status surface.
+
+        Deliberately reports ``enforced: False`` rather than staying silent —
+        a user must not read "the helper ran" as "the helper was confined".
+        """
+        return {
+            "mode": self._confinement_mode,
+            "enforced": False,
+            "state": "unavailable",
+            "detail": (
+                "byoc helper confinement is not implemented host-side: the "
+                "helper is spawned without an OS boundary, so its confinement "
+                "probe cannot pass. Remote compute remains a Prototype "
+                f"capability. Set {_CONFINEMENT_ENV}=enforce to refuse byoc "
+                "ops until a verified boundary exists."
+            ),
+        }
+
+    def _confinement_gate(self, pid: str) -> None:
+        """Fail closed when the caller demanded a boundary we cannot establish.
+
+        The helper ships a confinement probe (`expect_confined`) and an exit
+        code for failing it, but nothing on the host ever wraps the helper in
+        a sandbox or supplies the probe's netns anchor — so confinement is a
+        designed, not a built, boundary. `enforce` therefore refuses the op
+        outright. That is the honest answer: passing `expect_confined=1` here
+        would only make the helper kill itself with exit 71, and defaulting it
+        on would break every byoc user while proving nothing.
+        """
+        if self._confinement_mode == "enforce":
+            raise ComputeError(
+                f"byoc provider {pid!r} refused: {_CONFINEMENT_ENV}=enforce "
+                f"requires verified helper confinement, which this host cannot "
+                f"establish (no OS boundary is applied to the provider helper). "
+                f"Fix the deployment or set {_CONFINEMENT_ENV}=auto to accept "
+                f"unconfined execution.",
+                "confinement_unavailable",
+            )
 
     # --- discovery / capability ------------------------------------------
     def has_any_provider(self) -> bool:
@@ -191,11 +269,19 @@ class ComputeManager:
         req: dict,
         creds: dict,
         stage: Path,
-        expect_confined: bool = False,
+        expect_confined: bool | None = None,
+        timeout: float | None = None,
     ) -> dict:
         """Spawn the confined helper in oneshot mode for one op. The credential
         rides on the helper's stdin (never its environment); req/reply cross
-        via the stage dir."""
+        via the stage dir.
+
+        ``expect_confined`` defaults to the manager's policy rather than to
+        False: an op that does not ask for confinement has not established it,
+        so leaving the default off silently downgraded every call site.
+        """
+        if expect_confined is None:
+            expect_confined = self._require_confinement
         (stage / "req.json").write_text(
             json.dumps({**req, "stage": str(stage), "install_id": self._install_id}),
             encoding="utf-8",
@@ -220,7 +306,24 @@ class ComputeManager:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, env=env)
         proc.stdin.write((json.dumps({"op": "auth", **creds}) + "\n").encode("utf-8"))
         proc.stdin.close()
-        proc.wait()
+        # A hard host-side deadline. The helper has its own poll budget, but a
+        # wedged exec stream (or a provider SDK blocking on a socket) leaves it
+        # with none — and a bare wait() would block the dispatcher forever.
+        deadline = timeout if timeout is not None else self._HELPER_TIMEOUT_S
+        try:
+            proc.wait(timeout=deadline)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+            raise ComputeError(
+                f"provider helper for op {op!r} exceeded the {deadline}s host "
+                f"deadline and was killed; the remote operation may or may not "
+                f"have taken effect",
+                "unknown_state",
+            )
         reply_path = stage / "reply.json"
         if not reply_path.exists():
             raise ComputeError(
@@ -288,6 +391,7 @@ class ComputeManager:
 
     def _submit_byoc(self, pid: str, kw: dict) -> dict:
         prov = self._byoc(pid)
+        self._confinement_gate(pid)
         creds = self._provider_creds(prov)
         job_id = "job-" + uuid.uuid4().hex[:12]
         timeout_s = int(kw.get("timeout_seconds") or 14400)
@@ -334,10 +438,27 @@ class ComputeManager:
         job_id = "job-" + uuid.uuid4().hex[:12]
         workdir = f"~/.openai4s-jobs/{job_id}"
         script = kw["command"]
+        # The job body runs under a wrapper whose only added responsibility is
+        # to record the terminal exit code. Without a .rc on disk a finished
+        # job is indistinguishable from a killed one, and _result_ssh has no
+        # honest state to report — so this write is what makes a *failed* ssh
+        # job observable at all. It lands via .rc.tmp + mv so a reader never
+        # sees a half-written code (mv is atomic within one filesystem).
+        inner = (
+            "bash run.sh > stdout.log 2> stderr.log; rc=$?; "
+            'printf "%s" "$rc" > .rc.tmp; mv -f .rc.tmp .rc'
+        )
+        # The braces are load-bearing. `&` binds looser than `&&`, so
+        # `mkdir && cd && cat > run.sh && nohup ... & echo $!` makes the WHOLE
+        # and-list asynchronous — and POSIX assigns an async list's stdin to
+        # /dev/null. `cat` then read nothing, run.sh was written empty, and
+        # `bash run.sh` exited 0 without ever running the job. Grouping keeps
+        # `&` scoped to the nohup alone, so `cat` stays in the foreground and
+        # actually receives the script over the ssh channel.
         remote = (
             f"mkdir -p {workdir} && cd {workdir} && "
-            f"cat > run.sh && nohup bash run.sh "
-            f"> stdout.log 2> stderr.log & echo $!"
+            f"cat > run.sh && rm -f .rc .rc.tmp && "
+            f"{{ nohup bash -c {shlex.quote(inner)} >/dev/null 2>&1 & echo $!; }}"
         )
         try:
             proc = subprocess.run(
@@ -400,11 +521,59 @@ class ComputeManager:
                     "job_id": job["job_id"],
                     "hint": "job still running — use wait_for_notification",
                 }
-            out_files = self._harvest(job["job_id"], stage)
-        job["status"] = "failed" if rep.get("job_exit_code") else "done"
-        return {
-            "status": job["status"],
-            "exit_code": rep.get("job_exit_code"),
+            exit_code = rep.get("job_exit_code")
+            phase_err = rep.get("phase_read_error")
+            if exit_code is None:
+                # The helper reached a ready state but could not read a
+                # terminal exit code out of .phase. Previously this fell
+                # through to "done" because None is falsy — the single worst
+                # false-success in this module.
+                #
+                # Not cached onto the job, for the same reason as the ssh path:
+                # `unknown` is unresolved, not terminal, so a later poll must
+                # stay free to resolve it. It also keeps the job inside
+                # _live_count() — a job we cannot account for is conservatively
+                # still occupying its slot, rather than freeing capacity we
+                # have no evidence is free.
+                return {
+                    "status": "unknown",
+                    "job_id": job["job_id"],
+                    "exit_code": None,
+                    "error_kind": "unknown_state",
+                    "reason": phase_err
+                    or "provider reported the job ready without a terminal exit code",
+                    "stdout_tail": rep.get("stdout_tail", ""),
+                    "stderr_tail": rep.get("stderr_tail", ""),
+                    "left_on_remote": False,
+                    "hint": (
+                        "the job's outcome could not be established; treat any "
+                        "harvested output as unverified"
+                    ),
+                }
+            try:
+                out_files = self._harvest(job["job_id"], stage)
+                harvest_error = None
+            except UnsafeArchiveError as e:
+                out_files = []
+                harvest_error = str(e)
+
+        if rep.get("deadline_fired") or rep.get("job_timeout_fired"):
+            status = "timed_out"
+        elif exit_code == 0:
+            status = "done"
+        else:
+            status = "failed"
+        # `harvest_failed:<rc>` means the wrapper's own tar/mv lost the outputs,
+        # so a rc==0 job still has nothing verified to show for it.
+        if phase_err and status == "done":
+            status = "incomplete"
+        if harvest_error and status == "done":
+            status = "incomplete"
+        job["status"] = status
+        job["exit_code"] = exit_code
+        result = {
+            "status": status,
+            "exit_code": exit_code,
             "output_files": out_files,
             "featured_files": out_files,
             "stdout_tail": rep.get("stdout_tail", ""),
@@ -412,59 +581,141 @@ class ComputeManager:
             "job_wall_s": rep.get("job_wall_s"),
             "left_on_remote": False,
         }
+        if phase_err:
+            result["phase_read_error"] = phase_err
+        if harvest_error:
+            result["harvest_error"] = harvest_error
+            result["error_kind"] = "unsafe_archive"
+        return result
 
     def _harvest(self, job_id: str, stage: Path) -> list[str]:
+        """Unpack the remote's out.tar.gz into hpc/<job_id>/.
+
+        Raises UnsafeArchiveError if the archive is hostile; the caller must
+        treat that as a failed harvest, never a partial success.
+        """
         dest = self._hpc_root / job_id
         dest.mkdir(parents=True, exist_ok=True)
         tgz = stage / "out.tar.gz"
-        files: list[str] = []
-        if tgz.exists():
-            with tarfile.open(tgz, "r:gz") as tf:
-                tf.extractall(dest)
-            for p in sorted(dest.rglob("*")):
-                if p.is_file():
-                    files.append(str(p))
-        return files
+        if not tgz.exists():
+            return []
+        safe_extract_tar(tgz, dest)
+        return [str(p) for p in sorted(dest.rglob("*")) if p.is_file()]
 
     def _result_ssh(self, job: dict) -> dict:
         alias, workdir = job["alias"], job["workdir"]
-        # Non-blocking: is the pid still alive?
-        check = subprocess.run(
-            [
-                "ssh",
-                alias,
-                f"kill -0 {job['pid']} 2>/dev/null && echo RUNNING || "
-                f"cat {workdir}/.rc 2>/dev/null || echo 0",
-            ],
-            capture_output=True,
-            timeout=30,
+        pid = job.get("pid") or ""
+        # Probe ordering matters. `kill -0` is asked first because the wrapper
+        # writes .rc *before* it exits: a live pid is authoritatively running,
+        # and a dead pid means .rc is already durable if it will ever be. The
+        # reverse order would race a just-finished job into `unknown`.
+        probe = (
+            f"if kill -0 {shlex.quote(pid)} 2>/dev/null; then echo RUNNING; "
+            f"elif [ -f {workdir}/.rc ]; then cat {workdir}/.rc; "
+            f"else echo NORC; fi"
         )
-        out = check.stdout.decode().strip()
+        try:
+            check = subprocess.run(
+                ["ssh", alias, probe], capture_output=True, timeout=30
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return self._ssh_unknown(job, f"status probe failed to run: {e}")
+        if check.returncode != 0:
+            # We never reached the host (network, auth, host down). The job's
+            # real state is untouched by our inability to observe it, so this
+            # is explicitly not a terminal answer.
+            return self._ssh_unknown(
+                job,
+                "status probe exited "
+                f"{check.returncode}: "
+                f"{check.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}",
+            )
+        out = check.stdout.decode("utf-8", "replace").strip()
         if out == "RUNNING":
             return {"status": "running", "job_id": job["job_id"]}
+        if out == "NORC":
+            # The process is gone but left no exit code: OOM-killed, host
+            # rebooted, or SIGKILLed. Reporting success here is exactly the
+            # false-success this state exists to prevent.
+            return self._ssh_unknown(
+                job,
+                "remote process is no longer alive but wrote no exit code "
+                "(killed, evicted, or the host restarted)",
+            )
+        try:
+            exit_code = int(out)
+        except ValueError:
+            return self._ssh_unknown(job, f"unparseable exit code {out!r}")
+
         dest = self._hpc_root / job["job_id"]
         dest.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [
-                "scp",
-                "-O",
-                "-q",
-                f"{alias}:{workdir}/stdout.log",
-                f"{alias}:{workdir}/stderr.log",
-                str(dest),
-            ],
-            capture_output=True,
-            timeout=120,
-        )
-        job["status"] = "done"
-        return {
-            "status": "done",
-            "exit_code": 0,
-            "output_files": [str(p) for p in dest.iterdir()],
+        harvest_error = self._scp_logs(alias, workdir, dest)
+        status = "done" if exit_code == 0 else "failed"
+        if harvest_error:
+            # The job's own verdict is known and trustworthy; only our copy of
+            # its logs is incomplete. Keep the verdict, but never claim a clean
+            # harvest we did not get.
+            status = "failed" if exit_code != 0 else "incomplete"
+        job["status"] = status
+        job["exit_code"] = exit_code
+        result = {
+            "status": status,
+            "exit_code": exit_code,
+            "output_files": [str(p) for p in sorted(dest.iterdir())],
             "featured_files": [],
             "remote_workdir": workdir,
             "left_on_remote": True,
         }
+        if harvest_error:
+            result["harvest_error"] = harvest_error
+        return result
+
+    def _ssh_unknown(self, job: dict, reason: str) -> dict:
+        """Terminal-shaped answer for a job whose real state we cannot observe.
+
+        `unknown` is deliberately distinct from `failed`: the job may well have
+        succeeded. It means *we have no evidence either way*, and the caller
+        must reconcile rather than assume. It is never cached onto the job, so
+        a later poll can still resolve it.
+        """
+        return {
+            "status": "unknown",
+            "job_id": job["job_id"],
+            "exit_code": None,
+            "error_kind": "unknown_state",
+            "reason": reason,
+            "remote_workdir": job.get("workdir"),
+            "left_on_remote": True,
+            "hint": (
+                "the remote job's outcome could not be established — inspect "
+                f"{job.get('workdir')} on the host before re-submitting, as "
+                "the original job may still have run to completion"
+            ),
+        }
+
+    def _scp_logs(self, alias: str, workdir: str, dest: Path) -> str | None:
+        """Copy stdout/stderr back. Returns an error string, or None on success."""
+        try:
+            proc = subprocess.run(
+                [
+                    "scp",
+                    "-O",
+                    "-q",
+                    f"{alias}:{workdir}/stdout.log",
+                    f"{alias}:{workdir}/stderr.log",
+                    str(dest),
+                ],
+                capture_output=True,
+                timeout=120,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return f"log harvest failed to run: {e}"
+        if proc.returncode != 0:
+            return (
+                f"log harvest exited {proc.returncode}: "
+                f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
+            )
+        return None
 
     # --- cancel / close / ssh command / scp -------------------------------
     def cancel(self, kw: dict) -> dict:
@@ -474,11 +725,27 @@ class ComputeManager:
             raise ComputeError(f"no such job {kw['job_id']!r}", "not_found")
         fam, rest = self._split(job["provider"])
         if fam == "ssh":
-            subprocess.run(
-                ["ssh", job["alias"], f"kill -TERM {job['pid']}"],
-                capture_output=True,
-                timeout=30,
-            )
+            try:
+                proc = subprocess.run(
+                    ["ssh", job["alias"], f"kill -TERM {shlex.quote(job['pid'])}"],
+                    capture_output=True,
+                    timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                raise ComputeError(
+                    f"cancel could not reach {job['alias']}: {e}; the remote "
+                    f"job may still be running",
+                    "unknown_state",
+                )
+            if proc.returncode != 0:
+                # A kill we could not deliver is not a cancellation. Claiming
+                # one leaves the caller believing the allocation is freed.
+                raise ComputeError(
+                    f"cancel failed on {job['alias']} (exit {proc.returncode}): "
+                    f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
+                    f"; the remote job may still be running",
+                    "unknown_state",
+                )
         else:
             prov = self._byoc(rest)
             with tempfile.TemporaryDirectory(prefix="openai4s-byoc-stage-") as td:
@@ -546,15 +813,33 @@ class ComputeManager:
         alias = kw["provider"].split(":", 1)[1]
         if kw["direction"] == "down":
             local = kw.get("local") or Path(kw["remote"]).name
-            subprocess.run(
-                ["scp", "-O", "-q", f"{alias}:{kw['remote']}", local],
-                capture_output=True,
-                timeout=300,
+            self._run_scp(
+                ["scp", "-O", "-q", f"{alias}:{kw['remote']}", str(local)],
+                f"download {kw['remote']!r} from {alias}",
             )
             return {"local": str(local)}
-        subprocess.run(
+        self._run_scp(
             ["scp", "-O", "-q", kw["local"], f"{alias}:{kw['remote']}"],
-            capture_output=True,
-            timeout=300,
+            f"upload to {kw['remote']!r} on {alias}",
         )
         return {"remote": kw["remote"]}
+
+    @staticmethod
+    def _run_scp(argv: list[str], what: str) -> None:
+        """Run one scp, raising on failure.
+
+        Returning a path the transfer never produced is what made a failed copy
+        look like a delivered file to the caller.
+        """
+        try:
+            proc = subprocess.run(argv, capture_output=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            raise ComputeError(f"{what} timed out after 300s", "transient")
+        except OSError as e:
+            raise ComputeError(f"{what} could not start: {e}", "transient")
+        if proc.returncode != 0:
+            raise ComputeError(
+                f"{what} failed (scp exited {proc.returncode}): "
+                f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}",
+                "transient",
+            )
