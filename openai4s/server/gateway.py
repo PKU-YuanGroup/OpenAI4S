@@ -7812,7 +7812,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 mcfg = {
                     "command": c["command"],
                     "args": c.get("args"),
-                    "env": c.get("env"),
+                    # Resolved — the row holds references once migrated.
+                    "env": store.connector_env(c),
                 }
                 self._json(manager().probe(mcfg))
                 return
@@ -7828,7 +7829,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 mcfg = {
                     "command": c["command"],
                     "args": c.get("args"),
-                    "env": c.get("env"),
+                    # Resolved — the row holds references once migrated.
+                    "env": store.connector_env(c),
                 }
                 try:
                     self._json(
@@ -8579,7 +8581,10 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     # the old plaintext authoritative and the next start retries; a key that
     # cannot be migrated keeps working as plaintext rather than being lost.
     try:
-        from openai4s.security.secret_migration import migrate_settings_secrets
+        from openai4s.security.secret_migration import (
+            migrate_connector_env,
+            migrate_settings_secrets,
+        )
 
         _store = get_store(cfg.db_path)
         _report = migrate_settings_secrets(_store, _store.secrets)
@@ -8613,6 +8618,20 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
             print(
                 f"[openai4s] could not migrate profile {_failure['id']}: "
                 f"{_failure['error']} — its key remains in plaintext",
+                file=sys.stderr,
+            )
+
+        _cr = migrate_connector_env(_store)
+        if _cr["migrated"]:
+            print(
+                f"[openai4s] moved env for {len(_cr['migrated'])} connector(s) "
+                f"into {_store.secrets.posture()['backend']}",
+                file=sys.stderr,
+            )
+        for _failure in _cr["failed"]:
+            print(
+                f"[openai4s] could not migrate connector {_failure['id']}: "
+                f"{_failure['error']} — its env remains in plaintext",
                 file=sys.stderr,
             )
     except Exception:  # noqa: BLE001 - never block startup on this

@@ -83,13 +83,24 @@ def test_public_connector_handles_absent_env(store):
 # --------------------------------------------------------------------------
 
 
-def test_the_repository_still_yields_env_to_launchers(store):
-    """The projection is an API boundary, not a storage change. host/mcp.py and
-    the probe/call routes launch the MCP server and genuinely need the env — if
-    this regresses, connectors stop working entirely."""
+def test_the_launchers_still_get_the_real_env(store):
+    """host/mcp.py and the probe/call routes launch the MCP server and
+    genuinely need the env — if this regresses, connectors stop working.
+
+    The row itself now holds references, so the launch path resolves through
+    `Store.connector_env`. Handing the raw row to a server would give it the
+    literal "secret://..." string as its credential.
+    """
     _connector(store)
-    raw = store.get_connector("lab")
-    assert raw["env"] == {"LAB_API_TOKEN": _CANARY, "MODE": "test"}
+    resolved = store.connector_env(store.get_connector("lab"))
+    assert resolved == {"LAB_API_TOKEN": _CANARY, "MODE": "test"}
+
+
+def test_the_stored_row_holds_references_not_values(store):
+    _connector(store)
+    stored = store.get_connector("lab")["env"]
+    assert stored["LAB_API_TOKEN"].startswith("secret://")
+    assert _CANARY not in json.dumps(stored)
 
 
 def test_mcp_service_list_projection_excludes_env(store):

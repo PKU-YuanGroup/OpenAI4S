@@ -52,12 +52,14 @@ class MCPService:
                 return candidate
         return None
 
-    @staticmethod
-    def _config(connector: dict) -> dict:
+    def _config(self, connector: dict) -> dict:
         config = {
             "command": connector["command"],
             "args": connector.get("args"),
-            "env": connector.get("env"),
+            # Resolved: the row holds references once migrated, and launching
+            # the server with the literal "secret://..." string as its
+            # credential fails as a broken server, not a broken lookup.
+            "env": self.store.connector_env(connector),
         }
         if connector.get("cwd"):
             config["cwd"] = connector["cwd"]

@@ -460,6 +460,100 @@ def test_replacing_a_profile_key_does_not_strand_the_old_one(store, tmp_path):
 
 
 # --------------------------------------------------------------------------
+# connector env
+# --------------------------------------------------------------------------
+
+
+def _add_connector(store, env):
+    return store.upsert_connector(
+        connector_id="lab",
+        name="Lab MCP",
+        command=["python", "s.py"],
+        env=env,
+        enabled=True,
+    )
+
+
+def test_connector_env_values_are_brokered(store):
+    _add_connector(store, {"LAB_TOKEN": _CANARY, "MODE": "test"})
+    stored = store.get_connector("lab")["env"]
+    assert stored["LAB_TOKEN"].startswith("secret://")
+    assert _CANARY not in json.dumps(store.get_connector("lab"))
+
+
+def test_every_env_value_is_brokered_not_just_the_credential_shaped_ones(store):
+    """Deciding by variable name would be the same name-based heuristic the
+    compute provider's README warns about — a secret under an unrecognised name
+    is simply missed. A benign MODE=test in the keychain costs nothing."""
+    _add_connector(store, {"LAB_TOKEN": _CANARY, "MODE": "test"})
+    stored = store.get_connector("lab")["env"]
+    assert stored["MODE"].startswith("secret://")
+
+
+def test_the_launcher_gets_real_values(store):
+    _add_connector(store, {"LAB_TOKEN": _CANARY, "MODE": "test"})
+    assert store.connector_env(store.get_connector("lab")) == {
+        "LAB_TOKEN": _CANARY,
+        "MODE": "test",
+    }
+
+
+def test_legacy_plaintext_connector_env_still_launches(store):
+    """An install that has not migrated must keep launching its servers."""
+    assert store.connector_env({"env": {"LAB_TOKEN": _CANARY}}) == {
+        "LAB_TOKEN": _CANARY
+    }
+
+
+def test_connector_env_migration(store):
+    from openai4s.security.secret_migration import migrate_connector_env
+
+    # A legacy row: plaintext written straight past the broker.
+    store._connectors.upsert(
+        connector_id="old",
+        name="Old",
+        command=["x"],
+        env={"OLD_TOKEN": _CANARY},
+        enabled=True,
+    )
+    assert store.get_connector("old")["env"] == {"OLD_TOKEN": _CANARY}
+
+    report = migrate_connector_env(store)
+    assert report["migrated"] == ["old"]
+    assert store.get_connector("old")["env"]["OLD_TOKEN"].startswith("secret://")
+    assert store.connector_env(store.get_connector("old")) == {"OLD_TOKEN": _CANARY}
+
+
+def test_connector_env_migration_is_idempotent(store):
+    from openai4s.security.secret_migration import migrate_connector_env
+
+    _add_connector(store, {"LAB_TOKEN": _CANARY})
+    assert migrate_connector_env(store)["migrated"] == []
+
+
+def test_deleting_a_connector_deletes_its_env_secrets(store):
+    _add_connector(store, {"LAB_TOKEN": _CANARY})
+    ref = store.get_connector("lab")["env"]["LAB_TOKEN"]
+    store.delete_connector("lab")
+    assert store.secrets.get(ref) is None
+
+
+def test_an_unresolvable_env_reference_is_not_passed_through(store):
+    """The server must not receive the literal "secret://..." string as its
+    credential — that fails as a broken server rather than a missing key."""
+    _add_connector(store, {"LAB_TOKEN": _CANARY})
+    connector = store.get_connector("lab")
+    store.secrets.delete(connector["env"]["LAB_TOKEN"])
+    assert store.connector_env(connector) == {"LAB_TOKEN": ""}
+
+
+def test_empty_env_is_untouched(store):
+    _add_connector(store, None)
+    assert store.get_connector("lab")["env"] == {}
+    assert store.connector_env(store.get_connector("lab")) == {}
+
+
+# --------------------------------------------------------------------------
 # the plaintext backend is honest about what it is
 # --------------------------------------------------------------------------
 

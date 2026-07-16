@@ -125,8 +125,16 @@ Model and search credentials are held by a **SecretBroker**
 stores an opaque reference such as `secret://v1/llm/llm_api_key` and the value
 lives in the system keychain. The reference is not derived from the value, so it
 is safe to log and safe to sit in a row. Covered today: `llm_api_key`,
-`tavily_api_key`, and the per-profile `api_key` of every saved model profile
-(`secret://v1/model_profile/<id>`).
+`tavily_api_key`, the per-profile `api_key` of every saved model profile
+(`secret://v1/model_profile/<id>`), and every connector `env` value
+(`secret://v1/connector_env/<id>.<VAR>`).
+
+Connector env brokers **every** value, not only the credential-shaped ones.
+Choosing by variable name would mean a regex over names — the same name-based
+heuristic the confined compute runtime's README warns about, where "a secret
+stored under an unrecognized name is not removed". A connector's env is small,
+the UI only ever shows the names, and a benign `MODE=prod` in the keychain costs
+nothing next to one missed `TOKEN_FOR_X`.
 
 A reference is a truthy string that is not a key, which sets one trap worth
 knowing about: `if profile["api_key"]:` reports a revoked credential as present,
@@ -166,9 +174,6 @@ working, reported on stderr.
 
 Still outstanding, and stated plainly rather than left implied:
 
-- **Connector `env` is still plaintext** in the `connectors` table. Its values
-  are no longer echoed to the browser (see below), but anything that copies the
-  data dir still copies them in the clear.
 - **Windows has no backend**, so it resolves to plaintext under `auto`.
   `security` and `secret-tool` cover macOS and Linux desktops; DPAPI would need
   a `ctypes` shim.

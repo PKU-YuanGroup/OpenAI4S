@@ -99,6 +99,39 @@ def _migrate_one(
     return ref
 
 
+def migrate_connector_env(store) -> dict:
+    """Move each connector's plaintext env values behind references.
+
+    Re-upserting the row is what applies it: `Store.upsert_connector` brokers
+    env on the way in, so this only has to hand back what it read. That keeps
+    one implementation of the write rule rather than a second copy here that
+    could drift from it.
+    """
+    migrated: list[str] = []
+    failed: list[dict] = []
+    for connector in store.list_connectors():
+        env = connector.get("env")
+        if not isinstance(env, dict) or not env:
+            continue
+        if all(is_ref(str(v or "")) or not v for v in env.values()):
+            continue
+        try:
+            store.upsert_connector(
+                connector_id=connector["connector_id"],
+                name=connector["name"],
+                description=connector.get("description") or "",
+                command=connector.get("command"),
+                args=connector.get("args"),
+                env=env,
+                enabled=bool(connector.get("enabled", True)),
+            )
+            migrated.append(connector["connector_id"])
+        except Exception as e:  # noqa: BLE001 - one bad connector must not
+            # strand the others; its plaintext stays and it keeps working.
+            failed.append({"id": connector["connector_id"], "error": str(e)[:200]})
+    return {"migrated": migrated, "failed": failed}
+
+
 def resolve_setting(store, broker: SecretBroker, key: str) -> str:
     """Read a settings value that may be a reference or a legacy plaintext.
 
@@ -119,6 +152,7 @@ __all__ = [
     "MigrationReport",
     "SETTINGS_SECRETS",
     "fingerprint",
+    "migrate_connector_env",
     "migrate_settings_secrets",
     "resolve_setting",
 ]

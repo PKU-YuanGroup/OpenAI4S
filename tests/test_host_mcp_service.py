@@ -28,6 +28,13 @@ class FakeStore:
         self.list_calls += 1
         return self.connectors
 
+    def connector_env(self, connector):
+        """Mirror the real Store: the row's env may hold broker references, so
+        the launch path resolves it rather than passing the row through. These
+        fixtures use plaintext env, which resolves to itself."""
+        env = connector.get("env")
+        return dict(env) if isinstance(env, dict) else {}
+
 
 class FakeManager:
     def __init__(self) -> None:

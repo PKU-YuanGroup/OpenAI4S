@@ -56,7 +56,12 @@ from openai4s.storage.artifacts import same_file_path as _same_file_path
 from openai4s.storage.branch_projection import count_cursor, project_branch_records
 from openai4s.storage.capabilities import CapabilityStateRepository
 from openai4s.storage.checkpoint_state import CheckpointStateRepository
-from openai4s.storage.connectors import ConnectorRepository
+from openai4s.storage.connectors import (
+    ConnectorRepository,
+    broker_connector_env,
+    forget_connector_env,
+    resolve_connector_env,
+)
 from openai4s.storage.delegation import DelegationProjectionRepository
 from openai4s.storage.frames import FrameRepository
 from openai4s.storage.kernels import KernelGenerationRepository
@@ -2580,6 +2585,10 @@ class Store:
         env=None,
         enabled: bool = True,
     ) -> dict:
+        # Brokered here rather than in the repository: this facade owns the
+        # SecretBroker, and the repository must keep returning the real env to
+        # the callers that launch the server.
+        env = broker_connector_env(self, connector_id, env)
         return self._connectors.upsert(
             connector_id=connector_id,
             name=name,
@@ -2594,7 +2603,15 @@ class Store:
         self._connectors.set_enabled(connector_id, enabled)
 
     def delete_connector(self, connector_id: str) -> None:
+        # Drop the credentials with the row. Otherwise a connector the user
+        # removed leaves its env secrets in the keychain with nothing left in
+        # the app that refers to them.
+        forget_connector_env(self, self._connectors.get(connector_id))
         self._connectors.delete(connector_id)
+
+    def connector_env(self, connector: dict) -> dict:
+        """The env a connector's process is launched with, references resolved."""
+        return resolve_connector_env(self, connector)
 
     # --- compaction ------------------------------------------------------
     def archive_compaction(
