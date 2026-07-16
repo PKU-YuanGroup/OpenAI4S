@@ -329,8 +329,17 @@ class Config:
     )
 
     def ensure_dirs(self) -> None:
+        from openai4s.security.permissions import harden_dir
+
+        # The data dir holds the credential database, artifacts, and logs. It
+        # was created at the process umask (0755 on most systems), so every
+        # local account could list and read it.
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        harden_dir(self.data_dir)
         for sub in ("logs", "artifacts", "tool-results", "compaction-history"):
-            (self.data_dir / sub).mkdir(parents=True, exist_ok=True)
+            path = self.data_dir / sub
+            path.mkdir(parents=True, exist_ok=True)
+            harden_dir(path)
 
     @property
     def logs_dir(self) -> Path:

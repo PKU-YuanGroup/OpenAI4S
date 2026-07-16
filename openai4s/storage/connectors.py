@@ -6,6 +6,37 @@ import json
 import sqlite3
 from typing import Any, Callable
 
+# Columns safe to hand to an HTTP client. `env` is deliberately absent: it
+# carries a connector's credentials (API tokens for the MCP server it
+# launches), and `list()` decodes it into a live dict for the process-spawning
+# callers that genuinely need it. Anything crossing the wire must go through
+# public_connector() instead of spreading a row.
+_PUBLIC_FIELDS = (
+    "connector_id",
+    "name",
+    "description",
+    "command",
+    "args",
+    "enabled",
+    "created_at",
+    "updated_at",
+)
+
+
+def public_connector(connector: dict) -> dict:
+    """Project a connector row for an API response, never including env values.
+
+    Env *names* are returned so the UI can show which variables are configured;
+    their values are reduced to a boolean. Callers that must launch the server
+    (host/mcp.py, the probe/call routes) read the raw row instead.
+    """
+    env = connector.get("env")
+    env_keys = sorted(env.keys()) if isinstance(env, dict) else []
+    out = {k: connector.get(k) for k in _PUBLIC_FIELDS if k in connector}
+    out["env_keys"] = env_keys
+    out["has_env"] = bool(env_keys)
+    return out
+
 
 class ConnectorRepository:
     """Persist and decode configured MCP server connections."""
@@ -116,4 +147,4 @@ class ConnectorRepository:
             self._connection.commit()
 
 
-__all__ = ["ConnectorRepository"]
+__all__ = ["ConnectorRepository", "public_connector"]

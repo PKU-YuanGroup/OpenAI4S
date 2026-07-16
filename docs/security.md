@@ -31,6 +31,9 @@ untrusted multi-tenant sandbox.
 | **Biosecurity screener** | `OPENAI4S_BIOSECURITY` (on) | trajectory screener (ALLOW / ESCALATE / BLOCK) on biosecurity-relevant content |
 | **Injection detector** | `OPENAI4S_INJECTION_SCAN` (on) | annotates tool-returned content (web / PDF / MCP) so the model treats it as **data, not instructions** |
 | **Egress allowlist** | `OPENAI4S_EGRESS` (`off`) | application policy for `web_fetch` / `web_search` and authorized `host.bash`; the OS sandbox is the separate raw-network boundary |
+| **Remote-compute confinement** | `OPENAI4S_COMPUTE_CONFINEMENT` (`auto`) | `enforce` refuses `byoc:*` ops because no host-side boundary exists for the provider helper yet (see [`docs/compute.md`](compute.md)); `auto` runs unconfined and reports the posture rather than implying one |
+| **Data-dir permissions** | always on | the data dir is `0700` and the database (plus any `-wal`/`-shm`) is `0600`; POSIX only — Windows needs an ACL, and the posture reports `supported: false` there rather than claiming a boundary |
+| **Browser response headers** | always on | a hash-based CSP with no `'unsafe-inline'` in `script-src` and a same-origin `connect-src`, plus `nosniff` / `X-Frame-Options` / `Referrer-Policy` on every response including streamed artifact bytes |
 
 `web_fetch` rejects loopback and private-network targets by default to reduce
 SSRF risk. `OPENAI4S_ALLOW_PRIVATE_FETCH=1` is an explicit trusted-local
@@ -113,6 +116,30 @@ it:
 - Because the denylist is a table-name match, a query that reads the unrelated `agents.connectors` *column* is also refused; no bundled skill relies on that read.
 
 Credential values passed to `host.credentials.set(name, value)` are held only in an in-memory vault (never persisted). To keep that true end to end, the **RPC audit log** redacts them: `credentials_get` / `credentials_list` are not logged at all, and `credentials_set` is logged for audit **with its args redacted** — the plaintext value never enters `host_call_log`. The replay tape recorder likewise skips `credentials_set`, so an exported notebook cannot carry a plaintext credential.
+
+### Credentials at rest — a known gap
+
+Configured credentials are stored in SQLite **as plaintext**: model-profile API
+keys and `llm_api_key` / `tavily_api_key` in `settings`, and connector `env` in
+`connectors`. There is no encryption layer today. Two consequences worth stating
+plainly rather than leaving implied:
+
+- **Anything that copies the data dir copies the secrets.** A backup, an rsync,
+  a container image layer, or a support bundle carries them in the clear.
+- **The file mode is the only barrier.** The data dir is `0700` and the database
+  `0600` (see the table above), which removes the trivial read by another local
+  account — but a mode is not encryption, and it does nothing on a platform
+  where POSIX modes are not enforced.
+
+What *is* enforced is that credentials do not leave over the API: connector and
+model-profile responses are allowlist projections (`env_keys` / `has_api_key`,
+never the values), covered by canary regressions in
+`tests/test_secret_canary.py` that assert on the secret's bytes rather than on
+field names.
+
+Encrypting these at rest — a broker holding opaque references with short-lived
+leases, backed by the system keychain or Secret Service, failing closed on
+headless rather than to an obfuscated file — remains outstanding.
 
 ### BYOC provider import-time secret scrubbing
 

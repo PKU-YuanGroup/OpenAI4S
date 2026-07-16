@@ -45,6 +45,7 @@ from openai4s.execution.dependencies import (
     default_replay_policy,
     default_visibility,
 )
+from openai4s.security.permissions import harden_db, harden_dir
 from openai4s.storage.actions import ActionLedgerRepository
 from openai4s.storage.activation import SessionActivationRepository
 from openai4s.storage.agents import AgentProfileRepository
@@ -531,12 +532,23 @@ class Store:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self._closed = False
+        # mode= on mkdir is masked by the umask and only applies on creation,
+        # so harden explicitly and unconditionally afterwards.
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        harden_dir(self.db_path.parent)
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        # SQLite creates the file at the process umask — 0644 on most systems.
+        # This database holds plaintext credentials, so close it to the owner
+        # as soon as it exists and before any schema is written into it.
+        harden_db(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        # Re-run: the schema write is the first thing that can materialise a
+        # -wal/-shm sidecar, which would otherwise be born world-readable
+        # carrying the same rows.
+        harden_db(self.db_path)
         self._migrate()
         self._actions = ActionLedgerRepository(
             self._conn,

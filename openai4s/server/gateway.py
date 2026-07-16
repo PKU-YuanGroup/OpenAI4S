@@ -103,6 +103,7 @@ from openai4s.server.recovery_runtime import (
     python_runtime_spec,
 )
 from openai4s.server.reviews import ReviewPorts, ReviewService
+from openai4s.server.security_headers import security_headers
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.server.session_domain import (
     CursorCheckpointUnavailable,
@@ -121,6 +122,7 @@ from openai4s.server.titles import SessionTitleService
 from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
+from openai4s.storage.connectors import public_connector
 from openai4s.store import Store, get_store
 from openai4s.tools import control_tool_specs, get_tool
 
@@ -5631,6 +5633,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self.send_header("Content-Type", _sanitize_header_value(ctype))
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-cache")
+            # Applied here rather than at the HTML route so no response can be
+            # added later that quietly opts out.
+            for k, v in security_headers(WEBUI_DIR / "index.html").items():
+                self.send_header(k, v)
             for k, v in (extra or {}).items():
                 self.send_header(k, _sanitize_header_value(v))
             self.end_headers()
@@ -6020,6 +6026,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self.send_header("Content-Type", _sanitize_header_value(ctype))
                 self.send_header("Content-Length", str(size))
                 self.send_header("Cache-Control", "no-cache")
+                # This path streams artifact bytes — agent-authored content, so
+                # the one that most needs nosniff and a closed CSP. It builds
+                # its own headers instead of going through _send, so it has to
+                # opt in explicitly.
+                for key, value in security_headers(WEBUI_DIR / "index.html").items():
+                    self.send_header(key, value)
                 for key, value in (extra or {}).items():
                     self.send_header(key, _sanitize_header_value(value))
                 self.end_headers()
@@ -7753,15 +7765,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json({"error": "name and command required"}, 400)
                     return
                 cid = b.get("connector_id") or _skill_slug(nm)
+                # upsert_connector re-reads the row, so echoing its return value
+                # replayed the env the client just sent straight back out.
                 self._json(
-                    store.upsert_connector(
-                        connector_id=cid,
-                        name=nm,
-                        description=b.get("description") or "",
-                        command=cmd,
-                        args=b.get("args"),
-                        env=b.get("env"),
-                        enabled=b.get("enabled", True),
+                    public_connector(
+                        store.upsert_connector(
+                            connector_id=cid,
+                            name=nm,
+                            description=b.get("description") or "",
+                            command=cmd,
+                            args=b.get("args"),
+                            env=b.get("env"),
+                            enabled=b.get("enabled", True),
+                        )
                     )
                 )
                 return
@@ -8083,13 +8099,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             return out
 
         def _connectors_payload(self, store) -> list[dict]:
-            # Cheap: return stored connectors as-is (no probe — probing spawns a
+            # Cheap: return stored connectors (no probe — probing spawns a
             # process; the UI probes on demand). Mark the argv for display.
+            #
+            # Projected, never spread: a connector's `env` holds the credentials
+            # its MCP server is launched with, and `{**c}` handed every one of
+            # them to the browser.
             out = []
             for c in store.list_connectors():
                 cmd = c.get("command")
                 display = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
-                out.append({**c, "command_display": display})
+                out.append({**public_connector(c), "command_display": display})
             return out
 
         def _compute_providers(self) -> list[dict]:
@@ -8506,14 +8526,26 @@ class _GatewayHTTPServer(ThreadingHTTPServer):
 def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     cfg = cfg or get_config()
     cfg.ensure_dirs()
-    # Ship the scientific + networking stack with the kernel: install any missing
-    # CORE packages in the background at startup so agent tasks never stall on a
-    # first-use `pip install`. Idempotent + instant when everything is present.
+    # Report what the scientific stack is missing; do NOT install it. Starting
+    # the daemon must not mutate the user's Python environment — this used to
+    # call ensure_core(background=True), which resolved ~23 unpinned names
+    # against PyPI and installed them with --break-system-packages on a thread
+    # nobody was watching. The UI surfaces the plan (Customize → Compute) and
+    # `openai4s setup` applies it.
     try:
         from openai4s.kernel import preinstall
 
-        preinstall.ensure_core(background=True)
-    except Exception:  # noqa: BLE001 - preinstall must never block startup
+        plan = preinstall.core_plan()
+        if plan["missing"]:
+            print(
+                f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
+                f"installed: {', '.join(plan['missing'][:6])}"
+                f"{' …' if len(plan['missing']) > 6 else ''}\n"
+                f"[openai4s] startup does not install packages. Run "
+                f"`openai4s setup`, or install from Customize → Compute.",
+                file=sys.stderr,
+            )
+    except Exception:  # noqa: BLE001 - diagnostics must never block startup
         traceback.print_exc()
     hub = WSHub()
     runner = SessionRunner(cfg, hub)
