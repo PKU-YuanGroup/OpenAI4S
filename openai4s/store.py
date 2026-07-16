@@ -56,6 +56,7 @@ from openai4s.storage.artifacts import same_file_path as _same_file_path
 from openai4s.storage.branch_projection import count_cursor, project_branch_records
 from openai4s.storage.capabilities import CapabilityStateRepository
 from openai4s.storage.checkpoint_state import CheckpointStateRepository
+from openai4s.storage.compute_jobs import ComputeJobRepository
 from openai4s.storage.connectors import (
     ConnectorRepository,
     broker_connector_env,
@@ -381,6 +382,48 @@ CREATE TABLE IF NOT EXISTS connectors (
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
+-- Remote compute jobs. These outlive the process that submitted them: an ssh
+-- job keeps running under nohup and a byoc sandbox keeps billing whether or not
+-- this daemon is alive. Holding them only in memory (which is what
+-- ComputeManager did) meant a restart stranded every in-flight job — the remote
+-- work continued with nothing left that could find, harvest, or cancel it.
+CREATE TABLE IF NOT EXISTS compute_jobs (
+    job_id          TEXT PRIMARY KEY,
+    -- Stable across a resubmit of the same logical work. Reconciliation looks
+    -- a job up by this before submitting, so a crash between "provider
+    -- accepted" and "we recorded it" cannot become a double-charge.
+    idempotency_key TEXT,
+    provider        TEXT NOT NULL,     -- "ssh:<alias>" | "byoc:<id>"
+    status          TEXT NOT NULL,     -- see compute/manager.py's state machine
+    alias           TEXT,              -- ssh
+    workdir         TEXT,              -- ssh
+    pid             TEXT,              -- ssh
+    sandbox_id      TEXT,              -- byoc
+    -- The provider's own acknowledgement of the submit. Evidence the job
+    -- exists remotely, independent of anything we chose to believe.
+    receipt         TEXT,
+    outputs         TEXT,              -- JSON: declared output globs
+    exit_code       INTEGER,
+    reason          TEXT,              -- why a terminal state was reached
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    submitted_at    INTEGER,
+    terminal_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_compute_jobs_status ON compute_jobs(status);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_compute_jobs_idem
+    ON compute_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+-- Append-only, monotonically sequenced per job. A status column alone says
+-- where a job is; this says how it got there, which is what a restart needs to
+-- tell "we never submitted" from "we submitted and lost the response".
+CREATE TABLE IF NOT EXISTS compute_job_events (
+    job_id   TEXT NOT NULL,
+    seq      INTEGER NOT NULL,
+    kind     TEXT NOT NULL,
+    at       INTEGER NOT NULL,
+    payload  TEXT,                     -- JSON
+    PRIMARY KEY (job_id, seq)
+);
 CREATE TABLE IF NOT EXISTS frame_steps (
     step_id       TEXT PRIMARY KEY,
     frame_id      TEXT NOT NULL,
@@ -641,6 +684,11 @@ class Store:
             set_setting=self.set_setting,
         )
         self._connectors = ConnectorRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._compute_jobs = ComputeJobRepository(
             self._conn,
             self._lock,
             clock_ms=lambda: _now_ms(),
@@ -2601,6 +2649,34 @@ class Store:
 
     def set_connector_enabled(self, connector_id: str, enabled: bool) -> None:
         self._connectors.set_enabled(connector_id, enabled)
+
+    # --- compute jobs ----------------------------------------------------
+    def create_compute_job(self, **kw) -> dict:
+        return self._compute_jobs.create(**kw)
+
+    def update_compute_job(self, job_id: str, **fields) -> dict | None:
+        return self._compute_jobs.update(job_id, **fields)
+
+    def get_compute_job(self, job_id: str) -> dict | None:
+        return self._compute_jobs.get(job_id)
+
+    def compute_job_by_idempotency_key(self, key: str) -> dict | None:
+        return self._compute_jobs.by_idempotency_key(key)
+
+    def live_compute_jobs(self) -> list[dict]:
+        return self._compute_jobs.live()
+
+    def list_compute_jobs(self, limit: int = 200) -> list[dict]:
+        return self._compute_jobs.list(limit)
+
+    def append_compute_job_event(self, job_id: str, kind: str, payload=None) -> int:
+        return self._compute_jobs.append_event(job_id, kind, payload)
+
+    def compute_job_events(self, job_id: str) -> list[dict]:
+        return self._compute_jobs.events(job_id)
+
+    def delete_compute_job(self, job_id: str) -> None:
+        self._compute_jobs.delete(job_id)
 
     def delete_connector(self, connector_id: str) -> None:
         # Drop the credentials with the row. Otherwise a connector the user

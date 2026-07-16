@@ -26,9 +26,17 @@ itself succeeded but its outputs could not be verified), ``cancelled``, and
 *not* a synonym for failure, and it must never be resolved to success by
 default. Every path that cannot produce an exit code lands there deliberately.
 
-Known limits, stated so they are not mistaken for guarantees: job records live
-only in this process (a daemon restart strands in-flight remote work), and no
-OS boundary is applied to the byoc helper — see ``confinement_status``.
+Jobs are durable. A remote job outlives this process — an ssh job keeps running
+under ``nohup``, a byoc sandbox keeps billing — so every job is recorded in
+``compute_jobs`` before it is submitted, its provider receipt (remote pid /
+sandbox id) is stored on acknowledgement, and every transition appends to a
+sequenced ``compute_job_events`` stream. A restart rehydrates whatever was live
+and ``reconcile()`` surfaces it; nothing is resubmitted automatically, because
+a job in ``submitted`` may or may not be running and guessing wrong costs either
+a duplicate charge or a lost result.
+
+Known limit, stated so it is not mistaken for a guarantee: no OS boundary is
+applied to the byoc helper — see ``confinement_status``.
 """
 from __future__ import annotations
 
@@ -87,6 +95,26 @@ class ComputeError(RuntimeError):
         self.concurrency = concurrency
 
 
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _open_store(cfg: Any):
+    """The Store this manager records jobs in.
+
+    Resolved from cfg rather than injected because the dispatcher builds the
+    manager lazily from cfg alone. Returns None rather than raising: a manager
+    that cannot reach the database degrades to in-memory bookkeeping, which is
+    the old behaviour — worse, but better than refusing to run a job at all.
+    """
+    try:
+        from openai4s.store import get_store
+
+        return get_store(cfg.db_path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _discover_providers(skills_dir: Path) -> dict[str, dict]:
     """Map provider id -> {id, dir, provider_py, meta}. A provider is a
     ``remote-compute-<id>`` skill dir with a ``provider.json`` (declaring its
@@ -129,10 +157,13 @@ class ComputeManager:
     # bounds its .phase loop, not a wedged provider SDK socket.
     _HELPER_TIMEOUT_S = 300.0
 
-    def __init__(self, cfg: Any):
+    def __init__(self, cfg: Any, store: Any = None):
         self.cfg = cfg
         self._providers = _discover_providers(Path(cfg.skills_dir))
         self._install_id = self._resolve_install_id()
+        self._store = store if store is not None else _open_store(cfg)
+        # In-memory view of the durable records. The database is the source of
+        # truth; this is a cache so the hot path does not re-read on every poll.
         self._jobs: dict[str, dict] = {}
         # byoc sandbox reuse: provider-id -> sandbox_id (warm container).
         self._sandboxes: dict[str, str] = {}
@@ -140,10 +171,131 @@ class ComputeManager:
         self._limit: int | None = None
         self._hpc_root = Path(cfg.data_dir) / "hpc"
         self._hpc_root.mkdir(parents=True, exist_ok=True)
+        self._rehydrate()
         self._confinement_mode = _confinement_mode()
         # See _confinement_gate: no host-side byoc boundary exists yet, so the
         # helper is never asked to assert one it cannot have.
         self._require_confinement = False
+
+    # --- durability -------------------------------------------------------
+    def _rehydrate(self) -> None:
+        """Load jobs that may still be live remotely.
+
+        Without this a restart stranded every in-flight job: the ssh process
+        kept running under nohup and the byoc sandbox kept billing, while
+        `result()` answered "no such job" and `_live_count()` reset to zero —
+        so the session would happily oversubscribe a provider that was still
+        busy with work it had forgotten.
+        """
+        if self._store is None:
+            return
+        try:
+            for record in self._store.live_compute_jobs():
+                self._jobs[record["job_id"]] = self._from_record(record)
+        except Exception:  # noqa: BLE001 - a broken record must not stop startup
+            pass
+
+    @staticmethod
+    def _from_record(record: dict) -> dict:
+        job = {
+            "job_id": record["job_id"],
+            "provider": record["provider"],
+            "status": record.get("status") or "running",
+            "outputs": record.get("outputs"),
+            "idempotency_key": record.get("idempotency_key"),
+            "receipt": record.get("receipt"),
+            "recovered": True,
+        }
+        for key in ("alias", "workdir", "pid", "sandbox_id"):
+            if record.get(key):
+                job[key] = record[key]
+        return job
+
+    def _persist(self, job_id: str, **fields: Any) -> None:
+        if self._store is None:
+            return
+        try:
+            self._store.update_compute_job(job_id, **fields)
+        except Exception:  # noqa: BLE001 - never fail an op on bookkeeping
+            pass
+
+    def _event(self, job_id: str, kind: str, payload: dict | None = None) -> None:
+        if self._store is None:
+            return
+        try:
+            self._store.append_compute_job_event(job_id, kind, payload)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _claim(self, provider: str, idempotency_key: str | None, outputs: Any) -> str:
+        """Reserve a job row *before* the submit is attempted.
+
+        The ordering is the whole point. A row written only after a successful
+        submit would be missing for exactly the case that matters: the provider
+        accepted the work and the response never came back. Reserving first
+        means a crash anywhere in the submit path still leaves something to
+        reconcile against, rather than an orphan that bills forever.
+        """
+        job_id = "job-" + uuid.uuid4().hex[:12]
+        if self._store is None:
+            return job_id
+        if idempotency_key:
+            existing = self._store.compute_job_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                raise ComputeError(
+                    f"a job for idempotency key {idempotency_key!r} already "
+                    f"exists ({existing['job_id']}, status "
+                    f"{existing.get('status')!r}); reconcile it instead of "
+                    f"submitting again",
+                    "duplicate_request",
+                )
+        try:
+            self._store.create_compute_job(
+                job_id=job_id,
+                provider=provider,
+                status="staging",
+                idempotency_key=idempotency_key,
+                outputs=outputs,
+            )
+        except Exception:  # noqa: BLE001 - degrade to in-memory rather than
+            # refuse to run; a job we cannot record is still better than none.
+            pass
+        return job_id
+
+    def reconcile(self, kw: dict | None = None) -> dict:
+        """Report jobs that were live when the daemon last stopped.
+
+        Deliberately does NOT resubmit anything. A job in `submitted` may or
+        may not be running remotely, and guessing wrong costs either a
+        duplicate charge or a lost result. The honest move is to surface each
+        one with its receipt and let a poll — or a human — resolve it.
+        """
+        recovered = [job for job in self._jobs.values() if job.get("recovered")]
+        return {
+            "recovered": [
+                {
+                    "job_id": job["job_id"],
+                    "provider": job["provider"],
+                    "status": job.get("status"),
+                    "receipt": job.get("receipt"),
+                    "hint": (
+                        "poll with .result() to resolve; it may have finished "
+                        "while the daemon was down"
+                    ),
+                }
+                for job in recovered
+            ],
+            "count": len(recovered),
+        }
+
+    def job_history(self, kw: dict) -> dict:
+        """The append-only event stream for one job."""
+        if self._store is None:
+            return {"job_id": kw.get("job_id"), "events": []}
+        return {
+            "job_id": kw["job_id"],
+            "events": self._store.compute_job_events(kw["job_id"]),
+        }
 
     def confinement_status(self) -> dict:
         """Machine-readable posture for the UI/status surface.
@@ -393,7 +545,9 @@ class ComputeManager:
         prov = self._byoc(pid)
         self._confinement_gate(pid)
         creds = self._provider_creds(prov)
-        job_id = "job-" + uuid.uuid4().hex[:12]
+        job_id = self._claim(
+            f"byoc:{pid}", kw.get("idempotency_key"), kw.get("outputs")
+        )
         timeout_s = int(kw.get("timeout_seconds") or 14400)
         with tempfile.TemporaryDirectory(prefix="openai4s-byoc-stage-") as td:
             stage = Path(td)
@@ -426,6 +580,17 @@ class ComputeManager:
                 "outputs": kw.get("outputs"),
                 "creds": bool(creds),
             }
+        # The sandbox id is the receipt — it is what reconcile/terminate need to
+        # reach this work after a restart, and what stops an orphaned sandbox
+        # from billing unnoticed.
+        self._persist(
+            job_id,
+            status="running",
+            sandbox_id=sid,
+            receipt=sid,
+            submitted_at=_now_ms(),
+        )
+        self._event(job_id, "submitted", {"sandbox_id": sid})
         return {
             "job_id": job_id,
             "status": "running",
@@ -435,7 +600,9 @@ class ComputeManager:
 
     # --- ssh --------------------------------------------------------------
     def _submit_ssh(self, alias: str, kw: dict) -> dict:
-        job_id = "job-" + uuid.uuid4().hex[:12]
+        job_id = self._claim(
+            f"ssh:{alias}", kw.get("idempotency_key"), kw.get("outputs")
+        )
         workdir = f"~/.openai4s-jobs/{job_id}"
         script = kw["command"]
         # The job body runs under a wrapper whose only added responsibility is
@@ -468,12 +635,20 @@ class ComputeManager:
                 timeout=60,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
-            raise ComputeError(f"ssh submit failed: {e}", "transient")
+            # We do not know whether the remote shell ran. The claim row stays
+            # at `staging` with the workdir recorded, which is what makes this
+            # reconcilable instead of an orphan.
+            self._persist(job_id, status="unknown", workdir=workdir, reason=str(e))
+            self._event(job_id, "submit_indeterminate", {"error": str(e)})
+            raise ComputeError(f"ssh submit failed: {e}", "unknown_state")
         if proc.returncode != 0:
+            self._persist(job_id, status="failed", reason="ssh submit rejected")
+            self._event(job_id, "submit_rejected", {"rc": proc.returncode})
             raise ComputeError(
                 proc.stderr.decode("utf-8", "replace") or "ssh submit failed",
                 "transient",
             )
+        pid = proc.stdout.decode().strip()
         with self._lock:
             self._jobs[job_id] = {
                 "job_id": job_id,
@@ -481,9 +656,21 @@ class ComputeManager:
                 "alias": alias,
                 "workdir": workdir,
                 "status": "running",
-                "pid": proc.stdout.decode().strip(),
+                "pid": pid,
                 "outputs": kw.get("outputs"),
             }
+        # The remote pid is the provider's receipt: evidence the job exists out
+        # there, independent of anything this process chose to believe.
+        self._persist(
+            job_id,
+            status="running",
+            alias=alias,
+            workdir=workdir,
+            pid=pid,
+            receipt=pid,
+            submitted_at=_now_ms(),
+        )
+        self._event(job_id, "submitted", {"pid": pid, "workdir": workdir})
         return {
             "job_id": job_id,
             "status": "running",
@@ -571,6 +758,14 @@ class ComputeManager:
             status = "incomplete"
         job["status"] = status
         job["exit_code"] = exit_code
+        self._persist(
+            job["job_id"],
+            status=status,
+            exit_code=exit_code,
+            terminal_at=_now_ms(),
+            reason=phase_err or harvest_error or "",
+        )
+        self._event(job["job_id"], status, {"exit_code": exit_code})
         result = {
             "status": status,
             "exit_code": exit_code,
@@ -658,6 +853,14 @@ class ComputeManager:
             status = "failed" if exit_code != 0 else "incomplete"
         job["status"] = status
         job["exit_code"] = exit_code
+        self._persist(
+            job["job_id"],
+            status=status,
+            exit_code=exit_code,
+            terminal_at=_now_ms(),
+            reason=harvest_error or "",
+        )
+        self._event(job["job_id"], status, {"exit_code": exit_code})
         result = {
             "status": status,
             "exit_code": exit_code,
@@ -757,6 +960,8 @@ class ComputeManager:
                     Path(td),
                 )
         job["status"] = "cancelled"
+        self._persist(job["job_id"], status="cancelled", terminal_at=_now_ms())
+        self._event(job["job_id"], "cancelled")
         return {"status": "cancelled"}
 
     def close(self, kw: dict) -> dict:

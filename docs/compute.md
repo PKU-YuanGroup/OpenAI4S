@@ -50,6 +50,40 @@ Terminal states are mutually exclusive and never optimistic:
 
 `unknown` is not a synonym for failure — the job may well have succeeded. It means there is no evidence either way (the host was unreachable, the remote process was killed without writing an exit code, a helper blew its deadline, or a `.phase` marker was unparseable). Reconcile it against the remote before re-submitting; a blind retry may duplicate work that already completed. Nothing resolves `unknown` to success by default.
 
+### Durability
+
+A remote job outlives the daemon — an `ssh:*` job keeps running under `nohup`, a
+`byoc:*` sandbox keeps billing — so jobs are recorded in SQLite, not in process
+memory. Each job's row is written **before** the submit is attempted; a row
+written only on success would be missing for exactly the case that matters, when
+the provider took the work and the response never came back. On acknowledgement
+the provider's receipt (remote pid / sandbox id) is stored: evidence the job
+exists out there, independent of anything this process chose to believe. Every
+transition appends to a sequenced `compute_job_events` stream — a status says
+where a job is, the stream says how it got there, which is what tells "never
+submitted" from "submitted, response lost".
+
+A restart rehydrates whatever was still live, so a recovered job can still be
+polled, harvested, and cancelled, and still occupies its concurrency slot rather
+than letting the session oversubscribe a provider that is still busy.
+
+`host.compute.reconcile()` reports what came back:
+
+```python
+host.compute.reconcile()
+# {'recovered': [{'job_id': 'job-…', 'provider': 'ssh:lab',
+#                 'status': 'running', 'receipt': '31337', 'hint': …}], 'count': 1}
+host.compute.job_history('job-…')   # the sequenced event stream
+```
+
+**Nothing is resubmitted automatically.** A job in `submitted` may or may not be
+running remotely, and guessing wrong costs either a duplicate charge or a lost
+result — so reconcile surfaces the job with its receipt and lets a poll resolve
+it. Pass `idempotency_key` to `submit_job` to make a retry of the same logical
+work safe: a second submit under a key that already has a job is refused with
+`duplicate_request` rather than becoming a second remote job, and the key
+survives a restart, which is precisely when a client retries.
+
 ### Confinement status (Prototype)
 
 `openai4s_compute_provider` ships a confinement probe and an `expect_confined` mode, but **nothing on the host currently wraps the helper in an OS sandbox** or supplies the probe's netns anchor — so confinement is a designed boundary, not a built one, and `host.compute` remains Prototype. Do not read "the helper ran" as "the helper was confined".

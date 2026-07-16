@@ -1638,6 +1638,12 @@ class HostDispatcher:
     def _m_compute_close(self, kw: dict) -> Any:
         return self._compute_guard(lambda: self.compute.close(kw))
 
+    def _m_compute_reconcile(self, kw: dict) -> Any:
+        return self._compute_guard(lambda: self.compute.reconcile(kw))
+
+    def _m_compute_job_history(self, kw: dict) -> Any:
+        return self._compute_guard(lambda: self.compute.job_history(kw))
+
     def _m_compute_ssh(self, kw: dict) -> Any:
         return self._compute_guard(lambda: self.compute.ssh(kw))
 
