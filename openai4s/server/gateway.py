@@ -5730,11 +5730,35 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             )
 
         def _body(self) -> dict:
-            try:
-                payload = self._read_request_body(limit=_MAX_JSON_BODY_BYTES)
-                return json.loads(payload or b"{}")
-            except (ValueError, TypeError):
+            """Parse a JSON request body, or fail with an explicit 4xx.
+
+            Malformed JSON used to become ``{}``. That is the worst possible
+            answer: every route reads its fields with ``b.get(...)``, so a
+            truncated or mistyped body did not fail — it silently became "the
+            client supplied nothing", and the request no-opped while returning
+            200. A client cannot tell that from success, so the bug lands on
+            whoever later wonders why their setting never saved.
+
+            An empty body stays valid and yields ``{}``: routes with only
+            optional fields legitimately accept one. It is *unparseable* input
+            that is now an error, not absent input.
+            """
+            payload = self._read_request_body(limit=_MAX_JSON_BODY_BYTES)
+            if not payload:
                 return {}
+            try:
+                parsed = json.loads(payload)
+            except (ValueError, TypeError) as e:
+                raise GatewayError(400, f"request body is not valid JSON: {e}") from e
+            if not isinstance(parsed, dict):
+                # `[1,2]` parses fine and then AttributeErrors on the first
+                # .get() — a 500 for what is squarely a client error.
+                raise GatewayError(
+                    400,
+                    f"request body must be a JSON object, got "
+                    f"{type(parsed).__name__}",
+                )
+            return parsed
 
         def _body_bytes(self, *, limit: int) -> bytes:
             return self._read_request_body(

@@ -2042,10 +2042,19 @@ def test_upload_without_frame_id_stores_file_but_never_broadcasts(tmp_path):
     )
 
 
-def test_body_malformed_json_treated_as_empty_dict(tmp_path):
-    """_body() contract: an unparseable JSON body, an empty body, and a
-    missing Content-Length all collapse to {} — route handlers never see a
-    parse error and treat the request as field-less."""
+def test_body_rejects_unparseable_json_with_an_explicit_4xx(tmp_path):
+    """_body() contract: unparseable input is a 400, absent input is not.
+
+    This used to collapse a malformed body to {} so "route handlers never see a
+    parse error". Every route reads its fields with b.get(...), so that did not
+    mean "lenient" — it meant a truncated or mistyped body silently became "the
+    client supplied nothing", the request no-opped, and it returned 200. A
+    client cannot tell that from success; the bug lands on whoever later wonders
+    why their setting never saved.
+
+    An empty body stays {}: routes whose fields are all optional legitimately
+    accept one. The distinction is unparseable vs absent.
+    """
     cfg = _cfg(tmp_path)
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
@@ -2056,10 +2065,23 @@ def test_body_malformed_json_treated_as_empty_dict(tmp_path):
         handler.rfile = io.BytesIO(raw)
         return handler._body()
 
-    assert _with(b'{"a": 1}') == {"a": 1}  # valid JSON parses
-    assert _with(b"this is not json") == {}  # malformed → {}
-    assert _with(b"{truncated") == {}
+    assert _with(b'{"a": 1}') == {"a": 1}
     assert _with(b"") == {}  # Content-Length: 0 → {} without reading
+    assert _with(b"{}") == {}
+
+    for malformed in (b"this is not json", b"{truncated", b"{'py': 'repr'}"):
+        with pytest.raises(gateway_mod.GatewayError) as e:
+            _with(malformed)
+        assert e.value.code == 400
+        assert "not valid JSON" in e.value.message
+
+    # `[1,2]` parses, then AttributeErrors on the first .get() — a 500 for what
+    # is squarely a client error.
+    for wrong_shape in (b"[1,2]", b'"str"', b"42"):
+        with pytest.raises(gateway_mod.GatewayError) as e:
+            _with(wrong_shape)
+        assert e.value.code == 400
+        assert "must be a JSON object" in e.value.message
 
     handler.headers = {}  # no Content-Length header at all
     handler.rfile = io.BytesIO(b'{"ignored": true}')

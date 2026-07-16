@@ -77,12 +77,15 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
     # Fixed: `enabled` now gates the spawn, not just the invocation, so a
     # disabled connector never reaches the manager.
     assert cases["disabled_mcp_tools_connects"]["known_bug"] is False
+    # Fixed: only *leading* system messages are initial policy.
+    assert cases["compaction_summary_provider_hoist"]["known_bug"] is False
     for case_id in set(cases) - {
         "cli_max_turns",
         "partial_sse_hard_failure",
         "headless_ask_fails_closed_deny_absolute",
         "rate_limit_single_attempt",
         "disabled_mcp_tools_connects",
+        "compaction_summary_provider_hoist",
     }:
         assert cases[case_id]["known_bug"] is True
 
@@ -109,11 +112,15 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
         "sse_attempts": 1,
     }
 
+    # The compaction note keeps its timeline position. It used to be hoisted
+    # into the initial system field, which on Anthropic is also the cache
+    # prefix — so every compaction both reframed a transient summary as durable
+    # policy and invalidated the prompt cache.
     hoist = observed["compaction_summary_provider_hoist"]
-    assert hoist["anthropic_summary_in_top_level_system"] is True
-    assert hoist["anthropic_summary_in_messages"] is False
-    assert hoist["gemini_summary_in_system_instruction"] is True
-    assert hoist["gemini_summary_in_contents"] is False
+    assert hoist["anthropic_summary_in_top_level_system"] is False
+    assert hoist["anthropic_summary_in_messages"] is True
+    assert hoist["gemini_summary_in_system_instruction"] is False
+    assert hoist["gemini_summary_in_contents"] is True
 
     oversized = observed["oversized_observation_unbudgeted"]
     assert oversized["model_view_chars"] > oversized["input_chars"]

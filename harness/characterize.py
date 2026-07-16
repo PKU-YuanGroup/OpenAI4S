@@ -490,9 +490,9 @@ def collect_prechange_characterization(data_dir: str | Path) -> dict[str, Any]:
         },
         {
             "case_id": "compaction_summary_provider_hoist",
-            "current_behavior": "The compaction note is a mid-timeline system message that Anthropic and Gemini hoist into their initial system fields.",
+            "current_behavior": "Only leading system messages become the initial system field; a mid-timeline system message (the compaction note) stays at its timeline position as a marked turn.",
             "desired_contract": "Compile a typed compaction_summary at its timeline position; never merge it into initial policy or cache prefix.",
-            "known_bug": True,
+            "known_bug": False,
             "probe": lambda: _compaction_provider_hoist(root / "compaction"),
         },
         {

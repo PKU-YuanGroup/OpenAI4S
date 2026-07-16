@@ -187,10 +187,10 @@
       ]
     },
     {
-      "current_behavior": "The compaction note is a mid-timeline system message that Anthropic and Gemini hoist into their initial system fields.",
+      "current_behavior": "Only leading system messages become the initial system field; a mid-timeline system message (the compaction note) stays at its timeline position as a marked turn.",
       "desired_contract": "Compile a typed compaction_summary at its timeline position; never merge it into initial policy or cache prefix.",
       "id": "compaction_summary_provider_hoist",
-      "known_bug": true,
+      "known_bug": false,
       "trace": [
         {
           "event_id": "<event:1>",
@@ -216,10 +216,11 @@
           "payload": {
             "anthropic_message_roles": [
               "user",
+              "user",
               "assistant"
             ],
-            "anthropic_summary_in_messages": false,
-            "anthropic_summary_in_top_level_system": true,
+            "anthropic_summary_in_messages": true,
+            "anthropic_summary_in_top_level_system": false,
             "compacted_roles": [
               "system",
               "user",
@@ -228,10 +229,11 @@
             ],
             "gemini_content_roles": [
               "user",
+              "user",
               "model"
             ],
-            "gemini_summary_in_contents": false,
-            "gemini_summary_in_system_instruction": true
+            "gemini_summary_in_contents": true,
+            "gemini_summary_in_system_instruction": false
           },
           "phase": "characterization",
           "root_frame_id": "<root_frame:1>",
