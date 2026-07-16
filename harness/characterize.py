@@ -476,9 +476,9 @@ def collect_prechange_characterization(data_dir: str | Path) -> dict[str, Any]:
         },
         {
             "case_id": "rate_limit_single_attempt",
-            "current_behavior": "An HTTP 429 raises LLMError after one transport attempt even when Retry-After is present.",
+            "current_behavior": "An HTTP 429 raises a typed TransportError carrying status/Retry-After, and is retried within a bounded, cancellable budget that honors Retry-After; the call recovers on the retry.",
             "desired_contract": "Typed rate_limit errors honor Retry-After and retry within a cancellable source-aware budget before output is committed.",
-            "known_bug": True,
+            "known_bug": False,
             "probe": _rate_limit_single_attempt,
         },
         {

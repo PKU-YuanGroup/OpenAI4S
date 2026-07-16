@@ -70,16 +70,33 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
     assert cases["cli_max_turns"]["known_bug"] is False
     assert cases["partial_sse_hard_failure"]["known_bug"] is False
     assert cases["headless_ask_fails_closed_deny_absolute"]["known_bug"] is False
+    # Fixed: the transport now raises a typed TransportError carrying the
+    # status and Retry-After, and retries a 429 within a bounded, cancellable
+    # budget. This row is an ordinary regression from here on.
+    assert cases["rate_limit_single_attempt"]["known_bug"] is False
     for case_id in set(cases) - {
         "cli_max_turns",
         "partial_sse_hard_failure",
         "headless_ask_fails_closed_deny_absolute",
+        "rate_limit_single_attempt",
     }:
         assert cases[case_id]["known_bug"] is True
 
     observed = {case_id: case["trace"][1]["payload"] for case_id, case in cases.items()}
     assert observed["cli_max_turns"]["stop_reason"] == "max_turns"
-    assert observed["rate_limit_single_attempt"]["attempts"] == 1
+
+    # A 429 carrying Retry-After is retried and the call recovers. This used to
+    # be attempts == 1: the status was flattened into an f-string, so no caller
+    # could tell a rate limit from an auth failure and nothing retried.
+    rate_limit = observed["rate_limit_single_attempt"]
+    assert rate_limit["attempts"] == 2
+    assert rate_limit["content"] == "recovered"
+    assert rate_limit["error_type"] is None
+    assert rate_limit["retry_after_was_available"] is True
+
+    # The other half of the same rule, and the reason the fix is narrow: once a
+    # stream has committed output, a retry would duplicate what the user has
+    # already seen. Still exactly one attempt.
     assert observed["partial_sse_hard_failure"] == {
         "blocking_fallback_attempts": 0,
         "deltas": ["committed-delta"],

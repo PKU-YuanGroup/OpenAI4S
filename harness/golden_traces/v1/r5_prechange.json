@@ -65,10 +65,10 @@
       ]
     },
     {
-      "current_behavior": "An HTTP 429 raises LLMError after one transport attempt even when Retry-After is present.",
+      "current_behavior": "An HTTP 429 raises a typed TransportError carrying status/Retry-After, and is retried within a bounded, cancellable budget that honors Retry-After; the call recovers on the retry.",
       "desired_contract": "Typed rate_limit errors honor Retry-After and retry within a cancellable source-aware budget before output is committed.",
       "id": "rate_limit_single_attempt",
-      "known_bug": true,
+      "known_bug": false,
       "trace": [
         {
           "event_id": "<event:1>",
@@ -92,10 +92,10 @@
           "monotonic_ms": 1,
           "parent_event_id": "<event:1>",
           "payload": {
-            "attempts": 1,
-            "content": null,
-            "error_text": "LLM HTTP 429: {\"error\":\"rate limited\"}",
-            "error_type": "LLMError",
+            "attempts": 2,
+            "content": "recovered",
+            "error_text": null,
+            "error_type": null,
             "retry_after_was_available": true
           },
           "phase": "characterization",
