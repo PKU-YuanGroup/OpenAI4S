@@ -511,9 +511,9 @@ def collect_prechange_characterization(data_dir: str | Path) -> dict[str, Any]:
         },
         {
             "case_id": "disabled_mcp_tools_connects",
-            "current_behavior": "mcp_tools calls the connector manager even when the connector row is disabled.",
+            "current_behavior": "mcp_tools/resources/prompts refuse a disabled connector without reaching the manager, so a disabled row is zero-spawn.",
             "desired_contract": "Disabled or untrusted MCP connectors are zero-spawn and never enter connect/list/call.",
-            "known_bug": True,
+            "known_bug": False,
             "probe": lambda: _disabled_mcp_tools_connects(root / "mcp"),
         },
     )

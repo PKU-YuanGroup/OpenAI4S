@@ -74,11 +74,15 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
     # status and Retry-After, and retries a 429 within a bounded, cancellable
     # budget. This row is an ordinary regression from here on.
     assert cases["rate_limit_single_attempt"]["known_bug"] is False
+    # Fixed: `enabled` now gates the spawn, not just the invocation, so a
+    # disabled connector never reaches the manager.
+    assert cases["disabled_mcp_tools_connects"]["known_bug"] is False
     for case_id in set(cases) - {
         "cli_max_turns",
         "partial_sse_hard_failure",
         "headless_ask_fails_closed_deny_absolute",
         "rate_limit_single_attempt",
+        "disabled_mcp_tools_connects",
     }:
         assert cases[case_id]["known_bug"] is True
 
@@ -122,6 +126,11 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
     assert permission["deny_effective_decision"] == "deny"
     assert permission["headless_deny_allowed"] is False
 
+    # A disabled connector is zero-spawn. This used to be
+    # manager_list_tools_calls == 1: `call` refused a disabled row, but
+    # discovery — which is what actually launches the process — did not, so an
+    # agent could make the host run a command the user had turned off.
     disabled_mcp = observed["disabled_mcp_tools_connects"]
     assert disabled_mcp["connector_enabled"] is False
-    assert disabled_mcp["manager_list_tools_calls"] == 1
+    assert disabled_mcp["manager_list_tools_calls"] == 0
+    assert "disabled" in disabled_mcp["result"]["error"]

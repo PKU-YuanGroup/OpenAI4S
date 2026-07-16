@@ -20,6 +20,13 @@ class MCPStore(Protocol):
         ...
 
 
+def _disabled(server: Any) -> str:
+    return (
+        f"connector {server!r} is disabled; enable it in Customize \u2192 "
+        f"Connectors to use it"
+    )
+
+
 class MCPService:
     """Resolve configured MCP servers and dispatch MCP control operations."""
 
@@ -78,11 +85,20 @@ class MCPService:
         ]
 
     def tools(self, server: str) -> Any:
-        """List tools, including for a configured but disabled connector."""
+        """List tools on an enabled connector.
+
+        Zero-spawn when disabled. `call` already refused a disabled connector,
+        but discovery did not — and discovery is what launches the process, so
+        an agent could make the host run a command out of a connector row the
+        user had explicitly turned off. `enabled` is a user control; it has to
+        gate the spawn, not just the invocation.
+        """
         manager_factory = self._resolve_manager_factory()
         connector = self.connector(server)
         if not connector:
             return {"error": f"connector {server!r} not found"}
+        if not connector.get("enabled"):
+            return {"error": _disabled(server)}
         config = self._config(connector)
         try:
             return {
@@ -117,13 +133,16 @@ class MCPService:
             return {"error": f"mcp_call({server}.{tool}) failed: {exc}"}
 
     def resources(self, spec: dict) -> Any:
-        """List resource metadata; configured disabled servers remain inspectable."""
+        """List resource metadata on an enabled connector. Zero-spawn when
+        disabled — see :meth:`tools`."""
 
         manager_factory = self._resolve_manager_factory()
         server = spec.get("server")
         connector = self.connector(server)
         if not connector:
             return {"error": f"connector {server!r} not found"}
+        if not connector.get("enabled"):
+            return {"error": _disabled(server)}
         try:
             return manager_factory().list_resources(
                 connector["connector_id"],
@@ -154,13 +173,16 @@ class MCPService:
             return {"error": f"mcp resource read({server}:{uri}) failed: {exc}"}
 
     def prompts(self, spec: dict) -> Any:
-        """List prompt metadata; configured disabled servers remain inspectable."""
+        """List prompt metadata on an enabled connector. Zero-spawn when
+        disabled — see :meth:`tools`."""
 
         manager_factory = self._resolve_manager_factory()
         server = spec.get("server")
         connector = self.connector(server)
         if not connector:
             return {"error": f"connector {server!r} not found"}
+        if not connector.get("enabled"):
+            return {"error": _disabled(server)}
         try:
             return manager_factory().list_prompts(
                 connector["connector_id"],
