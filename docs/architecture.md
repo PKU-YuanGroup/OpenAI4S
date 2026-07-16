@@ -204,6 +204,36 @@ implementation files. New behaviour goes to the owning class below:
 | `storage/` | persistence behaviour and transaction boundaries | frame/artifact plus Action Ledger, attempts, kernel generations, approvals, capability state, snapshots/branches, recovery, metadata/settings, plan/review, connector, and memory repositories |
 | `server/` | persistent Web-session operations | execution coordinator, Cell/artifact transactions, Timeline, session domain/checkpoints/recovery/export/renderers, plan/review/skills/title; `gateway.py` exposes the currently wired subset over stdlib HTTP/WebSocket |
 
+### Schema versioning
+
+The database carries its version in `PRAGMA user_version`, with an auditable
+record in `schema_migrations(version, name, checksum, applied_at)`; read both via
+`Store.schema_state()`. Migrations live in
+[`storage/migrations.py`](../openai4s/storage/migrations.py) and run inside one
+explicit transaction, so **a database is either fully at version N or still fully
+at version N-1** — an interrupted upgrade leaves no in-between state, and
+re-running is safe. An upgrade integrity-checks first, backs up the file with
+SQLite's backup API (kept on failure, removed on success), and refuses to migrate
+a database that is already damaged.
+
+Version 1 is the legacy baseline: the historical catch-up pass that used to
+re-probe every table on *every* open. Retrofitting a version onto databases that
+never had one works because that pass is idempotent by predicate — it adds only
+absent columns and every backfill is guarded by a `WHERE` selecting only rows
+that still need it. So it converges once, gets stamped, and is never re-derived
+again. To add a migration: write the step, register it in `Store._migrate`'s map
+under the next number, and bump `SCHEMA_VERSION`. Steps must not commit.
+
+Two PRAGMAs are deliberately left alone, documented in `Store._apply_pragmas` so
+the reasoning is not lost: `journal_mode` stays on the rollback journal (WAL is
+the usual answer to the real multi-process access here — `openai4s run` and
+`openai4s init` open the database from their own process — but measurement showed
+no reader blocking to fix, and changing a live database's on-disk format on
+folklore is a bad trade), and `synchronous` stays FULL because this database holds
+an audit ledger. `foreign_keys` is ON, which is a no-op today: the schema declares
+no `REFERENCES` at all, so the pragma only ensures a future constraint would
+actually bite rather than read as documentation.
+
 Repositories share the `Store` connection and `RLock`; services use narrow
 ports or late-bound providers for replaceable session state. Compatibility
 facades keep existing imports, SDK calls, REST/WS payloads, and saved databases
