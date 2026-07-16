@@ -3821,7 +3821,7 @@ class SessionRunner:
         so the UI banner matches what `_llm_cfg` actually sends.
         """
         try:
-            v = _clean_api_key(self.store.get_setting("llm_api_key"))
+            v = _clean_api_key(self.store.get_secret_setting("llm_api_key"))
             if v:
                 return v
         except Exception:  # noqa: BLE001
@@ -3844,8 +3844,12 @@ class SessionRunner:
         try:
             s = {
                 k: self.store.get_setting(k)
-                for k in ("llm_api_key", "llm_model", "llm_base_url", "llm_provider")
+                for k in ("llm_model", "llm_base_url", "llm_provider")
             }
+            # Through the broker, not get_setting: after migration the row
+            # holds a reference, and handing that to the provider as an API key
+            # would fail auth in a way that looks like a bad key.
+            s["llm_api_key"] = self.store.get_secret_setting("llm_api_key")
         except Exception:  # noqa: BLE001
             s = {}
         model_ov = st.model if (st is not None and st.model) else s.get("llm_model")
@@ -6181,9 +6185,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         if field in b and b[field] is not None:
                             store.set_setting(key, str(b[field]).strip())
                     if b.get("api_key"):  # only overwrite when a value is supplied
-                        store.set_setting("llm_api_key", _clean_api_key(b["api_key"]))
+                        store.set_secret_setting(
+                            "llm_api_key", _clean_api_key(b["api_key"]), scope="llm"
+                        )
                     if b.get("clear_api_key"):
-                        store.set_setting("llm_api_key", "")
+                        store.set_secret_setting("llm_api_key", "", scope="llm")
                     if b.get("model"):
                         _default_model["id"] = str(b["model"]).strip()
                     self._json(
@@ -8022,16 +8028,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if method in ("PUT", "PATCH", "POST"):
                     b = self._body()
                     if b.get("clear_api_key"):
-                        store.set_setting("tavily_api_key", "")
+                        store.set_secret_setting("tavily_api_key", "", scope="search")
                         _os.environ.pop("OPENAI4S_TAVILY_API_KEY", None)
                     else:
                         key = (b.get("api_key") or "").strip()
                         if key:
-                            store.set_setting("tavily_api_key", key)
+                            store.set_secret_setting(
+                                "tavily_api_key", key, scope="search"
+                            )
                             _os.environ["OPENAI4S_TAVILY_API_KEY"] = key
                 configured = bool(
                     (_os.environ.get("OPENAI4S_TAVILY_API_KEY") or "").strip()
-                    or (store.get_setting("tavily_api_key") or "").strip()
+                    # A reference is truthy but is not a key; ask the broker
+                    # whether one is actually stored.
+                    or (store.get_secret_setting("tavily_api_key") or "").strip()
                 )
                 self._json(
                     {
@@ -8560,8 +8570,33 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         traceback.print_exc()
     # Load a UI-saved web-search (Tavily) key into the env webtools reads, unless
     # an explicit env/.env value is already set (which wins).
+    # Move any plaintext credential out of the database and behind a broker
+    # reference. Ordered write -> verify -> replace, so an interruption leaves
+    # the old plaintext authoritative and the next start retries; a key that
+    # cannot be migrated keeps working as plaintext rather than being lost.
     try:
-        _tav = get_store(cfg.db_path).get_setting("tavily_api_key")
+        from openai4s.security.secret_migration import migrate_settings_secrets
+
+        _store = get_store(cfg.db_path)
+        _report = migrate_settings_secrets(_store, _store.secrets)
+        if _report.migrated:
+            print(
+                f"[openai4s] moved {len(_report.migrated)} credential(s) into "
+                f"{_store.secrets.posture()['backend']}: "
+                f"{', '.join(_report.migrated)}",
+                file=sys.stderr,
+            )
+        for _failure in _report.failed:
+            print(
+                f"[openai4s] could not migrate {_failure['key']}: "
+                f"{_failure['error']} — it remains stored in plaintext",
+                file=sys.stderr,
+            )
+    except Exception:  # noqa: BLE001 - never block startup on this
+        traceback.print_exc()
+
+    try:
+        _tav = get_store(cfg.db_path).get_secret_setting("tavily_api_key")
         if _tav and not os.environ.get("OPENAI4S_TAVILY_API_KEY"):
             os.environ["OPENAI4S_TAVILY_API_KEY"] = _tav
     except Exception:  # noqa: BLE001

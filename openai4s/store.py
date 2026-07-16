@@ -936,6 +936,65 @@ class Store:
             # cleanup first; this only ensures they would bite once they exist.
             self._conn.execute("PRAGMA foreign_keys = ON")
 
+    # --- secrets ---------------------------------------------------------
+    @property
+    def secrets(self):
+        """The SecretBroker for this database, resolved once on first use.
+
+        Lazy because resolution runs a real keychain round-trip self-test, and
+        the overwhelming majority of Store construction (every test, every CLI
+        subcommand that touches no credential) never needs a secret.
+        """
+        with self._lock:
+            broker = getattr(self, "_secret_broker", None)
+            if broker is None:
+                from openai4s.security.secret_broker import SecretBroker
+
+                broker = SecretBroker(self)
+                self._secret_broker = broker
+            return broker
+
+    def get_secret_setting(self, key: str) -> str:
+        """Read a credential setting, whether it is a reference or legacy plaintext.
+
+        Both shapes have to work: an install that has not migrated, one that
+        has, and one where migration failed for a single key must all keep
+        running. Callers do not need to know which they are looking at.
+        """
+        from openai4s.security.secret_migration import resolve_setting
+
+        return resolve_setting(self, self.secrets, key)
+
+    def set_secret_setting(self, key: str, value: str, *, scope: str) -> str:
+        """Store a credential through the broker, recording only its reference.
+
+        Returns the reference. An empty value clears both the reference and the
+        stored secret — a cleared key must not linger in the keychain where the
+        UI reports it as gone.
+        """
+        from openai4s.security.secret_broker import is_ref
+
+        previous = self.get_setting(key)
+        if not value:
+            if is_ref(previous):
+                try:
+                    self.secrets.delete(previous)
+                except Exception:  # noqa: BLE001 - clearing the row still matters
+                    pass
+            self.set_setting(key, "")
+            return ""
+        ref = self.secrets.put(scope, key, value)
+        # Verify before recording: a write that did not raise is not evidence
+        # the value is retrievable, and a reference that resolves to nothing is
+        # worse than the plaintext it replaced.
+        if self.secrets.get(ref) != value:
+            raise RuntimeError(
+                f"refusing to record {key!r}: wrote to {ref} but could not read "
+                f"it back"
+            )
+        self.set_setting(key, ref)
+        return ref
+
     # --- schema state ----------------------------------------------------
     def schema_state(self) -> dict:
         """Report the database's schema version and how it got there.

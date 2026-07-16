@@ -187,7 +187,9 @@ class ModelProfileService:
             ("model", "llm_model"),
         ):
             self.store.set_setting(setting, str(profile.get(field) or "").strip())
-        self.store.set_setting("llm_api_key", clean_api_key(profile.get("api_key")))
+        self.store.set_secret_setting(
+            "llm_api_key", clean_api_key(profile.get("api_key")), scope="llm"
+        )
         self.store.set_setting("active_model_profile", profile["id"])
 
         def to_front(profiles: list[dict[str, Any]]) -> None:
@@ -237,7 +239,9 @@ class ModelProfileService:
                 ("model", "llm_model"),
             ):
                 self.store.set_setting(setting, str(profile.get(field) or ""))
-            self.store.set_setting("llm_api_key", clean_api_key(profile.get("api_key")))
+            self.store.set_secret_setting(
+                "llm_api_key", clean_api_key(profile.get("api_key")), scope="llm"
+            )
             selected_model = self.effective_model_id(
                 profile.get("provider"), profile.get("model")
             )

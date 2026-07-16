@@ -32,6 +32,7 @@ untrusted multi-tenant sandbox.
 | **Injection detector** | `OPENAI4S_INJECTION_SCAN` (on) | annotates tool-returned content (web / PDF / MCP) so the model treats it as **data, not instructions** |
 | **Egress allowlist** | `OPENAI4S_EGRESS` (`off`) | application policy for `web_fetch` / `web_search` and authorized `host.bash`; the OS sandbox is the separate raw-network boundary |
 | **Remote-compute confinement** | `OPENAI4S_COMPUTE_CONFINEMENT` (`auto`) | `enforce` refuses `byoc:*` ops because no host-side boundary exists for the provider helper yet (see [`docs/compute.md`](compute.md)); `auto` runs unconfined and reports the posture rather than implying one |
+| **Secret store** | `OPENAI4S_SECRET_STORE` (`auto`) | system keychain behind an opaque reference, chosen only after a real round-trip self-test; `keychain` fails closed, `auto` degrades to plaintext visibly. No obfuscated-file fallback exists |
 | **Data-dir permissions** | always on | the data dir is `0700` and the database (plus any `-wal`/`-shm`) is `0600`; POSIX only — Windows needs an ACL, and the posture reports `supported: false` there rather than claiming a boundary |
 | **Browser response headers** | always on | a hash-based CSP with no `'unsafe-inline'` in `script-src` and a same-origin `connect-src`, plus `nosniff` / `X-Frame-Options` / `Referrer-Policy` on every response including streamed artifact bytes |
 
@@ -117,29 +118,58 @@ it:
 
 Credential values passed to `host.credentials.set(name, value)` are held only in an in-memory vault (never persisted). To keep that true end to end, the **RPC audit log** redacts them: `credentials_get` / `credentials_list` are not logged at all, and `credentials_set` is logged for audit **with its args redacted** — the plaintext value never enters `host_call_log`. The replay tape recorder likewise skips `credentials_set`, so an exported notebook cannot carry a plaintext credential.
 
-### Credentials at rest — a known gap
+### Credentials at rest
 
-Configured credentials are stored in SQLite **as plaintext**: model-profile API
-keys and `llm_api_key` / `tavily_api_key` in `settings`, and connector `env` in
-`connectors`. There is no encryption layer today. Two consequences worth stating
-plainly rather than leaving implied:
+`llm_api_key` and `tavily_api_key` are held by a **SecretBroker**
+([`security/secret_broker.py`](../openai4s/security/secret_broker.py)): the
+`settings` row stores an opaque reference such as `secret://v1/llm/llm_api_key`
+and the value lives in the system keychain. The reference is not derived from
+the value, so it is safe to log and safe to sit in a row.
 
-- **Anything that copies the data dir copies the secrets.** A backup, an rsync,
-  a container image layer, or a support bundle carries them in the clear.
-- **The file mode is the only barrier.** The data dir is `0700` and the database
-  `0600` (see the table above), which removes the trivial read by another local
-  account — but a mode is not encryption, and it does nothing on a platform
-  where POSIX modes are not enforced.
+| mode (`OPENAI4S_SECRET_STORE`) | behaviour |
+|---|---|
+| `auto` (default) | Use the system keychain when a **real round-trip self-test** passes; otherwise fall back to plaintext with a high-visibility warning and `secure: false` in the posture. Never a silent downgrade. |
+| `keychain` | The same detection, but fail closed — refuse to store a secret at all rather than store it in the clear. |
+| `plaintext` | Explicitly accept database storage. Visible in the posture, never implicit. |
 
-What *is* enforced is that credentials do not leave over the API: connector and
-model-profile responses are allowlist projections (`env_keys` / `has_api_key`,
-never the values), covered by canary regressions in
+Backends are driven through the system CLIs, because the core is stdlib-only and
+cannot depend on `keyring`: `security` on macOS, `secret-tool` (Secret Service)
+on Linux desktops. The value is fed on **stdin, never argv** — `security`'s own
+help says "Use of the -p or -w options is insecure", and a value on the command
+line is readable by any local `ps` for the life of the call. Presence of the CLI
+is not treated as availability of a keychain: a locked keychain or a missing
+session bus fails only at first use, so the broker proves a round-trip before
+trusting a backend with a real secret.
+
+There is deliberately **no obfuscated-file backend**. Base64, XOR, or a
+hand-rolled cipher over a key stored beside the ciphertext is not a boundary; it
+is a plaintext store described in words that suggest otherwise.
+
+Existing plaintext keys migrate on daemon start, ordered **write → verify by
+reading back → replace the row with a reference**. Every prefix of that is safe
+to be interrupted at: crash after the write and the plaintext is still
+authoritative and the next start retries. The verify step reads the value back
+and compares it, because a write that did not raise is not evidence the value is
+retrievable — and a reference that resolves to nothing is worse than the
+plaintext it replaced. A key that cannot be migrated stays plaintext and keeps
+working, reported on stderr.
+
+Still outstanding, and stated plainly rather than left implied:
+
+- **Connector `env` and model-profile keys are still plaintext.** `settings`'
+  two named keys are migrated; `connectors.env` and the per-profile `api_key`
+  inside the `model_profiles` JSON blob are not yet. Anything that copies the
+  data dir still copies those in the clear.
+- **Windows has no backend**, so it resolves to plaintext under `auto`.
+- **The file mode is the only barrier for what is not yet migrated.** The data
+  dir is `0700` and the database `0600` (see the table above), which removes the
+  trivial read by another local account — but a mode is not encryption.
+
+What *is* enforced throughout is that credentials do not leave over the API:
+connector and model-profile responses are allowlist projections (`env_keys` /
+`has_api_key`, never the values), covered by canary regressions in
 `tests/test_secret_canary.py` that assert on the secret's bytes rather than on
 field names.
-
-Encrypting these at rest — a broker holding opaque references with short-lived
-leases, backed by the system keychain or Secret Service, failing closed on
-headless rather than to an obfuscated file — remains outstanding.
 
 ### BYOC provider import-time secret scrubbing
 
