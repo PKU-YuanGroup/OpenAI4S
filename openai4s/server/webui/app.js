@@ -6741,11 +6741,37 @@ async function renderRemoteGPU(c) {
   const hd = el("div", "cust-row"); hd.innerHTML = `<div class="info"><div class="nm">${t("cust.remote.title")}</div><div class="ds">${t("cust.remote.desc")}</div></div>`; c.appendChild(hd);
   const hosts = (info && info.hosts) || [];
   hosts.forEach(h => {
-    const row = el("div", "cust-row"); const dot = h.reachable ? "🟢" : "🔴";
-    const gpus = h.gpus || (h.reachable ? "" : t("cust.remote.unreachable"));
-    const caps = (h.capabilities || []).map(cp => `<span style="display:inline-block;padding:1px 7px;margin:3px 4px 0 0;border-radius:8px;background:rgba(127,127,127,.18);font-size:11px">${cp.name}${cp.engine ? " · " + cp.engine : ""}${cp.verified ? " ✓" : ""}</span>`).join("");
+    // Built with DOM nodes, not innerHTML. Every string here comes off a
+    // machine we do not control: the label/alias is whatever the user's
+    // ~/.ssh/config says, and gpus and capability names are literally the
+    // stdout of `nvidia-smi` and a service probe on the remote host. Through
+    // innerHTML a hostile or merely odd GPU name was markup.
+    const row = el("div", "cust-row");
     const inf = el("div", "info");
-    inf.innerHTML = `<div class="nm">${dot} ${h.label || h.alias} <span style="opacity:.55;font-weight:400">· ${h.provider}</span></div><div class="ds">${gpus}${caps ? "<br>" + t("cust.remote.services") + " " + caps : "<br><span style='opacity:.6'>" + t("cust.remote.noservices") + "</span>"}</div>`;
+
+    const nm = el("div", "nm", (h.reachable ? "🟢 " : "🔴 ") + (h.label || h.alias || ""));
+    const prov = el("span", null, " · " + (h.provider || ""));
+    prov.style.opacity = ".55";
+    prov.style.fontWeight = "400";
+    nm.appendChild(prov);
+    inf.appendChild(nm);
+
+    const ds = el("div", "ds", h.gpus || (h.reachable ? "" : t("cust.remote.unreachable")));
+    const caps = h.capabilities || [];
+    ds.appendChild(el("br"));
+    if (caps.length) {
+      ds.appendChild(document.createTextNode(t("cust.remote.services") + " "));
+      caps.forEach(cp => {
+        const chip = el("span", null, (cp.name || "") + (cp.engine ? " · " + cp.engine : "") + (cp.verified ? " ✓" : ""));
+        chip.style.cssText = "display:inline-block;padding:1px 7px;margin:3px 4px 0 0;border-radius:8px;background:rgba(127,127,127,.18);font-size:11px";
+        ds.appendChild(chip);
+      });
+    } else {
+      const none = el("span", null, t("cust.remote.noservices"));
+      none.style.opacity = ".6";
+      ds.appendChild(none);
+    }
+    inf.appendChild(ds);
     const rm = el("button", "outline-btn small", t("common.remove"));
     rm.onclick = async () => { if (!confirm(t("cust.remote.confirmRemove", h.alias))) return; try { await api("/compute/remote/" + encodeURIComponent(h.alias), { method: "DELETE" }); custTab("compute"); } catch (e) { hint(e.message, true); } };
     row.appendChild(inf); row.appendChild(rm); c.appendChild(row);
@@ -6760,7 +6786,20 @@ async function renderRemoteGPU(c) {
   add.onclick = async () => { const alias = sel.value; if (!alias) return; add.disabled = true; add.textContent = t("cust.remote.testing"); try { const r = await api("/compute/remote", { method: "POST", body: JSON.stringify({ alias }) }); hint(r.reachable ? t("cust.remote.added", alias, r.gpus || "") : t("cust.remote.addedUnreachable", alias)); custTab("compute"); } catch (e) { hint(e.message, true); add.disabled = false; add.textContent = t("common.add"); } };
   ds.appendChild(sel); ds.appendChild(add); ai.appendChild(ds); addRow.appendChild(ai); c.appendChild(addRow);
 }
-async function custCompute(c) { try { const gpu = await api("/compute/gpu"); const env = await api("/environments/status").catch(() => ({ environments: [] })); const host = await api("/compute/local/hostinfo").catch(() => ({})); c.innerHTML = ""; c.appendChild(hdr(t("cust.compute.title"), t("cust.compute.desc"))); const hostRow = el("div", "cust-row"); hostRow.innerHTML = `<div class="info"><div class="nm">${t("cust.compute.host")}</div><div class="ds">${t("cust.compute.hostDetail", host.python || "?", host.machine || "", host.cpu_count || "?", host.ram_gb || "?", host.disk_free_gb || "?")}</div></div>`; c.appendChild(hostRow); const g = el("div", "cust-row"); g.innerHTML = `<div class="info"><div class="nm">GPU</div><div class="ds">${gpu.available ? (gpu.gpu_name || t("cust.compute.gpuAvailable")) : t("cust.compute.gpuUnavailable")}</div></div>`; c.appendChild(g); await renderRemoteGPU(c); const envs = env.environments || []; envs.forEach(e => { const row = el("div", "cust-row"); const inst = (e.packages || []).filter(p => p.installed); row.innerHTML = `<div class="info"><div class="nm">${t("cust.compute.kernelLabel", e.language, e.status === "installing" ? t("cust.compute.kernelInstalling") : t("cust.compute.kernelReady"))}</div><div class="ds">${t("cust.compute.preinstalledDetail", e.package_count, inst.slice(0, 18).map(p => p.name).join("、") + (inst.length > 18 ? " …" : ""))}</div></div>`; c.appendChild(row); }); const ins = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", t("cust.compute.installExtraName"))); const dsc = el("div", "ds"); const inp = el("input"); inp.placeholder = t("cust.compute.installPlaceholder"); inp.className = "cust-input"; const btn = el("button", "outline-btn small", t("cust.compute.installBtn")); btn.onclick = async () => { const pkgs = inp.value.trim().split(/\s+/).filter(Boolean); if (!pkgs.length) return; btn.disabled = true; btn.textContent = t("cust.compute.installingBtn"); try { const r = S.currentId ? await api(`/frames/${S.currentId}/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs, restart: true }) }) : await api(`/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs }) }); hint(r.ok ? (t("step.env.installed", (r.installed || []).join("、") + (r.restarted ? t("cust.compute.kernelRestarted") : ""))) : (t("toast.compute.installFailed", ((r.failed && r.failed[0] && r.failed[0].error) || t("toast.compute.installSeeLogs"))))); if (r.ok) S._envSnapById = {}; custTab("compute"); } catch (e) { hint(t("toast.compute.installFailed", e.message), true); } btn.disabled = false; btn.textContent = t("cust.compute.installBtn"); }; dsc.appendChild(inp); dsc.appendChild(btn); info.appendChild(dsc); ins.appendChild(info); c.appendChild(ins); await renderJobs(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
+// An info row built from DOM nodes. `t()` substitutes without escaping, so its
+// result is safe as textContent and unsafe as innerHTML — several compute rows
+// interpolate a GPU name straight out of `nvidia-smi`, a machine string, and
+// package names, none of which this process authored.
+const infoRow = (name, detail) => {
+  const row = el("div", "cust-row");
+  const info = el("div", "info");
+  info.appendChild(el("div", "nm", name));
+  info.appendChild(el("div", "ds", detail));
+  row.appendChild(info);
+  return row;
+};
+
+async function custCompute(c) { try { const gpu = await api("/compute/gpu"); const env = await api("/environments/status").catch(() => ({ environments: [] })); const host = await api("/compute/local/hostinfo").catch(() => ({})); c.innerHTML = ""; c.appendChild(hdr(t("cust.compute.title"), t("cust.compute.desc"))); c.appendChild(infoRow(t("cust.compute.host"), t("cust.compute.hostDetail", host.python || "?", host.machine || "", host.cpu_count || "?", host.ram_gb || "?", host.disk_free_gb || "?"))); c.appendChild(infoRow("GPU", gpu.available ? (gpu.gpu_name || t("cust.compute.gpuAvailable")) : t("cust.compute.gpuUnavailable"))); await renderRemoteGPU(c); const envs = env.environments || []; envs.forEach(e => { const inst = (e.packages || []).filter(p => p.installed); c.appendChild(infoRow(t("cust.compute.kernelLabel", e.language, e.status === "installing" ? t("cust.compute.kernelInstalling") : t("cust.compute.kernelReady")), t("cust.compute.preinstalledDetail", e.package_count, inst.slice(0, 18).map(p => p.name).join("、") + (inst.length > 18 ? " …" : "")))); }); const ins = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", t("cust.compute.installExtraName"))); const dsc = el("div", "ds"); const inp = el("input"); inp.placeholder = t("cust.compute.installPlaceholder"); inp.className = "cust-input"; const btn = el("button", "outline-btn small", t("cust.compute.installBtn")); btn.onclick = async () => { const pkgs = inp.value.trim().split(/\s+/).filter(Boolean); if (!pkgs.length) return; btn.disabled = true; btn.textContent = t("cust.compute.installingBtn"); try { const r = S.currentId ? await api(`/frames/${S.currentId}/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs, restart: true }) }) : await api(`/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs }) }); hint(r.ok ? (t("step.env.installed", (r.installed || []).join("、") + (r.restarted ? t("cust.compute.kernelRestarted") : ""))) : (t("toast.compute.installFailed", ((r.failed && r.failed[0] && r.failed[0].error) || t("toast.compute.installSeeLogs"))))); if (r.ok) S._envSnapById = {}; custTab("compute"); } catch (e) { hint(t("toast.compute.installFailed", e.message), true); } btn.disabled = false; btn.textContent = t("cust.compute.installBtn"); }; dsc.appendChild(inp); dsc.appendChild(btn); info.appendChild(dsc); ins.appendChild(info); c.appendChild(ins); await renderJobs(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
 async function renderJobs(c) {
   c.appendChild(hdr(t("cust.jobs.title"), t("cust.jobs.desc")));
   const sub = el("div", "cust-row"); const si = el("div", "info"); si.appendChild(el("div", "nm", t("cust.jobs.submitName")));
