@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from openai4s import pkgscan
 from openai4s.config import Config, LLMConfig
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import environments as E
@@ -60,6 +61,77 @@ def test_base_env_always_present():
 
 def test_default_env_name_is_offered():
     assert E.default_env_name() in {e.name for e in E.discover_environments(force=True)}
+
+
+def test_conda_base_prefix_discovers_its_envs_not_the_base_parent(
+    tmp_path, monkeypatch
+):
+    conda_base = tmp_path / "portable-conda"
+    (conda_base / "bin").mkdir(parents=True)
+    (conda_base / "bin" / "python").symlink_to(sys.executable)
+    expected = _make_py_env(conda_base / "envs", "torch", packages=("pandas", "torch"))
+    monkeypatch.delenv("OPENAI4S_ENV_ROOTS", raising=False)
+    monkeypatch.delenv("CONDA_ENVS_PATH", raising=False)
+    monkeypatch.delenv("MAMBA_ROOT_PREFIX", raising=False)
+    monkeypatch.setenv("CONDA_PREFIX", str(conda_base))
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "base")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(E.sys, "base_prefix", str(tmp_path / "system-python"))
+
+    envs = E.discover_environments(force=True)
+
+    assert E.get_environment("torch").root == expected
+    assert conda_base.name not in {environment.name for environment in envs}
+
+
+def test_activated_named_conda_prefix_discovers_sibling_envs(tmp_path, monkeypatch):
+    envs_root = tmp_path / "portable-conda" / "envs"
+    active = _make_py_env(envs_root, "active")
+    expected = _make_py_env(envs_root, "analysis", packages=("numpy", "pandas"))
+    monkeypatch.delenv("OPENAI4S_ENV_ROOTS", raising=False)
+    monkeypatch.delenv("CONDA_ENVS_PATH", raising=False)
+    monkeypatch.delenv("MAMBA_ROOT_PREFIX", raising=False)
+    monkeypatch.setenv("CONDA_PREFIX", str(active))
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "active")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(E.sys, "base_prefix", str(tmp_path / "system-python"))
+
+    E.discover_environments(force=True)
+
+    assert E.get_environment("active").root == active
+    assert E.get_environment("analysis").root == expected
+
+
+def test_daemon_venv_base_prefix_discovers_conda_envs_without_activation(
+    tmp_path, monkeypatch
+):
+    conda_base = tmp_path / "portable-conda"
+    expected = _make_py_env(conda_base / "envs", "science", packages=("pandas",))
+    monkeypatch.delenv("OPENAI4S_ENV_ROOTS", raising=False)
+    monkeypatch.delenv("CONDA_ENVS_PATH", raising=False)
+    monkeypatch.delenv("MAMBA_ROOT_PREFIX", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(E.sys, "base_prefix", str(conda_base))
+
+    E.discover_environments(force=True)
+
+    assert E.get_environment("science").root == expected
+
+
+def test_package_scan_is_bounded_to_site_packages(tmp_path):
+    env = tmp_path / "env"
+    installed = env / "lib" / "python3.13" / "site-packages" / "demo-1.dist-info"
+    installed.mkdir(parents=True)
+    (installed / "METADATA").write_text("Name: demo\nVersion: 1\n", "utf-8")
+    unrelated = env / "lib" / "native" / "cache" / "ghost-1.dist-info"
+    unrelated.mkdir(parents=True)
+    (unrelated / "METADATA").write_text("Name: ghost\nVersion: 1\n", "utf-8")
+
+    packages = pkgscan.collect_packages(env, language="python")
+
+    assert "demo" in packages
+    assert "ghost" not in packages
 
 
 def test_discover_fake_python_env(tmp_path, monkeypatch):

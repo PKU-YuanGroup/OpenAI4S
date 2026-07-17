@@ -124,17 +124,19 @@ def _collect_pip(root: Path, requested_only: bool = False) -> set[str]:
     not the full transitive closure.
     """
     out: set[str] = set()
-    # site-packages can live at a few standard spots inside a venv/conda env
+    # Search only actual site-packages directories. Recursing from ``lib/``
+    # walks large native toolchains, model caches and R libraries in scientific
+    # Conda envs, turning a simple environment listing into a minutes-long scan.
     candidates = [
-        root / "lib",
-        root / "lib64",
-        root / "Lib",  # windows-style, harmless if absent
+        *sorted((root / "lib").glob("python*/site-packages")),
+        *sorted((root / "lib64").glob("python*/site-packages")),
+        root / "Lib" / "site-packages",  # Windows-style, harmless if absent
     ]
     seen_infos: set[Path] = set()
     for base in candidates:
         if not base.is_dir():
             continue
-        for info in base.rglob("*.dist-info"):
+        for info in base.glob("*.dist-info"):
             if info in seen_infos:
                 continue
             seen_infos.add(info)
