@@ -1,0 +1,30 @@
+[
+    {
+        "question": "Sedate the pig with midazolam (____ mg/kg, i.m.) and atropine (0.04 mg/kg, i.m.).",
+        "answer": "0.3",
+        "choices": [
+            "0.2",
+            "0.3",
+            "0.5",
+            "0.1",
+            "0.4"
+        ],
+        "type": "parameter",
+        "id": "TEST-PQA-000000",
+        "generated_response": "<think>This is a simulated reasoning process.</think> Based on standard protocols, the answer is [ANSWER_START] 0.3 & 95 [ANSWER_END]"
+    },
+    {
+        "question": "Dissolve tacrolimus tablets in hot water to create a ____ mg/mL solution.",
+        "answer": "25",
+        "choices": [
+            "10",
+            "15",
+            "25",
+            "30",
+            "20"
+        ],
+        "type": "reagent",
+        "id": "TEST-PQA-000001",
+        "generated_response": "<think>Simulating another thought process.</think> The concentration should be [ANSWER_START] 25 & 80 [ANSWER_END]"
+    }
+]
