@@ -97,6 +97,82 @@ try {
     }
   }
 
+  // --- browser data boundary ------------------------------------------------
+  // The UI renders strings this process did not author: markdown from the
+  // model, tracebacks from the kernel, a remote host's label, and a GPU name
+  // that is literally `nvidia-smi` stdout. None may become executable markup.
+  // These samples are the ones the improvement proposal named (malicious link,
+  // image, attribute, remote hostname, GPU name); they run against the real
+  // app functions so a regression in renderMd/escaping fails CI rather than a
+  // browser somewhere.
+  const securityHeaders = response.headers();
+  for (const [header, expected] of [
+    ["content-security-policy", "default-src 'self'"],
+    ["x-content-type-options", "nosniff"],
+  ]) {
+    if (!(securityHeaders[header] || "").includes(expected)) {
+      throw new Error(`response missing hardened header ${header}: ${expected}`);
+    }
+  }
+  // script-src must never carry 'unsafe-inline' (style-src legitimately does):
+  // that concession is what would make the whole policy decorative against the
+  // injection it exists to stop.
+  const scriptSrc = (securityHeaders["content-security-policy"] || "")
+    .split(";").map((s) => s.trim()).find((s) => s.startsWith("script-src")) || "";
+  if (scriptSrc.includes("'unsafe-inline'")) {
+    throw new Error("CSP script-src must not allow 'unsafe-inline'");
+  }
+
+  const boundary = await page.evaluate(() => {
+    const out = { executed: [], scriptTags: 0, imgTags: 0, missing: [] };
+    window.__xssProbe = () => out.executed.push("fired");
+    const host = document.createElement("div");
+    host.style.display = "none";
+    document.body.appendChild(host);
+
+    const attacks = [
+      "before <script>window.__xssProbe()<\/script> after",
+      "text <img src=x onerror=\"window.__xssProbe()\"> text",
+      "<div onclick=\"window.__xssProbe()\">x</div>",
+      "[link](javascript:window.__xssProbe())",
+      "<svg onload=\"window.__xssProbe()\"></svg>",
+    ];
+    if (typeof renderMd !== "function") { out.missing.push("renderMd"); }
+    else {
+      for (const md of attacks) {
+        const d = document.createElement("div");
+        host.appendChild(d);
+        d.innerHTML = renderMd(md);
+      }
+    }
+    if (typeof highlightTraceback === "function") {
+      const pre = document.createElement("pre");
+      host.appendChild(pre);
+      pre.innerHTML = highlightTraceback(
+        'File "<img src=x onerror=\"window.__xssProbe()\">", line 1\n'
+        + 'Error: <script>window.__xssProbe()<\/script>',
+      );
+    }
+    out.scriptTags = host.querySelectorAll("script").length;
+    out.imgTags = host.querySelectorAll("img").length;
+    return out;
+  });
+  // A brief tick so any onerror/onload that WAS going to fire has fired.
+  await page.waitForTimeout(300);
+  const executed = await page.evaluate(() => window.__xssProbe && document.querySelectorAll("script").length);
+  if (boundary.missing.length) {
+    throw new Error(`XSS probe could not reach: ${boundary.missing.join(", ")}`);
+  }
+  if (boundary.executed.length) {
+    throw new Error(`hostile markup executed in renderMd/traceback: ${boundary.executed.join(", ")}`);
+  }
+  if (boundary.scriptTags || boundary.imgTags) {
+    throw new Error(
+      `hostile markup became live nodes (script=${boundary.scriptTags} img=${boundary.imgTags}) — `
+      + "escaping regressed",
+    );
+  }
+
   const projects = await api("/projects");
   if (!Array.isArray(projects.projects)) {
     throw new Error("projects API did not return a projects array");
