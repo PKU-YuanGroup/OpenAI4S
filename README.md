@@ -95,7 +95,7 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 - **🔌 One-line multi-provider** — `ark` (doubao · glm · kimi · deepseek · minimax) plus official `chatgpt · claude · gemini`, behind a single `host.llm`; switch from the UI.
 - **🖥️ Scientific workbench** — live streaming, versioned artifacts, provenance, an Action Timeline surface, and a **read-only-by-default Notebook**. An explicit developer flag enables multiline Python/R input against the shared kernels.
 - **🔐 Hardened local execution** — strict child-environment allowlists, durable approvals, one-shot generation-bound `host.bash` capabilities, and OS sandbox adapters (Seatbelt on macOS, bubblewrap on Linux) with visible degraded/fail-closed modes.
-- **🔬 33 bundled Skills** — GPU/model science Skills (AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock …) + research-workflow Skills. Skills are **recipes of code**, not JSON schemas; user-authored Skills stay under the data directory and cannot shadow bundled trust.
+- **🔬 34 bundled Skills** — GPU/model science Skills (AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock …) + research-workflow Skills. Skills are **recipes of code**, not JSON schemas; user-authored Skills stay under the data directory and cannot shadow bundled trust.
 - **☁️ BYOC remote compute** — with a configured, reachable provider, dispatch GPU jobs via `ssh:<alias>` or the bundled **NVIDIA NIM** integration. General remote compute remains a Prototype surface; `host.fold` uses a strict no-fabrication policy.
 
 ---
@@ -162,7 +162,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 | [**Startup guide**](docs/startup-guide.md) | macOS `.dmg` walkthrough: install, Gatekeeper, and configuring the model + Tavily search keys |
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
-| [**Skills**](docs/skills.md) | the 33 bundled Skills + how to write your own |
+| [**Skills**](docs/skills.md) | the 34 bundled Skills + how to write your own |
 | [**Remote compute**](docs/compute.md) | BYOC GPU jobs, `host.fold`, auto-provisioning |
 | [**Web app**](docs/webapp.md) | UI features, Action Timeline, read-only Notebook, artifacts, and implementation status |
 | [**Jupyter adapter**](docs/jupyter.md) | optional standalone Python/R KernelSpecs, install commands, and compatibility limits |
