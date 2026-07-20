@@ -422,6 +422,8 @@ m.frame_id`.
 | `branch_created` | `branch_id`, `from_checkpoint_id` | A checkpoint-backed branch committed. |
 | `branch_revert_conflict` | `branch_id`, `operation_id`, `target_checkpoint_id`, `reason` | Revert was recorded but not applied because the conflict check failed. |
 | `branch_reverted` | `branch_id`, `operation_id`, `target_checkpoint_id`, `checkpoint_id`, `undo_checkpoint_id`, `ok`, `requires_kernel_recovery` | Revert committed append-only state; clients must refresh branch/recovery projections. Full previews/checkpoint records stay in the direct REST result and never enter WebSocket. |
+| `branch_projection_restored` | `frame_id`, `branch_id`, `checkpoint_id` | The branch-scoped projection was rebuilt (for example after a Revert); clients holding a stale message/Notebook view must refetch it rather than patch. |
+| `branch_activation_state` | `frame_id`, `root_frame_id`, `branch_id`, `checkpoint_id`, `status`/`state` | Activation of a branch runtime progressed. `status` and `state` carry the same value — a compatibility duplication kept because both spellings are already consumed. |
 | `artifact_created` | **non-uniform — see below** | An artifact was produced, edited, renamed, uploaded, restored, or deleted. |
 | `pong` | — | Reply to JSON ping. |
 
