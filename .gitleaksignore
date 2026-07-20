@@ -6,3 +6,10 @@
 576207dc278bd00253433f172700d61709e1162b:README.md:generic-api-key:190
 df92eb25a1c69bd9c616a470aabaa2212b5fd8a7:docs/refactor-plan.md:generic-api-key:271
 f35863d9dee282772ae0dd420c1364ebf413afa5:tests/test_compute_nvidia.py:generic-api-key:87
+# Synthetic canaries in redaction tests, not credentials. They are deliberately
+# credential-shaped because the redaction they exercise keys on entropy and
+# shape — an obviously-fake string would make those tests pass for the wrong
+# reason. Suppressed by fingerprint rather than by widening a path rule, so a
+# real leak in the same file would still be caught.
+a4b1e49ba48653c811cd8cd6a3a29e84bc5ab9fd:tests/test_diagnostics.py:generic-api-key:33
+a44f5c7f58eae1f0c9cff643249ec89caeb1ccdf:tests/test_observability.py:generic-api-key:27

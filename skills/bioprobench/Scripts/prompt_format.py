@@ -2,7 +2,7 @@ def generate_user_prompt(sample, task_name):
     """
     Generate a prompt for the given sample and task.
     """
-    if task_name == 'PQA':
+    if task_name == "PQA":
         prompt = f"""
 You will be given a multiple-choice question related to a biological protocol. The blank in the question (represented as '____') indicates where the correct choice should be filled in.
 
@@ -21,7 +21,7 @@ Your task:
 - The format of your response must be:
 [ANSWER_START]your selected choice & your confidence score[ANSWER_END]
 """
-    elif task_name == 'ORD':
+    elif task_name == "ORD":
         prompt = f"""
 {sample['question']}
 The steps are:
@@ -32,11 +32,11 @@ The steps are:
 - The format of your response must be:
 [ANSWER_START]a list of the original indices[ANSWER_END]
 """
-    elif task_name == 'ERR':
-        if sample['is_correct']:
-            step=sample['corrected_text']
+    elif task_name == "ERR":
+        if sample["is_correct"]:
+            step = sample["corrected_text"]
         else:
-            step=sample['corrupted_text']
+            step = sample["corrupted_text"]
         prompt = f"""Determine whether the following target step in a protocol is True or False:
 {step}
 
@@ -50,11 +50,11 @@ Please carefully evaluate if the step is logically consistent, necessary, and ac
 - The format of your response must be:
 [ANSWER_START]True or False[ANSWER_END]
 """
-    elif task_name == 'REA-ERR':
-        if sample['is_correct']:
-            step=sample['corrected_text']
+    elif task_name == "REA-ERR":
+        if sample["is_correct"]:
+            step = sample["corrected_text"]
         else:
-            step=sample['corrupted_text']
+            step = sample["corrupted_text"]
         prompt = f"""Evaluate the validity of the following target step in a protocol. Follow the detailed reasoning process demonstrated in the example below to identify potential errors across Operation, Reagent, and Parameter categories, with meticulous attention to numerical values and their consistency with the provided context and typical practices.
 
 ---
@@ -100,14 +100,14 @@ Only evaluate the correctness of the information explicitly present in the targe
 The format of your final answer must be:
 [ANSWER_START]True or False[ANSWER_END]
 """
-    elif task_name == 'GEN':
+    elif task_name == "GEN":
         prompt = f"""{sample['system_prompt']}
 {sample['instruction']}
 Format requirements:
 - Each step must be on a separate line.
 
 {sample['input']}"""
-    elif task_name == 'REA-GEN':
+    elif task_name == "REA-GEN":
         prompt = f"""{sample['system_prompt']}
 {sample['instruction']}
 
@@ -136,5 +136,5 @@ Format requirements for the final output steps (which must be placed *between* t
 {sample['input']}"""
     else:
         raise ValueError(f"Unsupported task name: {task_name}")
-    
+
     return prompt
