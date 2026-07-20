@@ -3,7 +3,17 @@ import json
 import re
 import ast
 import os
+import sys
 from itertools import combinations
+
+# ==========================================
+# 0. Dynamic Script Mounting
+# ==========================================
+# Mount the script directory so we can dynamically load original scripts
+current_dir = os.path.dirname(os.path.abspath(__file__))
+script_dir = os.path.join(current_dir, "script")
+if os.path.exists(script_dir) and script_dir not in sys.path:
+    sys.path.append(script_dir)
 
 # ==========================================
 # 1. Strict Dependency Guard (OpenAI4S Rule)
@@ -254,18 +264,11 @@ def evaluate_predictions(output_file_path):
 
 
 # ==========================================
-# 4. Agent Entry Point
+# 4. Agent Evaluation Entry Point
 # ==========================================
 def run_bioprobench_eval(task_name: str, response_file_path: str):
     """
     Main entry point for OpenAI4S agents to evaluate model responses against BioProBench.
-    
-    Args:
-        task_name (str): One of 'PQA', 'ORD', 'ERR', 'GEN', 'REA-ERR'.
-        response_file_path (str): The absolute path to the generated JSON responses.
-    
-    Returns:
-        dict: A dictionary containing the metrics for the specified task.
     """
     if not os.path.exists(response_file_path):
         return {"error": f"File not found: {response_file_path}"}
@@ -290,3 +293,79 @@ def run_bioprobench_eval(task_name: str, response_file_path: str):
         }
     except Exception as e:
         return {"error": f"Evaluation failed during execution: {str(e)}"}
+
+# ==========================================
+# 5. Agent Inference & Script Bridging
+# ==========================================
+def _load_script(module_name: str, file_name: str):
+    """Dynamically load script files to bypass Python's import hyphen restrictions."""
+    import importlib.util
+    file_path = os.path.join(script_dir, file_name)
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Original script {file_name} not found in {script_dir}")
+    
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+def get_task_prompt(sample: dict, task_name: str) -> str:
+    """Agent interface to fetch the standardized prompt for a specific sample."""
+    try:
+        prompt_format = _load_script("prompt_format", "prompt_format.py")
+        return prompt_format.generate_user_prompt(sample, task_name)
+    except Exception as e:
+        return f"Error loading prompt format: {e}"
+
+def run_llm_judge_evaluation(sample: dict, api_key: str, base_url: str = "https://api.deepseek.com", model_name: str = "deepseek-chat") -> str:
+    """Agent interface for dynamic LLM Judge evaluation."""
+    try:
+        from openai import OpenAI
+        llm_judge = _load_script("llm_judge", "LLM-as-a-judge_for_REA-ERR.py")
+        
+        # Safely override the global client initialized in the script with the real Agent credentials
+        llm_judge.client = OpenAI(api_key=api_key, base_url=base_url)
+        
+        prompt = llm_judge.generate_user_prompt(sample)
+        judgment = llm_judge.generate_response(prompt, model_name)
+        return judgment
+    except ImportError:
+        return "Error: The 'openai' package is required to run the LLM Judge."
+    except Exception as e:
+        return f"Error during LLM Judge execution: {e}"
+
+def trigger_batch_inference(task_name: str, test_file_path: str, mode: str = "API", model_name: str = "o3-mini", api_key: str = None) -> dict:
+    """Agent interface to trigger full dataset batch inference."""
+    try:
+        if mode == "API":
+            if not api_key:
+                return {"error": "API mode requires an api_key provided securely by the agent."}
+            from openai import OpenAI
+            api_inf = _load_script("api_inf", "generate_response.py")
+            
+            # Dynamically override the script's global configs
+            api_inf.API_KEY = api_key
+            api_inf.MODEL_NAME = model_name
+            api_inf.TASK_NAME = task_name
+            api_inf.TEST_FILE_PATH = test_file_path
+            api_inf.OUTPUT_FILE = f"{task_name}_test_{model_name}_api.json"
+            api_inf.client = OpenAI(api_key=api_key, base_url=api_inf.BASE_URL)
+            
+            api_inf.main()
+            return {"status": "success", "message": f"API batch inference for {task_name} completed. Saved to {api_inf.OUTPUT_FILE}."}
+            
+        elif mode == "Local":
+            local_inf = _load_script("local_inf", "generate_response_local.py")
+            
+            # Dynamically override the script's global configs
+            local_inf.MODEL_NAME = model_name
+            local_inf.TASK_NAME = task_name
+            local_inf.TEST_FILE_PATH = test_file_path
+            local_inf.OUTPUT_FILE = f"{task_name}_test_{model_name}_local.json"
+            
+            local_inf.main()
+            return {"status": "success", "message": f"Local batch inference for {task_name} completed. Saved to {local_inf.OUTPUT_FILE}."}
+        else:
+            return {"error": "Unknown mode. Choose 'API' or 'Local'."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
