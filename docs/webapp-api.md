@@ -30,6 +30,23 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
   consumers at the time of the cut.
 - The frontend builds every request from a single `API` constant in `app.js`,
   so a future version bump is one line there plus `_API_ROOT` in the gateway.
+- **Every error response is `{"error": <message>, "code": <stable>, "status":
+  <int>, "request_id": <id|null>}`**, plus any route-specific diagnostic fields.
+  `code` is the machine-readable contract; `error` remains the human message and
+  is unchanged, so the enrichment is additive. Match on `code`, never on prose —
+  the message wording is not an interface and will be improved.
+  Status is too coarse to branch on alone: four distinct 400s
+  (`malformed_json`, `invalid_body_type`, `invalid_cursor`, `invalid_limit`)
+  need telling apart, and a client retrying `invalid_cursor` the way it retries
+  a transient failure would loop on a request that can never succeed.
+  `request_id` matches the `X-Request-Id` response header and the correlation id
+  in the structured log line, so one id ties a user report to a server event.
+- **Success bodies are not wrapped in a `{data: …}` envelope.** Considered and
+  declined: it would churn every route and every consumer to relocate
+  information that is already unambiguous, and a half-finished reshape presents
+  as a silently broken screen rather than a failing test. What the contract
+  needs from the success side is a documented, stable shape per route, which the
+  route/event inventory test enforces.
 - **WebSocket events carry a monotonic `seq` per root frame.** A client resumes
   with `{"type":"view_session","root_frame_id":…,"since_seq":N}` and receives
   only events after `N`; `replay_begin` reports `from_seq`/`to_seq` and

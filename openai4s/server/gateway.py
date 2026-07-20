@@ -140,6 +140,31 @@ _WATCHDOG_INTERRUPT_GRACE_S = 10.0
 _WATCHDOG_KILL_GRACE_S = 10.0
 
 
+# Stable, machine-readable error codes. A client that has to match on English
+# prose is coupled to wording nobody thinks of as an interface, so it breaks the
+# first time a message is improved. Status alone is too coarse: several distinct
+# failures share 400, and a client retrying "invalid cursor" the way it retries
+# "rate limited" is a bug the contract should prevent.
+_ERROR_CODES = {
+    400: "bad_request",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    413: "payload_too_large",
+    422: "unprocessable",
+    423: "locked",
+    429: "rate_limited",
+    500: "internal_error",
+    503: "unavailable",
+}
+
+
+def _error_code_for(status: int) -> str:
+    return _ERROR_CODES.get(int(status), "error" if status < 500 else "internal_error")
+
+
 def _encode_frame_cursor(created_at: int, frame_id: str) -> str:
     """Opaque cursor. Opaque on purpose: a client that parses it becomes
     coupled to the sort key, and the key could not then be changed without
@@ -162,7 +187,7 @@ def _decode_frame_cursor(value: str | None) -> tuple[int, str] | None:
     except Exception as e:  # noqa: BLE001
         # A cursor we cannot read must not silently become "start from the
         # beginning" — the client would loop over page one forever.
-        raise GatewayError(400, f"invalid cursor: {e}")
+        raise GatewayError(400, f"invalid cursor: {e}", "invalid_cursor")
 
 
 _API_ROOT = "/api/v1"
@@ -5617,10 +5642,16 @@ def _environment_snapshot() -> dict:
 #  HTTP + WS request handler
 # --------------------------------------------------------------------------- #
 class GatewayError(Exception):
-    def __init__(self, code: int, message: str):
+    """An HTTP failure with a status, a human message, and an optional stable
+    machine code. ``error_code`` overrides the status-derived default when a
+    single status covers genuinely different failures a client must tell
+    apart."""
+
+    def __init__(self, code: int, message: str, error_code: str | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.error_code = error_code
 
 
 def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
@@ -5747,6 +5778,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self.wfile.write(body)
 
         def _json(self, obj, code: int = 200) -> None:
+            # Every error response carries a stable `code` and the request's
+            # correlation id, enriched here rather than at ~29 call sites so a
+            # new route cannot forget. Deliberately ADDITIVE: `error` keeps the
+            # human message it always had, so existing clients (including this
+            # repo's own app.js, which reads `j.error`) are unaffected. Wrapping
+            # SUCCESS bodies in a `{data: …}` envelope was considered and not
+            # done — it would churn every route and every consumer to relocate
+            # information that is already unambiguous, and the failure mode of
+            # getting it half-done is a silently broken screen.
+            if code >= 400 and isinstance(obj, dict) and "error" in obj:
+                obj = {
+                    **obj,
+                    "code": obj.get("code") or _error_code_for(code),
+                    "status": code,
+                    "request_id": getattr(self, "_correlation_id", "") or None,
+                }
             self._send(
                 code,
                 json.dumps(obj, ensure_ascii=False).encode("utf-8"),
@@ -5846,7 +5893,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             try:
                 parsed = json.loads(payload)
             except (ValueError, TypeError) as e:
-                raise GatewayError(400, f"request body is not valid JSON: {e}") from e
+                raise GatewayError(
+                    400, f"request body is not valid JSON: {e}", "malformed_json"
+                ) from e
             if not isinstance(parsed, dict):
                 # `[1,2]` parses fine and then AttributeErrors on the first
                 # .get() — a 500 for what is squarely a client error.
@@ -5854,6 +5903,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     400,
                     f"request body must be a JSON object, got "
                     f"{type(parsed).__name__}",
+                    "invalid_body_type",
                 )
             return parsed
 
@@ -6113,7 +6163,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json({"error": "not found"}, 404)
             except GatewayError as ge:
                 try:
-                    self._json({"error": ge.message}, ge.code)
+                    payload = {"error": ge.message}
+                    if ge.error_code:
+                        payload["code"] = ge.error_code
+                    self._json(payload, ge.code)
                 except (BrokenPipeError, ConnectionResetError):
                     self.close_connection = True
             except (BrokenPipeError, ConnectionResetError):
@@ -6564,7 +6617,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     try:
                         limit = max(1, min(200, int((q.get("limit") or ["100"])[0])))
                     except (TypeError, ValueError):
-                        raise GatewayError(400, "limit must be an integer")
+                        raise GatewayError(
+                            400, "limit must be an integer", "invalid_limit"
+                        )
                     cursor = _decode_frame_cursor((q.get("cursor") or [None])[0])
                     running = runner.running_frames()  # scan jobs ONCE, not per row
 

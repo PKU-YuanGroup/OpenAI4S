@@ -1992,7 +1992,15 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
     handler._api("GET", "/artifacts/no-such-ident")
     code, body, ctype = sends[-1]
     assert code == 404
-    assert json.loads(body) == {"error": "artifact not found"}
+    envelope = json.loads(body)
+    assert envelope["error"] == "artifact not found"
+    # Contract v1 enriches every error with a stable machine code and the
+    # request's correlation id. `request_id` is null here because this test
+    # drives _api directly, so no request scope was ever entered — the honest
+    # answer rather than a fabricated id.
+    assert envelope["code"] == "not_found"
+    assert envelope["status"] == 404
+    assert envelope["request_id"] is None
     assert ctype.startswith("application/json")
 
 
