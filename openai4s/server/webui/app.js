@@ -1,5 +1,5 @@
 "use strict";
-// OpenAI4S UI — aligned to Claude Science (dashboard + conversation), over /api + /api/ws.
+// OpenAI4S UI — aligned to Claude Science (dashboard + conversation), over /api/v1 + /api/v1/ws.
 const $ = (s) => document.querySelector(s);
 const el = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
 const esc = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -77,12 +77,16 @@ const icon = (name, size, cls) => `<svg class="ic-svg${cls ? " " + cls : ""}" wi
 const iconEl = (name, size, cls) => { const s = el("span", "ic"); s.innerHTML = icon(name, size, cls); return s.firstChild; };
 function paintIcons(root) { (root || document).querySelectorAll("[data-icon]").forEach(e => { if (e._painted) return; e.innerHTML = icon(e.dataset.icon, +e.dataset.iconSize || 16); e._painted = true; }); }
 function setTitle(name) { const ct = $("#conv-title"); if (!ct) return; ct.value = name || t("conv.title.default"); ct.size = Math.max(6, Math.min(40, (name || t("conv.title.default")).length + 1)); }
+// The versioned API root. Contract v1 is the frozen surface; a future version
+// bump is this one line plus a gateway prefix, not a sweep through the file.
+const API = "/api/v1";
+
 const api = async (p, o = {}) => {
   // `p` must be an internal, same-origin API path: a single leading slash and no
   // scheme/host. Rejecting "//host" (protocol-relative) and non-string input keeps
   // an untrusted id interpolated into `p` from redirecting the request off-origin.
   if (typeof p !== "string" || p[0] !== "/" || p[1] === "/") throw new Error("invalid api path");
-  const r = await fetch("/api" + p, { headers: { "content-type": "application/json" }, ...o });
+  const r = await fetch(API + p, { headers: { "content-type": "application/json" }, ...o });
   const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch { j = t; }
   if (!r.ok) throw new Error((j && (j.error || j.detail)) || ("HTTP " + r.status)); return j;
 };
@@ -2773,7 +2777,7 @@ function renderActionTimeline() {
 
 /* ---------- WebSocket ---------- */
 function connectWS() {
-  const ws = new WebSocket((location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/api/ws");
+  const ws = new WebSocket((location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + API + "/ws");
   S.ws = ws;
   ws.onopen = () => { conn(true); if (S.currentId) sub(S.currentId); };
   ws.onclose = () => { conn(false); setTimeout(connectWS, 1500); };
@@ -3805,7 +3809,7 @@ function renderProjMenu() {
     if (current) item(t("proj.menu.settings"), "settings", () => openProjectModal(current));
     item(t("projectResearch.menu"), "provenance", () => openProjectResearchView("timeline"));
     item(t("sessionPackage.import"), "cloud-upload", chooseSessionPackage);
-    item(t("proj.menu.downloadArtifacts"), "download", () => downloadArtifactBundle(`/api/projects/${encodeURIComponent(S.project)}/artifacts.zip`, `${projName(S.project)}-artifacts.zip`));
+    item(t("proj.menu.downloadArtifacts"), "download", () => downloadArtifactBundle(`${API}/projects/${encodeURIComponent(S.project)}/artifacts.zip`, `${projName(S.project)}-artifacts.zip`));
     m.appendChild(el("div", "ctx-sep"));
   }
   item(t("proj.menu.allProjects"), "arrow-left", showDashboard);
@@ -4154,7 +4158,7 @@ function sessionMenu(anchor, fid) {
   items.push(
     { label: t("sessionMenu.exportMarkdown"), icon: "download", onClick: () => exportSession(fid) },
     { label: t("sessionPackage.export"), icon: "archive", onClick: () => exportSessionPackage(fid, frame) },
-    { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`/api/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
+    { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`${API}/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
     { label: t("sessionMenu.viewNotebook"), icon: "notebook", onClick: async () => { if (fid !== S.currentId) await openConversation(fid, frame.project_id); setActiveTab("notebook"); } },
     { sep: true },
     { label: t("sessionMenu.duplicate"), icon: "copy", onClick: () => duplicateSession(fid) },
@@ -4166,7 +4170,7 @@ function sessionMenu(anchor, fid) {
 function exportSessionPackage(fid, frame = {}) {
   const label = frame.name || frame.task_summary || "session";
   downloadArtifactBundle(
-    `/api/frames/${encodeURIComponent(fid)}/session/export`,
+    `${API}/frames/${encodeURIComponent(fid)}/session/export`,
     label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip",
   );
 }
@@ -4178,7 +4182,7 @@ async function importSessionPackage(file) {
   if (!file) return;
   if (file.size > 128 * 1024 * 1024) { hint(t("sessionPackage.tooLarge"), true); return; }
   try {
-    const response = await fetch("/api/sessions/import", {
+    const response = await fetch(API + "/sessions/import", {
       method: "POST",
       headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
       body: file,
@@ -4629,7 +4633,7 @@ function renderFilesGrid() {
 function tileThumbBig(a) { const t = tileThumb(a); t.className = "a-thumb"; return t; }
 
 /* Shared artifact body renderer (used by dock Viewer + fullscreen modal). */
-function artUrl(a) { const b = (S._artBust || {})[a.id]; return `/api/artifacts/${a.id}` + (b ? `?_=${b}` : ""); }
+function artUrl(a) { const b = (S._artBust || {})[a.id]; return `${API}/artifacts/${a.id}` + (b ? `?_=${b}` : ""); }
 function scientificRenderers() { return window.OpenAI4SScientificRenderers || null; }
 function artifactRendererVersion(a) { return a && (a.version_id || a.latest_version_id) || ""; }
 function loadRendererCatalog() {
@@ -5200,7 +5204,7 @@ function toggleAnnotList(anchor) {
 /* Fullscreen: center modal. */
 function openArtifact(a) {
   $("#modal-title").textContent = a.filename || t("modal.title.preview");
-  const dl = $("#modal-download"); dl.style.display = ""; dl.href = `/api/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact");
+  const dl = $("#modal-download"); dl.style.display = ""; dl.href = `${API}/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact");
   renderArtifactBody($("#modal-body"), a);
   openModalEl($("#modal"));
 }
@@ -5217,7 +5221,7 @@ function renderViewer() {
   const menuBtn = ghostIconBtn("more-vertical", t("viewer.act.more")); menuBtn.onclick = () => artifactMenu(menuBtn, a);
   if (!S.provMode && isTextEditable(a)) { const editBtn = ghostIconBtn("pencil", t("common.edit")); editBtn.onclick = () => editArtifact(a); acts.appendChild(editBtn); }
   const maxBtn = ghostIconBtn("maximize-2", t("viewer.act.fullscreen")); maxBtn.onclick = () => openArtifact(a);
-  const dl = el("a", "icon-ghost"); dl.innerHTML = icon("download", 16); dl.href = `/api/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact"); dl.title = t("common.download");
+  const dl = el("a", "icon-ghost"); dl.innerHTML = icon("download", 16); dl.href = `${API}/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact"); dl.title = t("common.download");
   const closeBtn = ghostIconBtn("x", t("common.close")); closeBtn.onclick = () => { if (S.provMode) { S.provMode = false; renderViewer(); } else closeTab(a.id); };
   acts.insertBefore(menuBtn, acts.firstChild); acts.appendChild(maxBtn); acts.appendChild(dl); acts.appendChild(closeBtn);
   head.appendChild(acts); v.appendChild(head);
@@ -5268,7 +5272,7 @@ function renderArtifactEditor(body, a) {
   ta.addEventListener("blur", () => setTimeout(() => { if (!ec.dead) edacClose(ec); }, 120));  // grace for popup mousedown
   ta.addEventListener("scroll", () => edacClose(ec));
   ta.addEventListener("click", () => edacClose(ec));  // click repositions the caret → dismiss
-  fetch(`/api/artifacts/${a.id}?_=${Date.now()}`).then(r => r.text()).then(t => { ta.value = t; ta.disabled = false; ta.focus(); }).catch(() => { ta.value = ""; ta.disabled = false; });
+  fetch(`${API}/artifacts/${a.id}?_=${Date.now()}`).then(r => r.text()).then(t => { ta.value = t; ta.disabled = false; ta.focus(); }).catch(() => { ta.value = ""; ta.disabled = false; });
   cancel.onclick = () => { S._editing = null; renderViewer(); };
   save.onclick = async () => {
     save.disabled = true; save.textContent = t("common.saving");
@@ -5289,7 +5293,7 @@ function artifactMenu(anchor, a) {
     { sep: true },
     { label: starred ? t("menu.unstar") : t("menu.star"), icon: "star", onClick: () => setArtPriority(a, starred ? 0 : 1) },
     { label: t("menu.hideFromList"), icon: "eye-off", onClick: () => setArtPriority(a, -1, true) },
-    { label: t("menu.copyLink"), icon: "link", onClick: () => { try { navigator.clipboard && navigator.clipboard.writeText(location.origin + "/api/artifacts/" + a.id); } catch {} hint(t("artifact.linkCopied")); } },
+    { label: t("menu.copyLink"), icon: "link", onClick: () => { try { navigator.clipboard && navigator.clipboard.writeText(location.origin + API + "/artifacts/" + a.id); } catch {} hint(t("artifact.linkCopied")); } },
     { label: t("common.edit"), icon: "pencil", onClick: () => { if (isTextEditable(a)) editArtifact(a); else hint(t("artifact.notEditable")); } },
     { label: t("folder.menu.rename"), icon: "pencil", onClick: () => renameArtifact(a) },
     { label: t("menu.exportMetadata"), icon: "file-text", onClick: () => exportMetadata(a) },
@@ -5332,7 +5336,7 @@ async function showVersions(a) {
       info.appendChild(el("div", "ver-meta", (bytes(v.size_bytes) || "") + " · " + ago(v.created_at)));
       row.appendChild(info);
       const acts = el("div", "ver-acts");
-      const view = el("a", "outline-btn small", t("common.view")); view.href = `/api/artifacts/${v.version_id}`; view.target = "_blank"; acts.appendChild(view);
+      const view = el("a", "outline-btn small", t("common.view")); view.href = `${API}/artifacts/${v.version_id}`; view.target = "_blank"; acts.appendChild(view);
       if (!v.is_latest) { const rb = el("button", "solid-btn small", t("versions.restore")); rb.onclick = async () => { rb.disabled = true; rb.textContent = t("versions.restoring"); try { const restored = await api(`/artifacts/${a.id}/versions/${v.version_id}/restore`, { method: "POST" }); syncArtifactVersion((restored && restored.artifact) || { id: a.id, version_id: v.version_id }, true); hint(t("versions.restored", v.ordinal)); (S._artBust = S._artBust || {})[a.id] = Date.now(); if (S.currentId) loadArtifacts(S.currentId); if (S.dockArtifact && S.dockArtifact.id === a.id) { if (S.provMode) showProvenance(S.dockArtifact); else renderViewer(); } render(); } catch (e) { rb.disabled = false; rb.textContent = t("versions.restore"); hint(t("versions.restore.err", e.message), true); } }; acts.appendChild(rb); }
       row.appendChild(acts); wrap.appendChild(row);
     });
@@ -5404,14 +5408,14 @@ function artUrlByName(fname) {
   if (!fname) return "";
   const base = String(fname).split("/").pop();
   const a = (S.artifacts || []).find(x => (x.filename || "") === fname || (x.filename || "").split("/").pop() === base);
-  return a ? artUrl(a) : `/api/artifacts/${encodeURIComponent(fname)}`;  // artUrl adds the version cache-bust
+  return a ? artUrl(a) : `${API}/artifacts/${encodeURIComponent(fname)}`;  // artUrl adds the version cache-bust
 }
 // Same, but cache-busted by the artifact's current version so an overwritten
 // table (re-run cell) refetches instead of serving the browser's stale copy.
 function artUrlBust(fname) {
   const base = String(fname).split("/").pop();
   const a = (S.artifacts || []).find(x => (x.filename || "") === fname || (x.filename || "").split("/").pop() === base);
-  return a ? artUrl(a) : `/api/artifacts/${encodeURIComponent(fname)}`;
+  return a ? artUrl(a) : `${API}/artifacts/${encodeURIComponent(fname)}`;
 }
 // Minimal RFC-4180-ish parser: handles quoted fields, "" escapes and CRLF.
 function parseDelimited(text, sep) {
@@ -5825,7 +5829,7 @@ function notebookExportLink(frameId) {
   const dl = el("a", "prov-dlbtn");
   dl.appendChild(iconEl("download", 14));
   dl.appendChild(el("span", null, t("prov.exec.downloadNotebook")));
-  dl.href = `/api/frames/${encodeURIComponent(frameId)}/notebook/export?language=bundle`;
+  dl.href = `${API}/frames/${encodeURIComponent(frameId)}/notebook/export?language=bundle`;
   dl.setAttribute("download", `${frameId}.notebooks.zip`);
   return dl;
 }

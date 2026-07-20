@@ -623,7 +623,7 @@ def test_session_package_export_import_is_visible_and_binary_safe() -> None:
     assert 'id="dash-import-session"' in INDEX_HTML
     assert 'id="session-package-input"' in INDEX_HTML
     assert "application/vnd.openai4s.session+zip" in INDEX_HTML
-    assert 'fetch("/api/sessions/import"' in importer
+    assert 'fetch(API + "/sessions/import"' in importer
     assert '"Content-Type": "application/vnd.openai4s.session+zip"' in importer
     assert "body: file" in importer
     assert "128 * 1024 * 1024" in importer

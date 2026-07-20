@@ -16,10 +16,20 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
 
 - Server: stdlib `http.server.BaseHTTPRequestHandler`, `HTTP/1.1`
   (`protocol_version = "HTTP/1.1"`), hand-rolled WebSocket upgrade on
-  `/api/ws`. Default bind `127.0.0.1:8760`.
-- REST lives under `/api/*`. The handler strips the `/api` prefix and matches
-  the remainder (`sub`) with a long `if`/`re.fullmatch` chain in
-  `Handler._api` — there is no route table or OpenAPI spec.
+  `/api/v1/ws`. Default bind `127.0.0.1:8760`.
+- **REST lives under `/api/v1/*` — contract v1.** The handler strips the
+  `/api/v1` prefix (`_API_ROOT`) and matches the remainder (`sub`) with a long
+  `if`/`re.fullmatch` chain in `Handler._api` — there is no route table or
+  OpenAPI spec yet.
+- **There is no un-versioned surface and no legacy alias.** Any path under
+  `/api/` that is not `/api/v1/` returns `404` with a JSON body naming
+  `api_root`. That is deliberate: falling through to the SPA shell would answer
+  `200 text/html` to an API call, which a client reads as success and then
+  fails to parse — a worse failure than a clear one. The un-versioned `/api/*`
+  surface was removed outright rather than aliased, because it had no external
+  consumers at the time of the cut.
+- The frontend builds every request from a single `API` constant in `app.js`,
+  so a future version bump is one line there plus `_API_ROOT` in the gateway.
 - The frontend is a single-page app served from the working tree
   (`/`, `/index.html`, `/static/*`). Any unknown non-API `GET` serves the SPA
   shell (`index.html`) to support deep links. Unknown non-GET, non-API paths
@@ -27,7 +37,7 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
 - All JSON responses are `application/json; charset=utf-8` with
   `Cache-Control: no-cache` and an explicit `Content-Length`.
 - Request bodies are JSON except the explicitly documented Session-package
-  import route, which consumes raw ZIP bytes. `Handler._body()` tolerates an empty or unparsable
+  import route, which consumes raw ZIP bytes. `Handler._body()` accepts an empty body but rejects an unparsable
   body by returning `{}` — a malformed JSON body is **silently treated as
   empty**, not rejected with 400.
 - Query strings are parsed with `parse_qs` (every value is a list;
@@ -36,7 +46,7 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
 ### Authentication and CSRF
 
 - **CSRF/origin guard:** every mutating request (`POST`/`PUT`/`PATCH`/`DELETE`)
-  to `/api/*` whose `Origin` header is present and whose netloc differs from
+  to `/api/v1/*` whose `Origin` header is present and whose netloc differs from
   the `Host` header is rejected with `403 {"error": "cross-origin request
   refused"}`. Requests without an `Origin` header (curl, same-origin fetches)
   pass.
@@ -88,7 +98,7 @@ Note the overlap on `GET /api/artifacts/…`: the specific matchers
 (`/lineage`, `/environment`, `/versions`, …) are tried first; the final
 `re.fullmatch(r"/artifacts/(.+)")` + GET catch-all serves bytes, and because
 it matches `.+` (slashes included) it also catches any otherwise-unmatched
-GET under `/api/artifacts/`.
+GET under `/api/v1/artifacts/`.
 
 ## 2. REST routes
 
@@ -105,7 +115,7 @@ success response body. Serializer shapes are in §4.
 | `GET /csrf` | `{"csrf_token":"local"}` (a stub; the real CSRF defense is the Origin check). |
 | `GET|POST|PUT|PATCH /config/llm` | GET → `{provider,model,base_url,has_api_key}`. Write → persists `provider`/`model`/`base_url`; `api_key` only overwrites when non-empty; `clear_api_key:true` empties it → `{"ok":true,"has_api_key"}`. The raw key is never returned. |
 | `GET /search?q=` | `{sessions:[{id,project_id,name,task_summary}], artifacts:[{id,filename,content_type,root_frame_id,project_id}]}`; empty `q` → empty lists. |
-| `GET /` (i.e. `/api` or `/api/`) | `{"service":"openai4s","ok":true}`. |
+| `GET /` (i.e. `/api` or `/api/v1/`) | `{"service":"openai4s","ok":true}`. |
 
 ### Models and model profiles
 
@@ -350,7 +360,7 @@ available through the query parameter.
 | `GET /preferences/builtin-allowlist` | `{"enabled","egress_mode","granted":[domains],"groups"}`. |
 | `GET|PUT|PATCH|POST /search/config` | Tavily key config; write accepts `{api_key}` or `{clear_api_key}`; always returns `{"endpoint":"https://api.tavily.com/search","api_key_configured":bool}` — the key itself is never echoed. |
 
-## 3. WebSocket contract (`/api/ws`)
+## 3. WebSocket contract (`/api/v1/ws`)
 
 Standard RFC-6455 upgrade (hand-rolled: `Sec-WebSocket-Accept` computed, no
 extensions/subprotocols). Messages both ways are JSON text frames. Protocol

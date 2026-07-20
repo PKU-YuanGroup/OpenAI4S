@@ -8,7 +8,7 @@ and SQLite store.
   * Static UI          GET /            GET /static/*
   * REST API           /api/*           (projects, frames, messages, artifacts,
                                           execution-log, lineage, models, skills…)
-  * WebSocket          GET /api/ws      (view_session/ping ; text_reset/text_chunk/
+  * WebSocket          GET /api/v1/ws   (view_session/ping ; text_reset/text_chunk/
                                           frame_update/artifact_created)
 
 Each user message runs the shared AgentEngine against a session-scoped control
@@ -138,6 +138,9 @@ os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure cap
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
 _WATCHDOG_INTERRUPT_GRACE_S = 10.0
 _WATCHDOG_KILL_GRACE_S = 10.0
+_API_ROOT = "/api/v1"
+_API_PREFIX = _API_ROOT + "/"
+_API_WS = _API_ROOT + "/ws"
 _MAX_JSON_BODY_BYTES = MAX_ARCHIVE_BYTES
 
 
@@ -5731,7 +5734,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             return payload
 
         def _prepare_request_body(self, path: str, method: str) -> None:
-            is_session_import = path == "/api/sessions/import" and method == "POST"
+            is_session_import = (
+                path == _API_ROOT + "/sessions/import" and method == "POST"
+            )
             self._read_request_body(
                 limit=MAX_ARCHIVE_BYTES if is_session_import else _MAX_JSON_BODY_BYTES,
                 too_large_message=(
@@ -5913,16 +5918,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # cross-origin writes; reject any mutating /api request whose Origin
                 # is not this same server. Same-origin app fetches + curl (no Origin)
                 # pass through.
-                # The /api/ws upgrade is a GET, but WebSocket handshakes are
+                # The /api/v1/ws upgrade is a GET, but WebSocket handshakes are
                 # exempt from CORS entirely and the socket accepts state-changing
                 # commands (cancel_execution) and streams session output plus
                 # pending approval prompts. Apply the same Origin==Host check so a
-                # foreign page cannot open ws://127.0.0.1:.../api/ws cross-origin.
+                # foreign page cannot open ws://127.0.0.1:.../api/v1/ws cross-origin.
                 # Browsers always send Origin on WS upgrades; non-browser clients
                 # send none and pass.
-                if path == "/api/ws" or (
+                if path == _API_WS or (
                     method in ("POST", "PUT", "PATCH", "DELETE")
-                    and path.startswith("/api/")
+                    and path.startswith(_API_PREFIX)
                 ):
                     origin = self.headers.get("Origin")
                     if origin:
@@ -5966,7 +5971,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         )
                         return
                 # websocket upgrade
-                if path == "/api/ws":
+                if path == _API_WS:
                     if method != "GET":
                         self.close_connection = True
                         raise GatewayError(405, "websocket upgrade requires GET")
@@ -5990,8 +5995,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # static / SPA shell
                 if method == "GET" and self._serve_static(path):
                     return
-                if path.startswith("/api/"):
-                    self._api(method, path[4:])  # strip "/api"
+                if path.startswith(_API_PREFIX):
+                    self._api(method, path[len(_API_ROOT) :])
+                    return
+                if path == "/api" or path.startswith("/api/"):
+                    # An un-versioned or wrong-version API path. Without this it
+                    # would fall through to the SPA shell below and answer 200
+                    # with HTML — a client would read that as success and then
+                    # fail parsing JSON, which is a worse failure than a clear
+                    # one. Say what happened and where the surface went.
+                    self._json(
+                        {
+                            "error": (
+                                f"the API is versioned; use {_API_ROOT} "
+                                f"(this daemon serves contract v1 only)"
+                            ),
+                            "path": path,
+                            "api_root": _API_ROOT,
+                        },
+                        404,
+                    )
                     return
                 if method == "GET" and path.startswith("/preview/"):
                     self._serve_artifact(

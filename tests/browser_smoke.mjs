@@ -17,7 +17,7 @@ const workbenchSockets = [];
 const workbenchEvents = [];
 page.on("pageerror", (error) => pageErrors.push(String(error)));
 page.on("websocket", (socket) => {
-  if (!/\/api\/ws(?:\?|$)/.test(socket.url())) return;
+  if (!/\/api\/v1\/ws(?:\?|$)/.test(socket.url())) return;
   workbenchSockets.push(socket.url());
   socket.on("framereceived", (frame) => {
     try {
@@ -29,7 +29,7 @@ page.on("websocket", (socket) => {
 });
 
 async function api(path, { method = "GET", data } = {}) {
-  const response = await page.request.fetch(new URL(`api${path}`, baseUrl).toString(), {
+  const response = await page.request.fetch(new URL(`api/v1${path}`, baseUrl).toString(), {
     method,
     data,
     headers: data === undefined ? undefined : { "Content-Type": "application/json" },
@@ -392,7 +392,7 @@ try {
   // Python service contract. A never-started session still exports a valid,
   // empty notebook with immutable digest metadata.
   const notebookResponse = await page.request.get(
-    new URL(`api/frames/${encodeURIComponent(frameId)}/notebook/export?language=python`, baseUrl).toString(),
+    new URL(`api/v1/frames/${encodeURIComponent(frameId)}/notebook/export?language=python`, baseUrl).toString(),
   );
   if (!notebookResponse.ok()) {
     throw new Error(`notebook export returned HTTP ${notebookResponse.status()}`);
@@ -578,7 +578,7 @@ try {
   // Session packages cross a real binary HTTP boundary. Import always creates
   // a new project/root and leaves it Ended/view-only until explicit recovery.
   const sessionExport = await page.request.get(
-    new URL(`api/frames/${encodeURIComponent(frameId)}/session/export`, baseUrl).toString(),
+    new URL(`api/v1/frames/${encodeURIComponent(frameId)}/session/export`, baseUrl).toString(),
   );
   if (!sessionExport.ok() ||
       !/application\/vnd\.openai4s\.session\+zip/.test(sessionExport.headers()["content-type"] || "") ||
@@ -587,7 +587,7 @@ try {
   }
   const sessionPackage = await sessionExport.body();
   const importResponse = await page.request.fetch(
-    new URL("api/sessions/import", baseUrl).toString(),
+    new URL("api/v1/sessions/import", baseUrl).toString(),
     {
       method: "POST",
       headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
