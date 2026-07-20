@@ -179,6 +179,7 @@ def _assert_parameter_prefix(
                 "port",
                 "llm",
                 "security",
+                "share",
                 "skills_dir",
                 "max_turns",
                 "explore_max_turns",

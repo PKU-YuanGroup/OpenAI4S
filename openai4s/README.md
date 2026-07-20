@@ -49,6 +49,7 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 | [`sdk/`](./sdk/) | Compatible `host` facade injected into Python cells and the remote-compute namespace. |
 | [`security/`](./security/) | Sandboxing and child-environment isolation. It also screens code and content, checks for injection, and carries the policy helpers those layers lean on. Each layer is independent, and several can fail open. |
 | [`server/`](./server/) | The stdlib HTTP/WebSocket workbench: session services, projections, recovery, and the static UI. Several specialized UI and recovery workflows remain Partial. |
+| [`share/`](./share/) | Web sharing transport: the tunnel wire protocol, a stdlib WSS client, the daemon's outbound `TunnelClient`, the stateless public relay, and the SSRF-hardened bundle fetch. The snapshot itself is built server-side in `server/share_projection.py`. |
 | [`skills_loader/`](./skills_loader/) | Finds Skills and discloses them progressively: name and summary first, the body only on load. It also validates sidecars, installs versions, and rolls them back. |
 | [`storage/`](./storage/) | Focused SQLite repositories used through `Store`. |
 | [`tools/`](./tools/) | Class-based provider-native control tools. Each one carries its own schema. Around them sit the registry, the dynamic-tool lifecycle, and compatibility support for fenced calls. |

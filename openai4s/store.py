@@ -77,6 +77,7 @@ from openai4s.storage.permissions import perm_match as _perm_match
 from openai4s.storage.plans import PlanRepository
 from openai4s.storage.recovery import RecoveryJournalRepository
 from openai4s.storage.settings import SettingsRepository
+from openai4s.storage.shares import SharesRepository
 from openai4s.storage.skills import SkillVersionRepository
 from openai4s.storage.snapshots import SessionSnapshotRepository
 
@@ -460,6 +461,26 @@ CREATE TABLE IF NOT EXISTS permission_requests (
 );
 CREATE INDEX IF NOT EXISTS ix_permission_request_root
     ON permission_requests(root_frame_id, state, created_at);
+CREATE TABLE IF NOT EXISTS shares (
+    share_id       TEXT PRIMARY KEY,
+    root_frame_id  TEXT NOT NULL,
+    title          TEXT,
+    status         TEXT NOT NULL DEFAULT 'publishing'
+                   CHECK (status IN ('publishing','ready','failed','revoked')),
+    snapshot_id    TEXT,
+    pending_snapshot_id TEXT,
+    bundle_sha256  TEXT,
+    bundle_size    INTEGER,
+    projection_id  TEXT,
+    counts_json    TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    revoked_at     INTEGER,
+    expires_at     INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_shares_active_frame
+    ON shares(root_frame_id) WHERE status IN ('publishing','ready');
+CREATE INDEX IF NOT EXISTS ix_shares_root ON shares(root_frame_id);
 """
 
 # Tables host.query must refuse to read. These hold secrets or
@@ -595,6 +616,11 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._shares = SharesRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._permissions = PermissionRuleRepository(
             self._conn,
             self._lock,
@@ -683,6 +709,7 @@ class Store:
     # --- migration (add columns missing from a pre-existing DB) -----------
     _MIGRATIONS = {
         "messages": [("branch_id", "TEXT")],
+        "shares": [("expires_at", "INTEGER")],
         "frames": [
             ("task_summary", "TEXT"),
             ("folder_id", "TEXT"),
@@ -1927,6 +1954,70 @@ class Store:
 
     def delete_setting(self, key: str) -> None:
         self._settings.delete(key)
+
+    # --- web shares (public read-only snapshots) -------------------------
+    def get_share(self, share_id: str) -> dict | None:
+        return self._shares.get(share_id)
+
+    def active_share_for_frame(self, root_frame_id: str) -> dict | None:
+        return self._shares.active_for_frame(root_frame_id)
+
+    def list_shares_for_frame(self, root_frame_id: str) -> list[dict]:
+        return self._shares.list_for_frame(root_frame_id)
+
+    def list_shares(self, *, include_revoked: bool = False) -> list[dict]:
+        return self._shares.list_all(include_revoked=include_revoked)
+
+    def list_active_shares(self) -> list[dict]:
+        return self._shares.list_active()
+
+    def list_expired_shares(self, now_ms: int) -> list[dict]:
+        return self._shares.list_expired(now_ms)
+
+    def begin_share_publish(
+        self,
+        *,
+        share_id: str,
+        root_frame_id: str,
+        title: str | None,
+        pending_snapshot_id: str,
+        expires_at: int | None = None,
+    ) -> dict:
+        return self._shares.begin_publish(
+            share_id=share_id,
+            root_frame_id=root_frame_id,
+            title=title,
+            pending_snapshot_id=pending_snapshot_id,
+            expires_at=expires_at,
+        )
+
+    def mark_share_ready(
+        self,
+        share_id: str,
+        *,
+        snapshot_id: str,
+        bundle_sha256: str,
+        bundle_size: int,
+        projection_id: str,
+        counts: dict | None = None,
+    ) -> dict | None:
+        return self._shares.mark_ready(
+            share_id,
+            snapshot_id=snapshot_id,
+            bundle_sha256=bundle_sha256,
+            bundle_size=bundle_size,
+            projection_id=projection_id,
+            counts=counts,
+        )
+
+    def mark_share_failed(self, share_id: str) -> None:
+        self._shares.mark_failed(share_id)
+
+    def mark_share_revoked(self, share_id: str) -> None:
+        self._shares.mark_revoked(share_id)
+
+    def delete_share(self, share_id: str) -> None:
+        self._shares.delete(share_id)
 
     # --- model profiles (saved LLM/API configs) --------------------------
     # Stored as a JSON list under the `model_profiles` setting so users can keep

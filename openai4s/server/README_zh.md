@@ -63,10 +63,14 @@ gateway.py
 | [`session_recovery.py`](session_recovery.py) | 启动时协调过期的运行时状态，并在 activity 与恢复阻塞条件的约束下确定性地回收空闲内核。旧 daemon 遗留下来的活 generation 会被标成 `abandoned` 并保持可审计；这里没有任何代码反序列化对象，也不声称内存还活着。 |
 | [`session_runtime.py`](session_runtime.py) | 保存会话的控制平面对象，例如 dispatcher、委派树和动态 capability，让语言 worker 可以启动、替换或停止，而不丢掉这些状态。 |
 | [`skill_sidecars.py`](skill_sidecars.py) | 把 worker 实际加载成功的 Skill sidecar 记到那个精确的内核 generation 上，用 compare-and-swap 合并进内容寻址的 bootstrap 清单，这样恢复重放的就是真实观察到的东西。Host 进程从不导入或执行 sidecar。 |
+| [`share_projection.py`](share_projection.py) | 把一个会话构建成一份冻结、扁平化的 `ShareProjection`（单一 synthetic root、无 checkpoint、无 memories/策略），再分两路序列化：一个 `import_bytes` 兼容的 bundle 和一份脱敏的查看器文档。复用会话包的失败即拒 secret 闸门。 |
+| [`share_router.py`](share_router.py) | 单个分享的只读公网请求处理器：仅 GET/HEAD、有且仅有两个读取根（内存查看器资产 + 当前 lease 的快照）、严格 CSP、单段 Range，以及统一 404。它绝不触碰内核、dispatcher 或任何 gateway 路由。 |
+| [`share_service.py`](share_service.py) | Web 分享的两阶段发布（DB 状态机 + 不可变版本目录 + `current.json` 指针），带 SnapshotLease 引用计数 GC、崩溃恢复、有效期清扫与撤销。FIFO 准入与隧道客户端由外部注入。 |
 | [`skills.py`](skills.py) | Web Customize 里用户自撰 Skill 文档的生命周期。它管增删改查和导入，管 UI 读的那份目录投影，也管能力的启用。 |
 | [`titles.py`](titles.py) | 在后台根据第一条消息生成会话标题。模型配置延迟绑定，持久化和广播都做了防竞态处理。 |
 | [`variable_inspector.py`](variable_inspector.py) | 通过一个很窄的 manager 协议请求，读取活着且空闲的 Python/R 命名空间，返回有界、净化过的变量预览。它不会创建会话，也不会创建 worker，更不会进入 Cell 事务。 |
 | [`workbench_state.py`](workbench_state.py) | 根据持久状态与实时状态投影 Context 和 Security 面板。它不暴露消息内容；在真实 worker 报回自测结果之前，它也不会声称 OS 沙箱已经存在。 |
+| [`ws_frames.py`](ws_frames.py) | 由 gateway WebSocket 与分享隧道共用的、加固过的 RFC 6455 帧编解码。按角色的读取会校验掩码方向、FIN、RSV、opcode、canonical 长度、64 位最高位、控制帧大小与载荷上限；gateway 通过别名保留原有调用点。 |
 
 ## 子目录
 

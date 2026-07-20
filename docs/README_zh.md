@@ -26,6 +26,7 @@
 | `startup-guide.md` | 双语 macOS `.dmg` 上手全流程：安装、Gatekeeper，以及在 UI 里配置模型 + Tavily 搜索 Key。 |
 | `webapp-api.md` | REST/WebSocket 功能面的详细契约与兼容行为。 |
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
+| `webshare.md` | Web 分享：只读快照 + 出站 relay 隧道、部署方式与信任模型。 |
 
 ## 在架构中的位置
 

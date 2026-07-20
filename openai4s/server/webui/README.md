@@ -27,6 +27,7 @@ The browser client lives here, and the stdlib gateway serves it at `/static/`. T
 
 | Directory | Responsibility |
 | --- | --- |
+| `share/` | The standalone read-only share viewer (`share.html`/`share.js`/`share.css`), served by the relay tunnel's ShareRouter — separate from the main single-page app. It reuses `scientific_renderers.js` and the vendored 3Dmol, but has its own minimal shell and never connects a WebSocket. |
 | `vendor/` | Vendored minified 3Dmol runtime and font assets. 3Dmol is the one piece of third-party JavaScript in the client, and `app.js` injects it only when a molecule artifact is opened. If the vendored file does not load, that injection falls back to the `3Dmol.org` CDN before it gives up and renders plain text ([`app.js`](app.js), the `3Dmol-min.js` script tags). Treat these as upstream, byte-sensitive assets; they are excluded from formatting and are not documented file-by-file here. |
 
 ## Verification
