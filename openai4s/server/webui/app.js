@@ -3643,7 +3643,7 @@ async function loadDashboard() {
   paintDashSkeleton();
   await loadProjects();
   let frames = [];
-  try { frames = (await api("/frames?limit=50")).filter?.(f => !f.parent_frame_id) || []; } catch {}
+  try { frames = ((await api("/frames?limit=50")).frames || []).filter(f => !f.parent_frame_id); } catch {}
   // annotate projects with a live running-session count (derived from frames)
   const rc = {};
   frames.forEach(f => { if (f.running) rc[f.project_id] = (rc[f.project_id] || 0) + 1; });
@@ -3720,7 +3720,7 @@ async function refreshDashRunning() {
   // Skip work while the tab is backgrounded; the next visible tick will catch up.
   if (typeof document.hidden === "boolean" && document.hidden) return;
   let frames = [];
-  try { frames = (await api("/frames?limit=50")).filter?.(f => !f.parent_frame_id) || []; } catch { return; }
+  try { frames = ((await api("/frames?limit=50")).frames || []).filter(f => !f.parent_frame_id); } catch { return; }
   if ($("#dashboard").classList.contains("hidden")) return;
   renderDashRunning(frames);
 }
@@ -3887,7 +3887,7 @@ async function deleteProject(id) {
 
 /* ---------- sessions ---------- */
 async function loadSessions() {
-  try { const f = await api("/frames?limit=100"); S.sessions = (Array.isArray(f) ? f : []).filter(x => !x.parent_frame_id); } catch { S.sessions = []; }
+  try { const f = await api("/frames?limit=100"); S.sessions = (f.frames || []).filter(x => !x.parent_frame_id); } catch { S.sessions = []; }
   await loadFolders();
   renderSessions(); syncCurrentTitle(); if (!$("#dashboard").classList.contains("hidden")) loadDashboard();
 }

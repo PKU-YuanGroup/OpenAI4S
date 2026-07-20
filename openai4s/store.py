@@ -1329,12 +1329,14 @@ class Store:
         status: str | None = None,
         roots_only: bool = True,
         limit: int = 50,
+        before: tuple[int, str] | None = None,
     ) -> list[dict]:
         return self._frames.browse_frames(
             project_id=project_id,
             status=status,
             roots_only=roots_only,
             limit=limit,
+            before=before,
         )
 
     def frame_detail(

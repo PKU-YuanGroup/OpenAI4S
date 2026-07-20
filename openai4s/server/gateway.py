@@ -138,6 +138,33 @@ os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure cap
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
 _WATCHDOG_INTERRUPT_GRACE_S = 10.0
 _WATCHDOG_KILL_GRACE_S = 10.0
+
+
+def _encode_frame_cursor(created_at: int, frame_id: str) -> str:
+    """Opaque cursor. Opaque on purpose: a client that parses it becomes
+    coupled to the sort key, and the key could not then be changed without
+    breaking it."""
+    raw = f"{int(created_at)}:{frame_id}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_frame_cursor(value: str | None) -> tuple[int, str] | None:
+    if not value:
+        return None
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        created, _, frame_id = (
+            base64.urlsafe_b64decode(padded).decode("utf-8").partition(":")
+        )
+        if not frame_id:
+            raise ValueError("missing frame id")
+        return (int(created), frame_id)
+    except Exception as e:  # noqa: BLE001
+        # A cursor we cannot read must not silently become "start from the
+        # beginning" — the client would loop over page one forever.
+        raise GatewayError(400, f"invalid cursor: {e}")
+
+
 _API_ROOT = "/api/v1"
 _API_PREFIX = _API_ROOT + "/"
 _API_WS = _API_ROOT + "/ws"
@@ -6534,28 +6561,73 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if sub.split("?")[0] == "/frames" or sub.startswith("/frames?"):
                 if method == "GET":
                     pid = (q.get("project_id") or [None])[0]
-                    limit = int((q.get("limit") or ["100"])[0])
-                    frames = store.browse_frames(
-                        project_id=pid or "all", roots_only=True, limit=limit * 2
-                    )
+                    try:
+                        limit = max(1, min(200, int((q.get("limit") or ["100"])[0])))
+                    except (TypeError, ValueError):
+                        raise GatewayError(400, "limit must be an integer")
+                    cursor = _decode_frame_cursor((q.get("cursor") or [None])[0])
                     running = runner.running_frames()  # scan jobs ONCE, not per row
-                    out = []
-                    for f in frames:
-                        fj = _frame_json(f, store)
-                        # hide abandoned empty sessions (no messages, no cells,
-                        # no title) — but keep REPL-only sessions (have cells)
-                        if (
-                            not fj["message_count"]
-                            and not fj.get("name")
-                            and not fj.get("task_summary")
-                            and not store.cell_count(f["frame_id"])
-                        ):
-                            continue
-                        # live-activity annotations for the session list badges
-                        fj["running"] = f["frame_id"] in running
-                        fj["kernel_alive"] = runner.kernel_alive(f["frame_id"])
-                        out.append(fj)
-                    self._json(out[:limit])
+
+                    # Collect one MORE than the page size, then report
+                    # has_more from that. The obvious version — fetch a batch,
+                    # filter, stop at `limit` — cannot tell a short page from
+                    # the last page, because the filter runs after the read: a
+                    # project whose sessions are mostly hidden returns fewer
+                    # rows than asked and the client reads that as the end.
+                    # Asking for one extra makes "is there another page" an
+                    # observation instead of an inference.
+                    out: list[dict] = []
+                    want = limit + 1
+                    while len(out) < want:
+                        batch = store.browse_frames(
+                            project_id=pid or "all",
+                            roots_only=True,
+                            limit=limit * 2,
+                            before=cursor,
+                        )
+                        if not batch:
+                            break
+                        last = batch[-1]
+                        cursor = (int(last["created_at"] or 0), last["frame_id"])
+                        store_drained = len(batch) < limit * 2
+                        for f in batch:
+                            fj = _frame_json(f, store)
+                            # hide abandoned empty sessions (no messages, no
+                            # cells, no title) — but keep REPL-only sessions
+                            if (
+                                not fj["message_count"]
+                                and not fj.get("name")
+                                and not fj.get("task_summary")
+                                and not store.cell_count(f["frame_id"])
+                            ):
+                                continue
+                            fj["running"] = f["frame_id"] in running
+                            fj["kernel_alive"] = runner.kernel_alive(f["frame_id"])
+                            fj["_cursor"] = (
+                                int(f["created_at"] or 0),
+                                f["frame_id"],
+                            )
+                            out.append(fj)
+                            if len(out) >= want:
+                                break
+                        if store_drained:
+                            break
+
+                    has_more = len(out) > limit
+                    page = out[:limit]
+                    next_cursor = None
+                    if has_more and page:
+                        tail = page[-1]["_cursor"]
+                        next_cursor = _encode_frame_cursor(tail[0], tail[1])
+                    for row in page:
+                        row.pop("_cursor", None)
+                    self._json(
+                        {
+                            "frames": page,
+                            "next_cursor": next_cursor,
+                            "has_more": has_more,
+                        }
+                    )
                     return
                 if method == "POST":
                     b = self._body()

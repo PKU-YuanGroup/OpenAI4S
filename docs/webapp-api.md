@@ -166,7 +166,7 @@ success response body. Serializer shapes are in §4.
 
 | Method & path | Behavior |
 | --- | --- |
-| `GET /frames?project_id=&limit=` | **Bare JSON array** of frame JSON (not wrapped). `limit` defaults to 100; the handler over-fetches `limit*2` root frames, drops "abandoned empty" sessions (no messages, no cells, no title), annotates each with live `running` and `kernel_alive` booleans, then truncates to `limit`. No `offset`. |
+| `GET /frames?project_id=&limit=&cursor=` | `{"frames":[…],"next_cursor":…,"has_more":bool}`. Keyset pagination, newest first; `limit` 1–200 (default 100). `cursor` is opaque — parsing it would couple a client to the sort key. An unreadable cursor is a `400`, never a silent restart, which would loop a client on page one. `has_more` is observed by collecting one row beyond the page, not inferred from the page being full: hidden abandoned sessions are filtered *after* the read, so a full-looking page is not evidence of a next one. |
 | `POST /frames` | Body `{project_id?,model?}` → frame JSON for a new root frame. |
 | `GET /frames/{fid}` | Frame JSON, or `{}` when not found. |
 | `PATCH /frames/{fid}` | Updates `name`/`task_summary`, broadcasts `frame_update` → frame JSON. |
