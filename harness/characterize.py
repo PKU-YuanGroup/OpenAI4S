@@ -18,6 +18,7 @@ import importlib
 import io
 import json
 import os
+import tempfile
 import urllib.error
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -361,16 +362,29 @@ def _compaction_provider_hoist(data_dir: Path) -> Mapping[str, Any]:
 def _oversized_observation() -> Mapping[str, Any]:
     loop = importlib.import_module("openai4s.agent.loop")
     stdout = "x" * 2_000_000
-    rendered = loop._format_observation(  # noqa: SLF001 - production characterization
-        {"stdout": stdout, "stderr": "", "error": None, "usage": {}}
-    )
-    return {
-        "input_chars": len(stdout),
-        "model_view_chars": len(rendered),
-        "full_tail_preserved": rendered.endswith(stdout),
-        "has_content_ref": "content ref=" in rendered.lower(),
-        "has_omission_marker": "omitted" in rendered.lower(),
-    }
+    # `cwd` is what a real kernel result carries — the manager annotates every
+    # response with the workspace. Omitting it here would characterize an input
+    # production never produces, and would report "no content ref" for a reason
+    # that has nothing to do with the formatter.
+    with tempfile.TemporaryDirectory() as workspace:
+        rendered = (
+            loop._format_observation(  # noqa: SLF001 - production characterization
+                {
+                    "stdout": stdout,
+                    "stderr": "",
+                    "error": None,
+                    "usage": {},
+                    "cwd": workspace,
+                }
+            )
+        )
+        return {
+            "input_chars": len(stdout),
+            "model_view_chars": len(rendered),
+            "full_tail_preserved": rendered.endswith(stdout),
+            "has_content_ref": "content ref=" in rendered.lower(),
+            "has_omission_marker": "omitted" in rendered.lower(),
+        }
 
 
 def _headless_permission(data_dir: Path) -> Mapping[str, Any]:
@@ -497,9 +511,9 @@ def collect_prechange_characterization(data_dir: str | Path) -> dict[str, Any]:
         },
         {
             "case_id": "oversized_observation_unbudgeted",
-            "current_behavior": "The model-view formatter preserves an entire 2,000,000-character observation with no content reference or omission marker.",
+            "current_behavior": "The model-view formatter budgets each section, previewing head+tail with an explicit omission marker and spilling the full bytes to a workspace-relative content reference the agent can open.",
             "desired_contract": "Apply per-result and aggregate model-view budgets, spilling full bytes to an authorized content reference before previewing.",
-            "known_bug": True,
+            "known_bug": False,
             "probe": _oversized_observation,
         },
         {

@@ -79,15 +79,13 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
     assert cases["disabled_mcp_tools_connects"]["known_bug"] is False
     # Fixed: only *leading* system messages are initial policy.
     assert cases["compaction_summary_provider_hoist"]["known_bug"] is False
-    for case_id in set(cases) - {
-        "cli_max_turns",
-        "partial_sse_hard_failure",
-        "headless_ask_fails_closed_deny_absolute",
-        "rate_limit_single_attempt",
-        "disabled_mcp_tools_connects",
-        "compaction_summary_provider_hoist",
-    }:
-        assert cases[case_id]["known_bug"] is True
+    # Fixed: sections are budgeted and the full bytes spill to a
+    # workspace-relative content reference the agent can open.
+    assert cases["oversized_observation_unbudgeted"]["known_bug"] is False
+    # All four known bugs are now fixed. This asserts the set is empty rather
+    # than deleting the loop: a future characterization added as a known bug
+    # must state so deliberately, not inherit silence.
+    assert not [c for c in cases.values() if c["known_bug"]]
 
     observed = {case_id: case["trace"][1]["payload"] for case_id, case in cases.items()}
     assert observed["cli_max_turns"]["stop_reason"] == "max_turns"
@@ -122,9 +120,16 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
     assert hoist["gemini_summary_in_system_instruction"] is False
     assert hoist["gemini_summary_in_contents"] is True
 
+    # A 2M-char observation is previewed, not forwarded. Forwarding it whole was
+    # not a large observation so much as a destroyed turn: it evicts the task
+    # from the context window and bills for the privilege. The full bytes are
+    # reachable at a workspace-relative ref, which is more useful than a tail
+    # the model cannot search.
     oversized = observed["oversized_observation_unbudgeted"]
-    assert oversized["model_view_chars"] > oversized["input_chars"]
-    assert oversized["has_content_ref"] is False
+    assert oversized["model_view_chars"] < oversized["input_chars"]
+    assert oversized["has_content_ref"] is True
+    assert oversized["has_omission_marker"] is True
+    assert oversized["full_tail_preserved"] is False
 
     permission = observed["headless_ask_fails_closed_deny_absolute"]
     assert permission["ask_effective_decision"] == "ask"

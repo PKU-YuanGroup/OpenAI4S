@@ -262,10 +262,10 @@
       ]
     },
     {
-      "current_behavior": "The model-view formatter preserves an entire 2,000,000-character observation with no content reference or omission marker.",
+      "current_behavior": "The model-view formatter budgets each section, previewing head+tail with an explicit omission marker and spilling the full bytes to a workspace-relative content reference the agent can open.",
       "desired_contract": "Apply per-result and aggregate model-view budgets, spilling full bytes to an authorized content reference before previewing.",
       "id": "oversized_observation_unbudgeted",
-      "known_bug": true,
+      "known_bug": false,
       "trace": [
         {
           "event_id": "<event:1>",
@@ -289,11 +289,11 @@
           "monotonic_ms": 1,
           "parent_event_id": "<event:1>",
           "payload": {
-            "full_tail_preserved": true,
-            "has_content_ref": false,
-            "has_omission_marker": false,
+            "full_tail_preserved": false,
+            "has_content_ref": true,
+            "has_omission_marker": true,
             "input_chars": 2000000,
-            "model_view_chars": 2000022
+            "model_view_chars": 10344
           },
           "phase": "characterization",
           "root_frame_id": "<root_frame:1>",

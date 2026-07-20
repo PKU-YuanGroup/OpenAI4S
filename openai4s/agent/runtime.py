@@ -7,7 +7,9 @@ dispatcher-backed control tools without importing those concrete services.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.tools import (
@@ -407,16 +409,88 @@ class TranscriptEventSink:
             self.log(f"--- turn {event.turn} (observation) ---\n{content}")
 
 
+# Per-section ceiling on what reaches the model. A cell that prints a 2M-char
+# dataframe used to have every character forwarded, which is not a large
+# observation so much as a destroyed turn: it evicts the task from the context
+# window (or exceeds it outright) and bills for the privilege. The full bytes
+# are not discarded — they spill to a file the agent can open, which is more
+# useful than a tail it cannot search.
+OBSERVATION_SECTION_BUDGET = 12_000
+_PREVIEW_HEAD = 6_000
+_PREVIEW_TAIL = 4_000
+# Inside the workspace so the agent can open it with the relative path it is
+# given (the kernel's cwd is the workspace), and under `.openai4s/` because
+# that directory is already excluded from workspace snapshots — an observation
+# dump must not become part of a checkpoint's content-addressed tree.
+_SPILL_DIR = ".openai4s/observations"
+
+
+def _spill_observation(text: str, kind: str, workspace: str | None) -> str | None:
+    """Write the full section and return a WORKSPACE-RELATIVE reference.
+
+    Relative, and content-addressed to a fixed width, on purpose. An absolute
+    path would leak $HOME into the model's context and would make the rendered
+    observation's length depend on where the data directory happens to live —
+    which breaks byte-identical trace comparison across machines.
+    """
+    if not workspace:
+        return None
+    digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+    rel = f"{_SPILL_DIR}/obs-{kind}-{digest}.txt"
+    try:
+        target = Path(workspace) / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            target.write_text(text, encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return rel
+
+
+def _budgeted(text: str, kind: str, workspace: str | None) -> str:
+    """A section trimmed to the budget, with the full bytes still reachable.
+
+    The marker states all three things the model needs: that something is
+    missing, how much, and where the rest is. A silent truncation invites it to
+    reason about a tail as though it were the whole.
+    """
+    if len(text) <= OBSERVATION_SECTION_BUDGET:
+        return text
+    ref = _spill_observation(text, kind, workspace)
+    omitted = len(text) - _PREVIEW_HEAD - _PREVIEW_TAIL
+    where = (
+        f"full {len(text):,} chars at content ref={ref}"
+        if ref
+        else f"full {len(text):,} chars could not be saved"
+    )
+    marker = (
+        f"\n\n[... {omitted:,} characters omitted — {where} ...]\n"
+        f"[system] This is a preview, not the output. Do not infer what is in "
+        f"the gap"
+        + (
+            f"; read the full text with open({ref!r}).read() if you need it.\n\n"
+            if ref
+            else ".\n\n"
+        )
+    )
+    return text[:_PREVIEW_HEAD] + marker + text[-_PREVIEW_TAIL:]
+
+
 def format_observation(result: dict) -> str:
-    """Format one kernel result as the stable observation protocol."""
+    """Format one kernel result as the stable observation protocol.
+
+    Oversized stdout/stderr are previewed and their full bytes spilled to a
+    workspace-relative content reference the agent can open.
+    """
     parts = ["[Observation]"]
     out = result.get("stdout") or ""
     err = result.get("stderr") or ""
     error = result.get("error")
+    workspace = result.get("cwd")
     if out:
-        parts.append(f"stdout:\n{out.rstrip()}")
+        parts.append(f"stdout:\n{_budgeted(out.rstrip(), 'stdout', workspace)}")
     if err:
-        parts.append(f"stderr:\n{err.rstrip()}")
+        parts.append(f"stderr:\n{_budgeted(err.rstrip(), 'stderr', workspace)}")
     if error:
         trace = result.get("trace") or {}
         line = trace.get("error_lineno")

@@ -316,7 +316,13 @@ def _contract_dispatcher(method, args):
 
 
 def test_response_frame_shape():
-    """The final response frame carries exactly the documented key set."""
+    """The final response frame carries exactly the documented key set.
+
+    `cwd` is a host-side annotation added by the manager, not a field the
+    worker produces: the observation formatter needs a workspace-relative place
+    to spill an oversized stdout, and the manager is the only layer that knows
+    where that is. The worker protocol is unchanged — it never sends this key.
+    """
     with Kernel(dispatcher=_echo_dispatcher) as k:
         r = k.execute("print('shape')")
         assert set(r) == {
@@ -329,6 +335,7 @@ def test_response_frame_shape():
             "trace",
             "guards",
             "usage",
+            "cwd",
         }
         assert r["type"] == "response"
         assert r["interrupted"] is False
