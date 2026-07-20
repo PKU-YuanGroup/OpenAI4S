@@ -30,7 +30,7 @@ from openai4s.diagnostics import (
 )
 from openai4s.observability import redact_text
 
-_KEY = "sk-live-9f3a1c7e4b2d8e6f0a1b2c3d"
+_KEY = "canary-live-9f3a1c7e4b2d8e6f0a1b2c3d"
 
 
 @pytest.fixture

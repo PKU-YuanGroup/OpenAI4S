@@ -439,7 +439,7 @@ try {
     throw new Error("artifact restore did not append a fresh current version");
   }
   const artifactBody = await page.request.get(
-    new URL(`api/artifacts/${encodeURIComponent(upload.artifact_id)}`, baseUrl).toString(),
+    new URL(`api/v1/artifacts/${encodeURIComponent(upload.artifact_id)}`, baseUrl).toString(),
   );
   const restoredBodyText = await artifactBody.text();
   if (!artifactBody.ok() || restoredBodyText !== "VERSION-ONE") {

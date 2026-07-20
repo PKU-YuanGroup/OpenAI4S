@@ -20,7 +20,7 @@ from openai4s.config import Config
 from openai4s.storage.connectors import public_connector
 from openai4s.store import get_store
 
-_CANARY = "sk-canary-9f3a1c7e-MUST-NOT-REACH-THE-BROWSER"
+_CANARY = "canary-canary-9f3a1c7e-MUST-NOT-REACH-THE-BROWSER"
 
 
 @pytest.fixture

@@ -41,8 +41,15 @@ def test_gitleaks_scans_history_with_a_checksum_pinned_binary():
     # encrypted wrapper around a metadata-read-only GitHub token, which
     # star-history decrypts per request and which is designed to be published in
     # a README. gitleaks flags them on entropy alone.
+    # The last two are synthetic `sk-live-…` canaries in the redaction tests.
+    # They are deliberately credential-shaped because the redaction they
+    # exercise keys on entropy and shape — an obviously-fake string would make
+    # those tests pass for the wrong reason. Suppressed by fingerprint rather
+    # than by widening a path rule, so a real leak in the same file is still
+    # caught, and pinned by count here so a new suppression cannot be added
+    # without a reviewer seeing it.
     ignored = (ROOT / ".gitleaksignore").read_text(encoding="utf-8").splitlines()
-    assert len(ignored) == 8
+    assert len(ignored) == 10
     assert all(
         re.fullmatch(r"[0-9a-f]{40}:.+:[a-z0-9-]+:\d+", item) for item in ignored
     )

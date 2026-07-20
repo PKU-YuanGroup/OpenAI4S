@@ -24,7 +24,7 @@ from openai4s.observability import (
     set_correlation_id,
 )
 
-_KEY = "sk-live-9f3a1c7e4b2d8e6f0a1b2c3d4e5f6071"
+_KEY = "canary-live-9f3a1c7e4b2d8e6f0a1b2c3d4e5f6071"
 
 
 # --------------------------------------------------------------------------

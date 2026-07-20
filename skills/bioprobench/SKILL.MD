@@ -3,7 +3,7 @@
 > **Citation & Authorship**
 > This skill integrates BioProBench, the first large-scale, integrated multi-task benchmark for biological protocol understanding and reasoning.
 > If you use this benchmark to evaluate agents or models, please cite the original work:
-> 
+>
 > ```bibtex
 > @article{liu2025bioprobench,
 >   title={BioProBench: Comprehensive Dataset and Benchmark in Biological Protocol Understanding and Reasoning},
@@ -16,7 +16,7 @@
 > *(Note: This benchmark serves as the foundational evaluation environment for downstream physical execution agents like BioProAgent.)*
 
 ## Description
-Biological protocols are the fundamental bedrock of reproducible and safe life science research. While LLMs show strong general capabilities, wet-lab environments demand high-precision procedural logic. 
+Biological protocols are the fundamental bedrock of reproducible and safe life science research. While LLMs show strong general capabilities, wet-lab environments demand high-precision procedural logic.
 
 This skill provides a robust framework to evaluate an agent's capability across **5 core reasoning tasks**:
 1. **PQA (Protocol Question Answering):** Comprehension of reagent dosages, parameters, and instructions.

@@ -40,7 +40,7 @@ from openai4s.security.secret_migration import (
 )
 from openai4s.store import get_store
 
-_CANARY = "sk-broker-canary-3f9a1c-MUST-NOT-PERSIST-IN-THE-DB"
+_CANARY = "canary-broker-canary-3f9a1c-MUST-NOT-PERSIST-IN-THE-DB"
 
 
 @pytest.fixture
