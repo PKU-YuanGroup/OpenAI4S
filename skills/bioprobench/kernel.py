@@ -11,7 +11,7 @@ from itertools import combinations
 # ==========================================
 # Mount the script directory so we can dynamically load original scripts
 current_dir = os.path.dirname(os.path.abspath(__file__))
-script_dir = os.path.join(current_dir, "script")
+script_dir = os.path.join(current_dir, "Scripts")
 if os.path.exists(script_dir) and script_dir not in sys.path:
     sys.path.append(script_dir)
 
