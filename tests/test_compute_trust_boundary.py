@@ -33,7 +33,8 @@ def mgr(tmp_path):
     )
     (tmp_path / "data").mkdir()
     (tmp_path / "skills").mkdir()
-    return ComputeManager(cfg)
+    (tmp_path / "ws").mkdir()
+    return ComputeManager(cfg, workspace=tmp_path / "ws")
 
 
 def _ssh_job(mgr, job_id="job-abc"):
@@ -314,7 +315,8 @@ def test_scp_download_failure_raises_instead_of_claiming_a_file(mgr, monkeypatch
     assert "No such file" in str(e.value)
 
 
-def test_scp_upload_failure_raises(mgr, monkeypatch):
+def test_scp_upload_failure_raises(mgr, monkeypatch, tmp_path):
+    (tmp_path / "ws" / "a.dat").write_text("payload")
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -326,17 +328,117 @@ def test_scp_upload_failure_raises(mgr, monkeypatch):
             {
                 "provider": "ssh:lab",
                 "direction": "up",
-                "local": "/tmp/a",
+                "local": "a.dat",
                 "remote": "/remote/a",
             }
         )
     assert "Permission denied" in str(e.value)
 
 
-def test_scp_success_returns_path(mgr, monkeypatch):
+def test_scp_success_returns_path(mgr, monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
     out = mgr.scp({"provider": "ssh:lab", "direction": "down", "remote": "/x/y.dat"})
-    assert out["local"] == "y.dat"
+    # A resolved path, not the bare name: the caller should not have to guess
+    # which directory the file landed in.
+    assert out["local"] == str(tmp_path / "ws" / "y.dat")
+
+
+# --------------------------------------------------------------------------
+# the direct scp surface is no looser than the job path beside it
+# --------------------------------------------------------------------------
+
+
+def test_a_download_cannot_escape_the_workspace(mgr, monkeypatch):
+    """The agent picks the destination — that is the whole risk. Without this,
+    `local="/etc/cron.d/x"` writes wherever the daemon can."""
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    for escape in ("/etc/passwd", "../../outside.txt"):
+        with pytest.raises(ComputeError) as e:
+            mgr.scp(
+                {
+                    "provider": "ssh:lab",
+                    "direction": "down",
+                    "remote": "/x/y",
+                    "local": escape,
+                }
+            )
+        assert "workspace" in str(e.value), escape
+
+
+def test_a_symlink_cannot_redirect_the_write(mgr, monkeypatch, tmp_path):
+    """Resolution happens BEFORE the containment check, so a link planted
+    inside the workspace cannot point the write outside it."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "ws" / "link").symlink_to(outside)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    with pytest.raises(ComputeError, match="workspace"):
+        mgr.scp(
+            {
+                "provider": "ssh:lab",
+                "direction": "down",
+                "remote": "/x/y",
+                "local": "link/y.dat",
+            }
+        )
+
+
+@pytest.mark.parametrize("bad", ["../etc/passwd", "a/../../b", "x\x00y", "line\nbreak"])
+def test_a_hostile_remote_path_is_rejected(mgr, monkeypatch, bad):
+    """scp accepts `../../etc/passwd` happily; quoting stops word-splitting,
+    not traversal."""
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    with pytest.raises(ComputeError):
+        mgr.scp({"provider": "ssh:lab", "direction": "down", "remote": bad})
+
+
+def test_an_oversized_upload_is_refused(mgr, monkeypatch, tmp_path):
+    """The job path stages through a manifest and harvests through the safe
+    extractor; this surface has neither, so it gets an explicit cap."""
+    from openai4s.compute import manager as manager_mod
+
+    source = tmp_path / "ws" / "big.bin"
+    source.write_bytes(b"x" * 2048)
+    monkeypatch.setattr(manager_mod, "MAX_TRANSFER_BYTES", 1024)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    with pytest.raises(ComputeError, match="cap"):
+        mgr.scp(
+            {
+                "provider": "ssh:lab",
+                "direction": "up",
+                "local": "big.bin",
+                "remote": "/remote/big.bin",
+            }
+        )
+
+
+def test_an_upload_of_a_missing_file_is_refused(mgr, monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    with pytest.raises(ComputeError, match="not a file"):
+        mgr.scp(
+            {
+                "provider": "ssh:lab",
+                "direction": "up",
+                "local": "nope.dat",
+                "remote": "/remote/x",
+            }
+        )
+
+
+def test_direct_surface_calls_are_audited(mgr, monkeypatch):
+    """A compatibility surface that bypasses the job record still has to leave
+    one."""
+    seen = []
+    import openai4s.observability as obs
+
+    monkeypatch.setattr(
+        obs, "log_event", lambda event, **f: seen.append((event, f)), raising=True
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _Proc(0, b"ok"), raising=True
+    )
+    mgr.ssh({"provider": "ssh:lab", "command": "hostname"})
+    assert any(e == "compute_ssh_command" for e, _ in seen)
 
 
 def test_cancel_that_never_landed_is_not_a_cancellation(mgr, monkeypatch):

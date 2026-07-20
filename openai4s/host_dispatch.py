@@ -757,7 +757,14 @@ class HostDispatcher:
         if self._compute is None:
             from openai4s.compute import ComputeManager
 
-            self._compute = ComputeManager(self.cfg)
+            # The session workspace bounds the direct scp surface: without it
+            # an agent choosing `local="/etc/..."` writes wherever the daemon
+            # can.
+            try:
+                workspace = self._workspace()
+            except Exception:  # noqa: BLE001 - fall back to the process cwd
+                workspace = None
+            self._compute = ComputeManager(self.cfg, workspace=workspace)
         return self._compute
 
     @property

@@ -95,6 +95,34 @@ class ComputeError(RuntimeError):
         self.concurrency = concurrency
 
 
+# Ceiling on one direct scp. The job path stages inputs through a manifest and
+# harvests through the safe-archive extractor; this compatibility surface has
+# neither, so it gets an explicit cap instead of the implicit "whatever fits".
+MAX_TRANSFER_BYTES = 512 * 1024 * 1024
+
+
+def _safe_remote_path(value: str, *, label: str) -> str:
+    """A remote path that cannot walk out of where the caller said it was going.
+
+    `scp` happily accepts `../../etc/passwd` and a shell-quoted path is still a
+    path — quoting stops word-splitting, not traversal. These are the same
+    rejections the archive extractor applies, for the same reason: the string
+    came from an agent, and the remote host is not ours to trust.
+    """
+    text = str(value or "").strip()
+    if not text:
+        raise ComputeError(f"{label} must not be empty", "invalid_request")
+    if "\x00" in text:
+        raise ComputeError(f"{label} must not contain a NUL byte", "invalid_request")
+    if "\n" in text or "\r" in text:
+        raise ComputeError(f"{label} must not contain a newline", "invalid_request")
+    if ".." in Path(text).parts:
+        raise ComputeError(
+            f"{label} must not contain '..' ({text!r})", "invalid_request"
+        )
+    return text
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -157,8 +185,12 @@ class ComputeManager:
     # bounds its .phase loop, not a wedged provider SDK socket.
     _HELPER_TIMEOUT_S = 300.0
 
-    def __init__(self, cfg: Any, store: Any = None):
+    def __init__(self, cfg: Any, store: Any = None, workspace: Any = None):
         self.cfg = cfg
+        # The containment base for the direct scp surface. None falls back to
+        # the process cwd, which is right for the CLI and wrong for nothing —
+        # the Web path supplies the session workspace explicitly.
+        self._workspace = workspace
         self._providers = _discover_providers(Path(cfg.skills_dir))
         self._install_id = self._resolve_install_id()
         self._store = store if store is not None else _open_store(cfg)
@@ -1000,6 +1032,9 @@ class ComputeManager:
             if kw.get("login_shell"):
                 shell += ["-t"]
             shell += [rest, cmd]
+            # Audited before it runs, not after: a command that hangs or kills
+            # the daemon must still leave a record that it was attempted.
+            self._audit("compute_ssh_command", alias=rest, command=cmd[:2000])
             proc = subprocess.run(shell, capture_output=True, timeout=timeout_s)
             return {
                 "stdout": proc.stdout.decode("utf-8", "replace")[:65536],
@@ -1013,21 +1048,91 @@ class ComputeManager:
         )
 
     def scp(self, kw: dict) -> dict:
+        """Direct file transfer over an ssh alias.
+
+        A compatibility surface, deliberately kept but no longer looser than the
+        job path it sits beside: paths are checked, size is capped, and every
+        call is audited. Previously it forwarded an agent-supplied string
+        straight to `scp`.
+        """
         if self._split(kw["provider"])[0] != "ssh":
             raise ComputeError("download/upload is ssh-only", "invalid_request")
         alias = kw["provider"].split(":", 1)[1]
+        remote = _safe_remote_path(kw.get("remote"), label="remote path")
+
         if kw["direction"] == "down":
-            local = kw.get("local") or Path(kw["remote"]).name
-            self._run_scp(
-                ["scp", "-O", "-q", f"{alias}:{kw['remote']}", str(local)],
-                f"download {kw['remote']!r} from {alias}",
+            local = self._safe_local_path(
+                kw.get("local") or Path(remote).name, label="local path"
             )
+            self._audit("compute_scp_download", alias=alias, remote=remote)
+            self._run_scp(
+                ["scp", "-O", "-q", f"{alias}:{remote}", str(local)],
+                f"download {remote!r} from {alias}",
+            )
+            self._enforce_transfer_cap(local)
             return {"local": str(local)}
+
+        local = self._safe_local_path(kw["local"], label="local path", must_exist=True)
+        self._enforce_transfer_cap(local)
+        self._audit("compute_scp_upload", alias=alias, remote=remote)
         self._run_scp(
-            ["scp", "-O", "-q", kw["local"], f"{alias}:{kw['remote']}"],
-            f"upload to {kw['remote']!r} on {alias}",
+            ["scp", "-O", "-q", str(local), f"{alias}:{remote}"],
+            f"upload to {remote!r} on {alias}",
         )
-        return {"remote": kw["remote"]}
+        return {"remote": remote}
+
+    def _safe_local_path(
+        self, value: Any, *, label: str, must_exist: bool = False
+    ) -> Path:
+        """Resolve a local path and require it to stay inside the workspace.
+
+        Without this, `direction="down"` with `local="/etc/cron.d/x"` writes
+        wherever the daemon can write — the agent choosing the destination is
+        the whole risk. Symlinks are resolved BEFORE the containment check, so a
+        link planted inside the workspace cannot redirect the write outside it.
+        """
+        text = str(value or "").strip()
+        if not text:
+            raise ComputeError(f"{label} must not be empty", "invalid_request")
+        if "\x00" in text:
+            raise ComputeError(
+                f"{label} must not contain a NUL byte", "invalid_request"
+            )
+        base = Path(self._workspace or Path.cwd()).resolve()
+        candidate = Path(text)
+        resolved = base / candidate if not candidate.is_absolute() else candidate
+        resolved = resolved.resolve()
+        if resolved != base and base not in resolved.parents:
+            raise ComputeError(
+                f"{label} must stay inside the workspace ({resolved} is outside "
+                f"{base})",
+                "invalid_request",
+            )
+        if must_exist and not resolved.is_file():
+            raise ComputeError(f"{label} {text!r} is not a file", "invalid_request")
+        return resolved
+
+    @staticmethod
+    def _enforce_transfer_cap(path: Path) -> None:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return
+        if size > MAX_TRANSFER_BYTES:
+            raise ComputeError(
+                f"transfer of {size} bytes exceeds the {MAX_TRANSFER_BYTES} byte "
+                f"cap for the direct scp surface; stage it through a job instead",
+                "invalid_request",
+            )
+
+    def _audit(self, event: str, **fields: Any) -> None:
+        """Record a direct-surface call. Redaction is the emitter's job."""
+        try:
+            from openai4s.observability import log_event
+
+            log_event(event, **fields)
+        except Exception:  # noqa: BLE001 - auditing must not fail the operation
+            pass
 
     @staticmethod
     def _run_scp(argv: list[str], what: str) -> None:
