@@ -141,6 +141,30 @@ def redact(value: Any, *, _key: str = "", _depth: int = 0) -> Any:
     return value
 
 
+def redact_text(text: str) -> str:
+    """Redact credential-shaped *tokens inside free text*.
+
+    `redact` works on field values: it asks whether a whole string is a
+    credential. That is the wrong question for a log line, where a key sits in
+    the middle of a sentence — the surrounding spaces alone make the whole
+    string "not opaque", so a stray `print(token)` sails through untouched.
+    This scans word by word instead.
+
+    Needed specifically for the diagnostic bundle: a line some future code
+    emits without knowing about redaction still has to be safe to share, and
+    "the author should have used the structured logger" is not a control.
+    """
+    out = []
+    for word in str(text).split(" "):
+        # Punctuation commonly abuts a token in prose ("key=sk-…," / "(sk-…)").
+        stripped = word.strip("\"'`,;:()[]{}<>")
+        if stripped and _looks_opaque(stripped):
+            out.append(word.replace(stripped, f"<redacted:{fingerprint(stripped)}>"))
+        else:
+            out.append(word)
+    return " ".join(out)
+
+
 def enabled() -> bool:
     return os.environ.get(_ENABLED_ENV, "").strip().lower() in (
         "1",
@@ -177,6 +201,7 @@ __all__ = [
     "log_event",
     "new_correlation_id",
     "redact",
+    "redact_text",
     "reset_correlation_id",
     "set_correlation_id",
 ]

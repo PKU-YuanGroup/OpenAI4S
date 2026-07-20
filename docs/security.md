@@ -148,9 +148,21 @@ string. The model's messages and the kernel's data are the likeliest carriers of
 a user's unpublished work, so the default is that they have no route out through
 here at all.
 
-Retention is currently the operator's: the daemon writes to stderr and does not
-rotate, expire, or ship logs anywhere. A deployment that enables structured logs
-owns their lifetime.
+**Retention is bounded by construction.** `diagnostics.rotate_log` rolls a log
+at 8 MiB and keeps 3 generations, deleting the oldest — a size rather than a
+duration, because a daemon can be quiet for a week or chatty for an hour and
+bytes are what actually run out. Unbounded logs are not a neutral default; they
+are a slow disk-full that arrives at the least convenient moment.
+
+**`openai4s diagnostics`** writes a redacted bundle for a bug report: postures
+and versions, plus log tails. The database is never included — it holds research
+work and, until every credential is brokered, secrets — and the manifest names
+what was left out, so nobody is tempted into a second, manual, unredacted
+collection. Log lines pass through `observability.redact_text`, which scans
+*word by word*: `redact` asks whether a whole value is a credential, which is
+right for a field and wrong for a log line where a token sits mid-sentence. An
+earlier version of the bundle passed the structured lines and leaked the plain
+one.
 
 ### Credentials at rest
 
