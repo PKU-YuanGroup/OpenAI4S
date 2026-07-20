@@ -63,6 +63,12 @@ from openai4s.execution import (
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
 from openai4s.llm import PROVIDERS, chat, get_model_capabilities, provider_specs
+from openai4s.observability import (
+    log_event,
+    new_correlation_id,
+    reset_correlation_id,
+    set_correlation_id,
+)
 from openai4s.review import review_evidence
 from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.server.agent_run import EventCancellation
@@ -5637,10 +5643,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         def _send(
             self, code: int, body: bytes, ctype: str, extra: dict | None = None
         ) -> None:
+            self._last_status = code
             self.send_response(code)
             self.send_header("Content-Type", _sanitize_header_value(ctype))
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-cache")
+            # Echoed so a user reporting a failure can hand over an id that ties
+            # their request to this daemon's log line for it.
+            request_id = getattr(self, "_correlation_id", "")
+            if request_id:
+                self.send_header("X-Request-Id", _sanitize_header_value(request_id))
             # Applied here rather than at the HTML route so no response can be
             # added later that quietly opts out.
             for k, v in security_headers(WEBUI_DIR / "index.html").items():
@@ -5874,6 +5886,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self._request_is_websocket = False
             parsed = urlparse(self.path)
             path = parsed.path
+            # Bind an id for this request before anything can fail, so even a
+            # rejected request is traceable. A client-supplied id is honoured so
+            # a caller can stitch its own trace to ours, but it is bounded and
+            # stripped of anything that could forge a log line.
+            supplied = _sanitize_header_value(self.headers.get("X-Request-Id", ""))
+            self._correlation_id = (
+                "".join(c for c in supplied if c.isalnum() or c in "-_")[:64]
+                or new_correlation_id()
+            )
+            correlation_token = set_correlation_id(self._correlation_id)
             try:
                 # DNS-rebinding defense: pin the Host header to an address we
                 # bind, on EVERY request (GET included) and BEFORE the Origin/
@@ -6007,6 +6029,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._request_body_payload = b""
                 self._request_body_ready = False
                 self._request_body_tracking_active = False
+                # Path only, never the query string: tokens and ids ride there.
+                log_event(
+                    "http_request",
+                    method=method,
+                    path=path,
+                    status=getattr(self, "_last_status", None),
+                )
+                reset_correlation_id(correlation_token)
 
         # ---- static -----------------------------------------------------
         def _serve_index(self) -> None:

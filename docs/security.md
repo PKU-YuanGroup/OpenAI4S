@@ -118,6 +118,40 @@ it:
 
 Credential values passed to `host.credentials.set(name, value)` are held only in an in-memory vault (never persisted). To keep that true end to end, the **RPC audit log** redacts them: `credentials_get` / `credentials_list` are not logged at all, and `credentials_set` is logged for audit **with its args redacted** — the plaintext value never enters `host_call_log`. The replay tape recorder likewise skips `credentials_set`, so an exported notebook cannot carry a plaintext credential.
 
+### Correlation IDs and structured logs
+
+Every HTTP request carries an id
+([`observability.py`](../openai4s/observability.py)). A client-supplied
+`X-Request-Id` is honoured — bounded to 64 chars and stripped to
+`[A-Za-z0-9-_]`, so it cannot forge a log line or inject a header — otherwise
+one is generated. It is echoed back in `X-Request-Id` and held in a `ContextVar`
+so anything reached from the request, including a thread it spawns, can stamp
+the same id without threading a parameter through every call.
+
+Structured logs are **off unless `OPENAI4S_STRUCTURED_LOGS=1`**: turning them on
+by default would change what every existing deployment writes to disk. When on,
+each event is one JSON object per line on stderr.
+
+Redaction is by **value shape, not field name**. A denylist of key names is not
+evidence that a log has no secrets in it — a credential stored under an
+unremarkable key is precisely the one such a rule misses. So any long, opaque,
+mixed-class string is replaced by `<redacted:<fingerprint>>` wherever it occurs,
+including nested, alongside the obvious key-name matches. The fingerprint is
+stable and non-reversible, so two lines about the same secret remain
+correlatable without either revealing it. Paths, URLs, and short identifiers are
+deliberately preserved — redaction that eats the useful fields makes the log
+worthless, and a worthless log stops being read.
+
+**Prompts and research data are never logged by this path.** There is no
+`log_prompt` helper, and the request log records the path only, never the query
+string. The model's messages and the kernel's data are the likeliest carriers of
+a user's unpublished work, so the default is that they have no route out through
+here at all.
+
+Retention is currently the operator's: the daemon writes to stderr and does not
+rotate, expire, or ship logs anywhere. A deployment that enables structured logs
+owns their lifetime.
+
 ### Credentials at rest
 
 Model and search credentials are held by a **SecretBroker**
