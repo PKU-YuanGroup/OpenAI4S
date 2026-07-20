@@ -81,3 +81,6 @@ gateway.py
 - Browser DTOs stay bounded and redacted. Raw provider payloads, tool arguments, credentials, and unrestricted filesystem paths do not belong in a projection.
 
 See the repository [architecture guide](../../docs/architecture.md), [Web application guide](../../docs/webapp.md), and the [`webui/` README](webui/README.md).
+
+- [`security_headers.py`](security_headers.py) — the hash-based CSP and hardened response headers applied to every response.
+- [`contract.py`](contract.py) — the versioned surface's shared envelope, error codes, and route/event inventory.

@@ -81,3 +81,6 @@ gateway.py
 - 交给浏览器的 DTO 必须有界且脱敏。原始供应商 payload、工具参数、凭据和不受限的文件系统路径都不该出现在投影里。
 
 另见仓库[架构指南](../../docs/architecture.md)、[Web 应用指南](../../docs/webapp.md)与 [`webui/` README](webui/README_zh.md)。
+
+- [`security_headers.py`](security_headers.py) —— 基于 hash 的 CSP 与加固响应头，作用于每一个响应。
+- [`contract.py`](contract.py) —— 版本化对外面的统一信封、错误码与 route/event 清单。

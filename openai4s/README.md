@@ -59,3 +59,9 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 - Put new domain behavior in its focused service, repository, or tool. Do not rewrite `host_dispatch.py` or `store.py` wholesale.
 - The kernel protocol has invariants: one frame reader, ID-routed responses, the transaction lock, and the generation checks. Leave them intact.
 - Read the security and persistence labels literally. A best-effort projection or a Partial surface must never be documented as a guarantee.
+
+## Trust Foundation modules
+
+- [`observability.py`](observability.py) — correlation IDs and structured, shape-redacted logs.
+- [`diagnostics.py`](diagnostics.py) — the redacted support bundle and bounded log retention.
+- [`evidence.py`](evidence.py) — stdlib-only verification of an exported package, for a recipient who does not trust this host yet.

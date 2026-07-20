@@ -17,3 +17,5 @@ openai4s verify-package <session>.openai4s-session.zip
 A pass means the package is **intact**, not that it is authentic — see
 [`openai4s/evidence.py`](../../openai4s/evidence.py) for exactly what
 verification does and does not establish.
+
+The recipe itself is in [`SKILL.md`](SKILL.md).

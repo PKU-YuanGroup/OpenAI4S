@@ -47,3 +47,7 @@
 - [安全模型](../../docs/security.md)
 - [系统架构](../../docs/architecture.md)
 - [配置](../../docs/configuration.md)
+
+- [`permissions.py`](permissions.py) —— 数据目录与凭据数据库的仅属主权限。
+- [`secret_broker.py`](secret_broker.py) —— 凭据以不透明引用存放于系统钥匙串或进程环境；`auto` fail closed。
+- [`secret_migration.py`](secret_migration.py) —— 写入、读回验证、再替换，使迁移的每个前缀都可安全中断。

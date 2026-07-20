@@ -183,3 +183,25 @@ Every `test_*.py` file is listed below, with the reason the module exists rather
 ## Choosing the right place
 
 Put a focused regression assertion here. Put reusable scripted scenarios, fake providers, normalized trajectories, scored evaluations, and reviewed goldens in the [`../harness/`](../harness/) layer. Default tests in both layers stay offline unless their entry point is explicitly marked and invoked as an opt-in smoke.
+
+## Trust Foundation additions
+
+| Module | What it pins |
+|---|---|
+| [`test_compute_trust_boundary.py`](test_compute_trust_boundary.py) | The manager never reports success it did not observe. The fault matrix — no network, probe failure, a killed remote process, a partial transfer, a hostile archive, a wedged helper, a cancel that never lands — must resolve to `failed`, `incomplete`, or `unknown`, never `done`. Includes the real-shell class that caught `&` binding looser than `&&`. |
+| [`test_compute_durability.py`](test_compute_durability.py) | A remote job outlives the daemon. The row is written before the submit, the receipt survives a restart, and reconcile reports without resubmitting. |
+| [`test_secret_broker.py`](test_secret_broker.py) | Credentials behind an opaque reference; `auto` fails closed rather than degrading; env injection is read-only. |
+| [`test_secret_canary.py`](test_secret_canary.py) | Canaries asserted on the secret's bytes, not on field names — a denylist fails open the moment someone adds a field. |
+| [`test_schema_migrations.py`](test_schema_migrations.py) | A database is fully at version N or fully at N-1. A failing step rolls back the whole set, and DDL really is transactional. |
+| [`test_data_dir_permissions.py`](test_data_dir_permissions.py) | The credential store is not readable by another local account, including its WAL sidecars. |
+| [`test_security_headers.py`](test_security_headers.py) | `script-src` never gains `'unsafe-inline'`, and the CSP hash tracks edits to the inline bootstrap. |
+| [`test_llm_transport_typed.py`](test_llm_transport_typed.py) | A 429 carries its status and `Retry-After` and is retried within a bounded budget; a stream that committed output never is. |
+| [`test_llm_system_placement.py`](test_llm_system_placement.py) | Only leading system messages become the provider's initial system field, so compaction cannot invade the cache prefix. |
+| [`test_startup_no_implicit_install.py`](test_startup_no_implicit_install.py) | `serve` diagnoses the environment and never mutates it. |
+| [`test_diagnostics.py`](test_diagnostics.py) | The support bundle is safe to paste into a public issue, including a token sitting mid-sentence in a log line. |
+| [`test_evidence_verification.py`](test_evidence_verification.py) | An exported package verifies with no daemon, and four tamper shapes are caught — including a payload rewritten together with its recorded hash. |
+| [`test_observability.py`](test_observability.py) | Correlation IDs and shape-based redaction of structured log fields. |
+| [`test_error_envelope.py`](test_error_envelope.py) | One success/error envelope with stable codes and a request id. |
+| [`test_contract_inventory.py`](test_contract_inventory.py) | Every external route and event is covered by the contract inventory. |
+| [`test_frame_pagination.py`](test_frame_pagination.py) | Keyset pagination over the session list. |
+| [`test_ws_resume_cursor.py`](test_ws_resume_cursor.py) | A monotonic event sequence and a resume cursor a reconnecting client can use. |

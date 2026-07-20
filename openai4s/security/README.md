@@ -47,3 +47,7 @@ Six of the layers around Code-as-Action live in this package: code classificatio
 - [Security model](../../docs/security.md)
 - [System architecture](../../docs/architecture.md)
 - [Configuration](../../docs/configuration.md)
+
+- [`permissions.py`](permissions.py) — owner-only modes for the data directory and the credential database.
+- [`secret_broker.py`](secret_broker.py) — credentials behind an opaque reference, in the system keychain or the process environment; `auto` fails closed.
+- [`secret_migration.py`](secret_migration.py) — write, verify by reading back, then replace, so every prefix of the migration is safe to be interrupted at.

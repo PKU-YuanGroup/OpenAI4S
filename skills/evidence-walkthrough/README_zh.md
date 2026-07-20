@@ -14,3 +14,5 @@ openai4s verify-package <session>.openai4s-session.zip
 
 通过表示这个包是**完整未被篡改**的，而不是"来源可信"——具体校验了什么、没有
 校验什么，见 [`openai4s/evidence.py`](../../openai4s/evidence.py)。
+
+配方本身在 [`SKILL.md`](SKILL.md)。
