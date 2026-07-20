@@ -21,6 +21,7 @@ PQA aggregation needs numpy/scikit-learn and is skipped when they are absent.
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import sys
 
@@ -241,3 +242,58 @@ def test_pqa_end_to_end_scores_a_well_formed_file(kernel, tmp_path):
     assert result["metrics"]["Failed_Rate"] == 0.0
     # Confidences 0.95 (right) and 0.10 (wrong) -> ((1-.95)^2 + (.10)^2) / 2.
     assert result["metrics"]["Brier_Score"] == pytest.approx(0.00625)
+
+
+# `prompt_format` asks the model for `choice & confidence`, so the `&` branch is
+# the prompted path and the whitespace branch is the fallback. An earlier fix
+# hardened only the fallback, leaving the common path fabricating a confidence
+# from the first digit run.
+@pytest.mark.parametrize("token", ["95", "100", "0", "7", "95%"])
+def test_pqa_both_separators_accept_the_same_confidences(kernel, token):
+    assert kernel._split_answer_and_confidence(
+        f"0.3 & {token}"
+    ) == kernel._split_answer_and_confidence(f"0.3 {token}")
+
+
+@pytest.mark.parametrize("token", ["0.95", "0.3", "1.00", "95.5", "abc", "101"])
+def test_pqa_ampersand_branch_rejects_what_the_fallback_rejects(kernel, token):
+    """A probability like 0.95 must not become confidence 0 via the first digit run."""
+    with pytest.raises(ValueError):
+        kernel._split_answer_and_confidence(f"0.3 & {token}")
+    with pytest.raises(ValueError):
+        kernel._split_answer_and_confidence(f"0.3 {token}")
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("Tris & EDTA & 90", ("Tris & EDTA", 90)),
+        ("R&D buffer & 90", ("R&D buffer", 90)),
+        ("wash & spin & 5", ("wash & spin", 5)),
+    ],
+)
+def test_pqa_answer_may_itself_contain_an_ampersand(kernel, content, expected):
+    """Only the last field is the confidence; the answer must match a choice exactly."""
+    assert kernel._split_answer_and_confidence(content) == expected
+
+
+def test_pqa_probability_confidence_reaches_failed_rate_not_a_worst_case_brier(
+    kernel, tmp_path
+):
+    pytest.importorskip("numpy")
+    pytest.importorskip("sklearn")
+
+    # Every answer is correct; only the confidence format deviates. Scoring this
+    # as success yielded Brier 1.0 — the worst attainable — with Failed_Rate 0.
+    records = [{"generated_response": _answer("0.3 & 0.95"), "answer": "0.3"}]
+    path = _write(tmp_path, "pqa.json", records)
+
+    result = kernel.run_bioprobench_eval("PQA", path)
+
+    assert result["status"] == "failed"
+    assert result["metrics"]["Failed_Rate"] == 1.0
+
+
+def test_trigger_batch_inference_exposes_the_endpoint(kernel):
+    """A non-OpenAI key must not be transmittable only to api.openai.com."""
+    assert "base_url" in inspect.signature(kernel.trigger_batch_inference).parameters

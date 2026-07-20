@@ -487,19 +487,26 @@ _CONFIDENCE_TOKEN = re.compile(r"^(100|\d{1,2})\s*%?$")
 def _split_answer_and_confidence(content):
     """Split `[ANSWER_START] … [ANSWER_END]` content into (answer, confidence).
 
-    The `&` form is authoritative. Without it, only strip a trailing token when
-    it really looks like a confidence *and* something is left over for the
-    answer — otherwise a bare correct answer such as `0.3` would be consumed as
-    its own confidence, scoring a correct response as wrong with a fabricated
-    confidence of 0, uncounted in Failed_Rate.
+    The `&` form is the one prompt_format asks the model for; the whitespace
+    form is a fallback. Both validate the trailing token the same way, so a
+    confidence is never fabricated from a digit run: a response that does not
+    carry a well-formed 0-100 score is rejected and lands in Failed_Rate rather
+    than being scored as a confident answer.
     """
     if "&" in content:
         parts = content.split("&")
-        answer = parts[0].strip()
-        match = re.search(r"\d+", parts[-1])
-        if match is None:
-            raise ValueError(f"No confidence value after '&': {parts[-1]!r}")
-        confidence = int(match.group())
+        # Only the LAST field is the confidence; an answer may itself contain
+        # "&" (reagent names such as "Tris & EDTA"), and prompt_format requires
+        # the answer to match a choice exactly, so truncating at the first "&"
+        # would score a correct answer as wrong.
+        answer = "&".join(parts[:-1]).strip()
+        token = parts[-1].strip()
+        if not _CONFIDENCE_TOKEN.match(token):
+            # `re.search(r"\d+")` would take the first digit run, turning a
+            # probability like 0.95 into confidence 0 — the worst attainable
+            # Brier score, reported as a clean success.
+            raise ValueError(f"Trailing token is not a confidence: {token!r}")
+        confidence = int(token.rstrip("% ").strip())
     else:
         tokens = content.split()
         if len(tokens) < 2:
@@ -761,8 +768,16 @@ def trigger_batch_inference(
     mode: str = "API",
     model_name: str = "o3-mini",
     api_key: str = None,
+    base_url: str = None,
 ) -> dict:
-    """Agent interface to trigger full dataset batch inference."""
+    """Agent interface to trigger full dataset batch inference.
+
+    `base_url` selects the OpenAI-compatible endpoint the key is sent to. It
+    must be passed whenever the key is not an OpenAI one: the vendored script's
+    constant points at api.openai.com, so defaulting to it would transmit a
+    deepseek/ark/self-hosted credential — and every prompt — to a vendor the
+    caller never chose.
+    """
     # `task_name` and `model_name` are caller-supplied and land in a filename;
     # a value like "../../etc/x" or "a/b" must not escape the working directory.
     safe_task = _safe_path_component(task_name, "task")
@@ -787,7 +802,9 @@ def trigger_batch_inference(
             api_inf.TASK_NAME = task_name
             api_inf.TEST_FILE_PATH = test_file_path
             api_inf.OUTPUT_FILE = f"{safe_task}_test_{safe_model}_api.json"
-            api_inf.client = OpenAI(api_key=api_key, base_url=api_inf.BASE_URL)
+            endpoint = base_url or api_inf.BASE_URL
+            api_inf.BASE_URL = endpoint
+            api_inf.client = OpenAI(api_key=api_key, base_url=endpoint)
 
             api_inf.main()
             return {
