@@ -30,6 +30,17 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
   consumers at the time of the cut.
 - The frontend builds every request from a single `API` constant in `app.js`,
   so a future version bump is one line there plus `_API_ROOT` in the gateway.
+- **WebSocket events carry a monotonic `seq` per root frame.** A client resumes
+  with `{"type":"view_session","root_frame_id":…,"since_seq":N}` and receives
+  only events after `N`; `replay_begin` reports `from_seq`/`to_seq` and
+  `gap: true` when the capped buffer no longer reaches back to `N+1`, so a
+  client that was away too long can refetch state instead of resuming into a
+  hole it cannot detect. `since_seq` absent or `0` replays the whole buffer.
+  The counter does not reset between turns — a per-turn counter would make a
+  stale cursor look already-satisfied and skip the new turn's first events.
+  Only `broadcast` events are sequenced; point-to-point snapshots delivered on
+  subscribe (`execution_queue`, pending approval cards) and the replay control
+  frames deliberately carry no `seq`.
 - The frontend is a single-page app served from the working tree
   (`/`, `/index.html`, `/static/*`). Any unknown non-API `GET` serves the SPA
   shell (`index.html`) to support deep links. Unknown non-GET, non-API paths

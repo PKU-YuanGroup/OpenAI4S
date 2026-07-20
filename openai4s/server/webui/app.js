@@ -2781,10 +2781,22 @@ function connectWS() {
   S.ws = ws;
   ws.onopen = () => { conn(true); if (S.currentId) sub(S.currentId); };
   ws.onclose = () => { conn(false); setTimeout(connectWS, 1500); };
-  ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } onEvent(m); };
+  ws.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    // Record the cursor only AFTER onEvent has applied it: advancing first
+    // would let a handler that throws leave the client claiming an event it
+    // never rendered, and the resume would then skip it for good.
+    onEvent(m);
+    const rid = m && m.root_frame_id, sq = m && m.seq;
+    if (rid && typeof sq === "number" && sq > (S._seqSeen[rid] || 0)) S._seqSeen[rid] = sq;
+  };
   clearInterval(connectWS._p); connectWS._p = setInterval(() => { try { ws.readyState === 1 && ws.send('{"type":"ping"}'); } catch {} }, 25000);
 }
-const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f })); } catch {} };
+// Highest event seq actually applied, per frame. Sent back on (re)subscribe so
+// the server replays only what was missed instead of the whole turn — the
+// client would otherwise have to de-duplicate a stream it cannot tell apart.
+S._seqSeen = S._seqSeen || {};
+const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f, since_seq: S._seqSeen[f] || 0 })); } catch {} };
 const unsub = (f) => { try { S.ws && S.ws.readyState === 1 && f && S.ws.send(JSON.stringify({ type: "unview_session", root_frame_id: f })); } catch {} };
 const conn = (on) => { const d = $("#conn-dot"); if (d) d.className = "dot " + (on ? "on" : "off"); };
 function onEvent(m) {

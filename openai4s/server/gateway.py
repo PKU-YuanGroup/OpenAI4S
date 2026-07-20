@@ -354,6 +354,23 @@ class WSHub:
         self._lock = threading.Lock()
         # per-frame live-turn buffer: {frame_id: {"events": [...], "running": bool}}
         self._live: dict[str, dict] = {}
+        # Monotonic per-frame event counter. Never reset while the daemon lives,
+        # including across turns: a client that reconnects mid-turn compares its
+        # cursor against this, and a counter that restarted would silently look
+        # like "you already have everything".
+        #
+        # Only events that go through `broadcast` are sequenced. Point-to-point
+        # snapshots a subscriber receives directly (`execution_queue`, pending
+        # approval cards) and the replay control frames carry no `seq` on
+        # purpose: they are not positions in the stream, they are state handed
+        # over once, so numbering them would make two clients' cursors disagree
+        # about the same stream.
+        self._seq: dict[str, int] = {}
+
+    def _next_seq_locked(self, root_frame_id: str) -> int:
+        nxt = self._seq.get(root_frame_id, 0) + 1
+        self._seq[root_frame_id] = nxt
+        return nxt
 
     def add(self, c: WSConnection) -> None:
         with self._lock:
@@ -363,7 +380,9 @@ class WSHub:
         with self._lock:
             self._conns.discard(c)
 
-    def subscribe(self, root_frame_id: str, conn: "WSConnection") -> None:
+    def subscribe(
+        self, root_frame_id: str, conn: "WSConnection", since_seq: int = 0
+    ) -> None:
         """Subscribe and enqueue any live replay as one ordered transaction.
 
         ``broadcast`` uses the same lock while enqueueing.  A newly arriving
@@ -376,7 +395,9 @@ class WSHub:
             conn.subs.add(root_frame_id)
             buf = self._live.get(root_frame_id)
             if buf and buf.get("running") and buf.get("events"):
-                self._enqueue_replay_locked(root_frame_id, conn, buf["events"])
+                self._enqueue_replay_locked(
+                    root_frame_id, conn, buf["events"], since_seq
+                )
 
     def unsubscribe(self, root_frame_id: str, conn: "WSConnection") -> None:
         with self._lock:
@@ -840,6 +861,13 @@ class WSHub:
     def broadcast(self, root_frame_id: str | None, obj: dict) -> None:
         with self._lock:
             if root_frame_id:
+                # Stamped under the hub lock, so the number a client sees is the
+                # same order the buffer recorded and the same order every other
+                # subscriber receives. Assigning it outside the lock would let
+                # two producers interleave and hand out a sequence that does not
+                # match delivery order — which is the one thing a resume cursor
+                # cannot tolerate.
+                obj["seq"] = self._next_seq_locked(root_frame_id)
                 self._record(root_frame_id, obj)
             # ``send_json`` only performs JSON encoding + a non-blocking queue
             # put.  Keeping enqueue under the hub lock makes its order atomic
@@ -870,12 +898,37 @@ class WSHub:
 
     @staticmethod
     def _enqueue_replay_locked(
-        root_frame_id: str, conn: "WSConnection", events: list[dict]
+        root_frame_id: str,
+        conn: "WSConnection",
+        events: list[dict],
+        since_seq: int = 0,
     ) -> None:
-        conn.send_json({"type": "replay_begin", "root_frame_id": root_frame_id})
-        for event in events:
+        """Replay buffered events, optionally only those after ``since_seq``.
+
+        ``replay_begin`` carries ``from_seq``/``to_seq`` and whether the window
+        was complete. A client that was away longer than the buffer retains
+        cannot be served by a cursor, and telling it so (``gap: true``) lets it
+        refetch state instead of resuming from a hole it cannot see.
+        """
+        selected = [e for e in events if int(e.get("seq") or 0) > since_seq]
+        first = int(selected[0].get("seq") or 0) if selected else since_seq
+        last = int(selected[-1].get("seq") or 0) if selected else since_seq
+        conn.send_json(
+            {
+                "type": "replay_begin",
+                "root_frame_id": root_frame_id,
+                "from_seq": first,
+                "to_seq": last,
+                # The buffer is capped, so the oldest event it still holds may
+                # be newer than the cursor+1 the client asked for.
+                "gap": bool(since_seq and selected and first > since_seq + 1),
+            }
+        )
+        for event in selected:
             conn.send_json(event)
-        conn.send_json({"type": "replay_end", "root_frame_id": root_frame_id})
+        conn.send_json(
+            {"type": "replay_end", "root_frame_id": root_frame_id, "to_seq": last}
+        )
 
     def emitter(self, root_frame_id: str):
         def emit(event: dict) -> None:
@@ -8374,7 +8427,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             # Subscription and replay share the hub's enqueue
                             # order with live broadcasts, so a new Cell event
                             # can never interleave into an older snapshot.
-                            hub.subscribe(rid, conn)
+                            #
+                            # `since_seq` is the resume cursor: a client that
+                            # dropped mid-turn sends the highest seq it actually
+                            # rendered and gets only what it missed, instead of
+                            # re-receiving the whole turn and having to
+                            # de-duplicate it. Absent or 0 means "send
+                            # everything buffered", which is the old behaviour.
+                            try:
+                                since_seq = int(msg.get("since_seq") or 0)
+                            except (TypeError, ValueError):
+                                since_seq = 0
+                            hub.subscribe(rid, conn, max(0, since_seq))
                             # re-surface any tool-call approval prompt that is
                             # still pending, so a mid-pause reconnect can answer.
                             try:
