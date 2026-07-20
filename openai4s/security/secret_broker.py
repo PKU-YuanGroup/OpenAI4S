@@ -25,9 +25,13 @@ CLIs.
   for the life of the call.
 * **Linux desktop** — ``secret-tool`` (libsecret), i.e. the Secret Service the
   session keyring already implements. Also stdin.
-* **plaintext** — today's behaviour, kept only so this change does not lock
-  existing users out of their own configuration. It is reported as insecure and
-  is never chosen silently over a working keychain.
+* **env injection** — what a server actually has. Credentials arrive in the
+  process environment (systemd ``EnvironmentFile``, a Kubernetes Secret, …) and
+  nothing is written to disk at all, which is stronger than the keychain case
+  rather than a fallback from it. Read-only on purpose: if the environment owns
+  the secret, the app must not be able to overwrite it behind the operator's
+  back.
+* **plaintext** — the old behaviour. Reachable only by asking for it by name.
 
 There is deliberately **no** obfuscated-file backend. Base64, XOR, or a
 hand-rolled cipher over a key stored beside the ciphertext is not a security
@@ -41,20 +45,24 @@ to fail.
 because it is the same shape of decision and the codebase already has one:
 
 ``auto`` (default)
-    Use the system keychain when it is usable, verified by a real round-trip.
-    Otherwise fall back to plaintext with a high-visibility warning and a
-    machine-readable degraded posture. Never a silent downgrade.
+    Try the system keychain (verified by a real round-trip), then environment
+    injection. If neither is available, **fail closed** — refuse to handle
+    credentials at all.
 ``keychain``
-    The same detection, but fail closed: refuse to store a secret at all rather
-    than store it in the clear.
+    Keychain only. Fail closed.
+``env``
+    Environment injection only. Fail closed.
 ``plaintext``
-    Explicitly accept the current behaviour. Visible in the posture, never
-    implicit.
+    Store credentials in the database in the clear. Never implicit; an operator
+    has to ask for it by name.
 
-The proposal assigns the headless policy — non-persistent injection versus a
-required secure-storage component — to a product owner to freeze. `auto` is
-what keeps every existing install working until they do; `keychain` is what
-they set once they have.
+`auto` used to degrade to plaintext with a warning. That inverted the risk: the
+deployment least able to protect a secret — a Linux server, with neither a
+keychain nor a session bus — was exactly the one that silently got no
+protection, while a developer laptop that needed it least got the keychain. A
+warning printed at boot is not a control; it scrolls away and the credential
+stays in the clear. Storing a secret unprotected is now a decision someone
+makes, not a default they inherit.
 """
 from __future__ import annotations
 
@@ -65,7 +73,7 @@ import sys
 import threading
 
 _STORE_ENV = "OPENAI4S_SECRET_STORE"
-_VALID_MODES = frozenset({"auto", "keychain", "plaintext"})
+_VALID_MODES = frozenset({"auto", "keychain", "env", "plaintext"})
 
 # One service name per install, so a user can find and revoke these by hand.
 _KEYCHAIN_SERVICE = "openai4s"
@@ -144,6 +152,8 @@ class _Backend:
     name = "none"
     persistent = False
     secure = False
+    # A backend the app can read but not write: the operator owns the value.
+    read_only = False
 
     def available(self) -> bool:
         return False
@@ -307,6 +317,73 @@ class SecretServiceBackend(_Backend):
         )
 
 
+class EnvInjectionBackend(_Backend):
+    """Credentials supplied by the operator's environment; never written to disk.
+
+    This is how a server deployment holds secrets: systemd\'s ``EnvironmentFile``,
+    a Kubernetes Secret, or whatever the config management already owns. The
+    process reads them and stores nothing, so a snapshot of the data directory
+    carries no credential at all — which is stronger than the keychain case, not
+    a fallback from it.
+
+    Read-only by nature, and that is the point rather than a limitation: if the
+    environment owns the secret, the UI must not be able to overwrite it behind
+    the operator\'s back. ``put`` therefore fails with the exact variable name to
+    set, instead of silently accepting a value that would vanish on restart.
+
+    A variable is named ``OPENAI4S_SECRET_<SCOPE>_<NAME>``, upper-cased with
+    every non-alphanumeric run collapsed to ``_`` — so the llm api key is
+    ``OPENAI4S_SECRET_LLM_LLM_API_KEY`` and a connector env value is
+    ``OPENAI4S_SECRET_CONNECTOR_ENV_LAB_LAB_TOKEN``.
+    """
+
+    name = "env-injection"
+    persistent = False
+    secure = True
+    read_only = True
+
+    PREFIX = "OPENAI4S_SECRET_"
+    # Explicit opt-in for a server that has not been given any credential yet:
+    # without it a fresh box would look like "no backend" and fail closed before
+    # the operator could ever supply one.
+    ENABLE = "OPENAI4S_SECRET_ENV"
+
+    @staticmethod
+    def var_name(scope: str, name: str) -> str:
+        raw = f"{EnvInjectionBackend.PREFIX}{scope}_{name}"
+        out = []
+        for ch in raw:
+            out.append(ch if ch.isalnum() else "_")
+        # Collapse runs so "a..b" and "a__b" cannot name different variables.
+        collapsed = "_".join(part for part in "".join(out).split("_") if part)
+        return collapsed.upper()
+
+    def available(self) -> bool:
+        if os.environ.get(self.ENABLE, "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return True
+        return any(k.startswith(self.PREFIX) for k in os.environ)
+
+    def put(self, scope: str, name: str, secret: str) -> None:
+        raise SecretBrokerError(
+            f"this deployment takes credentials from the environment, so they "
+            f"cannot be set from the app. Set "
+            f"{self.var_name(scope, name)} in the daemon's environment "
+            f"(systemd EnvironmentFile, container secret, …) and restart."
+        )
+
+    def get(self, scope: str, name: str) -> str | None:
+        return os.environ.get(self.var_name(scope, name)) or None
+
+    def delete(self, scope: str, name: str) -> None:
+        # Nothing of ours to remove; the operator owns the variable.
+        return None
+
+
 class PlaintextBackend(_Backend):
     """Today's behaviour: the value in the Store's ``settings`` table.
 
@@ -381,7 +458,10 @@ def _mode(value: str | None = None) -> str:
 
 
 def _system_backends() -> list[_Backend]:
-    return [KeychainBackend(), SecretServiceBackend()]
+    # Ordered by preference. A desktop keychain is interactive and durable; env
+    # injection is what a server deployment actually has. Plaintext is never in
+    # this list — `auto` must not reach it by falling off the end.
+    return [KeychainBackend(), SecretServiceBackend(), EnvInjectionBackend()]
 
 
 class SecretBroker:
@@ -406,32 +486,45 @@ class SecretBroker:
             return PlaintextBackend(self._store)
 
         candidates = backends if backends is not None else _system_backends()
+        if self._mode == "keychain":
+            candidates = [b for b in candidates if not b.read_only]
+        elif self._mode == "env":
+            candidates = [b for b in candidates if b.read_only]
+
+        tried: list[str] = []
         for backend in candidates:
             if not backend.available():
                 continue
+            # A read-only backend cannot round-trip a probe (there is nothing it
+            # can write), and its availability was already an explicit operator
+            # act — supplying the variable, or setting the enable flag.
+            if backend.read_only:
+                self._detail = f"{backend.name} supplied by the environment"
+                return backend
             ok, why = self._self_test(backend)
             if ok:
                 self._detail = f"{backend.name} verified by a round-trip self-test"
                 return backend
-            self._detail = f"{backend.name} present but unusable: {why}"
+            tried.append(f"{backend.name} present but unusable: {why}")
 
-        if self._mode == "keychain":
-            raise SecretStoreUnavailable(
-                f"{_STORE_ENV}=keychain requires a usable system keychain and "
-                f"none was found ({self._detail or 'no backend available'}). "
-                f"Refusing to store credentials in the clear. Set "
-                f"{_STORE_ENV}=auto to accept plaintext storage."
-            )
-
-        detail = self._detail or "no system keychain on this platform"
-        self._detail = (
-            f"no secure store in use ({detail}); credentials are stored in the "
-            f"database in PLAINTEXT. The data directory is owner-only, but a "
-            f"backup or copy of it carries the secrets in the clear. Set "
-            f"{_STORE_ENV}=keychain to fail closed instead."
+        # Fail closed. `auto` used to fall through to plaintext here with a
+        # warning, which meant the deployment most likely to need protection —
+        # a Linux server, where neither a keychain nor a session bus exists —
+        # was exactly the one that silently got none. Storing a credential in
+        # the clear is now something an operator has to ask for by name.
+        self._detail = "; ".join(tried) or "no secure secret store on this host"
+        raise SecretStoreUnavailable(
+            f"refusing to handle credentials without a secure store "
+            f"({self._detail}).\n"
+            f"  desktop: a login keychain (macOS) or libsecret + a session "
+            f"keyring (Linux) makes this work with no further configuration.\n"
+            f"  server:  supply credentials in the daemon's environment as "
+            f"{EnvInjectionBackend.PREFIX}<SCOPE>_<NAME> (and set "
+            f"{EnvInjectionBackend.ENABLE}=1 before any are configured); "
+            f"nothing is written to disk.\n"
+            f"  to accept plaintext storage anyway, set "
+            f"{_STORE_ENV}=plaintext explicitly."
         )
-        _warn_degraded(self._detail)
-        return PlaintextBackend(self._store)
 
     @staticmethod
     def _self_test(backend: _Backend) -> tuple[bool, str]:

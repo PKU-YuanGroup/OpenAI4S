@@ -32,7 +32,7 @@ untrusted multi-tenant sandbox.
 | **Injection detector** | `OPENAI4S_INJECTION_SCAN` (on) | annotates tool-returned content (web / PDF / MCP) so the model treats it as **data, not instructions** |
 | **Egress allowlist** | `OPENAI4S_EGRESS` (`off`) | application policy for `web_fetch` / `web_search` and authorized `host.bash`; the OS sandbox is the separate raw-network boundary |
 | **Remote-compute confinement** | `OPENAI4S_COMPUTE_CONFINEMENT` (`auto`) | `enforce` refuses `byoc:*` ops because no host-side boundary exists for the provider helper yet (see [`docs/compute.md`](compute.md)); `auto` runs unconfined and reports the posture rather than implying one |
-| **Secret store** | `OPENAI4S_SECRET_STORE` (`auto`) | system keychain behind an opaque reference, chosen only after a real round-trip self-test; `keychain` fails closed, `auto` degrades to plaintext visibly. No obfuscated-file fallback exists |
+| **Secret store** | `OPENAI4S_SECRET_STORE` (`auto`) | credentials behind an opaque reference in the system keychain (after a real round-trip self-test) or the process environment; `auto` **fails closed** when neither is available. Plaintext is reachable only by asking for it by name, and no obfuscated-file fallback exists |
 | **Data-dir permissions** | always on | the data dir is `0700` and the database (plus any `-wal`/`-shm`) is `0600`; POSIX only — Windows needs an ACL, and the posture reports `supported: false` there rather than claiming a boundary |
 | **Browser response headers** | always on | a hash-based CSP with no `'unsafe-inline'` in `script-src` and a same-origin `connect-src`, plus `nosniff` / `X-Frame-Options` / `Referrer-Policy` on every response including streamed artifact bytes |
 
@@ -180,9 +180,26 @@ its key in the keychain with nothing left that refers to it.
 
 | mode (`OPENAI4S_SECRET_STORE`) | behaviour |
 |---|---|
-| `auto` (default) | Use the system keychain when a **real round-trip self-test** passes; otherwise fall back to plaintext with a high-visibility warning and `secure: false` in the posture. Never a silent downgrade. |
-| `keychain` | The same detection, but fail closed — refuse to store a secret at all rather than store it in the clear. |
-| `plaintext` | Explicitly accept database storage. Visible in the posture, never implicit. |
+| `auto` (default) | System keychain (verified by a **real round-trip self-test**), else environment injection. If neither is available, **fail closed** — refuse to handle credentials at all. |
+| `keychain` | Keychain only. Fail closed. |
+| `env` | Environment injection only. Fail closed. |
+| `plaintext` | Store in the database in the clear. Never implicit; asked for by name. |
+
+**`auto` fails closed rather than degrading.** It used to fall through to
+plaintext with a warning, which inverted the risk: the deployment least able to
+protect a secret — a Linux server, with neither a keychain nor a session bus —
+was exactly the one that silently got none, while a laptop that needed it least
+got the keychain. A warning printed at boot is not a control; it scrolls away
+and the credential stays in the clear.
+
+**Servers supply credentials through the environment.** Set
+`OPENAI4S_SECRET_<SCOPE>_<NAME>` (e.g. `OPENAI4S_SECRET_LLM_LLM_API_KEY`) from
+systemd's `EnvironmentFile`, a Kubernetes Secret, or whatever the config
+management already owns; set `OPENAI4S_SECRET_ENV=1` to opt in before any are
+configured. **Nothing is written to disk** — stronger than the keychain case,
+not a fallback from it. It is read-only on purpose: if the environment owns the
+secret, the app must not overwrite it behind the operator's back, so a write
+attempt fails with the exact variable name to set.
 
 Backends are driven through the system CLIs, because the core is stdlib-only and
 cannot depend on `keyring`: `security` on macOS, `secret-tool` (Secret Service)

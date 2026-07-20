@@ -158,31 +158,46 @@ def test_describe_reports_absence(broker):
 # --------------------------------------------------------------------------
 
 
-def test_a_backend_must_pass_a_real_round_trip_to_be_used(store):
+def test_a_backend_that_cannot_round_trip_is_not_used(store):
     """Presence of a CLI is not availability of a keychain. A backend that
     accepts a write and returns nothing must be rejected at resolution — not
-    discovered later, when the user's key silently fails to save."""
-    resolved = SecretBroker(store, mode="auto", backends=[_BrokenRoundTrip()])
-    assert resolved.posture()["backend"] == "plaintext-db"
-    assert "unusable" in resolved.posture()["detail"]
+    discovered later, when the user's key silently fails to save. With nothing
+    else available that now means failing closed."""
+    with pytest.raises(SecretStoreUnavailable, match="unusable"):
+        SecretBroker(store, mode="auto", backends=[_BrokenRoundTrip()])
 
 
-def test_auto_degrades_visibly_rather_than_silently(store, capsys):
-    SecretBroker(store, mode="auto", backends=[_Unavailable()])
-    warning = capsys.readouterr().err
-    assert "SECURITY WARNING" in warning
-    assert "PLAINTEXT" in warning
+def test_auto_fails_closed_rather_than_degrading_to_plaintext(store):
+    """The inversion this fixes: `auto` used to fall through to plaintext with
+    a warning, so the deployment least able to protect a secret — a Linux
+    server with neither a keychain nor a session bus — was exactly the one that
+    silently got no protection. A boot warning is not a control; it scrolls
+    away and the credential stays in the clear."""
+    with pytest.raises(SecretStoreUnavailable) as e:
+        SecretBroker(store, mode="auto", backends=[_Unavailable()])
+    message = str(e.value)
+    # The error has to say how to fix it on each kind of host, or it just
+    # relocates the problem to a support thread.
+    assert "OPENAI4S_SECRET_" in message
+    assert "plaintext" in message
 
 
-def test_auto_posture_admits_it_is_not_secure(store):
-    posture = SecretBroker(store, mode="auto", backends=[_Unavailable()]).posture()
-    assert posture["secure"] is False
+def test_failing_closed_does_not_leak_a_secret_into_the_message(store):
+    with pytest.raises(SecretStoreUnavailable) as e:
+        SecretBroker(store, mode="auto", backends=[_Unavailable()])
+    assert _CANARY not in str(e.value)
+
+
+def test_plaintext_remains_reachable_but_only_by_name(store):
+    """An operator who accepts the risk can still say so; nobody inherits it."""
+    posture = SecretBroker(store, mode="plaintext").posture()
     assert posture["backend"] == "plaintext-db"
+    assert posture["secure"] is False
 
 
 def test_keychain_mode_fails_closed(store):
     """Refuse to store a secret at all rather than store it in the clear."""
-    with pytest.raises(SecretStoreUnavailable, match="Refusing"):
+    with pytest.raises(SecretStoreUnavailable, match="refusing"):
         SecretBroker(store, mode="keychain", backends=[_Unavailable()])
 
 
@@ -571,3 +586,84 @@ def test_no_obfuscation_backend_exists():
     names = [n.lower() for n in dir(module)]
     for banned in ("base64", "obfuscat", "xor", "encrypt"):
         assert not any(banned in n for n in names), banned
+
+
+# --------------------------------------------------------------------------
+# environment injection — how a server holds credentials
+# --------------------------------------------------------------------------
+
+
+def test_env_injection_reads_the_operators_variable(store, monkeypatch):
+    from openai4s.security.secret_broker import EnvInjectionBackend
+
+    monkeypatch.setenv("OPENAI4S_SECRET_LLM_LLM_API_KEY", _CANARY)
+    broker = SecretBroker(store, mode="env", backends=[EnvInjectionBackend()])
+    assert broker.get(make_ref("llm", "llm_api_key")) == _CANARY
+
+
+def test_env_injection_writes_nothing_to_disk(store, monkeypatch):
+    """Stronger than the keychain case, not a fallback from it: a snapshot of
+    the data directory carries no credential at all."""
+    from openai4s.security.secret_broker import EnvInjectionBackend
+
+    monkeypatch.setenv("OPENAI4S_SECRET_LLM_LLM_API_KEY", _CANARY)
+    SecretBroker(store, mode="env", backends=[EnvInjectionBackend()])
+    assert _CANARY not in json.dumps(
+        [dict(r) for r in store._conn.execute("SELECT * FROM settings")]
+    )
+
+
+def test_env_injection_refuses_to_be_overwritten_by_the_app(store, monkeypatch):
+    """If the environment owns the secret, the UI must not be able to change it
+    behind the operator's back — and the error has to name the variable to set,
+    or the operator is left guessing."""
+    from openai4s.security.secret_broker import EnvInjectionBackend
+
+    monkeypatch.setenv("OPENAI4S_SECRET_ENV", "1")
+    broker = SecretBroker(store, mode="env", backends=[EnvInjectionBackend()])
+    with pytest.raises(SecretBrokerError) as e:
+        broker.put("llm", "llm_api_key", _CANARY)
+    assert "OPENAI4S_SECRET_LLM_LLM_API_KEY" in str(e.value)
+
+
+def test_a_fresh_server_can_opt_in_before_any_credential_exists(store, monkeypatch):
+    """Without the enable flag a box with no variables set yet would look like
+    "no backend" and fail closed before the operator could supply one."""
+    from openai4s.security.secret_broker import EnvInjectionBackend
+
+    monkeypatch.setenv("OPENAI4S_SECRET_ENV", "1")
+    assert EnvInjectionBackend().available() is True
+
+
+def test_variable_names_are_predictable(monkeypatch):
+    from openai4s.security.secret_broker import EnvInjectionBackend
+
+    assert (
+        EnvInjectionBackend.var_name("llm", "llm_api_key")
+        == "OPENAI4S_SECRET_LLM_LLM_API_KEY"
+    )
+    assert (
+        EnvInjectionBackend.var_name("connector_env", "lab.LAB_TOKEN")
+        == "OPENAI4S_SECRET_CONNECTOR_ENV_LAB_LAB_TOKEN"
+    )
+
+
+def test_separator_runs_cannot_name_two_different_variables():
+    """ "a..b" and "a__b" must not resolve to different secrets."""
+    from openai4s.security.secret_broker import EnvInjectionBackend
+
+    assert EnvInjectionBackend.var_name("s", "a..b") == EnvInjectionBackend.var_name(
+        "s", "a__b"
+    )
+
+
+def test_auto_prefers_a_keychain_over_the_environment(store, monkeypatch):
+    """Both are secure; the keychain is durable and interactive, so it wins
+    when present."""
+    from openai4s.security.secret_broker import EnvInjectionBackend
+
+    monkeypatch.setenv("OPENAI4S_SECRET_ENV", "1")
+    posture = SecretBroker(
+        store, mode="auto", backends=[MemoryBackend(), EnvInjectionBackend()]
+    ).posture()
+    assert posture["backend"] == "memory"
