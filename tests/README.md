@@ -207,6 +207,7 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_schema_migrations.py`](test_schema_migrations.py) | A database is fully at version N or fully at N-1. A failing step rolls back the whole set, and DDL really is transactional. |
 | [`test_data_dir_permissions.py`](test_data_dir_permissions.py) | The credential store is not readable by another local account, including its WAL sidecars. |
 | [`test_security_headers.py`](test_security_headers.py) | `script-src` never gains `'unsafe-inline'`, and the CSP hash tracks edits to the inline bootstrap. |
+| [`test_local_jobs.py`](test_local_jobs.py) | Cancelling a local background job really stops it: the whole process group dies, not just the shell, and a cancel that could not stop the job says so instead of reporting success. |
 | [`test_llm_transport_typed.py`](test_llm_transport_typed.py) | A 429 carries its status and `Retry-After` and is retried within a bounded budget; a stream that committed output never is. |
 | [`test_llm_transport_wiring.py`](test_llm_transport_wiring.py) | The typed transport is reachable from a real `chat()`: errors name their provider and Stop interrupts a backoff, while four-argument injected transports keep working. |
 | [`test_llm_system_placement.py`](test_llm_system_placement.py) | Only leading system messages become the provider's initial system field, so compaction cannot invade the cache prefix. |
