@@ -425,3 +425,55 @@ def test_job_result_cache_warning_egress_hint_and_cancel(capsys):
         "compute_cancel",
         [{"job_id": "job-1", "provider": "byoc:nvidia"}],
     )
+
+
+def test_idempotency_key_reaches_the_host(tmp_path, monkeypatch):
+    """`docs/compute.md` has told users to pass this for a while; the SDK
+    never forwarded it, so a retry became a second remote job — the exact
+    duplicate charge the host's dedup guard exists to prevent."""
+    monkeypatch.chdir(tmp_path)
+    recorder = _Recorder([{"job_id": "job-1"}])
+    instance = _ComputeInstance(recorder, "ssh:lab")
+
+    instance.submit_job(command="run", intent="test", idempotency_key="run-42")
+
+    _, args = recorder.calls[0]
+    assert args[0]["idempotency_key"] == "run-42"
+
+
+def test_the_key_the_sdk_sends_actually_deduplicates(tmp_path, monkeypatch):
+    """End to end rather than at the seam: the SDK's key must be the one the
+    manager claims against, or forwarding it proves nothing."""
+    import subprocess
+    import types
+
+    from openai4s.compute.manager import ComputeError, ComputeManager
+    from openai4s.config import Config
+
+    (tmp_path / "skills").mkdir()
+    cfg = types.SimpleNamespace(
+        data_dir=tmp_path,
+        skills_dir=tmp_path / "skills",
+        db_path=Config(data_dir=tmp_path).db_path,
+    )
+
+    class _Proc:
+        returncode = 0
+        stdout = b"4242\n"
+        stderr = b""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(), raising=True)
+    manager = ComputeManager(cfg)
+
+    def host_call(op, args):
+        assert op == "compute_submit"
+        return manager.submit({k: v for k, v in args[0].items() if v is not None})
+
+    instance = _ComputeInstance(host_call, "ssh:lab")
+    first = instance.submit_job(command="run", intent="t", idempotency_key="k-1")
+    assert first.job_id
+
+    with pytest.raises(RuntimeError) as e:
+        instance.submit_job(command="run", intent="t", idempotency_key="k-1")
+    assert isinstance(e.value, (ComputeError, RuntimeError))
+    assert "duplicate" in str(e.value).lower() or "already" in str(e.value).lower()

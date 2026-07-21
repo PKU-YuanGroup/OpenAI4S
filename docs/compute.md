@@ -14,7 +14,7 @@ Model-weight-bound work runs its heavy step on a remote GPU, not the local kerne
 
 ## 1 · `host.compute` — general BYOC / SSH job dispatcher
 
-A job is dispatched non-blocking (`create → submit_job → wait → result`): the daemon stages inputs, runs the job on the remote provider, and harvests `out.tar.gz` back into the workspace under `hpc/<job_id>/`. The harvest is bounded — the archive is rejected outright on path traversal, absolute paths, symlink/hardlink or device members, or a decompression bomb, because remote bytes are untrusted input even on the happy path. Two provider families are built in:
+A job is dispatched non-blocking (`create → submit_job → poll result()`): the daemon stages inputs, runs the job on the remote provider, and harvests `out.tar.gz` back into the workspace under `hpc/<job_id>/`. `result()` is what drives that forward — it probes the remote and harvests once the work is terminal; there is no background poller, so a job nobody polls is never harvested. The harvest is bounded — the archive is rejected outright on path traversal, absolute paths, symlink/hardlink or device members, or a decompression bomb, because remote bytes are untrusted input even on the happy path. Two provider families are built in:
 
 - **`ssh:<alias>`** — run jobs over an SSH connection to a machine you already have ([`skills/remote-compute-ssh`](../skills/remote-compute-ssh)).
 - **`byoc:<id>`** — a bring-your-own-compute provider discovered from `skills/remote-compute-<id>/` (`provider.json` + `provider.py`).
@@ -30,7 +30,8 @@ The bundled **NVIDIA NIM** provider ([`skills/remote-compute-nvidia`](../skills/
 c   = host.compute.create("byoc:nvidia", provider_params={"nvidia": {"mode": "hosted"}})
 job = c.submit_job(intent="run esmfold2 on 1 seq", command="python run_esmfold.py ./seq.fasta",
                    inputs=[{"src": "seq.fasta"}], outputs=["*.pdb"], timeout_seconds=3600)
-result = job.result()   # non-blocking once the compute_done notification arrives
+result = job.result()   # one non-blocking poll — call it again from a later cell
+                        # until result['status'] is terminal
 ```
 
 The daemon forwards **only** the keys a provider declares in its `provider.json` `secret_env` into the job (over the helper's stdin) — never your whole environment.

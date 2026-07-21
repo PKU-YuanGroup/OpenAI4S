@@ -125,7 +125,17 @@ jobs:
   publish:
     name: Publish to PyPI with OIDC
     if: github.event_name == 'release'
-    needs: build
+    # The PyPI upload is the one step in this pipeline that cannot be undone —
+    # a version number, once taken, is taken forever, and yanking is a
+    # different thing from never having published. So it goes last, behind
+    # every other required asset.
+    #
+    # `needs: build` alone let it run while the macOS image had failed to
+    # build or failed `verify_macos_bundle.py`: `attach` would skip, and the
+    # result was a release published on PyPI whose GitHub Release carried no
+    # assets at all. That is precisely the half-published state this pipeline
+    # exists to prevent.
+    needs: [build, macos-app, attach]
     runs-on: ubuntu-latest
     environment:
       name: pypi

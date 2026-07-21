@@ -286,6 +286,192 @@ def test_the_submitted_event_carries_the_receipt(cfg, submitted):
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# the byoc arm: same discipline as ssh
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def byoc(cfg, tmp_path):
+    """A discoverable byoc provider. The helper itself is always stubbed."""
+    d = cfg.skills_dir / "remote-compute-fake"
+    d.mkdir()
+    (d / "provider.json").write_text('{"id": "fake"}', encoding="utf-8")
+    (d / "provider.py").write_text("PROVIDER = object()\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    return ComputeManager(cfg, workspace=workspace)
+
+
+def _helper(manager, monkeypatch, behaviour):
+    monkeypatch.setattr(
+        ComputeManager, "_run_helper", lambda self, prov, op, *a, **k: behaviour(op)
+    )
+
+
+def test_a_byoc_create_that_may_have_landed_is_reconcilable(byoc, monkeypatch, cfg):
+    """A killed helper is not proof that nothing was created. Recording this as
+    `failed` would be a claim we cannot support; leaving it at `staging` — the
+    old behaviour — is worse still, because nothing ever revisits it."""
+
+    def behaviour(op):
+        raise ComputeError("helper exceeded the host deadline", "unknown_state")
+
+    _helper(byoc, monkeypatch, behaviour)
+    with pytest.raises(ComputeError):
+        byoc.submit({"provider": "byoc:fake", "command": "train.py"})
+
+    rows = get_store(cfg.db_path).list_compute_jobs()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "unknown"
+
+
+def test_a_byoc_sandbox_survives_a_submit_that_failed_after_it(byoc, monkeypatch, cfg):
+    """The expensive case. `create` succeeded, so a sandbox is billing; the
+    later `submit` blew up. The id lived only in the in-memory `_sandboxes`
+    map, so a restart left a running sandbox nobody could name."""
+
+    def behaviour(op):
+        if op == "create":
+            return {"sandbox_id": "sbx-777"}
+        raise ComputeError("submit exploded", "transient")
+
+    _helper(byoc, monkeypatch, behaviour)
+    with pytest.raises(ComputeError):
+        byoc.submit({"provider": "byoc:fake", "command": "train.py"})
+
+    row = get_store(cfg.db_path).list_compute_jobs()[0]
+    assert row["status"] == "unknown", "a live sandbox is not a clean failure"
+    assert row["sandbox_id"] == "sbx-777"
+    assert row["receipt"] == "sbx-777", "the receipt is what terminate needs"
+
+
+def test_a_byoc_submit_the_provider_refused_is_failed(byoc, monkeypatch, cfg):
+    """No sandbox was created and the provider said so explicitly, so this one
+    really is terminal — and holds no concurrency slot."""
+
+    def behaviour(op):
+        raise ComputeError("quota exceeded", "invalid_request")
+
+    _helper(byoc, monkeypatch, behaviour)
+    with pytest.raises(ComputeError):
+        byoc.submit({"provider": "byoc:fake", "command": "train.py"})
+
+    row = get_store(cfg.db_path).list_compute_jobs()[0]
+    assert row["status"] == "failed"
+    assert row["terminal_at"]
+    assert byoc._live_count() == 0
+
+
+def test_a_closed_job_does_not_come_back_to_life(cfg, submitted):
+    """close() only mutated the in-memory dict, so a restart rehydrated the job
+    as live: it held a concurrency slot and was reconciled against a provider
+    that had already released it."""
+    manager, job_id = submitted
+    manager.close({"provider": "ssh:lab", "job_ids": [job_id]})
+
+    assert get_store(cfg.db_path).list_compute_jobs()[0]["status"] == "closed"
+    assert ComputeManager(cfg)._live_count() == 0
+    kinds = [e["kind"] for e in manager.job_history({"job_id": job_id})["events"]]
+    assert "closed" in kinds
+
+
+def test_close_keeps_the_sandbox_id_when_terminate_fails(byoc, monkeypatch):
+    """The id was popped *before* the terminate attempt, so a provider that
+    refused to release the sandbox left it billing with nothing able to name
+    it. Losing the handle is the one outcome worse than a failed terminate."""
+
+    def behaviour(op):
+        if op == "create":
+            return {"sandbox_id": "sbx-9"}
+        if op == "terminate":
+            raise ComputeError("provider unreachable", "transient")
+        return {}
+
+    _helper(byoc, monkeypatch, behaviour)
+    byoc.submit({"provider": "byoc:fake", "command": "x"})
+    assert byoc._sandboxes["fake"] == "sbx-9"
+
+    out = byoc.close({"provider": "byoc:fake"})
+    assert out["sandbox_released"] is False
+    assert byoc._sandboxes.get("fake") == "sbx-9", "the handle must survive"
+
+
+def test_close_releases_the_sandbox_once_the_provider_confirms(byoc, monkeypatch):
+    def behaviour(op):
+        return {"sandbox_id": "sbx-9"} if op == "create" else {}
+
+    _helper(byoc, monkeypatch, behaviour)
+    byoc.submit({"provider": "byoc:fake", "command": "x"})
+
+    out = byoc.close({"provider": "byoc:fake"})
+    assert out["sandbox_released"] is True
+    assert "fake" not in byoc._sandboxes
+
+
+# --------------------------------------------------------------------------
+# staging inputs
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "dst",
+    [
+        "/etc/cron.d/openai4s",  # `work / dst` discards `work` entirely
+        "../../escaped.txt",
+        "nested/dir.txt",  # inputs are flat; a subdir is not a name
+        "..",
+    ],
+)
+def test_a_staged_input_cannot_choose_where_it_lands(byoc, monkeypatch, tmp_path, dst):
+    src = tmp_path / "workspace" / "payload.txt"
+    src.write_text("data", encoding="utf-8")
+    _helper(byoc, monkeypatch, lambda op: {"sandbox_id": "sbx-1"})
+
+    with pytest.raises(ComputeError) as e:
+        byoc.submit(
+            {
+                "provider": "byoc:fake",
+                "command": "x",
+                "inputs": [{"src": str(src), "dst_filename": dst}],
+            }
+        )
+    assert e.value.error_kind == "invalid_request"
+
+
+def test_a_missing_input_fails_the_job_instead_of_running_without_it(
+    byoc, monkeypatch, tmp_path
+):
+    """Silently skipping a missing input is how a job runs to completion
+    against data that was never there and reports success."""
+    _helper(byoc, monkeypatch, lambda op: {"sandbox_id": "sbx-1"})
+
+    with pytest.raises(ComputeError) as e:
+        byoc.submit(
+            {
+                "provider": "byoc:fake",
+                "command": "x",
+                "inputs": [{"src": str(tmp_path / "workspace" / "absent.csv")}],
+            }
+        )
+    assert e.value.error_kind == "invalid_request"
+
+
+def test_a_legitimate_input_still_stages(byoc, monkeypatch, tmp_path):
+    src = tmp_path / "workspace" / "payload.txt"
+    src.write_text("data", encoding="utf-8")
+    _helper(byoc, monkeypatch, lambda op: {"sandbox_id": "sbx-1"})
+
+    out = byoc.submit(
+        {
+            "provider": "byoc:fake",
+            "command": "x",
+            "inputs": [{"src": str(src), "dst_filename": "renamed.txt"}],
+        }
+    )
+    assert out["status"] == "running"
+
+
 def test_a_manager_without_a_store_still_runs_jobs(cfg, monkeypatch):
     """Bookkeeping that cannot reach the database must not refuse to run work —
     that is the old behaviour, which is worse but not nothing."""

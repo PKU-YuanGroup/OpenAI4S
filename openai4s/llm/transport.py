@@ -19,13 +19,46 @@ The retry policy is deliberately narrow:
 """
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import random
 import time
 import urllib.error
 import urllib.request
+from typing import Any
 
 from .models import LLMError, TransportError, parse_retry_after, status_is_retryable
+
+
+def bind_call_context(fn, **context):
+    """Attach provider/cancellation to a transport without breaking injection.
+
+    The provider adapters call ``post_json(url, payload, headers, timeout)``
+    positionally, so this binds the context once at the dispatch seam instead
+    of touching all four wire adapters.
+
+    Offline tests inject their own transports at two different depths — the
+    ``openai4s.llm._post_json`` facade hook and ``transport.post_json``
+    itself — and many of those are plain four-argument callables. The
+    documented contract says they keep working, so only keywords the target
+    actually accepts are bound; anything else is dropped rather than raising
+    ``TypeError`` on a call that would otherwise have succeeded.
+    """
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # builtins and other C callables
+        return fn
+    takes_kwargs = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+    accepted: dict[str, Any] = {
+        name: value
+        for name, value in context.items()
+        if takes_kwargs or name in parameters
+    }
+    return functools.partial(fn, **accepted) if accepted else fn
+
 
 # Attempts include the first try: 3 == one initial call plus two retries.
 DEFAULT_MAX_ATTEMPTS = 3

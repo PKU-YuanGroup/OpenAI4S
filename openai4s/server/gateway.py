@@ -4842,6 +4842,9 @@ class SessionRunner:
                 chat,
                 tools=model_tools,
                 stream=True,
+                # Same signal the engine gets below, so Stop also interrupts a
+                # retry backoff rather than only the gap between turns.
+                cancellation=EventCancellation(st.cancel),
             ),
             WebActionExecutor(
                 dispatcher=lambda: st.dispatcher,

@@ -65,9 +65,10 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
 - All JSON responses are `application/json; charset=utf-8` with
   `Cache-Control: no-cache` and an explicit `Content-Length`.
 - Request bodies are JSON except the explicitly documented Session-package
-  import route, which consumes raw ZIP bytes. `Handler._body()` accepts an empty body but rejects an unparsable
-  body by returning `{}` — a malformed JSON body is **silently treated as
-  empty**, not rejected with 400.
+  import route, which consumes raw ZIP bytes. `Handler._body()` accepts an
+  empty body, but an unparsable one is rejected with `400 malformed_json`, and
+  a body that parses to something other than an object with
+  `400 invalid_body_type`. Neither is silently coerced to `{}`.
 - Query strings are parsed with `parse_qs` (every value is a list;
   handlers read `q.get("x", [default])[0]`).
 
@@ -526,7 +527,7 @@ compatibility; keep both when touching these serializers.
   `{error}`, others return `{}` (frame/project GET), `{"ok":true}`
   (idempotent deletes), a nulls-filled 200 (`/artifacts/{aid}/lineage`), or a
   200 body containing `{error}` (`/connectors/{id}/call`).
-- Malformed JSON request bodies are treated as `{}`, not rejected.
+- Malformed JSON request bodies are rejected with `400 malformed_json`.
 - Raw-bytes artifact routes return JSON bodies on 404.
 - Skill enable-disable state is durable; the legacy built-in-agent roster
   toggle is still process-local. Specialist runtime policy has separate

@@ -130,15 +130,18 @@ print(job.job_id) # cell ends here — kernel never blocks on compute
 (or inline the `pd.Index(np.asarray(..., dtype=object))` coercion) before
 `.write_h5ad`.
 
-Then call the `wait_for_notification` brain-tool. When `compute_done`
-arrives, `save_artifacts(payload["featured_files"])`. For the full result
-dict, re-enter the kernel and bind the **compute handle** (not the job)
-separately — `.close` lives on the handle, not on the job:
+Then poll from a later cell — `.result()` is one non-blocking probe, and it
+is what harvests the outputs once the job is terminal; nothing runs in the
+background, so a job you never poll is never harvested. Bind the **compute
+handle** (not the job) to poll from a fresh kernel — `.close()` lives on the
+handle, not on the job:
 
 ```python
 h = host.compute.create('byoc:nvidia')
-res = h.attach_job(job_id).result # output_files, remote_workdir,...
-h.close
+res = h.attach_job(job_id).result() # status, output_files, remote_workdir,...
+if res["status"] != "running":      # else end the cell and poll again later
+    save_artifacts(res["featured_files"])
+    h.close()
 ```
 
 See the `remote-compute-nvidia` skill for orchestration details.

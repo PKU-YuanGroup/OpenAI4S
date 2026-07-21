@@ -198,7 +198,6 @@ def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
         "scripts/source_secret_scan.py",
         "scripts/verify_release_artifacts.py",
         "python-package-distributions",
-        "needs: build",
         "environment:",
         "name: pypi",
         "id-token: write",
@@ -210,6 +209,27 @@ def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
         assert contract in workflow
 
     assert workflow.index("id-token: write") > workflow.index("publish:")
+
+
+def test_the_irreversible_publish_waits_for_every_other_required_job():
+    """A PyPI version number, once taken, is taken forever.
+
+    With `needs: build` alone, a macOS image that failed to build or failed
+    `verify_macos_bundle.py` only skipped `attach` — `publish` went ahead, and
+    the result was a version live on PyPI whose GitHub Release carried no
+    assets. Yanking is not the same as never having published.
+    """
+    import re
+
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    publish = workflow[workflow.index("  publish:") :]
+    needs = re.search(r"^    needs: (.+)$", publish, re.MULTILINE)
+    assert needs, "the publish job must declare what it waits for"
+    for required in ("build", "macos-app", "attach"):
+        assert required in needs.group(1), (
+            f"publish must not run before {required!r}; it is the only "
+            f"irreversible step in this pipeline"
+        )
 
 
 def test_distribution_manifest_keeps_release_and_runtime_resources():

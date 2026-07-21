@@ -112,17 +112,22 @@ job = c.submit_job(
 print(job.job_id)   # cell ends here — kernel never blocks on compute
 ```
 
-Then call the `wait_for_notification` brain-tool. When the
-`compute_done` notification arrives, act on its payload:
+Then poll from a later cell. `.result()` is one non-blocking probe of the
+remote and is what harvests the outputs once the job is terminal — nothing
+runs in the background, so a job you never poll is never harvested. While the
+job is still running it returns `{"status": "running", …}`; end the cell and
+call it again later:
 
 ```python
-save_artifacts(payload["featured_files"])   # paths under hpc/<job_id>/
+r = c.attach_job(job_id).result()   # {status, exit_code, output_files,
+                                    #  featured_files, remote_workdir, …}
+if r["status"] != "running":
+    save_artifacts(r["featured_files"])   # paths under hpc/<job_id>/
+    c.close()
 ```
 
-For the full result dict (`output_files`, `remote_workdir`, …), re-enter the
-kernel: `c.attach_job(job_id).result()` then `c.close()`. See the
-`remote-compute-ssh` / `remote-compute-nvidia` skill for the orchestration
-details.
+See the `remote-compute-ssh` / `remote-compute-nvidia` skill for the
+orchestration details.
 
 Inside `embed_esm2.py`, set `TORCH_HOME` to the provider's torch-hub cache
 mount (path is in `compute_details`) so `esm.pretrained.*` resolves locally.

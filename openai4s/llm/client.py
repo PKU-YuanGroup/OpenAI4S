@@ -17,6 +17,7 @@ from .models import LLMError
 from .providers import _WIRE_DISPATCH
 from .registry import PROVIDERS, provider_spec
 from .tooling import _canonical_tool_specs
+from .transport import bind_call_context
 
 
 def supports_vision(provider: str) -> bool:
@@ -52,6 +53,7 @@ def chat(
     tools: list[Any] | tuple[Any, ...] | None = None,
     tool_choice: Any = None,
     parallel_tool_calls: bool | None = None,
+    should_cancel=None,
     post_json,
     post_sse,
 ) -> dict[str, Any]:
@@ -97,11 +99,17 @@ def chat(
         effective_parallel = capabilities.parallel_tool_calls
     if not canonical_tools:
         effective_parallel = None
-    transport_args = {"post_sse": post_sse}
+    bound_json = bind_call_context(
+        post_json, provider=cfg.provider, should_cancel=should_cancel
+    )
+    bound_sse = bind_call_context(
+        post_sse, provider=cfg.provider, should_cancel=should_cancel
+    )
+    transport_args = {"post_sse": bound_sse}
     if wire == "openai":
-        transport_args["post_json"] = post_json
+        transport_args["post_json"] = bound_json
     elif wire in ("anthropic", "gemini"):
-        transport_args = {"post_json": post_json}
+        transport_args = {"post_json": bound_json}
     reply = caller(
         messages,
         cfg,

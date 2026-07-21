@@ -123,6 +123,31 @@ def _safe_remote_path(value: str, *, label: str) -> str:
     return text
 
 
+def _safe_stage_name(value: str, *, label: str) -> str:
+    """A staged input lands flat in the archive root, so its name is a name.
+
+    ``work / dst`` is a join, and a join with an absolute path discards the
+    left side entirely — ``work / "/etc/cron.d/x"`` is ``/etc/cron.d/x``. A
+    relative ``../`` walks out just as effectively. Both write wherever the
+    daemon can write, before the archive is ever built, and the caller picking
+    the name is an agent.
+    """
+    text = str(value or "").strip()
+    if not text:
+        raise ComputeError(f"{label} must not be empty", "invalid_request")
+    if "\x00" in text:
+        raise ComputeError(f"{label} must not contain a NUL byte", "invalid_request")
+    if text in (".", ".."):
+        raise ComputeError(f"{label} must name a file ({text!r})", "invalid_request")
+    if os.path.isabs(text) or Path(text).name != text:
+        raise ComputeError(
+            f"{label} must be a bare filename with no directory part ({text!r}); "
+            f"staged inputs are placed flat in the job's work directory",
+            "invalid_request",
+        )
+    return text
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -177,9 +202,13 @@ def _discover_providers(skills_dir: Path) -> dict[str, dict]:
 
 
 class ComputeManager:
-    """One per session/kernel. Owns provider discovery, job bookkeeping, and a
-    lazy background poller. Thread-safe for the handful of ops the dispatcher
-    drives."""
+    """One per session/kernel. Owns provider discovery and durable job
+    bookkeeping. Thread-safe for the handful of ops the dispatcher drives.
+
+    There is no background poller: ``result()`` is what probes the remote and
+    harvests. A job nobody polls is never harvested, which is why the SDK
+    tells the agent to call ``.result()`` again rather than to wait.
+    """
 
     # Hard host-side ceiling on one helper op. The helper's own poll budget
     # bounds its .phase loop, not a wedged provider SDK socket.
@@ -258,6 +287,48 @@ class ComputeManager:
             self._store.append_compute_job_event(job_id, kind, payload)
         except Exception:  # noqa: BLE001
             pass
+
+    def _fail_submit(
+        self, job_id: str, exc: BaseException, *, sandbox_id: str | None = None
+    ) -> None:
+        """Give a submit that raised an honest terminal state, never `staging`.
+
+        The distinction that matters is not failed-vs-succeeded but *definitely
+        nothing happened* vs *something may be running out there*. Only the
+        second costs money and needs reconciling, so anything short of an
+        explicit provider rejection is recorded as ``unknown``:
+
+        - the host deadline fired and we killed the helper mid-call, so the
+          remote op may have landed after we stopped listening;
+        - the helper died without writing a reply, same reasoning;
+        - a sandbox was already created, which is a live billable resource
+          regardless of why the later step failed.
+
+        The sandbox id is persisted here for exactly that last case. Until now
+        it lived only in the in-memory ``_sandboxes`` map, so a create that
+        succeeded followed by a submit that failed left a sandbox nobody could
+        name after a restart.
+        """
+        kind = getattr(exc, "error_kind", None)
+        rejected = (
+            isinstance(exc, ComputeError)
+            and kind not in (None, "unknown_state")
+            and not sandbox_id
+        )
+        fields: dict[str, Any] = {"reason": str(exc)}
+        if sandbox_id:
+            fields["sandbox_id"] = sandbox_id
+            fields["receipt"] = sandbox_id
+        if rejected:
+            self._persist(job_id, status="failed", terminal_at=_now_ms(), **fields)
+            self._event(job_id, "submit_rejected", {"error": str(exc), "kind": kind})
+        else:
+            self._persist(job_id, status="unknown", **fields)
+            self._event(
+                job_id,
+                "submit_indeterminate",
+                {"error": str(exc), "kind": kind, "sandbox_id": sandbox_id},
+            )
 
     def _claim(self, provider: str, idempotency_key: str | None, outputs: Any) -> str:
         """Reserve a job row *before* the submit is attempted.
@@ -564,10 +635,15 @@ class ComputeManager:
             src = inp.get("src") or inp.get("remote_path")
             if not src:
                 continue
-            dst = inp.get("dst_filename") or Path(src).name
-            src_path = Path(src) if os.path.isabs(src) else Path.cwd() / src
-            if src_path.exists():
-                shutil.copy2(src_path, work / dst)
+            # A source that does not exist used to be skipped in silence, so
+            # the job ran to completion against missing data and reported
+            # success. Refusing here is the difference between a failed job
+            # and a wrong result nobody questions.
+            src_path = self._safe_local_path(src, label="input src", must_exist=True)
+            dst = _safe_stage_name(
+                inp.get("dst_filename") or Path(src).name, label="input dst_filename"
+            )
+            shutil.copy2(src_path, work / dst)
         tgz = stage / "in.tar.gz"
         with tarfile.open(tgz, "w:gz") as tf:
             tf.add(work, arcname=".")
@@ -581,28 +657,46 @@ class ComputeManager:
             f"byoc:{pid}", kw.get("idempotency_key"), kw.get("outputs")
         )
         timeout_s = int(kw.get("timeout_seconds") or 14400)
-        with tempfile.TemporaryDirectory(prefix="openai4s-byoc-stage-") as td:
-            stage = Path(td)
-            # 1. create (or reuse) the sandbox.
-            sid = self._sandboxes.get(pid) or kw.get("reuse_job_id")
-            if not sid or not self._sandboxes.get(pid):
-                spec = (kw.get("provider_params") or {}).get(pid, {})
-                tags = {"openai4s-session": self._install_id, "openai4s-job": job_id}
-                rep = self._run_helper(
+        sid: str | None = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="openai4s-byoc-stage-") as td:
+                stage = Path(td)
+                # 1. create (or reuse) the sandbox.
+                sid = self._sandboxes.get(pid) or kw.get("reuse_job_id")
+                if not sid or not self._sandboxes.get(pid):
+                    spec = (kw.get("provider_params") or {}).get(pid, {})
+                    tags = {
+                        "openai4s-session": self._install_id,
+                        "openai4s-job": job_id,
+                    }
+                    rep = self._run_helper(
+                        prov,
+                        "create",
+                        {"spec": spec, "tags": tags, "app_name": "openai4s"},
+                        creds,
+                        stage,
+                        expect_confined=False,
+                    )
+                    sid = rep["sandbox_id"]
+                    self._sandboxes[pid] = sid
+                # 2. stage inputs then submit.
+                self._stage_inputs(stage, kw.get("inputs"), kw["command"], timeout_s)
+                self._run_helper(
                     prov,
-                    "create",
-                    {"spec": spec, "tags": tags, "app_name": "openai4s"},
+                    "submit",
+                    {"sandbox_id": sid, "timeout": timeout_s},
                     creds,
                     stage,
-                    expect_confined=False,
                 )
-                sid = rep["sandbox_id"]
-                self._sandboxes[pid] = sid
-            # 2. stage inputs then submit.
-            self._stage_inputs(stage, kw.get("inputs"), kw["command"], timeout_s)
-            self._run_helper(
-                prov, "submit", {"sandbox_id": sid, "timeout": timeout_s}, creds, stage
-            )
+        except BaseException as exc:
+            # Without this the row stays at `staging` forever: no terminal
+            # state, no event, and -- worse -- a sandbox the provider may
+            # already be billing for, whose id lived only in the in-memory
+            # `_sandboxes` map and vanished with the process. The ssh arm has
+            # had this discipline since it was written (see `_submit_ssh`);
+            # the byoc arm never did.
+            self._fail_submit(job_id, exc, sandbox_id=sid)
+            raise
         with self._lock:
             self._jobs[job_id] = {
                 "job_id": job_id,
@@ -738,7 +832,7 @@ class ComputeManager:
                 return {
                     "status": "running",
                     "job_id": job["job_id"],
-                    "hint": "job still running — use wait_for_notification",
+                    "hint": "job still running — call .result() again later",
                 }
             exit_code = rep.get("job_exit_code")
             phase_err = rep.get("phase_read_error")
@@ -999,8 +1093,9 @@ class ComputeManager:
     def close(self, kw: dict) -> dict:
         provider = kw["provider"]
         fam, rest = self._split(provider)
+        terminated = True
         if fam == "byoc":
-            sid = self._sandboxes.pop(rest, None)
+            sid = self._sandboxes.get(rest)
             if sid:
                 prov = self._byoc(rest)
                 with tempfile.TemporaryDirectory(prefix="openai4s-byoc-stage-") as td:
@@ -1013,12 +1108,23 @@ class ComputeManager:
                             Path(td),
                         )
                     except ComputeError:
-                        pass
+                        # Drop the id only once the provider has confirmed the
+                        # sandbox is gone. Forgetting it on a failed terminate
+                        # is how a sandbox bills forever with nothing left in
+                        # this process able to name it.
+                        terminated = False
+                if terminated:
+                    self._sandboxes.pop(rest, None)
         for jid in kw.get("job_ids") or []:
             j = self._jobs.get(jid)
             if j and j.get("status") in ("submitted", "running", "queued"):
                 j["status"] = "closed"
-        return {"status": "closed"}
+                # In-memory only meant a restart rehydrated the job as live,
+                # so it kept occupying a concurrency slot and kept being
+                # reconciled against a provider that had already released it.
+                self._persist(jid, status="closed", terminal_at=_now_ms())
+                self._event(jid, "closed", {"provider": provider})
+        return {"status": "closed", "sandbox_released": terminated}
 
     def ssh(self, kw: dict) -> dict:
         """One synchronous command (call_command). byoc runs it inside the

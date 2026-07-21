@@ -33,7 +33,8 @@ Python 的 [`host.compute` SDK](../sdk/compute.py) 把每次调用变成一个 `
 
 ## 持久化、审批与成熟度边界
 
-- **Prototype 状态：** `ComputeManager` 的 job 记录、并发上限和预热沙箱的 handle 全都只在内存里。daemon 或 manager 一重启，本实现就再也接不回这些记录，哪怕远端的任务和回收下来的文件都还在。[`registry.py`](registry.py) 持久化的只有那份专用的 SSH capability 目录。
+- **job 记录是持久的，预热沙箱 handle 不是。** job 行在提交*之前*就写入，并带上 provider receipt，所以重启后的 manager 会把每个可能仍在占用远端资源的 job 重新装载回来，计入并发计数，并且仍然可以轮询或取消它。`reconcile()` 只上报这些 job，有意不重新提交——一个在途的 job 可能在跑也可能没跑，猜错的代价要么是重复计费，要么是丢结果。仍然只在内存里的是：每个 provider 的预热 byoc 沙箱 handle，所以重启后接不回一个已经预热的容器（但那个容器里正在跑的 job 仍可通过 receipt 恢复）。[`registry.py`](registry.py) 持久化那份专用的 SSH capability 目录。
+- **没有后台轮询器。** 真正去探测远端并回收产物的是 `result()`；没人轮询的 job 永远不会被回收。
 - native 的 `compute_submit` 需要审批。对已经授权过的那个确切 job，回收结果、取消和关闭有意不再问第二次。更丰富的直接调用 `compute_ssh`/`compute_scp` 比这道有界的 native tool 审批门宽，不能拿后者的批准当它们的批准。
 - BYOC 的隔离由 provider 运行时和 provider 自身共同实现，只能实测，不能假定。credential 是按声明的环境变量名挑出来的，通过 helper 的 auth 输入传过去；如果 secret 藏在没人声明的变量名里，基于名称的清理就拦不住它。
 - 当前的 SSH job 路径有意做得很基础：记账只在本地内存，远程目录用完不删，声明的 output pattern 没有完整回收，报出来的终止退出码也不是持久的、调度器级别的契约。
