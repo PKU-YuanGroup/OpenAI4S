@@ -148,12 +148,15 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
     )
     assert proc.returncode == 0, proc.stderr
     assert (
-        "{serve,status,verify-package,diagnostics,stop,url,run,init,setup,jupyter,"
-        "share,relay}" in proc.stdout
+        "{serve,status,doctor,verify-package,diagnostics,stop,url,run,init,setup,"
+        "jupyter,share,relay}" in proc.stdout
     )
     for command in (
         "serve",
         "status",
+        # The command for someone whose daemon will not start: if it is not in
+        # --help, it does not exist to the person who needs it.
+        "doctor",
         # A recipient verifying an evidence package has no daemon and no docs
         # open; a command absent from --help may as well not exist.
         "verify-package",

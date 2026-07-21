@@ -64,5 +64,6 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 ## Trust Foundation modules
 
 - [`observability.py`](observability.py) — correlation IDs and structured, shape-redacted logs.
+- [`doctor.py`](doctor.py) — one command answering whether this installation can do the work: model, runtime, isolation, disk, connectors, remote compute. Runs without the daemon, because the situation that motivates it is usually one where the daemon will not start.
 - [`diagnostics.py`](diagnostics.py) — the redacted support bundle and bounded log retention.
 - [`evidence.py`](evidence.py) — stdlib-only verification of an exported package, for a recipient who does not trust this host yet.

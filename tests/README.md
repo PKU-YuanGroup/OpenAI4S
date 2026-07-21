@@ -217,6 +217,7 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_diagnostics.py`](test_diagnostics.py) | The support bundle is safe to paste into a public issue, including a token sitting mid-sentence in a log line. |
 | [`test_evidence_verification.py`](test_evidence_verification.py) | An exported package verifies with no daemon, and four tamper shapes are caught — including a payload rewritten together with its recorded hash. |
 | [`test_observability.py`](test_observability.py) | Correlation IDs and shape-based redaction of structured log fields. |
+| [`test_doctor.py`](test_doctor.py) | `openai4s doctor` works without a daemon, tells a degradation from a refusal, exits with the verdict, and never prints a credential value. |
 | [`test_error_envelope.py`](test_error_envelope.py) | One success/error envelope with stable codes and a request id. |
 | [`test_contract_inventory.py`](test_contract_inventory.py) | Every external route and event is covered by the contract inventory. |
 | [`test_frame_pagination.py`](test_frame_pagination.py) | Keyset pagination over the session list. |

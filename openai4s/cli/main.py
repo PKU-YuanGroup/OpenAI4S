@@ -107,6 +107,26 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    """Check whether this installation can actually do the work.
+
+    Deliberately needs no daemon: the situation that motivates running it is
+    usually one where the daemon will not start.
+
+    Exit code is the verdict — 0 for ok, 1 for degraded-but-usable, 2 when a
+    check failed outright — so a setup script can branch on it rather than
+    grepping prose.
+    """
+    from openai4s import doctor
+
+    result = doctor.report(get_config())
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(doctor.render(result))
+    return {doctor.OK: 0, doctor.WARN: 1, doctor.FAIL: 2}[result["status"]]
+
+
 def cmd_verify_package(args) -> int:
     """Verify an exported session/evidence package in a clean environment."""
     from openai4s.evidence import EvidenceError, verify_package
@@ -732,6 +752,13 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--no-open", action="store_true", help="don't open a browser")
     ps.set_defaults(fn=cmd_serve)
     sub.add_parser("status", help="check daemon status").set_defaults(fn=cmd_status)
+    pdoc = sub.add_parser(
+        "doctor",
+        help="check model, runtime, isolation, disk, connectors and remote "
+        "compute (no daemon needed)",
+    )
+    pdoc.add_argument("--json", action="store_true", help="machine-readable report")
+    pdoc.set_defaults(fn=cmd_doctor)
     pv = sub.add_parser(
         "verify-package",
         help="verify an exported session/evidence package (no daemon needed)",

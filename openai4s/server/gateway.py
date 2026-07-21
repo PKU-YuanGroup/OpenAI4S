@@ -6082,7 +6082,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         def _prepare_request_body(self, path: str, method: str) -> None:
             is_session_import = (
-                path == _API_ROOT + "/sessions/import" and method == "POST"
+                path in (_API_ROOT + "/sessions/import", _API_ROOT + "/sessions/verify")
+                and method == "POST"
             )
             self._read_request_body(
                 limit=MAX_ARCHIVE_BYTES if is_session_import else _MAX_JSON_BODY_BYTES,
@@ -6552,6 +6553,28 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         # ---- REST API ---------------------------------------------------
         def _api(self, method: str, sub: str) -> None:
             q = self._query()
+            if sub == "/sessions/verify" and method == "POST":
+                # Verification before import, so a recipient can check what
+                # they were handed without first admitting it to their
+                # database. `verify_package` reads only the archive -- no
+                # daemon state, no network -- which is what makes the answer
+                # trustworthy to someone who does not yet trust this host.
+                from openai4s.evidence import EvidenceError, verify_package
+
+                payload = self._body_bytes(limit=MAX_ARCHIVE_BYTES)
+                with tempfile.NamedTemporaryFile(
+                    suffix=".openai4s-session.zip", delete=False
+                ) as handle:
+                    handle.write(payload)
+                    staged = Path(handle.name)
+                try:
+                    report = verify_package(staged)
+                except EvidenceError as error:
+                    raise GatewayError(400, str(error)) from error
+                finally:
+                    staged.unlink(missing_ok=True)
+                self._json(report)
+                return
             if sub == "/sessions/import" and method == "POST":
                 payload = self._body_bytes(limit=MAX_ARCHIVE_BYTES)
                 try:

@@ -838,6 +838,8 @@ Object.assign(I18N.zh, {
   "sessionPackage.export": "导出会话包",
   "sessionPackage.imported": "会话包已安全导入；Kernel 保持结束状态，需显式恢复",
   "sessionPackage.tooLarge": "会话包超过客户端 128 MiB 限制",
+  "sessionPackage.verified": "校验通过：{0} 个文件与包内清单一致，正在导入",
+  "sessionPackage.verifyFailed": "校验未通过，已拒绝导入：{0}",
   "projModal.create": "创建",
   "projModal.editTitle": "项目设置",
   "projModal.ctx.label": "智能体上下文",
@@ -1670,6 +1672,8 @@ Object.assign(I18N.en, {
   "sessionPackage.export": "Export session package",
   "sessionPackage.imported": "Session imported safely; its Kernel remains Ended until explicit recovery",
   "sessionPackage.tooLarge": "Session package exceeds the 128 MiB client limit",
+  "sessionPackage.verified": "Verified: {0} file(s) match the package's own manifest — importing",
+  "sessionPackage.verifyFailed": "Verification failed, import refused: {0}",
   "projModal.create": "Create",
   "projModal.editTitle": "Project settings",
   "projModal.ctx.label": "Agent Context",
@@ -4400,6 +4404,22 @@ async function importSessionPackage(file) {
   if (!file) return;
   if (file.size > 128 * 1024 * 1024) { hint(t("sessionPackage.tooLarge"), true); return; }
   try {
+    // Verify before importing, not as an optional extra afterwards. The
+    // package arrived from somewhere else; checking it against its own
+    // manifest costs one request and is the whole point of shipping hashes.
+    // A tampered archive must never reach the database.
+    const checked = await fetch(API + "/sessions/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
+      body: file,
+    });
+    const verdict = await checked.json().catch(() => ({}));
+    if (!checked.ok || !verdict.ok) {
+      const first = (verdict.problems || [])[0] || verdict.error || "";
+      hint(t("sessionPackage.verifyFailed", publicText(first, 160)), true);
+      return;
+    }
+    hint(t("sessionPackage.verified", (verdict.files_verified || []).length));
     const response = await fetch(API + "/sessions/import", {
       method: "POST",
       headers: { "Content-Type": "application/vnd.openai4s.session+zip" },

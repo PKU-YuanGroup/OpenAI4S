@@ -127,6 +127,95 @@ def _canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _reproduce_notes(
+    *,
+    root_frame_id: str,
+    project_name: str,
+    environment: Any,
+    artifacts: Any,
+    lineage_edges: Any,
+) -> bytes:
+    """The page a recipient reads first.
+
+    A package with per-file hashes is checkable, but only by someone who
+    already knows the command. The proposal asks for reproduction notes
+    alongside the manifest, and this is the difference between an archive
+    somebody can verify and one they actually do.
+
+    Deterministic by construction: everything below is derived from the
+    package's own contents, so exporting the same session twice produces the
+    same bytes and the file's own hash stays meaningful.
+    """
+    artifact_rows = artifacts if isinstance(artifacts, list) else []
+    edges = lineage_edges if isinstance(lineage_edges, list) else []
+    env = environment if isinstance(environment, dict) else {}
+
+    lines = [
+        f"# Reproducing {project_name or 'this session'}",
+        "",
+        "This archive is a self-contained record of one research session: the",
+        "conversation, every executed cell, the artifacts produced, and the",
+        "lineage connecting them.",
+        "",
+        "## Check it before you trust it",
+        "",
+        "```",
+        "openai4s verify-package <this-file>.openai4s-session.zip",
+        "```",
+        "",
+        "That command reads only the archive. It needs no daemon, no network,",
+        "and no configuration, so a recipient can run it before deciding",
+        "whether to trust the sender's installation at all.",
+        "",
+        "It confirms three things: every file listed in `manifest.json` matches",
+        "its recorded SHA-256, the manifest matches its own digest, and the",
+        "archive contains no file the manifest does not list.",
+        "",
+        "**It does not establish who produced the package.** Anyone able to",
+        "rewrite a payload can recompute the hashes that describe it; only a",
+        "signature would answer authorship, and this format carries none.",
+        "",
+        "## What produced it",
+        "",
+    ]
+    kind = str(env.get("kind") or "python")
+    version = str(env.get("python_version") or env.get("version") or "unknown")
+    platform_name = str(env.get("platform") or "unknown")
+    lines += [
+        f"- runtime: {kind} {version}",
+        f"- platform: {platform_name}",
+        f"- packages recorded: {len(env.get('packages') or [])}",
+        f"- source session: `{root_frame_id}`",
+        "",
+        "`environment.json` carries the full package freeze. Recreating that",
+        "environment is what makes a rerun comparable; without it, a",
+        "difference in results has no attributable cause.",
+        "",
+        "## What is inside",
+        "",
+        f"- `{len(artifact_rows)}` artifact(s), with content hashes, in",
+        "  `artifacts.json`",
+        f"- `{len(edges)}` lineage edge(s) in `lineage.json`, each linking an",
+        "  input version to the output derived from it",
+        "- `notebook.json` — every cell that ran, in order",
+        "- `ledger.json` — the action ledger, including attempts that failed",
+        "- `manifest.json` — the hash of every file above",
+        "",
+        "## Rerunning it",
+        "",
+        "1. Verify the archive with the command above.",
+        "2. Recreate the environment from `environment.json`.",
+        "3. Import the package into an OpenAI4S installation, or read",
+        "   `notebook.json` directly — the cells are plain source in order.",
+        "",
+        "An imported session is quarantined read-only until you explicitly",
+        "activate it, so opening someone else's package cannot execute",
+        "anything on your machine.",
+        "",
+    ]
+    return ("\n".join(lines)).encode("utf-8")
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -621,6 +710,13 @@ class SessionPackageService:
             **workspace_files,
             **artifact_files,
         }
+        files["REPRODUCE.md"] = _reproduce_notes(
+            root_frame_id=root_frame_id,
+            project_name=_safe_text(project.get("name") or ""),
+            environment=environment,
+            artifacts=artifact_projection,
+            lineage_edges=lineage_edges,
+        )
         for name, payload in files.items():
             if self._contains_secret_bytes(payload):
                 raise SessionPackageError(

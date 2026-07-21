@@ -1087,3 +1087,147 @@ def test_session_package_gateway_routes_use_binary_export_and_raw_import(tmp_pat
         assert not import_staging.exists()
     finally:
         runner.close()
+
+
+def test_a_real_export_carries_reproduction_notes_and_still_verifies(tmp_path):
+    """The package had per-file hashes and a verifier, but nothing telling the
+    recipient the command exists — and reproduction notes are what the
+    proposal asks for alongside the manifest.
+
+    Driven through the real exporter rather than a synthetic archive, because
+    the risk this pins is an ordering one: `REPRODUCE.md` has to join the file
+    set *before* the manifest is computed, or the verifier rejects it as a file
+    the manifest does not list.
+    """
+    import hashlib as _hashlib
+    import hashlib as _hashlib_top
+    import zipfile as _zipfile
+
+    from openai4s.evidence import verify_package
+
+    config = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    runner = gateway_mod.SessionRunner(config, _Hub(), start_idle_sweeper=False)
+    project = runner.store.create_project(name="Reproduction source")
+    root = runner.store.new_frame(
+        project_id=project["project_id"], kind="turn", status="done"
+    )
+    artifact_path = runner.active_workspace_for(root) / "result.csv"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text("score\n0.93\n", encoding="utf-8")
+    runner.store.save_artifact(
+        path=str(artifact_path),
+        filename=artifact_path.name,
+        content_type="text/csv",
+        size_bytes=artifact_path.stat().st_size,
+        checksum=_hashlib_top.sha256(artifact_path.read_bytes()).hexdigest(),
+        frame_id=root,
+        root_frame_id=root,
+        project_id=project["project_id"],
+    )
+    handler_class = gateway_mod.make_handler(config, runner.hub, runner)
+    handler = object.__new__(handler_class)
+    replies = []
+    handler._query = lambda: {}
+    handler._send = lambda code, data, content_type, extra=None: replies.append(
+        (code, data, content_type, extra or {})
+    )
+    handler._json = lambda value, code=200: replies.append((code, value))
+    try:
+        handler._api("GET", f"/frames/{root}/session/export")
+        code, data, _content_type, _headers = replies.pop()
+        assert code == 200
+
+        package = tmp_path / "exported.openai4s-session.zip"
+        package.write_bytes(data)
+
+        with _zipfile.ZipFile(package) as archive:
+            names = set(archive.namelist())
+            notes = archive.read("REPRODUCE.md").decode("utf-8")
+            manifest = json.loads(archive.read("manifest.json"))
+
+        assert "REPRODUCE.md" in names
+        listed = {entry["path"]: entry for entry in manifest["files"]}
+        assert (
+            "REPRODUCE.md" in listed
+        ), "an unlisted member makes the whole package fail verification"
+        assert (
+            listed["REPRODUCE.md"]["sha256"]
+            == _hashlib.sha256(notes.encode("utf-8")).hexdigest()
+        )
+
+        report = verify_package(package)
+        assert report["ok"], report["problems"]
+
+        # The notes have to carry the command and the honest limit of what
+        # verification proves, or they are decoration.
+        assert "openai4s verify-package" in notes
+        assert "does not establish who produced" in notes
+        assert "environment.json" in notes
+    finally:
+        runner.close()
+
+
+def test_the_verify_route_answers_without_importing(tmp_path):
+    """Verification has to be reachable before import, not only after: the
+    recipient's question is whether to admit this archive to their database at
+    all, and answering it afterwards is too late.
+
+    It was CLI-only, so anyone working in the browser had no way to check what
+    they had been handed.
+    """
+    import zipfile as _zipfile
+
+    config = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    runner = gateway_mod.SessionRunner(config, _Hub(), start_idle_sweeper=False)
+    project = runner.store.create_project(name="Verify source")
+    root = runner.store.new_frame(
+        project_id=project["project_id"], kind="turn", status="done"
+    )
+    handler_class = gateway_mod.make_handler(config, runner.hub, runner)
+    handler = object.__new__(handler_class)
+    replies = []
+    handler._query = lambda: {}
+    handler._send = lambda code, data, content_type, extra=None: replies.append(
+        (code, data, content_type, extra or {})
+    )
+    handler._json = lambda value, code=200: replies.append((code, value))
+    try:
+        handler._api("GET", f"/frames/{root}/session/export")
+        _code, data, _ct, _h = replies.pop()
+
+        handler._body_bytes = lambda **_kwargs: data
+        handler._api("POST", "/sessions/verify")
+        code, report = replies.pop()
+        assert code == 200
+        assert report["ok"] is True
+        assert report["files_verified"]
+        # The route must be honest about the limit of what it proves.
+        assert "does not establish" in report["verifies"]
+
+        # Nothing was admitted: verification is a read, not an import.
+        assert len(runner.store.list_projects()) == 1
+
+        tampered_path = tmp_path / "tampered.zip"
+        with _zipfile.ZipFile(tmp_path / "src.zip", "w") as _seed:
+            pass
+        with _zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = {n: archive.read(n) for n in archive.namelist()}
+        members["notebook.json"] = members["notebook.json"] + b" "
+        with _zipfile.ZipFile(tampered_path, "w") as archive:
+            for name, payload in members.items():
+                archive.writestr(name, payload)
+
+        handler._body_bytes = lambda **_kwargs: tampered_path.read_bytes()
+        handler._api("POST", "/sessions/verify")
+        code, bad = replies.pop()
+        assert code == 200
+        assert bad["ok"] is False
+        assert any("notebook.json" in p for p in bad["problems"])
+    finally:
+        runner.close()
