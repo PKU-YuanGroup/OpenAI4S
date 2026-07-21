@@ -5,20 +5,32 @@ so every package importable by the daemon's interpreter is available to agent
 cells.  Historically the agent had to ``pip install`` a package mid-task and then
 had no way to get a fresh kernel — this module fixes both halves:
 
-  * ``ensure_core(background=True)`` is called once at daemon startup and installs
-    the standard scientific + networking stack so it is "bundled" and ready with
-    no task-time install (numpy/pandas/scipy/matplotlib/scikit-learn/biopython …
-    plus requests/httpx for networking).  Idempotent: anything already importable
-    is skipped, so warm starts are instant.
+  * ``core_plan()`` reports what the scientific stack is missing WITHOUT
+    touching the environment. This is what daemon startup calls.
+
+  * ``ensure_core()`` installs that plan. It runs only when a human or an
+    explicit API asks — never as a side effect of ``openai4s serve``.
 
   * ``install(packages)`` performs an on-demand install (used by the
     ``POST /api/kernel/install`` endpoint and the ``host.pip_install`` tool). The
     caller then restarts the session kernel (kernel/manager.py ``Kernel.restart``)
     so the new package is picked up by a clean process.
 
-Homebrew / distro pythons are PEP-668 "externally managed"; we always pass
-``--break-system-packages`` (a harmless no-op on unmanaged envs) so installs work
-out of the box in the environments this daemon actually runs in.
+Startup does not install. It used to: ``serve`` fired ``ensure_core`` on a
+daemon thread, which resolved ~23 unpinned package names against PyPI and
+installed them with ``--break-system-packages`` into whatever interpreter the
+daemon happened to run under. That made three things true that should not be:
+starting the daemon mutated the user's Python environment, what you got
+depended on what PyPI served that day, and a cold start off the network failed
+in a background thread nobody was watching. Diagnosing and installing are now
+separate: startup reports, the user decides.
+
+Homebrew / distro pythons are PEP-668 "externally managed"; installs pass
+``--break-system-packages`` (a harmless no-op on unmanaged envs) so an
+explicitly requested install works in the environments this daemon runs in.
+That flag is why the implicit-at-startup behaviour was worth removing rather
+than merely narrowing: it is exactly the flag that makes an unattended install
+capable of stepping on a system interpreter.
 """
 from __future__ import annotations
 
@@ -76,12 +88,17 @@ OPTIONAL_PACKAGES: list[dict] = [
 
 # Live progress, read by GET /api/environments/status.
 STATUS: dict = {
-    "phase": "idle",  # idle | installing | ready | error
+    # idle | needs_provision | installing | ready | error
+    #
+    # needs_provision is the honest resting state for a cold install: packages
+    # are missing and the daemon will not install them behind the user's back.
+    "phase": "idle",
     "started_at": None,
     "finished_at": None,
     "installing": [],  # pip names currently being installed
     "installed": [],  # pip names installed this run
     "failed": [],  # [{name, error}]
+    "missing": [],  # pip names a plan would install
     "message": "",
 }
 _LOCK = threading.Lock()
@@ -144,10 +161,48 @@ def install(pip_names: list[str], *, upgrade: bool = False) -> dict:
     return result
 
 
-def ensure_core(background: bool = True) -> dict:
-    """Install any missing CORE packages so the kernel ships them at startup.
+def core_plan() -> dict:
+    """Report what ensure_core WOULD install. Never touches the environment.
 
-    Fast no-op when everything is already importable (the common warm-start case).
+    This is the `plan` half of plan/apply, and the only thing daemon startup is
+    allowed to call.
+    """
+    missing = missing_core()
+    pip_names = [pip for pip, _imp in missing]
+    with _LOCK:
+        if not missing:
+            STATUS.update(
+                phase="ready",
+                message="scientific stack ready",
+                installing=[],
+                missing=[],
+                finished_at=time.time(),
+            )
+        elif STATUS.get("phase") not in ("installing",):
+            STATUS.update(
+                phase="needs_provision",
+                installing=[],
+                missing=list(pip_names),
+                message=(
+                    f"{len(pip_names)} scientific package(s) not installed — "
+                    f"run `openai4s setup` or install from Customize → Compute"
+                ),
+            )
+    return {
+        "ok": True,
+        "missing": pip_names,
+        "satisfied": not pip_names,
+        "would_install": pip_names,
+    }
+
+
+def ensure_core(background: bool = True) -> dict:
+    """Install any missing CORE packages.
+
+    The `apply` half of plan/apply. Callers are explicit user actions only —
+    startup calls core_plan() instead, because installing 23 unpinned packages
+    into the user's interpreter is not something a daemon should do just
+    because it booted.
     """
     missing = missing_core()
     if not missing:

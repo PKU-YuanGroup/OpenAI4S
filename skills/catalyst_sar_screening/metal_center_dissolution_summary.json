@@ -1,0 +1,64 @@
+{
+  "mode": "dissolution",
+  "metrics": [
+    "dissolution"
+  ],
+  "computation": {
+    "calculator": "uma",
+    "protocol": "catalyst-design-agent/uma-s-1p1+oc20",
+    "mlip_model": "uma-s-1p1",
+    "mlip_task": "oc20",
+    "reference": "Catalyst-Design-Agent CalculationTools (FAIRChem UMA / OC20)",
+    "conda_env": "catagent"
+  },
+  "n_total": 3,
+  "n_converged": 0,
+  "n_passing": 0,
+  "insights": [
+    "Synthetic demo fixture only \u2014 not experimental results.",
+    "Live runs must call run_pipeline into a fresh workdir and present only that run's deliverables.",
+    "Example prompt metals: Mn-N4, Fe-N4, Cu-N4 on graphene (pyridineN)."
+  ],
+  "ranked": [
+    {
+      "name": "Mn-N4",
+      "metal": "Mn",
+      "source": "catalog",
+      "host": "graphene",
+      "motif": "pyridineN",
+      "rank": 1,
+      "converged": false,
+      "passes_filters": false,
+      "dissolution_potential": null,
+      "note": "placeholder row; values filled only by a live UMA run"
+    },
+    {
+      "name": "Fe-N4",
+      "metal": "Fe",
+      "source": "catalog",
+      "host": "graphene",
+      "motif": "pyridineN",
+      "rank": 2,
+      "converged": false,
+      "passes_filters": false,
+      "dissolution_potential": null,
+      "note": "placeholder row; values filled only by a live UMA run"
+    },
+    {
+      "name": "Cu-N4",
+      "metal": "Cu",
+      "source": "catalog",
+      "host": "graphene",
+      "motif": "pyridineN",
+      "rank": 3,
+      "converged": false,
+      "passes_filters": false,
+      "dissolution_potential": null,
+      "note": "placeholder row; values filled only by a live UMA run"
+    }
+  ],
+  "figures": [],
+  "structure_renders": [],
+  "demo": true,
+  "disclaimer": "Not unpublished experimental results. Do not treat metal_center_dissolution_* demo files as user deliverables."
+}

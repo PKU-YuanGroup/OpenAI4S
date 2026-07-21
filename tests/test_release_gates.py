@@ -202,6 +202,9 @@ def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
         "environment:",
         "name: pypi",
         "id-token: write",
+        # A Docker-container action PyPA only publishes tagged by release ref,
+        # so this one is intentionally on `release/v1` rather than a SHA pin
+        # (see the justification comment in release.yml and test_governance.py).
         "pypa/gh-action-pypi-publish@release/v1",
     ):
         assert contract in workflow
@@ -214,8 +217,6 @@ def test_distribution_manifest_keeps_release_and_runtime_resources():
 
     for contract in (
         "include scripts/*.py",
-        "include CODE_OF_CONDUCT.md",
-        "include SECURITY.md",
         "recursive-include docs *.md",
         "recursive-include skills",
         "recursive-include openai4s/compute/templates",

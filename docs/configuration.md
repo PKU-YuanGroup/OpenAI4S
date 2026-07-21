@@ -50,12 +50,24 @@ and `get_model_capabilities()` expose detached or immutable catalog views.
 
 ## Kernel environments (conda)
 
-The agent kernel uses a scientific stack (numpy / pandas / scipy / matplotlib / scikit-learn / biopython / …) that installs automatically in the background on first `serve`. For heavier toolchains, four ready-to-use conda specs let the agent pick per task — create them with `openai4s setup` (`--dry-run` to preview, `--only <name>` for one). Specs live in [`envs/`](../envs):
+The core engine stays stdlib-only, and the control `.venv` carries just the optional `science` extra (numpy / pandas / matplotlib). A baseline scientific stack (scipy / seaborn / scikit-learn / biopython / httpx / …, see `CORE_PACKAGES` in [`openai4s/kernel/preinstall.py`](../openai4s/kernel/preinstall.py)) is available on top of that, but **`serve` does not install it**.
 
-- **`python`** *(default)* — scanpy / anndata / leiden / UMAP / scikit-learn / RDKit / fair-esm / pandas / matplotlib.
+Starting the daemon never modifies your Python environment. `serve` only *reports* what is missing — on stderr and via `GET /api/kernel/packages` (`preinstall.phase == "needs_provision"`). Installing is an explicit act:
+
+```bash
+openai4s setup            # provision the kernel environments
+```
+
+or Customize → Compute → "Install package" in the UI, or `host.pip_install` from a cell.
+
+This used to be implicit: `serve` resolved ~23 *unpinned* package names against PyPI on a background thread and installed them with `--break-system-packages`. That made booting the daemon mutate the user's interpreter, made two cold starts a week apart produce different environments, and made an offline cold start fail where nobody was looking. Diagnosis and mutation are now separate.
+
+Heavier toolchains live in ready-to-use Conda specs instead, so native dependencies are solved for the user's own macOS or Linux platform rather than copying one machine's build strings. Create the everyday Python + R pair with `./setup.sh --with-kernel-envs` or `openai4s setup --profile standard`; use `--update` (or `./setup.sh --update-kernel-envs`) to synchronize an existing environment without pruning user-installed packages. `openai4s setup` with no profile preserves the historical behavior of creating all four environments. Use `--dry-run` to preview and `--only <name>` for one. Specs live in [`envs/`](../envs):
+
+- **`python`** *(default)* — NumPy / pandas / SciPy / matplotlib / seaborn / Pillow / PDFium / SOCKS, plus scanpy / anndata / Leiden / UMAP / scikit-learn / RDKit / fair-esm.
 - **`struct`** — torch + fair-esm + biotite.
 - **`phylo`** — MAFFT / IQ-TREE / FastTree / trimAl / BioPython / ete3.
-- **`r`** — tidyverse.
+- **`r`** — R 4.5 / tidyverse / data.table / ggplot2 / R Markdown / knitr / jsonlite / Pandoc.
 
 ## Ports & data
 
@@ -92,7 +104,9 @@ openai4s serve     # daemon + web UI (foreground)
 openai4s status    # is it up?
 openai4s stop      # stop the daemon
 openai4s run "…"   # one Code-as-Action task in-process, no daemon
-openai4s setup     # build the four conda kernel environments
+openai4s setup --profile standard          # build Python + R
+openai4s setup --profile standard --update # sync Python + R, no pruning
+openai4s setup                             # build all four environments
 openai4s jupyter describe               # inspect optional bridge availability
 openai4s jupyter export ./kernel-specs  # pure-stdlib KernelSpec export
 openai4s jupyter install                # install user KernelSpecs

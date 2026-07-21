@@ -31,6 +31,10 @@ untrusted multi-tenant sandbox.
 | **Biosecurity screener** | `OPENAI4S_BIOSECURITY` (on) | trajectory screener (ALLOW / ESCALATE / BLOCK) on biosecurity-relevant content |
 | **Injection detector** | `OPENAI4S_INJECTION_SCAN` (on) | annotates tool-returned content (web / PDF / MCP) so the model treats it as **data, not instructions** |
 | **Egress allowlist** | `OPENAI4S_EGRESS` (`off`) | application policy for `web_fetch` / `web_search` and authorized `host.bash`; the OS sandbox is the separate raw-network boundary |
+| **Remote-compute confinement** | `OPENAI4S_COMPUTE_CONFINEMENT` (`auto`) | `enforce` refuses `byoc:*` ops because no host-side boundary exists for the provider helper yet (see [`docs/compute.md`](compute.md)); `auto` runs unconfined and reports the posture rather than implying one |
+| **Secret store** | `OPENAI4S_SECRET_STORE` (`auto`) | credentials behind an opaque reference in the system keychain (after a real round-trip self-test) or the process environment; `auto` **fails closed** when neither is available. Plaintext is reachable only by asking for it by name, and no obfuscated-file fallback exists |
+| **Data-dir permissions** | always on | the data dir is `0700` and the database (plus any `-wal`/`-shm`) is `0600`; POSIX only — Windows needs an ACL, and the posture reports `supported: false` there rather than claiming a boundary |
+| **Browser response headers** | always on | a hash-based CSP with no `'unsafe-inline'` in `script-src` and a same-origin `connect-src`, plus `nosniff` / `X-Frame-Options` / `Referrer-Policy` on every response including streamed artifact bytes |
 
 `web_fetch` rejects loopback and private-network targets by default to reduce
 SSRF risk. `OPENAI4S_ALLOW_PRIVATE_FETCH=1` is an explicit trusted-local
@@ -114,6 +118,141 @@ it:
 
 Credential values passed to `host.credentials.set(name, value)` are held only in an in-memory vault (never persisted). To keep that true end to end, the **RPC audit log** redacts them: `credentials_get` / `credentials_list` are not logged at all, and `credentials_set` is logged for audit **with its args redacted** — the plaintext value never enters `host_call_log`. The replay tape recorder likewise skips `credentials_set`, so an exported notebook cannot carry a plaintext credential.
 
+### Correlation IDs and structured logs
+
+Every HTTP request carries an id
+([`observability.py`](../openai4s/observability.py)). A client-supplied
+`X-Request-Id` is honoured — bounded to 64 chars and stripped to
+`[A-Za-z0-9-_]`, so it cannot forge a log line or inject a header — otherwise
+one is generated. It is echoed back in `X-Request-Id` and held in a `ContextVar`
+so anything reached from the request, including a thread it spawns, can stamp
+the same id without threading a parameter through every call.
+
+Structured logs are **off unless `OPENAI4S_STRUCTURED_LOGS=1`**: turning them on
+by default would change what every existing deployment writes to disk. When on,
+each event is one JSON object per line on stderr.
+
+Redaction is by **value shape, not field name**. A denylist of key names is not
+evidence that a log has no secrets in it — a credential stored under an
+unremarkable key is precisely the one such a rule misses. So any long, opaque,
+mixed-class string is replaced by `<redacted:<fingerprint>>` wherever it occurs,
+including nested, alongside the obvious key-name matches. The fingerprint is
+stable and non-reversible, so two lines about the same secret remain
+correlatable without either revealing it. Paths, URLs, and short identifiers are
+deliberately preserved — redaction that eats the useful fields makes the log
+worthless, and a worthless log stops being read.
+
+**Prompts and research data are never logged by this path.** There is no
+`log_prompt` helper, and the request log records the path only, never the query
+string. The model's messages and the kernel's data are the likeliest carriers of
+a user's unpublished work, so the default is that they have no route out through
+here at all.
+
+**Retention is bounded by construction.** `diagnostics.rotate_log` rolls a log
+at 8 MiB and keeps 3 generations, deleting the oldest — a size rather than a
+duration, because a daemon can be quiet for a week or chatty for an hour and
+bytes are what actually run out. Unbounded logs are not a neutral default; they
+are a slow disk-full that arrives at the least convenient moment.
+
+**`openai4s diagnostics`** writes a redacted bundle for a bug report: postures
+and versions, plus log tails. The database is never included — it holds research
+work and, until every credential is brokered, secrets — and the manifest names
+what was left out, so nobody is tempted into a second, manual, unredacted
+collection. Log lines pass through `observability.redact_text`, which scans
+*word by word*: `redact` asks whether a whole value is a credential, which is
+right for a field and wrong for a log line where a token sits mid-sentence. An
+earlier version of the bundle passed the structured lines and leaked the plain
+one.
+
+### Credentials at rest
+
+Model and search credentials are held by a **SecretBroker**
+([`security/secret_broker.py`](../openai4s/security/secret_broker.py)): the row
+stores an opaque reference such as `secret://v1/llm/llm_api_key` and the value
+lives in the system keychain. The reference is not derived from the value, so it
+is safe to log and safe to sit in a row. Covered today: `llm_api_key`,
+`tavily_api_key`, the per-profile `api_key` of every saved model profile
+(`secret://v1/model_profile/<id>`), and every connector `env` value
+(`secret://v1/connector_env/<id>.<VAR>`).
+
+Connector env brokers **every** value, not only the credential-shaped ones.
+Choosing by variable name would mean a regex over names — the same name-based
+heuristic the confined compute runtime's README warns about, where "a secret
+stored under an unrecognized name is not removed". A connector's env is small,
+the UI only ever shows the names, and a benign `MODE=prod` in the keychain costs
+nothing next to one missed `TOKEN_FOR_X`.
+
+A reference is a truthy string that is not a key, which sets one trap worth
+knowing about: `if profile["api_key"]:` reports a revoked credential as present,
+and handing that field to a provider fails auth in a way that looks like a bad
+key. Every read goes through `resolve_profile_key` /
+`Store.get_secret_setting`, which resolve the value and report absence honestly.
+Deleting a profile deletes its credential, so a removed endpoint does not leave
+its key in the keychain with nothing left that refers to it.
+
+| mode (`OPENAI4S_SECRET_STORE`) | behaviour |
+|---|---|
+| `auto` (default) | System keychain (verified by a **real round-trip self-test**), else environment injection. If neither is available, **fail closed** — refuse to handle credentials at all. |
+| `keychain` | Keychain only. Fail closed. |
+| `env` | Environment injection only. Fail closed. |
+| `plaintext` | Store in the database in the clear. Never implicit; asked for by name. |
+
+**`auto` fails closed rather than degrading.** It used to fall through to
+plaintext with a warning, which inverted the risk: the deployment least able to
+protect a secret — a Linux server, with neither a keychain nor a session bus —
+was exactly the one that silently got none, while a laptop that needed it least
+got the keychain. A warning printed at boot is not a control; it scrolls away
+and the credential stays in the clear.
+
+**Servers supply credentials through the environment.** Set
+`OPENAI4S_SECRET_<SCOPE>_<NAME>` (e.g. `OPENAI4S_SECRET_LLM_LLM_API_KEY`) from
+systemd's `EnvironmentFile`, a Kubernetes Secret, or whatever the config
+management already owns; set `OPENAI4S_SECRET_ENV=1` to opt in before any are
+configured. **Nothing is written to disk** — stronger than the keychain case,
+not a fallback from it. It is read-only on purpose: if the environment owns the
+secret, the app must not overwrite it behind the operator's back, so a write
+attempt fails with the exact variable name to set.
+
+Backends are driven through the system CLIs, because the core is stdlib-only and
+cannot depend on `keyring`: `security` on macOS, `secret-tool` (Secret Service)
+on Linux desktops. The value is fed on **stdin, never argv** — `security`'s own
+help says "Use of the -p or -w options is insecure", and a value on the command
+line is readable by any local `ps` for the life of the call. Presence of the CLI
+is not treated as availability of a keychain: a locked keychain or a missing
+session bus fails only at first use, so the broker proves a round-trip before
+trusting a backend with a real secret.
+
+There is deliberately **no obfuscated-file backend**. Base64, XOR, or a
+hand-rolled cipher over a key stored beside the ciphertext is not a boundary; it
+is a plaintext store described in words that suggest otherwise.
+
+Existing plaintext keys migrate on daemon start, ordered **write → verify by
+reading back → replace the row with a reference**. Every prefix of that is safe
+to be interrupted at: crash after the write and the plaintext is still
+authoritative and the next start retries. The verify step reads the value back
+and compares it, because a write that did not raise is not evidence the value is
+retrievable — and a reference that resolves to nothing is worse than the
+plaintext it replaced. A key that cannot be migrated stays plaintext and keeps
+working, reported on stderr.
+
+Still outstanding, and stated plainly rather than left implied:
+
+- **Windows has no backend**, so it resolves to plaintext under `auto`.
+  `security` and `secret-tool` cover macOS and Linux desktops; DPAPI would need
+  a `ctypes` shim.
+- **The file mode is the only barrier for what is not yet migrated.** The data
+  dir is `0700` and the database `0600` (see the table above), which removes the
+  trivial read by another local account — but a mode is not encryption.
+- **Rotation and recovery have no owner yet.** Nothing re-keys or expires a
+  stored credential, and a keychain entry deleted out from under the app reports
+  as "not configured" and must be re-entered.
+
+What *is* enforced throughout is that credentials do not leave over the API:
+connector and model-profile responses are allowlist projections (`env_keys` /
+`has_api_key`, never the values), covered by canary regressions in
+`tests/test_secret_canary.py` that assert on the secret's bytes rather than on
+field names.
+
 ### BYOC provider import-time secret scrubbing
 
 The remote-compute worker (`openai4s_compute_provider`) loads an untrusted-ish provider shim (`skills/remote-compute-<id>/provider.py`) by file path. To keep a provider's **top-level module code** from reading credential-shaped or known-prefix environment variables, scrubbing is two-staged. This is a **name-based heuristic** — a secret stored in a variable whose name matches neither rule below is **not** scrubbed:
@@ -132,3 +271,29 @@ ssh -L 8760:127.0.0.1:8760 user@your-host
 ```
 
 If you must bind a non-loopback address (`OPENAI4S_HOST=0.0.0.0`) or set `OPENAI4S_REQUIRE_TOKEN=1`, the server prints a one-time access token at startup and rejects any request without `?token=…` (`401`).
+
+## Web sharing
+
+Web sharing (off by default; see [webshare.md](webshare.md)) never changes the
+daemon's bind — it dials *out* over WSS to a relay you run. The public surface is
+a **materialized read-only snapshot**, not a proxy to the gateway. Invariants:
+
+- The daemon stays on `127.0.0.1`; the tunnel is always daemon-initiated and only
+  created when sharing is both enabled and configured (otherwise zero share
+  network threads exist).
+- A visitor can only reach bytes that were captured at share time by the
+  `SessionPackageService` export pipeline (fail-closed secret scan), served
+  GET/HEAD-only from an immutable snapshot directory or the fixed in-memory viewer
+  asset set. The share request path never imports the dispatcher, kernel, or a
+  subprocess and never proxies a gateway route.
+- The share package is a **flattened** single-branch snapshot with no checkpoints
+  and no project memories, permission, or capability state.
+- The relay treats daemon responses as constrained input (status/header
+  allowlist, `Set-Cookie`/`Location`/hop-by-hop refused); the daemon treats the
+  relay as untrusted (bounded, schema-checked frames). The publisher token grants
+  no local-daemon access — only the ability to publish under your share subdomains.
+- Imported shares remain quarantined and view-only until an explicit fresh
+  restart, exactly like any imported Session package.
+
+The tunnel is not a way to remotely access the daemon: the read-only snapshot
+surface has no route overlap with the gateway.

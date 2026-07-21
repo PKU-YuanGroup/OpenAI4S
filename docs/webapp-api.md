@@ -16,10 +16,48 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
 
 - Server: stdlib `http.server.BaseHTTPRequestHandler`, `HTTP/1.1`
   (`protocol_version = "HTTP/1.1"`), hand-rolled WebSocket upgrade on
-  `/api/ws`. Default bind `127.0.0.1:8760`.
-- REST lives under `/api/*`. The handler strips the `/api` prefix and matches
-  the remainder (`sub`) with a long `if`/`re.fullmatch` chain in
-  `Handler._api` — there is no route table or OpenAPI spec.
+  `/api/v1/ws`. Default bind `127.0.0.1:8760`.
+- **REST lives under `/api/v1/*` — contract v1.** The handler strips the
+  `/api/v1` prefix (`_API_ROOT`) and matches the remainder (`sub`) with a long
+  `if`/`re.fullmatch` chain in `Handler._api` — there is no route table or
+  OpenAPI spec yet.
+- **There is no un-versioned surface and no legacy alias.** Any path under
+  `/api/` that is not `/api/v1/` returns `404` with a JSON body naming
+  `api_root`. That is deliberate: falling through to the SPA shell would answer
+  `200 text/html` to an API call, which a client reads as success and then
+  fails to parse — a worse failure than a clear one. The un-versioned `/api/*`
+  surface was removed outright rather than aliased, because it had no external
+  consumers at the time of the cut.
+- The frontend builds every request from a single `API` constant in `app.js`,
+  so a future version bump is one line there plus `_API_ROOT` in the gateway.
+- **Every error response is `{"error": <message>, "code": <stable>, "status":
+  <int>, "request_id": <id|null>}`**, plus any route-specific diagnostic fields.
+  `code` is the machine-readable contract; `error` remains the human message and
+  is unchanged, so the enrichment is additive. Match on `code`, never on prose —
+  the message wording is not an interface and will be improved.
+  Status is too coarse to branch on alone: four distinct 400s
+  (`malformed_json`, `invalid_body_type`, `invalid_cursor`, `invalid_limit`)
+  need telling apart, and a client retrying `invalid_cursor` the way it retries
+  a transient failure would loop on a request that can never succeed.
+  `request_id` matches the `X-Request-Id` response header and the correlation id
+  in the structured log line, so one id ties a user report to a server event.
+- **Success bodies are not wrapped in a `{data: …}` envelope.** Considered and
+  declined: it would churn every route and every consumer to relocate
+  information that is already unambiguous, and a half-finished reshape presents
+  as a silently broken screen rather than a failing test. What the contract
+  needs from the success side is a documented, stable shape per route, which the
+  route/event inventory test enforces.
+- **WebSocket events carry a monotonic `seq` per root frame.** A client resumes
+  with `{"type":"view_session","root_frame_id":…,"since_seq":N}` and receives
+  only events after `N`; `replay_begin` reports `from_seq`/`to_seq` and
+  `gap: true` when the capped buffer no longer reaches back to `N+1`, so a
+  client that was away too long can refetch state instead of resuming into a
+  hole it cannot detect. `since_seq` absent or `0` replays the whole buffer.
+  The counter does not reset between turns — a per-turn counter would make a
+  stale cursor look already-satisfied and skip the new turn's first events.
+  Only `broadcast` events are sequenced; point-to-point snapshots delivered on
+  subscribe (`execution_queue`, pending approval cards) and the replay control
+  frames deliberately carry no `seq`.
 - The frontend is a single-page app served from the working tree
   (`/`, `/index.html`, `/static/*`). Any unknown non-API `GET` serves the SPA
   shell (`index.html`) to support deep links. Unknown non-GET, non-API paths
@@ -27,7 +65,7 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
 - All JSON responses are `application/json; charset=utf-8` with
   `Cache-Control: no-cache` and an explicit `Content-Length`.
 - Request bodies are JSON except the explicitly documented Session-package
-  import route, which consumes raw ZIP bytes. `Handler._body()` tolerates an empty or unparsable
+  import route, which consumes raw ZIP bytes. `Handler._body()` accepts an empty body but rejects an unparsable
   body by returning `{}` — a malformed JSON body is **silently treated as
   empty**, not rejected with 400.
 - Query strings are parsed with `parse_qs` (every value is a list;
@@ -36,7 +74,7 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
 ### Authentication and CSRF
 
 - **CSRF/origin guard:** every mutating request (`POST`/`PUT`/`PATCH`/`DELETE`)
-  to `/api/*` whose `Origin` header is present and whose netloc differs from
+  to `/api/v1/*` whose `Origin` header is present and whose netloc differs from
   the `Host` header is rejected with `403 {"error": "cross-origin request
   refused"}`. Requests without an `Origin` header (curl, same-origin fetches)
   pass.
@@ -88,7 +126,7 @@ Note the overlap on `GET /api/artifacts/…`: the specific matchers
 (`/lineage`, `/environment`, `/versions`, …) are tried first; the final
 `re.fullmatch(r"/artifacts/(.+)")` + GET catch-all serves bytes, and because
 it matches `.+` (slashes included) it also catches any otherwise-unmatched
-GET under `/api/artifacts/`.
+GET under `/api/v1/artifacts/`.
 
 ## 2. REST routes
 
@@ -105,18 +143,18 @@ success response body. Serializer shapes are in §4.
 | `GET /csrf` | `{"csrf_token":"local"}` (a stub; the real CSRF defense is the Origin check). |
 | `GET|POST|PUT|PATCH /config/llm` | GET → `{provider,model,base_url,has_api_key}`. Write → persists `provider`/`model`/`base_url`; `api_key` only overwrites when non-empty; `clear_api_key:true` empties it → `{"ok":true,"has_api_key"}`. The raw key is never returned. |
 | `GET /search?q=` | `{sessions:[{id,project_id,name,task_summary}], artifacts:[{id,filename,content_type,root_frame_id,project_id}]}`; empty `q` → empty lists. |
-| `GET /` (i.e. `/api` or `/api/`) | `{"service":"openai4s","ok":true}`. |
+| `GET /` (i.e. `/api` or `/api/v1/`) | `{"service":"openai4s","ok":true}`. |
 
 ### Models and model profiles
 
 | Method & path | Behavior |
 | --- | --- |
-| `GET /models` | `{"models":{"default":[{id,name,description}…]},"default_model_id"}` — live model first, then profile models, then provider defaults, deduped. |
+| `GET /models` | `{"models":{"default":[{id,name,description}…]},"default_model_id"}` — the live model first, then the saved profiles' models, deduped. Built-in provider defaults are not listed: an endpoint the user never configured must not be selectable. A profile that leaves `model` blank is resolved through its protocol's default. |
 | `GET /models/default` | `{"default_model_id"}`. |
 | `POST /models/default` (any non-GET) | Body `{model_id}` → persists as `llm_model` setting → `{"default_model_id"}`. |
 | `GET /model-endpoints/discover?force=1` | Explicitly probes the fixed loopback catalogue for Ollama, LM Studio, vLLM, and llama.cpp, with environment proxies disabled. Returns sanitized profile suggestions plus `mutated_settings:false`; it never accepts a caller-supplied URL and never creates or activates a profile. `force=1` bypasses the short in-process cache. A discovered endpoint is keyless, but vendor capabilities are not inferred: until an explicit override exists it uses conservative Code-as-Action (no inherited vision/tool/schema claim). |
-| `GET /model-profiles` | Seeds built-in presets on first call, then `{"profiles":[masked…],"active_id","known_providers"}`. Profiles are **masked**: `{id,name,provider,base_url,model,has_api_key}` — the API key is never echoed. |
-| `POST /model-profiles` | Body `{name,provider?,base_url?,model?,api_key?}`; missing `name` → `400 {"error":"name required"}`; success → `201` masked profile. |
+| `GET /model-profiles` | Returns only user-saved profiles as `{"profiles":[masked…],"active_id","protocols":["chatgpt","claude","ark"]}`; no default endpoints are seeded. A one-time migration removes entries matching the preset identities generated by older releases. Profiles are **masked**: `{id,name,provider,base_url,model,has_api_key}` — the API key is never echoed. |
+| `POST /model-profiles` | Body `{name,provider,base_url?,model?,api_key?}` where `provider` selects the `chatgpt` (OpenAI-compatible), `claude` (Anthropic-compatible), or `ark` protocol; missing `name` or an unsupported protocol → `400 {"error":…}`; success → `201` masked profile. |
 | `POST /model-profiles/{id}/activate` | Copies the profile's fields into the live `llm_*` settings, moves it to the front of the list → `{"ok":true,"active_id","has_api_key"}`; unknown id → 404. |
 | `PUT|PATCH /model-profiles/{id}` | Partial edit; `api_key` only overwrites when non-empty; `clear_api_key:true` clears. Editing the active profile also syncs the live settings → masked profile; unknown id → 404. |
 | `DELETE /model-profiles/{id}` | Removes it (clears `active_model_profile` if it was active) → `{"ok":true}`. Deleting a nonexistent id still returns `{"ok":true}`. |
@@ -145,7 +183,7 @@ success response body. Serializer shapes are in §4.
 
 | Method & path | Behavior |
 | --- | --- |
-| `GET /frames?project_id=&limit=` | **Bare JSON array** of frame JSON (not wrapped). `limit` defaults to 100; the handler over-fetches `limit*2` root frames, drops "abandoned empty" sessions (no messages, no cells, no title), annotates each with live `running` and `kernel_alive` booleans, then truncates to `limit`. No `offset`. |
+| `GET /frames?project_id=&limit=&cursor=` | `{"frames":[…],"next_cursor":…,"has_more":bool}`. Keyset pagination, newest first; `limit` 1–200 (default 100). `cursor` is opaque — parsing it would couple a client to the sort key. An unreadable cursor is a `400`, never a silent restart, which would loop a client on page one. `has_more` is observed by collecting one row beyond the page, not inferred from the page being full: hidden abandoned sessions are filtered *after* the read, so a full-looking page is not evidence of a next one. |
 | `POST /frames` | Body `{project_id?,model?}` → frame JSON for a new root frame. |
 | `GET /frames/{fid}` | Frame JSON, or `{}` when not found. |
 | `PATCH /frames/{fid}` | Updates `name`/`task_summary`, broadcasts `frame_update` → frame JSON. |
@@ -314,6 +352,19 @@ available through the query parameter.
 | `POST /connectors/{id}/call` | Body `{tool,args}` → tool result; **exceptions are returned as `{"error":…}` with HTTP 200**. |
 | `DELETE /connectors/{id}` | Disconnect + delete → `{"ok":true}`. |
 
+### Session sharing (`shares`)
+
+Read-only session sharing over an outbound relay tunnel. The full protocol,
+trust model, and operator controls are in [`webshare.md`](webshare.md); this is
+the route index so the surface is discoverable from one place.
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /shares` | List this daemon's read-only session shares (`shares.list_all()`). |
+| `POST /frames/{id}/shares` | Create a share for a session (a `frames`-family route). `403` when sharing is disabled or the relay is unconfigured. |
+| `PUT /shares/{id}` | Publish or update a share (optional TTL); ensures the tunnel. Unknown id → `404`. |
+| `DELETE /shares/{id}` | Revoke a share and unregister it from the relay (`shares.revoke()`). |
+
 ### Compute / environments / kernel packages
 
 | Method & path | Behavior |
@@ -350,7 +401,7 @@ available through the query parameter.
 | `GET /preferences/builtin-allowlist` | `{"enabled","egress_mode","granted":[domains],"groups"}`. |
 | `GET|PUT|PATCH|POST /search/config` | Tavily key config; write accepts `{api_key}` or `{clear_api_key}`; always returns `{"endpoint":"https://api.tavily.com/search","api_key_configured":bool}` — the key itself is never echoed. |
 
-## 3. WebSocket contract (`/api/ws`)
+## 3. WebSocket contract (`/api/v1/ws`)
 
 Standard RFC-6455 upgrade (hand-rolled: `Sec-WebSocket-Accept` computed, no
 extensions/subprotocols). Messages both ways are JSON text frames. Protocol
@@ -401,6 +452,8 @@ m.frame_id`.
 | `branch_created` | `branch_id`, `from_checkpoint_id` | A checkpoint-backed branch committed. |
 | `branch_revert_conflict` | `branch_id`, `operation_id`, `target_checkpoint_id`, `reason` | Revert was recorded but not applied because the conflict check failed. |
 | `branch_reverted` | `branch_id`, `operation_id`, `target_checkpoint_id`, `checkpoint_id`, `undo_checkpoint_id`, `ok`, `requires_kernel_recovery` | Revert committed append-only state; clients must refresh branch/recovery projections. Full previews/checkpoint records stay in the direct REST result and never enter WebSocket. |
+| `branch_projection_restored` | `frame_id`, `branch_id`, `checkpoint_id` | The branch-scoped projection was rebuilt (for example after a Revert); clients holding a stale message/Notebook view must refetch it rather than patch. |
+| `branch_activation_state` | `frame_id`, `root_frame_id`, `branch_id`, `checkpoint_id`, `status`/`state` | Activation of a branch runtime progressed. `status` and `state` carry the same value — a compatibility duplication kept because both spellings are already consumed. |
 | `artifact_created` | **non-uniform — see below** | An artifact was produced, edited, renamed, uploaded, restored, or deleted. |
 | `pong` | — | Reply to JSON ping. |
 

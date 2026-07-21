@@ -28,6 +28,13 @@ class FakeStore:
         self.list_calls += 1
         return self.connectors
 
+    def connector_env(self, connector):
+        """Mirror the real Store: the row's env may hold broker references, so
+        the launch path resolves it rather than passing the row through. These
+        fixtures use plaintext env, which resolves to itself."""
+        env = connector.get("env")
+        return dict(env) if isinstance(env, dict) else {}
+
 
 class FakeManager:
     def __init__(self) -> None:
@@ -139,34 +146,45 @@ def test_list_projects_enabled_connectors_only_and_preserves_hard_key_errors():
         service.list()
 
 
-def test_tools_calls_disabled_connector_with_strict_config_and_dynamic_factory():
-    connector = _connector(
-        "disabled-id",
-        "disabled-name",
-        enabled=False,
-        ignored="not passed",
-    )
-    store = FakeStore([connector])
-    managers = [FakeManager(), FakeManager()]
+def test_tools_is_zero_spawn_for_a_disabled_connector():
+    """`enabled` gates the spawn, not just the invocation.
+
+    This previously listed tools for a disabled connector, which meant an agent
+    calling host.mcp.tools() could make the host launch a command out of a
+    connector row the user had explicitly turned off — `call` refused, but
+    discovery is what starts the process. The manager must never be reached.
+
+    The UI's "Test" button is unaffected: it goes through the separate
+    /connectors/<id>/probe route, not this agent-facing path.
+    """
+    store = FakeStore([_connector("disabled-id", "disabled-name", enabled=False)])
     factory_calls = []
 
     def manager_factory():
-        factory_calls.append(len(factory_calls))
-        return managers[len(factory_calls) - 1]
+        factory_calls.append(1)
+        raise AssertionError("a disabled connector must not reach the manager")
 
     service = MCPService(store, manager_factory=manager_factory)
-    assert factory_calls == []
+    result = service.tools("disabled-id")
+    assert "disabled" in result["error"]
+    assert factory_calls == [], "zero spawn"
 
-    assert service.tools("disabled-id") == {"tools": [{"name": "search"}]}
-    assert service.tools("disabled-id") == {"tools": [{"name": "search"}]}
-    expected_config = {
-        "command": ["python", "server.py"],
-        "args": ["--stdio"],
-        "env": {"TOKEN": "test"},
-    }
-    assert managers[0].list_calls == [("disabled-id", expected_config)]
-    assert managers[1].list_calls == [("disabled-id", expected_config)]
-    assert factory_calls == [0, 1]
+
+def test_tools_still_works_for_an_enabled_connector():
+    store = FakeStore([_connector("enabled-id", "enabled-name", enabled=True)])
+    manager = FakeManager()
+    service = MCPService(store, manager_factory=lambda: manager)
+    assert service.tools("enabled-id") == {"tools": [{"name": "search"}]}
+    assert manager.list_calls == [
+        (
+            "enabled-id",
+            {
+                "command": ["python", "server.py"],
+                "args": ["--stdio"],
+                "env": {"TOKEN": "test"},
+            },
+        )
+    ]
 
 
 def test_tools_preserves_not_found_soft_failure_exception_text_and_keyerror():
@@ -250,8 +268,8 @@ def test_call_preserves_exception_text_and_command_keyerror_boundary():
         service.call({"server": "broken", "tool": "lookup"})
 
 
-def test_resource_and_prompt_discovery_preserve_cursor_and_disabled_introspection():
-    connector = _connector("srv", "Server", enabled=False)
+def test_resource_and_prompt_discovery_preserve_cursor():
+    connector = _connector("srv", "Server", enabled=True)
     store = FakeStore([connector])
     manager = FakeManager()
     service = MCPService(store, manager_factory=lambda: manager)
@@ -269,6 +287,19 @@ def test_resource_and_prompt_discovery_preserve_cursor_and_disabled_introspectio
         manager.prompts_result
     )
     assert manager.prompt_list_calls == [("srv", config, "prompts-2")]
+
+
+def test_resource_and_prompt_discovery_are_zero_spawn_when_disabled():
+    """Same rule as tools(): discovery is what launches the process, so
+    `enabled` has to gate it."""
+    store = FakeStore([_connector("srv", "Server", enabled=False)])
+
+    def manager_factory():
+        raise AssertionError("a disabled connector must not reach the manager")
+
+    service = MCPService(store, manager_factory=manager_factory)
+    assert "disabled" in service.resources({"server": "srv"})["error"]
+    assert "disabled" in service.prompts({"server": "srv"})["error"]
 
 
 def test_resource_read_and_prompt_get_require_enabled_connector_and_route_payloads():

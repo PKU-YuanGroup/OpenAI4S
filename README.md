@@ -61,9 +61,9 @@ Engine after earlier Cells have run.
 <tr><th></th><th>JSON control plane</th><th>Python/R science plane</th></tr>
 <tr><td align="right"><b>Best for</b></td><td>workflow, permissions, metadata, services</td><td>computation, analysis, simulation</td></tr>
 <tr><td align="right"><b>Action unit</b></td><td>One ordered native-tool batch</td><td><b>One complete code cell</b></td></tr>
-<tr><td align="right"><b>Composition</b></td><td>auditable schemas and resource policy</td><td><code>for</code>, <code>if</code>, libraries, mid-cell Host RPC</td></tr>
+<tr><td align="right"><b>Composition</b></td><td>auditable schemas and resource policy</td><td><code>for</code>, <code>if</code>, libraries; Python also has mid-cell Host RPC</td></tr>
 <tr><td align="right"><b>State</b></td><td>append-only Action Ledger</td><td>kernel memory + versioned artifacts</td></tr>
-<tr><td align="right"><b>Completion</b></td><td>Engine-owned <code>finalize_response</code></td><td><code>host.submit_output(...)</code></td></tr>
+<tr><td align="right"><b>Completion</b></td><td>Engine-owned <code>finalize_response</code></td><td>Python: <code>host.submit_output(...)</code>; R: no in-cell completion</td></tr>
 <tr><td align="right"><b>Extending</b></td><td>named <code>Tool</code> subclass</td><td>import a library or load a Skill</td></tr>
 <tr><td colspan="3">
 
@@ -82,21 +82,21 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 
 ## 📣 News
 
+- **`2026-07-15`** 🍎 **`v0.1.0` — macOS app** — a one-click, no-toolchain Apple Silicon `.dmg` with an embedded Python and the full default kernel science stack (rdkit · scanpy · the single-cell stack), plus PyPI packaging (`pip install openai4s`) and release automation. **New here? → [Startup guide](docs/startup-guide.md).**
 - **`2026-07-06`** 🎉 **Open-sourced** — the pure-stdlib Code-as-Action engine, the scientific web app, 24 science Skills, and BYOC remote compute.
 
 ---
 
 ## 😮 Highlights
 
-- **🧬 Hybrid action engine** — class-based native JSON tools orchestrate while persistent Python/R kernels execute science. CLI and Web adapters start a language lazily, so tool/finalize-only runs do not spawn a kernel.
+- **🧬 Hybrid action engine** — class-based native JSON tools orchestrate while persistent Python/R kernels execute science. CLI and Web adapters start foreground language slots lazily, so tool/finalize routing itself does not spawn one; individual tools may still manage dedicated workers.
 - **📒 Ledger-first runtime** — action groups/events and terminal facts are append-only; execution attempts, generation lifecycle, usage, and completion records remain durable and reconstructable.
 - **🐍 Pure-stdlib core** — the engine **and** the web server are stdlib-only (`http.server` + hand-rolled WebSocket, no framework, no deps). The LLM client speaks OpenAI / Anthropic / Gemini over `urllib` alone.
 - **🔌 One-line multi-provider** — `ark` (doubao · glm · kimi · deepseek · minimax) plus official `chatgpt · claude · gemini`, behind a single `host.llm`; switch from the UI.
 - **🖥️ Scientific workbench** — live streaming, versioned artifacts, provenance, an Action Timeline surface, and a **read-only-by-default Notebook**. An explicit developer flag enables multiline Python/R input against the shared kernels.
 - **🔐 Hardened local execution** — strict child-environment allowlists, durable approvals, one-shot generation-bound `host.bash` capabilities, and OS sandbox adapters (Seatbelt on macOS, bubblewrap on Linux) with visible degraded/fail-closed modes.
-- **🔬 30 bundled Skills** — 14 GPU/model science Skills (AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock …) plus data-audit, model-evaluation, reproducibility, and research-workflow Skills. Skills are **recipes of code**, not JSON schemas; user-authored Skills stay under the data directory and cannot shadow bundled trust.
-- **🗃️ Structured science connectors** — two flat tools cover UniProt, RCSB PDB, Ensembl, ChEMBL, PubChem, arXiv, and OpenAlex with one typed result shape; `host.science` keeps multi-source joins inside a persistent cell.
-- **☁️ BYOC remote compute** — dispatch GPU jobs to your own machines via `ssh:<alias>` or the bundled **NVIDIA NIM** provider; real `host.fold` (single-sequence Protenix / AF3-class) under a strict no-fabrication policy.
+- **🔬 34 bundled Skills** — GPU/model science Skills (AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock …) + research-workflow Skills. Skills are **recipes of code**, not JSON schemas; user-authored Skills stay under the data directory and cannot shadow bundled trust.
+- **☁️ BYOC remote compute** — with a configured, reachable provider, dispatch GPU jobs via `ssh:<alias>` or the bundled **NVIDIA NIM** integration. General remote compute remains a Prototype surface; `host.fold` uses a strict no-fabrication policy.
 
 ---
 
@@ -121,40 +121,48 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 
 ## ⚡ Quickstart
 
-The published package has no required runtime dependencies. Choose an isolated
-launcher; neither path requires cloning the repository or preinstalling `uv`:
-
 ```bash
-# persistent command
-pipx install openai4s
-openai4s init                 # optional guided model setup
-openai4s serve
-
-# zero-install trial (the data directory remains at ~/.openai4s)
-uvx openai4s serve
+git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
+./setup.sh     # one-time: build the environment with uv
+./start.sh     # launch the web UI at http://127.0.0.1:8760/
 ```
 
-Plain `python -m pip install openai4s` is also supported. No API key is needed
-to boot: use `openai4s init`, or launch directly and configure a model in
-**Customize → Models**. One-shot without the UI: `openai4s run "Compute the
-mean of [4,8,15,16,23,42] and submit it." -v`.
+`setup.sh` creates the lightweight control `.venv` with **uv**. For the comprehensive Python + R scientific kernels, install a Conda-family manager (`micromamba`, `mamba`, or `conda`) and run `./setup.sh --with-kernel-envs` instead. Existing kernel environments can be synchronized with `./setup.sh --update-kernel-envs`; updates do not prune user-installed packages. `start.sh` launches the daemon + web UI. No API key is needed to boot — **set your model in the UI** (Customize → Models). One-shot without the UI: `uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`.
 
-Native Linux and macOS are supported. On Windows, use **WSL2**; the current
-scientific-kernel protocol and OS sandbox are Unix-based and native Windows is
-not yet a supported runtime. Contributors working from a clone can continue to
-use `./setup.sh` and `./start.sh`; those scripts are development conveniences,
-not runtime requirements.
+### macOS app (no toolchain required)
+
+Apple Silicon users can skip the checkout entirely: download `OpenAI4S-<version>-macos-arm64.dmg` from the [latest release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest), drag it to Applications, and launch. The image embeds its own Python plus the default kernel science stack — numpy · pandas · scipy · matplotlib · scikit-learn · **rdkit** (cheminformatics) · **scanpy** and the single-cell stack · umap · numba · biopython — so the first launch needs no network and no `pip`. Data lives in `~/.openai4s`.
+
+The build is ad-hoc signed but **not notarized**, so Gatekeeper refuses it the first time. On **macOS 15+**, open it once, then allow it under System Settings → Privacy & Security → **Open Anyway**; on **macOS 12–14**, right-click the app → **Open** → **Open**. Either way, `xattr -dr com.apple.quarantine /Applications/OpenAI4S.app` also clears it.
+
+**First run — point it at a model, then at search.** Launching the app opens the workbench at `http://127.0.0.1:8760/`. No key ships, so:
+
+1. **Model API** — open **Settings ⚙ → Models**, pick a protocol (**Ark-compatible** for Doubao/GLM/Kimi/DeepSeek/MiniMax, or **OpenAI-** / **Anthropic-compatible**), paste your **API Key**, click **Add**, then **Set active**. Cheapest path: the `ark` protocol on Volcengine Ark's ¥9.9/mo plan.
+2. **Search API** *(optional, recommended)* — open **Settings ⚙ → Network**, keep **Allow network access** on, register at **[tavily.com](https://tavily.com)**, and paste the key into **Search API key (Tavily)** → **Save**. Without a key, web search still falls back to keyless scrapers.
+
+Full walkthrough (install → Gatekeeper → model → search → R kernel): **[Startup guide](docs/startup-guide.md)**.
+
+The CLI ships inside the app — symlink it if you want it on your PATH:
+
+```bash
+sudo ln -sf /Applications/OpenAI4S.app/Contents/Resources/runtime/bin/openai4s /usr/local/bin/openai4s
+openai4s setup        # only if you want the R kernel: needs micromamba/mamba/conda
+```
+
+The R kernel is not bundled (it needs a conda environment). On Intel Macs and Linux, install from PyPI (`pip install openai4s`) instead.
 
 ---
 
 ## 📚 Documentation
 
+The canonical bilingual documentation is published at **[openai4s.org/docs](https://openai4s.org/docs/)**. Its public source and issue tracker live in [Nobody-Zhang/openai4s-docs](https://github.com/Nobody-Zhang/openai4s-docs); the links below point to the code-adjacent copies kept with this repository.
+
 | doc | what's inside |
 |---|---|
+| [**Startup guide**](docs/startup-guide.md) | macOS `.dmg` walkthrough: install, Gatekeeper, and configuring the model + Tavily search keys |
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
-| [**Skills**](docs/skills.md) | the 30 bundled Skills + how to write your own |
-| [**Scientific databases**](docs/science-connectors.md) | normalized UniProt/PDB/Ensembl/chemistry/literature search |
+| [**Skills**](docs/skills.md) | the 34 bundled Skills + how to write your own |
 | [**Remote compute**](docs/compute.md) | BYOC GPU jobs, `host.fold`, auto-provisioning |
 | [**Web app**](docs/webapp.md) | UI features, Action Timeline, read-only Notebook, artifacts, and implementation status |
 | [**Jupyter adapter**](docs/jupyter.md) | optional standalone Python/R KernelSpecs, install commands, and compatibility limits |
@@ -171,7 +179,9 @@ not runtime requirements.
   quarantined portable Session packages, checkpointed plan/review/memory state,
   and dedicated 2D chemistry/genome/sequence/MSA/LaTeX renderers. Arbitrary
   in-memory namespace objects are deliberately not serialized; recovery remains
-  Partial unless a safe recipe can rebuild and verify them.
+  Partial unless a safe recipe can rebuild and verify them, and Fork is offered
+  only on records that carry a proven checkpoint mapping, so older history
+  returns 409.
 - [ ] Add stronger Linux isolation beyond bubblewrap where available (for example seccomp) and expand packaged sandbox smoke coverage.
 - [ ] Keyless `web_search` beyond DuckDuckGo (rate-limit resilience).
 - [ ] More BYOC providers (Modal / SLURM) beyond SSH + NVIDIA NIM.
@@ -184,7 +194,7 @@ not runtime requirements.
 
 OpenAI4S is a community effort to keep the **Code-as-Action** paradigm open.
 
-Before opening a PR, please read [`CONTRIBUTING.md`](CONTRIBUTING.md) and the [`Code of Conduct`](CODE_OF_CONDUCT.md). Security vulnerabilities belong in the private process described by [`SECURITY.md`](SECURITY.md), never a public issue. The contribution guide defines branch naming, the PR checklist ([`.github/pull_request_template.md`](.github/pull_request_template.md)), code ownership ([`.github/CODEOWNERS`](.github/CODEOWNERS)), review & release policy, and the offline-test policy.
+Before opening a PR, please read [`CONTRIBUTING.md`](CONTRIBUTING.md) — it defines branch naming, the PR checklist ([`.github/pull_request_template.md`](.github/pull_request_template.md)), code ownership ([`.github/CODEOWNERS`](.github/CODEOWNERS)), review & release policy, and the offline-test policy.
 
 ### Development setup
 
@@ -192,7 +202,8 @@ Requires **Python ≥ 3.10** and [**uv**](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
-./setup.sh                          # uv sync --extra science + pre-commit hook
+./setup.sh                          # uv sync --locked --extra science + pre-commit hook
+./setup.sh --with-kernel-envs       # optional: full Python + R kernel stacks
 uv run pytest                       # offline test suite (LLM mocked)
 uv run pre-commit run --all-files   # format + lint everything
 ```
@@ -202,9 +213,8 @@ Style is enforced by **pre-commit** — `black`, `isort` (`--profile black`), an
 ### What we welcome
 
 - **New Skills** — a `SKILL.md` (+ optional `kernel.py`) under `skills/` — recipes of code, not schemas.
-- **New model providers** — register an endpoint/model over a shipped wire through the [provider catalog](docs/configuration.md#extending-the-provider-catalog); add a focused adapter only for a genuinely new wire. BYOC compute providers remain a separate extension kind.
+- **New providers** — a wire adapter under [`openai4s/llm/providers/`](openai4s/llm/providers/) plus its provider definition and registry entry, or a BYOC compute provider.
 - **Engine & UI** — the core is pure stdlib and readable; the web app is framework-free.
-- **Reviews** — reproduce a contract, audit a focused diff, or become a recurring reviewer for runtime, security, science, or Web paths through the [reviewer pathway](CONTRIBUTING.md#reviewer-pathway).
 
 Keep the core dependency-free, guard optional science imports behind `try/except ImportError`, and make sure `uv run pytest` and `uv run pre-commit run --all-files` pass before opening a PR.
 
@@ -263,5 +273,5 @@ Released under the **MIT License** — see [`LICENSE`](LICENSE).
 ---
 
 <div align="center">
-<sub><b>OpenAI4S</b> · code is the action, the kernel is the environment. · <a href="README_zh.md">简体中文</a></sub>
+<sub><b>OpenAI4S</b> · code is the action, the kernel is the environment. · <a href="README_zh.md">简体中文 </a> · Friend Link https://linux.do </sub>
 </div>

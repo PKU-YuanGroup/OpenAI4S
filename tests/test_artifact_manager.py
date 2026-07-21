@@ -654,6 +654,36 @@ def test_promote_cell_fences_longer_than_backtick_runs_in_output(tmp_path):
     assert "````" in text  # output fence grew to 4 backticks around the 3-run body
 
 
+def test_promote_cell_survives_symlinked_workspace_prefix(tmp_path):
+    harness = ArtifactHarness(tmp_path)
+    # A workspace reached through a symlinked parent (mirrors /tmp -> /private/tmp
+    # on macOS, or a relative OPENAI4S_DATA_DIR): _write_confined_text returns a
+    # resolved path while register_file relativizes against the unresolved
+    # workspace. If the two diverge, promotion must still succeed rather than
+    # raising an uncaught ValueError.
+    real = tmp_path / "real-root"
+    real.mkdir()
+    link = tmp_path / "linked-root"
+    link.symlink_to(real, target_is_directory=True)
+    workspace = link / "ws"
+    workspace.mkdir()
+    session = SimpleNamespace(
+        root_frame_id=harness.frame_id,
+        project_id="default",
+        workspace=workspace,
+    )
+
+    meta = harness.manager.promote_cell(
+        session,
+        {"producing_cell_id": "cell-sym", "cell_index": 7, "source": "x = 1"},
+        lambda event: None,
+    )
+
+    assert meta is not None
+    assert meta["filename"].endswith(".md")
+    assert list((workspace / "promoted").glob("*.md"))
+
+
 def test_promote_cell_rejects_symlinked_output_directory(tmp_path):
     harness = ArtifactHarness(tmp_path)
     outside = tmp_path / "outside"

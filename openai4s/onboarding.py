@@ -91,8 +91,17 @@ class OnboardingService:
             self._stored("llm_provider") or self.cfg.llm.provider
         )
         spec = self.providers[selected]
-        chosen_model = str(model or spec.get("model") or "").strip()
-        chosen_url = str(base_url or spec.get("base_url") or "").strip().rstrip("/")
+        # Fall back to the currently persisted configuration, not the raw provider
+        # spec: a non-interactive call that only touches the key (model/base_url
+        # left None) must not silently reset an operator's stored model/base_url.
+        # defaults() already returns the spec values when the provider changed.
+        current = self.defaults(selected)
+        chosen_model = str(model or current["model"] or spec.get("model") or "").strip()
+        chosen_url = (
+            str(base_url or current["base_url"] or spec.get("base_url") or "")
+            .strip()
+            .rstrip("/")
+        )
         if not chosen_model:
             raise ValueError("model must not be empty")
         parsed = urlsplit(chosen_url)
@@ -110,21 +119,25 @@ class OnboardingService:
         self.store.set_setting("llm_model", chosen_model)
         self.store.set_setting("llm_base_url", chosen_url)
         if clear_api_key:
-            self.store.set_setting("llm_api_key", "")
+            self.store.set_secret_setting("llm_api_key", "", scope="llm")
         elif key is not None:
-            self.store.set_setting("llm_api_key", key)
+            self.store.set_secret_setting("llm_api_key", key, scope="llm")
         elif selected != previous_provider:
             # Stored keys are provider credentials, not a transferable default.
             # Clearing the runtime override lets LLMConfig resolve the newly
             # selected provider's own environment variables instead of sending
             # the previous provider's secret to a different endpoint.
-            self.store.set_setting("llm_api_key", "")
+            self.store.set_secret_setting("llm_api_key", "", scope="llm")
         self.store.set_setting("onboarding_complete", "1")
         return self.status()
 
     def status(self) -> OnboardingResult:
         defaults = self.defaults()
-        stored_key = (self._stored("llm_api_key") or "").strip()
+        # Through the broker: the row holds a reference once migrated, and a
+        # reference is truthy whether or not the keychain still has the value.
+        # Reading it raw would report "configured" for a key that was revoked
+        # by hand or belongs to another machine.
+        stored_key = (self._stored_secret("llm_api_key") or "").strip()
         configured_provider = str(self.cfg.llm.provider or "").strip().lower()
         fallback_key = (
             self.cfg.llm.api_key
@@ -146,6 +159,10 @@ class OnboardingService:
 
     def _stored(self, key: str) -> str:
         return str(self.store.get_setting(key) or "").strip()
+
+    def _stored_secret(self, key: str) -> str:
+        """Resolve a credential setting, whether reference or legacy plaintext."""
+        return str(self.store.get_secret_setting(key) or "").strip()
 
     def _provider(self, value: str) -> str:
         provider = str(value or "").strip().lower()

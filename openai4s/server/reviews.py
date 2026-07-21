@@ -115,6 +115,10 @@ class ReviewPorts:
     review_evidence: Callable[[dict, Any], dict]
     providers: Callable[[], Mapping[str, dict]]
     clean_api_key: Callable[[Any], str]
+    # A profile's api_key field holds a broker reference once migrated.
+    # Reading it raw would send that reference to the provider as if it
+    # were a key, failing auth in a way that looks like a bad key.
+    resolve_profile_key: Callable[[Mapping[str, Any]], str]
     job_factory: Callable[[str, str], ReviewJob]
     busy_error: Callable[[int, str], Exception]
     run_reviewer: Callable[..., dict | None] | None = None
@@ -206,13 +210,11 @@ class ReviewService:
                 overrides["base_url"] = str(
                     (profile or {}).get("base_url") or ""
                 ).strip()
-                overrides["api_key"] = self.ports.clean_api_key(
-                    (profile or {}).get("api_key")
-                )
+                overrides["api_key"] = self.ports.resolve_profile_key(profile or {})
             elif profile and profile.get("base_url"):
                 overrides["base_url"] = str(profile["base_url"]).strip()
-            if profile and self.ports.clean_api_key(profile.get("api_key")):
-                overrides["api_key"] = self.ports.clean_api_key(profile.get("api_key"))
+            if profile and self.ports.resolve_profile_key(profile):
+                overrides["api_key"] = self.ports.resolve_profile_key(profile)
         try:
             return dataclasses.replace(config, **overrides)
         except Exception:  # noqa: BLE001 - preserve the agent config fallback

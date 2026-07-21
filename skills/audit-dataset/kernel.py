@@ -32,12 +32,17 @@ def _type_name(value: object) -> str:
 def _stable(value: object) -> str:
     """Return a deterministic representation suitable for equality counts."""
     try:
+        # default=repr lets unserializable leaves (datetime, Decimal, UUID) pass
+        # through json.dumps so sort_keys still canonicalizes dict key order.
+        # A bare repr(value) fallback preserves insertion order, so two
+        # byte-identical rows with differing key order would miss as duplicates.
         return json.dumps(
             value,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
             allow_nan=True,
+            default=repr,
         )
     except (TypeError, ValueError):
         return repr(value)

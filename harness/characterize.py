@@ -18,6 +18,7 @@ import importlib
 import io
 import json
 import os
+import tempfile
 import urllib.error
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -361,16 +362,29 @@ def _compaction_provider_hoist(data_dir: Path) -> Mapping[str, Any]:
 def _oversized_observation() -> Mapping[str, Any]:
     loop = importlib.import_module("openai4s.agent.loop")
     stdout = "x" * 2_000_000
-    rendered = loop._format_observation(  # noqa: SLF001 - production characterization
-        {"stdout": stdout, "stderr": "", "error": None, "usage": {}}
-    )
-    return {
-        "input_chars": len(stdout),
-        "model_view_chars": len(rendered),
-        "full_tail_preserved": rendered.endswith(stdout),
-        "has_content_ref": "content ref=" in rendered.lower(),
-        "has_omission_marker": "omitted" in rendered.lower(),
-    }
+    # `cwd` is what a real kernel result carries — the manager annotates every
+    # response with the workspace. Omitting it here would characterize an input
+    # production never produces, and would report "no content ref" for a reason
+    # that has nothing to do with the formatter.
+    with tempfile.TemporaryDirectory() as workspace:
+        rendered = (
+            loop._format_observation(  # noqa: SLF001 - production characterization
+                {
+                    "stdout": stdout,
+                    "stderr": "",
+                    "error": None,
+                    "usage": {},
+                    "cwd": workspace,
+                }
+            )
+        )
+        return {
+            "input_chars": len(stdout),
+            "model_view_chars": len(rendered),
+            "full_tail_preserved": rendered.endswith(stdout),
+            "has_content_ref": "content ref=" in rendered.lower(),
+            "has_omission_marker": "omitted" in rendered.lower(),
+        }
 
 
 def _headless_permission(data_dir: Path) -> Mapping[str, Any]:
@@ -476,9 +490,9 @@ def collect_prechange_characterization(data_dir: str | Path) -> dict[str, Any]:
         },
         {
             "case_id": "rate_limit_single_attempt",
-            "current_behavior": "An HTTP 429 raises LLMError after one transport attempt even when Retry-After is present.",
+            "current_behavior": "An HTTP 429 raises a typed TransportError carrying status/Retry-After, and is retried within a bounded, cancellable budget that honors Retry-After; the call recovers on the retry.",
             "desired_contract": "Typed rate_limit errors honor Retry-After and retry within a cancellable source-aware budget before output is committed.",
-            "known_bug": True,
+            "known_bug": False,
             "probe": _rate_limit_single_attempt,
         },
         {
@@ -490,16 +504,16 @@ def collect_prechange_characterization(data_dir: str | Path) -> dict[str, Any]:
         },
         {
             "case_id": "compaction_summary_provider_hoist",
-            "current_behavior": "The compaction note is a mid-timeline system message that Anthropic and Gemini hoist into their initial system fields.",
+            "current_behavior": "Only leading system messages become the initial system field; a mid-timeline system message (the compaction note) stays at its timeline position as a marked turn.",
             "desired_contract": "Compile a typed compaction_summary at its timeline position; never merge it into initial policy or cache prefix.",
-            "known_bug": True,
+            "known_bug": False,
             "probe": lambda: _compaction_provider_hoist(root / "compaction"),
         },
         {
             "case_id": "oversized_observation_unbudgeted",
-            "current_behavior": "The model-view formatter preserves an entire 2,000,000-character observation with no content reference or omission marker.",
+            "current_behavior": "The model-view formatter budgets each section, previewing head+tail with an explicit omission marker and spilling the full bytes to a workspace-relative content reference the agent can open.",
             "desired_contract": "Apply per-result and aggregate model-view budgets, spilling full bytes to an authorized content reference before previewing.",
-            "known_bug": True,
+            "known_bug": False,
             "probe": _oversized_observation,
         },
         {
@@ -511,9 +525,9 @@ def collect_prechange_characterization(data_dir: str | Path) -> dict[str, Any]:
         },
         {
             "case_id": "disabled_mcp_tools_connects",
-            "current_behavior": "mcp_tools calls the connector manager even when the connector row is disabled.",
+            "current_behavior": "mcp_tools/resources/prompts refuse a disabled connector without reaching the manager, so a disabled row is zero-spawn.",
             "desired_contract": "Disabled or untrusted MCP connectors are zero-spawn and never enter connect/list/call.",
-            "known_bug": True,
+            "known_bug": False,
             "probe": lambda: _disabled_mcp_tools_connects(root / "mcp"),
         },
     )

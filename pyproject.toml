@@ -23,7 +23,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/PKU-YuanGroup/OpenAI4S"
-Documentation = "https://github.com/PKU-YuanGroup/OpenAI4S/tree/main/docs"
+Documentation = "https://openai4s.org/docs/"
 Issues = "https://github.com/PKU-YuanGroup/OpenAI4S/issues"
 Source = "https://github.com/PKU-YuanGroup/OpenAI4S"
 
@@ -36,6 +36,13 @@ science = [
     "numpy>=1.24",
     "pandas>=2.0",
     "matplotlib>=3.7",
+    "scikit-learn>=1.3",
+]
+# Optional cheminformatics support is kept separate because RDKit does not
+# publish wheels for every platform supported by the core/science environment.
+# Install where available with: uv sync --extra chemistry
+chemistry = [
+    "rdkit>=2024.9",
 ]
 
 [dependency-groups]

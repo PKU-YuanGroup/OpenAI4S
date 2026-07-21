@@ -1,8 +1,10 @@
 # python — general data science + single-cell + cheminformatics (Python 3.11)
 #
-# This is the DEFAULT kernel env. Derived from all_env_packages.csv: lists the
-# headline scientific packages only; conda resolves the full dependency tree.
-# Versions match the CSV where they are meaningful top-level packages.
+# This is the DEFAULT kernel env. It includes the portable top-level dependency
+# intent from Claude Science's Python environment plus OpenAI4S's broader
+# single-cell, cheminformatics, IO, and plotting stack. Conda resolves native
+# and platform-specific transitive dependencies for the target machine; do not
+# copy build strings or macOS-only toolchain packages into this shared spec.
 name: python
 channels:
   - conda-forge
@@ -10,23 +12,28 @@ channels:
 dependencies:
   - python=3.11
   # single-cell stack
-  - scanpy=1.11.5
-  - anndata=0.12.19
-  - leidenalg=0.12.0
-  - python-igraph=1.0.0
-  - umap-learn=0.5.12
-  - numba=0.66.0
+  - scanpy
+  - anndata
+  - leidenalg
+  - python-igraph
+  - umap-learn
+  - numba
+  # cheminformatics — conda-forge, NOT the pip `rdkit-pypi` wheel: that project
+  # is frozen at 2022.9.5 and is built against the NumPy 1.x C ABI, so it
+  # segfaults the kernel worker against the NumPy 2.x this spec now resolves.
+  - rdkit
   # machine learning + numerics
-  - scikit-learn=1.9.0
+  - scikit-learn
   - numpy
   - scipy
-  - pandas=2.3.3
+  - pandas<3
   # plotting
   - matplotlib
   - seaborn
-  - plotly=6.8.0
+  - plotly
+  - pillow
   # bio + IO + web
-  - biopython=1.87
+  - biopython
   - h5py
   - zarr
   - pyarrow
@@ -34,6 +41,8 @@ dependencies:
   - pypdf
   - beautifulsoup4
   - httpx
+  - socksio
+  - pysocks
   - tqdm
   - statsmodels
   - networkx
@@ -41,4 +50,5 @@ dependencies:
   - pip
   - pip:
       - fair-esm==2.0.0
-      - rdkit-pypi==2022.9.5
+      # from PyPI so pip selects the bundled PDFium wheel matching this platform.
+      - pypdfium2==5.9.0

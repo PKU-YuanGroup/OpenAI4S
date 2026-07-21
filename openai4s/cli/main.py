@@ -6,7 +6,7 @@
   openai4s url      print the local web UI url
   openai4s run "<task>"   run one Code-as-Action task (in-process, no daemon)
   openai4s init     guided first-run model configuration
-  openai4s setup    create the four default conda envs from envs/*.yml
+  openai4s setup    create/update conda envs from envs/*.yml
   openai4s jupyter  describe/export/install the optional Jupyter bridge
 """
 from __future__ import annotations
@@ -104,6 +104,50 @@ def cmd_serve(args) -> int:
         serve(cfg, block=True)
     finally:
         _clear_state(cfg)
+    return 0
+
+
+def cmd_verify_package(args) -> int:
+    """Verify an exported session/evidence package in a clean environment."""
+    from openai4s.evidence import EvidenceError, verify_package
+
+    try:
+        report = verify_package(args.package)
+    except EvidenceError as e:
+        print(f"cannot verify: {e}")
+        return 2
+    print(f"package: {report['path']}")
+    print(f"  format: {report['format']} (schema {report['schema_version']})")
+    print(f"  archive sha256: {report['archive_sha256']}")
+    print(f"  files verified: {len(report['files_verified'])}")
+    if report["ok"]:
+        print("  OK — every listed file matches its recorded hash, and the")
+        print("       manifest matches its own digest.")
+        print(f"  note: {report['verifies']}")
+        return 0
+    print(f"  FAILED — {len(report['problems'])} problem(s):")
+    for problem in report["problems"]:
+        print(f"    - {problem}")
+    return 1
+
+
+def cmd_diagnostics(args) -> int:
+    """Write a redacted diagnostic bundle for a bug report."""
+    from openai4s.diagnostics import build_bundle
+
+    cfg = get_config()
+    target = (
+        Path(args.output) if args.output else Path.cwd() / "openai4s-diagnostics.zip"
+    )
+    result = build_bundle(cfg, target)
+    print(f"wrote {result['path']}")
+    print(f"  included: {', '.join(result['included']) or 'nothing'}")
+    for item in result["excluded"]:
+        print(f"  excluded: {item['path']} ({item['reason']})")
+    print(
+        "\nLog lines and report fields are redacted, but review the file before "
+        "sharing it — only you know what your own output contains."
+    )
     return 0
 
 
@@ -316,6 +360,13 @@ def cmd_jupyter_install(args) -> int:
 # default kernel env). Names must match the `name:` in each envs/<name>.yml.
 _DEFAULT_ENVS = ["python", "phylo", "r", "struct"]
 
+# Named setup profiles. The standard profile is the broad, everyday Python/R
+# stack used by setup.sh; full preserves the historical four-env setup.
+_ENV_PROFILES = {
+    "standard": ["python", "r"],
+    "full": list(_DEFAULT_ENVS),
+}
+
 # Conda-family tools we know how to drive, fastest first.
 _CONDA_TOOLS = ["micromamba", "mamba", "conda"]
 
@@ -333,41 +384,48 @@ def _find_conda_tool() -> str | None:
     return None
 
 
-def _existing_env_names() -> set[str]:
-    """Names of conda envs that already exist.
+def _existing_envs() -> dict[str, Path]:
+    """Existing conda envs, mapped name → prefix.
 
     Prefers the daemon's own discovery (:mod:`openai4s.kernel.environments`,
     which honours ``OPENAI4S_ENV_ROOTS`` and the reference-daemon envs dir);
-    falls back to ``conda env list`` parsing if that import isn't available."""
+    falls back to ``conda env list`` parsing if that import isn't available.
+
+    The prefix matters: we decide create-vs-update from *these* roots, so an
+    update has to name the very prefix we found. Passing only the spec file
+    would make the conda tool re-resolve the yml's ``name:`` inside its own
+    root prefix, which is a different namespace — see :func:`_update_cmd`."""
     try:
         from openai4s.kernel.environments import discover_environments
 
-        return {e.name for e in discover_environments(force=True)}
+        return {e.name: e.root for e in discover_environments(force=True) if e.is_conda}
     except Exception:  # noqa: BLE001 — fall back to CLI probing
         pass
     tool = _find_conda_tool()
     if not tool:
-        return set()
+        return {}
     try:
         out = subprocess.run(
             [tool, "env", "list"], capture_output=True, text=True, timeout=30
         )
     except Exception:  # noqa: BLE001
-        return set()
-    names: set[str] = set()
+        return {}
+    envs: dict[str, Path] = {}
     for line in out.stdout.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         # rows look like:  "python   *  /path/to/envs/python"
-        first = line.split()[0]
+        fields = line.split()
+        path = fields[-1]
+        if os.sep not in path:
+            continue
+        prefix = Path(path)
+        envs.setdefault(prefix.name, prefix)
+        first = fields[0]
         if first and first != "*":
-            names.add(first)
-        # also take the leaf dir of the prefix path, if any
-        path = line.split()[-1]
-        if os.sep in path:
-            names.add(Path(path).name)
-    return names
+            envs.setdefault(first, prefix)
+    return envs
 
 
 def _create_cmd(tool: str, name: str, yml: Path) -> list[str]:
@@ -376,6 +434,22 @@ def _create_cmd(tool: str, name: str, yml: Path) -> list[str]:
     micromamba/mamba/conda all accept ``env create -f <file>``; conda derives
     the env name from the file's ``name:`` field."""
     return [tool, "env", "create", "-f", str(yml)]
+
+
+def _update_cmd(tool: str, prefix: Path, yml: Path) -> list[str]:
+    """Non-destructively update the env at ``prefix`` from ``yml``.
+
+    ``-p`` is not optional. Without it, micromamba/mamba/conda resolve the
+    yml's ``name:`` against *their own* root prefix — but we chose "update"
+    because :func:`_existing_envs` found the env somewhere else (a second conda
+    root, ``OPENAI4S_ENV_ROOTS``, …). conda would then happily build a brand-new
+    env under its own root and report success while the env the agent actually
+    runs in stays untouched; micromamba would abort with "Prefix does not exist".
+
+    ``--prune`` is deliberately omitted so setup never removes packages the user
+    installed after the initial environment creation.
+    """
+    return [tool, "env", "update", "-p", str(prefix), "-f", str(yml)]
 
 
 def cmd_setup(args) -> int:
@@ -402,16 +476,21 @@ def cmd_setup(args) -> int:
             )
             return 1
         wanted = [args.only]
+    elif getattr(args, "profile", None):
+        wanted = list(_ENV_PROFILES[args.profile])
     else:
         wanted = list(_DEFAULT_ENVS)
 
-    existing = set() if args.dry_run else _existing_env_names()
+    existing = _existing_envs()
+    update_existing = bool(getattr(args, "update", False))
 
     print(
-        f"using '{tool}' to create envs from {envs_dir}"
+        f"using '{tool}' to manage envs from {envs_dir}"
         + (" (dry-run)" if args.dry_run else "")
     )
     created = 0
+    updated = 0
+    skipped = 0
     failed = 0
     for name in wanted:
         yml = envs_dir / f"{name}.yml"
@@ -419,14 +498,21 @@ def cmd_setup(args) -> int:
             print(f"  [{name}] skip: spec file missing ({yml})")
             failed += 1
             continue
-        if name in existing:
-            print(f"  [{name}] already exists — skipping")
+        prefix = existing.get(name)
+        if prefix is not None and not update_existing:
+            print(f"  [{name}] already exists — skipping (use --update to sync)")
+            skipped += 1
             continue
-        cmd = _create_cmd(tool, name, yml)
+        cmd = (
+            _update_cmd(tool, prefix, yml)
+            if prefix is not None
+            else _create_cmd(tool, name, yml)
+        )
+        action = "update" if prefix is not None else "create"
         if args.dry_run:
-            print(f"  [{name}] would run: {' '.join(cmd)}")
+            print(f"  [{name}] would {action}: {' '.join(cmd)}")
             continue
-        print(f"  [{name}] creating… ({' '.join(cmd)})")
+        print(f"  [{name}] {action}… ({' '.join(cmd)})")
         try:
             rc = subprocess.run(cmd).returncode
         except Exception as exc:  # noqa: BLE001
@@ -434,16 +520,208 @@ def cmd_setup(args) -> int:
             failed += 1
             continue
         if rc == 0:
-            print(f"  [{name}] created")
-            created += 1
+            print(f"  [{name}] {action}d")
+            if prefix is not None:
+                updated += 1
+            else:
+                created += 1
         else:
             print(f"  [{name}] FAILED (exit {rc})", file=sys.stderr)
             failed += 1
 
     if args.dry_run:
         return 0
-    print(f"done: {created} created, {failed} failed")
+    print(
+        f"done: {created} created, {updated} updated, "
+        f"{skipped} skipped, {failed} failed"
+    )
     return 1 if failed else 0
+
+
+def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
+    """Call the running daemon's REST API; returns (status, parsed_json)."""
+
+    url = _url(cfg).rstrip("/") + path
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    # The daemon's CSRF guard passes non-browser clients (no Origin header).
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            raw = resp.read().decode("utf-8")
+            return resp.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as error:
+        raw = error.read().decode("utf-8", "replace")
+        try:
+            return error.code, json.loads(raw)
+        except ValueError:
+            return error.code, {"error": raw}
+
+
+def _require_daemon(cfg) -> bool:
+    pid = _read_pid(cfg)
+    if not pid or not _pid_alive(pid):
+        print(
+            "error: daemon is not running — start it with `openai4s serve`",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _parse_duration(text: str) -> int:
+    """Parse '30m' / '24h' / '7d' / '3600' into seconds. Raises SystemExit on error."""
+
+    text = str(text).strip().lower()
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+    try:
+        if text and text[-1] in units:
+            return int(float(text[:-1]) * units[text[-1]])
+        return int(text)
+    except (ValueError, IndexError):
+        print(
+            f"error: invalid duration {text!r} (use e.g. 30m, 24h, 7d)", file=sys.stderr
+        )
+        raise SystemExit(2) from None
+
+
+def cmd_share(args) -> int:
+    cfg = get_config()
+    action = args.share_action
+    if action in (
+        "create",
+        "update",
+        "list",
+        "revoke",
+        "enable",
+        "disable",
+        "status",
+        "import",
+    ):
+        if not _require_daemon(cfg):
+            return 1
+    try:
+        if action == "create":
+            root = args.session
+            if root == "latest":
+                _, frames = _daemon_request(cfg, "GET", "/api/frames")
+                items = frames.get("frames") if isinstance(frames, dict) else frames
+                if not items:
+                    print("error: no sessions found", file=sys.stderr)
+                    return 2
+                root = items[0].get("frame_id") or items[0].get("id")
+            body: dict = {}
+            if args.title:
+                body["title"] = args.title
+            if args.expires:
+                body["expires_in"] = _parse_duration(args.expires)
+            status, rec = _daemon_request(
+                cfg, "POST", f"/api/frames/{root}/shares", body
+            )
+        elif action == "update":
+            ubody: dict = {}
+            if getattr(args, "no_expiry", False):
+                ubody["expires_in"] = 0
+            elif args.expires:
+                ubody["expires_in"] = _parse_duration(args.expires)
+            status, rec = _daemon_request(
+                cfg, "PUT", f"/api/shares/{args.share_id}", ubody or None
+            )
+        elif action == "list":
+            status, rec = _daemon_request(cfg, "GET", "/api/shares")
+        elif action == "revoke":
+            status, rec = _daemon_request(cfg, "DELETE", f"/api/shares/{args.share_id}")
+        elif action == "enable":
+            status, rec = _daemon_request(
+                cfg, "PUT", "/api/share/settings", {"enabled": True}
+            )
+        elif action == "disable":
+            status, rec = _daemon_request(
+                cfg, "PUT", "/api/share/settings", {"enabled": False}
+            )
+        elif action == "status":
+            status, rec = _daemon_request(cfg, "GET", "/api/share/status")
+        elif action == "import":
+            status, rec = _daemon_request(
+                cfg, "POST", "/api/sessions/import-url", {"url": args.url}
+            )
+        else:  # pragma: no cover
+            print("error: unknown share action", file=sys.stderr)
+            return 2
+    except urllib.error.URLError as error:
+        print(f"error: could not reach daemon: {error}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(rec, ensure_ascii=False, indent=2))
+    elif status >= 400:
+        print(f"error: {rec.get('error') or rec}", file=sys.stderr)
+    elif action == "create" or action == "update":
+        print(rec.get("url") or json.dumps(rec))
+    elif action == "list":
+        for item in rec.get("shares", []):
+            print(f"{item['share_id']}\t{item['status']}\t{item.get('url', '')}")
+    elif action == "import":
+        rid = rec.get("root_frame_id")
+        print(
+            f"imported session {rid} (view-only). Open the web UI and use "
+            "“Restart fresh” to continue."
+        )
+    else:
+        print(json.dumps(rec, ensure_ascii=False))
+    return 0 if status < 400 else 2
+
+
+def cmd_relay_serve(args) -> int:
+    from openai4s.share.relay import RelayConfig, serve_relay
+
+    base_domain = args.base_domain or os.environ.get("OPENAI4S_RELAY_BASE_DOMAIN", "")
+    if not base_domain:
+        print(
+            "error: --base-domain (or OPENAI4S_RELAY_BASE_DOMAIN) is required",
+            file=sys.stderr,
+        )
+        return 1
+    listen = args.listen or os.environ.get("OPENAI4S_RELAY_LISTEN", "127.0.0.1:8770")
+    host, _, port_s = listen.rpartition(":")
+    host = host or "127.0.0.1"
+    try:
+        port = int(port_s)
+    except ValueError:
+        print(f"error: invalid --listen {listen!r}", file=sys.stderr)
+        return 1
+    tokens_file = args.tokens_file or os.environ.get("OPENAI4S_RELAY_TOKENS_FILE")
+    single = os.environ.get("OPENAI4S_RELAY_AUTH_TOKEN")
+    tokens = {"env": single} if single else None
+    if not tokens_file and not tokens:
+        print(
+            "error: provide --tokens-file or OPENAI4S_RELAY_AUTH_TOKEN", file=sys.stderr
+        )
+        return 1
+    trust_proxy = args.trust_proxy or os.environ.get(
+        "OPENAI4S_RELAY_TRUST_PROXY", ""
+    ) in ("1", "true", "yes")
+    config = RelayConfig(
+        base_domain=base_domain,
+        tunnel_host=args.tunnel_host,
+        tokens=tokens,
+        tokens_file=tokens_file,
+        trust_proxy=trust_proxy,
+    )
+    print(f"openai4s relay listening on {host}:{port} for *.{base_domain}")
+    print("front this with TLS (Caddy/nginx) — see docs/webshare.md")
+    try:
+        serve_relay(host=host, port=port, config=config, block=True)
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_relay_gen_token(args) -> int:
+    import secrets as _secrets
+
+    print(f"openai4s_pub_{_secrets.token_urlsafe(32)}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -454,6 +732,19 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--no-open", action="store_true", help="don't open a browser")
     ps.set_defaults(fn=cmd_serve)
     sub.add_parser("status", help="check daemon status").set_defaults(fn=cmd_status)
+    pv = sub.add_parser(
+        "verify-package",
+        help="verify an exported session/evidence package (no daemon needed)",
+    )
+    pv.add_argument("package", help="path to the .openai4s-session.zip")
+    pv.set_defaults(fn=cmd_verify_package)
+    pd = sub.add_parser(
+        "diagnostics", help="write a redacted diagnostic bundle for a bug report"
+    )
+    pd.add_argument(
+        "-o", "--output", help="destination zip (default ./openai4s-diagnostics.zip)"
+    )
+    pd.set_defaults(fn=cmd_diagnostics)
     sub.add_parser("stop", help="stop the daemon").set_defaults(fn=cmd_stop)
     sub.add_parser("url", help="print the web UI url").set_defaults(fn=cmd_url)
 
@@ -485,19 +776,28 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--json", action="store_true", help="emit secret-free JSON")
     pi.set_defaults(fn=cmd_init)
 
-    pu = sub.add_parser(
-        "setup", help="create the four default conda envs from envs/*.yml"
-    )
-    pu.add_argument(
+    pu = sub.add_parser("setup", help="create or update conda envs from envs/*.yml")
+    setup_selection = pu.add_mutually_exclusive_group()
+    setup_selection.add_argument(
         "--only",
         metavar="NAME",
         choices=_DEFAULT_ENVS,
         help="create just one env (%(choices)s)",
     )
+    setup_selection.add_argument(
+        "--profile",
+        choices=tuple(_ENV_PROFILES),
+        help="environment profile: standard=python+r, full=all four",
+    )
     pu.add_argument(
         "--dry-run",
         action="store_true",
         help="print the commands that would run, without executing",
+    )
+    pu.add_argument(
+        "--update",
+        action="store_true",
+        help="update existing envs without pruning user-installed packages",
     )
     pu.set_defaults(fn=cmd_setup)
 
@@ -539,6 +839,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="replace kernel.json in an existing spec directory",
     )
     ji.set_defaults(fn=cmd_jupyter_install)
+
+    psh = sub.add_parser("share", help="publish / manage read-only session shares")
+    ssub = psh.add_subparsers(dest="share_action", required=True)
+
+    def _share_sub(name: str, help_text: str):
+        sp = ssub.add_parser(name, help=help_text)
+        sp.add_argument("--json", action="store_true", help="emit JSON")
+        sp.set_defaults(fn=cmd_share)
+        return sp
+
+    sc = _share_sub("create", "publish a session as a share")
+    sc.add_argument("session", help="root frame id, or 'latest'")
+    sc.add_argument("--title", help="optional share title")
+    sc.add_argument("--expires", help="auto-revoke after this long, e.g. 30m/24h/7d")
+    su = _share_sub("update", "refresh a share snapshot")
+    su.add_argument("share_id")
+    su.add_argument("--expires", help="reset the expiry, e.g. 30m/24h/7d")
+    su.add_argument("--no-expiry", action="store_true", help="clear any expiry")
+    _share_sub("list", "list shares")
+    _share_sub("revoke", "revoke a share").add_argument("share_id")
+    _share_sub("enable", "enable sharing")
+    _share_sub("disable", "disable sharing (keeps shares offline)")
+    _share_sub("status", "show tunnel status")
+    _share_sub("import", "import a shared session by URL").add_argument("url")
+
+    prelay = sub.add_parser("relay", help="run the public share relay (on a VPS)")
+    rsub = prelay.add_subparsers(dest="relay_action", required=True)
+    rs = rsub.add_parser("serve", help="serve the relay (front with TLS)")
+    rs.add_argument("--listen", help="host:port (default 127.0.0.1:8770)")
+    rs.add_argument("--base-domain", help="wildcard base domain, e.g. openai4s.org")
+    rs.add_argument("--tunnel-host", help="host for the /tunnel endpoint (optional)")
+    rs.add_argument("--tokens-file", help="publisher tokens file (one per line)")
+    rs.add_argument(
+        "--trust-proxy",
+        action="store_true",
+        help="read X-Forwarded-For only when the direct peer is loopback",
+    )
+    rs.set_defaults(fn=cmd_relay_serve)
+    rg = rsub.add_parser("gen-token", help="print a fresh publisher token")
+    rg.set_defaults(fn=cmd_relay_gen_token)
     return p
 
 

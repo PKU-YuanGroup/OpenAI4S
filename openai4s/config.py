@@ -289,12 +289,51 @@ def _egress_groups() -> list[dict]:
 
 
 @dataclass
+class ShareConfig:
+    """Outbound web-share tunnel config (see docs/webshare.md).
+
+    All values resolve from the environment / git-ignored .env at instance time.
+    The auth token is a secret and is filtered like an API key; it is named to
+    end in ``AUTH_TOKEN`` so the session-package secret scanners catch it too.
+    Sharing is inert until both ``relay_url`` and ``auth_token`` are set.
+    """
+
+    relay_url: str = field(
+        default_factory=lambda: os.environ.get("OPENAI4S_SHARE_RELAY_URL", "").strip()
+    )
+    auth_token: str = ""
+    base_domain: str = field(
+        default_factory=lambda: os.environ.get("OPENAI4S_SHARE_BASE_DOMAIN", "").strip()
+    )
+    allow_insecure: bool = field(
+        default_factory=lambda: _env_flag("OPENAI4S_SHARE_ALLOW_INSECURE", False)
+    )
+
+    def __post_init__(self) -> None:
+        raw = (
+            self.auth_token or os.environ.get("OPENAI4S_SHARE_AUTH_TOKEN", "")
+        ).strip()
+        self.auth_token = "" if is_placeholder_api_key(raw) else raw
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.relay_url and self.auth_token)
+
+    def public_url(self, share_id: str) -> str:
+        from urllib.parse import urlparse
+
+        domain = self.base_domain or (urlparse(self.relay_url).hostname or "localhost")
+        return f"https://{share_id}.{domain}/"
+
+
+@dataclass
 class Config:
     data_dir: Path = field(default_factory=_default_data_dir)
     host: str = os.environ.get("OPENAI4S_HOST", "127.0.0.1")
     port: int = int(os.environ.get("OPENAI4S_PORT", "8760"))
     llm: LLMConfig = field(default_factory=LLMConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
+    share: ShareConfig = field(default_factory=ShareConfig)
     # skills root: repo-local skills/ dir by default
     skills_dir: Path = field(
         default_factory=lambda: Path(
@@ -329,8 +368,17 @@ class Config:
     )
 
     def ensure_dirs(self) -> None:
+        from openai4s.security.permissions import harden_dir
+
+        # The data dir holds the credential database, artifacts, and logs. It
+        # was created at the process umask (0755 on most systems), so every
+        # local account could list and read it.
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        harden_dir(self.data_dir)
         for sub in ("logs", "artifacts", "tool-results", "compaction-history"):
-            (self.data_dir / sub).mkdir(parents=True, exist_ok=True)
+            path = self.data_dir / sub
+            path.mkdir(parents=True, exist_ok=True)
+            harden_dir(path)
 
     @property
     def logs_dir(self) -> Path:
@@ -339,6 +387,10 @@ class Config:
     @property
     def artifacts_dir(self) -> Path:
         return self.data_dir / "artifacts"
+
+    @property
+    def shares_dir(self) -> Path:
+        return self.data_dir / "shares"
 
     @property
     def compaction_dir(self) -> Path:

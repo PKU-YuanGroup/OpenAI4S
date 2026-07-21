@@ -25,6 +25,15 @@ PROVIDERS = {
 
 
 class MemorySettings:
+    """Stands in for the Store's settings surface.
+
+    The secret accessors mirror what the real Store does under the plaintext
+    backend — store the value, hand it straight back. Onboarding writes the
+    user's API key through the broker now, so this double has to carry that
+    part of the contract; the tests below assert the key does not leak into a
+    *response*, which is orthogonal to where it is stored.
+    """
+
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
 
@@ -33,6 +42,13 @@ class MemorySettings:
 
     def set_setting(self, key: str, value: str) -> None:
         self.values[key] = value
+
+    def get_secret_setting(self, key: str) -> str:
+        return self.values.get(key) or ""
+
+    def set_secret_setting(self, key: str, value: str, *, scope: str) -> str:
+        self.values[key] = value
+        return value
 
 
 def service(tmp_path: Path) -> tuple[OnboardingService, MemorySettings]:
@@ -149,3 +165,21 @@ def test_clear_api_key_is_explicit(tmp_path):
     result = onboarding.configure(provider="alpha", clear_api_key=True)
     assert settings.values["llm_api_key"] == ""
     assert result.has_api_key is False
+
+
+def test_configure_preserves_stored_model_and_base_url_when_only_touching_key(tmp_path):
+    onboarding, settings = service(tmp_path)
+    # Operator previously customized model/base_url for the active provider.
+    settings.values["llm_provider"] = "alpha"
+    settings.values["llm_model"] = "alpha-custom"
+    settings.values["llm_base_url"] = "https://corp.proxy/v1"
+
+    # Non-interactive path passes model=None/base_url=None; it must not reset
+    # the stored customization back to the provider spec defaults.
+    result = onboarding.configure(provider="alpha", api_key="fresh-key")
+
+    assert result.model == "alpha-custom"
+    assert result.base_url == "https://corp.proxy/v1"
+    assert settings.values["llm_model"] == "alpha-custom"
+    assert settings.values["llm_base_url"] == "https://corp.proxy/v1"
+    assert settings.values["llm_api_key"] == "fresh-key"

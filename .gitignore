@@ -1,10 +1,13 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 *.db
 .env
 .env.*
 .env.bak.*
+.venv
 !.env.example
 *.egg-info/
 node_modules/

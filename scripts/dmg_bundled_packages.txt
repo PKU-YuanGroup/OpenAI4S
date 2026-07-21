@@ -1,0 +1,68 @@
+# The scientific stack pre-baked into the macOS .app bundle.
+#
+# Single source of truth, read by BOTH sides so they cannot drift:
+#   - scripts/build_macos_dmg.sh installs the pip names into the embedded runtime
+#   - scripts/verify_macos_bundle.py asserts each import name resolves from inside
+#     the signed bundle
+#
+# One package per line:  <pip-name> <import-name>   (# starts a comment)
+#
+# This is the pip-installable superset of the DEFAULT python.yml kernel env plus
+# the stdlib-networking helpers, so a downloaded .app runs the common
+# cheminformatics / single-cell / dataframe workflows offline with no
+# `pip install` and no `openai4s setup`. Every entry here has been verified to
+# wheel on macOS arm64 CPython 3.13 and to import without pulling numpy below 2.x.
+#
+# Deliberately NOT here: torch + fair-esm (torch is ~200MB and belongs to the
+# GPU/struct env), and the R kernel + bioconda CLIs (mafft/iqtree/fasttree) which
+# are conda-only binaries pip cannot install. Those stay behind `openai4s setup`.
+
+# --- numeric / dataframe / plotting baseline ---
+numpy            numpy
+pandas           pandas
+scipy            scipy
+matplotlib       matplotlib
+seaborn          seaborn
+plotly           plotly
+pillow           PIL
+sympy            sympy
+statsmodels      statsmodels
+networkx         networkx
+
+# --- machine learning ---
+scikit-learn     sklearn
+umap-learn       umap
+numba            numba
+
+# --- cheminformatics ---
+rdkit            rdkit
+
+# --- single-cell ---
+scanpy           scanpy
+anndata          anndata
+leidenalg        leidenalg
+igraph           igraph
+
+# --- bio / IO / storage ---
+biopython        Bio
+h5py             h5py
+zarr             zarr
+pyarrow          pyarrow
+openpyxl         openpyxl
+pypdf            pypdf
+pypdfium2        pypdfium2
+
+# --- web / parsing / networking ---
+requests         requests
+httpx            httpx
+socksio          socksio
+PySocks          socks
+beautifulsoup4   bs4
+lxml             lxml
+
+# --- utilities ---
+tabulate         tabulate
+tqdm             tqdm
+pyyaml           yaml
+python-dateutil  dateutil
+regex            regex

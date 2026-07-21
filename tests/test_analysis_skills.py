@@ -69,6 +69,21 @@ def test_audit_rows_finds_duplicates_types_and_group_leakage():
     assert result["split_leakage"]["patient"] == {"count": 1, "examples": [1]}
 
 
+def test_audit_rows_detects_duplicates_with_unserializable_values_and_reordered_keys():
+    import datetime
+
+    audit_rows = _kernel("audit-dataset").audit_rows
+    # Two byte-identical records whose keys were inserted in a different order,
+    # carrying a value json cannot serialize natively (date). The stable-key
+    # fallback must still canonicalize dict order so these count as duplicates.
+    rows = [
+        {"x": datetime.date(2024, 1, 1), "y": 1},
+        {"y": 1, "x": datetime.date(2024, 1, 1)},
+    ]
+    result = audit_rows(rows)
+    assert result["duplicate_rows"] == 1
+
+
 def test_binary_metrics_include_tie_aware_auc_and_undefined_ratios():
     metrics = _kernel("evaluate-model")
     result = metrics.binary_classification_metrics(

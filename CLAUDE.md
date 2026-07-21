@@ -13,14 +13,17 @@ Keep future guidance platform-neutral unless a section explicitly calls out a Cl
 ## Commands
 
 ```bash
-./setup.sh                          # one-time: uv sync --extra science + install pre-commit hook
+./setup.sh                          # one-time: locked lightweight .venv + pre-commit hook
+./setup.sh --with-kernel-envs       # also create comprehensive Python + R envs
+./setup.sh --update-kernel-envs     # sync existing Python + R envs, without pruning
 ./start.sh                          # launch daemon + web UI at http://127.0.0.1:8760/
 uv run pytest                       # full offline test suite (LLM is mocked — no network, no keys)
 uv run pytest tests/test_agent.py::test_max_turns_stop   # a single test
 uv run pytest tests/test_kernel.py -k background         # tests matching a pattern
 uv run pre-commit run --all-files   # format + lint (black · isort --profile black · ruff)
 uv run openai4s run "…" -v          # run one Code-as-Action task in-process, no daemon
-openai4s setup                      # build the 4 conda kernel envs from envs/*.yml (--dry-run to preview)
+openai4s setup --profile standard   # build Python + R from envs/*.yml
+openai4s setup                      # build all 4 envs (--dry-run to preview)
 ```
 
 CLI subcommands (`openai4s <cmd>`): `serve` · `status` · `stop` · `url` · `run` · `setup`. `start.sh` just runs `openai4s serve`.
@@ -54,7 +57,7 @@ Read `docs/architecture.md` first. The system is two nested loops:
 - **`openai4s/server/webui/`** — static frontend (`app.js`, `index.html`, `style.css`, vendored 3Dmol under `vendor/`). Served as static files **from the working tree**, so JS/CSS edits are live on reload — no build step.
 - **`openai4s/security/` + `kernel/environment.py`** — strict child-env allowlisting keeps daemon secrets out of Python/R/subprocesses. The OS sandbox adapter uses Seatbelt/bubblewrap with `auto|enforce|off`, private temp/workspace writes, raw-network denial, and a real self-test; `auto` degrades visibly, `enforce` fails closed. Static/LLM code classification, shell checks, biosecurity, injection screening, dlopen audit hook, durable approvals (unattended defaults deny), and application egress remain independent layers.
 - **`openai4s/compute/`** + **`openai4s_compute_provider/`** — BYOC remote GPU. `compute/` is the host-side manager/registry; `openai4s_compute_provider/` is the **stdlib-only sandboxed SDK that runs on the remote machine**. Secret scrubbing is two-staged: `__main__` runs the provider-agnostic `scrub_secret_env()` baseline **before** it imports `provider.py`, then the resident prologue re-scrubs with the loaded provider's own declared `secret_env_prefixes` before the credential is read (from stdin/fd-3) — so provider top-level code cannot read credential-shaped or known-prefix env vars (a name-based heuristic — a secret in an unrecognized variable name is NOT scrubbed), and the credential itself is never placed in the env. Provider shims that import third-party SDKs live only in `skills/remote-compute-<id>/provider.py`. `host.fold` (single-sequence Protenix/AF3-class) runs under a strict no-fabrication policy.
-- **`skills/`** + **`openai4s/skills_loader/loader.py`** — 30 bundled Skills. Each is `skills/<name>/SKILL.md` (+ optional `kernel.py` sidecar), a **recipe of code, not a JSON schema**. User-authored content lives only under `<data_dir>/user-skills`; bundled directories win name collisions and remain read-only. Host authoring preserves `draft → personal`, while Web Customize documents use `user`. The default loader resolves capability state through the current Store generation on every operation, so it must not retain a repository from a closed Store. Progressive disclosure lists only name + summary until `host.search_skills()`/load, and sidecars are compile-checked before use.
+- **`skills/`** + **`openai4s/skills_loader/loader.py`** — 34 bundled Skills. Each is `skills/<name>/SKILL.md` (+ optional `kernel.py` sidecar), a **recipe of code, not a JSON schema**. User-authored content lives only under `<data_dir>/user-skills`; bundled directories win name collisions and remain read-only. Host authoring preserves `draft → personal`, while Web Customize documents use `user`. The default loader resolves capability state through the current Store generation on every operation, so it must not retain a repository from a closed Store. Progressive disclosure lists only name + summary until `host.search_skills()`/load, and sidecars are compile-checked before use.
 - Other roots: `mcp_client.py` + `mcp_servers/` (MCP), `prompts.py` (system prompts), `replay.py` (trajectory replay), `pkgscan.py`, `jobs.py`, `config.py` (dataclass `Config` + zero-dep `.env` loader).
 
 ## Conventions & gotchas

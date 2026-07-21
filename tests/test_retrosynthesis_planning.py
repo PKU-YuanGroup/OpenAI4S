@@ -1,4 +1,5 @@
 """Offline tests for the retrosynthesis_planning skill."""
+import base64
 import importlib.util
 import json
 import re
@@ -19,6 +20,7 @@ def _llm_prompt(request):
 def _import_skill():
     sys.path.insert(0, str(get_config().skills_dir))
     from retrosynthesis_planning.kernel import (  # noqa: PLC0415
+        OpenAI4SLLMReactionEvidenceProvider,
         annotate_routes_with_llm,
         build_aizynth_command,
         build_llm_annotation_prompt,
@@ -27,6 +29,8 @@ def _import_skill():
         build_pubchem_query_url,
         build_pubchem_structure_image_url,
         collect_molecule_briefs,
+        collect_reaction_briefs,
+        collect_reaction_evidence,
         command_to_shell,
         normalize_routes,
         parse_llm_annotations,
@@ -44,7 +48,10 @@ def _import_skill():
         "build_pubchem_structure_image_url": build_pubchem_structure_image_url,
         "command_to_shell": command_to_shell,
         "collect_molecule_briefs": collect_molecule_briefs,
+        "collect_reaction_evidence": collect_reaction_evidence,
+        "collect_reaction_briefs": collect_reaction_briefs,
         "normalize_routes": normalize_routes,
+        "OpenAI4SLLMReactionEvidenceProvider": OpenAI4SLLMReactionEvidenceProvider,
         "parse_llm_annotations": parse_llm_annotations,
         "rank_routes": rank_routes,
         "render_route_tree_html": render_route_tree_html,
@@ -59,18 +66,27 @@ def _graph_payload(html):
     return json.loads(match.group(1))["graph"]
 
 
-def _assert_no_duplicate_structure_uris(html):
+def _svg_source_text(source):
+    """Decode the self-contained SVG payload used by dashboard structure images."""
+    prefix = "data:image/svg+xml;base64,"
+    assert source.startswith(prefix)
+    return base64.b64decode(source.removeprefix(prefix)).decode("utf-8")
+
+
+def _assert_no_duplicate_structure_uris(html, *, check_runtime=True):
     """An `onerror` fallback is emitted only when it differs from its own primary.
 
     Without RDKit the primary *is* the placeholder, so carrying a fallback would
-    embed the identical base64 payload twice on every molecule.
+    embed the identical base64 payload twice on every molecule. Runtime checks
+    apply only to HTML rendered in this test environment; committed examples may
+    have been generated in a different optional-dependency environment.
     """
     tags = re.findall(r"<(?:img|image)\b[^>]*?data-fallback-src[^>]*?>", html)
     for tag in tags:
         primary = re.search(r'(?:^|\s)(?:src|href)="([^"]+)"', tag).group(1)
         fallback = re.search(r'data-fallback-src="([^"]+)"', tag).group(1)
         assert fallback != primary, "fallback duplicates the primary structure URI"
-    if importlib.util.find_spec("rdkit") is None:
+    if check_runtime and importlib.util.find_spec("rdkit") is None:
         assert not tags, "without RDKit no fallback should be emitted at all"
 
 
@@ -187,7 +203,17 @@ def test_aspirin_example_dashboard_is_documented():
         n for n in graph["nodes"] if n.get("smiles") == "CC(=O)Oc1ccccc1C(=O)O"
     )
     assert target["className"] == "target"
-    _assert_no_duplicate_structure_uris(html)
+    molecule_sources = [
+        node["structureSrc"]
+        for node in graph["nodes"]
+        if node.get("kind") == "molecule"
+    ]
+    assert molecule_sources
+    assert all(
+        "structure renderer fallback" not in _svg_source_text(source)
+        for source in molecule_sources
+    )
+    _assert_no_duplicate_structure_uris(html, check_runtime=False)
 
 
 def test_normalize_and_rank_routes():
@@ -303,6 +329,183 @@ def test_molecule_briefs_and_query_urls():
     assert funcs["build_molecule_structure_src"]("unknown-intermediate").startswith(
         "data:image/svg+xml;base64,"
     )
+
+
+def test_rdkit_structure_depiction_when_available():
+    if importlib.util.find_spec("rdkit") is None:
+        pytest.skip("RDKit is an optional chemistry dependency")
+
+    funcs = _import_skill()
+    svg = _svg_source_text(
+        funcs["build_molecule_structure_src"]("CC(=O)Oc1ccccc1C(=O)O")
+    )
+    assert "structure renderer fallback" not in svg
+    assert "#FFFFFF" not in svg.upper()
+
+
+def test_route_step_evidence_cards_are_source_backed_and_graph_visible():
+    funcs = _import_skill()
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+    briefs = funcs["collect_reaction_briefs"](ranked)
+
+    assert len(briefs) == 2
+    assert briefs[0]["reaction_key"].startswith("rxn:")
+
+    evidence = {
+        "reactions": {
+            briefs[0]["reaction_key"]: [
+                {
+                    "source_type": "literature",
+                    "title": "Verified O-acylation precedent",
+                    "identifier": "DOI:10.0000/example",
+                    "url": "https://example.org/precedent",
+                    "match_level": "exact_substrate",
+                    "verified": True,
+                    "conditions": {"solvent": "ethyl acetate", "temperature": "20 C"},
+                    "yield_range": "82-88%",
+                    "risk_flags": ["controlled quench required"],
+                    "notes": "Evidence record supplied by the reviewer.",
+                }
+            ]
+        }
+    }
+    html = funcs["render_route_tree_html"](
+        ranked,
+        target_smiles="CC(=O)Oc1ccccc1C(=O)O",
+        reaction_evidence=evidence,
+    )
+
+    assert "Step Evidence" in html
+    assert "Verified exact-substrate evidence" in html
+    assert "88/100 coverage" in html
+    assert "Verified O-acylation precedent" in html
+    assert 'href="https://example.org/precedent"' in html
+    assert "No external evidence attached for this step." in html
+
+    graph = _graph_payload(html)
+    reaction_nodes = [node for node in graph["nodes"] if node.get("kind") == "reaction"]
+    matched = next(
+        node
+        for node in reaction_nodes
+        if node["details"].get("Evidence status") == "Verified exact-substrate evidence"
+    )
+    assert matched["details"]["Evidence coverage"] == "88/100 heuristic coverage"
+    assert matched["details"]["Supporting evidence"][0]["Identifier"] == (
+        "DOI:10.0000/example"
+    )
+
+
+def test_openai4s_llm_evidence_provider_only_links_retrieved_sources():
+    funcs = _import_skill()
+    ranked = funcs["rank_routes"](funcs["normalize_routes"](ROUTE_PAYLOAD))
+    calls = {"searches": []}
+
+    def fake_llm(request):
+        prompt = _llm_prompt(request)
+        if "planning source retrieval" in prompt:
+            briefs = json.loads(prompt.split("Reaction briefs:\n", 1)[1])
+            return json.dumps(
+                {
+                    "queries": [
+                        {
+                            "reaction_key": briefs[0]["reaction_key"],
+                            "query": "aspirin O-acylation synthesis precedent",
+                        }
+                    ]
+                }
+            )
+        if "screening retrieved sources" in prompt:
+            sources = json.loads(prompt.split("Retrieved sources:\n", 1)[1])
+            source = sources[0]
+            return json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "reaction_key": source["reaction_key"],
+                            "source_id": source["source_id"],
+                            "match_level": "exact_substrate",
+                            "rationale": "Retrieved title and snippet indicate a close precedent.",
+                        },
+                        {
+                            "reaction_key": source["reaction_key"],
+                            "source_id": "invented-source-id",
+                            "match_level": "exact_substrate",
+                        },
+                    ]
+                }
+            )
+        raise AssertionError("unexpected LLM prompt")
+
+    def fake_search(query, **kwargs):
+        calls["searches"].append((query, kwargs))
+        return {
+            "results": [
+                {
+                    "title": "Retrieved O-acylation precedent",
+                    "url": "https://doi.org/10.5555/retrosynthesis",
+                    "snippet": "Source snippet returned by the search skill.",
+                }
+            ]
+        }
+
+    provider = funcs["OpenAI4SLLMReactionEvidenceProvider"](
+        llm=fake_llm,
+        search=fake_search,
+        doi_verifier=lambda dois: {doi: {"ok": True} for doi in dois},
+        max_queries_per_reaction=1,
+    )
+    evidence = funcs["collect_reaction_evidence"](ranked, [provider])
+
+    assert calls["searches"][0][0] == "aspirin O-acylation synthesis precedent"
+    assert len(evidence) == 1
+    record = next(iter(evidence.values()))[0]
+    assert record["title"] == "Retrieved O-acylation precedent"
+    assert record["url"] == "https://doi.org/10.5555/retrosynthesis"
+    assert record["identifier"] == "10.5555/retrosynthesis"
+    assert record["candidate"] is True
+    assert record["verified"] is False
+    assert record["identifier_verified"] is True
+
+    html = funcs["render_route_tree_html"](ranked, reaction_evidence=evidence)
+    assert "Retrieved source candidates need review" in html
+    assert "30/100 coverage" in html
+    assert "Retrieved O-acylation precedent" in html
+    assert "invented-source-id" not in html
+
+
+def test_execution_scoring_keeps_candidate_evidence_and_constraints_auditable():
+    funcs = _import_skill()
+    routes = funcs["normalize_routes"](ROUTE_PAYLOAD)
+    first_reaction = funcs["collect_reaction_briefs"](routes)[0]
+    evidence = {
+        first_reaction["reaction_key"]: [
+            {
+                "source_type": "literature",
+                "title": "Retrieved candidate only",
+                "url": "https://doi.org/10.5555/candidate",
+                "match_level": "exact_substrate",
+                "candidate": True,
+            }
+        ]
+    }
+    ranked = funcs["rank_routes"](
+        routes,
+        reaction_evidence=evidence,
+        constraints={
+            "require_solved": True,
+            "minimum_evidence_coverage": 40,
+            "forbidden_starting_materials": ["CC(=O)O"],
+        },
+        decision_weights={"evidence_coverage": 40},
+    )
+
+    first = next(route for route in ranked if "CC(=O)O" in route["starting_materials"])
+    second = next(route for route in ranked if not route["solved"])
+    assert first["decision_breakdown"]["evidence_coverage"]["value"] == 30
+    assert "forbidden starting material: CC(=O)O" in first["constraint_violations"]
+    assert "route is not solved" in second["constraint_violations"]
+    assert any("evidence coverage" in item for item in second["constraint_violations"])
+    assert sum(item["weight"] for item in first["decision_breakdown"].values()) == 100
 
 
 def test_llm_annotations_drive_reaction_and_molecule_html():

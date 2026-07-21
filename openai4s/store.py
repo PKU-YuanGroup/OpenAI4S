@@ -45,6 +45,7 @@ from openai4s.execution.dependencies import (
     default_replay_policy,
     default_visibility,
 )
+from openai4s.security.permissions import harden_db, harden_dir
 from openai4s.storage.actions import ActionLedgerRepository
 from openai4s.storage.activation import SessionActivationRepository
 from openai4s.storage.agents import AgentProfileRepository
@@ -55,7 +56,13 @@ from openai4s.storage.artifacts import same_file_path as _same_file_path
 from openai4s.storage.branch_projection import count_cursor, project_branch_records
 from openai4s.storage.capabilities import CapabilityStateRepository
 from openai4s.storage.checkpoint_state import CheckpointStateRepository
-from openai4s.storage.connectors import ConnectorRepository
+from openai4s.storage.compute_jobs import ComputeJobRepository
+from openai4s.storage.connectors import (
+    ConnectorRepository,
+    broker_connector_env,
+    forget_connector_env,
+    resolve_connector_env,
+)
 from openai4s.storage.delegation import DelegationProjectionRepository
 from openai4s.storage.frames import FrameRepository
 from openai4s.storage.kernels import KernelGenerationRepository
@@ -69,6 +76,14 @@ from openai4s.storage.metadata import (
     HostCallRepository,
     NotesRepository,
 )
+from openai4s.storage.migrations import (
+    SCHEMA_VERSION,
+    MigrationError,
+    _is_duplicate_column,
+    applied_migrations,
+    current_version,
+    run_migrations,
+)
 from openai4s.storage.permissions import (
     DEFAULT_PERMISSION_RULES as _DEFAULT_PERMISSION_RULES,
 )
@@ -77,6 +92,7 @@ from openai4s.storage.permissions import perm_match as _perm_match
 from openai4s.storage.plans import PlanRepository
 from openai4s.storage.recovery import RecoveryJournalRepository
 from openai4s.storage.settings import SettingsRepository
+from openai4s.storage.shares import SharesRepository
 from openai4s.storage.skills import SkillVersionRepository
 from openai4s.storage.snapshots import SessionSnapshotRepository
 
@@ -367,6 +383,48 @@ CREATE TABLE IF NOT EXISTS connectors (
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
+-- Remote compute jobs. These outlive the process that submitted them: an ssh
+-- job keeps running under nohup and a byoc sandbox keeps billing whether or not
+-- this daemon is alive. Holding them only in memory (which is what
+-- ComputeManager did) meant a restart stranded every in-flight job — the remote
+-- work continued with nothing left that could find, harvest, or cancel it.
+CREATE TABLE IF NOT EXISTS compute_jobs (
+    job_id          TEXT PRIMARY KEY,
+    -- Stable across a resubmit of the same logical work. Reconciliation looks
+    -- a job up by this before submitting, so a crash between "provider
+    -- accepted" and "we recorded it" cannot become a double-charge.
+    idempotency_key TEXT,
+    provider        TEXT NOT NULL,     -- "ssh:<alias>" | "byoc:<id>"
+    status          TEXT NOT NULL,     -- see compute/manager.py's state machine
+    alias           TEXT,              -- ssh
+    workdir         TEXT,              -- ssh
+    pid             TEXT,              -- ssh
+    sandbox_id      TEXT,              -- byoc
+    -- The provider's own acknowledgement of the submit. Evidence the job
+    -- exists remotely, independent of anything we chose to believe.
+    receipt         TEXT,
+    outputs         TEXT,              -- JSON: declared output globs
+    exit_code       INTEGER,
+    reason          TEXT,              -- why a terminal state was reached
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    submitted_at    INTEGER,
+    terminal_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_compute_jobs_status ON compute_jobs(status);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_compute_jobs_idem
+    ON compute_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+-- Append-only, monotonically sequenced per job. A status column alone says
+-- where a job is; this says how it got there, which is what a restart needs to
+-- tell "we never submitted" from "we submitted and lost the response".
+CREATE TABLE IF NOT EXISTS compute_job_events (
+    job_id   TEXT NOT NULL,
+    seq      INTEGER NOT NULL,
+    kind     TEXT NOT NULL,
+    at       INTEGER NOT NULL,
+    payload  TEXT,                     -- JSON
+    PRIMARY KEY (job_id, seq)
+);
 CREATE TABLE IF NOT EXISTS frame_steps (
     step_id       TEXT PRIMARY KEY,
     frame_id      TEXT NOT NULL,
@@ -460,6 +518,26 @@ CREATE TABLE IF NOT EXISTS permission_requests (
 );
 CREATE INDEX IF NOT EXISTS ix_permission_request_root
     ON permission_requests(root_frame_id, state, created_at);
+CREATE TABLE IF NOT EXISTS shares (
+    share_id       TEXT PRIMARY KEY,
+    root_frame_id  TEXT NOT NULL,
+    title          TEXT,
+    status         TEXT NOT NULL DEFAULT 'publishing'
+                   CHECK (status IN ('publishing','ready','failed','revoked')),
+    snapshot_id    TEXT,
+    pending_snapshot_id TEXT,
+    bundle_sha256  TEXT,
+    bundle_size    INTEGER,
+    projection_id  TEXT,
+    counts_json    TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    revoked_at     INTEGER,
+    expires_at     INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_shares_active_frame
+    ON shares(root_frame_id) WHERE status IN ('publishing','ready');
+CREATE INDEX IF NOT EXISTS ix_shares_root ON shares(root_frame_id);
 """
 
 # Tables host.query must refuse to read. These hold secrets or
@@ -525,18 +603,42 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# How long a writer waits for a competing lock before raising "database is
+# locked". Python's sqlite3 already defaults this to 5s via connect(timeout=);
+# naming it makes the value a decision rather than a coincidence, and gives the
+# multi-process case (openai4s run / init alongside a live daemon) one place to
+# tune.
+_BUSY_TIMEOUT_S = 5.0
+
+
 class Store:
     """Thread-safe SQLite wrapper. One per data_dir; created lazily."""
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self._closed = False
+        # mode= on mkdir is masked by the umask and only applies on creation,
+        # so harden explicitly and unconditionally afterwards.
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        harden_dir(self.db_path.parent)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=_BUSY_TIMEOUT_S,
+        )
+        # SQLite creates the file at the process umask — 0644 on most systems.
+        # This database holds plaintext credentials, so close it to the owner
+        # as soon as it exists and before any schema is written into it.
+        harden_db(self.db_path)
         self._conn.row_factory = sqlite3.Row
+        self._apply_pragmas()
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        # Re-run: the schema write is the first thing that can materialise a
+        # -wal/-shm sidecar, which would otherwise be born world-readable
+        # carrying the same rows.
+        harden_db(self.db_path)
         self._migrate()
         self._actions = ActionLedgerRepository(
             self._conn,
@@ -595,6 +697,11 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._shares = SharesRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._permissions = PermissionRuleRepository(
             self._conn,
             self._lock,
@@ -603,6 +710,11 @@ class Store:
             set_setting=self.set_setting,
         )
         self._connectors = ConnectorRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._compute_jobs = ComputeJobRepository(
             self._conn,
             self._lock,
             clock_ms=lambda: _now_ms(),
@@ -683,6 +795,7 @@ class Store:
     # --- migration (add columns missing from a pre-existing DB) -----------
     _MIGRATIONS = {
         "messages": [("branch_id", "TEXT")],
+        "shares": [("expires_at", "INTEGER")],
         "frames": [
             ("task_summary", "TEXT"),
             ("folder_id", "TEXT"),
@@ -744,100 +857,240 @@ class Store:
     }
 
     def _migrate(self) -> None:
+        """Bring the database to SCHEMA_VERSION, transactionally and once.
+
+        The fast path is a ``PRAGMA user_version`` read: an already-current
+        database does no probing at all, where previously every open re-derived
+        the schema shape with a table_info scan per table.
+        """
         with self._lock:
-            for table, cols in self._MIGRATIONS.items():
-                have = {
-                    r["name"]
-                    for r in self._conn.execute(
-                        f"PRAGMA table_info({table})"
-                    ).fetchall()
-                }
-                for name, decl in cols:
-                    if name not in have:
-                        try:
-                            self._conn.execute(
-                                f"ALTER TABLE {table} ADD COLUMN {name} {decl}"
-                            )
-                        except sqlite3.OperationalError:
-                            pass
-            # Historical child frames inherited the root id but silently kept
-            # project_id='default'. Historical artifacts also used their actor
-            # frame as root_frame_id. Repair both idempotently when the frame
-            # tree still exists; unframed legacy uploads remain untouched.
-            self._conn.execute(
-                "UPDATE frames SET project_id=COALESCE((SELECT root.project_id "
-                "FROM frames AS root WHERE root.frame_id=frames.root_frame_id),"
-                "project_id) WHERE root_frame_id IS NOT NULL"
+            report = run_migrations(
+                self._conn,
+                self.db_path,
+                {1: ("legacy_baseline", self._apply_legacy_baseline)},
             )
-            self._conn.execute(
-                "UPDATE artifacts SET project_id=COALESCE((SELECT root.project_id "
-                "FROM frames AS actor JOIN frames AS root "
-                "ON root.frame_id=actor.root_frame_id "
-                "WHERE actor.frame_id=artifacts.root_frame_id),project_id) "
-                "WHERE root_frame_id IN (SELECT frame_id FROM frames)"
+            if report["migrated"]:
+                harden_db(self.db_path)
+
+    def _apply_legacy_baseline(self, conn: sqlite3.Connection) -> None:
+        """Version 1: the historical catch-up pass, run once and then stamped.
+
+        This is the whole of what ``_migrate`` used to do on every open. It is
+        idempotent by construction — it adds only absent columns, and every
+        backfill below is guarded by a predicate that selects only rows still
+        needing it — which is exactly why a version can be retrofitted onto an
+        existing database without reconstructing which ALTERs had already run.
+        Converge once, stamp version 1, and stop re-deriving it forever after.
+
+        Runs inside the transaction owned by run_migrations; it must not commit.
+        """
+        for table, cols in self._MIGRATIONS.items():
+            have = {
+                r["name"]
+                for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for name, decl in cols:
+                if name in have:
+                    continue
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                except sqlite3.OperationalError as e:
+                    # Only the one error a concurrent re-run legitimately
+                    # produces is benign. The old blanket swallow also hid
+                    # "database is locked" and "no such table", letting the
+                    # process continue against a schema missing a column it
+                    # believed it had — a migration failure surfacing much
+                    # later as an unexplained runtime error.
+                    if not _is_duplicate_column(e):
+                        raise MigrationError(
+                            f"ALTER TABLE {table} ADD COLUMN {name} {decl} "
+                            f"failed: {e}"
+                        ) from e
+        # Historical child frames inherited the root id but silently kept
+        # project_id='default'. Historical artifacts also used their actor
+        # frame as root_frame_id. Repair both idempotently when the frame
+        # tree still exists; unframed legacy uploads remain untouched.
+        conn.execute(
+            "UPDATE frames SET project_id=COALESCE((SELECT root.project_id "
+            "FROM frames AS root WHERE root.frame_id=frames.root_frame_id),"
+            "project_id) WHERE root_frame_id IS NOT NULL"
+        )
+        conn.execute(
+            "UPDATE artifacts SET project_id=COALESCE((SELECT root.project_id "
+            "FROM frames AS actor JOIN frames AS root "
+            "ON root.frame_id=actor.root_frame_id "
+            "WHERE actor.frame_id=artifacts.root_frame_id),project_id) "
+            "WHERE root_frame_id IN (SELECT frame_id FROM frames)"
+        )
+        conn.execute(
+            "UPDATE artifacts SET root_frame_id=COALESCE((SELECT "
+            "actor.root_frame_id FROM frames AS actor "
+            "WHERE actor.frame_id=artifacts.root_frame_id),root_frame_id) "
+            "WHERE root_frame_id IN (SELECT frame_id FROM frames)"
+        )
+        # Messages written before branch-aware history belonged to the
+        # canonical root.  Keep the rows immutable and backfill only their
+        # newly-added routing projection.
+        conn.execute(
+            "UPDATE messages SET branch_id=root_frame_id "
+            "WHERE branch_id IS NULL OR branch_id=''"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_msg_branch "
+            "ON messages(root_frame_id,branch_id,seq)"
+        )
+        # ``cell_index`` was already the session-monotonic allocation for
+        # historical Web Cells.  Backfill the explicitly named runtime
+        # revision without pretending that rows which never had an index
+        # carry recoverable state.
+        conn.execute(
+            "UPDATE execution_log SET state_revision=cell_index "
+            "WHERE state_revision IS NULL AND cell_index IS NOT NULL"
+        )
+        # Capture the same immutable dependency metadata for historical
+        # Cells as for newly recorded ones.  Rows are selected by the hash
+        # sentinel, making the additive migration idempotent.
+        legacy_cells = conn.execute(
+            "SELECT producing_cell_id,code,language,origin,visibility,"
+            "replay_policy FROM execution_log WHERE code_hash IS NULL"
+        ).fetchall()
+        for cell in legacy_cells:
+            visibility = cell["visibility"] or default_visibility(cell["origin"])
+            if visibility == "scientific" and str(cell["origin"] or "").lower() in {
+                "system",
+                "recovery",
+            }:
+                visibility = default_visibility(cell["origin"])
+            replay_policy = cell["replay_policy"]
+            if not replay_policy or visibility in {"system", "recovery"}:
+                replay_policy = default_replay_policy(visibility)
+            metadata = analyze_code(cell["code"] or "", cell["language"] or "python")
+            conn.execute(
+                "UPDATE execution_log SET code_hash=?,visibility=?,"
+                "replay_policy=?,variable_reads=?,variable_writes=?,"
+                "variable_deletes=?,mutation_uncertain=? "
+                "WHERE producing_cell_id=?",
+                (
+                    metadata.code_hash,
+                    visibility,
+                    replay_policy,
+                    json.dumps(metadata.reads, ensure_ascii=False),
+                    json.dumps(metadata.writes, ensure_ascii=False),
+                    json.dumps(metadata.deletes, ensure_ascii=False),
+                    1 if metadata.uncertain else 0,
+                    cell["producing_cell_id"],
+                ),
             )
-            self._conn.execute(
-                "UPDATE artifacts SET root_frame_id=COALESCE((SELECT "
-                "actor.root_frame_id FROM frames AS actor "
-                "WHERE actor.frame_id=artifacts.root_frame_id),root_frame_id) "
-                "WHERE root_frame_id IN (SELECT frame_id FROM frames)"
+
+    def _apply_pragmas(self) -> None:
+        """The connection's explicit PRAGMA policy.
+
+        Stated rather than inherited, because a default that happens to be
+        right is indistinguishable from one nobody chose — and the next person
+        cannot tell which knobs were considered.
+
+        Deliberately NOT set here:
+
+        ``journal_mode``. It stays at the rollback-journal default. There is
+        real multi-process access (``openai4s run`` and ``openai4s init`` open
+        this database from their own process with no check that the daemon is
+        not live), which is the usual argument for WAL — but measuring it
+        showed a reader is not blocked by an in-flight writer under either
+        mode, so there is no demonstrated problem for WAL to solve. Switching
+        the on-disk format of a live user database on folklore is a bad trade;
+        WAL also adds -wal/-shm sidecars and is unsafe on network filesystems.
+        Revisit under a real concurrency and crash-recovery test, not before.
+
+        ``synchronous``. Already FULL, which is the safe end. Lowering it
+        trades crash durability for write speed on a database holding an audit
+        ledger. Not a trade to make silently.
+        """
+        with self._lock:
+            # No-op today: the schema declares zero REFERENCES/FOREIGN KEY
+            # clauses, so there is nothing to enforce. Set anyway, and by
+            # policy rather than by accident: the pragma is per-connection and
+            # OFF by default, so the day someone adds a foreign key it would
+            # otherwise be silently unenforced — the constraint would read as
+            # documentation. Adding real constraints to these tables needs a
+            # rebuild (SQLite has no ALTER TABLE ADD CONSTRAINT) and orphan
+            # cleanup first; this only ensures they would bite once they exist.
+            self._conn.execute("PRAGMA foreign_keys = ON")
+
+    # --- secrets ---------------------------------------------------------
+    @property
+    def secrets(self):
+        """The SecretBroker for this database, resolved once on first use.
+
+        Lazy because resolution runs a real keychain round-trip self-test, and
+        the overwhelming majority of Store construction (every test, every CLI
+        subcommand that touches no credential) never needs a secret.
+        """
+        with self._lock:
+            broker = getattr(self, "_secret_broker", None)
+            if broker is None:
+                from openai4s.security.secret_broker import SecretBroker
+
+                broker = SecretBroker(self)
+                self._secret_broker = broker
+            return broker
+
+    def get_secret_setting(self, key: str) -> str:
+        """Read a credential setting, whether it is a reference or legacy plaintext.
+
+        Both shapes have to work: an install that has not migrated, one that
+        has, and one where migration failed for a single key must all keep
+        running. Callers do not need to know which they are looking at.
+        """
+        from openai4s.security.secret_migration import resolve_setting
+
+        return resolve_setting(self, self.secrets, key)
+
+    def set_secret_setting(self, key: str, value: str, *, scope: str) -> str:
+        """Store a credential through the broker, recording only its reference.
+
+        Returns the reference. An empty value clears both the reference and the
+        stored secret — a cleared key must not linger in the keychain where the
+        UI reports it as gone.
+        """
+        from openai4s.security.secret_broker import is_ref
+
+        previous = self.get_setting(key)
+        if not value:
+            if is_ref(previous):
+                try:
+                    self.secrets.delete(previous)
+                except Exception:  # noqa: BLE001 - clearing the row still matters
+                    pass
+            self.set_setting(key, "")
+            return ""
+        ref = self.secrets.put(scope, key, value)
+        # Verify before recording: a write that did not raise is not evidence
+        # the value is retrievable, and a reference that resolves to nothing is
+        # worse than the plaintext it replaced.
+        if self.secrets.get(ref) != value:
+            raise RuntimeError(
+                f"refusing to record {key!r}: wrote to {ref} but could not read "
+                f"it back"
             )
-            # Messages written before branch-aware history belonged to the
-            # canonical root.  Keep the rows immutable and backfill only their
-            # newly-added routing projection.
-            self._conn.execute(
-                "UPDATE messages SET branch_id=root_frame_id "
-                "WHERE branch_id IS NULL OR branch_id=''"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_msg_branch "
-                "ON messages(root_frame_id,branch_id,seq)"
-            )
-            # ``cell_index`` was already the session-monotonic allocation for
-            # historical Web Cells.  Backfill the explicitly named runtime
-            # revision without pretending that rows which never had an index
-            # carry recoverable state.
-            self._conn.execute(
-                "UPDATE execution_log SET state_revision=cell_index "
-                "WHERE state_revision IS NULL AND cell_index IS NOT NULL"
-            )
-            # Capture the same immutable dependency metadata for historical
-            # Cells as for newly recorded ones.  Rows are selected by the hash
-            # sentinel, making the additive migration idempotent.
-            legacy_cells = self._conn.execute(
-                "SELECT producing_cell_id,code,language,origin,visibility,"
-                "replay_policy FROM execution_log WHERE code_hash IS NULL"
-            ).fetchall()
-            for cell in legacy_cells:
-                visibility = cell["visibility"] or default_visibility(cell["origin"])
-                if visibility == "scientific" and str(cell["origin"] or "").lower() in {
-                    "system",
-                    "recovery",
-                }:
-                    visibility = default_visibility(cell["origin"])
-                replay_policy = cell["replay_policy"]
-                if not replay_policy or visibility in {"system", "recovery"}:
-                    replay_policy = default_replay_policy(visibility)
-                metadata = analyze_code(
-                    cell["code"] or "", cell["language"] or "python"
-                )
-                self._conn.execute(
-                    "UPDATE execution_log SET code_hash=?,visibility=?,"
-                    "replay_policy=?,variable_reads=?,variable_writes=?,"
-                    "variable_deletes=?,mutation_uncertain=? "
-                    "WHERE producing_cell_id=?",
-                    (
-                        metadata.code_hash,
-                        visibility,
-                        replay_policy,
-                        json.dumps(metadata.reads, ensure_ascii=False),
-                        json.dumps(metadata.writes, ensure_ascii=False),
-                        json.dumps(metadata.deletes, ensure_ascii=False),
-                        1 if metadata.uncertain else 0,
-                        cell["producing_cell_id"],
-                    ),
-                )
-            self._conn.commit()
+        self.set_setting(key, ref)
+        return ref
+
+    # --- schema state ----------------------------------------------------
+    def schema_state(self) -> dict:
+        """Report the database's schema version and how it got there.
+
+        Exists so "is this database current, and what has been applied to it"
+        is a question that can be answered without re-deriving the shape from
+        table_info — which is what the code had to do before there was a
+        version at all.
+        """
+        with self._lock:
+            return {
+                "version": current_version(self._conn),
+                "expected": SCHEMA_VERSION,
+                "current": current_version(self._conn) >= SCHEMA_VERSION,
+                "applied": applied_migrations(self._conn),
+            }
 
     # --- low-level -------------------------------------------------------
     def _exec(self, sql: str, params: tuple = ()) -> None:
@@ -1103,12 +1356,14 @@ class Store:
         status: str | None = None,
         roots_only: bool = True,
         limit: int = 50,
+        before: tuple[int, str] | None = None,
     ) -> list[dict]:
         return self._frames.browse_frames(
             project_id=project_id,
             status=status,
             roots_only=roots_only,
             limit=limit,
+            before=before,
         )
 
     def frame_detail(
@@ -1928,6 +2183,70 @@ class Store:
     def delete_setting(self, key: str) -> None:
         self._settings.delete(key)
 
+    # --- web shares (public read-only snapshots) -------------------------
+    def get_share(self, share_id: str) -> dict | None:
+        return self._shares.get(share_id)
+
+    def active_share_for_frame(self, root_frame_id: str) -> dict | None:
+        return self._shares.active_for_frame(root_frame_id)
+
+    def list_shares_for_frame(self, root_frame_id: str) -> list[dict]:
+        return self._shares.list_for_frame(root_frame_id)
+
+    def list_shares(self, *, include_revoked: bool = False) -> list[dict]:
+        return self._shares.list_all(include_revoked=include_revoked)
+
+    def list_active_shares(self) -> list[dict]:
+        return self._shares.list_active()
+
+    def list_expired_shares(self, now_ms: int) -> list[dict]:
+        return self._shares.list_expired(now_ms)
+
+    def begin_share_publish(
+        self,
+        *,
+        share_id: str,
+        root_frame_id: str,
+        title: str | None,
+        pending_snapshot_id: str,
+        expires_at: int | None = None,
+    ) -> dict:
+        return self._shares.begin_publish(
+            share_id=share_id,
+            root_frame_id=root_frame_id,
+            title=title,
+            pending_snapshot_id=pending_snapshot_id,
+            expires_at=expires_at,
+        )
+
+    def mark_share_ready(
+        self,
+        share_id: str,
+        *,
+        snapshot_id: str,
+        bundle_sha256: str,
+        bundle_size: int,
+        projection_id: str,
+        counts: dict | None = None,
+    ) -> dict | None:
+        return self._shares.mark_ready(
+            share_id,
+            snapshot_id=snapshot_id,
+            bundle_sha256=bundle_sha256,
+            bundle_size=bundle_size,
+            projection_id=projection_id,
+            counts=counts,
+        )
+
+    def mark_share_failed(self, share_id: str) -> None:
+        self._shares.mark_failed(share_id)
+
+    def mark_share_revoked(self, share_id: str) -> None:
+        self._shares.mark_revoked(share_id)
+
+    def delete_share(self, share_id: str) -> None:
+        self._shares.delete(share_id)
+
     # --- model profiles (saved LLM/API configs) --------------------------
     # Stored as a JSON list under the `model_profiles` setting so users can keep
     # several full API configs (provider + base_url + model + key) side by side
@@ -2407,6 +2726,10 @@ class Store:
         env=None,
         enabled: bool = True,
     ) -> dict:
+        # Brokered here rather than in the repository: this facade owns the
+        # SecretBroker, and the repository must keep returning the real env to
+        # the callers that launch the server.
+        env = broker_connector_env(self, connector_id, env)
         return self._connectors.upsert(
             connector_id=connector_id,
             name=name,
@@ -2420,8 +2743,44 @@ class Store:
     def set_connector_enabled(self, connector_id: str, enabled: bool) -> None:
         self._connectors.set_enabled(connector_id, enabled)
 
+    # --- compute jobs ----------------------------------------------------
+    def create_compute_job(self, **kw) -> dict:
+        return self._compute_jobs.create(**kw)
+
+    def update_compute_job(self, job_id: str, **fields) -> dict | None:
+        return self._compute_jobs.update(job_id, **fields)
+
+    def get_compute_job(self, job_id: str) -> dict | None:
+        return self._compute_jobs.get(job_id)
+
+    def compute_job_by_idempotency_key(self, key: str) -> dict | None:
+        return self._compute_jobs.by_idempotency_key(key)
+
+    def live_compute_jobs(self) -> list[dict]:
+        return self._compute_jobs.live()
+
+    def list_compute_jobs(self, limit: int = 200) -> list[dict]:
+        return self._compute_jobs.list(limit)
+
+    def append_compute_job_event(self, job_id: str, kind: str, payload=None) -> int:
+        return self._compute_jobs.append_event(job_id, kind, payload)
+
+    def compute_job_events(self, job_id: str) -> list[dict]:
+        return self._compute_jobs.events(job_id)
+
+    def delete_compute_job(self, job_id: str) -> None:
+        self._compute_jobs.delete(job_id)
+
     def delete_connector(self, connector_id: str) -> None:
+        # Drop the credentials with the row. Otherwise a connector the user
+        # removed leaves its env secrets in the keychain with nothing left in
+        # the app that refers to them.
+        forget_connector_env(self, self._connectors.get(connector_id))
         self._connectors.delete(connector_id)
+
+    def connector_env(self, connector: dict) -> dict:
+        """The env a connector's process is launched with, references resolved."""
+        return resolve_connector_env(self, connector)
 
     # --- compaction ------------------------------------------------------
     def archive_compaction(

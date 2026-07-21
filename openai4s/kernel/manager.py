@@ -188,6 +188,14 @@ class Kernel:
                     if ftype == "response":
                         if stdout_chunks and not frame.get("stdout"):
                             frame["stdout"] = "".join(stdout_chunks)
+                        # Host-side annotation, not a protocol field: the
+                        # observation formatter needs somewhere inside the
+                        # workspace to spill an oversized stdout, and the
+                        # manager is the only layer that knows where that is.
+                        # Adding it to the worker's frame would be a protocol
+                        # change for information the worker does not have to
+                        # produce.
+                        frame.setdefault("cwd", str(self.cwd))
                         return frame
                     if ftype == "host_call":
                         self._service_host_call(frame)

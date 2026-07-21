@@ -12,7 +12,17 @@ lookup, or a medicinal chemistry synthesis feasibility summary.
 
 The recommended backend is AiZynthFinder running in a separate environment. This
 skill keeps OpenAI4S core dependency-free: the helper module is pure stdlib and
-only optionally uses RDKit if it is already installed in the active kernel.
+uses RDKit from the optional chemistry environment for transparent-background
+2D molecule depictions. On a platform with an RDKit wheel, install both optional
+environments before generating visual reports:
+
+```bash
+uv sync --extra science --extra chemistry
+```
+
+RDKit is not required to plan, rank, or review routes. If the chemistry extra is
+unavailable on the current platform, omit it; the dashboard falls back to
+transparent local SVG placeholders while the rest of the skill remains usable.
 
 ## Capability summary
 
@@ -78,15 +88,19 @@ files out of git.
 from retrosynthesis_planning.kernel import (
     annotate_routes_with_llm,
     build_aizynth_command,
+    build_host_web_fetch_doi_verifier,
     build_llm_annotation_prompt,
     build_markdown_report,
     build_molecule_structure_src,
     build_pubchem_query_url,
     canonicalize_smiles,
     collect_molecule_briefs,
+    collect_reaction_evidence,
+    collect_reaction_briefs,
     command_to_shell,
     load_aizynth_routes,
     normalize_routes,
+    OpenAI4SLLMReactionEvidenceProvider,
     rank_routes,
     render_route_tree_html,
 )
@@ -173,6 +187,81 @@ backend class such as `0.0 Unrecognized`, do not repeat it as the final reaction
 type. Use the SMARTS/mapped reaction, policy probability, and LLM/literature
 annotation to explain the disconnection.
 
+For an industrial decision workflow, attach source-backed evidence separately
+from LLM annotations. Retrieve the stable keys first, then pass only evidence
+records that identify their source and verification state:
+
+```python
+reaction_briefs = collect_reaction_briefs(ranked[:10])
+for reaction in reaction_briefs:
+    print(reaction["reaction_key"], reaction["template"])
+
+reaction_evidence = {
+    "reactions": {
+        reaction_briefs[0]["reaction_key"]: [
+            {
+                "source_type": "literature",  # literature, patent, internal_eln, reaction_database, vendor
+                "title": "Verified source title",
+                "identifier": "DOI, patent, ELN run, or database record",
+                "url": "https://example.org/record",
+                "match_level": "exact_substrate",  # exact_substrate, close_analog, reaction_class
+                "verified": True,
+                "conditions": {"solvent": "...", "temperature": "..."},
+                "yield_range": "82-88%",
+                "risk_flags": ["exothermic quench"],
+                "notes": "Reviewer-confirmed record.",
+                "retrieved_at": "2026-07-14",
+            }
+        ]
+    }
+}
+```
+
+Pass `reaction_evidence=reaction_evidence` to `render_route_tree_html(...)`.
+Each route then includes a Step Evidence card, and the same evidence appears in
+the selected reaction node of the knowledge graph. The displayed coverage score
+is a retrieval-completeness heuristic, not a probability of experimental
+success. LLM-generated conditions and yields never become evidence records
+automatically.
+
+### Source retrieval with OpenAI4S skills
+
+Use `OpenAI4SLLMReactionEvidenceProvider` when a live evidence sweep is
+appropriate. It explicitly composes the configured conversation model with the
+existing `host.web_search` and optional `host.web_fetch` skills: the LLM drafts
+reaction-aware search queries, OpenAI4S retrieves the pages, and a second LLM
+pass can select **only** returned source IDs. This is intentionally not an
+implicit tool-call: `host.llm` is a text-completion API, so the provider keeps
+all network activity observable and auditable.
+
+Use `build_host_web_fetch_doi_verifier(...)` when DOI resolution checks are
+appropriate. The adapter routes requests through the auditable
+`host.web_fetch` capability instead of opening raw worker-network connections.
+A resolving DOI does not prove that the paper supports the proposed substrate
+scope. The output is therefore marked as a *retrieved source candidate*,
+receives capped coverage, and never becomes verified exact-substrate precedent
+without reviewer or ELN confirmation.
+
+```python
+doi_verifier = build_host_web_fetch_doi_verifier(host.web_fetch)
+provider = OpenAI4SLLMReactionEvidenceProvider(
+    llm=host.llm,
+    search=host.web_search,
+    fetch=host.web_fetch,
+    doi_verifier=doi_verifier,  # optional; omit when DOI checks are not needed
+    max_reactions=10,
+    max_queries_per_reaction=2,
+    results_per_query=5,
+)
+reaction_evidence = collect_reaction_evidence(ranked[:10], [provider])
+```
+
+The provider never accepts an LLM-supplied URL or title: every card is built
+from a retrieved `host.web_search` result. It also never auto-populates
+conditions, yields, or `verified=True`. A chemist should promote a reviewed
+candidate by adding a source record with explicit scope, conditions, yield, and
+verification status before using it in execution scoring.
+
 ### Phase 4 — Visualize and report
 
 The HTML artifact is a self-contained dashboard: KPI summary, ranked route
@@ -207,6 +296,7 @@ html = render_route_tree_html(
     target_smiles=target,
     max_routes=10,
     llm=host.llm,
+    reaction_evidence=reaction_evidence,
 )
 report = build_markdown_report(ranked, target_smiles=target)
 
@@ -229,9 +319,9 @@ uv run python skills/retrosynthesis_planning/examples/build_example.py
 ```
 
 `aspirin_routes.json` holds the route trees and `aspirin_annotations.json` the
-deterministic demonstration annotations. **The committed dashboard was rendered
-without RDKit**, so its molecule images are the transparent placeholder SVG, not
-real depictions. Install RDKit before regenerating to get real structures.
+deterministic demonstration annotations. The committed dashboard is rendered
+with RDKit depictions. To regenerate it with the same molecule rendering, first
+install the science and chemistry extras and then run the build command above.
 
 Open it directly in a browser, or serve the skill directory locally:
 

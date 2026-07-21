@@ -455,10 +455,32 @@ class _Compute:
         provider's own max-concurrent ceiling."""
         return _compute_call(self._call, "status", {})
 
+    def reconcile(self) -> dict:
+        """Jobs that were still live when the daemon last stopped.
+
+        A remote job outlives the daemon, so a restart can find work it did not
+        start still running. Returns ``{recovered: [{job_id, provider, status,
+        receipt, hint}], count}``.
+
+        Nothing is resubmitted: a job may or may not still be running, and
+        guessing wrong costs either a duplicate charge or a lost result. Poll a
+        recovered job with ``.result()`` — it may have finished while the daemon
+        was down.
+        """
+        return _compute_call(self._call, "reconcile", {})
+
+    def job_history(self, job_id: str) -> dict:
+        """The append-only, sequenced event stream for one job.
+
+        ``{job_id, events: [{seq, kind, at, payload?}]}``. A status says where a
+        job is; this says how it got there.
+        """
+        return _compute_call(self._call, "job_history", {"job_id": job_id})
+
     def __repr__(self) -> str:
         return (
             "<host.compute — create(target) -> ComputeInstance; "
-            "set_concurrency_limit(n); status(); "
+            "set_concurrency_limit(n); status(); reconcile(); "
             "help(host.compute) for the lifecycle>"
         )
 

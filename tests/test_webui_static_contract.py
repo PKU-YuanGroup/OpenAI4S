@@ -623,7 +623,7 @@ def test_session_package_export_import_is_visible_and_binary_safe() -> None:
     assert 'id="dash-import-session"' in INDEX_HTML
     assert 'id="session-package-input"' in INDEX_HTML
     assert "application/vnd.openai4s.session+zip" in INDEX_HTML
-    assert 'fetch("/api/sessions/import"' in importer
+    assert 'fetch(API + "/sessions/import"' in importer
     assert '"Content-Type": "application/vnd.openai4s.session+zip"' in importer
     assert "body: file" in importer
     assert "128 * 1024 * 1024" in importer
@@ -828,6 +828,12 @@ def test_local_model_discovery_is_loopback_only_and_requires_explicit_add() -> N
     assert "loopbackModelBase(profile.base_url)" in renderer
     assert 'api("/model-endpoints/discover"' in models
     assert "runLocalScan(false)" in models
+    assert 'const provIn = el("select", "cust-input")' in models
+    assert '["chatgpt", "cust.models.protocol.openai"]' in models
+    assert '["claude", "cust.models.protocol.anthropic"]' in models
+    assert '["ark", "cust.models.protocol.ark"]' in models
+    assert "datalist" not in models
+    assert "known_providers" not in models
     # Discovery itself is GET-only; profile mutation exists solely behind the
     # explicit per-endpoint Add button above.
     scan = models[

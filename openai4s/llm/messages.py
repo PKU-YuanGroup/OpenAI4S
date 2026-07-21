@@ -108,6 +108,15 @@ def _openai_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _mid_timeline_text(content: str) -> str:
+    """Mark a system message that is timeline content, not policy."""
+    return f"[system] {content}"
+
+
+def _mid_timeline_system(content: str) -> dict:
+    return {"role": "user", "content": _mid_timeline_text(content)}
+
+
 def _anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
     system_parts: list[str] = []
     conv: list[dict] = []
@@ -123,7 +132,10 @@ def _anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
         if role == "system":
             content = message.get("content")
             if isinstance(content, str) and content:
-                system_parts.append(content)
+                if not conv and not pending_results:
+                    system_parts.append(content)
+                else:
+                    conv.append(_mid_timeline_system(content))
             continue
         if role == "tool":
             block = {
@@ -185,7 +197,15 @@ def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
         if role == "system":
             content = message.get("content")
             if isinstance(content, str) and content:
-                system_parts.append(content)
+                if not contents and not pending_results:
+                    system_parts.append(content)
+                else:
+                    contents.append(
+                        {
+                            "role": "user",
+                            "parts": [{"text": _mid_timeline_text(content)}],
+                        }
+                    )
             continue
         if role == "tool":
             value = message.get("content")

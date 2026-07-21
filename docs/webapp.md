@@ -61,6 +61,12 @@ HTML/CSS/JavaScript served directly from the working tree.
 - **Customize and research UX** — model profiles, Skills/Specialists,
   connectors, compute, network, memory, permission rules, plan/explore modes,
   voice dictation, uploads/paste/drag-drop, annotations, and bilingual 中文/EN.
+- **Web sharing (off by default)** — the session menu can publish a read-only
+  snapshot to `https://<share-id>.<domain>/` through a relay you run, without
+  binding a public port. The recipient views the conversation/Notebook/artifacts,
+  downloads a portable bundle, and imports it into their own local install to run
+  or continue (quarantined until an explicit fresh restart). See
+  [webshare.md](webshare.md).
 
 ## Notebook lifecycle and truthfulness
 

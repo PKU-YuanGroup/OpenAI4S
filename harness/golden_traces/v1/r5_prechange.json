@@ -65,10 +65,10 @@
       ]
     },
     {
-      "current_behavior": "An HTTP 429 raises LLMError after one transport attempt even when Retry-After is present.",
+      "current_behavior": "An HTTP 429 raises a typed TransportError carrying status/Retry-After, and is retried within a bounded, cancellable budget that honors Retry-After; the call recovers on the retry.",
       "desired_contract": "Typed rate_limit errors honor Retry-After and retry within a cancellable source-aware budget before output is committed.",
       "id": "rate_limit_single_attempt",
-      "known_bug": true,
+      "known_bug": false,
       "trace": [
         {
           "event_id": "<event:1>",
@@ -92,10 +92,10 @@
           "monotonic_ms": 1,
           "parent_event_id": "<event:1>",
           "payload": {
-            "attempts": 1,
-            "content": null,
-            "error_text": "LLM HTTP 429: {\"error\":\"rate limited\"}",
-            "error_type": "LLMError",
+            "attempts": 2,
+            "content": "recovered",
+            "error_text": null,
+            "error_type": null,
             "retry_after_was_available": true
           },
           "phase": "characterization",
@@ -187,10 +187,10 @@
       ]
     },
     {
-      "current_behavior": "The compaction note is a mid-timeline system message that Anthropic and Gemini hoist into their initial system fields.",
+      "current_behavior": "Only leading system messages become the initial system field; a mid-timeline system message (the compaction note) stays at its timeline position as a marked turn.",
       "desired_contract": "Compile a typed compaction_summary at its timeline position; never merge it into initial policy or cache prefix.",
       "id": "compaction_summary_provider_hoist",
-      "known_bug": true,
+      "known_bug": false,
       "trace": [
         {
           "event_id": "<event:1>",
@@ -216,10 +216,11 @@
           "payload": {
             "anthropic_message_roles": [
               "user",
+              "user",
               "assistant"
             ],
-            "anthropic_summary_in_messages": false,
-            "anthropic_summary_in_top_level_system": true,
+            "anthropic_summary_in_messages": true,
+            "anthropic_summary_in_top_level_system": false,
             "compacted_roles": [
               "system",
               "user",
@@ -228,10 +229,11 @@
             ],
             "gemini_content_roles": [
               "user",
+              "user",
               "model"
             ],
-            "gemini_summary_in_contents": false,
-            "gemini_summary_in_system_instruction": true
+            "gemini_summary_in_contents": true,
+            "gemini_summary_in_system_instruction": false
           },
           "phase": "characterization",
           "root_frame_id": "<root_frame:1>",
@@ -260,10 +262,10 @@
       ]
     },
     {
-      "current_behavior": "The model-view formatter preserves an entire 2,000,000-character observation with no content reference or omission marker.",
+      "current_behavior": "The model-view formatter budgets each section, previewing head+tail with an explicit omission marker and spilling the full bytes to a workspace-relative content reference the agent can open.",
       "desired_contract": "Apply per-result and aggregate model-view budgets, spilling full bytes to an authorized content reference before previewing.",
       "id": "oversized_observation_unbudgeted",
-      "known_bug": true,
+      "known_bug": false,
       "trace": [
         {
           "event_id": "<event:1>",
@@ -287,11 +289,11 @@
           "monotonic_ms": 1,
           "parent_event_id": "<event:1>",
           "payload": {
-            "full_tail_preserved": true,
-            "has_content_ref": false,
-            "has_omission_marker": false,
+            "full_tail_preserved": false,
+            "has_content_ref": true,
+            "has_omission_marker": true,
             "input_chars": 2000000,
-            "model_view_chars": 2000022
+            "model_view_chars": 10344
           },
           "phase": "characterization",
           "root_frame_id": "<root_frame:1>",
@@ -380,10 +382,10 @@
       ]
     },
     {
-      "current_behavior": "mcp_tools calls the connector manager even when the connector row is disabled.",
+      "current_behavior": "mcp_tools/resources/prompts refuse a disabled connector without reaching the manager, so a disabled row is zero-spawn.",
       "desired_contract": "Disabled or untrusted MCP connectors are zero-spawn and never enter connect/list/call.",
       "id": "disabled_mcp_tools_connects",
-      "known_bug": true,
+      "known_bug": false,
       "trace": [
         {
           "event_id": "<event:1>",
@@ -408,9 +410,9 @@
           "parent_event_id": "<event:1>",
           "payload": {
             "connector_enabled": false,
-            "manager_list_tools_calls": 1,
+            "manager_list_tools_calls": 0,
             "result": {
-              "tools": []
+              "error": "connector 'disabled-characterization' is disabled; enable it in Customize → Connectors to use it"
             }
           },
           "phase": "characterization",

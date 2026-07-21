@@ -1,11 +1,12 @@
 "use strict";
-// OpenAI4S UI — aligned to Claude Science (dashboard + conversation), over /api + /api/ws.
+// OpenAI4S UI — aligned to Claude Science (dashboard + conversation), over /api/v1 + /api/v1/ws.
 const $ = (s) => document.querySelector(s);
 const el = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
 const esc = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 /* ---------- line icons (lucide) ---------- */
 const ICONS = {
   "plus": '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  "share": '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>',
   "chevron-down": '<path d="m6 9 6 6 6-6"/>',
   "chevron-up": '<path d="m18 15-6-6-6 6"/>',
   "chevron-right": '<path d="m9 18 6-6-6-6"/>',
@@ -77,12 +78,16 @@ const icon = (name, size, cls) => `<svg class="ic-svg${cls ? " " + cls : ""}" wi
 const iconEl = (name, size, cls) => { const s = el("span", "ic"); s.innerHTML = icon(name, size, cls); return s.firstChild; };
 function paintIcons(root) { (root || document).querySelectorAll("[data-icon]").forEach(e => { if (e._painted) return; e.innerHTML = icon(e.dataset.icon, +e.dataset.iconSize || 16); e._painted = true; }); }
 function setTitle(name) { const ct = $("#conv-title"); if (!ct) return; ct.value = name || t("conv.title.default"); ct.size = Math.max(6, Math.min(40, (name || t("conv.title.default")).length + 1)); }
+// The versioned API root. Contract v1 is the frozen surface; a future version
+// bump is this one line plus a gateway prefix, not a sweep through the file.
+const API = "/api/v1";
+
 const api = async (p, o = {}) => {
   // `p` must be an internal, same-origin API path: a single leading slash and no
   // scheme/host. Rejecting "//host" (protocol-relative) and non-string input keeps
   // an untrusted id interpolated into `p` from redirecting the request off-origin.
   if (typeof p !== "string" || p[0] !== "/" || p[1] === "/") throw new Error("invalid api path");
-  const r = await fetch("/api" + p, { headers: { "content-type": "application/json" }, ...o });
+  const r = await fetch(API + p, { headers: { "content-type": "application/json" }, ...o });
   const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch { j = t; }
   if (!r.ok) throw new Error((j && (j.error || j.detail)) || ("HTTP " + r.status)); return j;
 };
@@ -373,8 +378,8 @@ Object.assign(I18N.zh, {
   "cust.models.addBtn": "新增",
   "cust.models.addHeading": "新增模型 / API",
   "cust.models.available": "可选模型",
-  "cust.models.baseUrl.placeholder": "Base URL（留空用该 provider 默认）",
-  "cust.models.baseUrlPlaceholder": "Base URL（留空用该 provider 默认）",
+  "cust.models.baseUrl.placeholder": "Base URL（留空用该协议默认）",
+  "cust.models.baseUrlPlaceholder": "Base URL（留空用该协议默认）",
   "cust.models.cancelEdit": "取消编辑",
   "cust.models.configuredHeading": "已配置的模型 / API",
   "cust.models.editHeading": "编辑：{0}",
@@ -389,9 +394,10 @@ Object.assign(I18N.zh, {
   "cust.models.label.apiKey": "API Key",
   "cust.models.label.baseUrl": "Base URL",
   "cust.models.label.defaultModel": "默认模型",
-  "cust.models.label.provider": "Provider",
-  "cust.models.model.placeholder": "模型 id（留空用 provider 默认）",
-  "cust.models.modelPlaceholder2": "模型 id（留空用该 provider 默认）",
+  "cust.models.label.provider": "兼容协议",
+  "cust.models.label.protocol": "兼容协议",
+  "cust.models.model.placeholder": "模型 id（留空用该协议默认）",
+  "cust.models.modelPlaceholder2": "模型 id（留空用该协议默认）",
   "cust.models.namePlaceholder": "名称（如 DeepSeek 生产 / 本地 vLLM）",
   "cust.models.local.title": "本地推理服务",
   "cust.models.local.desc": "自动扫描本机固定端口上的 Ollama、LM Studio、vLLM 与 llama.cpp；扫描不会修改当前模型，未知能力默认走保守的 Code-as-Action。",
@@ -405,8 +411,9 @@ Object.assign(I18N.zh, {
   "cust.models.local.error": "本地模型扫描失败：{0}",
   "cust.models.local.keyless": "本机 · 无需 API Key",
   "cust.models.noKey": "⚠️ 无 Key",
-  "cust.models.provider.placeholder": "provider（如 ark / chatgpt / claude / gemini）",
-  "cust.models.providerPlaceholder2": "provider（如 ark / chatgpt / claude / gemini）",
+  "cust.models.protocol.openai": "OpenAI 兼容协议",
+  "cust.models.protocol.anthropic": "Anthropic 兼容协议",
+  "cust.models.protocol.ark": "ark 兼容协议",
   "cust.search.name": "搜索 API Key（Tavily）",
   "cust.search.desc": "用于联网搜索的 Tavily 密钥；接入点固定为 api.tavily.com。",
   "cust.search.set": "已配置",
@@ -418,8 +425,8 @@ Object.assign(I18N.zh, {
   "cust.models.save": "保存并生效",
   "cust.models.setActive": "设为当前",
   "cust.models.setDefault": "设为默认",
-  "cust.models.subtitle": "配置 LLM 提供商、Base URL、模型与 API Key（保存后立即生效）",
-  "cust.models.subtitle2": "配置多套 LLM API（provider / Base URL / 模型 / Key），随时新增、切换或删除，方便对接不同接口",
+  "cust.models.subtitle": "配置 LLM 兼容协议、Base URL、模型与 API Key（保存后立即生效）",
+  "cust.models.subtitle2": "配置多套 LLM API（兼容协议 / Base URL / 模型 / Key），随时新增、切换或删除，方便对接不同接口",
   "cust.models.updateBtn": "更新",
   "cust.network.allowName": "允许联网",
   "cust.network.desc": "联网访问（智能体的 web_search / web_fetch / bash 与代码请求）",
@@ -805,6 +812,28 @@ Object.assign(I18N.zh, {
   "projectResearch.latest": "latest",
   "projectResearch.noLineage": "还没有项目级血缘数据。",
   "projectResearch.edges": "血缘边（{0}）",
+  "share.menu": "分享（只读链接）",
+  "share.title": "分享此会话",
+  "share.scope": "将公开：对话、Notebook 代码与输出、产物文件、环境清单。任何持有链接的人均可查看，内容经你的 relay 明文中转。",
+  "share.create": "创建分享链接",
+  "share.copy": "复制",
+  "share.copied": "已复制链接",
+  "share.update": "更新快照",
+  "share.updated": "快照已更新",
+  "share.revoke": "撤销",
+  "share.revokeConfirm": "确定撤销该分享链接？撤销后立即失效。",
+  "share.revoked": "已撤销",
+  "share.disabled": "分享功能未启用。",
+  "share.enable": "启用分享",
+  "share.expiry": "有效期：",
+  "share.expiry.never": "永不过期",
+  "share.expiry.1d": "1 天",
+  "share.expiry.7d": "7 天",
+  "share.expiry.30d": "30 天",
+  "share.expiresAt": "过期于",
+  "share.neverExpires": "永不过期",
+  "share.unconfigured": "分享未配置（需设置 relay URL 与 token，见 docs/webshare.md）。",
+  "share.close": "关闭",
   "sessionPackage.import": "导入会话包",
   "sessionPackage.export": "导出会话包",
   "sessionPackage.imported": "会话包已安全导入；Kernel 保持结束状态，需显式恢复",
@@ -1181,8 +1210,8 @@ Object.assign(I18N.en, {
   "cust.models.addBtn": "Add",
   "cust.models.addHeading": "Add model / API",
   "cust.models.available": "Available models",
-  "cust.models.baseUrl.placeholder": "Base URL (leave blank to use the provider default)",
-  "cust.models.baseUrlPlaceholder": "Base URL (leave blank for the provider default)",
+  "cust.models.baseUrl.placeholder": "Base URL (leave blank to use the protocol default)",
+  "cust.models.baseUrlPlaceholder": "Base URL (leave blank for the protocol default)",
   "cust.models.cancelEdit": "Cancel edit",
   "cust.models.configuredHeading": "Configured models / APIs",
   "cust.models.editHeading": "Edit: {0}",
@@ -1197,9 +1226,10 @@ Object.assign(I18N.en, {
   "cust.models.label.apiKey": "API Key",
   "cust.models.label.baseUrl": "Base URL",
   "cust.models.label.defaultModel": "Default model",
-  "cust.models.label.provider": "Provider",
-  "cust.models.model.placeholder": "Model id (leave blank to use the provider default)",
-  "cust.models.modelPlaceholder2": "Model id (leave blank for the provider default)",
+  "cust.models.label.provider": "Compatible protocol",
+  "cust.models.label.protocol": "Compatible protocol",
+  "cust.models.model.placeholder": "Model id (leave blank to use the protocol default)",
+  "cust.models.modelPlaceholder2": "Model id (leave blank for the protocol default)",
   "cust.models.namePlaceholder": "Name (e.g. DeepSeek Prod / Local vLLM)",
   "cust.models.local.title": "Local inference servers",
   "cust.models.local.desc": "Automatically scans fixed loopback ports for Ollama, LM Studio, vLLM, and llama.cpp. Scanning never changes the active model; unknown capabilities default to conservative Code-as-Action.",
@@ -1213,8 +1243,9 @@ Object.assign(I18N.en, {
   "cust.models.local.error": "Local model discovery failed: {0}",
   "cust.models.local.keyless": "local · no API key required",
   "cust.models.noKey": "⚠️ No key",
-  "cust.models.provider.placeholder": "provider (e.g. ark / chatgpt / claude / gemini)",
-  "cust.models.providerPlaceholder2": "provider (e.g. ark / chatgpt / claude / gemini)",
+  "cust.models.protocol.openai": "OpenAI-compatible protocol",
+  "cust.models.protocol.anthropic": "Anthropic-compatible protocol",
+  "cust.models.protocol.ark": "Ark-compatible protocol",
   "cust.search.name": "Search API key (Tavily)",
   "cust.search.desc": "Tavily key for web search; the endpoint is fixed to api.tavily.com.",
   "cust.search.set": "Configured",
@@ -1226,8 +1257,8 @@ Object.assign(I18N.en, {
   "cust.models.save": "Save and apply",
   "cust.models.setActive": "Set active",
   "cust.models.setDefault": "Set as default",
-  "cust.models.subtitle": "Configure the LLM provider, Base URL, model, and API Key (takes effect immediately after saving)",
-  "cust.models.subtitle2": "Configure multiple LLM APIs (provider / Base URL / model / key); add, switch, or remove anytime to work with different endpoints",
+  "cust.models.subtitle": "Configure the LLM-compatible protocol, Base URL, model, and API Key (takes effect immediately after saving)",
+  "cust.models.subtitle2": "Configure multiple LLM APIs (compatible protocol / Base URL / model / key); add, switch, or remove anytime to work with different endpoints",
   "cust.models.updateBtn": "Update",
   "cust.network.allowName": "Allow network access",
   "cust.network.desc": "Network access (the agent's web_search / web_fetch / bash and code requests)",
@@ -1613,6 +1644,28 @@ Object.assign(I18N.en, {
   "projectResearch.latest": "latest",
   "projectResearch.noLineage": "No project lineage data yet.",
   "projectResearch.edges": "Lineage edges ({0})",
+  "share.menu": "Share (read-only link)",
+  "share.title": "Share this session",
+  "share.scope": "This publishes: the conversation, Notebook code and output, artifact files, and the environment list. Anyone with the link can view it, relayed in the clear through your relay.",
+  "share.create": "Create share link",
+  "share.copy": "Copy",
+  "share.copied": "Link copied",
+  "share.update": "Update snapshot",
+  "share.updated": "Snapshot updated",
+  "share.revoke": "Revoke",
+  "share.revokeConfirm": "Revoke this share link? It stops working immediately.",
+  "share.revoked": "Revoked",
+  "share.disabled": "Sharing is off.",
+  "share.enable": "Enable sharing",
+  "share.expiry": "Expires:",
+  "share.expiry.never": "Never",
+  "share.expiry.1d": "1 day",
+  "share.expiry.7d": "7 days",
+  "share.expiry.30d": "30 days",
+  "share.expiresAt": "Expires",
+  "share.neverExpires": "Never expires",
+  "share.unconfigured": "Sharing is not configured (relay URL and token required — see docs/webshare.md).",
+  "share.close": "Close",
   "sessionPackage.import": "Import session",
   "sessionPackage.export": "Export session package",
   "sessionPackage.imported": "Session imported safely; its Kernel remains Ended until explicit recovery",
@@ -2769,14 +2822,26 @@ function renderActionTimeline() {
 
 /* ---------- WebSocket ---------- */
 function connectWS() {
-  const ws = new WebSocket((location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/api/ws");
+  const ws = new WebSocket((location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + API + "/ws");
   S.ws = ws;
   ws.onopen = () => { conn(true); if (S.currentId) sub(S.currentId); };
   ws.onclose = () => { conn(false); setTimeout(connectWS, 1500); };
-  ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } onEvent(m); };
+  ws.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    // Record the cursor only AFTER onEvent has applied it: advancing first
+    // would let a handler that throws leave the client claiming an event it
+    // never rendered, and the resume would then skip it for good.
+    onEvent(m);
+    const rid = m && m.root_frame_id, sq = m && m.seq;
+    if (rid && typeof sq === "number" && sq > (S._seqSeen[rid] || 0)) S._seqSeen[rid] = sq;
+  };
   clearInterval(connectWS._p); connectWS._p = setInterval(() => { try { ws.readyState === 1 && ws.send('{"type":"ping"}'); } catch {} }, 25000);
 }
-const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f })); } catch {} };
+// Highest event seq actually applied, per frame. Sent back on (re)subscribe so
+// the server replays only what was missed instead of the whole turn — the
+// client would otherwise have to de-duplicate a stream it cannot tell apart.
+S._seqSeen = S._seqSeen || {};
+const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f, since_seq: S._seqSeen[f] || 0 })); } catch {} };
 const unsub = (f) => { try { S.ws && S.ws.readyState === 1 && f && S.ws.send(JSON.stringify({ type: "unview_session", root_frame_id: f })); } catch {} };
 const conn = (on) => { const d = $("#conn-dot"); if (d) d.className = "dot " + (on ? "on" : "off"); };
 function onEvent(m) {
@@ -3623,7 +3688,7 @@ async function loadDashboard() {
   paintDashSkeleton();
   await loadProjects();
   let frames = [];
-  try { frames = (await api("/frames?limit=50")).filter?.(f => !f.parent_frame_id) || []; } catch {}
+  try { frames = ((await api("/frames?limit=50")).frames || []).filter(f => !f.parent_frame_id); } catch {}
   // annotate projects with a live running-session count (derived from frames)
   const rc = {};
   frames.forEach(f => { if (f.running) rc[f.project_id] = (rc[f.project_id] || 0) + 1; });
@@ -3700,7 +3765,7 @@ async function refreshDashRunning() {
   // Skip work while the tab is backgrounded; the next visible tick will catch up.
   if (typeof document.hidden === "boolean" && document.hidden) return;
   let frames = [];
-  try { frames = (await api("/frames?limit=50")).filter?.(f => !f.parent_frame_id) || []; } catch { return; }
+  try { frames = ((await api("/frames?limit=50")).frames || []).filter(f => !f.parent_frame_id); } catch { return; }
   if ($("#dashboard").classList.contains("hidden")) return;
   renderDashRunning(frames);
 }
@@ -3801,7 +3866,7 @@ function renderProjMenu() {
     if (current) item(t("proj.menu.settings"), "settings", () => openProjectModal(current));
     item(t("projectResearch.menu"), "provenance", () => openProjectResearchView("timeline"));
     item(t("sessionPackage.import"), "cloud-upload", chooseSessionPackage);
-    item(t("proj.menu.downloadArtifacts"), "download", () => downloadArtifactBundle(`/api/projects/${encodeURIComponent(S.project)}/artifacts.zip`, `${projName(S.project)}-artifacts.zip`));
+    item(t("proj.menu.downloadArtifacts"), "download", () => downloadArtifactBundle(`${API}/projects/${encodeURIComponent(S.project)}/artifacts.zip`, `${projName(S.project)}-artifacts.zip`));
     m.appendChild(el("div", "ctx-sep"));
   }
   item(t("proj.menu.allProjects"), "arrow-left", showDashboard);
@@ -3867,7 +3932,7 @@ async function deleteProject(id) {
 
 /* ---------- sessions ---------- */
 async function loadSessions() {
-  try { const f = await api("/frames?limit=100"); S.sessions = (Array.isArray(f) ? f : []).filter(x => !x.parent_frame_id); } catch { S.sessions = []; }
+  try { const f = await api("/frames?limit=100"); S.sessions = (f.frames || []).filter(x => !x.parent_frame_id); } catch { S.sessions = []; }
   await loadFolders();
   renderSessions(); syncCurrentTitle(); if (!$("#dashboard").classList.contains("hidden")) loadDashboard();
 }
@@ -4149,8 +4214,9 @@ function sessionMenu(anchor, fid) {
   } });
   items.push(
     { label: t("sessionMenu.exportMarkdown"), icon: "download", onClick: () => exportSession(fid) },
+    { label: t("share.menu"), icon: "share", onClick: () => openShareDialog(fid, frame) },
     { label: t("sessionPackage.export"), icon: "archive", onClick: () => exportSessionPackage(fid, frame) },
-    { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`/api/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
+    { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`${API}/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
     { label: t("sessionMenu.viewNotebook"), icon: "notebook", onClick: async () => { if (fid !== S.currentId) await openConversation(fid, frame.project_id); setActiveTab("notebook"); } },
     { sep: true },
     { label: t("sessionMenu.duplicate"), icon: "copy", onClick: () => duplicateSession(fid) },
@@ -4162,9 +4228,147 @@ function sessionMenu(anchor, fid) {
 function exportSessionPackage(fid, frame = {}) {
   const label = frame.name || frame.task_summary || "session";
   downloadArtifactBundle(
-    `/api/frames/${encodeURIComponent(fid)}/session/export`,
+    `${API}/frames/${encodeURIComponent(fid)}/session/export`,
     label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip",
   );
+}
+async function openShareDialog(fid, frame = {}) {
+  let status = {};
+  let shares = { shares: [] };
+  try {
+    [status, shares] = await Promise.all([
+      fetch("/api/share/status").then(r => r.json()),
+      fetch(`/api/frames/${encodeURIComponent(fid)}/shares`).then(r => r.json()),
+    ]);
+  } catch (error) { hint(t("nb.action.failed", error.message), true); return; }
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:1000";
+  const box = document.createElement("div");
+  box.style.cssText = "background:var(--panel,#fff);color:var(--ink,#111);max-width:520px;width:90%;border-radius:12px;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.3)";
+  overlay.appendChild(box);
+  const close = () => overlay.remove();
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  const h = document.createElement("h3"); h.textContent = t("share.title"); h.style.marginTop = "0";
+  box.appendChild(h);
+
+  const state = String(status.state || "");
+  if (state === "unconfigured") {
+    box.appendChild(Object.assign(document.createElement("p"),
+      { textContent: t("share.unconfigured") }));
+    box.appendChild(mkBtn(t("share.close"), close));
+    document.body.appendChild(overlay);
+    return;
+  }
+  if (state === "disabled") {
+    box.appendChild(Object.assign(document.createElement("p"),
+      { textContent: t("share.disabled") }));
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
+    if (status.configured) {
+      row.appendChild(mkBtn(t("share.enable"), async () => {
+        await shareCall("PUT", "/api/share/settings", { enabled: true });
+        close(); openShareDialog(fid, frame);
+      }, false, true));
+    }
+    row.appendChild(mkBtn(t("share.close"), close));
+    box.appendChild(row);
+    document.body.appendChild(overlay);
+    return;
+  }
+
+  const active = (shares.shares || []).find(s => s.status === "ready" || s.status === "publishing");
+  const scope = document.createElement("p");
+  scope.className = "muted";
+  scope.style.fontSize = "13px";
+  scope.textContent = t("share.scope");
+  box.appendChild(scope);
+
+  if (active) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;margin:12px 0";
+    const inp = document.createElement("input");
+    inp.readOnly = true; inp.value = active.url || "";
+    inp.style.cssText = "flex:1;padding:8px;border:1px solid var(--line,#ccc);border-radius:8px";
+    row.appendChild(inp);
+    row.appendChild(mkBtn(t("share.copy"), () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(active.url || "");
+      hint(t("share.copied"));
+    }));
+    box.appendChild(row);
+    const exp = document.createElement("div");
+    exp.className = "muted"; exp.style.fontSize = "12px"; exp.style.margin = "4px 0 8px";
+    exp.textContent = active.expires_at
+      ? t("share.expiresAt") + " " + new Date(active.expires_at).toLocaleString()
+      : t("share.neverExpires");
+    box.appendChild(exp);
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
+    actions.appendChild(mkBtn(t("share.update"), async () => {
+      await shareCall("PUT", `/api/shares/${encodeURIComponent(active.share_id)}`);
+      hint(t("share.updated")); close();
+    }));
+    actions.appendChild(mkBtn(t("share.revoke"), async () => {
+      if (!confirm(t("share.revokeConfirm"))) return;
+      await shareCall("DELETE", `/api/shares/${encodeURIComponent(active.share_id)}`);
+      hint(t("share.revoked")); close();
+    }, true));
+    actions.appendChild(mkBtn(t("share.close"), close));
+    box.appendChild(actions);
+  } else {
+    const expRow = document.createElement("div");
+    expRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:12px 0";
+    const expLabel = document.createElement("span");
+    expLabel.className = "muted"; expLabel.style.fontSize = "13px";
+    expLabel.textContent = t("share.expiry");
+    const sel = document.createElement("select");
+    sel.style.cssText = "padding:6px;border:1px solid var(--line,#ccc);border-radius:8px";
+    [[0, t("share.expiry.never")], [86400, t("share.expiry.1d")],
+     [604800, t("share.expiry.7d")], [2592000, t("share.expiry.30d")]]
+      .forEach(([secs, label]) => {
+        const o = document.createElement("option"); o.value = String(secs); o.textContent = label;
+        sel.appendChild(o);
+      });
+    sel.value = "604800";  // default 7 days
+    expRow.appendChild(expLabel); expRow.appendChild(sel);
+    box.appendChild(expRow);
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
+    actions.appendChild(mkBtn(t("share.create"), async () => {
+      const body = {};
+      const secs = parseInt(sel.value, 10);
+      if (secs > 0) body.expires_in = secs;
+      const rec = await shareCall("POST", `/api/frames/${encodeURIComponent(fid)}/shares`, body);
+      close();
+      if (rec && rec.url) openShareDialog(fid, frame);
+    }, false, true));
+    actions.appendChild(mkBtn(t("share.close"), close));
+    box.appendChild(actions);
+  }
+  document.body.appendChild(overlay);
+
+  function mkBtn(label, onClick, danger, primary) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.className = danger ? "danger" : (primary ? "primary" : "");
+    b.style.cssText = "padding:7px 14px;border-radius:8px;cursor:pointer;border:1px solid var(--line,#ccc)" +
+      (primary ? ";background:var(--accent,#2b6cb0);color:#fff" : "");
+    b.onclick = onClick;
+    return b;
+  }
+  async function shareCall(method, path, body) {
+    try {
+      const r = await fetch(path, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      return j;
+    } catch (error) { hint(t("nb.action.failed", error.message), true); return null; }
+  }
 }
 function chooseSessionPackage() {
   const input = $("#session-package-input");
@@ -4174,7 +4378,7 @@ async function importSessionPackage(file) {
   if (!file) return;
   if (file.size > 128 * 1024 * 1024) { hint(t("sessionPackage.tooLarge"), true); return; }
   try {
-    const response = await fetch("/api/sessions/import", {
+    const response = await fetch(API + "/sessions/import", {
       method: "POST",
       headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
       body: file,
@@ -4625,7 +4829,7 @@ function renderFilesGrid() {
 function tileThumbBig(a) { const t = tileThumb(a); t.className = "a-thumb"; return t; }
 
 /* Shared artifact body renderer (used by dock Viewer + fullscreen modal). */
-function artUrl(a) { const b = (S._artBust || {})[a.id]; return `/api/artifacts/${a.id}` + (b ? `?_=${b}` : ""); }
+function artUrl(a) { const b = (S._artBust || {})[a.id]; return `${API}/artifacts/${a.id}` + (b ? `?_=${b}` : ""); }
 function scientificRenderers() { return window.OpenAI4SScientificRenderers || null; }
 function artifactRendererVersion(a) { return a && (a.version_id || a.latest_version_id) || ""; }
 function loadRendererCatalog() {
@@ -5196,7 +5400,7 @@ function toggleAnnotList(anchor) {
 /* Fullscreen: center modal. */
 function openArtifact(a) {
   $("#modal-title").textContent = a.filename || t("modal.title.preview");
-  const dl = $("#modal-download"); dl.style.display = ""; dl.href = `/api/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact");
+  const dl = $("#modal-download"); dl.style.display = ""; dl.href = `${API}/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact");
   renderArtifactBody($("#modal-body"), a);
   openModalEl($("#modal"));
 }
@@ -5213,7 +5417,7 @@ function renderViewer() {
   const menuBtn = ghostIconBtn("more-vertical", t("viewer.act.more")); menuBtn.onclick = () => artifactMenu(menuBtn, a);
   if (!S.provMode && isTextEditable(a)) { const editBtn = ghostIconBtn("pencil", t("common.edit")); editBtn.onclick = () => editArtifact(a); acts.appendChild(editBtn); }
   const maxBtn = ghostIconBtn("maximize-2", t("viewer.act.fullscreen")); maxBtn.onclick = () => openArtifact(a);
-  const dl = el("a", "icon-ghost"); dl.innerHTML = icon("download", 16); dl.href = `/api/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact"); dl.title = t("common.download");
+  const dl = el("a", "icon-ghost"); dl.innerHTML = icon("download", 16); dl.href = `${API}/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact"); dl.title = t("common.download");
   const closeBtn = ghostIconBtn("x", t("common.close")); closeBtn.onclick = () => { if (S.provMode) { S.provMode = false; renderViewer(); } else closeTab(a.id); };
   acts.insertBefore(menuBtn, acts.firstChild); acts.appendChild(maxBtn); acts.appendChild(dl); acts.appendChild(closeBtn);
   head.appendChild(acts); v.appendChild(head);
@@ -5264,7 +5468,7 @@ function renderArtifactEditor(body, a) {
   ta.addEventListener("blur", () => setTimeout(() => { if (!ec.dead) edacClose(ec); }, 120));  // grace for popup mousedown
   ta.addEventListener("scroll", () => edacClose(ec));
   ta.addEventListener("click", () => edacClose(ec));  // click repositions the caret → dismiss
-  fetch(`/api/artifacts/${a.id}?_=${Date.now()}`).then(r => r.text()).then(t => { ta.value = t; ta.disabled = false; ta.focus(); }).catch(() => { ta.value = ""; ta.disabled = false; });
+  fetch(`${API}/artifacts/${a.id}?_=${Date.now()}`).then(r => r.text()).then(t => { ta.value = t; ta.disabled = false; ta.focus(); }).catch(() => { ta.value = ""; ta.disabled = false; });
   cancel.onclick = () => { S._editing = null; renderViewer(); };
   save.onclick = async () => {
     save.disabled = true; save.textContent = t("common.saving");
@@ -5285,7 +5489,7 @@ function artifactMenu(anchor, a) {
     { sep: true },
     { label: starred ? t("menu.unstar") : t("menu.star"), icon: "star", onClick: () => setArtPriority(a, starred ? 0 : 1) },
     { label: t("menu.hideFromList"), icon: "eye-off", onClick: () => setArtPriority(a, -1, true) },
-    { label: t("menu.copyLink"), icon: "link", onClick: () => { try { navigator.clipboard && navigator.clipboard.writeText(location.origin + "/api/artifacts/" + a.id); } catch {} hint(t("artifact.linkCopied")); } },
+    { label: t("menu.copyLink"), icon: "link", onClick: () => { try { navigator.clipboard && navigator.clipboard.writeText(location.origin + API + "/artifacts/" + a.id); } catch {} hint(t("artifact.linkCopied")); } },
     { label: t("common.edit"), icon: "pencil", onClick: () => { if (isTextEditable(a)) editArtifact(a); else hint(t("artifact.notEditable")); } },
     { label: t("folder.menu.rename"), icon: "pencil", onClick: () => renameArtifact(a) },
     { label: t("menu.exportMetadata"), icon: "file-text", onClick: () => exportMetadata(a) },
@@ -5328,7 +5532,7 @@ async function showVersions(a) {
       info.appendChild(el("div", "ver-meta", (bytes(v.size_bytes) || "") + " · " + ago(v.created_at)));
       row.appendChild(info);
       const acts = el("div", "ver-acts");
-      const view = el("a", "outline-btn small", t("common.view")); view.href = `/api/artifacts/${v.version_id}`; view.target = "_blank"; acts.appendChild(view);
+      const view = el("a", "outline-btn small", t("common.view")); view.href = `${API}/artifacts/${v.version_id}`; view.target = "_blank"; acts.appendChild(view);
       if (!v.is_latest) { const rb = el("button", "solid-btn small", t("versions.restore")); rb.onclick = async () => { rb.disabled = true; rb.textContent = t("versions.restoring"); try { const restored = await api(`/artifacts/${a.id}/versions/${v.version_id}/restore`, { method: "POST" }); syncArtifactVersion((restored && restored.artifact) || { id: a.id, version_id: v.version_id }, true); hint(t("versions.restored", v.ordinal)); (S._artBust = S._artBust || {})[a.id] = Date.now(); if (S.currentId) loadArtifacts(S.currentId); if (S.dockArtifact && S.dockArtifact.id === a.id) { if (S.provMode) showProvenance(S.dockArtifact); else renderViewer(); } render(); } catch (e) { rb.disabled = false; rb.textContent = t("versions.restore"); hint(t("versions.restore.err", e.message), true); } }; acts.appendChild(rb); }
       row.appendChild(acts); wrap.appendChild(row);
     });
@@ -5400,14 +5604,14 @@ function artUrlByName(fname) {
   if (!fname) return "";
   const base = String(fname).split("/").pop();
   const a = (S.artifacts || []).find(x => (x.filename || "") === fname || (x.filename || "").split("/").pop() === base);
-  return a ? artUrl(a) : `/api/artifacts/${encodeURIComponent(fname)}`;  // artUrl adds the version cache-bust
+  return a ? artUrl(a) : `${API}/artifacts/${encodeURIComponent(fname)}`;  // artUrl adds the version cache-bust
 }
 // Same, but cache-busted by the artifact's current version so an overwritten
 // table (re-run cell) refetches instead of serving the browser's stale copy.
 function artUrlBust(fname) {
   const base = String(fname).split("/").pop();
   const a = (S.artifacts || []).find(x => (x.filename || "") === fname || (x.filename || "").split("/").pop() === base);
-  return a ? artUrl(a) : `/api/artifacts/${encodeURIComponent(fname)}`;
+  return a ? artUrl(a) : `${API}/artifacts/${encodeURIComponent(fname)}`;
 }
 // Minimal RFC-4180-ish parser: handles quoted fields, "" escapes and CRLF.
 function parseDelimited(text, sep) {
@@ -5821,7 +6025,7 @@ function notebookExportLink(frameId) {
   const dl = el("a", "prov-dlbtn");
   dl.appendChild(iconEl("download", 14));
   dl.appendChild(el("span", null, t("prov.exec.downloadNotebook")));
-  dl.href = `/api/frames/${encodeURIComponent(frameId)}/notebook/export?language=bundle`;
+  dl.href = `${API}/frames/${encodeURIComponent(frameId)}/notebook/export?language=bundle`;
   dl.setAttribute("download", `${frameId}.notebooks.zip`);
   return dl;
 }
@@ -6737,11 +6941,37 @@ async function renderRemoteGPU(c) {
   const hd = el("div", "cust-row"); hd.innerHTML = `<div class="info"><div class="nm">${t("cust.remote.title")}</div><div class="ds">${t("cust.remote.desc")}</div></div>`; c.appendChild(hd);
   const hosts = (info && info.hosts) || [];
   hosts.forEach(h => {
-    const row = el("div", "cust-row"); const dot = h.reachable ? "🟢" : "🔴";
-    const gpus = h.gpus || (h.reachable ? "" : t("cust.remote.unreachable"));
-    const caps = (h.capabilities || []).map(cp => `<span style="display:inline-block;padding:1px 7px;margin:3px 4px 0 0;border-radius:8px;background:rgba(127,127,127,.18);font-size:11px">${cp.name}${cp.engine ? " · " + cp.engine : ""}${cp.verified ? " ✓" : ""}</span>`).join("");
+    // Built with DOM nodes, not innerHTML. Every string here comes off a
+    // machine we do not control: the label/alias is whatever the user's
+    // ~/.ssh/config says, and gpus and capability names are literally the
+    // stdout of `nvidia-smi` and a service probe on the remote host. Through
+    // innerHTML a hostile or merely odd GPU name was markup.
+    const row = el("div", "cust-row");
     const inf = el("div", "info");
-    inf.innerHTML = `<div class="nm">${dot} ${h.label || h.alias} <span style="opacity:.55;font-weight:400">· ${h.provider}</span></div><div class="ds">${gpus}${caps ? "<br>" + t("cust.remote.services") + " " + caps : "<br><span style='opacity:.6'>" + t("cust.remote.noservices") + "</span>"}</div>`;
+
+    const nm = el("div", "nm", (h.reachable ? "🟢 " : "🔴 ") + (h.label || h.alias || ""));
+    const prov = el("span", null, " · " + (h.provider || ""));
+    prov.style.opacity = ".55";
+    prov.style.fontWeight = "400";
+    nm.appendChild(prov);
+    inf.appendChild(nm);
+
+    const ds = el("div", "ds", h.gpus || (h.reachable ? "" : t("cust.remote.unreachable")));
+    const caps = h.capabilities || [];
+    ds.appendChild(el("br"));
+    if (caps.length) {
+      ds.appendChild(document.createTextNode(t("cust.remote.services") + " "));
+      caps.forEach(cp => {
+        const chip = el("span", null, (cp.name || "") + (cp.engine ? " · " + cp.engine : "") + (cp.verified ? " ✓" : ""));
+        chip.style.cssText = "display:inline-block;padding:1px 7px;margin:3px 4px 0 0;border-radius:8px;background:rgba(127,127,127,.18);font-size:11px";
+        ds.appendChild(chip);
+      });
+    } else {
+      const none = el("span", null, t("cust.remote.noservices"));
+      none.style.opacity = ".6";
+      ds.appendChild(none);
+    }
+    inf.appendChild(ds);
     const rm = el("button", "outline-btn small", t("common.remove"));
     rm.onclick = async () => { if (!confirm(t("cust.remote.confirmRemove", h.alias))) return; try { await api("/compute/remote/" + encodeURIComponent(h.alias), { method: "DELETE" }); custTab("compute"); } catch (e) { hint(e.message, true); } };
     row.appendChild(inf); row.appendChild(rm); c.appendChild(row);
@@ -6756,7 +6986,20 @@ async function renderRemoteGPU(c) {
   add.onclick = async () => { const alias = sel.value; if (!alias) return; add.disabled = true; add.textContent = t("cust.remote.testing"); try { const r = await api("/compute/remote", { method: "POST", body: JSON.stringify({ alias }) }); hint(r.reachable ? t("cust.remote.added", alias, r.gpus || "") : t("cust.remote.addedUnreachable", alias)); custTab("compute"); } catch (e) { hint(e.message, true); add.disabled = false; add.textContent = t("common.add"); } };
   ds.appendChild(sel); ds.appendChild(add); ai.appendChild(ds); addRow.appendChild(ai); c.appendChild(addRow);
 }
-async function custCompute(c) { try { const gpu = await api("/compute/gpu"); const env = await api("/environments/status").catch(() => ({ environments: [] })); const host = await api("/compute/local/hostinfo").catch(() => ({})); c.innerHTML = ""; c.appendChild(hdr(t("cust.compute.title"), t("cust.compute.desc"))); const hostRow = el("div", "cust-row"); hostRow.innerHTML = `<div class="info"><div class="nm">${t("cust.compute.host")}</div><div class="ds">${t("cust.compute.hostDetail", host.python || "?", host.machine || "", host.cpu_count || "?", host.ram_gb || "?", host.disk_free_gb || "?")}</div></div>`; c.appendChild(hostRow); const g = el("div", "cust-row"); g.innerHTML = `<div class="info"><div class="nm">GPU</div><div class="ds">${gpu.available ? (gpu.gpu_name || t("cust.compute.gpuAvailable")) : t("cust.compute.gpuUnavailable")}</div></div>`; c.appendChild(g); await renderRemoteGPU(c); const envs = env.environments || []; envs.forEach(e => { const row = el("div", "cust-row"); const inst = (e.packages || []).filter(p => p.installed); row.innerHTML = `<div class="info"><div class="nm">${t("cust.compute.kernelLabel", e.language, e.status === "installing" ? t("cust.compute.kernelInstalling") : t("cust.compute.kernelReady"))}</div><div class="ds">${t("cust.compute.preinstalledDetail", e.package_count, inst.slice(0, 18).map(p => p.name).join("、") + (inst.length > 18 ? " …" : ""))}</div></div>`; c.appendChild(row); }); const ins = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", t("cust.compute.installExtraName"))); const dsc = el("div", "ds"); const inp = el("input"); inp.placeholder = t("cust.compute.installPlaceholder"); inp.className = "cust-input"; const btn = el("button", "outline-btn small", t("cust.compute.installBtn")); btn.onclick = async () => { const pkgs = inp.value.trim().split(/\s+/).filter(Boolean); if (!pkgs.length) return; btn.disabled = true; btn.textContent = t("cust.compute.installingBtn"); try { const r = S.currentId ? await api(`/frames/${S.currentId}/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs, restart: true }) }) : await api(`/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs }) }); hint(r.ok ? (t("step.env.installed", (r.installed || []).join("、") + (r.restarted ? t("cust.compute.kernelRestarted") : ""))) : (t("toast.compute.installFailed", ((r.failed && r.failed[0] && r.failed[0].error) || t("toast.compute.installSeeLogs"))))); if (r.ok) S._envSnapById = {}; custTab("compute"); } catch (e) { hint(t("toast.compute.installFailed", e.message), true); } btn.disabled = false; btn.textContent = t("cust.compute.installBtn"); }; dsc.appendChild(inp); dsc.appendChild(btn); info.appendChild(dsc); ins.appendChild(info); c.appendChild(ins); await renderJobs(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
+// An info row built from DOM nodes. `t()` substitutes without escaping, so its
+// result is safe as textContent and unsafe as innerHTML — several compute rows
+// interpolate a GPU name straight out of `nvidia-smi`, a machine string, and
+// package names, none of which this process authored.
+const infoRow = (name, detail) => {
+  const row = el("div", "cust-row");
+  const info = el("div", "info");
+  info.appendChild(el("div", "nm", name));
+  info.appendChild(el("div", "ds", detail));
+  row.appendChild(info);
+  return row;
+};
+
+async function custCompute(c) { try { const gpu = await api("/compute/gpu"); const env = await api("/environments/status").catch(() => ({ environments: [] })); const host = await api("/compute/local/hostinfo").catch(() => ({})); c.innerHTML = ""; c.appendChild(hdr(t("cust.compute.title"), t("cust.compute.desc"))); c.appendChild(infoRow(t("cust.compute.host"), t("cust.compute.hostDetail", host.python || "?", host.machine || "", host.cpu_count || "?", host.ram_gb || "?", host.disk_free_gb || "?"))); c.appendChild(infoRow("GPU", gpu.available ? (gpu.gpu_name || t("cust.compute.gpuAvailable")) : t("cust.compute.gpuUnavailable"))); await renderRemoteGPU(c); const envs = env.environments || []; envs.forEach(e => { const inst = (e.packages || []).filter(p => p.installed); c.appendChild(infoRow(t("cust.compute.kernelLabel", e.language, e.status === "installing" ? t("cust.compute.kernelInstalling") : t("cust.compute.kernelReady")), t("cust.compute.preinstalledDetail", e.package_count, inst.slice(0, 18).map(p => p.name).join("、") + (inst.length > 18 ? " …" : "")))); }); const ins = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", t("cust.compute.installExtraName"))); const dsc = el("div", "ds"); const inp = el("input"); inp.placeholder = t("cust.compute.installPlaceholder"); inp.className = "cust-input"; const btn = el("button", "outline-btn small", t("cust.compute.installBtn")); btn.onclick = async () => { const pkgs = inp.value.trim().split(/\s+/).filter(Boolean); if (!pkgs.length) return; btn.disabled = true; btn.textContent = t("cust.compute.installingBtn"); try { const r = S.currentId ? await api(`/frames/${S.currentId}/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs, restart: true }) }) : await api(`/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs }) }); hint(r.ok ? (t("step.env.installed", (r.installed || []).join("、") + (r.restarted ? t("cust.compute.kernelRestarted") : ""))) : (t("toast.compute.installFailed", ((r.failed && r.failed[0] && r.failed[0].error) || t("toast.compute.installSeeLogs"))))); if (r.ok) S._envSnapById = {}; custTab("compute"); } catch (e) { hint(t("toast.compute.installFailed", e.message), true); } btn.disabled = false; btn.textContent = t("cust.compute.installBtn"); }; dsc.appendChild(inp); dsc.appendChild(btn); info.appendChild(dsc); ins.appendChild(info); c.appendChild(ins); await renderJobs(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
 async function renderJobs(c) {
   c.appendChild(hdr(t("cust.jobs.title"), t("cust.jobs.desc")));
   const sub = el("div", "cust-row"); const si = el("div", "info"); si.appendChild(el("div", "nm", t("cust.jobs.submitName")));
@@ -6894,9 +7137,19 @@ function renderLocalModelEndpoints(root, discovery, profiles) {
 }
 async function custModels(c) {
   c.innerHTML = ""; c.appendChild(hdr(t("cust.tab.models"), t("cust.models.subtitle2")));
-  let data = { profiles: [], active_id: "", known_providers: [] };
+  let data = { profiles: [], active_id: "", protocols: [] };
   try { data = await api("/model-profiles"); } catch (e) { c.appendChild(el("div", "dock-empty", t("versions.load.err", e.message))); return; }
   let editing = null;  // set to a profile object when editing that row
+  const protocols = [
+    ["chatgpt", "cust.models.protocol.openai"],
+    ["claude", "cust.models.protocol.anthropic"],
+    ["ark", "cust.models.protocol.ark"],
+  ];
+  const protocolIds = new Set(protocols.map(item => item[0]));
+  const protocolLabel = provider => {
+    const match = protocols.find(item => item[0] === provider);
+    return match ? t(match[1]) : provider;
+  };
 
   // Local discovery is a read-only, fixed-loopback scan. The endpoint must be
   // explicitly added before it can affect model settings.
@@ -6921,26 +7174,27 @@ async function custModels(c) {
   c.appendChild(head);
   const form = el("div", "skill-form");
   const nameIn = el("input", "cust-input"); nameIn.placeholder = t("cust.models.namePlaceholder");
-  const provIn = el("input", "cust-input"); provIn.placeholder = t("cust.models.providerPlaceholder2"); provIn.setAttribute("list", "os-provs");
-  const dl = el("datalist"); dl.id = "os-provs"; (data.known_providers || []).forEach(p => { const o = el("option"); o.value = p; dl.appendChild(o); });
+  const provIn = el("select", "cust-input");
+  protocols.forEach(([value, labelKey]) => { const option = el("option"); option.value = value; option.textContent = t(labelKey); provIn.appendChild(option); });
   const baseIn = el("input", "cust-input"); baseIn.placeholder = t("cust.models.baseUrlPlaceholder");
   const modelIn = el("input", "cust-input"); modelIn.placeholder = t("cust.models.modelPlaceholder2");
   const keyIn = el("input", "cust-input"); keyIn.type = "password"; keyIn.placeholder = "API Key"; keyIn.autocomplete = "off";
-  form.appendChild(dl);
   form.appendChild(el("label", "skill-lbl", t("cust.connectors.namePlaceholder"))); form.appendChild(nameIn);
-  form.appendChild(el("label", "skill-lbl", t("label.provider"))); form.appendChild(provIn);
+  form.appendChild(el("label", "skill-lbl", t("cust.models.label.protocol"))); form.appendChild(provIn);
   form.appendChild(el("label", "skill-lbl", "Base URL")); form.appendChild(baseIn);
   form.appendChild(el("label", "skill-lbl", t("label.model"))); form.appendChild(modelIn);
   form.appendChild(el("label", "skill-lbl", "API Key")); form.appendChild(keyIn);
   const save = el("button", "solid-btn", t("cust.models.addBtn"));
   const cancel = el("button", "outline-btn small", t("cust.models.cancelEdit")); cancel.style.display = "none";
-  const resetForm = () => { editing = null; nameIn.value = provIn.value = baseIn.value = modelIn.value = keyIn.value = ""; keyIn.placeholder = "API Key"; save.textContent = t("cust.models.addBtn"); head.textContent = t("cust.models.addHeading"); cancel.style.display = "none"; };
-  const startEdit = (p) => { editing = p; nameIn.value = p.name || ""; provIn.value = p.provider || ""; baseIn.value = p.base_url || ""; modelIn.value = p.model || ""; keyIn.value = ""; keyIn.placeholder = p.has_api_key ? t("cust.models.keyPlaceholderSet") : t("cust.models.keyPlaceholderUnset"); save.textContent = t("cust.models.updateBtn"); head.textContent = t("cust.models.editHeading", (p.name || p.id)); cancel.style.display = ""; nameIn.focus(); c.scrollTop = 0; };
+  const clearLegacyProtocol = () => provIn.querySelectorAll("option[data-legacy]").forEach(option => option.remove());
+  const resetForm = () => { editing = null; clearLegacyProtocol(); nameIn.value = baseIn.value = modelIn.value = keyIn.value = ""; provIn.value = "chatgpt"; keyIn.placeholder = "API Key"; save.textContent = t("cust.models.addBtn"); head.textContent = t("cust.models.addHeading"); cancel.style.display = "none"; };
+  const startEdit = (p) => { editing = p; clearLegacyProtocol(); nameIn.value = p.name || ""; if (protocolIds.has(p.provider)) { provIn.value = p.provider; } else { const legacy = el("option"); legacy.value = p.provider || ""; legacy.textContent = p.provider || "—"; legacy.disabled = true; legacy.dataset.legacy = "true"; provIn.appendChild(legacy); provIn.value = legacy.value; } baseIn.value = p.base_url || ""; modelIn.value = p.model || ""; keyIn.value = ""; keyIn.placeholder = p.has_api_key ? t("cust.models.keyPlaceholderSet") : t("cust.models.keyPlaceholderUnset"); save.textContent = t("cust.models.updateBtn"); head.textContent = t("cust.models.editHeading", (p.name || p.id)); cancel.style.display = ""; nameIn.focus(); c.scrollTop = 0; };
   cancel.onclick = resetForm;
   save.onclick = async () => {
     const nm = nameIn.value.trim(); if (!nm) { hint(t("toast.specialist.enterName"), true); nameIn.focus(); return; }
     save.disabled = true; const label = save.textContent; save.textContent = t("common.saving");
-    const body = { name: nm, provider: provIn.value.trim(), base_url: baseIn.value.trim(), model: modelIn.value.trim() };
+    const body = { name: nm, base_url: baseIn.value.trim(), model: modelIn.value.trim() };
+    if (protocolIds.has(provIn.value)) body.provider = provIn.value;
     if (keyIn.value) body.api_key = keyIn.value;
     try {
       if (editing) { await api(`/model-profiles/${editing.id}`, { method: "PATCH", body: JSON.stringify(body) }); hint(t("toast.models.updated", nm)); }
@@ -6962,7 +7216,7 @@ async function custModels(c) {
     const isActive = p.id === data.active_id;
     if (isActive) { nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", t("cust.models.activePill"))); }
     info.appendChild(nm);
-    const bits = []; if (p.provider) bits.push(p.provider); if (p.model) bits.push(p.model); bits.push(p.has_api_key ? t("cust.models.hasKey") : (loopbackModelBase(p.base_url) ? t("cust.models.local.keyless") : t("cust.models.noKey")));
+    const bits = []; if (p.provider) bits.push(protocolLabel(p.provider)); if (p.model) bits.push(p.model); bits.push(p.has_api_key ? t("cust.models.hasKey") : (loopbackModelBase(p.base_url) ? t("cust.models.local.keyless") : t("cust.models.noKey")));
     info.appendChild(el("div", "ds", bits.join(" · ") + (p.base_url ? "  ·  " + p.base_url : "")));
     row.appendChild(info);
     if (!isActive) { const use = el("button", "outline-btn small", t("cust.models.setActive")); use.onclick = async () => { use.disabled = true; try { await api(`/model-profiles/${p.id}/activate`, { method: "POST" }); hint(t("toast.models.switched", (p.name || p.id))); S.defaultModel = p.model || S.defaultModel; await loadModels(); refreshKeyBanner(); custTab("models"); } catch (e) { use.disabled = false; hint(t("toast.switchFailed", e.message), true); } }; row.appendChild(use); } else { row.appendChild(el("div", "col-spacer")); }
@@ -7039,9 +7293,13 @@ function mdInline(t) {
   var codes = [];
   t = t.replace(/`([^`]+)`/g, function (m, c) { codes.push(c); return MDC0 + (codes.length - 1) + MDC1; });
   t = esc(t);
-  t = t.replace(/!\[([^\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g, '<img alt="$1" src="$2">');
-  t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, '<img alt="$1" src="$2">');
-  t = t.replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // esc() escapes &<> but not quotes, so any capture group interpolated into a
+  // double-quoted HTML attribute must additionally neutralize " to prevent an
+  // alt/href/src value from closing the attribute and injecting new ones.
+  var escQuote = function (s) { return String(s).replace(/"/g, "&quot;"); };
+  t = t.replace(/!\[([^\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g, function (m, alt, src) { return '<img alt="' + escQuote(alt) + '" src="' + src + '">'; });
+  t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, function (m, alt, src) { return '<img alt="' + escQuote(alt) + '" src="' + escQuote(src) + '">'; });
+  t = t.replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g, function (m, text, href) { return '<a href="' + escQuote(href) + '" target="_blank" rel="noopener">' + text + '</a>'; });
   t = t.replace(/\*\*\*([^*]+?)\*\*\*/g, "<strong><em>$1</em></strong>");
   t = t.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
   t = t.replace(/(^|[^\w*])__([^_]+?)__(?!\w)/g, "$1<strong>$2</strong>");
