@@ -41,6 +41,16 @@ harvest is reconciled makes the job `failed` even if it exited 0. Every harvest
 records `{path, size, sha256}` per file plus a digest over the set, which is
 also what makes a transfer truncated at rc==0 visible.
 
+On `byoc:*`, `provider_params[<id>]["timeout"]` is the **container's**
+lifetime, which is a different clock from the job's. The host stamps when the
+sandbox was created and sends the resulting absolute deadline with each
+submit, so the wrapper's watchdog stops the job with a harvest margin to spare
+rather than letting the container be reclaimed mid-run and take the outputs
+with it. A reused warm container therefore inherits the time it has already
+spent — the second job into a one-hour sandbox created forty minutes ago gets
+twenty minutes, not another hour. Declare no lifetime and the watchdog stays
+unarmed, because a guessed deadline would kill jobs early.
+
 `timeout_seconds` is enforced on the remote, by wrapping the job body in
 `timeout(1)` (or `gtimeout`). A host with neither refuses the submit rather
 than running an unbounded job while you believe a limit applies. On expiry the

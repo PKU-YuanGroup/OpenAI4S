@@ -175,6 +175,14 @@ partial outputs staged, and it lands as `status: 'timed_out'` (not a generic
 failure). Keep `./out/` checkpoints small — the harvest stream runs in a
 bounded window, so a multi-GB `out/` risks `harvest_failed`.
 
+The container has its own, separate clock: `provider_params={'nvidia':
+{'timeout': N}}` on `create` sets how long the sandbox itself lives. When you
+set it, the job is stopped with a harvest margin to spare rather than the
+container being reclaimed mid-run and taking the outputs with it — and because
+the first `submit_job` creates the container and later ones reuse it warm, a
+second job inherits the time already spent. Size the container lifetime for
+the whole sequence you intend to run through it, not for one job.
+
 ## When the user gives you a budget
 
 `host.compute.set_concurrency_limit(k)` makes the user's ceiling a property of

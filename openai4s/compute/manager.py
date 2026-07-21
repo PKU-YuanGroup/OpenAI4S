@@ -106,6 +106,14 @@ class ComputeError(RuntimeError):
 # neither, so it gets an explicit cap instead of the implicit "whatever fits".
 MAX_TRANSFER_BYTES = 512 * 1024 * 1024
 
+# How long before the sandbox expires the wrapper must stop the job so that
+# taring the outputs and writing .phase still fit. The wrapper defaults to the
+# same value; sending it explicitly keeps the policy on the host, where the
+# harvest actually happens.
+HARVEST_MARGIN_S = 600
+# Grace between SIGTERM and SIGKILL for the job's process group.
+TERM_GRACE_S = 60
+
 # GNU `timeout` reports expiry with this exit code. The ssh job body wraps the
 # command in it whenever a deadline is requested.
 _TIMEOUT_EXIT_CODE = 124
@@ -156,6 +164,26 @@ def _safe_stage_name(value: str, *, label: str) -> str:
             "invalid_request",
         )
     return text
+
+
+def _sandbox_lifetime_s(spec: Any) -> int:
+    """The container lifetime the caller declared, in seconds.
+
+    Documented on ``host.compute.create`` as ``timeout`` inside
+    ``provider_params``. Absent or unreadable yields 0, which leaves the
+    wrapper's watchdog unarmed — the same behaviour as before, rather than a
+    guessed deadline that could kill a job early.
+    """
+    if not isinstance(spec, dict):
+        return 0
+    for key in ("timeout", "timeout_seconds", "lifetime_s"):
+        try:
+            value = int(spec.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0
 
 
 def _ssh_cancel_script(pid: str) -> str:
@@ -274,6 +302,12 @@ class ComputeManager:
         self._jobs: dict[str, dict] = {}
         # byoc sandbox reuse: provider-id -> sandbox_id (warm container).
         self._sandboxes: dict[str, str] = {}
+        # When each warm sandbox expires, as an absolute epoch. Kept beside
+        # `_sandboxes` rather than derived per submit because a *reused*
+        # container has already spent part of its life: the second job into a
+        # one-hour sandbox created forty minutes ago has twenty minutes, not
+        # another hour. Only an absolute deadline can express that.
+        self._sandbox_deadlines: dict[str, float] = {}
         self._lock = threading.RLock()
         self._limit: int | None = None
         self._hpc_root = Path(cfg.data_dir) / "hpc"
@@ -735,15 +769,31 @@ class ComputeManager:
                     )
                     sid = rep["sandbox_id"]
                     self._sandboxes[pid] = sid
+                    # Stamp the container's expiry the moment it exists, so a
+                    # later job reusing it inherits the time already spent.
+                    lifetime = _sandbox_lifetime_s(spec)
+                    if lifetime > 0:
+                        self._sandbox_deadlines[pid] = time.time() + lifetime
+                    else:
+                        self._sandbox_deadlines.pop(pid, None)
                 # 2. stage inputs then submit.
                 self._stage_inputs(stage, kw.get("inputs"), kw["command"], timeout_s)
-                self._run_helper(
-                    prov,
-                    "submit",
-                    {"sandbox_id": sid, "timeout": timeout_s},
-                    creds,
-                    stage,
-                )
+                # The wrapper implements a watchdog that stops the job with
+                # `harvest_margin_s` to spare so its outputs can still be
+                # staged, and the helper forwards these straight through — but
+                # nothing on the host ever produced them, so the watchdog was
+                # never armed and a container could be reclaimed mid-job,
+                # taking the results with it.
+                deadline = self._sandbox_deadlines.get(pid)
+                submit_req: dict[str, Any] = {
+                    "sandbox_id": sid,
+                    "timeout": timeout_s,
+                    "harvest_margin_s": HARVEST_MARGIN_S,
+                    "term_grace_s": TERM_GRACE_S,
+                }
+                if deadline:
+                    submit_req["sandbox_deadline_epoch"] = int(deadline)
+                self._run_helper(prov, "submit", submit_req, creds, stage)
         except BaseException as exc:
             # Without this the row stays at `staging` forever: no terminal
             # state, no event, and -- worse -- a sandbox the provider may
@@ -1262,6 +1312,7 @@ class ComputeManager:
                         terminated = False
                 if terminated:
                     self._sandboxes.pop(rest, None)
+                    self._sandbox_deadlines.pop(rest, None)
         for jid in kw.get("job_ids") or []:
             j = self._jobs.get(jid)
             # Every live state, `staging` and `unknown` included: closing a

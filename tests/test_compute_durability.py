@@ -17,6 +17,7 @@ Two properties carry the design:
     result. The honest move is to surface it with its receipt.
 """
 import subprocess
+import time
 import types
 from pathlib import Path
 
@@ -592,3 +593,102 @@ def test_featured_files_is_the_declared_subset(byoc, monkeypatch):
 
     assert [Path(p).name for p in result["featured_files"]] == ["scores.csv"]
     assert len(result["output_files"]) == 2
+
+
+# --------------------------------------------------------------------------
+# the container deadline the wrapper has always been able to enforce
+# --------------------------------------------------------------------------
+
+
+def _capture_submits(manager, monkeypatch, behaviour):
+    """Record every helper request so the submit payload can be inspected."""
+    seen = []
+
+    def run_helper(self, prov, op, req, *a, **k):
+        seen.append((op, dict(req)))
+        return behaviour(op)
+
+    monkeypatch.setattr(ComputeManager, "_run_helper", run_helper)
+    return seen
+
+
+def _sandbox_behaviour(op):
+    if op == "create":
+        return {"sandbox_id": "sbx-1"}
+    if op == "wait":
+        return {"ready": True, "job_exit_code": 0}
+    return {}
+
+
+def test_a_declared_container_lifetime_arms_the_wrapper_watchdog(byoc, monkeypatch):
+    """`sandbox_deadline_epoch`, `harvest_margin_s` and `term_grace_s` are
+    read by the helper and consumed by the wrapper, and the host produced none
+    of them — so the watchdog was never armed and a container could be
+    reclaimed mid-job, taking the outputs with it."""
+    seen = _capture_submits(byoc, monkeypatch, _sandbox_behaviour)
+
+    byoc.submit(
+        {
+            "provider": "byoc:fake",
+            "command": "train.py",
+            "provider_params": {"fake": {"timeout": 3600}},
+        }
+    )
+
+    submit = next(req for op, req in seen if op == "submit")
+    assert submit["harvest_margin_s"] > 0
+    assert submit["term_grace_s"] > 0
+    # An absolute epoch roughly an hour out, not a relative duration.
+    assert submit["sandbox_deadline_epoch"] > time.time() + 3000
+
+
+def test_a_reused_sandbox_inherits_the_time_it_has_already_spent(byoc, monkeypatch):
+    """The case an absolute deadline exists for. A second job entering a warm
+    container must not be handed a fresh lifetime — the container expires when
+    it expires, regardless of when the job started."""
+    seen = _capture_submits(byoc, monkeypatch, _sandbox_behaviour)
+    params = {"fake": {"timeout": 3600}}
+
+    byoc.submit({"provider": "byoc:fake", "command": "a", "provider_params": params})
+    first = next(req for op, req in seen if op == "submit")
+
+    # The container is warm now; time passes before the next job.
+    byoc._sandbox_deadlines["fake"] -= 1800
+    byoc.submit({"provider": "byoc:fake", "command": "b", "provider_params": params})
+    second = [req for op, req in seen if op == "submit"][-1]
+
+    assert [op for op, _ in seen].count("create") == 1, "the sandbox was reused"
+    assert (
+        second["sandbox_deadline_epoch"] < first["sandbox_deadline_epoch"]
+    ), "a reused container must not be handed a fresh hour"
+
+
+def test_no_declared_lifetime_leaves_the_watchdog_unarmed(byoc, monkeypatch):
+    """Absent a lifetime the host has nothing to compute a deadline from, and
+    guessing one could kill a job early. The wrapper falls back to no
+    watchdog, which is what it did before."""
+    seen = _capture_submits(byoc, monkeypatch, _sandbox_behaviour)
+
+    byoc.submit({"provider": "byoc:fake", "command": "train.py"})
+
+    submit = next(req for op, req in seen if op == "submit")
+    assert "sandbox_deadline_epoch" not in submit
+    # The margins are still sent: they are policy, not a deadline.
+    assert submit["harvest_margin_s"] > 0
+
+
+def test_closing_a_sandbox_forgets_its_deadline(byoc, monkeypatch):
+    _capture_submits(byoc, monkeypatch, _sandbox_behaviour)
+    byoc.submit(
+        {
+            "provider": "byoc:fake",
+            "command": "x",
+            "provider_params": {"fake": {"timeout": 3600}},
+        }
+    )
+    assert "fake" in byoc._sandbox_deadlines
+
+    byoc.close({"provider": "byoc:fake"})
+    assert (
+        "fake" not in byoc._sandbox_deadlines
+    ), "a stale deadline would be applied to the next container"
