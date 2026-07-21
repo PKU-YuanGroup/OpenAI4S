@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>OpenAI4S · Shared session</title>
+<link rel="stylesheet" href="/static/share.css" />
+</head>
+<body>
+<div id="app">
+  <header id="head">
+    <div class="brand">OpenAI4S</div>
+    <div class="head-main">
+      <h1 id="title">Shared session</h1>
+      <div id="subtitle" class="muted"></div>
+    </div>
+    <div class="head-actions">
+      <button id="lang-btn" class="ghost" type="button">中文</button>
+      <button id="run-btn" class="primary" type="button" data-i18n="runLocally">Run locally</button>
+    </div>
+  </header>
+
+  <div id="run-panel" class="panel" hidden>
+    <h2 data-i18n="runTitle">Run or continue this session locally</h2>
+    <ol>
+      <li data-i18n="runStep1">Install &amp; start OpenAI4S: <code>pip install openai4s &amp;&amp; openai4s serve</code></li>
+      <li><span data-i18n="runStep2">Import this snapshot:</span> <code id="import-cmd"></code>
+          <button id="copy-import" class="ghost small" type="button" data-i18n="copy">Copy</button></li>
+      <li data-i18n="runStep3">The imported session opens <b>view-only</b>. Click “Restart fresh” in its recovery panel to establish a trusted runtime, then continue or fork.</li>
+    </ol>
+    <a id="bundle-link" class="primary" download data-i18n="downloadBundle">Download bundle</a>
+  </div>
+
+  <main>
+    <section id="conversation">
+      <h2 data-i18n="conversation">Conversation</h2>
+      <div id="messages"></div>
+    </section>
+    <section id="notebook">
+      <h2 data-i18n="notebook">Notebook</h2>
+      <div id="cells"></div>
+      <div id="hidden-note" class="muted" hidden></div>
+    </section>
+    <section id="artifacts">
+      <h2 data-i18n="artifacts">Artifacts</h2>
+      <div id="artifact-grid"></div>
+    </section>
+  </main>
+
+  <footer class="muted">
+    <span data-i18n="footer">A read-only snapshot shared via OpenAI4S. The link is a credential — anyone with it can view this content.</span>
+  </footer>
+</div>
+<div id="preview-overlay" hidden>
+  <div id="preview-box">
+    <button id="preview-close" class="ghost" type="button">✕</button>
+    <div id="preview-body"></div>
+  </div>
+</div>
+<script src="/static/share.js"></script>
+</body>
+</html>

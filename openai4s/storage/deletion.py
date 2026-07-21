@@ -230,6 +230,7 @@ class SessionDeletionRepository:
                 "delegation_children",
                 "delegation_sessions",
                 "messages",
+                "shares",
             ):
                 self._delete_counted(deleted_rows, table, root_where, roots)
 

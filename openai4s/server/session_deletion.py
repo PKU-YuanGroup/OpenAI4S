@@ -42,6 +42,7 @@ class SessionDeletionService:
         cas: WorkspaceCAS,
         drop_runtime: Callable[[str, str], Any],
         drop_resume_window: Callable[[str], Any],
+        revoke_shares: Callable[[str], Any] | None = None,
     ) -> None:
         self.store = store
         self.data_dir = Path(data_dir).expanduser().resolve()
@@ -52,6 +53,7 @@ class SessionDeletionService:
         )
         self._drop_runtime = drop_runtime
         self._drop_resume_window = drop_resume_window
+        self._revoke_shares = revoke_shares or (lambda _root_frame_id: None)
 
     def delete_session(
         self, root_frame_id: str, *, reason: str = "frame_deleted"
@@ -62,6 +64,7 @@ class SessionDeletionService:
             if canonical != root_frame_id:
                 raise ValueError("session deletion requires a root frame id")
             self._drop_runtime(root_frame_id, reason)
+        self._revoke_shares_safe(root_frame_id)
         result = self.store.delete_frame(root_frame_id)
         cleanup = self._cleanup(result)
         self._drop_resume_window(root_frame_id)
@@ -73,6 +76,7 @@ class SessionDeletionService:
         roots = self.store.project_session_ids(project_id)
         for root_frame_id in roots:
             self._drop_runtime(root_frame_id, reason)
+            self._revoke_shares_safe(root_frame_id)
         result = self.store.delete_project(project_id)
         deleted_roots = tuple(
             dict.fromkeys(
@@ -85,6 +89,7 @@ class SessionDeletionService:
         for root_frame_id in deleted_roots:
             if root_frame_id not in roots:
                 self._drop_runtime(root_frame_id, reason)
+                self._revoke_shares_safe(root_frame_id)
         cleanup = self._cleanup(result)
         dynamic = self.dynamic_scopes.delete_project_scope(project_id)
         for root_frame_id in deleted_roots:
@@ -95,6 +100,12 @@ class SessionDeletionService:
             "freed_dynamic_events": dynamic["events"],
             "freed_dynamic_manifests": dynamic["manifests"],
         }
+
+    def _revoke_shares_safe(self, root_frame_id: str) -> None:
+        try:
+            self._revoke_shares(root_frame_id)
+        except Exception:  # noqa: BLE001 - deletion must proceed regardless
+            pass
 
     def _cleanup(self, result: Mapping[str, Any]) -> dict[str, Any]:
         roots = tuple(

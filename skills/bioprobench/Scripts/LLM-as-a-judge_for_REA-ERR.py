@@ -1,3 +1,4 @@
+# Adapted from the upstream BioProBench project: https://github.com/YuyangSunshine/bioprotocolbench
 # We use LLM (deepseek-chat here) as a judge to evaluate the consitency of the model-generated response with the error description in REA-ERR task. For more details, please refer to our paper.
 import json
 import os

@@ -271,3 +271,29 @@ ssh -L 8760:127.0.0.1:8760 user@your-host
 ```
 
 If you must bind a non-loopback address (`OPENAI4S_HOST=0.0.0.0`) or set `OPENAI4S_REQUIRE_TOKEN=1`, the server prints a one-time access token at startup and rejects any request without `?token=…` (`401`).
+
+## Web sharing
+
+Web sharing (off by default; see [webshare.md](webshare.md)) never changes the
+daemon's bind — it dials *out* over WSS to a relay you run. The public surface is
+a **materialized read-only snapshot**, not a proxy to the gateway. Invariants:
+
+- The daemon stays on `127.0.0.1`; the tunnel is always daemon-initiated and only
+  created when sharing is both enabled and configured (otherwise zero share
+  network threads exist).
+- A visitor can only reach bytes that were captured at share time by the
+  `SessionPackageService` export pipeline (fail-closed secret scan), served
+  GET/HEAD-only from an immutable snapshot directory or the fixed in-memory viewer
+  asset set. The share request path never imports the dispatcher, kernel, or a
+  subprocess and never proxies a gateway route.
+- The share package is a **flattened** single-branch snapshot with no checkpoints
+  and no project memories, permission, or capability state.
+- The relay treats daemon responses as constrained input (status/header
+  allowlist, `Set-Cookie`/`Location`/hop-by-hop refused); the daemon treats the
+  relay as untrusted (bounded, schema-checked frames). The publisher token grants
+  no local-daemon access — only the ability to publish under your share subdomains.
+- Imported shares remain quarantined and view-only until an explicit fresh
+  restart, exactly like any imported Session package.
+
+The tunnel is not a way to remotely access the daemon: the read-only snapshot
+surface has no route overlap with the gateway.

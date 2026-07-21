@@ -27,6 +27,7 @@
 
 | 目录 | 职责 |
 | --- | --- |
+| `share/` | 独立的只读分享查看器（`share.html`/`share.js`/`share.css`），由 relay 隧道的 ShareRouter 提供，与主单页应用分开。它复用 `scientific_renderers.js` 和自带的 3Dmol，但有自己的极简外壳，且从不建立 WebSocket。 |
 | `vendor/` | 从上游取来的压缩版 3Dmol 运行时和字体资源。3Dmol 是客户端里唯一的第三方 JavaScript，而且只有在打开分子 Artifact 时才由 `app.js` 动态注入。自带的那份如果加载不上，这次注入会先回退到 `3Dmol.org` 的 CDN，都失败才退回纯文本展示（见 [`app.js`](app.js) 里注入 `3Dmol-min.js` 的两处 script 标签）。把它们当作上游的、逐字节敏感的资产：不参与格式化，本 README 也不逐个文件说明。 |
 
 ## 验证

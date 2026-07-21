@@ -188,21 +188,36 @@ def _hidden_names() -> set[str]:
     return _ALWAYS_HIDE | {n.strip() for n in extra.split(",") if n.strip()}
 
 
-def _envs_root_from_prefix(prefix: str | os.PathLike[str]) -> Path:
-    """Return the standard sibling-environment directory for a Conda prefix.
+def _envs_roots_from_prefix(prefix: str | os.PathLike[str]) -> list[Path]:
+    """Candidate sibling-environment directories for a Conda prefix.
 
-    Conda exposes either its base prefix (``<base>``) or an activated named
-    environment (normally ``<base>/envs/<name>``).  The former stores named
-    environments under ``<base>/envs``; the latter already has that directory
-    as its parent.  Treating ``<base>.parent`` as an env root scans unrelated
-    directories and incorrectly offers the base installation itself as a
+    Conda exposes either a base/root prefix (``<base>``, which stores named
+    environments under ``<base>/envs``) or an activated environment.  An
+    activated environment is *not* always ``<base>/envs/<name>``: ``envs_dirs``
+    can point anywhere (``/data/myenvs/proj``) and ``conda create -p`` puts a
+    prefix at an arbitrary path.  So the parent is classified *structurally*
+    rather than by directory name — a named environment carries ``conda-meta``
+    and neither of the two markers only a root prefix has: ``envs`` (its named
+    environments) and ``pkgs`` (the shared package cache).  ``pkgs`` matters
+    because ``envs`` alone is not enough: a base installation on which no
+    environment has been created yet has no ``envs`` directory, and mistaking
+    it for a named environment would put ``$HOME`` on the scan list.
+
+    Returns every plausible root; callers de-duplicate and drop the ones that
+    do not exist.  Blindly treating ``<base>.parent`` as an env root would
+    scan unrelated directories and offer the base installation itself as a
     named environment.
     """
 
     path = Path(prefix).expanduser()
-    if path.parent.name == "envs":
-        return path.parent
-    return path / "envs"
+    roots = [path / "envs"]
+    is_root_prefix = (path / "envs").is_dir() or (path / "pkgs").is_dir()
+    looks_named = path.parent.name == "envs" or (
+        (path / "conda-meta").is_dir() and not is_root_prefix
+    )
+    if looks_named:
+        roots.append(path.parent)
+    return roots
 
 
 def _env_roots() -> list[Path]:
@@ -226,11 +241,15 @@ def _env_roots() -> list[Path]:
             add(Path(chunk.strip()))
 
     # Respect Conda's configured environment directories before inferred
-    # locations.  CONDA_ENVS_PATH may contain multiple roots.
-    configured = os.environ.get("CONDA_ENVS_PATH", "")
-    for chunk in configured.split(os.pathsep):
-        if chunk.strip():
-            add(Path(chunk.strip()))
+    # locations.  CONDA_ENVS_DIRS is canonical; CONDA_ENVS_PATH is the
+    # deprecated alias.  Both may carry several os.pathsep-joined roots.
+    for var in ("CONDA_ENVS_DIRS", "CONDA_ENVS_PATH"):
+        for chunk in os.environ.get(var, "").split(os.pathsep):
+            entry = chunk.strip()
+            # A relative entry would resolve against the daemon's cwd, which
+            # is nondeterministic — conda itself only honours absolute roots.
+            if entry and os.path.isabs(entry):
+                add(Path(entry))
 
     mamba_root = os.environ.get("MAMBA_ROOT_PREFIX", "").strip()
     if mamba_root:
@@ -238,14 +257,16 @@ def _env_roots() -> list[Path]:
 
     prefix = os.environ.get("CONDA_PREFIX", "").strip()
     if prefix:
-        add(_envs_root_from_prefix(prefix))
+        for root in _envs_roots_from_prefix(prefix):
+            add(root)
 
     # ``start.sh`` executes the project venv directly.  Even when the caller
     # did not activate Conda (and CONDA_PREFIX is therefore absent), a venv
     # created from a Conda Python retains that installation as sys.base_prefix.
     base_prefix = str(getattr(sys, "base_prefix", "") or "").strip()
     if base_prefix:
-        add(_envs_root_from_prefix(base_prefix))
+        for root in _envs_roots_from_prefix(base_prefix):
+            add(root)
 
     home = Path.home()
     for base in ("miniconda3", "miniforge3", "anaconda3", "mambaforge", "micromamba"):

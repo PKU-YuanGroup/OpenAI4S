@@ -352,6 +352,19 @@ available through the query parameter.
 | `POST /connectors/{id}/call` | Body `{tool,args}` → tool result; **exceptions are returned as `{"error":…}` with HTTP 200**. |
 | `DELETE /connectors/{id}` | Disconnect + delete → `{"ok":true}`. |
 
+### Session sharing (`shares`)
+
+Read-only session sharing over an outbound relay tunnel. The full protocol,
+trust model, and operator controls are in [`webshare.md`](webshare.md); this is
+the route index so the surface is discoverable from one place.
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /shares` | List this daemon's read-only session shares (`shares.list_all()`). |
+| `POST /frames/{id}/shares` | Create a share for a session (a `frames`-family route). `403` when sharing is disabled or the relay is unconfigured. |
+| `PUT /shares/{id}` | Publish or update a share (optional TTL); ensures the tunnel. Unknown id → `404`. |
+| `DELETE /shares/{id}` | Revoke a share and unregister it from the relay (`shares.revoke()`). |
+
 ### Compute / environments / kernel packages
 
 | Method & path | Behavior |

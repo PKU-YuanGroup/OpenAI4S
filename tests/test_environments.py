@@ -15,11 +15,35 @@ from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import environments as E
 from openai4s.server import gateway as gateway_mod
 
+#: Every environment variable ``E._env_roots()`` merges into its scan list.
+#: ``_env_roots`` merges *all* sources — OPENAI4S_ENV_ROOTS does not
+#: short-circuit — so a developer machine that exports e.g. MAMBA_ROOT_PREFIX
+#: (micromamba's shell hook always does) would otherwise leak real conda envs
+#: into these assertions.
+_ENV_ROOT_SOURCES = (
+    "OPENAI4S_ENV_ROOTS",
+    "OPENAI4S_ENV_HIDE",
+    "OPENAI4S_DEFAULT_ENV",
+    "CONDA_ENVS_DIRS",
+    "CONDA_ENVS_PATH",
+    "MAMBA_ROOT_PREFIX",
+    "CONDA_PREFIX",
+)
+
 
 @pytest.fixture(autouse=True)
-def _reset_env_cache():
-    """Rescan the (real) envs after each test so the global cache never leaks a
-    test's fake OPENAI4S_ENV_ROOTS into a later test."""
+def _isolate_env_discovery(tmp_path, monkeypatch):
+    """Neutralize every discovery source so each test sees only what it sets up.
+
+    Also rescans the (real) envs afterwards so the global cache never leaks a
+    test's fake roots into a later test.
+    """
+    for var in _ENV_ROOT_SOURCES:
+        monkeypatch.delenv(var, raising=False)
+    home = tmp_path / "isolated-home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(E.sys, "base_prefix", str(tmp_path / "no-such-system-python"))
     yield
     E.discover_environments(force=True)
 
@@ -70,13 +94,8 @@ def test_conda_base_prefix_discovers_its_envs_not_the_base_parent(
     (conda_base / "bin").mkdir(parents=True)
     (conda_base / "bin" / "python").symlink_to(sys.executable)
     expected = _make_py_env(conda_base / "envs", "torch", packages=("pandas", "torch"))
-    monkeypatch.delenv("OPENAI4S_ENV_ROOTS", raising=False)
-    monkeypatch.delenv("CONDA_ENVS_PATH", raising=False)
-    monkeypatch.delenv("MAMBA_ROOT_PREFIX", raising=False)
     monkeypatch.setenv("CONDA_PREFIX", str(conda_base))
     monkeypatch.setenv("CONDA_DEFAULT_ENV", "base")
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(E.sys, "base_prefix", str(tmp_path / "system-python"))
 
     envs = E.discover_environments(force=True)
 
@@ -88,13 +107,8 @@ def test_activated_named_conda_prefix_discovers_sibling_envs(tmp_path, monkeypat
     envs_root = tmp_path / "portable-conda" / "envs"
     active = _make_py_env(envs_root, "active")
     expected = _make_py_env(envs_root, "analysis", packages=("numpy", "pandas"))
-    monkeypatch.delenv("OPENAI4S_ENV_ROOTS", raising=False)
-    monkeypatch.delenv("CONDA_ENVS_PATH", raising=False)
-    monkeypatch.delenv("MAMBA_ROOT_PREFIX", raising=False)
     monkeypatch.setenv("CONDA_PREFIX", str(active))
     monkeypatch.setenv("CONDA_DEFAULT_ENV", "active")
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(E.sys, "base_prefix", str(tmp_path / "system-python"))
 
     E.discover_environments(force=True)
 
@@ -107,16 +121,108 @@ def test_daemon_venv_base_prefix_discovers_conda_envs_without_activation(
 ):
     conda_base = tmp_path / "portable-conda"
     expected = _make_py_env(conda_base / "envs", "science", packages=("pandas",))
-    monkeypatch.delenv("OPENAI4S_ENV_ROOTS", raising=False)
-    monkeypatch.delenv("CONDA_ENVS_PATH", raising=False)
-    monkeypatch.delenv("MAMBA_ROOT_PREFIX", raising=False)
-    monkeypatch.delenv("CONDA_PREFIX", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(E.sys, "base_prefix", str(conda_base))
 
     E.discover_environments(force=True)
 
     assert E.get_environment("science").root == expected
+
+
+def test_custom_envs_dirs_prefix_discovers_siblings(tmp_path, monkeypatch):
+    """``conda config --add envs_dirs /data/myenvs`` (or ``conda create -p``)
+    puts the active prefix under a directory that is *not* named ``envs``."""
+    myenvs = tmp_path / "myenvs"
+    active = _make_py_env(myenvs, "proj")
+    expected = _make_py_env(myenvs, "sibling", packages=("numpy", "pandas"))
+    monkeypatch.setenv("CONDA_PREFIX", str(active))
+
+    E.discover_environments(force=True)
+
+    assert E.get_environment("proj").root == active
+    assert E.get_environment("sibling").root == expected
+
+
+def test_base_install_prefix_does_not_offer_its_own_parent(tmp_path, monkeypatch):
+    """A base install has ``envs/`` — its parent must never become a root."""
+    conda_base = tmp_path / "opt" / "miniconda3"
+    (conda_base / "conda-meta").mkdir(parents=True)
+    expected = _make_py_env(conda_base / "envs", "torch")
+    _make_py_env(tmp_path / "opt", "unrelated")  # sibling of the base install
+    monkeypatch.setenv("CONDA_PREFIX", str(conda_base))
+
+    E.discover_environments(force=True)
+
+    assert E.get_environment("torch").root == expected
+    assert E.get_environment("unrelated") is None
+    assert E.get_environment("miniconda3") is None
+
+
+def test_fresh_base_install_without_envs_dir_does_not_scan_its_parent(
+    tmp_path, monkeypatch
+):
+    """A base install on which no env has been created yet still has ``pkgs/``.
+
+    Classifying it as a named environment would add ``$HOME`` (the parent of
+    ``~/miniconda3``) to the scan list, offering every home-directory folder —
+    and the base install itself — as a selectable environment.
+    """
+    home = tmp_path / "home"
+    conda_base = home / "miniconda3"
+    (conda_base / "bin").mkdir(parents=True)
+    (conda_base / "bin" / "python").symlink_to(sys.executable)
+    (conda_base / "conda-meta").mkdir()
+    (conda_base / "pkgs").mkdir()  # root-prefix marker; no envs/ yet
+    _make_py_env(home, "Projects")  # unrelated home-directory folder
+    monkeypatch.setenv("CONDA_PREFIX", str(conda_base))
+
+    E.discover_environments(force=True)
+
+    assert E.get_environment("Projects") is None
+    assert E.get_environment("miniconda3") is None
+
+
+def test_conda_envs_path_splits_on_pathsep(tmp_path, monkeypatch):
+    first = _make_py_env(tmp_path / "a", "alpha")
+    second = _make_py_env(tmp_path / "b", "beta")
+    monkeypatch.setenv(
+        "CONDA_ENVS_PATH", os.pathsep.join([str(tmp_path / "a"), str(tmp_path / "b")])
+    )
+
+    E.discover_environments(force=True)
+
+    assert E.get_environment("alpha").root == first
+    assert E.get_environment("beta").root == second
+
+
+def test_conda_envs_dirs_is_honoured(tmp_path, monkeypatch):
+    """CONDA_ENVS_DIRS is canonical; CONDA_ENVS_PATH is the deprecated alias."""
+    expected = _make_py_env(tmp_path / "roots", "gamma")
+    monkeypatch.setenv("CONDA_ENVS_DIRS", str(tmp_path / "roots"))
+
+    E.discover_environments(force=True)
+
+    assert E.get_environment("gamma").root == expected
+
+
+def test_relative_conda_envs_entries_are_ignored(tmp_path, monkeypatch):
+    """A relative root would resolve against the daemon's nondeterministic cwd."""
+    _make_py_env(tmp_path / "roots", "delta")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CONDA_ENVS_DIRS", "roots")
+
+    E.discover_environments(force=True)
+
+    assert E.get_environment("delta") is None
+
+
+def test_mamba_root_prefix_discovers_envs(tmp_path, monkeypatch):
+    mamba_root = tmp_path / "micromamba"
+    expected = _make_py_env(mamba_root / "envs", "epsilon")
+    monkeypatch.setenv("MAMBA_ROOT_PREFIX", str(mamba_root))
+
+    E.discover_environments(force=True)
+
+    assert E.get_environment("epsilon").root == expected
 
 
 def test_package_scan_is_bounded_to_site_packages(tmp_path):
@@ -131,6 +237,33 @@ def test_package_scan_is_bounded_to_site_packages(tmp_path):
     packages = pkgscan.collect_packages(env, language="python")
 
     assert "demo" in packages
+    assert "ghost" not in packages
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        "lib/python3.13/site-packages",  # CPython venv / conda env
+        "lib64/python3.11/site-packages",  # RHEL multilib
+        "lib/pypy3.10/site-packages",  # PyPy — 'python*' would miss this
+        "lib/python3/dist-packages",  # Debian/Ubuntu system Python
+        "lib/python3.11/dist-packages",  # Debian versioned
+        "Lib/site-packages",  # Windows
+    ],
+)
+def test_package_scan_resolves_real_layouts(tmp_path, layout):
+    env = tmp_path / "env"
+    installed = env / layout / "demo-1.dist-info"
+    installed.mkdir(parents=True)
+    (installed / "METADATA").write_text("Name: demo\nVersion: 1\n", "utf-8")
+    # decoy: a nested toolchain directory must stay out of the bounded scan
+    decoy = env / "lib" / "native" / "cache" / "ghost-1.dist-info"
+    decoy.mkdir(parents=True)
+    (decoy / "METADATA").write_text("Name: ghost\nVersion: 1\n", "utf-8")
+
+    packages = pkgscan.collect_packages(env, language="python")
+
+    assert "demo" in packages, f"{layout} did not resolve"
     assert "ghost" not in packages
 
 

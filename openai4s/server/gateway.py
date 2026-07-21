@@ -70,6 +70,7 @@ from openai4s.observability import (
     set_correlation_id,
 )
 from openai4s.review import review_evidence
+from openai4s.server import ws_frames
 from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.server.agent_run import EventCancellation
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
@@ -123,6 +124,9 @@ from openai4s.server.session_package import (
 )
 from openai4s.server.session_recovery import PROCESS_INSTANCE_ID, SessionRecoveryService
 from openai4s.server.session_runtime import SessionRuntime
+from openai4s.server.share_projection import ShareProjectionBuilder
+from openai4s.server.share_router import ShareRouter
+from openai4s.server.share_service import ShareConflict, ShareService
 from openai4s.server.skill_sidecars import GenerationSidecarRecorder
 from openai4s.server.skills import SkillCustomizationService
 from openai4s.server.titles import SessionTitleService
@@ -136,6 +140,58 @@ from openai4s.tools import control_tool_specs, get_tool
 os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure capture
 
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
+_SHARE_ASSET_DIR = WEBUI_DIR / "share"
+# Files the read-only share viewer is allowed to serve from memory (loaded once).
+_SHARE_ASSET_NAMES = (
+    "share.html",
+    "share.js",
+    "share.css",
+    "md_renderer.js",
+    "scientific_renderers.js",
+    "vendor/3Dmol-min.js",
+)
+
+
+def _load_share_assets() -> dict[str, bytes]:
+    """Load the static viewer assets into memory once at startup.
+
+    Viewer JS/CSS live under ``webui/share/``; ``scientific_renderers.js`` and
+    the vendored 3Dmol bundle are reused from ``webui/``.
+    """
+
+    assets: dict[str, bytes] = {}
+    for name in _SHARE_ASSET_NAMES:
+        for base in (_SHARE_ASSET_DIR, WEBUI_DIR):
+            candidate = base / name
+            if candidate.is_file():
+                try:
+                    assets[name] = candidate.read_bytes()
+                except OSError:
+                    pass
+                break
+    return assets
+
+
+def _share_expires_at(body: dict) -> tuple[bool, int | None]:
+    """Map a share request body's ``expires_in`` (seconds) to an epoch-ms expiry.
+
+    Returns ``(present, expires_at)``: ``present`` is True when the caller sent an
+    ``expires_in`` key at all (so an update can distinguish "clear it" from
+    "leave it"); a value of 0/null/negative means no expiry.
+    """
+
+    if "expires_in" not in body:
+        return False, None
+    raw = body.get("expires_in")
+    try:
+        seconds = int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        return True, None
+    if seconds <= 0:
+        return True, None
+    return True, int(time.time() * 1000) + seconds * 1000
+
+
 _WATCHDOG_INTERRUPT_GRACE_S = 10.0
 _WATCHDOG_KILL_GRACE_S = 10.0
 
@@ -247,51 +303,26 @@ def _sha256(path: Path) -> str:
 
 
 # --------------------------------------------------------------------------- #
-#  WebSocket (RFC 6455) — pure stdlib
+#  WebSocket (RFC 6455) — shared hardened codec (openai4s.server.ws_frames)
 # --------------------------------------------------------------------------- #
-_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+# The daemon reads client frames tolerantly (expect_mask=None) but now with a
+# bounded payload, canonical-length, opcode, and RSV/FIN checks the old inline
+# reader lacked. The share tunnel/relay use the same module in strict role-aware
+# mode. Aliases keep gateway call sites and existing tests unchanged.
+_WS_GUID = ws_frames.WS_GUID
+_ws_accept = ws_frames.ws_accept
 
+# Server frames are never masked; ``ws_encode`` defaults mask=False.
+_ws_encode = ws_frames.ws_encode
 
-def _ws_accept(key: str) -> str:
-    return base64.b64encode(hashlib.sha1((key + _WS_GUID).encode()).digest()).decode()
-
-
-def _ws_encode(payload: bytes, opcode: int = 0x1) -> bytes:
-    frame = bytearray([0x80 | opcode])
-    n = len(payload)
-    if n < 126:
-        frame.append(n)
-    elif n < 65536:
-        frame.append(126)
-        frame += struct.pack(">H", n)
-    else:
-        frame.append(127)
-        frame += struct.pack(">Q", n)
-    frame += payload
-    return bytes(frame)
+# 16 MiB matches the daemon's largest realistic control/notebook event.
+_GATEWAY_MAX_FRAME = 16 << 20
 
 
 def _ws_read_frame(rfile) -> tuple[int, bytes] | None:
-    """Read one client frame. Returns (opcode, payload) or None on close/error."""
-    try:
-        hdr = rfile.read(2)
-        if len(hdr) < 2:
-            return None
-        b0, b1 = hdr[0], hdr[1]
-        opcode = b0 & 0x0F
-        masked = b1 & 0x80
-        length = b1 & 0x7F
-        if length == 126:
-            length = struct.unpack(">H", rfile.read(2))[0]
-        elif length == 127:
-            length = struct.unpack(">Q", rfile.read(8))[0]
-        mask = rfile.read(4) if masked else b"\x00\x00\x00\x00"
-        data = rfile.read(length) if length else b""
-        if masked:
-            data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
-        return opcode, data
-    except (OSError, struct.error, ValueError):
-        return None
+    """Read one client frame (tolerant compat mode); (opcode, payload) or None."""
+
+    return ws_frames.ws_read_frame(rfile, expect_mask=None, max_len=_GATEWAY_MAX_FRAME)
 
 
 _WS_RESUME_BUFFER_CAP = 4000
@@ -493,13 +524,7 @@ class WSHub:
         """Exact unmasked server-frame bytes for this event's JSON encoding."""
 
         payload_size = len(json.dumps(obj, ensure_ascii=False).encode("utf-8"))
-        if payload_size < 126:
-            header_size = 2
-        elif payload_size <= 0xFFFF:
-            header_size = 4
-        else:
-            header_size = 10
-        return header_size + payload_size
+        return ws_frames.frame_header_size(payload_size) + payload_size
 
     def _prepare_live_event(self, obj: dict) -> tuple[dict, int]:
         """Bound large public string fields, then measure the event once."""
@@ -1594,6 +1619,30 @@ class SessionRunner:
             workspace=self.workspace_for_branch,
             event_sink=lambda event: self.hub.emitter(event["root_frame_id"])(event),
         )
+        # Web share: an outbound read-only snapshot tunnel. The tunnel client is
+        # created lazily and only when sharing is both enabled and configured, so
+        # a default install starts zero share network threads.
+        self._share_tunnel = None
+        self._share_router = None
+        share_builder = ShareProjectionBuilder(
+            self.store,
+            data_dir=self.cfg.data_dir,
+            workspace=self.workspace_for_branch,
+            cas=self.session_domain.cas,
+            extra_secret_values=lambda: (
+                (self.cfg.share.auth_token,) if self.cfg.share.auth_token else ()
+            ),
+        )
+        self.shares = ShareService(
+            self.store,
+            builder=share_builder,
+            shares_dir=self.cfg.shares_dir,
+            public_url=self.cfg.share.public_url,
+            active_branch=self.store.active_session_branch,
+            run_in_ticket=self._share_run_in_ticket,
+            tunnel=None,
+        )
+        self._share_router = ShareRouter(self.shares, _load_share_assets())
         self.deletions = SessionDeletionService(
             self.store,
             data_dir=self.cfg.data_dir,
@@ -1604,6 +1653,7 @@ class SessionRunner:
             drop_resume_window=getattr(
                 self.hub, "drop_frame", lambda _root_frame_id: None
             ),
+            revoke_shares=self.shares.revoke_for_session,
         )
         self.sidecar_manifests = GenerationSidecarRecorder(self.store)
         self.workbench = SessionWorkbenchStateService(
@@ -1706,6 +1756,7 @@ class SessionRunner:
         )
         if start_idle_sweeper:
             self.recovery.start()
+            self._share_boot_restore()
 
     def workspace_for(self, root_frame_id: str) -> Path:
         ws = self._ws_root / root_frame_id
@@ -1965,6 +2016,12 @@ class SessionRunner:
         recovery = getattr(self, "recovery", None)
         if recovery is not None:
             recovery.stop()
+        shares = getattr(self, "shares", None)
+        if shares is not None:
+            shares.stop_sweeper()
+        tunnel = getattr(self, "_share_tunnel", None)
+        if tunnel is not None:
+            tunnel.close()
         self.executions.close(reason="daemon_shutdown")
         for st in self._session_snapshot():
             self.drop_session(st.root_frame_id, reason="daemon_shutdown")
@@ -2410,6 +2467,104 @@ class SessionRunner:
                 event_sink=emit,
             )
         )
+
+    # --- web share lifecycle ------------------------------------------------
+    def _share_enabled(self) -> bool:
+        return self.store.get_setting("sharing_enabled") == "1"
+
+    def _share_run_in_ticket(self, root_frame_id: str, branch_id: str, fn):
+        """Run the share projection build under one exact FIFO ticket."""
+
+        scope = self.store.resolve_frame_scope(
+            root_frame_id, fallback_project="default"
+        )
+        st = self._state(root_frame_id, scope["project_id"], allow_quarantined=True)
+        with self._session_execution(
+            st,
+            owner="share",
+            owner_id=f"share-{uuid.uuid4().hex[:12]}",
+            reason="publishing share snapshot",
+        ):
+            return fn(st.cancel)
+
+    def ensure_share_tunnel(self):
+        """Lazily create/start the tunnel when sharing is enabled + configured."""
+
+        if not (self._share_enabled() and self.cfg.share.configured):
+            return None
+        if self._share_tunnel is None:
+            from openai4s.share.tunnel import TunnelClient
+
+            tunnel = TunnelClient(
+                self.cfg.share.relay_url,
+                self.cfg.share.auth_token,
+                self._share_router.handle,
+                allow_insecure=self.cfg.share.allow_insecure,
+            )
+            self._share_tunnel = tunnel
+            self.shares.tunnel = tunnel
+        return self._share_tunnel
+
+    def share_status(self) -> dict[str, Any]:
+        if not self._share_enabled():
+            return {"state": "disabled", "configured": self.cfg.share.configured}
+        if not self.cfg.share.configured:
+            missing = [
+                name
+                for name, value in (
+                    ("relay_url", self.cfg.share.relay_url),
+                    ("auth_token", self.cfg.share.auth_token),
+                )
+                if not value
+            ]
+            return {"state": "unconfigured", "missing": missing}
+        tunnel = self._share_tunnel
+        if tunnel is None:
+            return {"state": "connecting", "configured": True}
+        status = tunnel.status()
+        return {
+            "state": "connected" if status.get("connected") else "connecting",
+            "configured": True,
+            **status,
+        }
+
+    def set_sharing_enabled(self, enabled: bool) -> dict[str, Any]:
+        self.store.set_setting("sharing_enabled", "1" if enabled else "0")
+        if enabled:
+            tunnel = self.ensure_share_tunnel()
+            if tunnel is not None:
+                desired = {
+                    str(row["share_id"]): {} for row in self.store.list_active_shares()
+                }
+                # set_shares({}) means "no shares -> disconnect"; at enable time
+                # with none yet, just hold the connection open so the next create
+                # registers immediately.
+                if desired:
+                    tunnel.set_shares(desired)
+                else:
+                    tunnel.ensure_connected()
+        else:
+            # Disable = take shares offline but keep rows + snapshots for later.
+            if self._share_tunnel is not None:
+                self._share_tunnel.close()
+                self._share_tunnel = None
+                self.shares.tunnel = None
+        return self.share_status()
+
+    def _share_boot_restore(self) -> None:
+        try:
+            desired = self.shares.restore()
+        except Exception:  # noqa: BLE001 - share recovery must never block boot
+            return
+        if desired and self._share_enabled() and self.cfg.share.configured:
+            tunnel = self.ensure_share_tunnel()
+            if tunnel is not None:
+                tunnel.set_shares({sid: {} for sid in desired})
+        # Auto-revoke shares whose expiry lapses while the daemon runs.
+        try:
+            self.shares.start_sweeper()
+        except Exception:  # noqa: BLE001 - the sweeper is best-effort
+            pass
 
     def import_quarantine(self, root_frame_id: str) -> dict[str, Any] | None:
         raw = self.store.get_setting(session_import_quarantine_key(root_frame_id))
@@ -6340,6 +6495,90 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     raise GatewayError(400, str(error)) from error
                 self._json(imported, 201)
                 return
+            if sub == "/sessions/import-url" and method == "POST":
+                from openai4s.share.fetch import BundleFetchError, fetch_bundle
+
+                body = self._body()
+                url = str(body.get("url") or "").strip()
+                if not url:
+                    raise GatewayError(400, "url is required")
+                try:
+                    payload = fetch_bundle(url, allow_insecure=cfg.share.allow_insecure)
+                    imported = runner.session_domain.session_import(payload)
+                except BundleFetchError as error:
+                    raise GatewayError(400, str(error)) from error
+                except SessionPackageError as error:
+                    raise GatewayError(400, str(error)) from error
+                self._json(imported, 201)
+                return
+            # ---- web shares ----
+            if sub == "/share/settings":
+                if method == "GET":
+                    self._json({"enabled": runner._share_enabled()})
+                    return
+                if method in ("PUT", "POST", "PATCH"):
+                    body = self._body()
+                    self._json(runner.set_sharing_enabled(bool(body.get("enabled"))))
+                    return
+            if sub == "/share/status" and method == "GET":
+                self._json(runner.share_status())
+                return
+            if sub == "/shares" and method == "GET":
+                self._json({"shares": runner.shares.list_all()})
+                return
+            share_create = re.fullmatch(r"/frames/([^/]+)/shares", sub)
+            if share_create and method == "POST":
+                if not runner._share_enabled():
+                    raise GatewayError(
+                        403, "sharing is disabled; enable it in Settings"
+                    )
+                if not cfg.share.configured:
+                    raise GatewayError(
+                        409, "sharing is not configured (relay URL and token required)"
+                    )
+                runner.ensure_share_tunnel()
+                body = self._body()
+                _has_ttl, _exp = _share_expires_at(body)
+                try:
+                    record = runner.shares.create(
+                        share_create.group(1),
+                        title=body.get("title"),
+                        expires_at=_exp,
+                    )
+                except ShareConflict as error:
+                    self._json(
+                        {
+                            "error": "a share already exists for this session",
+                            "existing_share_id": error.existing_share_id,
+                        },
+                        409,
+                    )
+                    return
+                except SessionPackageError as error:
+                    raise GatewayError(400, str(error)) from error
+                self._json(record, 201)
+                return
+            if share_create and method == "GET":
+                self._json(
+                    {"shares": runner.shares.list_for_frame(share_create.group(1))}
+                )
+                return
+            share_item = re.fullmatch(r"/shares/([^/]+)", sub)
+            if share_item and method == "PUT":
+                runner.ensure_share_tunnel()
+                body = self._body()
+                has_ttl, exp = _share_expires_at(body)
+                kwargs = {"expires_at": exp} if has_ttl else {}
+                try:
+                    self._json(runner.shares.update(share_item.group(1), **kwargs))
+                except KeyError:
+                    raise GatewayError(404, "unknown share") from None
+                except SessionPackageError as error:
+                    raise GatewayError(400, str(error)) from error
+                return
+            if share_item and method == "DELETE":
+                self._json(runner.shares.revoke(share_item.group(1)))
+                return
             frame_mutation = re.fullmatch(r"/frames/([^/]+)(?:/.*)?", sub)
             if frame_mutation and method != "GET":
                 delete_session = method == "DELETE" and sub == (
@@ -6356,7 +6595,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         sub,
                     )
                 )
-                if not (delete_session or confirmed_fresh_restart or read_only_preview):
+                # Publishing a share is a read-only snapshot of the session, so a
+                # quarantined imported session may still be (re-)shared.
+                share_publish = bool(
+                    method == "POST" and re.fullmatch(r"/frames/[^/]+/shares", sub)
+                )
+                if not (
+                    delete_session
+                    or confirmed_fresh_restart
+                    or read_only_preview
+                    or share_publish
+                ):
                     _require_session_writable(
                         frame_mutation.group(1), "mutating the Session"
                     )

@@ -124,14 +124,17 @@ def _collect_pip(root: Path, requested_only: bool = False) -> set[str]:
     not the full transitive closure.
     """
     out: set[str] = set()
-    # Search only actual site-packages directories. Recursing from ``lib/``
-    # walks large native toolchains, model caches and R libraries in scientific
-    # Conda envs, turning a simple environment listing into a minutes-long scan.
-    candidates = [
-        *sorted((root / "lib").glob("python*/site-packages")),
-        *sorted((root / "lib64").glob("python*/site-packages")),
-        root / "Lib" / "site-packages",  # Windows-style, harmless if absent
-    ]
+    # Search only actual package directories. Recursing from ``lib/`` walks
+    # large native toolchains, model caches and R libraries in scientific Conda
+    # envs, turning a simple environment listing into a minutes-long scan.
+    # The interpreter directory is matched with ``*`` rather than ``python*``
+    # so PyPy (``lib/pypy3.10/site-packages``) resolves too, and both
+    # ``site-packages`` and Debian/RHEL ``dist-packages`` are covered.
+    candidates: list[Path] = []
+    for lib in (root / "lib", root / "lib64"):
+        for leaf in ("*/site-packages", "*/dist-packages"):
+            candidates.extend(sorted(lib.glob(leaf)))
+    candidates.append(root / "Lib" / "site-packages")  # Windows, harmless if absent
     seen_infos: set[Path] = set()
     for base in candidates:
         if not base.is_dir():

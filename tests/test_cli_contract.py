@@ -148,8 +148,8 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
     )
     assert proc.returncode == 0, proc.stderr
     assert (
-        "{serve,status,verify-package,diagnostics,stop,url,run,init,setup,jupyter}"
-        in proc.stdout
+        "{serve,status,verify-package,diagnostics,stop,url,run,init,setup,jupyter,"
+        "share,relay}" in proc.stdout
     )
     for command in (
         "serve",
@@ -166,6 +166,8 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
         "init",
         "setup",
         "jupyter",
+        "share",
+        "relay",
     ):
         assert command in proc.stdout
 

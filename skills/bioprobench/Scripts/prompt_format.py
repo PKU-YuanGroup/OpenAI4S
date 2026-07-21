@@ -1,3 +1,4 @@
+# Adapted from the upstream BioProBench project: https://github.com/YuyangSunshine/bioprotocolbench
 def generate_user_prompt(sample, task_name):
     """
     Generate a prompt for the given sample and task.

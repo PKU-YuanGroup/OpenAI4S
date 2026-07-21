@@ -276,6 +276,7 @@ class SessionPackageService:
         self._workspace = workspace
         self.cas = cas
         self._import_lock = threading.Lock()
+        self._injection_flags = 0
 
     def _known_secret_bytes(self) -> tuple[bytes, ...]:
         """Return configured secret values without ever serializing them."""
@@ -324,6 +325,30 @@ class SessionPackageService:
         if _secret_text_bytes(data):
             return True
         return any(secret in data for secret in self._known_secret_bytes())
+
+    def _scan_untrusted_text(self, text: Any) -> str:
+        """Annotate imported text that trips the static injection detector.
+
+        Imported messages/cells are untrusted third-party content.  Prepending a
+        loud banner is a human/model *hint*, not a guarantee — the real boundary
+        remains quarantine + never-replay.  Because the annotated text is stored,
+        it also reaches the model when ``restore_action_history`` rebuilds the
+        provider history after a fresh restart.
+        """
+
+        value = str(text or "")
+        if not value.strip():
+            return value
+        try:
+            from openai4s.security.injection import scan_tool_result
+
+            verdict = scan_tool_result(value, use_llm=False)
+        except Exception:  # noqa: BLE001 - screening must never break an import
+            return value
+        if verdict.injected:
+            self._injection_flags += 1
+            return verdict.annotate(value)
+        return value
 
     @staticmethod
     def _bounded_records(name: str, records: list[Any]) -> list[Any]:
@@ -959,6 +984,7 @@ class SessionPackageService:
             self._import_lock.release()
 
     def _import_bytes(self, data: bytes) -> dict[str, Any]:
+        self._injection_flags = 0
         files, manifest = self._read_untrusted(data)
         for name, payload in files.items():
             if name != "manifest.json" and self._contains_secret_bytes(payload):
@@ -1213,6 +1239,7 @@ class SessionPackageService:
                         "reason": "untrusted_session_package",
                         "package_sha256": package_sha256,
                         "schema_version": PACKAGE_SCHEMA_VERSION,
+                        "injection_flags": self._injection_flags,
                     }
                 ).decode("utf-8"),
             )
@@ -1955,15 +1982,22 @@ class SessionPackageService:
             source_branch = str(item.get("branch_id") or source_root)
             if source_branch not in branch_map:
                 raise SessionPackageError("message references an unknown branch")
+            before = self._injection_flags
+            content = self._scan_untrusted_text(item.get("content"))
+            metadata = (
+                dict(item.get("metadata"))
+                if isinstance(item.get("metadata"), dict)
+                else None
+            )
+            if self._injection_flags != before:
+                metadata = {**(metadata or {}), "injection_flagged": True}
             inserted = self.store.add_message(
                 root_frame_id=new_root,
                 branch_id=branch_map[source_branch],
                 frame_id=new_root,
                 role=role,
-                content=str(item.get("content") or ""),
-                metadata=item.get("metadata")
-                if isinstance(item.get("metadata"), dict)
-                else None,
+                content=content,
+                metadata=metadata,
                 created_at=item.get("created_at"),
             )
             source_id = item.get("message_id")
@@ -2032,9 +2066,15 @@ class SessionPackageService:
                 provider=item.get("provider"),
                 model=item.get("model"),
                 wire_state=self._remap_nested(item.get("wire_state"), identity_map),
-                assistant_content=item.get("assistant_content"),
+                assistant_content=(
+                    self._scan_untrusted_text(item.get("assistant_content"))
+                    if item.get("assistant_content")
+                    else item.get("assistant_content")
+                ),
                 assistant_message=(
-                    self._remap_nested(assistant_message, identity_map)
+                    self._annotate_assistant_message(
+                        self._remap_nested(assistant_message, identity_map)
+                    )
                     if isinstance(assistant_message, Mapping)
                     else None
                 ),
@@ -2066,6 +2106,15 @@ class SessionPackageService:
                     created_at=event.get("created_at"),
                 )
         return group_map, action_map
+
+    def _annotate_assistant_message(self, message: Any) -> Any:
+        """Banner the plain-text content of an untrusted assistant message."""
+
+        if isinstance(message, dict) and isinstance(message.get("content"), str):
+            annotated = dict(message)
+            annotated["content"] = self._scan_untrusted_text(message["content"])
+            return annotated
+        return message
 
     def _import_cells(
         self,

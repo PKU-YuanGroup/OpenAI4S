@@ -6,6 +6,7 @@ const esc = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 /* ---------- line icons (lucide) ---------- */
 const ICONS = {
   "plus": '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  "share": '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>',
   "chevron-down": '<path d="m6 9 6 6 6-6"/>',
   "chevron-up": '<path d="m18 15-6-6-6 6"/>',
   "chevron-right": '<path d="m9 18 6-6-6-6"/>',
@@ -811,6 +812,28 @@ Object.assign(I18N.zh, {
   "projectResearch.latest": "latest",
   "projectResearch.noLineage": "还没有项目级血缘数据。",
   "projectResearch.edges": "血缘边（{0}）",
+  "share.menu": "分享（只读链接）",
+  "share.title": "分享此会话",
+  "share.scope": "将公开：对话、Notebook 代码与输出、产物文件、环境清单。任何持有链接的人均可查看，内容经你的 relay 明文中转。",
+  "share.create": "创建分享链接",
+  "share.copy": "复制",
+  "share.copied": "已复制链接",
+  "share.update": "更新快照",
+  "share.updated": "快照已更新",
+  "share.revoke": "撤销",
+  "share.revokeConfirm": "确定撤销该分享链接？撤销后立即失效。",
+  "share.revoked": "已撤销",
+  "share.disabled": "分享功能未启用。",
+  "share.enable": "启用分享",
+  "share.expiry": "有效期：",
+  "share.expiry.never": "永不过期",
+  "share.expiry.1d": "1 天",
+  "share.expiry.7d": "7 天",
+  "share.expiry.30d": "30 天",
+  "share.expiresAt": "过期于",
+  "share.neverExpires": "永不过期",
+  "share.unconfigured": "分享未配置（需设置 relay URL 与 token，见 docs/webshare.md）。",
+  "share.close": "关闭",
   "sessionPackage.import": "导入会话包",
   "sessionPackage.export": "导出会话包",
   "sessionPackage.imported": "会话包已安全导入；Kernel 保持结束状态，需显式恢复",
@@ -1621,6 +1644,28 @@ Object.assign(I18N.en, {
   "projectResearch.latest": "latest",
   "projectResearch.noLineage": "No project lineage data yet.",
   "projectResearch.edges": "Lineage edges ({0})",
+  "share.menu": "Share (read-only link)",
+  "share.title": "Share this session",
+  "share.scope": "This publishes: the conversation, Notebook code and output, artifact files, and the environment list. Anyone with the link can view it, relayed in the clear through your relay.",
+  "share.create": "Create share link",
+  "share.copy": "Copy",
+  "share.copied": "Link copied",
+  "share.update": "Update snapshot",
+  "share.updated": "Snapshot updated",
+  "share.revoke": "Revoke",
+  "share.revokeConfirm": "Revoke this share link? It stops working immediately.",
+  "share.revoked": "Revoked",
+  "share.disabled": "Sharing is off.",
+  "share.enable": "Enable sharing",
+  "share.expiry": "Expires:",
+  "share.expiry.never": "Never",
+  "share.expiry.1d": "1 day",
+  "share.expiry.7d": "7 days",
+  "share.expiry.30d": "30 days",
+  "share.expiresAt": "Expires",
+  "share.neverExpires": "Never expires",
+  "share.unconfigured": "Sharing is not configured (relay URL and token required — see docs/webshare.md).",
+  "share.close": "Close",
   "sessionPackage.import": "Import session",
   "sessionPackage.export": "Export session package",
   "sessionPackage.imported": "Session imported safely; its Kernel remains Ended until explicit recovery",
@@ -4169,6 +4214,7 @@ function sessionMenu(anchor, fid) {
   } });
   items.push(
     { label: t("sessionMenu.exportMarkdown"), icon: "download", onClick: () => exportSession(fid) },
+    { label: t("share.menu"), icon: "share", onClick: () => openShareDialog(fid, frame) },
     { label: t("sessionPackage.export"), icon: "archive", onClick: () => exportSessionPackage(fid, frame) },
     { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`${API}/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
     { label: t("sessionMenu.viewNotebook"), icon: "notebook", onClick: async () => { if (fid !== S.currentId) await openConversation(fid, frame.project_id); setActiveTab("notebook"); } },
@@ -4185,6 +4231,144 @@ function exportSessionPackage(fid, frame = {}) {
     `${API}/frames/${encodeURIComponent(fid)}/session/export`,
     label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip",
   );
+}
+async function openShareDialog(fid, frame = {}) {
+  let status = {};
+  let shares = { shares: [] };
+  try {
+    [status, shares] = await Promise.all([
+      fetch("/api/share/status").then(r => r.json()),
+      fetch(`/api/frames/${encodeURIComponent(fid)}/shares`).then(r => r.json()),
+    ]);
+  } catch (error) { hint(t("nb.action.failed", error.message), true); return; }
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:1000";
+  const box = document.createElement("div");
+  box.style.cssText = "background:var(--panel,#fff);color:var(--ink,#111);max-width:520px;width:90%;border-radius:12px;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.3)";
+  overlay.appendChild(box);
+  const close = () => overlay.remove();
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  const h = document.createElement("h3"); h.textContent = t("share.title"); h.style.marginTop = "0";
+  box.appendChild(h);
+
+  const state = String(status.state || "");
+  if (state === "unconfigured") {
+    box.appendChild(Object.assign(document.createElement("p"),
+      { textContent: t("share.unconfigured") }));
+    box.appendChild(mkBtn(t("share.close"), close));
+    document.body.appendChild(overlay);
+    return;
+  }
+  if (state === "disabled") {
+    box.appendChild(Object.assign(document.createElement("p"),
+      { textContent: t("share.disabled") }));
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
+    if (status.configured) {
+      row.appendChild(mkBtn(t("share.enable"), async () => {
+        await shareCall("PUT", "/api/share/settings", { enabled: true });
+        close(); openShareDialog(fid, frame);
+      }, false, true));
+    }
+    row.appendChild(mkBtn(t("share.close"), close));
+    box.appendChild(row);
+    document.body.appendChild(overlay);
+    return;
+  }
+
+  const active = (shares.shares || []).find(s => s.status === "ready" || s.status === "publishing");
+  const scope = document.createElement("p");
+  scope.className = "muted";
+  scope.style.fontSize = "13px";
+  scope.textContent = t("share.scope");
+  box.appendChild(scope);
+
+  if (active) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;margin:12px 0";
+    const inp = document.createElement("input");
+    inp.readOnly = true; inp.value = active.url || "";
+    inp.style.cssText = "flex:1;padding:8px;border:1px solid var(--line,#ccc);border-radius:8px";
+    row.appendChild(inp);
+    row.appendChild(mkBtn(t("share.copy"), () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(active.url || "");
+      hint(t("share.copied"));
+    }));
+    box.appendChild(row);
+    const exp = document.createElement("div");
+    exp.className = "muted"; exp.style.fontSize = "12px"; exp.style.margin = "4px 0 8px";
+    exp.textContent = active.expires_at
+      ? t("share.expiresAt") + " " + new Date(active.expires_at).toLocaleString()
+      : t("share.neverExpires");
+    box.appendChild(exp);
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
+    actions.appendChild(mkBtn(t("share.update"), async () => {
+      await shareCall("PUT", `/api/shares/${encodeURIComponent(active.share_id)}`);
+      hint(t("share.updated")); close();
+    }));
+    actions.appendChild(mkBtn(t("share.revoke"), async () => {
+      if (!confirm(t("share.revokeConfirm"))) return;
+      await shareCall("DELETE", `/api/shares/${encodeURIComponent(active.share_id)}`);
+      hint(t("share.revoked")); close();
+    }, true));
+    actions.appendChild(mkBtn(t("share.close"), close));
+    box.appendChild(actions);
+  } else {
+    const expRow = document.createElement("div");
+    expRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:12px 0";
+    const expLabel = document.createElement("span");
+    expLabel.className = "muted"; expLabel.style.fontSize = "13px";
+    expLabel.textContent = t("share.expiry");
+    const sel = document.createElement("select");
+    sel.style.cssText = "padding:6px;border:1px solid var(--line,#ccc);border-radius:8px";
+    [[0, t("share.expiry.never")], [86400, t("share.expiry.1d")],
+     [604800, t("share.expiry.7d")], [2592000, t("share.expiry.30d")]]
+      .forEach(([secs, label]) => {
+        const o = document.createElement("option"); o.value = String(secs); o.textContent = label;
+        sel.appendChild(o);
+      });
+    sel.value = "604800";  // default 7 days
+    expRow.appendChild(expLabel); expRow.appendChild(sel);
+    box.appendChild(expRow);
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
+    actions.appendChild(mkBtn(t("share.create"), async () => {
+      const body = {};
+      const secs = parseInt(sel.value, 10);
+      if (secs > 0) body.expires_in = secs;
+      const rec = await shareCall("POST", `/api/frames/${encodeURIComponent(fid)}/shares`, body);
+      close();
+      if (rec && rec.url) openShareDialog(fid, frame);
+    }, false, true));
+    actions.appendChild(mkBtn(t("share.close"), close));
+    box.appendChild(actions);
+  }
+  document.body.appendChild(overlay);
+
+  function mkBtn(label, onClick, danger, primary) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.className = danger ? "danger" : (primary ? "primary" : "");
+    b.style.cssText = "padding:7px 14px;border-radius:8px;cursor:pointer;border:1px solid var(--line,#ccc)" +
+      (primary ? ";background:var(--accent,#2b6cb0);color:#fff" : "");
+    b.onclick = onClick;
+    return b;
+  }
+  async function shareCall(method, path, body) {
+    try {
+      const r = await fetch(path, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      return j;
+    } catch (error) { hint(t("nb.action.failed", error.message), true); return null; }
+  }
 }
 function chooseSessionPackage() {
   const input = $("#session-package-input");

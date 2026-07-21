@@ -54,5 +54,14 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI4S_ALLOW_PRIVATE_FETCH", "0")
     # Never the developer's real keychain — see the module-level default.
     monkeypatch.setenv("OPENAI4S_SECRET_STORE", "plaintext")
+    # A developer's git-ignored .env (loaded at import) may configure web sharing;
+    # the offline suite must never inherit it (it would try a real relay).
+    for var in (
+        "OPENAI4S_SHARE_RELAY_URL",
+        "OPENAI4S_SHARE_AUTH_TOKEN",
+        "OPENAI4S_SHARE_BASE_DOMAIN",
+        "OPENAI4S_SHARE_ALLOW_INSECURE",
+    ):
+        monkeypatch.delenv(var, raising=False)
     yield
     reset_singletons()

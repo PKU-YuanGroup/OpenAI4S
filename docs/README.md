@@ -28,6 +28,7 @@ and the internal plans in this directory are not published by that site.
 | `startup-guide.md` | Bilingual macOS `.dmg` walkthrough: install, Gatekeeper, and configuring the model + Tavily search keys in the UI. |
 | `webapp-api.md` | Detailed REST/WebSocket surface and compatibility behavior. |
 | `webapp.md` | Web workbench concepts, projections, status, and operator-facing behavior. |
+| `webshare.md` | Web sharing: the read-only snapshot + outbound relay tunnel, deployment, and the trust model. |
 
 ## Where this fits
 
