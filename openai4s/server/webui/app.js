@@ -4237,8 +4237,8 @@ async function openShareDialog(fid, frame = {}) {
   let shares = { shares: [] };
   try {
     [status, shares] = await Promise.all([
-      fetch("/api/share/status").then(r => r.json()),
-      fetch(`/api/frames/${encodeURIComponent(fid)}/shares`).then(r => r.json()),
+      fetch(`${API}/share/status`).then(r => r.json()),
+      fetch(`${API}/frames/${encodeURIComponent(fid)}/shares`).then(r => r.json()),
     ]);
   } catch (error) { hint(t("nb.action.failed", error.message), true); return; }
 
@@ -4268,7 +4268,7 @@ async function openShareDialog(fid, frame = {}) {
     row.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
     if (status.configured) {
       row.appendChild(mkBtn(t("share.enable"), async () => {
-        await shareCall("PUT", "/api/share/settings", { enabled: true });
+        await shareCall("PUT", `${API}/share/settings`, { enabled: true });
         close(); openShareDialog(fid, frame);
       }, false, true));
     }
@@ -4306,12 +4306,12 @@ async function openShareDialog(fid, frame = {}) {
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
     actions.appendChild(mkBtn(t("share.update"), async () => {
-      await shareCall("PUT", `/api/shares/${encodeURIComponent(active.share_id)}`);
+      await shareCall("PUT", `${API}/shares/${encodeURIComponent(active.share_id)}`);
       hint(t("share.updated")); close();
     }));
     actions.appendChild(mkBtn(t("share.revoke"), async () => {
       if (!confirm(t("share.revokeConfirm"))) return;
-      await shareCall("DELETE", `/api/shares/${encodeURIComponent(active.share_id)}`);
+      await shareCall("DELETE", `${API}/shares/${encodeURIComponent(active.share_id)}`);
       hint(t("share.revoked")); close();
     }, true));
     actions.appendChild(mkBtn(t("share.close"), close));
@@ -4339,7 +4339,7 @@ async function openShareDialog(fid, frame = {}) {
       const body = {};
       const secs = parseInt(sel.value, 10);
       if (secs > 0) body.expires_in = secs;
-      const rec = await shareCall("POST", `/api/frames/${encodeURIComponent(fid)}/shares`, body);
+      const rec = await shareCall("POST", `${API}/frames/${encodeURIComponent(fid)}/shares`, body);
       close();
       if (rec && rec.url) openShareDialog(fid, frame);
     }, false, true));

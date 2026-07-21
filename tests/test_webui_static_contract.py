@@ -243,6 +243,23 @@ def test_frontend_uses_backend_error_envelope() -> None:
     ), "api() must surface the backend's {error: ...} message"
 
 
+def test_frontend_never_hardcodes_an_unversioned_api_path() -> None:
+    """Every request must go through ``API``, never a literal ``/api/...``.
+
+    The un-versioned surface was deleted when the contract moved to ``/api/v1``
+    (there is deliberately no legacy alias), so a hardcoded ``"/api/share/…"``
+    is not a stylistic slip — it is a route that 404s at runtime while every
+    offline test still passes.  Web sharing shipped exactly that way: six
+    literals that no unit test exercised because they only run in a browser.
+    """
+    literals = re.findall(r"""["'`]/api/(?!v\d)[^"'`]*""", APP_JS)
+    assert not literals, (
+        "these frontend paths bypass the API prefix and will 404: "
+        f"{sorted(set(literals))}"
+    )
+    assert 'const API = "/api/v1"' in APP_JS
+
+
 def test_artifact_viewer_consumes_safe_renderer_descriptors() -> None:
     renderer_source = _extract_js_function(APP_JS, "artifactRendererDescriptor")
     body_source = _extract_js_function(APP_JS, "renderArtifactBody")
