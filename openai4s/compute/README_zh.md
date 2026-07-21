@@ -16,6 +16,7 @@ Python 的 [`host.compute` SDK](../sdk/compute.py) 把每次调用变成一个 `
 | --- | --- |
 | [`__init__.py`](__init__.py) | 对外只导出 Host 后端要用的两个名字：`ComputeManager` 和结构化的 `ComputeError`。 |
 | [`manager.py`](manager.py) | 两条传输路径都在这里。它发现 BYOC 的 provider Skill，路由 `byoc:*` 与 `ssh:*`，并在 session 内存中的并发上限达到时拒绝新的提交，暂存输入与 job 模板，并跟踪在跑的 job 和预热的沙箱，负责轮询、取消、关闭与产物回收。credential 是按 provider 自己声明的那几个环境变量名挑出来的，而且走 helper 的 stdin 递进去，不进它的环境变量。helper 的环境其余部分就是 daemon 自己那一份，只摘掉了以 `NGC_`、`NVIDIA_`、`HF_` 开头的名字。 |
+| [`states.py`](states.py) | 任务状态词表及其转换表，在写入状态时强制执行。终态不会被迟到的探测重新打开；`unknown` 有意归为**存活**态：远端操作可能落地也可能没有，所以它会被重新装载并参与调和，而不是被遗忘。 |
 | [`registry.py`](registry.py) | 记住有哪些 SSH 主机 alias、默认用哪一台、每台上开通了 `fold`/`score_mutations` 这类 capability 元数据，原子写入 `<data_dir>/remote_compute.json`。native 注册会先探测主机，通过之后才写下验证时间；用旧环境变量 seed 出来的主机则可能一直没验证过。它不存 SSH private key，也不存 provider token。 |
 
 ## 子目录

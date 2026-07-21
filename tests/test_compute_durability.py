@@ -94,7 +94,7 @@ def test_a_recovered_job_can_still_be_polled(cfg, submitted, monkeypatch):
         return _Proc(0, b"0\n") if argv[0] == "ssh" else _Proc(0)
 
     monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
-    assert restarted.result({"job_id": job_id})["status"] == "done"
+    assert restarted.result({"job_id": job_id})["status"] == "succeeded"
 
 
 def test_a_recovered_job_can_still_be_cancelled(cfg, submitted, monkeypatch):
@@ -370,7 +370,9 @@ def test_a_closed_job_does_not_come_back_to_life(cfg, submitted):
     manager, job_id = submitted
     manager.close({"provider": "ssh:lab", "job_ids": [job_id]})
 
-    assert get_store(cfg.db_path).list_compute_jobs()[0]["status"] == "closed"
+    row = get_store(cfg.db_path).list_compute_jobs()[0]
+    assert row["status"] == "cancelled"
+    assert row["termination_reason"] == "handle_closed"
     assert ComputeManager(cfg)._live_count() == 0
     kinds = [e["kind"] for e in manager.job_history({"job_id": job_id})["events"]]
     assert "closed" in kinds

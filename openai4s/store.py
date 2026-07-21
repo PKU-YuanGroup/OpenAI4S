@@ -395,7 +395,7 @@ CREATE TABLE IF NOT EXISTS compute_jobs (
     -- accepted" and "we recorded it" cannot become a double-charge.
     idempotency_key TEXT,
     provider        TEXT NOT NULL,     -- "ssh:<alias>" | "byoc:<id>"
-    status          TEXT NOT NULL,     -- see compute/manager.py's state machine
+    status          TEXT NOT NULL,     -- see compute/states.py; enforced on write
     alias           TEXT,              -- ssh
     workdir         TEXT,              -- ssh
     pid             TEXT,              -- ssh
@@ -405,7 +405,11 @@ CREATE TABLE IF NOT EXISTS compute_jobs (
     receipt         TEXT,
     outputs         TEXT,              -- JSON: declared output globs
     exit_code       INTEGER,
-    reason          TEXT,              -- why a terminal state was reached
+    reason          TEXT,              -- free-text detail, provider-supplied
+    -- Coded cause, from compute/states.py. `failed` because outputs could not
+    -- be verified is a different fact from `failed` because the command
+    -- exited non-zero, and the status alone cannot carry that.
+    termination_reason TEXT,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     submitted_at    INTEGER,
@@ -867,10 +871,55 @@ class Store:
             report = run_migrations(
                 self._conn,
                 self.db_path,
-                {1: ("legacy_baseline", self._apply_legacy_baseline)},
+                {
+                    1: ("legacy_baseline", self._apply_legacy_baseline),
+                    2: ("compute_job_states", self._apply_compute_job_states),
+                },
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+
+    def _apply_compute_job_states(self, conn: sqlite3.Connection) -> None:
+        """Version 2: one enforced compute-job state vocabulary.
+
+        Adds ``termination_reason`` and folds the two historical states that
+        the new vocabulary does not have onto states that it does, preserving
+        what each of them meant:
+
+          * ``done`` -> ``succeeded`` (a rename, nothing else)
+          * ``incomplete`` -> ``failed`` + ``outputs_unverified``. It meant the
+            job exited 0 but its outputs could not be verified, which is not a
+            success and must not keep a name that reads like one.
+          * ``closed`` -> ``cancelled`` + ``handle_closed``. The user released
+            the handle while the job was live.
+
+        Idempotent: the ALTER is guarded, and every UPDATE selects only rows
+        still carrying a legacy value, so a re-run after a partial apply
+        converges rather than double-writing. Runs inside the transaction owned
+        by ``run_migrations``; it must not commit.
+        """
+        from openai4s.compute.states import LEGACY_STATUS_MAP
+
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(compute_jobs)").fetchall()
+        }
+        if "termination_reason" not in have:
+            try:
+                conn.execute(
+                    "ALTER TABLE compute_jobs ADD COLUMN termination_reason TEXT"
+                )
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"compute_jobs.termination_reason could not be added: {e}"
+                    ) from e
+        for legacy, (status, reason) in LEGACY_STATUS_MAP.items():
+            conn.execute(
+                "UPDATE compute_jobs SET status=?, termination_reason=? "
+                "WHERE status=?",
+                (status, reason, legacy),
+            )
 
     def _apply_legacy_baseline(self, conn: sqlite3.Connection) -> None:
         """Version 1: the historical catch-up pass, run once and then stamped.

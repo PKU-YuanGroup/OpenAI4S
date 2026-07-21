@@ -54,6 +54,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from openai4s.compute import states
 from openai4s.compute.safe_archive import UnsafeArchiveError, safe_extract_tar
 
 # Repo-root openai4s_compute_provider (the confined helper package).
@@ -320,10 +321,21 @@ class ComputeManager:
             fields["sandbox_id"] = sandbox_id
             fields["receipt"] = sandbox_id
         if rejected:
-            self._persist(job_id, status="failed", terminal_at=_now_ms(), **fields)
+            self._persist(
+                job_id,
+                status=states.FAILED,
+                terminal_at=_now_ms(),
+                termination_reason=states.REASON_SUBMIT_REJECTED,
+                **fields,
+            )
             self._event(job_id, "submit_rejected", {"error": str(exc), "kind": kind})
         else:
-            self._persist(job_id, status="unknown", **fields)
+            self._persist(
+                job_id,
+                status=states.UNKNOWN,
+                termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+                **fields,
+            )
             self._event(
                 job_id,
                 "submit_indeterminate",
@@ -356,7 +368,7 @@ class ComputeManager:
             self._store.create_compute_job(
                 job_id=job_id,
                 provider=provider,
-                status="staging",
+                status=states.STAGING,
                 idempotency_key=idempotency_key,
                 outputs=outputs,
             )
@@ -497,11 +509,10 @@ class ComputeManager:
 
     # --- concurrency ------------------------------------------------------
     def _live_count(self) -> int:
-        return sum(
-            1
-            for j in self._jobs.values()
-            if j.get("status") in ("submitted", "running", "queued")
-        )
+        # `states.is_live` rather than a local tuple: this list and the one the
+        # rehydrating SQL used disagreed about `staging`, so a row left there
+        # by a crash was reported by reconcile forever while occupying no slot.
+        return sum(1 for j in self._jobs.values() if states.is_live(j.get("status")))
 
     def set_concurrency(self, kw: dict) -> dict:
         with self._lock:
@@ -711,7 +722,7 @@ class ComputeManager:
         # from billing unnoticed.
         self._persist(
             job_id,
-            status="running",
+            status=states.RUNNING,
             sandbox_id=sid,
             receipt=sid,
             submitted_at=_now_ms(),
@@ -764,11 +775,11 @@ class ComputeManager:
             # We do not know whether the remote shell ran. The claim row stays
             # at `staging` with the workdir recorded, which is what makes this
             # reconcilable instead of an orphan.
-            self._persist(job_id, status="unknown", workdir=workdir, reason=str(e))
+            self._persist(job_id, status=states.UNKNOWN, workdir=workdir, reason=str(e))
             self._event(job_id, "submit_indeterminate", {"error": str(e)})
             raise ComputeError(f"ssh submit failed: {e}", "unknown_state")
         if proc.returncode != 0:
-            self._persist(job_id, status="failed", reason="ssh submit rejected")
+            self._persist(job_id, status=states.FAILED, reason="ssh submit rejected")
             self._event(job_id, "submit_rejected", {"rc": proc.returncode})
             raise ComputeError(
                 proc.stderr.decode("utf-8", "replace") or "ssh submit failed",
@@ -789,7 +800,7 @@ class ComputeManager:
         # there, independent of anything this process chose to believe.
         self._persist(
             job_id,
-            status="running",
+            status=states.RUNNING,
             alias=alias,
             workdir=workdir,
             pid=pid,
@@ -871,17 +882,19 @@ class ComputeManager:
                 harvest_error = str(e)
 
         if rep.get("deadline_fired") or rep.get("job_timeout_fired"):
-            status = "timed_out"
+            status = states.TIMED_OUT
         elif exit_code == 0:
-            status = "done"
+            status = states.SUCCEEDED
         else:
-            status = "failed"
+            status = states.FAILED
         # `harvest_failed:<rc>` means the wrapper's own tar/mv lost the outputs,
         # so a rc==0 job still has nothing verified to show for it.
-        if phase_err and status == "done":
-            status = "incomplete"
-        if harvest_error and status == "done":
-            status = "incomplete"
+        # Exited 0 but nothing verifiable came back. Calling that a success
+        # is the single worst outcome available here, so it is a failure with
+        # the cause recorded rather than a status of its own.
+        unverified = bool(phase_err or harvest_error)
+        if unverified and status == states.SUCCEEDED:
+            status = states.FAILED
         job["status"] = status
         job["exit_code"] = exit_code
         self._persist(
@@ -890,6 +903,9 @@ class ComputeManager:
             exit_code=exit_code,
             terminal_at=_now_ms(),
             reason=phase_err or harvest_error or "",
+            termination_reason=(
+                states.REASON_OUTPUTS_UNVERIFIED if unverified else None
+            ),
         )
         self._event(job["job_id"], status, {"exit_code": exit_code})
         result = {
@@ -971,12 +987,12 @@ class ComputeManager:
         dest = self._hpc_root / job["job_id"]
         dest.mkdir(parents=True, exist_ok=True)
         harvest_error = self._scp_logs(alias, workdir, dest)
-        status = "done" if exit_code == 0 else "failed"
+        status = states.SUCCEEDED if exit_code == 0 else states.FAILED
         if harvest_error:
             # The job's own verdict is known and trustworthy; only our copy of
             # its logs is incomplete. Keep the verdict, but never claim a clean
             # harvest we did not get.
-            status = "failed" if exit_code != 0 else "incomplete"
+            status = states.FAILED
         job["status"] = status
         job["exit_code"] = exit_code
         self._persist(
@@ -1086,7 +1102,7 @@ class ComputeManager:
                     Path(td),
                 )
         job["status"] = "cancelled"
-        self._persist(job["job_id"], status="cancelled", terminal_at=_now_ms())
+        self._persist(job["job_id"], status=states.CANCELLED, terminal_at=_now_ms())
         self._event(job["job_id"], "cancelled")
         return {"status": "cancelled"}
 
@@ -1117,12 +1133,20 @@ class ComputeManager:
                     self._sandboxes.pop(rest, None)
         for jid in kw.get("job_ids") or []:
             j = self._jobs.get(jid)
-            if j and j.get("status") in ("submitted", "running", "queued"):
-                j["status"] = "closed"
+            # Every live state, `staging` and `unknown` included: closing a
+            # handle over work whose fate we do not know still ends our
+            # tracking of it, and leaving it live meant it held a slot forever.
+            if j and states.is_live(j.get("status")):
+                j["status"] = states.CANCELLED
                 # In-memory only meant a restart rehydrated the job as live,
                 # so it kept occupying a concurrency slot and kept being
                 # reconciled against a provider that had already released it.
-                self._persist(jid, status="closed", terminal_at=_now_ms())
+                self._persist(
+                    jid,
+                    status=states.CANCELLED,
+                    terminal_at=_now_ms(),
+                    termination_reason=states.REASON_HANDLE_CLOSED,
+                )
                 self._event(jid, "closed", {"provider": provider})
         return {"status": "closed", "sandbox_released": terminated}
 

@@ -89,13 +89,13 @@ def test_ssh_nonzero_rc_is_failed(mgr, monkeypatch):
     assert out["exit_code"] == 1
 
 
-def test_ssh_zero_rc_is_done(mgr, monkeypatch):
+def test_ssh_zero_rc_succeeds(mgr, monkeypatch):
     def fake_run(argv, **kw):
         return _Proc(0, b"0\n") if argv[0] == "ssh" else _Proc(0)
 
     monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
     out = mgr._result_ssh(_ssh_job(mgr))
-    assert out["status"] == "done"
+    assert out["status"] == "succeeded"
     assert out["exit_code"] == 0
 
 
@@ -148,7 +148,10 @@ def test_ssh_log_harvest_failure_does_not_claim_clean_success(mgr, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
     out = mgr._result_ssh(_ssh_job(mgr))
-    assert out["status"] == "incomplete"
+    assert out["status"] == "failed"
+    # The distinction `incomplete` used to carry: rc was 0, so this is not
+    # an ordinary non-zero failure — the outputs simply cannot be trusted.
+    assert out["exit_code"] == 0
     assert out["exit_code"] == 0
     assert "No such file" in out["harvest_error"]
 
@@ -175,7 +178,7 @@ def test_ssh_unknown_is_not_cached_onto_the_job(mgr, monkeypatch):
         return _Proc(0, b"0\n") if argv[0] == "ssh" else _Proc(0)
 
     monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
-    assert mgr._result_ssh(job)["status"] == "done"
+    assert mgr._result_ssh(job)["status"] == "succeeded"
 
 
 # --------------------------------------------------------------------------
@@ -258,7 +261,7 @@ class TestAgainstRealBash:
         workdir = Path(job["workdir"].replace("~", str(tmp_path)))
         assert (workdir / "run.sh").read_text() == "echo hello-from-the-job"
         assert (workdir / "stdout.log").read_text().strip() == "hello-from-the-job"
-        assert res["status"] == "done"
+        assert res["status"] == "succeeded"
         assert res["exit_code"] == 0
 
     def test_command_not_found_is_failed_not_done(self, local_ssh):
@@ -516,9 +519,9 @@ def test_byoc_unparseable_phase_surfaces_helper_diagnostic(mgr):
     assert "garbage" in out["reason"]
 
 
-def test_byoc_zero_exit_is_done(mgr):
+def test_byoc_zero_exit_succeeds(mgr):
     job = _byoc_mgr(mgr, {"ready": True, "job_exit_code": 0})
-    assert mgr._result_byoc(job)["status"] == "done"
+    assert mgr._result_byoc(job)["status"] == "succeeded"
 
 
 def test_byoc_nonzero_exit_is_failed(mgr):
@@ -544,7 +547,7 @@ def test_byoc_job_timeout_sentinel_is_timed_out(mgr):
     assert mgr._result_byoc(job)["status"] == "timed_out"
 
 
-def test_byoc_harvest_failed_phase_is_not_a_clean_done(mgr):
+def test_byoc_harvest_failed_phase_is_not_a_clean_success(mgr):
     """`harvest_failed:0` means the wrapper's tar/mv lost the outputs. rc==0,
     but there is nothing verified to show for it."""
     job = _byoc_mgr(
@@ -556,7 +559,10 @@ def test_byoc_harvest_failed_phase_is_not_a_clean_done(mgr):
         },
     )
     out = mgr._result_byoc(job)
-    assert out["status"] == "incomplete"
+    assert out["status"] == "failed"
+    # The distinction `incomplete` used to carry: rc was 0, so this is not
+    # an ordinary non-zero failure — the outputs simply cannot be trusted.
+    assert out["exit_code"] == 0
     assert "disk-full" in out["phase_read_error"]
 
 
@@ -791,6 +797,9 @@ def test_harvest_of_hostile_archive_is_not_a_success(mgr, tmp_path):
     real_harvest = mgr._harvest
     mgr._harvest = lambda job_id, _stage: real_harvest(job_id, stage)
     out = mgr._result_byoc(job)
-    assert out["status"] == "incomplete"
+    assert out["status"] == "failed"
+    # The distinction `incomplete` used to carry: rc was 0, so this is not
+    # an ordinary non-zero failure — the outputs simply cannot be trusted.
+    assert out["exit_code"] == 0
     assert out["error_kind"] == "unsafe_archive"
     assert out["output_files"] == []

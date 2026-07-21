@@ -298,11 +298,14 @@ done when nothing is left pending.
 
 ```python
 # repl tool — one poll pass; end the cell and re-run it until none are left
-TERMINAL = {'done', 'failed', 'timed_out', 'incomplete', 'cancelled', 'unknown'}
+TERMINAL = {'succeeded', 'failed', 'timed_out', 'cancelled'}
 for j in jobs:
     r = j.result()   # probes only the jobs still live; terminal ones are cached
     print(j.job_id, r['status'], r.get('exit_code'), r.get('featured_files'))
 print('still running:', [j.job_id for j in jobs if j.status not in TERMINAL])
+# `unknown` is NOT terminal: it means the submit may or may not have landed.
+# Re-poll it — do not treat it as finished, and do not resubmit it.
+print('unresolved:', [j.job_id for j in jobs if j.status == 'unknown'])
 ```
 
 Act on each job the pass reported terminal — `save_artifacts` on its

@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+# Imported rather than restated: a second copy of the vocabulary is how the
+# host and this namespace came to disagree about which states are final.
+# ``states`` is pure constants with no dependencies, so it is safe to reach
+# for from inside the kernel worker.
+from openai4s.compute.states import TERMINAL_STATES as _TERMINAL_STATUSES
+
 
 class SessionConcurrencyFull(RuntimeError):
     """Raised by submit_job(on_full="raise") when this session's
@@ -105,11 +111,11 @@ class _ComputeJob:
         ``status='failed'`` or ``status='timed_out'`` — read ``exit_code`` /
         ``error_kind``.
         """
-        if self.result_dict and self.result_dict.get("status") not in (
-            "running",
-            "timeout",
-            "harvesting",
-        ):
+        # Cache only a genuinely terminal result. This used to test against
+        # "running", "timeout" and "harvesting" — two of which the host has
+        # never produced, so the check was narrower than it looked and any
+        # unrecognised live state was cached as final.
+        if self.result_dict and self.result_dict.get("status") in _TERMINAL_STATUSES:
             return self.result_dict
         result = self._compute_call(
             "result", {"job_id": self._job_id, "provider": self._provider}

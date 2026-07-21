@@ -200,6 +200,7 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | Module | What it pins |
 |---|---|
 | [`test_compute_trust_boundary.py`](test_compute_trust_boundary.py) | The manager never reports success it did not observe. The fault matrix — no network, probe failure, a killed remote process, a partial transfer, a hostile archive, a wedged helper, a cancel that never lands — must resolve to `failed`, `incomplete`, or `unknown`, never `done`. Includes the real-shell class that caught `&` binding looser than `&&`. |
+| [`test_compute_states.py`](test_compute_states.py) | One job vocabulary, enforced on write: terminal states cannot be re-opened, `unknown` stays live so nothing bills unnoticed, and the migration folds `done`/`incomplete`/`closed` without losing what they meant. |
 | [`test_compute_durability.py`](test_compute_durability.py) | A remote job outlives the daemon. The row is written before the submit, the receipt survives a restart, and reconcile reports without resubmitting. |
 | [`test_secret_broker.py`](test_secret_broker.py) | Credentials behind an opaque reference; `auto` fails closed rather than degrading; env injection is read-only. |
 | [`test_secret_canary.py`](test_secret_canary.py) | Canaries asserted on the secret's bytes, not on field names — a denylist fails open the moment someone adds a field. |

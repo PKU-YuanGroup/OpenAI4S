@@ -40,15 +40,25 @@ _FIELDS = (
     "outputs",
     "exit_code",
     "reason",
+    # Why a job reached its terminal state, when the status alone would lose
+    # something worth keeping — `failed` because outputs could not be verified
+    # is a different fact from `failed` because the command exited non-zero.
+    "termination_reason",
     "created_at",
     "updated_at",
     "submitted_at",
     "terminal_at",
 )
 
-# A job in one of these is still consuming a remote resource, so it still
-# occupies a concurrency slot and still needs reconciling after a restart.
-LIVE_STATES = ("queued", "staging", "submitted", "running")
+# Re-exported from the state machine so the SQL that rehydrates jobs and the
+# runtime that counts them cannot drift apart again — they used to disagree
+# about `staging`, which is how a crashed claim stayed reportable forever
+# while holding no slot.
+from openai4s.compute.states import (  # noqa: E402
+    LIVE_STATES,
+    IllegalTransition,
+    check_transition,
+)
 
 
 class ComputeJobRepository:
@@ -104,6 +114,15 @@ class ComputeJobRepository:
         allowed = {k: v for k, v in fields.items() if k in _FIELDS and k != "job_id"}
         if not allowed:
             return self.get(job_id)
+        if "status" in allowed:
+            # The column used to accept any string, so a typo became a state
+            # and a terminal job could be quietly re-opened by a late probe.
+            current = self.get(job_id)
+            check_transition(
+                job_id,
+                (current or {}).get("status"),
+                str(allowed["status"]),
+            )
         if "outputs" in allowed and not isinstance(
             allowed["outputs"], (str, type(None))
         ):

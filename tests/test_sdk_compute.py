@@ -383,7 +383,7 @@ def test_job_result_cache_warning_egress_hint_and_cancel(capsys):
                 "egress_hint": "network fence blocked the request",
             },
             {
-                "status": "completed",
+                "status": "succeeded",
                 "exit_code": 0,
                 "output_files": ["result.csv"],
                 "featured_files": ["result.csv"],
@@ -408,8 +408,8 @@ def test_job_result_cache_warning_egress_hint_and_cancel(capsys):
     assert capsys.readouterr().out == "network fence blocked the request\n"
 
     completed = job.result()
-    assert completed["status"] == "completed"
-    assert job.status == "completed"
+    assert completed["status"] == "succeeded"
+    assert job.status == "succeeded"
     assert job.exit_code == 0
     assert job.output_files == ["result.csv"]
     assert job.featured_files == ["result.csv"]
@@ -417,7 +417,7 @@ def test_job_result_cache_warning_egress_hint_and_cancel(capsys):
     assert capsys.readouterr().out == ""
     assert job.result() is completed
     assert len(recorder.calls) == 2
-    assert "state=completed" in repr(job)
+    assert "state=succeeded" in repr(job)
     assert "egress='blocked (no outbound network)'" in repr(job)
 
     assert job.cancel() == {"cancelled": True}
