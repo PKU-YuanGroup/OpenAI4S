@@ -494,6 +494,192 @@ def cmd_setup(args) -> int:
     return 1 if failed else 0
 
 
+def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
+    """Call the running daemon's REST API; returns (status, parsed_json)."""
+
+    url = _url(cfg).rstrip("/") + path
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    # The daemon's CSRF guard passes non-browser clients (no Origin header).
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            raw = resp.read().decode("utf-8")
+            return resp.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as error:
+        raw = error.read().decode("utf-8", "replace")
+        try:
+            return error.code, json.loads(raw)
+        except ValueError:
+            return error.code, {"error": raw}
+
+
+def _require_daemon(cfg) -> bool:
+    pid = _read_pid(cfg)
+    if not pid or not _pid_alive(pid):
+        print(
+            "error: daemon is not running — start it with `openai4s serve`",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _parse_duration(text: str) -> int:
+    """Parse '30m' / '24h' / '7d' / '3600' into seconds. Raises SystemExit on error."""
+
+    text = str(text).strip().lower()
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+    try:
+        if text and text[-1] in units:
+            return int(float(text[:-1]) * units[text[-1]])
+        return int(text)
+    except (ValueError, IndexError):
+        print(
+            f"error: invalid duration {text!r} (use e.g. 30m, 24h, 7d)", file=sys.stderr
+        )
+        raise SystemExit(2) from None
+
+
+def cmd_share(args) -> int:
+    cfg = get_config()
+    action = args.share_action
+    if action in (
+        "create",
+        "update",
+        "list",
+        "revoke",
+        "enable",
+        "disable",
+        "status",
+        "import",
+    ):
+        if not _require_daemon(cfg):
+            return 1
+    try:
+        if action == "create":
+            root = args.session
+            if root == "latest":
+                _, frames = _daemon_request(cfg, "GET", "/api/frames")
+                items = frames.get("frames") if isinstance(frames, dict) else frames
+                if not items:
+                    print("error: no sessions found", file=sys.stderr)
+                    return 2
+                root = items[0].get("frame_id") or items[0].get("id")
+            body: dict = {}
+            if args.title:
+                body["title"] = args.title
+            if args.expires:
+                body["expires_in"] = _parse_duration(args.expires)
+            status, rec = _daemon_request(
+                cfg, "POST", f"/api/frames/{root}/shares", body
+            )
+        elif action == "update":
+            ubody: dict = {}
+            if getattr(args, "no_expiry", False):
+                ubody["expires_in"] = 0
+            elif args.expires:
+                ubody["expires_in"] = _parse_duration(args.expires)
+            status, rec = _daemon_request(
+                cfg, "PUT", f"/api/shares/{args.share_id}", ubody or None
+            )
+        elif action == "list":
+            status, rec = _daemon_request(cfg, "GET", "/api/shares")
+        elif action == "revoke":
+            status, rec = _daemon_request(cfg, "DELETE", f"/api/shares/{args.share_id}")
+        elif action == "enable":
+            status, rec = _daemon_request(
+                cfg, "PUT", "/api/share/settings", {"enabled": True}
+            )
+        elif action == "disable":
+            status, rec = _daemon_request(
+                cfg, "PUT", "/api/share/settings", {"enabled": False}
+            )
+        elif action == "status":
+            status, rec = _daemon_request(cfg, "GET", "/api/share/status")
+        elif action == "import":
+            status, rec = _daemon_request(
+                cfg, "POST", "/api/sessions/import-url", {"url": args.url}
+            )
+        else:  # pragma: no cover
+            print("error: unknown share action", file=sys.stderr)
+            return 2
+    except urllib.error.URLError as error:
+        print(f"error: could not reach daemon: {error}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(rec, ensure_ascii=False, indent=2))
+    elif status >= 400:
+        print(f"error: {rec.get('error') or rec}", file=sys.stderr)
+    elif action == "create" or action == "update":
+        print(rec.get("url") or json.dumps(rec))
+    elif action == "list":
+        for item in rec.get("shares", []):
+            print(f"{item['share_id']}\t{item['status']}\t{item.get('url', '')}")
+    elif action == "import":
+        rid = rec.get("root_frame_id")
+        print(
+            f"imported session {rid} (view-only). Open the web UI and use "
+            "“Restart fresh” to continue."
+        )
+    else:
+        print(json.dumps(rec, ensure_ascii=False))
+    return 0 if status < 400 else 2
+
+
+def cmd_relay_serve(args) -> int:
+    from openai4s.share.relay import RelayConfig, serve_relay
+
+    base_domain = args.base_domain or os.environ.get("OPENAI4S_RELAY_BASE_DOMAIN", "")
+    if not base_domain:
+        print(
+            "error: --base-domain (or OPENAI4S_RELAY_BASE_DOMAIN) is required",
+            file=sys.stderr,
+        )
+        return 1
+    listen = args.listen or os.environ.get("OPENAI4S_RELAY_LISTEN", "127.0.0.1:8770")
+    host, _, port_s = listen.rpartition(":")
+    host = host or "127.0.0.1"
+    try:
+        port = int(port_s)
+    except ValueError:
+        print(f"error: invalid --listen {listen!r}", file=sys.stderr)
+        return 1
+    tokens_file = args.tokens_file or os.environ.get("OPENAI4S_RELAY_TOKENS_FILE")
+    single = os.environ.get("OPENAI4S_RELAY_AUTH_TOKEN")
+    tokens = {"env": single} if single else None
+    if not tokens_file and not tokens:
+        print(
+            "error: provide --tokens-file or OPENAI4S_RELAY_AUTH_TOKEN", file=sys.stderr
+        )
+        return 1
+    trust_proxy = args.trust_proxy or os.environ.get(
+        "OPENAI4S_RELAY_TRUST_PROXY", ""
+    ) in ("1", "true", "yes")
+    config = RelayConfig(
+        base_domain=base_domain,
+        tunnel_host=args.tunnel_host,
+        tokens=tokens,
+        tokens_file=tokens_file,
+        trust_proxy=trust_proxy,
+    )
+    print(f"openai4s relay listening on {host}:{port} for *.{base_domain}")
+    print("front this with TLS (Caddy/nginx) — see docs/webshare.md")
+    try:
+        serve_relay(host=host, port=port, config=config, block=True)
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_relay_gen_token(args) -> int:
+    import secrets as _secrets
+
+    print(f"openai4s_pub_{_secrets.token_urlsafe(32)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="openai4s", description="openai4s CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -596,6 +782,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="replace kernel.json in an existing spec directory",
     )
     ji.set_defaults(fn=cmd_jupyter_install)
+
+    psh = sub.add_parser("share", help="publish / manage read-only session shares")
+    ssub = psh.add_subparsers(dest="share_action", required=True)
+
+    def _share_sub(name: str, help_text: str):
+        sp = ssub.add_parser(name, help=help_text)
+        sp.add_argument("--json", action="store_true", help="emit JSON")
+        sp.set_defaults(fn=cmd_share)
+        return sp
+
+    sc = _share_sub("create", "publish a session as a share")
+    sc.add_argument("session", help="root frame id, or 'latest'")
+    sc.add_argument("--title", help="optional share title")
+    sc.add_argument("--expires", help="auto-revoke after this long, e.g. 30m/24h/7d")
+    su = _share_sub("update", "refresh a share snapshot")
+    su.add_argument("share_id")
+    su.add_argument("--expires", help="reset the expiry, e.g. 30m/24h/7d")
+    su.add_argument("--no-expiry", action="store_true", help="clear any expiry")
+    _share_sub("list", "list shares")
+    _share_sub("revoke", "revoke a share").add_argument("share_id")
+    _share_sub("enable", "enable sharing")
+    _share_sub("disable", "disable sharing (keeps shares offline)")
+    _share_sub("status", "show tunnel status")
+    _share_sub("import", "import a shared session by URL").add_argument("url")
+
+    prelay = sub.add_parser("relay", help="run the public share relay (on a VPS)")
+    rsub = prelay.add_subparsers(dest="relay_action", required=True)
+    rs = rsub.add_parser("serve", help="serve the relay (front with TLS)")
+    rs.add_argument("--listen", help="host:port (default 127.0.0.1:8770)")
+    rs.add_argument("--base-domain", help="wildcard base domain, e.g. openai4s.org")
+    rs.add_argument("--tunnel-host", help="host for the /tunnel endpoint (optional)")
+    rs.add_argument("--tokens-file", help="publisher tokens file (one per line)")
+    rs.add_argument(
+        "--trust-proxy",
+        action="store_true",
+        help="read X-Forwarded-For only when the direct peer is loopback",
+    )
+    rs.set_defaults(fn=cmd_relay_serve)
+    rg = rsub.add_parser("gen-token", help="print a fresh publisher token")
+    rg.set_defaults(fn=cmd_relay_gen_token)
     return p
 
 

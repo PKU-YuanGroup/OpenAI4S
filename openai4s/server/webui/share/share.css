@@ -1,0 +1,93 @@
+:root {
+  --bg: #f7f7f8;
+  --panel: #ffffff;
+  --ink: #1a1a1c;
+  --muted: #6b6b72;
+  --line: #e3e3e7;
+  --accent: #2b6cb0;
+  --code-bg: #f0f1f3;
+  --err: #b42318;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171a; --panel: #1e2024; --ink: #e8e8ea; --muted: #9a9aa2;
+    --line: #2c2f34; --accent: #6aa3e0; --code-bg: #24262b; --err: #f27a72;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+#app { max-width: 900px; margin: 0 auto; padding: 0 20px 80px; }
+#head {
+  display: flex; align-items: center; gap: 16px; padding: 20px 0 16px;
+  border-bottom: 1px solid var(--line); position: sticky; top: 0;
+  background: var(--bg); z-index: 5;
+}
+.brand { font-weight: 700; color: var(--accent); letter-spacing: .3px; }
+.head-main { flex: 1; min-width: 0; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em;
+     color: var(--muted); margin: 28px 0 12px; }
+.muted { color: var(--muted); font-size: 13px; }
+.head-actions { display: flex; gap: 8px; align-items: center; }
+button, .primary {
+  font: inherit; cursor: pointer; border-radius: 8px; padding: 7px 14px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+}
+.primary {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+  text-decoration: none; display: inline-block;
+}
+.ghost { background: transparent; }
+.small { padding: 3px 8px; font-size: 12px; }
+.panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 18px 20px; margin: 18px 0;
+}
+.panel ol { margin: 10px 0 16px; padding-left: 20px; }
+.panel li { margin: 8px 0; }
+code {
+  background: var(--code-bg); padding: 2px 6px; border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+}
+.msg { margin: 14px 0; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); }
+.msg.user { background: var(--panel); }
+.msg.assistant { background: transparent; }
+.msg .role { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+             color: var(--muted); margin-bottom: 6px; }
+.msg-body p { margin: 8px 0; }
+.msg-body pre, .cell pre {
+  background: var(--code-bg); padding: 12px; border-radius: 8px; overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  white-space: pre; margin: 8px 0;
+}
+.cell { border: 1px solid var(--line); border-radius: 10px; margin: 14px 0;
+        overflow: hidden; background: var(--panel); }
+.cell .cell-head { font-size: 12px; color: var(--muted); padding: 6px 12px;
+                   border-bottom: 1px solid var(--line); }
+.cell .cell-src { margin: 0; border-radius: 0; }
+.cell .out { padding: 0 12px; }
+.cell .out pre { background: transparent; padding: 6px 0; }
+.cell .err pre { color: var(--err); }
+.cell figure { margin: 10px 12px; }
+.cell figure img { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; }
+#artifact-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+                 gap: 12px; }
+.art {
+  border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel);
+  cursor: pointer; overflow: hidden;
+}
+.art .art-name { font-size: 13px; word-break: break-all; }
+.art .art-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.art img { max-width: 100%; border-radius: 6px; margin-bottom: 6px; }
+table.csv { border-collapse: collapse; font-size: 13px; width: 100%; }
+table.csv td, table.csv th { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); }
+#preview-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6);
+                   display: flex; align-items: center; justify-content: center; z-index: 20; padding: 20px; }
+#preview-box { background: var(--panel); border-radius: 12px; max-width: 90vw; max-height: 90vh;
+               overflow: auto; padding: 16px; position: relative; }
+#preview-close { position: absolute; top: 10px; right: 10px; }
+#preview-body img { max-width: 100%; }
