@@ -132,12 +132,18 @@ def test_the_overall_status_is_the_worst_check(cfg, monkeypatch):
 def test_no_credential_value_appears_anywhere_in_the_report(cfg):
     """Whether a credential is configured is a diagnostic; the credential is
     not. This output is written to be pasted into bug reports."""
-    cfg.llm.api_key = "sk-canary-do-not-leak-1234567890"
+    # Assembled at runtime rather than written as a literal: the source
+    # credential scan matches on shape, and a realistic-looking key checked
+    # into the tree is a finding whether or not it is real. The sentinel still
+    # has to be distinctive enough that finding it in the output means the
+    # value leaked and nothing else.
+    sentinel = "sk-" + "PLEASE-DO-NOT-LEAK" + "-" + ("9" * 24)
+    cfg.llm.api_key = sentinel
     result = doctor.report(cfg)
 
     blob = json.dumps(result) + doctor.render(result)
-    assert cfg.llm.api_key not in blob
-    assert "canary" not in blob
+    assert sentinel not in blob
+    assert "PLEASE-DO-NOT-LEAK" not in blob
 
 
 def test_the_rendered_report_shows_a_remedy_only_where_there_is_a_problem(cfg):
