@@ -14,6 +14,7 @@ cancel that never lands. Each must resolve to `failed`, `incomplete`, or
 """
 import io
 import os
+import shutil
 import subprocess
 import tarfile
 import time
@@ -206,6 +207,16 @@ def test_ssh_submit_records_exit_code_atomically(mgr, monkeypatch):
     assert "rm -f .rc .rc.tmp" in remote
 
 
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class TestAgainstRealBash:
     """The submit/probe contract executed by a real shell, not a mock.
 
@@ -269,6 +280,92 @@ class TestAgainstRealBash:
         res, _ = self._run_to_completion(local_ssh, "definitely-not-a-real-binary")
         assert res["status"] == "failed"
         assert res["exit_code"] == 127
+
+    def test_the_job_owns_its_own_process_group(self, local_ssh, tmp_path):
+        """`kill -TERM <pid>` reached only the outer `bash -c`, so `run.sh`'s
+        children — the processes actually holding the allocation — survived a
+        cancel that reported success.
+
+        Executed for real: whether a background job lands in its own process
+        group is a property of the shell, and a mocked `subprocess.run` can
+        only assert the string we hoped to send.
+        """
+        out = local_ssh.submit(
+            {"provider": "ssh:lab", "command": "sleep 60 & echo $! > child.pid; wait"}
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        pid = int(job["pid"])
+
+        # Under job control the launched pid is its own group leader, so the
+        # group id equals the pid. That identity is what makes the cancel
+        # script's `kill -- -$pgid` reach the whole tree.
+        assert os.getpgid(pid) == pid
+
+    def test_cancel_kills_the_whole_remote_tree(self, local_ssh, tmp_path):
+        out = local_ssh.submit(
+            {"provider": "ssh:lab", "command": "sleep 60 & echo $! > child.pid; wait"}
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        workdir = Path(job["workdir"].replace("~", str(tmp_path)))
+
+        marker = workdir / "child.pid"
+        for _ in range(100):
+            if marker.exists() and marker.read_text().strip():
+                break
+            time.sleep(0.05)
+        child = int(marker.read_text().strip())
+        assert _alive(child), "the child should be running before we cancel"
+
+        local_ssh.cancel({"job_id": out["job_id"]})
+
+        for _ in range(100):
+            if not _alive(child):
+                break
+            time.sleep(0.05)
+        assert not _alive(child), "cancel must reach run.sh's children too"
+
+    @pytest.mark.skipif(
+        not (shutil.which("timeout") or shutil.which("gtimeout")),
+        reason="the deadline is enforced by timeout(1), which this host lacks",
+    )
+    def test_a_deadline_is_actually_applied(self, local_ssh):
+        """`timeout_seconds` was accepted and never read, so an ssh job ran
+        until the host reclaimed it."""
+        out = local_ssh.submit(
+            {"provider": "ssh:lab", "command": "sleep 30", "timeout_seconds": 1}
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        for _ in range(200):
+            res = local_ssh._result_ssh(job)
+            if res["status"] != "running":
+                break
+            time.sleep(0.05)
+        assert (
+            res["status"] == "timed_out"
+        ), "a job killed by its deadline is not an ordinary failure"
+        assert res["exit_code"] == 124
+
+    @pytest.mark.skipif(
+        bool(shutil.which("timeout") or shutil.which("gtimeout")),
+        reason="this host has timeout(1), so the refusal path cannot be reached",
+    )
+    def test_a_host_without_timeout_refuses_the_submit(self, local_ssh):
+        """Silently dropping the deadline would be the worse failure: the
+        caller believes a limit is in force and the job runs unbounded."""
+        with pytest.raises(ComputeError) as error:
+            local_ssh.submit(
+                {"provider": "ssh:lab", "command": "sleep 5", "timeout_seconds": 1}
+            )
+        assert "timeout" in str(error.value)
+
+    def test_no_deadline_leaves_the_job_unwrapped(self, local_ssh, tmp_path):
+        """Only wrap when a deadline was asked for — `timeout` is not present
+        on every host, and requiring it unconditionally would break hosts that
+        work today."""
+        res, job = self._run_to_completion(local_ssh, "echo fine")
+        assert res["status"] == "succeeded"
+        workdir = Path(job["workdir"].replace("~", str(tmp_path)))
+        assert (workdir / "stdout.log").read_text().strip() == "fine"
 
     def test_explicit_nonzero_exit_is_preserved(self, local_ssh):
         res, _ = self._run_to_completion(local_ssh, "echo out; exit 42")

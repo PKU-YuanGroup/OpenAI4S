@@ -36,18 +36,40 @@ result = job.result()   # one non-blocking poll — call it again from a later c
 
 The daemon forwards **only** the keys a provider declares in its `provider.json` `secret_env` into the job (over the helper's stdin) — never your whole environment.
 
+`outputs` is a promise, not a hint: a pattern that matches nothing when the
+harvest is reconciled makes the job `failed` even if it exited 0. Every harvest
+records `{path, size, sha256}` per file plus a digest over the set, which is
+also what makes a transfer truncated at rc==0 visible.
+
+`timeout_seconds` is enforced on the remote, by wrapping the job body in
+`timeout(1)` (or `gtimeout`). A host with neither refuses the submit rather
+than running an unbounded job while you believe a limit applies. On expiry the
+job reports `timed_out` with exit code 124. On the `ssh:*` path the job also
+runs under job control, so it owns a process group and `cancel` signals the
+whole tree — `run.sh` and everything it started — then escalates to SIGKILL
+and confirms the group is gone before reporting the cancellation.
+
 ### Job states
 
 Terminal states are mutually exclusive and never optimistic:
 
 | state | meaning |
 |---|---|
-| `done` | the job's exit code was read and was 0, and its outputs were harvested and verified |
-| `failed` | the job's exit code was read and was non-zero |
+| `succeeded` | the exit code was read and was 0, **and** every declared output was harvested and hashed |
+| `failed` | the exit code was read and was non-zero, or it was 0 but the outputs could not be accounted for — `termination_reason` says which |
 | `timed_out` | a deadline or per-job timeout sentinel fired |
-| `incomplete` | the job itself succeeded, but its outputs could not be verified (lost by the wrapper, a partial transfer, or a rejected archive) |
-| `cancelled` | a cancel was delivered and confirmed |
+| `cancelled` | a cancel was delivered and confirmed, or the handle was closed over live work (`termination_reason: handle_closed`) |
 | `unknown` | **the outcome could not be established** |
+
+`succeeded` is the only state that requires evidence on both halves. A job that
+exits 0 while a pattern it declared in `outputs` matched nothing is `failed`
+with `termination_reason: outputs_unverified` — the promise is part of the
+contract, not a hint. Every harvest records a manifest of `{path, size,
+sha256}` plus one digest over the whole set, which is also the only way to see
+a transfer that stopped halfway while its exit code stayed 0.
+
+`incomplete` and `done` were earlier spellings. Migration 2 renamed `done` to
+`succeeded` and folded `incomplete` into `failed` with the reason above.
 
 `unknown` is not a synonym for failure — the job may well have succeeded. It means there is no evidence either way (the host was unreachable, the remote process was killed without writing an exit code, a helper blew its deadline, or a `.phase` marker was unparseable). Reconcile it against the remote before re-submitting; a blind retry may duplicate work that already completed. Nothing resolves `unknown` to success by default.
 

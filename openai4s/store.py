@@ -410,6 +410,12 @@ CREATE TABLE IF NOT EXISTS compute_jobs (
     -- be verified is a different fact from `failed` because the command
     -- exited non-zero, and the status alone cannot carry that.
     termination_reason TEXT,
+    -- What the harvest actually produced: JSON [{path,size,sha256}] and one
+    -- digest over the whole record. A job that declared `outputs` and
+    -- produced none of them used to report success; these are what make that
+    -- checkable, and the only way to see a transfer truncated at rc==0.
+    artifact_manifest TEXT,
+    integrity_sha256  TEXT,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     submitted_at    INTEGER,
@@ -874,6 +880,7 @@ class Store:
                 {
                     1: ("legacy_baseline", self._apply_legacy_baseline),
                     2: ("compute_job_states", self._apply_compute_job_states),
+                    3: ("compute_job_manifest", self._apply_compute_job_manifest),
                 },
             )
             if report["migrated"]:
@@ -920,6 +927,31 @@ class Store:
                 "WHERE status=?",
                 (status, reason, legacy),
             )
+
+    def _apply_compute_job_manifest(self, conn: sqlite3.Connection) -> None:
+        """Version 3: room to record what a job actually produced.
+
+        Historical rows keep NULL — we cannot reconstruct a manifest for a
+        harvest that happened before anything hashed it, and inventing one
+        would be worse than admitting it is unknown. Only jobs harvested from
+        here on carry the record.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(compute_jobs)").fetchall()
+        }
+        for column in ("artifact_manifest", "integrity_sha256"):
+            if column in have:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE compute_jobs ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"compute_jobs.{column} could not be added: {e}"
+                    ) from e
 
     def _apply_legacy_baseline(self, conn: sqlite3.Connection) -> None:
         """Version 1: the historical catch-up pass, run once and then stamped.

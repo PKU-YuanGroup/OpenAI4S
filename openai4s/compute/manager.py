@@ -18,13 +18,18 @@ Two provider families share one manager:
   "byoc:<id>"  bring-your-own-compute sandbox (e.g. "byoc:nvidia").
   "ssh:<alias>" a job over an existing SSH connection.
 
-Terminal states are mutually exclusive and never optimistic:
-``done`` (verified rc==0 and outputs harvested), ``failed`` (verified rc!=0),
-``timed_out`` (a deadline/job-timeout sentinel fired), ``incomplete`` (the job
-itself succeeded but its outputs could not be verified), ``cancelled``, and
-``unknown``. ``unknown`` means the outcome could not be established — it is
-*not* a synonym for failure, and it must never be resolved to success by
-default. Every path that cannot produce an exit code lands there deliberately.
+Terminal states are mutually exclusive and never optimistic — the vocabulary
+and its transition table live in ``compute/states.py`` and are enforced when a
+status is written. ``succeeded`` requires evidence on both halves: a verified
+rc==0 *and* every declared output harvested and hashed. A job that exits 0
+while a pattern it declared in ``outputs`` matched nothing is ``failed`` with
+``termination_reason: outputs_unverified``.
+
+``unknown`` means the outcome could not be established. It is *not* a synonym
+for failure, it must never be resolved to success by default, and it counts as
+live — something may be running out there, and forgetting it is how a sandbox
+bills unnoticed. Every path that cannot produce an exit code lands there
+deliberately.
 
 Jobs are durable. A remote job outlives this process — an ssh job keeps running
 under ``nohup``, a byoc sandbox keeps billing — so every job is recorded in
@@ -54,7 +59,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from openai4s.compute import states
+from openai4s.compute import manifest, states
 from openai4s.compute.safe_archive import UnsafeArchiveError, safe_extract_tar
 
 # Repo-root openai4s_compute_provider (the confined helper package).
@@ -100,6 +105,10 @@ class ComputeError(RuntimeError):
 # harvests through the safe-archive extractor; this compatibility surface has
 # neither, so it gets an explicit cap instead of the implicit "whatever fits".
 MAX_TRANSFER_BYTES = 512 * 1024 * 1024
+
+# GNU `timeout` reports expiry with this exit code. The ssh job body wraps the
+# command in it whenever a deadline is requested.
+_TIMEOUT_EXIT_CODE = 124
 
 
 def _safe_remote_path(value: str, *, label: str) -> str:
@@ -147,6 +156,37 @@ def _safe_stage_name(value: str, *, label: str) -> str:
             "invalid_request",
         )
     return text
+
+
+def _ssh_cancel_script(pid: str) -> str:
+    """TERM the job's process group, escalate to KILL, then confirm.
+
+    Three things this replaces, all of which let a cancel report success over
+    a job that was still running:
+
+      * ``kill -TERM <pid>`` signalled only the outer ``bash -c``. The job is
+        launched under job control so its pid is also its process group id,
+        and ``kill -- -<pgid>`` reaches the whole tree — `run.sh` and every
+        process it started, which are the ones actually holding the
+        allocation.
+      * a process that ignores SIGTERM was never escalated to SIGKILL.
+      * nothing checked afterwards. The final ``kill -0`` is what makes the
+        non-zero exit — and therefore the caller's ``unknown_state`` — mean
+        "we looked, and it is still there".
+    """
+    quoted = shlex.quote(str(pid))
+    return (
+        f"pgid={quoted}; "
+        # `kill -0` on the group first: a job that already finished is a
+        # successful cancel, not an error.
+        f'kill -0 -- -"$pgid" 2>/dev/null || exit 0; '
+        f'kill -TERM -- -"$pgid" 2>/dev/null; '
+        f"for _ in 1 2 3 4 5 6 7 8 9 10; do "
+        f'kill -0 -- -"$pgid" 2>/dev/null || exit 0; sleep 1; done; '
+        f'kill -KILL -- -"$pgid" 2>/dev/null; sleep 1; '
+        f'if kill -0 -- -"$pgid" 2>/dev/null; then '
+        f"echo 'process group survived SIGKILL' >&2; exit 1; fi; exit 0"
+    )
 
 
 def _now_ms() -> int:
@@ -210,6 +250,11 @@ class ComputeManager:
     harvests. A job nobody polls is never harvested, which is why the SDK
     tells the agent to call ``.result()`` again rather than to wait.
     """
+
+    # The cancel script waits out a 10s SIGTERM grace period plus a second
+    # after SIGKILL, so the ssh call needs headroom over that or the client
+    # gives up before the remote has finished confirming.
+    _CANCEL_TIMEOUT_S = 45
 
     # Hard host-side ceiling on one helper op. The helper's own poll budget
     # bounds its .phase loop, not a wedged provider SDK socket.
@@ -748,10 +793,33 @@ class ComputeManager:
         # honest state to report — so this write is what makes a *failed* ssh
         # job observable at all. It lands via .rc.tmp + mv so a reader never
         # sees a half-written code (mv is atomic within one filesystem).
+        # A deadline the job actually carries. `timeout_seconds` was accepted
+        # and then never read, so an ssh job ran until the host reclaimed it.
+        # `timeout` is asked for by name rather than assumed: a host without it
+        # would otherwise silently run an unbounded job while the caller
+        # believes a limit is in force.
+        timeout_s = int(kw.get("timeout_seconds") or 0)
+        body = "bash run.sh"
+        if timeout_s > 0:
+            # -k gives the job a grace period to flush before SIGKILL. GNU
+            # `timeout` exits 124 on expiry, which _result_ssh maps to
+            # `timed_out` rather than a plain non-zero failure. `gtimeout` is
+            # the same binary under the name Homebrew's coreutils installs,
+            # so a macOS host is not silently denied a deadline.
+            body = (
+                "_o4s_to=$(command -v timeout || command -v gtimeout); "
+                f'"$_o4s_to" -k 10 -s TERM {timeout_s} bash run.sh'
+            )
         inner = (
-            "bash run.sh > stdout.log 2> stderr.log; rc=$?; "
+            f"{body} > stdout.log 2> stderr.log; rc=$?; "
             'printf "%s" "$rc" > .rc.tmp; mv -f .rc.tmp .rc'
         )
+        # `set -m` enables job control, which puts the background job in a
+        # process group of its own whose id equals the pid we record. Without
+        # it the job shares the login shell's group, and cancelling could only
+        # signal the outer `bash -c` — `run.sh`'s children, the processes
+        # actually holding the allocation, survived and kept running.
+        #
         # The braces are load-bearing. `&` binds looser than `&&`, so
         # `mkdir && cd && cat > run.sh && nohup ... & echo $!` makes the WHOLE
         # and-list asynchronous — and POSIX assigns an async list's stdin to
@@ -759,10 +827,22 @@ class ComputeManager:
         # `bash run.sh` exited 0 without ever running the job. Grouping keeps
         # `&` scoped to the nohup alone, so `cat` stays in the foreground and
         # actually receives the script over the ssh channel.
+        # Checked before anything is written, so a host without it fails the
+        # submit loudly instead of running an unbounded job while the caller
+        # believes a limit is in force.
+        guard = (
+            "{ command -v timeout >/dev/null 2>&1 || "
+            "command -v gtimeout >/dev/null 2>&1; } || "
+            "{ echo 'openai4s: neither timeout(1) nor gtimeout(1) is on this "
+            "host, so timeout_seconds cannot be honoured' >&2; exit 127; } && "
+            if timeout_s > 0
+            else ""
+        )
         remote = (
             f"mkdir -p {workdir} && cd {workdir} && "
+            f"{guard}"
             f"cat > run.sh && rm -f .rc .rc.tmp && "
-            f"{{ nohup bash -c {shlex.quote(inner)} >/dev/null 2>&1 & echo $!; }}"
+            f"{{ set -m; nohup bash -c {shlex.quote(inner)} >/dev/null 2>&1 & echo $!; }}"
         )
         try:
             proc = subprocess.run(
@@ -875,11 +955,16 @@ class ComputeManager:
                     ),
                 }
             try:
-                out_files = self._harvest(job["job_id"], stage)
+                entries = self._harvest(job["job_id"], stage)
                 harvest_error = None
             except UnsafeArchiveError as e:
-                out_files = []
+                entries = []
                 harvest_error = str(e)
+
+        dest = self._hpc_root / job["job_id"]
+        out_files = [str(dest / item["path"]) for item in entries]
+        featured, missing = manifest.reconcile(entries, job.get("outputs"))
+        featured_files = [str(dest / rel) for rel in featured]
 
         if rep.get("deadline_fired") or rep.get("job_timeout_fired"):
             status = states.TIMED_OUT
@@ -887,32 +972,39 @@ class ComputeManager:
             status = states.SUCCEEDED
         else:
             status = states.FAILED
-        # `harvest_failed:<rc>` means the wrapper's own tar/mv lost the outputs,
-        # so a rc==0 job still has nothing verified to show for it.
-        # Exited 0 but nothing verifiable came back. Calling that a success
-        # is the single worst outcome available here, so it is a failure with
-        # the cause recorded rather than a status of its own.
-        unverified = bool(phase_err or harvest_error)
+        # Exited 0 but nothing verifiable came back. Calling that a success is
+        # the single worst outcome available here, so it is a failure with the
+        # cause recorded rather than a status of its own. `phase_err` is the
+        # wrapper's own tar/mv losing the outputs; `missing` is the job simply
+        # not producing what it promised, which nothing checked before.
+        unverified = bool(phase_err or harvest_error or missing)
         if unverified and status == states.SUCCEEDED:
             status = states.FAILED
         job["status"] = status
         job["exit_code"] = exit_code
+        missing_note = (
+            f"declared outputs never arrived: {', '.join(missing)}" if missing else ""
+        )
         self._persist(
             job["job_id"],
             status=status,
             exit_code=exit_code,
             terminal_at=_now_ms(),
-            reason=phase_err or harvest_error or "",
+            reason=phase_err or harvest_error or missing_note or "",
             termination_reason=(
                 states.REASON_OUTPUTS_UNVERIFIED if unverified else None
             ),
+            artifact_manifest=entries,
+            integrity_sha256=manifest.manifest_digest(entries),
         )
         self._event(job["job_id"], status, {"exit_code": exit_code})
         result = {
             "status": status,
             "exit_code": exit_code,
             "output_files": out_files,
-            "featured_files": out_files,
+            "featured_files": featured_files,
+            "artifact_manifest": entries,
+            "integrity_sha256": manifest.manifest_digest(entries),
             "stdout_tail": rep.get("stdout_tail", ""),
             "stderr_tail": rep.get("stderr_tail", ""),
             "job_wall_s": rep.get("job_wall_s"),
@@ -925,8 +1017,12 @@ class ComputeManager:
             result["error_kind"] = "unsafe_archive"
         return result
 
-    def _harvest(self, job_id: str, stage: Path) -> list[str]:
-        """Unpack the remote's out.tar.gz into hpc/<job_id>/.
+    def _harvest(self, job_id: str, stage: Path) -> list[dict]:
+        """Unpack the remote's out.tar.gz into hpc/<job_id>/ and record it.
+
+        Returns the manifest — path, size and sha256 per file — rather than a
+        bare path list, because a path list cannot tell a complete transfer
+        from one that stopped halfway.
 
         Raises UnsafeArchiveError if the archive is hostile; the caller must
         treat that as a failed harvest, never a partial success.
@@ -935,9 +1031,11 @@ class ComputeManager:
         dest.mkdir(parents=True, exist_ok=True)
         tgz = stage / "out.tar.gz"
         if not tgz.exists():
+            # No archive at all. Previously this returned an empty list with no
+            # error and the caller went on to call the job succeeded.
             return []
         safe_extract_tar(tgz, dest)
-        return [str(p) for p in sorted(dest.rglob("*")) if p.is_file()]
+        return manifest.build_manifest(dest)
 
     def _result_ssh(self, job: dict) -> dict:
         alias, workdir = job["alias"], job["workdir"]
@@ -987,32 +1085,63 @@ class ComputeManager:
         dest = self._hpc_root / job["job_id"]
         dest.mkdir(parents=True, exist_ok=True)
         harvest_error = self._scp_logs(alias, workdir, dest)
-        status = states.SUCCEEDED if exit_code == 0 else states.FAILED
+        entries = manifest.build_manifest(dest)
+        featured, missing = manifest.reconcile(entries, job.get("outputs"))
+
+        if exit_code == 0:
+            status = states.SUCCEEDED
+        elif exit_code == _TIMEOUT_EXIT_CODE:
+            # `timeout` exits 124 on expiry. Reporting that as a plain failure
+            # would send the caller looking for a bug in their command.
+            status = states.TIMED_OUT
+        else:
+            status = states.FAILED
         if harvest_error:
             # The job's own verdict is known and trustworthy; only our copy of
             # its logs is incomplete. Keep the verdict, but never claim a clean
             # harvest we did not get.
             status = states.FAILED
+        # The ssh path copies back logs, not the declared outputs, so anything
+        # a job promised is by construction still on the remote host. Saying
+        # so is the honest answer; reporting success while the promised files
+        # sit somewhere this process never looked is not.
+        if missing and status == states.SUCCEEDED:
+            status = states.FAILED
         job["status"] = status
         job["exit_code"] = exit_code
+        missing_note = (
+            f"declared outputs were not harvested (still on {alias}:{workdir}): "
+            f"{', '.join(missing)}"
+            if missing
+            else ""
+        )
         self._persist(
             job["job_id"],
             status=status,
             exit_code=exit_code,
             terminal_at=_now_ms(),
-            reason=harvest_error or "",
+            reason=harvest_error or missing_note or "",
+            termination_reason=(
+                states.REASON_OUTPUTS_UNVERIFIED if (harvest_error or missing) else None
+            ),
+            artifact_manifest=entries,
+            integrity_sha256=manifest.manifest_digest(entries),
         )
         self._event(job["job_id"], status, {"exit_code": exit_code})
         result = {
             "status": status,
             "exit_code": exit_code,
-            "output_files": [str(p) for p in sorted(dest.iterdir())],
-            "featured_files": [],
+            "output_files": [str(dest / item["path"]) for item in entries],
+            "featured_files": [str(dest / rel) for rel in featured],
+            "artifact_manifest": entries,
+            "integrity_sha256": manifest.manifest_digest(entries),
             "remote_workdir": workdir,
             "left_on_remote": True,
         }
         if harvest_error:
             result["harvest_error"] = harvest_error
+        if missing:
+            result["unharvested_outputs"] = missing
         return result
 
     def _ssh_unknown(self, job: dict, reason: str) -> dict:
@@ -1072,9 +1201,9 @@ class ComputeManager:
         if fam == "ssh":
             try:
                 proc = subprocess.run(
-                    ["ssh", job["alias"], f"kill -TERM {shlex.quote(job['pid'])}"],
+                    ["ssh", job["alias"], _ssh_cancel_script(job["pid"])],
                     capture_output=True,
-                    timeout=30,
+                    timeout=self._CANCEL_TIMEOUT_S,
                 )
             except (subprocess.TimeoutExpired, OSError) as e:
                 raise ComputeError(
@@ -1085,6 +1214,8 @@ class ComputeManager:
             if proc.returncode != 0:
                 # A kill we could not deliver is not a cancellation. Claiming
                 # one leaves the caller believing the allocation is freed.
+                # The script exits non-zero when the group outlived SIGKILL
+                # too, so this also covers "signalled but still there".
                 raise ComputeError(
                     f"cancel failed on {job['alias']} (exit {proc.returncode}): "
                     f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"

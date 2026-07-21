@@ -65,11 +65,17 @@ Poll it from a later `repl` cell — `r = c.attach_job(job_id).result()`, or
 while the job is still running it returns `{'status': 'running',...}`, and
 the right response is to end the cell and call it again later, not to wait
 inside the cell. Once the status is terminal the dict carries
-`{status, exit_code, output_files, featured_files, left_on_remote,
-remote_workdir, stdout_tail,...}` — `featured_files` is the subset matching
-your featured `outputs:` globs (omitting `outputs:` features everything).
+`{status, exit_code, output_files, featured_files, artifact_manifest,
+left_on_remote, remote_workdir, stdout_tail,...}` — `featured_files` is the
+subset matching your featured `outputs:` globs (omitting `outputs:` features
+everything), and `artifact_manifest` records `{path, size, sha256}` for
+everything harvested.
 A failed job is a returned `status`, not an exception, so read `exit_code`
-rather than expecting `.result()` to raise. Publish what you want with
+rather than expecting `.result()` to raise. Note that a declared `outputs:`
+pattern is a promise the status is checked against: on this ssh path only the
+logs are copied back, so declaring `outputs:` here yields `failed` with
+`unharvested_outputs` naming what is still sitting on the host — fetch those
+with `c.download` rather than expecting the harvest to bring them. Publish what you want with
 `host.save_artifact(path)` per file — that step is what gives them
 provenance and surfaces them in the artifact panel.
 `open(r['output_files'][i])` reads any harvested file directly. Chain a

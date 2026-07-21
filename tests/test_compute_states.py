@@ -199,3 +199,39 @@ def test_a_migrated_job_is_not_rehydrated_as_live(tmp_path):
     )
     (tmp_path / "skills").mkdir(exist_ok=True)
     assert ComputeManager(cfg)._live_count() == 0
+
+
+def test_the_manifest_migration_upgrades_a_pre_manifest_database(tmp_path):
+    """Migration 3 adds the manifest columns. Historical rows keep NULL: a
+    harvest that happened before anything hashed it cannot be reconstructed,
+    and inventing a manifest for it would be worse than admitting so."""
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    db = store.db_path
+    store.close()
+
+    conn = sqlite3.connect(str(db))
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(compute_jobs)")]
+    keep = [c for c in columns if c not in ("artifact_manifest", "integrity_sha256")]
+    conn.execute("ALTER TABLE compute_jobs RENAME TO _old")
+    conn.execute(f"CREATE TABLE compute_jobs AS SELECT {','.join(keep)} FROM _old")
+    conn.execute("DROP TABLE _old")
+    conn.execute(
+        "INSERT INTO compute_jobs(job_id,provider,status,created_at,updated_at)"
+        " VALUES('legacy-1','ssh:lab','succeeded',1,1)"
+    )
+    conn.execute("PRAGMA user_version = 2")
+    conn.execute("DELETE FROM schema_migrations WHERE version=3")
+    conn.commit()
+    conn.close()
+
+    reopened = get_store(db)
+    row = reopened.get_compute_job("legacy-1")
+
+    assert row["status"] == states.SUCCEEDED, "the historical row survives"
+    assert row["artifact_manifest"] is None
+    assert row["integrity_sha256"] is None
+    assert [m["name"] for m in reopened.schema_state()["applied"]] == [
+        "legacy_baseline",
+        "compute_job_states",
+        "compute_job_manifest",
+    ]

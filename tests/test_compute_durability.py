@@ -18,6 +18,7 @@ Two properties carry the design:
 """
 import subprocess
 import types
+from pathlib import Path
 
 import pytest
 
@@ -485,3 +486,109 @@ def test_a_manager_without_a_store_still_runs_jobs(cfg, monkeypatch):
     out = manager.submit({"provider": "ssh:lab", "command": "x"})
     assert out["status"] == "running"
     assert manager.reconcile()["count"] == 0
+
+
+# --------------------------------------------------------------------------
+# a job is not successful until its outputs are accounted for
+# --------------------------------------------------------------------------
+
+
+def test_a_job_that_never_produced_its_declared_outputs_is_not_a_success(
+    byoc, monkeypatch, cfg
+):
+    """The `outputs` globs were persisted and never read back, so a job that
+    promised `model.pt` and wrote nothing still reported succeeded with an
+    empty file list."""
+
+    def behaviour(op):
+        if op == "create":
+            return {"sandbox_id": "sbx-1"}
+        if op == "wait":
+            return {"ready": True, "job_exit_code": 0}
+        return {}
+
+    _helper(byoc, monkeypatch, behaviour)
+    out = byoc.submit(
+        {"provider": "byoc:fake", "command": "train.py", "outputs": ["model.pt"]}
+    )
+    result = byoc.result({"job_id": out["job_id"]})
+
+    assert result["status"] == "failed", "rc==0 with no outputs is not a success"
+    assert result["exit_code"] == 0, "the job's own verdict is still reported"
+
+    row = get_store(cfg.db_path).list_compute_jobs()[0]
+    assert row["termination_reason"] == "outputs_unverified"
+    assert "model.pt" in (row["reason"] or "")
+
+
+def test_a_harvest_is_recorded_with_hashes(byoc, monkeypatch, cfg):
+    """Nothing in the compute package hashed anything, so a transfer that
+    stopped halfway was indistinguishable from a complete one."""
+    harvested = byoc._hpc_root
+
+    def behaviour(op):
+        if op == "create":
+            return {"sandbox_id": "sbx-1"}
+        if op == "wait":
+            return {"ready": True, "job_exit_code": 0}
+        return {}
+
+    _helper(byoc, monkeypatch, behaviour)
+
+    # Stand in for the archive extraction with a real file on disk.
+    def fake_harvest(job_id, _stage):
+        from openai4s.compute import manifest as _manifest
+
+        dest = harvested / job_id
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "model.pt").write_bytes(b"weights")
+        return _manifest.build_manifest(dest)
+
+    monkeypatch.setattr(byoc, "_harvest", fake_harvest, raising=True)
+
+    out = byoc.submit(
+        {"provider": "byoc:fake", "command": "train.py", "outputs": ["model.pt"]}
+    )
+    result = byoc.result({"job_id": out["job_id"]})
+
+    assert result["status"] == "succeeded"
+    entry = result["artifact_manifest"][0]
+    assert entry["path"] == "model.pt"
+    assert entry["size"] == len(b"weights")
+    assert len(entry["sha256"]) == 64
+    assert result["integrity_sha256"]
+
+    row = get_store(cfg.db_path).list_compute_jobs()[0]
+    assert row["artifact_manifest"][0]["sha256"] == entry["sha256"]
+    assert row["integrity_sha256"] == result["integrity_sha256"]
+
+
+def test_featured_files_is_the_declared_subset(byoc, monkeypatch):
+    """Documented as the subset matching the declared globs; it was in fact
+    every harvested file."""
+
+    def behaviour(op):
+        if op == "create":
+            return {"sandbox_id": "sbx-1"}
+        if op == "wait":
+            return {"ready": True, "job_exit_code": 0}
+        return {}
+
+    _helper(byoc, monkeypatch, behaviour)
+
+    def fake_harvest(job_id, _stage):
+        from openai4s.compute import manifest as _manifest
+
+        dest = byoc._hpc_root / job_id
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "scores.csv").write_text("a\n1\n", encoding="utf-8")
+        (dest / "stdout.log").write_text("noise\n", encoding="utf-8")
+        return _manifest.build_manifest(dest)
+
+    monkeypatch.setattr(byoc, "_harvest", fake_harvest, raising=True)
+
+    out = byoc.submit({"provider": "byoc:fake", "command": "x", "outputs": ["*.csv"]})
+    result = byoc.result({"job_id": out["job_id"]})
+
+    assert [Path(p).name for p in result["featured_files"]] == ["scores.csv"]
+    assert len(result["output_files"]) == 2

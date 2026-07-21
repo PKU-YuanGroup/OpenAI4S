@@ -44,6 +44,11 @@ _FIELDS = (
     # something worth keeping — `failed` because outputs could not be verified
     # is a different fact from `failed` because the command exited non-zero.
     "termination_reason",
+    # What the harvest actually produced: [{path, size, sha256}], plus one
+    # digest over the whole record. Without these a job that declared outputs
+    # and produced none of them still reported success.
+    "artifact_manifest",
+    "integrity_sha256",
     "created_at",
     "updated_at",
     "submitted_at",
@@ -123,10 +128,9 @@ class ComputeJobRepository:
                 (current or {}).get("status"),
                 str(allowed["status"]),
             )
-        if "outputs" in allowed and not isinstance(
-            allowed["outputs"], (str, type(None))
-        ):
-            allowed["outputs"] = json.dumps(allowed["outputs"])
+        for column in ("outputs", "artifact_manifest"):
+            if column in allowed and not isinstance(allowed[column], (str, type(None))):
+                allowed[column] = json.dumps(allowed[column])
         allowed["updated_at"] = self._clock_ms()
         assignments = ",".join(f"{k}=?" for k in allowed)
         with self._lock:
@@ -236,11 +240,12 @@ class ComputeJobRepository:
         if row is None:
             return None
         job = dict(zip(_FIELDS, row))
-        if job.get("outputs"):
-            try:
-                job["outputs"] = json.loads(job["outputs"])
-            except (ValueError, TypeError):
-                pass
+        for column in ("outputs", "artifact_manifest"):
+            if job.get(column):
+                try:
+                    job[column] = json.loads(job[column])
+                except (ValueError, TypeError):
+                    pass
         return job
 
 
