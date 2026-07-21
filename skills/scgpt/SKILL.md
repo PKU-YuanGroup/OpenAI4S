@@ -108,9 +108,11 @@ fresh kernel — `.close()` lives on the handle, not on the job object:
 h = host.compute.create(provider)
 res = h.attach_job(job_id).result()   # {status, exit_code, output_files,
                                       #  featured_files, remote_workdir, …}
-if res["status"] != "running":
-    save_artifacts(res["featured_files"])   # paths under hpc/<job_id>/
+if res["status"] == "succeeded":
+    for path in res["featured_files"]:      # paths under hpc/<job_id>/
+        host.save_artifact(path)
     h.close()
+# `unknown` is not a finished job — poll again rather than closing over it.
 ```
 
 See the `remote-compute-ssh` / `remote-compute-nvidia` skill for the

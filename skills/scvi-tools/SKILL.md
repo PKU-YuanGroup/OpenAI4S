@@ -139,8 +139,9 @@ handle, not on the job:
 ```python
 h = host.compute.create('byoc:nvidia')
 res = h.attach_job(job_id).result() # status, output_files, remote_workdir,...
-if res["status"] != "running":      # else end the cell and poll again later
-    save_artifacts(res["featured_files"])
+if res["status"] == "succeeded":    # else end the cell and poll again later
+    for path in res["featured_files"]:
+        host.save_artifact(path)
     h.close()
 ```
 

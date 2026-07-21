@@ -122,9 +122,11 @@ call it again later:
 ```python
 r = c.attach_job(job_id).result()   # {status, exit_code, output_files,
                                     #  featured_files, remote_workdir, …}
-if r["status"] != "running":
-    save_artifacts(r["featured_files"])   # paths under hpc/<job_id>/
+if r["status"] == "succeeded":
+    for path in r["featured_files"]:      # paths under hpc/<job_id>/
+        host.save_artifact(path)
     c.close()
+# `unknown` is not a finished job — poll again rather than closing over it.
 ```
 
 See the `remote-compute-ssh` / `remote-compute-nvidia` skill for the

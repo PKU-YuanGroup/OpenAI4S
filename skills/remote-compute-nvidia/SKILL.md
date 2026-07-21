@@ -147,9 +147,11 @@ than waiting inside the cell.
 # repl tool — cell ② polls; re-run this cell until the status is terminal
 r = c.attach_job('<JOB_ID>').result()  # one probe — harvests when terminal
 print(r['status'])
-if r['status'] != 'running':
-    save_artifacts(r['featured_files'])
+if r['status'] == 'succeeded':
+    for path in r['featured_files']:
+        host.save_artifact(path)
     c.close()
+# `unknown` is not a finished job — poll again rather than closing over it.
 ```
 
 ## `submit_job` details

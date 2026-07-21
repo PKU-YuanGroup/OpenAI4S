@@ -70,7 +70,7 @@ remote_workdir, stdout_tail,...}` — `featured_files` is the subset matching
 your featured `outputs:` globs (omitting `outputs:` features everything).
 A failed job is a returned `status`, not an exception, so read `exit_code`
 rather than expecting `.result()` to raise. Publish what you want with
-`save_artifacts(r['featured_files'])` — that step is what gives them
+`host.save_artifact(path)` per file — that step is what gives them
 provenance and surfaces them in the artifact panel.
 `open(r['output_files'][i])` reads any harvested file directly. Chain a
 remote-resident output via
@@ -84,7 +84,7 @@ fetch a host file, call `c.download` with the path they gave; the approval
 card is the authorization gate, so don't refuse on their behalf and don't
 `cp` into scratch first to dodge it. Dotfiles / paths under a dot-directory
 (`~/.ssh/*`, `.gitconfig`, `.env`, …) get a hardened per-file confirmation.
-`c.close` once you've confirmed — it cleans up the job workdirs on the
+`c.close()` once you've confirmed — it cleans up the job workdirs on the
 host. Hand back the result verbatim.
 
 ## What to record
@@ -229,10 +229,11 @@ Once it's terminal, act on what it harvested — `featured_files` paths are
 workspace-relative under `hpc/<jobId>/`:
 
 ```python
-save_artifacts(r['featured_files'])  # publish with provenance
+for path in r['featured_files']:
+    host.save_artifact(path)  # publish with provenance
 ```
 
-then `c.close` in a `repl` cell once you've confirmed the harvest.
+then `c.close()` in a `repl` cell once you've confirmed the harvest.
 
 `output_files` is the complete list (uncapped), ordered featured-first;
 the same files are on disk at `hpc/<job_id>/`.
@@ -308,11 +309,11 @@ print('still running:', [j.job_id for j in jobs if j.status not in TERMINAL])
 print('unresolved:', [j.job_id for j in jobs if j.status == 'unknown'])
 ```
 
-Act on each job the pass reported terminal — `save_artifacts` on its
-`featured_files`, or read `stdout_tail` / the full `output_files` off the
-same dict — then end the cell and re-run it for whatever is still running.
+Act on each job the pass reported terminal — `host.save_artifact` on each
+of its `featured_files`, or read `stdout_tail` / the full `output_files` off
+the same dict — then end the cell and re-run it for whatever is still running.
 
-When everything you care about is harvested, call `c.close` once to
+When everything you care about is harvested, call `c.close()` once to
 clean up the remote workdirs. Don't put the `create` in a `with`
 block — `__exit__` calls `close`, which would cancel the still-running
 jobs the moment the submit cell ends.
