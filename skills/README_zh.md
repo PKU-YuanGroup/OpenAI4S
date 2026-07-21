@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-32 个 OpenAI4S 内置 Skill 都在这里，一个 Skill 一个目录。Skill 是一份 recipe：
+33 个 OpenAI4S 内置 Skill 都在这里，一个 Skill 一个目录。Skill 是一份 recipe：
 代码，加上把它跑起来所需要的运维知识，而不是 provider 的 JSON Tool。披露是渐进的，
 loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它才去读该目录下的
 `SKILL.md` 和可选的 `kernel.py` sidecar。
@@ -14,6 +14,7 @@ loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它
 | [`admet_genetic/`](admet_genetic/) | 从 seed SMILES 出发的遗传式优化循环，用 RDKit 描述符、QED、SA-Score 和 ADMET-AI 打分。sidecar 故意不提供固定的 GA 引擎：突变、交叉、过滤和打分权重都要你按当前目标自己设计。每一条记录在案的候选分子都必须带着生成它的血缘。 |
 | [`alphafold2/`](alphafold2/) | 通过 ColabFold 的 `colabfold_batch` 跑 AF2 与 AF2-Multimer：一个 FASTA 加一条命令就能预测，不用在本地挂载 MSA 数据库。MSA 来自公共 MMseqs2 服务器，也就是说序列会被发到那里。只处理蛋白；要做配体或核酸，请转向 `boltz`、`chai1` 或 `openfold3`。 |
 | [`audit-dataset/`](audit-dataset/) | 训练或对外发布之前该做的那次检查：schema 漂移、缺失、重复行与重复 ID、目标类别不平衡，以及同一实体横跨 train/validation/test。纯标准库实现。结构层面查干净了，仍然说明不了数据是否有代表性、标签是否正确。 |
+| [`bioprobench/`](bioprobench/) | 用 BioProBench 基准给模型的方案推理能力打分：问答、步骤排序、错误纠正、方案生成，以及由 LLM 裁判评判的错误推理。真正的坑在输入约定——它评的是一份已经把标准答案合并进每条模型回复的文件；喂纯模型输出会在 `"status": "failed"` 之下返回全零。记得看 `Failed_Rate`。 |
 | [`boltz/`](boltz/) | 对蛋白、DNA、RNA 与配体链做开放权重的 co-folding，还有一个可选的小分子亲和力头。在四个 co-folding Skill 里，它是 binder 验证类任务的默认选择：权重完全开放（MIT），采样最快。 |
 | [`borzoi/`](borzoi/) | 输入 DNA，输出预测的实验信号覆盖：约 524 kb 窗口上的 RNA-seq、CAGE、DNase 和 ChIP track。给非编码变异打分的做法是跑 ref 与 alt 两个窗口，比较逐 track 的差值。如果你要的是序列似然而不是实验 track，请改用 `evo2`。 |
 | [`catalyst_sar_screening/`](catalyst_sar_screening/) | 针对石墨烯 M–N–C 位点的单原子催化剂 SAR 筛选，能量引擎硬锁定在 FAIRChem UMA。禁止启发式、查表和其他 MLIP，也禁止把仓库里已提交的 demo 输出当作用户结果：每个答案都必须来自一次全新的 pipeline 运行。权重 hub 连不上时，它会停下来问，而不是换一种方法糊过去。 |

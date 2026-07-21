@@ -36,6 +36,7 @@ science = [
     "numpy>=1.24",
     "pandas>=2.0",
     "matplotlib>=3.7",
+    "scikit-learn>=1.3",
 ]
 # Optional cheminformatics support is kept separate because RDKit does not
 # publish wheels for every platform supported by the core/science environment.

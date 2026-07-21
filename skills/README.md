@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-The 32 bundled OpenAI4S Skills live here, one directory each. A Skill is a
+The 33 bundled OpenAI4S Skills live here, one directory each. A Skill is a
 recipe: code plus the operational knowledge needed to run it, not a provider
 JSON Tool. Disclosure is progressive, so the loader shows a name and a one-line
 summary and nothing more until a Skill is selected; only then does it read
@@ -15,6 +15,7 @@ summary and nothing more until a Skill is selected; only then does it read
 | [`admet_genetic/`](admet_genetic/) | A genetic loop over seed SMILES, scored with RDKit descriptors, QED, SA-Score, and ADMET-AI. The sidecar ships no GA engine on purpose: mutation, crossover, filters, and scoring weights are yours to design for the objective at hand. Every logged candidate must carry the lineage that produced it. |
 | [`alphafold2/`](alphafold2/) | AF2 and AF2-Multimer through the ColabFold `colabfold_batch` runner, so a prediction is one FASTA and one command instead of a local database mount. The MSA comes from the public MMseqs2 server, which means the sequence is sent there. Proteins only. For ligands or nucleic acids, route to `boltz`, `chai1`, or `openfold3`. |
 | [`audit-dataset/`](audit-dataset/) | The check to run before anything is trained or published: schema drift, missingness, duplicate rows and IDs, target imbalance, and entities shared across train, validation, and test. Pure stdlib. A clean structural audit still says nothing about whether the data is representative or the labels are right. |
+| [`bioprobench/`](bioprobench/) | Scoring a model's protocol reasoning against the BioProBench benchmark: question answering, step ordering, error correction, generation, and LLM-judged error reasoning. The contract is the trap — it scores one file that already merges ground truth into each model response, and a plain model-output file returns zeros under `"status": "failed"`. Check `Failed_Rate`. |
 | [`boltz/`](boltz/) | Open-weights co-folding of protein, DNA, RNA, and ligand chains, with an optional small-molecule affinity head. Among the four co-folders it is the default for binder-validation campaigns: fully open MIT weights and the fastest sampler. |
 | [`borzoi/`](borzoi/) | DNA in, predicted assay coverage out: RNA-seq, CAGE, DNase, and ChIP tracks over roughly 524 kb windows. Score a non-coding variant by running ref and alt windows and comparing the per-track delta. Reach for `evo2` instead when you want sequence likelihood rather than assay tracks. |
 | [`catalyst_sar_screening/`](catalyst_sar_screening/) | Single-atom-catalyst SAR on graphene M–N–C sites, hard-locked to FAIRChem UMA. Heuristics, lookup tables, and other MLIPs are forbidden, and so is handing the repo's committed demo outputs to a user as a result: every answer must come from a fresh pipeline run. If the weights hub is unreachable it stops and asks rather than substituting a method. |
