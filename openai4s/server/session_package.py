@@ -300,8 +300,15 @@ class SessionPackageService:
             raw = self.store.get_setting(setting)
             if not raw:
                 continue
-            if setting == "llm_api_key" and len(raw) >= 8:
-                values.add(raw)
+            if setting == "llm_api_key":
+                # Resolve through the broker first. Once migrated this row holds
+                # a reference, and adding *that* to the redaction set would
+                # redact a harmless opaque string while leaving the real key —
+                # if it appeared anywhere in the export — untouched. Redaction
+                # needs the value it is redacting.
+                resolved = self.store.get_secret_setting(setting)
+                if resolved and len(resolved) >= 8:
+                    values.add(resolved)
                 continue
             try:
                 collect(json.loads(raw))

@@ -177,6 +177,12 @@ jobs:
         env:
           OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-browser-smoke
           OPENAI4S_KERNEL_SANDBOX: "off"
+          # A CI runner is a Linux host with no keychain and no session bus,
+          # so `auto` correctly fails closed here — that is the policy working,
+          # not a bug. An ephemeral daemon holding no real credential is the
+          # one case where plaintext is the honest answer, so say so explicitly
+          # rather than weakening the default for everyone.
+          OPENAI4S_SECRET_STORE: plaintext
           OPENAI4S_NOTEBOOK_REPL: "1"
           OPENAI4S_HOST: 127.0.0.1
           OPENAI4S_PORT: "8760"

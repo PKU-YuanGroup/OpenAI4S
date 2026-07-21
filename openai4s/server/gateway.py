@@ -8,7 +8,7 @@ and SQLite store.
   * Static UI          GET /            GET /static/*
   * REST API           /api/*           (projects, frames, messages, artifacts,
                                           execution-log, lineage, models, skills…)
-  * WebSocket          GET /api/ws      (view_session/ping ; text_reset/text_chunk/
+  * WebSocket          GET /api/v1/ws   (view_session/ping ; text_reset/text_chunk/
                                           frame_update/artifact_created)
 
 Each user message runs the shared AgentEngine against a session-scoped control
@@ -63,6 +63,12 @@ from openai4s.execution import (
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
 from openai4s.llm import PROVIDERS, chat, get_model_capabilities, provider_specs
+from openai4s.observability import (
+    log_event,
+    new_correlation_id,
+    reset_correlation_id,
+    set_correlation_id,
+)
 from openai4s.review import review_evidence
 from openai4s.server import ws_frames
 from openai4s.server.action_timeline import ActionTimelineService
@@ -86,6 +92,7 @@ from openai4s.server.model_discovery import LocalModelDiscoveryService
 from openai4s.server.model_profiles import ModelProfileError, ModelProfileService
 from openai4s.server.model_profiles import clean_api_key as _clean_api_key
 from openai4s.server.model_profiles import migrate_provider_alias
+from openai4s.server.model_profiles import resolve_profile_key as _resolve_profile_key
 
 # Keep the former gateway helper names as compatibility aliases; plan behavior
 # itself now lives together in PlanService.
@@ -104,6 +111,7 @@ from openai4s.server.recovery_runtime import (
     python_runtime_spec,
 )
 from openai4s.server.reviews import ReviewPorts, ReviewService
+from openai4s.server.security_headers import security_headers
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.server.session_domain import (
     CursorCheckpointUnavailable,
@@ -125,6 +133,7 @@ from openai4s.server.titles import SessionTitleService
 from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
+from openai4s.storage.connectors import public_connector
 from openai4s.store import Store, get_store
 from openai4s.tools import control_tool_specs, get_tool
 
@@ -185,6 +194,61 @@ def _share_expires_at(body: dict) -> tuple[bool, int | None]:
 
 _WATCHDOG_INTERRUPT_GRACE_S = 10.0
 _WATCHDOG_KILL_GRACE_S = 10.0
+
+
+# Stable, machine-readable error codes. A client that has to match on English
+# prose is coupled to wording nobody thinks of as an interface, so it breaks the
+# first time a message is improved. Status alone is too coarse: several distinct
+# failures share 400, and a client retrying "invalid cursor" the way it retries
+# "rate limited" is a bug the contract should prevent.
+_ERROR_CODES = {
+    400: "bad_request",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    413: "payload_too_large",
+    422: "unprocessable",
+    423: "locked",
+    429: "rate_limited",
+    500: "internal_error",
+    503: "unavailable",
+}
+
+
+def _error_code_for(status: int) -> str:
+    return _ERROR_CODES.get(int(status), "error" if status < 500 else "internal_error")
+
+
+def _encode_frame_cursor(created_at: int, frame_id: str) -> str:
+    """Opaque cursor. Opaque on purpose: a client that parses it becomes
+    coupled to the sort key, and the key could not then be changed without
+    breaking it."""
+    raw = f"{int(created_at)}:{frame_id}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_frame_cursor(value: str | None) -> tuple[int, str] | None:
+    if not value:
+        return None
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        created, _, frame_id = (
+            base64.urlsafe_b64decode(padded).decode("utf-8").partition(":")
+        )
+        if not frame_id:
+            raise ValueError("missing frame id")
+        return (int(created), frame_id)
+    except Exception as e:  # noqa: BLE001
+        # A cursor we cannot read must not silently become "start from the
+        # beginning" — the client would loop over page one forever.
+        raise GatewayError(400, f"invalid cursor: {e}", "invalid_cursor")
+
+
+_API_ROOT = "/api/v1"
+_API_PREFIX = _API_ROOT + "/"
+_API_WS = _API_ROOT + "/ws"
 _MAX_JSON_BODY_BYTES = MAX_ARCHIVE_BYTES
 
 
@@ -373,6 +437,23 @@ class WSHub:
         self._lock = threading.Lock()
         # per-frame live-turn buffer: {frame_id: {"events": [...], "running": bool}}
         self._live: dict[str, dict] = {}
+        # Monotonic per-frame event counter. Never reset while the daemon lives,
+        # including across turns: a client that reconnects mid-turn compares its
+        # cursor against this, and a counter that restarted would silently look
+        # like "you already have everything".
+        #
+        # Only events that go through `broadcast` are sequenced. Point-to-point
+        # snapshots a subscriber receives directly (`execution_queue`, pending
+        # approval cards) and the replay control frames carry no `seq` on
+        # purpose: they are not positions in the stream, they are state handed
+        # over once, so numbering them would make two clients' cursors disagree
+        # about the same stream.
+        self._seq: dict[str, int] = {}
+
+    def _next_seq_locked(self, root_frame_id: str) -> int:
+        nxt = self._seq.get(root_frame_id, 0) + 1
+        self._seq[root_frame_id] = nxt
+        return nxt
 
     def add(self, c: WSConnection) -> None:
         with self._lock:
@@ -382,7 +463,9 @@ class WSHub:
         with self._lock:
             self._conns.discard(c)
 
-    def subscribe(self, root_frame_id: str, conn: "WSConnection") -> None:
+    def subscribe(
+        self, root_frame_id: str, conn: "WSConnection", since_seq: int = 0
+    ) -> None:
         """Subscribe and enqueue any live replay as one ordered transaction.
 
         ``broadcast`` uses the same lock while enqueueing.  A newly arriving
@@ -395,7 +478,9 @@ class WSHub:
             conn.subs.add(root_frame_id)
             buf = self._live.get(root_frame_id)
             if buf and buf.get("running") and buf.get("events"):
-                self._enqueue_replay_locked(root_frame_id, conn, buf["events"])
+                self._enqueue_replay_locked(
+                    root_frame_id, conn, buf["events"], since_seq
+                )
 
     def unsubscribe(self, root_frame_id: str, conn: "WSConnection") -> None:
         with self._lock:
@@ -853,6 +938,13 @@ class WSHub:
     def broadcast(self, root_frame_id: str | None, obj: dict) -> None:
         with self._lock:
             if root_frame_id:
+                # Stamped under the hub lock, so the number a client sees is the
+                # same order the buffer recorded and the same order every other
+                # subscriber receives. Assigning it outside the lock would let
+                # two producers interleave and hand out a sequence that does not
+                # match delivery order — which is the one thing a resume cursor
+                # cannot tolerate.
+                obj["seq"] = self._next_seq_locked(root_frame_id)
                 self._record(root_frame_id, obj)
             # ``send_json`` only performs JSON encoding + a non-blocking queue
             # put.  Keeping enqueue under the hub lock makes its order atomic
@@ -883,12 +975,37 @@ class WSHub:
 
     @staticmethod
     def _enqueue_replay_locked(
-        root_frame_id: str, conn: "WSConnection", events: list[dict]
+        root_frame_id: str,
+        conn: "WSConnection",
+        events: list[dict],
+        since_seq: int = 0,
     ) -> None:
-        conn.send_json({"type": "replay_begin", "root_frame_id": root_frame_id})
-        for event in events:
+        """Replay buffered events, optionally only those after ``since_seq``.
+
+        ``replay_begin`` carries ``from_seq``/``to_seq`` and whether the window
+        was complete. A client that was away longer than the buffer retains
+        cannot be served by a cursor, and telling it so (``gap: true``) lets it
+        refetch state instead of resuming from a hole it cannot see.
+        """
+        selected = [e for e in events if int(e.get("seq") or 0) > since_seq]
+        first = int(selected[0].get("seq") or 0) if selected else since_seq
+        last = int(selected[-1].get("seq") or 0) if selected else since_seq
+        conn.send_json(
+            {
+                "type": "replay_begin",
+                "root_frame_id": root_frame_id,
+                "from_seq": first,
+                "to_seq": last,
+                # The buffer is capped, so the oldest event it still holds may
+                # be newer than the cursor+1 the client asked for.
+                "gap": bool(since_seq and selected and first > since_seq + 1),
+            }
+        )
+        for event in selected:
             conn.send_json(event)
-        conn.send_json({"type": "replay_end", "root_frame_id": root_frame_id})
+        conn.send_json(
+            {"type": "replay_end", "root_frame_id": root_frame_id, "to_seq": last}
+        )
 
     def emitter(self, root_frame_id: str):
         def emit(event: dict) -> None:
@@ -1463,6 +1580,9 @@ class SessionRunner:
                 ),
                 providers=lambda: PROVIDERS,
                 clean_api_key=lambda value: _clean_api_key(value),
+                resolve_profile_key=lambda profile: _resolve_profile_key(
+                    self.store, profile
+                ),
                 job_factory=lambda job_id, root_frame_id: MessageJob(
                     job_id, root_frame_id
                 ),
@@ -3974,7 +4094,7 @@ class SessionRunner:
         so the UI banner matches what `_llm_cfg` actually sends.
         """
         try:
-            v = _clean_api_key(self.store.get_setting("llm_api_key"))
+            v = _clean_api_key(self.store.get_secret_setting("llm_api_key"))
             if v:
                 return v
         except Exception:  # noqa: BLE001
@@ -3997,8 +4117,12 @@ class SessionRunner:
         try:
             s = {
                 k: self.store.get_setting(k)
-                for k in ("llm_api_key", "llm_model", "llm_base_url", "llm_provider")
+                for k in ("llm_model", "llm_base_url", "llm_provider")
             }
+            # Through the broker, not get_setting: after migration the row
+            # holds a reference, and handing that to the provider as an API key
+            # would fail auth in a way that looks like a bad key.
+            s["llm_api_key"] = self.store.get_secret_setting("llm_api_key")
         except Exception:  # noqa: BLE001
             s = {}
         model_ov = st.model if (st is not None and st.model) else s.get("llm_model")
@@ -5673,10 +5797,16 @@ def _environment_snapshot() -> dict:
 #  HTTP + WS request handler
 # --------------------------------------------------------------------------- #
 class GatewayError(Exception):
-    def __init__(self, code: int, message: str):
+    """An HTTP failure with a status, a human message, and an optional stable
+    machine code. ``error_code`` overrides the status-derived default when a
+    single status covers genuinely different failures a client must tell
+    apart."""
+
+    def __init__(self, code: int, message: str, error_code: str | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.error_code = error_code
 
 
 def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
@@ -5782,10 +5912,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         def _send(
             self, code: int, body: bytes, ctype: str, extra: dict | None = None
         ) -> None:
+            self._last_status = code
             self.send_response(code)
             self.send_header("Content-Type", _sanitize_header_value(ctype))
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-cache")
+            # Echoed so a user reporting a failure can hand over an id that ties
+            # their request to this daemon's log line for it.
+            request_id = getattr(self, "_correlation_id", "")
+            if request_id:
+                self.send_header("X-Request-Id", _sanitize_header_value(request_id))
+            # Applied here rather than at the HTML route so no response can be
+            # added later that quietly opts out.
+            for k, v in security_headers(WEBUI_DIR / "index.html").items():
+                self.send_header(k, v)
             for k, v in (extra or {}).items():
                 self.send_header(k, _sanitize_header_value(v))
             self.end_headers()
@@ -5793,6 +5933,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self.wfile.write(body)
 
         def _json(self, obj, code: int = 200) -> None:
+            # Every error response carries a stable `code` and the request's
+            # correlation id, enriched here rather than at ~29 call sites so a
+            # new route cannot forget. Deliberately ADDITIVE: `error` keeps the
+            # human message it always had, so existing clients (including this
+            # repo's own app.js, which reads `j.error`) are unaffected. Wrapping
+            # SUCCESS bodies in a `{data: …}` envelope was considered and not
+            # done — it would churn every route and every consumer to relocate
+            # information that is already unambiguous, and the failure mode of
+            # getting it half-done is a silently broken screen.
+            if code >= 400 and isinstance(obj, dict) and "error" in obj:
+                obj = {
+                    **obj,
+                    "code": obj.get("code") or _error_code_for(code),
+                    "status": code,
+                    "request_id": getattr(self, "_correlation_id", "") or None,
+                }
             self._send(
                 code,
                 json.dumps(obj, ensure_ascii=False).encode("utf-8"),
@@ -5860,7 +6016,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             return payload
 
         def _prepare_request_body(self, path: str, method: str) -> None:
-            is_session_import = path == "/api/sessions/import" and method == "POST"
+            is_session_import = (
+                path == _API_ROOT + "/sessions/import" and method == "POST"
+            )
             self._read_request_body(
                 limit=MAX_ARCHIVE_BYTES if is_session_import else _MAX_JSON_BODY_BYTES,
                 too_large_message=(
@@ -5871,11 +6029,38 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             )
 
         def _body(self) -> dict:
-            try:
-                payload = self._read_request_body(limit=_MAX_JSON_BODY_BYTES)
-                return json.loads(payload or b"{}")
-            except (ValueError, TypeError):
+            """Parse a JSON request body, or fail with an explicit 4xx.
+
+            Malformed JSON used to become ``{}``. That is the worst possible
+            answer: every route reads its fields with ``b.get(...)``, so a
+            truncated or mistyped body did not fail — it silently became "the
+            client supplied nothing", and the request no-opped while returning
+            200. A client cannot tell that from success, so the bug lands on
+            whoever later wonders why their setting never saved.
+
+            An empty body stays valid and yields ``{}``: routes with only
+            optional fields legitimately accept one. It is *unparseable* input
+            that is now an error, not absent input.
+            """
+            payload = self._read_request_body(limit=_MAX_JSON_BODY_BYTES)
+            if not payload:
                 return {}
+            try:
+                parsed = json.loads(payload)
+            except (ValueError, TypeError) as e:
+                raise GatewayError(
+                    400, f"request body is not valid JSON: {e}", "malformed_json"
+                ) from e
+            if not isinstance(parsed, dict):
+                # `[1,2]` parses fine and then AttributeErrors on the first
+                # .get() — a 500 for what is squarely a client error.
+                raise GatewayError(
+                    400,
+                    f"request body must be a JSON object, got "
+                    f"{type(parsed).__name__}",
+                    "invalid_body_type",
+                )
+            return parsed
 
         def _body_bytes(self, *, limit: int) -> bytes:
             return self._read_request_body(
@@ -5991,6 +6176,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self._request_is_websocket = False
             parsed = urlparse(self.path)
             path = parsed.path
+            # Bind an id for this request before anything can fail, so even a
+            # rejected request is traceable. A client-supplied id is honoured so
+            # a caller can stitch its own trace to ours, but it is bounded and
+            # stripped of anything that could forge a log line.
+            supplied = _sanitize_header_value(self.headers.get("X-Request-Id", ""))
+            self._correlation_id = (
+                "".join(c for c in supplied if c.isalnum() or c in "-_")[:64]
+                or new_correlation_id()
+            )
+            correlation_token = set_correlation_id(self._correlation_id)
             try:
                 # DNS-rebinding defense: pin the Host header to an address we
                 # bind, on EVERY request (GET included) and BEFORE the Origin/
@@ -6008,16 +6203,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # cross-origin writes; reject any mutating /api request whose Origin
                 # is not this same server. Same-origin app fetches + curl (no Origin)
                 # pass through.
-                # The /api/ws upgrade is a GET, but WebSocket handshakes are
+                # The /api/v1/ws upgrade is a GET, but WebSocket handshakes are
                 # exempt from CORS entirely and the socket accepts state-changing
                 # commands (cancel_execution) and streams session output plus
                 # pending approval prompts. Apply the same Origin==Host check so a
-                # foreign page cannot open ws://127.0.0.1:.../api/ws cross-origin.
+                # foreign page cannot open ws://127.0.0.1:.../api/v1/ws cross-origin.
                 # Browsers always send Origin on WS upgrades; non-browser clients
                 # send none and pass.
-                if path == "/api/ws" or (
+                if path == _API_WS or (
                     method in ("POST", "PUT", "PATCH", "DELETE")
-                    and path.startswith("/api/")
+                    and path.startswith(_API_PREFIX)
                 ):
                     origin = self.headers.get("Origin")
                     if origin:
@@ -6061,7 +6256,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         )
                         return
                 # websocket upgrade
-                if path == "/api/ws":
+                if path == _API_WS:
                     if method != "GET":
                         self.close_connection = True
                         raise GatewayError(405, "websocket upgrade requires GET")
@@ -6085,8 +6280,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # static / SPA shell
                 if method == "GET" and self._serve_static(path):
                     return
-                if path.startswith("/api/"):
-                    self._api(method, path[4:])  # strip "/api"
+                if path.startswith(_API_PREFIX):
+                    self._api(method, path[len(_API_ROOT) :])
+                    return
+                if path == "/api" or path.startswith("/api/"):
+                    # An un-versioned or wrong-version API path. Without this it
+                    # would fall through to the SPA shell below and answer 200
+                    # with HTML — a client would read that as success and then
+                    # fail parsing JSON, which is a worse failure than a clear
+                    # one. Say what happened and where the surface went.
+                    self._json(
+                        {
+                            "error": (
+                                f"the API is versioned; use {_API_ROOT} "
+                                f"(this daemon serves contract v1 only)"
+                            ),
+                            "path": path,
+                            "api_root": _API_ROOT,
+                        },
+                        404,
+                    )
                     return
                 if method == "GET" and path.startswith("/preview/"):
                     self._serve_artifact(
@@ -6105,7 +6318,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json({"error": "not found"}, 404)
             except GatewayError as ge:
                 try:
-                    self._json({"error": ge.message}, ge.code)
+                    payload = {"error": ge.message}
+                    if ge.error_code:
+                        payload["code"] = ge.error_code
+                    self._json(payload, ge.code)
                 except (BrokenPipeError, ConnectionResetError):
                     self.close_connection = True
             except (BrokenPipeError, ConnectionResetError):
@@ -6124,6 +6340,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._request_body_payload = b""
                 self._request_body_ready = False
                 self._request_body_tracking_active = False
+                # Path only, never the query string: tokens and ids ride there.
+                log_event(
+                    "http_request",
+                    method=method,
+                    path=path,
+                    status=getattr(self, "_last_status", None),
+                )
+                reset_correlation_id(correlation_token)
 
         # ---- static -----------------------------------------------------
         def _serve_index(self) -> None:
@@ -6175,6 +6399,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self.send_header("Content-Type", _sanitize_header_value(ctype))
                 self.send_header("Content-Length", str(size))
                 self.send_header("Cache-Control", "no-cache")
+                # This path streams artifact bytes — agent-authored content, so
+                # the one that most needs nosniff and a closed CSP. It builds
+                # its own headers instead of going through _send, so it has to
+                # opt in explicitly.
+                for key, value in security_headers(WEBUI_DIR / "index.html").items():
+                    self.send_header(key, value)
                 for key, value in (extra or {}).items():
                     self.send_header(key, _sanitize_header_value(value))
                 self.end_headers()
@@ -6418,9 +6648,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         if field in b and b[field] is not None:
                             store.set_setting(key, str(b[field]).strip())
                     if b.get("api_key"):  # only overwrite when a value is supplied
-                        store.set_setting("llm_api_key", _clean_api_key(b["api_key"]))
+                        store.set_secret_setting(
+                            "llm_api_key", _clean_api_key(b["api_key"]), scope="llm"
+                        )
                     if b.get("clear_api_key"):
-                        store.set_setting("llm_api_key", "")
+                        store.set_secret_setting("llm_api_key", "", scope="llm")
                     if b.get("model"):
                         _default_model["id"] = str(b["model"]).strip()
                     self._json(
@@ -6631,28 +6863,75 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if sub.split("?")[0] == "/frames" or sub.startswith("/frames?"):
                 if method == "GET":
                     pid = (q.get("project_id") or [None])[0]
-                    limit = int((q.get("limit") or ["100"])[0])
-                    frames = store.browse_frames(
-                        project_id=pid or "all", roots_only=True, limit=limit * 2
-                    )
+                    try:
+                        limit = max(1, min(200, int((q.get("limit") or ["100"])[0])))
+                    except (TypeError, ValueError):
+                        raise GatewayError(
+                            400, "limit must be an integer", "invalid_limit"
+                        )
+                    cursor = _decode_frame_cursor((q.get("cursor") or [None])[0])
                     running = runner.running_frames()  # scan jobs ONCE, not per row
-                    out = []
-                    for f in frames:
-                        fj = _frame_json(f, store)
-                        # hide abandoned empty sessions (no messages, no cells,
-                        # no title) — but keep REPL-only sessions (have cells)
-                        if (
-                            not fj["message_count"]
-                            and not fj.get("name")
-                            and not fj.get("task_summary")
-                            and not store.cell_count(f["frame_id"])
-                        ):
-                            continue
-                        # live-activity annotations for the session list badges
-                        fj["running"] = f["frame_id"] in running
-                        fj["kernel_alive"] = runner.kernel_alive(f["frame_id"])
-                        out.append(fj)
-                    self._json(out[:limit])
+
+                    # Collect one MORE than the page size, then report
+                    # has_more from that. The obvious version — fetch a batch,
+                    # filter, stop at `limit` — cannot tell a short page from
+                    # the last page, because the filter runs after the read: a
+                    # project whose sessions are mostly hidden returns fewer
+                    # rows than asked and the client reads that as the end.
+                    # Asking for one extra makes "is there another page" an
+                    # observation instead of an inference.
+                    out: list[dict] = []
+                    want = limit + 1
+                    while len(out) < want:
+                        batch = store.browse_frames(
+                            project_id=pid or "all",
+                            roots_only=True,
+                            limit=limit * 2,
+                            before=cursor,
+                        )
+                        if not batch:
+                            break
+                        last = batch[-1]
+                        cursor = (int(last["created_at"] or 0), last["frame_id"])
+                        store_drained = len(batch) < limit * 2
+                        for f in batch:
+                            fj = _frame_json(f, store)
+                            # hide abandoned empty sessions (no messages, no
+                            # cells, no title) — but keep REPL-only sessions
+                            if (
+                                not fj["message_count"]
+                                and not fj.get("name")
+                                and not fj.get("task_summary")
+                                and not store.cell_count(f["frame_id"])
+                            ):
+                                continue
+                            fj["running"] = f["frame_id"] in running
+                            fj["kernel_alive"] = runner.kernel_alive(f["frame_id"])
+                            fj["_cursor"] = (
+                                int(f["created_at"] or 0),
+                                f["frame_id"],
+                            )
+                            out.append(fj)
+                            if len(out) >= want:
+                                break
+                        if store_drained:
+                            break
+
+                    has_more = len(out) > limit
+                    page = out[:limit]
+                    next_cursor = None
+                    if has_more and page:
+                        tail = page[-1]["_cursor"]
+                        next_cursor = _encode_frame_cursor(tail[0], tail[1])
+                    for row in page:
+                        row.pop("_cursor", None)
+                    self._json(
+                        {
+                            "frames": page,
+                            "next_cursor": next_cursor,
+                            "has_more": has_more,
+                        }
+                    )
                     return
                 if method == "POST":
                     b = self._body()
@@ -8002,15 +8281,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json({"error": "name and command required"}, 400)
                     return
                 cid = b.get("connector_id") or _skill_slug(nm)
+                # upsert_connector re-reads the row, so echoing its return value
+                # replayed the env the client just sent straight back out.
                 self._json(
-                    store.upsert_connector(
-                        connector_id=cid,
-                        name=nm,
-                        description=b.get("description") or "",
-                        command=cmd,
-                        args=b.get("args"),
-                        env=b.get("env"),
-                        enabled=b.get("enabled", True),
+                    public_connector(
+                        store.upsert_connector(
+                            connector_id=cid,
+                            name=nm,
+                            description=b.get("description") or "",
+                            command=cmd,
+                            args=b.get("args"),
+                            env=b.get("env"),
+                            enabled=b.get("enabled", True),
+                        )
                     )
                 )
                 return
@@ -8035,7 +8318,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 mcfg = {
                     "command": c["command"],
                     "args": c.get("args"),
-                    "env": c.get("env"),
+                    # Resolved — the row holds references once migrated.
+                    "env": store.connector_env(c),
                 }
                 self._json(manager().probe(mcfg))
                 return
@@ -8051,7 +8335,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 mcfg = {
                     "command": c["command"],
                     "args": c.get("args"),
-                    "env": c.get("env"),
+                    # Resolved — the row holds references once migrated.
+                    "env": store.connector_env(c),
                 }
                 try:
                     self._json(
@@ -8255,16 +8540,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if method in ("PUT", "PATCH", "POST"):
                     b = self._body()
                     if b.get("clear_api_key"):
-                        store.set_setting("tavily_api_key", "")
+                        store.set_secret_setting("tavily_api_key", "", scope="search")
                         _os.environ.pop("OPENAI4S_TAVILY_API_KEY", None)
                     else:
                         key = (b.get("api_key") or "").strip()
                         if key:
-                            store.set_setting("tavily_api_key", key)
+                            store.set_secret_setting(
+                                "tavily_api_key", key, scope="search"
+                            )
                             _os.environ["OPENAI4S_TAVILY_API_KEY"] = key
                 configured = bool(
                     (_os.environ.get("OPENAI4S_TAVILY_API_KEY") or "").strip()
-                    or (store.get_setting("tavily_api_key") or "").strip()
+                    # A reference is truthy but is not a key; ask the broker
+                    # whether one is actually stored.
+                    or (store.get_secret_setting("tavily_api_key") or "").strip()
                 )
                 self._json(
                     {
@@ -8332,13 +8621,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             return out
 
         def _connectors_payload(self, store) -> list[dict]:
-            # Cheap: return stored connectors as-is (no probe — probing spawns a
+            # Cheap: return stored connectors (no probe — probing spawns a
             # process; the UI probes on demand). Mark the argv for display.
+            #
+            # Projected, never spread: a connector's `env` holds the credentials
+            # its MCP server is launched with, and `{**c}` handed every one of
+            # them to the browser.
             out = []
             for c in store.list_connectors():
                 cmd = c.get("command")
                 display = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
-                out.append({**c, "command_display": display})
+                out.append({**public_connector(c), "command_display": display})
             return out
 
         def _compute_providers(self) -> list[dict]:
@@ -8510,7 +8803,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             # Subscription and replay share the hub's enqueue
                             # order with live broadcasts, so a new Cell event
                             # can never interleave into an older snapshot.
-                            hub.subscribe(rid, conn)
+                            #
+                            # `since_seq` is the resume cursor: a client that
+                            # dropped mid-turn sends the highest seq it actually
+                            # rendered and gets only what it missed, instead of
+                            # re-receiving the whole turn and having to
+                            # de-duplicate it. Absent or 0 means "send
+                            # everything buffered", which is the old behaviour.
+                            try:
+                                since_seq = int(msg.get("since_seq") or 0)
+                            except (TypeError, ValueError):
+                                since_seq = 0
+                            hub.subscribe(rid, conn, max(0, since_seq))
                             # re-surface any tool-call approval prompt that is
                             # still pending, so a mid-pause reconnect can answer.
                             try:
@@ -8755,14 +9059,26 @@ class _GatewayHTTPServer(ThreadingHTTPServer):
 def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     cfg = cfg or get_config()
     cfg.ensure_dirs()
-    # Ship the scientific + networking stack with the kernel: install any missing
-    # CORE packages in the background at startup so agent tasks never stall on a
-    # first-use `pip install`. Idempotent + instant when everything is present.
+    # Report what the scientific stack is missing; do NOT install it. Starting
+    # the daemon must not mutate the user's Python environment — this used to
+    # call ensure_core(background=True), which resolved ~23 unpinned names
+    # against PyPI and installed them with --break-system-packages on a thread
+    # nobody was watching. The UI surfaces the plan (Customize → Compute) and
+    # `openai4s setup` applies it.
     try:
         from openai4s.kernel import preinstall
 
-        preinstall.ensure_core(background=True)
-    except Exception:  # noqa: BLE001 - preinstall must never block startup
+        plan = preinstall.core_plan()
+        if plan["missing"]:
+            print(
+                f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
+                f"installed: {', '.join(plan['missing'][:6])}"
+                f"{' …' if len(plan['missing']) > 6 else ''}\n"
+                f"[openai4s] startup does not install packages. Run "
+                f"`openai4s setup`, or install from Customize → Compute.",
+                file=sys.stderr,
+            )
+    except Exception:  # noqa: BLE001 - diagnostics must never block startup
         traceback.print_exc()
     hub = WSHub()
     runner = SessionRunner(cfg, hub)
@@ -8777,8 +9093,69 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         traceback.print_exc()
     # Load a UI-saved web-search (Tavily) key into the env webtools reads, unless
     # an explicit env/.env value is already set (which wins).
+    # Move any plaintext credential out of the database and behind a broker
+    # reference. Ordered write -> verify -> replace, so an interruption leaves
+    # the old plaintext authoritative and the next start retries; a key that
+    # cannot be migrated keeps working as plaintext rather than being lost.
     try:
-        _tav = get_store(cfg.db_path).get_setting("tavily_api_key")
+        from openai4s.security.secret_migration import (
+            migrate_connector_env,
+            migrate_settings_secrets,
+        )
+
+        _store = get_store(cfg.db_path)
+        _report = migrate_settings_secrets(_store, _store.secrets)
+        if _report.migrated:
+            print(
+                f"[openai4s] moved {len(_report.migrated)} credential(s) into "
+                f"{_store.secrets.posture()['backend']}: "
+                f"{', '.join(_report.migrated)}",
+                file=sys.stderr,
+            )
+        for _failure in _report.failed:
+            print(
+                f"[openai4s] could not migrate {_failure['key']}: "
+                f"{_failure['error']} — it remains stored in plaintext",
+                file=sys.stderr,
+            )
+
+        # Each saved model profile carries its own key inside the
+        # model_profiles blob; the active one is only mirrored into
+        # llm_api_key, so migrating that alone would leave every other
+        # configured endpoint's key in the clear.
+        _profiles = ModelProfileService(_store, cfg, providers=lambda: PROVIDERS)
+        _pr = _profiles.migrate_profile_keys()
+        if _pr["migrated"]:
+            print(
+                f"[openai4s] moved {len(_pr['migrated'])} model-profile key(s) "
+                f"into {_store.secrets.posture()['backend']}",
+                file=sys.stderr,
+            )
+        for _failure in _pr["failed"]:
+            print(
+                f"[openai4s] could not migrate profile {_failure['id']}: "
+                f"{_failure['error']} — its key remains in plaintext",
+                file=sys.stderr,
+            )
+
+        _cr = migrate_connector_env(_store)
+        if _cr["migrated"]:
+            print(
+                f"[openai4s] moved env for {len(_cr['migrated'])} connector(s) "
+                f"into {_store.secrets.posture()['backend']}",
+                file=sys.stderr,
+            )
+        for _failure in _cr["failed"]:
+            print(
+                f"[openai4s] could not migrate connector {_failure['id']}: "
+                f"{_failure['error']} — its env remains in plaintext",
+                file=sys.stderr,
+            )
+    except Exception:  # noqa: BLE001 - never block startup on this
+        traceback.print_exc()
+
+    try:
+        _tav = get_store(cfg.db_path).get_secret_setting("tavily_api_key")
         if _tav and not os.environ.get("OPENAI4S_TAVILY_API_KEY"):
             os.environ["OPENAI4S_TAVILY_API_KEY"] = _tav
     except Exception:  # noqa: BLE001

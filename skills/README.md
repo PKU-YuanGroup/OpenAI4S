@@ -58,3 +58,6 @@ summary and nothing more until a Skill is selected; only then does it read
 - Provider shims are trusted extension code and run across compute or endpoint
   boundaries documented elsewhere. A manifest on its own does not make a
   capability operational.
+
+- [`evidence-walkthrough/`](evidence-walkthrough/) — the reference pass: fixed query, local analysis, artifacts carrying lineage, and a package that verifies in a clean environment.
+- [`bioprobench/`](bioprobench/) — protocol-reasoning evaluation.

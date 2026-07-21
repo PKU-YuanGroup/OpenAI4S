@@ -41,7 +41,7 @@ from .catalog import (
 )
 from .client import chat as _client_chat
 from .client import supports_vision
-from .models import LLMError
+from .models import LLMError, TransportError, parse_retry_after
 from .providers.anthropic import _ANTHROPIC_VERSION
 from .registry import (
     PROVIDERS,
@@ -64,7 +64,9 @@ __all__ = [
     "PROVIDERS",
     "ProviderCapabilities",
     "SUPPORTED_WIRES",
+    "TransportError",
     "UsageMapping",
+    "parse_retry_after",
     "bind_provider_registry",
     "calculate_usage_cost_usd",
     "capability_cache_info",

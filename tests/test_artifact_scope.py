@@ -214,6 +214,15 @@ def test_store_migration_repairs_historical_child_scope(tmp_path):
         "WHERE artifact_id=?",
         (child, record["artifact_id"]),
     )
+    # Make the simulation of "historical" faithful. The rows above are hand-made
+    # to look like data written by a version that predates project_id
+    # inheritance, so the database they live in has to look that old too — the
+    # repair is a one-time migration, not a healer that re-runs on every open.
+    # (It used to re-run every open only because there was no version to know
+    # better; that meant a full-table UPDATE over frames and artifacts on every
+    # single Store construction. Real databases still get repaired: the upgrade
+    # path is v0 -> run the baseline, which includes this repair -> stamp v1.)
+    store._conn.execute("PRAGMA user_version = 0")
     store._conn.commit()
     store.close()
 

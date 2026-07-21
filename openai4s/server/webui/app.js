@@ -1,5 +1,5 @@
 "use strict";
-// OpenAI4S UI — aligned to Claude Science (dashboard + conversation), over /api + /api/ws.
+// OpenAI4S UI — aligned to Claude Science (dashboard + conversation), over /api/v1 + /api/v1/ws.
 const $ = (s) => document.querySelector(s);
 const el = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
 const esc = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -78,12 +78,16 @@ const icon = (name, size, cls) => `<svg class="ic-svg${cls ? " " + cls : ""}" wi
 const iconEl = (name, size, cls) => { const s = el("span", "ic"); s.innerHTML = icon(name, size, cls); return s.firstChild; };
 function paintIcons(root) { (root || document).querySelectorAll("[data-icon]").forEach(e => { if (e._painted) return; e.innerHTML = icon(e.dataset.icon, +e.dataset.iconSize || 16); e._painted = true; }); }
 function setTitle(name) { const ct = $("#conv-title"); if (!ct) return; ct.value = name || t("conv.title.default"); ct.size = Math.max(6, Math.min(40, (name || t("conv.title.default")).length + 1)); }
+// The versioned API root. Contract v1 is the frozen surface; a future version
+// bump is this one line plus a gateway prefix, not a sweep through the file.
+const API = "/api/v1";
+
 const api = async (p, o = {}) => {
   // `p` must be an internal, same-origin API path: a single leading slash and no
   // scheme/host. Rejecting "//host" (protocol-relative) and non-string input keeps
   // an untrusted id interpolated into `p` from redirecting the request off-origin.
   if (typeof p !== "string" || p[0] !== "/" || p[1] === "/") throw new Error("invalid api path");
-  const r = await fetch("/api" + p, { headers: { "content-type": "application/json" }, ...o });
+  const r = await fetch(API + p, { headers: { "content-type": "application/json" }, ...o });
   const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch { j = t; }
   if (!r.ok) throw new Error((j && (j.error || j.detail)) || ("HTTP " + r.status)); return j;
 };
@@ -2818,14 +2822,26 @@ function renderActionTimeline() {
 
 /* ---------- WebSocket ---------- */
 function connectWS() {
-  const ws = new WebSocket((location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/api/ws");
+  const ws = new WebSocket((location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + API + "/ws");
   S.ws = ws;
   ws.onopen = () => { conn(true); if (S.currentId) sub(S.currentId); };
   ws.onclose = () => { conn(false); setTimeout(connectWS, 1500); };
-  ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } onEvent(m); };
+  ws.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    // Record the cursor only AFTER onEvent has applied it: advancing first
+    // would let a handler that throws leave the client claiming an event it
+    // never rendered, and the resume would then skip it for good.
+    onEvent(m);
+    const rid = m && m.root_frame_id, sq = m && m.seq;
+    if (rid && typeof sq === "number" && sq > (S._seqSeen[rid] || 0)) S._seqSeen[rid] = sq;
+  };
   clearInterval(connectWS._p); connectWS._p = setInterval(() => { try { ws.readyState === 1 && ws.send('{"type":"ping"}'); } catch {} }, 25000);
 }
-const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f })); } catch {} };
+// Highest event seq actually applied, per frame. Sent back on (re)subscribe so
+// the server replays only what was missed instead of the whole turn — the
+// client would otherwise have to de-duplicate a stream it cannot tell apart.
+S._seqSeen = S._seqSeen || {};
+const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f, since_seq: S._seqSeen[f] || 0 })); } catch {} };
 const unsub = (f) => { try { S.ws && S.ws.readyState === 1 && f && S.ws.send(JSON.stringify({ type: "unview_session", root_frame_id: f })); } catch {} };
 const conn = (on) => { const d = $("#conn-dot"); if (d) d.className = "dot " + (on ? "on" : "off"); };
 function onEvent(m) {
@@ -3672,7 +3688,7 @@ async function loadDashboard() {
   paintDashSkeleton();
   await loadProjects();
   let frames = [];
-  try { frames = (await api("/frames?limit=50")).filter?.(f => !f.parent_frame_id) || []; } catch {}
+  try { frames = ((await api("/frames?limit=50")).frames || []).filter(f => !f.parent_frame_id); } catch {}
   // annotate projects with a live running-session count (derived from frames)
   const rc = {};
   frames.forEach(f => { if (f.running) rc[f.project_id] = (rc[f.project_id] || 0) + 1; });
@@ -3749,7 +3765,7 @@ async function refreshDashRunning() {
   // Skip work while the tab is backgrounded; the next visible tick will catch up.
   if (typeof document.hidden === "boolean" && document.hidden) return;
   let frames = [];
-  try { frames = (await api("/frames?limit=50")).filter?.(f => !f.parent_frame_id) || []; } catch { return; }
+  try { frames = ((await api("/frames?limit=50")).frames || []).filter(f => !f.parent_frame_id); } catch { return; }
   if ($("#dashboard").classList.contains("hidden")) return;
   renderDashRunning(frames);
 }
@@ -3850,7 +3866,7 @@ function renderProjMenu() {
     if (current) item(t("proj.menu.settings"), "settings", () => openProjectModal(current));
     item(t("projectResearch.menu"), "provenance", () => openProjectResearchView("timeline"));
     item(t("sessionPackage.import"), "cloud-upload", chooseSessionPackage);
-    item(t("proj.menu.downloadArtifacts"), "download", () => downloadArtifactBundle(`/api/projects/${encodeURIComponent(S.project)}/artifacts.zip`, `${projName(S.project)}-artifacts.zip`));
+    item(t("proj.menu.downloadArtifacts"), "download", () => downloadArtifactBundle(`${API}/projects/${encodeURIComponent(S.project)}/artifacts.zip`, `${projName(S.project)}-artifacts.zip`));
     m.appendChild(el("div", "ctx-sep"));
   }
   item(t("proj.menu.allProjects"), "arrow-left", showDashboard);
@@ -3916,7 +3932,7 @@ async function deleteProject(id) {
 
 /* ---------- sessions ---------- */
 async function loadSessions() {
-  try { const f = await api("/frames?limit=100"); S.sessions = (Array.isArray(f) ? f : []).filter(x => !x.parent_frame_id); } catch { S.sessions = []; }
+  try { const f = await api("/frames?limit=100"); S.sessions = (f.frames || []).filter(x => !x.parent_frame_id); } catch { S.sessions = []; }
   await loadFolders();
   renderSessions(); syncCurrentTitle(); if (!$("#dashboard").classList.contains("hidden")) loadDashboard();
 }
@@ -4200,7 +4216,7 @@ function sessionMenu(anchor, fid) {
     { label: t("sessionMenu.exportMarkdown"), icon: "download", onClick: () => exportSession(fid) },
     { label: t("share.menu"), icon: "share", onClick: () => openShareDialog(fid, frame) },
     { label: t("sessionPackage.export"), icon: "archive", onClick: () => exportSessionPackage(fid, frame) },
-    { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`/api/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
+    { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`${API}/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
     { label: t("sessionMenu.viewNotebook"), icon: "notebook", onClick: async () => { if (fid !== S.currentId) await openConversation(fid, frame.project_id); setActiveTab("notebook"); } },
     { sep: true },
     { label: t("sessionMenu.duplicate"), icon: "copy", onClick: () => duplicateSession(fid) },
@@ -4212,7 +4228,7 @@ function sessionMenu(anchor, fid) {
 function exportSessionPackage(fid, frame = {}) {
   const label = frame.name || frame.task_summary || "session";
   downloadArtifactBundle(
-    `/api/frames/${encodeURIComponent(fid)}/session/export`,
+    `${API}/frames/${encodeURIComponent(fid)}/session/export`,
     label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip",
   );
 }
@@ -4362,7 +4378,7 @@ async function importSessionPackage(file) {
   if (!file) return;
   if (file.size > 128 * 1024 * 1024) { hint(t("sessionPackage.tooLarge"), true); return; }
   try {
-    const response = await fetch("/api/sessions/import", {
+    const response = await fetch(API + "/sessions/import", {
       method: "POST",
       headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
       body: file,
@@ -4813,7 +4829,7 @@ function renderFilesGrid() {
 function tileThumbBig(a) { const t = tileThumb(a); t.className = "a-thumb"; return t; }
 
 /* Shared artifact body renderer (used by dock Viewer + fullscreen modal). */
-function artUrl(a) { const b = (S._artBust || {})[a.id]; return `/api/artifacts/${a.id}` + (b ? `?_=${b}` : ""); }
+function artUrl(a) { const b = (S._artBust || {})[a.id]; return `${API}/artifacts/${a.id}` + (b ? `?_=${b}` : ""); }
 function scientificRenderers() { return window.OpenAI4SScientificRenderers || null; }
 function artifactRendererVersion(a) { return a && (a.version_id || a.latest_version_id) || ""; }
 function loadRendererCatalog() {
@@ -5384,7 +5400,7 @@ function toggleAnnotList(anchor) {
 /* Fullscreen: center modal. */
 function openArtifact(a) {
   $("#modal-title").textContent = a.filename || t("modal.title.preview");
-  const dl = $("#modal-download"); dl.style.display = ""; dl.href = `/api/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact");
+  const dl = $("#modal-download"); dl.style.display = ""; dl.href = `${API}/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact");
   renderArtifactBody($("#modal-body"), a);
   openModalEl($("#modal"));
 }
@@ -5401,7 +5417,7 @@ function renderViewer() {
   const menuBtn = ghostIconBtn("more-vertical", t("viewer.act.more")); menuBtn.onclick = () => artifactMenu(menuBtn, a);
   if (!S.provMode && isTextEditable(a)) { const editBtn = ghostIconBtn("pencil", t("common.edit")); editBtn.onclick = () => editArtifact(a); acts.appendChild(editBtn); }
   const maxBtn = ghostIconBtn("maximize-2", t("viewer.act.fullscreen")); maxBtn.onclick = () => openArtifact(a);
-  const dl = el("a", "icon-ghost"); dl.innerHTML = icon("download", 16); dl.href = `/api/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact"); dl.title = t("common.download");
+  const dl = el("a", "icon-ghost"); dl.innerHTML = icon("download", 16); dl.href = `${API}/artifacts/${a.id}`; dl.setAttribute("download", a.filename || "artifact"); dl.title = t("common.download");
   const closeBtn = ghostIconBtn("x", t("common.close")); closeBtn.onclick = () => { if (S.provMode) { S.provMode = false; renderViewer(); } else closeTab(a.id); };
   acts.insertBefore(menuBtn, acts.firstChild); acts.appendChild(maxBtn); acts.appendChild(dl); acts.appendChild(closeBtn);
   head.appendChild(acts); v.appendChild(head);
@@ -5452,7 +5468,7 @@ function renderArtifactEditor(body, a) {
   ta.addEventListener("blur", () => setTimeout(() => { if (!ec.dead) edacClose(ec); }, 120));  // grace for popup mousedown
   ta.addEventListener("scroll", () => edacClose(ec));
   ta.addEventListener("click", () => edacClose(ec));  // click repositions the caret → dismiss
-  fetch(`/api/artifacts/${a.id}?_=${Date.now()}`).then(r => r.text()).then(t => { ta.value = t; ta.disabled = false; ta.focus(); }).catch(() => { ta.value = ""; ta.disabled = false; });
+  fetch(`${API}/artifacts/${a.id}?_=${Date.now()}`).then(r => r.text()).then(t => { ta.value = t; ta.disabled = false; ta.focus(); }).catch(() => { ta.value = ""; ta.disabled = false; });
   cancel.onclick = () => { S._editing = null; renderViewer(); };
   save.onclick = async () => {
     save.disabled = true; save.textContent = t("common.saving");
@@ -5473,7 +5489,7 @@ function artifactMenu(anchor, a) {
     { sep: true },
     { label: starred ? t("menu.unstar") : t("menu.star"), icon: "star", onClick: () => setArtPriority(a, starred ? 0 : 1) },
     { label: t("menu.hideFromList"), icon: "eye-off", onClick: () => setArtPriority(a, -1, true) },
-    { label: t("menu.copyLink"), icon: "link", onClick: () => { try { navigator.clipboard && navigator.clipboard.writeText(location.origin + "/api/artifacts/" + a.id); } catch {} hint(t("artifact.linkCopied")); } },
+    { label: t("menu.copyLink"), icon: "link", onClick: () => { try { navigator.clipboard && navigator.clipboard.writeText(location.origin + API + "/artifacts/" + a.id); } catch {} hint(t("artifact.linkCopied")); } },
     { label: t("common.edit"), icon: "pencil", onClick: () => { if (isTextEditable(a)) editArtifact(a); else hint(t("artifact.notEditable")); } },
     { label: t("folder.menu.rename"), icon: "pencil", onClick: () => renameArtifact(a) },
     { label: t("menu.exportMetadata"), icon: "file-text", onClick: () => exportMetadata(a) },
@@ -5516,7 +5532,7 @@ async function showVersions(a) {
       info.appendChild(el("div", "ver-meta", (bytes(v.size_bytes) || "") + " · " + ago(v.created_at)));
       row.appendChild(info);
       const acts = el("div", "ver-acts");
-      const view = el("a", "outline-btn small", t("common.view")); view.href = `/api/artifacts/${v.version_id}`; view.target = "_blank"; acts.appendChild(view);
+      const view = el("a", "outline-btn small", t("common.view")); view.href = `${API}/artifacts/${v.version_id}`; view.target = "_blank"; acts.appendChild(view);
       if (!v.is_latest) { const rb = el("button", "solid-btn small", t("versions.restore")); rb.onclick = async () => { rb.disabled = true; rb.textContent = t("versions.restoring"); try { const restored = await api(`/artifacts/${a.id}/versions/${v.version_id}/restore`, { method: "POST" }); syncArtifactVersion((restored && restored.artifact) || { id: a.id, version_id: v.version_id }, true); hint(t("versions.restored", v.ordinal)); (S._artBust = S._artBust || {})[a.id] = Date.now(); if (S.currentId) loadArtifacts(S.currentId); if (S.dockArtifact && S.dockArtifact.id === a.id) { if (S.provMode) showProvenance(S.dockArtifact); else renderViewer(); } render(); } catch (e) { rb.disabled = false; rb.textContent = t("versions.restore"); hint(t("versions.restore.err", e.message), true); } }; acts.appendChild(rb); }
       row.appendChild(acts); wrap.appendChild(row);
     });
@@ -5588,14 +5604,14 @@ function artUrlByName(fname) {
   if (!fname) return "";
   const base = String(fname).split("/").pop();
   const a = (S.artifacts || []).find(x => (x.filename || "") === fname || (x.filename || "").split("/").pop() === base);
-  return a ? artUrl(a) : `/api/artifacts/${encodeURIComponent(fname)}`;  // artUrl adds the version cache-bust
+  return a ? artUrl(a) : `${API}/artifacts/${encodeURIComponent(fname)}`;  // artUrl adds the version cache-bust
 }
 // Same, but cache-busted by the artifact's current version so an overwritten
 // table (re-run cell) refetches instead of serving the browser's stale copy.
 function artUrlBust(fname) {
   const base = String(fname).split("/").pop();
   const a = (S.artifacts || []).find(x => (x.filename || "") === fname || (x.filename || "").split("/").pop() === base);
-  return a ? artUrl(a) : `/api/artifacts/${encodeURIComponent(fname)}`;
+  return a ? artUrl(a) : `${API}/artifacts/${encodeURIComponent(fname)}`;
 }
 // Minimal RFC-4180-ish parser: handles quoted fields, "" escapes and CRLF.
 function parseDelimited(text, sep) {
@@ -6009,7 +6025,7 @@ function notebookExportLink(frameId) {
   const dl = el("a", "prov-dlbtn");
   dl.appendChild(iconEl("download", 14));
   dl.appendChild(el("span", null, t("prov.exec.downloadNotebook")));
-  dl.href = `/api/frames/${encodeURIComponent(frameId)}/notebook/export?language=bundle`;
+  dl.href = `${API}/frames/${encodeURIComponent(frameId)}/notebook/export?language=bundle`;
   dl.setAttribute("download", `${frameId}.notebooks.zip`);
   return dl;
 }
@@ -6925,11 +6941,37 @@ async function renderRemoteGPU(c) {
   const hd = el("div", "cust-row"); hd.innerHTML = `<div class="info"><div class="nm">${t("cust.remote.title")}</div><div class="ds">${t("cust.remote.desc")}</div></div>`; c.appendChild(hd);
   const hosts = (info && info.hosts) || [];
   hosts.forEach(h => {
-    const row = el("div", "cust-row"); const dot = h.reachable ? "🟢" : "🔴";
-    const gpus = h.gpus || (h.reachable ? "" : t("cust.remote.unreachable"));
-    const caps = (h.capabilities || []).map(cp => `<span style="display:inline-block;padding:1px 7px;margin:3px 4px 0 0;border-radius:8px;background:rgba(127,127,127,.18);font-size:11px">${cp.name}${cp.engine ? " · " + cp.engine : ""}${cp.verified ? " ✓" : ""}</span>`).join("");
+    // Built with DOM nodes, not innerHTML. Every string here comes off a
+    // machine we do not control: the label/alias is whatever the user's
+    // ~/.ssh/config says, and gpus and capability names are literally the
+    // stdout of `nvidia-smi` and a service probe on the remote host. Through
+    // innerHTML a hostile or merely odd GPU name was markup.
+    const row = el("div", "cust-row");
     const inf = el("div", "info");
-    inf.innerHTML = `<div class="nm">${dot} ${h.label || h.alias} <span style="opacity:.55;font-weight:400">· ${h.provider}</span></div><div class="ds">${gpus}${caps ? "<br>" + t("cust.remote.services") + " " + caps : "<br><span style='opacity:.6'>" + t("cust.remote.noservices") + "</span>"}</div>`;
+
+    const nm = el("div", "nm", (h.reachable ? "🟢 " : "🔴 ") + (h.label || h.alias || ""));
+    const prov = el("span", null, " · " + (h.provider || ""));
+    prov.style.opacity = ".55";
+    prov.style.fontWeight = "400";
+    nm.appendChild(prov);
+    inf.appendChild(nm);
+
+    const ds = el("div", "ds", h.gpus || (h.reachable ? "" : t("cust.remote.unreachable")));
+    const caps = h.capabilities || [];
+    ds.appendChild(el("br"));
+    if (caps.length) {
+      ds.appendChild(document.createTextNode(t("cust.remote.services") + " "));
+      caps.forEach(cp => {
+        const chip = el("span", null, (cp.name || "") + (cp.engine ? " · " + cp.engine : "") + (cp.verified ? " ✓" : ""));
+        chip.style.cssText = "display:inline-block;padding:1px 7px;margin:3px 4px 0 0;border-radius:8px;background:rgba(127,127,127,.18);font-size:11px";
+        ds.appendChild(chip);
+      });
+    } else {
+      const none = el("span", null, t("cust.remote.noservices"));
+      none.style.opacity = ".6";
+      ds.appendChild(none);
+    }
+    inf.appendChild(ds);
     const rm = el("button", "outline-btn small", t("common.remove"));
     rm.onclick = async () => { if (!confirm(t("cust.remote.confirmRemove", h.alias))) return; try { await api("/compute/remote/" + encodeURIComponent(h.alias), { method: "DELETE" }); custTab("compute"); } catch (e) { hint(e.message, true); } };
     row.appendChild(inf); row.appendChild(rm); c.appendChild(row);
@@ -6944,7 +6986,20 @@ async function renderRemoteGPU(c) {
   add.onclick = async () => { const alias = sel.value; if (!alias) return; add.disabled = true; add.textContent = t("cust.remote.testing"); try { const r = await api("/compute/remote", { method: "POST", body: JSON.stringify({ alias }) }); hint(r.reachable ? t("cust.remote.added", alias, r.gpus || "") : t("cust.remote.addedUnreachable", alias)); custTab("compute"); } catch (e) { hint(e.message, true); add.disabled = false; add.textContent = t("common.add"); } };
   ds.appendChild(sel); ds.appendChild(add); ai.appendChild(ds); addRow.appendChild(ai); c.appendChild(addRow);
 }
-async function custCompute(c) { try { const gpu = await api("/compute/gpu"); const env = await api("/environments/status").catch(() => ({ environments: [] })); const host = await api("/compute/local/hostinfo").catch(() => ({})); c.innerHTML = ""; c.appendChild(hdr(t("cust.compute.title"), t("cust.compute.desc"))); const hostRow = el("div", "cust-row"); hostRow.innerHTML = `<div class="info"><div class="nm">${t("cust.compute.host")}</div><div class="ds">${t("cust.compute.hostDetail", host.python || "?", host.machine || "", host.cpu_count || "?", host.ram_gb || "?", host.disk_free_gb || "?")}</div></div>`; c.appendChild(hostRow); const g = el("div", "cust-row"); g.innerHTML = `<div class="info"><div class="nm">GPU</div><div class="ds">${gpu.available ? (gpu.gpu_name || t("cust.compute.gpuAvailable")) : t("cust.compute.gpuUnavailable")}</div></div>`; c.appendChild(g); await renderRemoteGPU(c); const envs = env.environments || []; envs.forEach(e => { const row = el("div", "cust-row"); const inst = (e.packages || []).filter(p => p.installed); row.innerHTML = `<div class="info"><div class="nm">${t("cust.compute.kernelLabel", e.language, e.status === "installing" ? t("cust.compute.kernelInstalling") : t("cust.compute.kernelReady"))}</div><div class="ds">${t("cust.compute.preinstalledDetail", e.package_count, inst.slice(0, 18).map(p => p.name).join("、") + (inst.length > 18 ? " …" : ""))}</div></div>`; c.appendChild(row); }); const ins = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", t("cust.compute.installExtraName"))); const dsc = el("div", "ds"); const inp = el("input"); inp.placeholder = t("cust.compute.installPlaceholder"); inp.className = "cust-input"; const btn = el("button", "outline-btn small", t("cust.compute.installBtn")); btn.onclick = async () => { const pkgs = inp.value.trim().split(/\s+/).filter(Boolean); if (!pkgs.length) return; btn.disabled = true; btn.textContent = t("cust.compute.installingBtn"); try { const r = S.currentId ? await api(`/frames/${S.currentId}/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs, restart: true }) }) : await api(`/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs }) }); hint(r.ok ? (t("step.env.installed", (r.installed || []).join("、") + (r.restarted ? t("cust.compute.kernelRestarted") : ""))) : (t("toast.compute.installFailed", ((r.failed && r.failed[0] && r.failed[0].error) || t("toast.compute.installSeeLogs"))))); if (r.ok) S._envSnapById = {}; custTab("compute"); } catch (e) { hint(t("toast.compute.installFailed", e.message), true); } btn.disabled = false; btn.textContent = t("cust.compute.installBtn"); }; dsc.appendChild(inp); dsc.appendChild(btn); info.appendChild(dsc); ins.appendChild(info); c.appendChild(ins); await renderJobs(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
+// An info row built from DOM nodes. `t()` substitutes without escaping, so its
+// result is safe as textContent and unsafe as innerHTML — several compute rows
+// interpolate a GPU name straight out of `nvidia-smi`, a machine string, and
+// package names, none of which this process authored.
+const infoRow = (name, detail) => {
+  const row = el("div", "cust-row");
+  const info = el("div", "info");
+  info.appendChild(el("div", "nm", name));
+  info.appendChild(el("div", "ds", detail));
+  row.appendChild(info);
+  return row;
+};
+
+async function custCompute(c) { try { const gpu = await api("/compute/gpu"); const env = await api("/environments/status").catch(() => ({ environments: [] })); const host = await api("/compute/local/hostinfo").catch(() => ({})); c.innerHTML = ""; c.appendChild(hdr(t("cust.compute.title"), t("cust.compute.desc"))); c.appendChild(infoRow(t("cust.compute.host"), t("cust.compute.hostDetail", host.python || "?", host.machine || "", host.cpu_count || "?", host.ram_gb || "?", host.disk_free_gb || "?"))); c.appendChild(infoRow("GPU", gpu.available ? (gpu.gpu_name || t("cust.compute.gpuAvailable")) : t("cust.compute.gpuUnavailable"))); await renderRemoteGPU(c); const envs = env.environments || []; envs.forEach(e => { const inst = (e.packages || []).filter(p => p.installed); c.appendChild(infoRow(t("cust.compute.kernelLabel", e.language, e.status === "installing" ? t("cust.compute.kernelInstalling") : t("cust.compute.kernelReady")), t("cust.compute.preinstalledDetail", e.package_count, inst.slice(0, 18).map(p => p.name).join("、") + (inst.length > 18 ? " …" : "")))); }); const ins = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", t("cust.compute.installExtraName"))); const dsc = el("div", "ds"); const inp = el("input"); inp.placeholder = t("cust.compute.installPlaceholder"); inp.className = "cust-input"; const btn = el("button", "outline-btn small", t("cust.compute.installBtn")); btn.onclick = async () => { const pkgs = inp.value.trim().split(/\s+/).filter(Boolean); if (!pkgs.length) return; btn.disabled = true; btn.textContent = t("cust.compute.installingBtn"); try { const r = S.currentId ? await api(`/frames/${S.currentId}/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs, restart: true }) }) : await api(`/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs }) }); hint(r.ok ? (t("step.env.installed", (r.installed || []).join("、") + (r.restarted ? t("cust.compute.kernelRestarted") : ""))) : (t("toast.compute.installFailed", ((r.failed && r.failed[0] && r.failed[0].error) || t("toast.compute.installSeeLogs"))))); if (r.ok) S._envSnapById = {}; custTab("compute"); } catch (e) { hint(t("toast.compute.installFailed", e.message), true); } btn.disabled = false; btn.textContent = t("cust.compute.installBtn"); }; dsc.appendChild(inp); dsc.appendChild(btn); info.appendChild(dsc); ins.appendChild(info); c.appendChild(ins); await renderJobs(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
 async function renderJobs(c) {
   c.appendChild(hdr(t("cust.jobs.title"), t("cust.jobs.desc")));
   const sub = el("div", "cust-row"); const si = el("div", "info"); si.appendChild(el("div", "nm", t("cust.jobs.submitName")));

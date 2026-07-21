@@ -55,3 +55,6 @@ loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它
   Python 内核；它不得给 core 引入强制依赖。
 - Provider shim 是受信任的扩展代码，运行时会跨过另有文档说明的 compute 或 endpoint
   边界。光有一份 manifest，并不代表这项 capability 已经能用。
+
+- [`evidence-walkthrough/`](evidence-walkthrough/) —— 参考流程：固定查询、本地分析、带 lineage 的产物，以及能在干净环境校验的证据包。
+- [`bioprobench/`](bioprobench/) —— 流程推理（protocol reasoning）评测。

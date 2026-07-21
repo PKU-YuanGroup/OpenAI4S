@@ -1404,14 +1404,14 @@ def test_token_gate_401_and_cookie_redirect(monkeypatch, tmp_path, capsys):
     handler._json = lambda obj, code=200: replies.append((code, obj))
 
     # no token → 401 with the {"error": ...} envelope
-    handler.path = "/api/frames"
+    handler.path = "/api/v1/frames"
     handler._route("GET")
     code, body = replies[-1]
     assert code == 401
     assert body["error"].startswith("unauthorized")
 
     # wrong token → still 401
-    handler.path = "/api/frames?token=deadbeef"
+    handler.path = "/api/v1/frames?token=deadbeef"
     handler._route("GET")
     assert replies[-1][0] == 401
 
@@ -1451,7 +1451,7 @@ def test_gateway_error_maps_to_error_envelope(tmp_path):
         raise gateway_mod.GatewayError(418, "teapot")
 
     handler._api = boom
-    handler.path = "/api/anything"
+    handler.path = "/api/v1/anything"
     handler._route("GET")
 
     assert replies[-1] == (418, {"error": "teapot"})
@@ -1472,7 +1472,7 @@ def test_unhandled_exception_maps_to_500_error_envelope(tmp_path, capsys):
         raise RuntimeError("kaput")
 
     handler._api = boom
-    handler.path = "/api/anything"
+    handler.path = "/api/v1/anything"
     handler._route("GET")
 
     assert replies[-1] == (500, {"error": "kaput"})
@@ -1494,7 +1494,7 @@ def test_cross_origin_api_write_is_refused(tmp_path):
     replies = []
     handler._json = lambda obj, code=200: replies.append((code, obj))
     handler._api = lambda method, sub: replies.append(("api-was-called", None))
-    handler.path = "/api/frames"
+    handler.path = "/api/v1/frames"
     handler._route("POST")
 
     assert replies == [(403, {"error": "cross-origin request refused"})]
@@ -1513,7 +1513,7 @@ def test_cross_origin_ws_upgrade_is_refused(tmp_path):
     upgraded = []
     handler._json = lambda obj, code=200: replies.append((code, obj))
     handler._handle_ws = lambda: upgraded.append(True)
-    handler.path = "/api/ws"
+    handler.path = "/api/v1/ws"
     handler._route("GET")
 
     assert upgraded == []
@@ -1535,7 +1535,7 @@ def test_ws_upgrade_allows_absent_and_same_origin(tmp_path):
         upgraded = []
         handler._json = lambda obj, code=200: None
         handler._handle_ws = lambda: upgraded.append(True)
-        handler.path = "/api/ws"
+        handler.path = "/api/v1/ws"
         handler._route("GET")
         assert upgraded == [True]
 
@@ -1569,31 +1569,31 @@ def test_dns_rebinding_host_header_is_rejected(tmp_path):
     replies, api_calls = _run(
         {"Host": "evil.test:8760", "Origin": "http://evil.test:8760"},
         "POST",
-        "/api/compute/jobs",
+        "/api/v1/compute/jobs",
     )
     assert replies == [(403, {"error": "host not allowed"})]
     assert api_calls == []  # the command sink is never reached
 
     # the allowlist covers GET too: a rebound page is same-origin and can read
     # GET bodies, and origin-less GETs skip the Origin guard entirely
-    replies, api_calls = _run({"Host": "evil.test:8760"}, "GET", "/api/frames")
+    replies, api_calls = _run({"Host": "evil.test:8760"}, "GET", "/api/v1/frames")
     assert replies == [(403, {"error": "host not allowed"})]
     assert api_calls == []
 
     # legitimate loopback Hosts on the bound port reach routing (incl. IPv6)
     for host in ("127.0.0.1:8760", "localhost:8760", "[::1]:8760", "LocalHost:8760"):
-        replies, api_calls = _run({"Host": host}, "GET", "/api/frames")
+        replies, api_calls = _run({"Host": host}, "GET", "/api/v1/frames")
         assert api_calls == [("GET", "/frames")], f"{host} should route"
         assert replies == []
 
     # right hostname, wrong port → still rejected
-    replies, api_calls = _run({"Host": "127.0.0.1:9999"}, "GET", "/api/frames")
+    replies, api_calls = _run({"Host": "127.0.0.1:9999"}, "GET", "/api/v1/frames")
     assert replies == [(403, {"error": "host not allowed"})]
     assert api_calls == []
 
     # absent Host (non-browser client: curl/CLI) passes — a browser rebind
     # always carries a Host, so an empty Host is not the attack vector
-    replies, api_calls = _run({}, "GET", "/api/frames")
+    replies, api_calls = _run({}, "GET", "/api/v1/frames")
     assert api_calls == [("GET", "/frames")]
     assert replies == []
 
@@ -1992,7 +1992,15 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
     handler._api("GET", "/artifacts/no-such-ident")
     code, body, ctype = sends[-1]
     assert code == 404
-    assert json.loads(body) == {"error": "artifact not found"}
+    envelope = json.loads(body)
+    assert envelope["error"] == "artifact not found"
+    # Contract v1 enriches every error with a stable machine code and the
+    # request's correlation id. `request_id` is null here because this test
+    # drives _api directly, so no request scope was ever entered — the honest
+    # answer rather than a fabricated id.
+    assert envelope["code"] == "not_found"
+    assert envelope["status"] == 404
+    assert envelope["request_id"] is None
     assert ctype.startswith("application/json")
 
 
@@ -2042,10 +2050,19 @@ def test_upload_without_frame_id_stores_file_but_never_broadcasts(tmp_path):
     )
 
 
-def test_body_malformed_json_treated_as_empty_dict(tmp_path):
-    """_body() contract: an unparseable JSON body, an empty body, and a
-    missing Content-Length all collapse to {} — route handlers never see a
-    parse error and treat the request as field-less."""
+def test_body_rejects_unparseable_json_with_an_explicit_4xx(tmp_path):
+    """_body() contract: unparseable input is a 400, absent input is not.
+
+    This used to collapse a malformed body to {} so "route handlers never see a
+    parse error". Every route reads its fields with b.get(...), so that did not
+    mean "lenient" — it meant a truncated or mistyped body silently became "the
+    client supplied nothing", the request no-opped, and it returned 200. A
+    client cannot tell that from success; the bug lands on whoever later wonders
+    why their setting never saved.
+
+    An empty body stays {}: routes whose fields are all optional legitimately
+    accept one. The distinction is unparseable vs absent.
+    """
     cfg = _cfg(tmp_path)
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
@@ -2056,10 +2073,23 @@ def test_body_malformed_json_treated_as_empty_dict(tmp_path):
         handler.rfile = io.BytesIO(raw)
         return handler._body()
 
-    assert _with(b'{"a": 1}') == {"a": 1}  # valid JSON parses
-    assert _with(b"this is not json") == {}  # malformed → {}
-    assert _with(b"{truncated") == {}
+    assert _with(b'{"a": 1}') == {"a": 1}
     assert _with(b"") == {}  # Content-Length: 0 → {} without reading
+    assert _with(b"{}") == {}
+
+    for malformed in (b"this is not json", b"{truncated", b"{'py': 'repr'}"):
+        with pytest.raises(gateway_mod.GatewayError) as e:
+            _with(malformed)
+        assert e.value.code == 400
+        assert "not valid JSON" in e.value.message
+
+    # `[1,2]` parses, then AttributeErrors on the first .get() — a 500 for what
+    # is squarely a client error.
+    for wrong_shape in (b"[1,2]", b'"str"', b"42"):
+        with pytest.raises(gateway_mod.GatewayError) as e:
+            _with(wrong_shape)
+        assert e.value.code == 400
+        assert "must be a JSON object" in e.value.message
 
     handler.headers = {}  # no Content-Length header at all
     handler.rfile = io.BytesIO(b'{"ignored": true}')
@@ -2081,7 +2111,7 @@ def test_ignored_json_body_is_buffered_before_next_keepalive_request(tmp_path):
     handler._request_body_ready = False
     handler._request_body_payload = b""
 
-    handler._prepare_request_body("/api/artifacts/a-1/versions/v-1/restore", "POST")
+    handler._prepare_request_body("/api/v1/artifacts/a-1/versions/v-1/restore", "POST")
 
     assert handler._body() == {}
     assert handler.rfile.read() == b"GET /health HTTP/1.1\r\n"
@@ -2144,7 +2174,7 @@ def test_websocket_upgrade_is_never_reused_as_http_keepalive(tmp_path):
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
     handler = object.__new__(handler_cls)
-    handler.path = "/api/ws"
+    handler.path = "/api/v1/ws"
     handler.headers = {}
     handler.close_connection = False
     upgraded = []

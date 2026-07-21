@@ -17,7 +17,7 @@ const workbenchSockets = [];
 const workbenchEvents = [];
 page.on("pageerror", (error) => pageErrors.push(String(error)));
 page.on("websocket", (socket) => {
-  if (!/\/api\/ws(?:\?|$)/.test(socket.url())) return;
+  if (!/\/api\/v1\/ws(?:\?|$)/.test(socket.url())) return;
   workbenchSockets.push(socket.url());
   socket.on("framereceived", (frame) => {
     try {
@@ -29,7 +29,7 @@ page.on("websocket", (socket) => {
 });
 
 async function api(path, { method = "GET", data } = {}) {
-  const response = await page.request.fetch(new URL(`api${path}`, baseUrl).toString(), {
+  const response = await page.request.fetch(new URL(`api/v1${path}`, baseUrl).toString(), {
     method,
     data,
     headers: data === undefined ? undefined : { "Content-Type": "application/json" },
@@ -95,6 +95,82 @@ try {
     if ((await page.locator(selector).count()) !== 1) {
       throw new Error(`missing workbench surface: ${selector}`);
     }
+  }
+
+  // --- browser data boundary ------------------------------------------------
+  // The UI renders strings this process did not author: markdown from the
+  // model, tracebacks from the kernel, a remote host's label, and a GPU name
+  // that is literally `nvidia-smi` stdout. None may become executable markup.
+  // These samples are the ones the improvement proposal named (malicious link,
+  // image, attribute, remote hostname, GPU name); they run against the real
+  // app functions so a regression in renderMd/escaping fails CI rather than a
+  // browser somewhere.
+  const securityHeaders = response.headers();
+  for (const [header, expected] of [
+    ["content-security-policy", "default-src 'self'"],
+    ["x-content-type-options", "nosniff"],
+  ]) {
+    if (!(securityHeaders[header] || "").includes(expected)) {
+      throw new Error(`response missing hardened header ${header}: ${expected}`);
+    }
+  }
+  // script-src must never carry 'unsafe-inline' (style-src legitimately does):
+  // that concession is what would make the whole policy decorative against the
+  // injection it exists to stop.
+  const scriptSrc = (securityHeaders["content-security-policy"] || "")
+    .split(";").map((s) => s.trim()).find((s) => s.startsWith("script-src")) || "";
+  if (scriptSrc.includes("'unsafe-inline'")) {
+    throw new Error("CSP script-src must not allow 'unsafe-inline'");
+  }
+
+  const boundary = await page.evaluate(() => {
+    const out = { executed: [], scriptTags: 0, imgTags: 0, missing: [] };
+    window.__xssProbe = () => out.executed.push("fired");
+    const host = document.createElement("div");
+    host.style.display = "none";
+    document.body.appendChild(host);
+
+    const attacks = [
+      "before <script>window.__xssProbe()<\/script> after",
+      "text <img src=x onerror=\"window.__xssProbe()\"> text",
+      "<div onclick=\"window.__xssProbe()\">x</div>",
+      "[link](javascript:window.__xssProbe())",
+      "<svg onload=\"window.__xssProbe()\"></svg>",
+    ];
+    if (typeof renderMd !== "function") { out.missing.push("renderMd"); }
+    else {
+      for (const md of attacks) {
+        const d = document.createElement("div");
+        host.appendChild(d);
+        d.innerHTML = renderMd(md);
+      }
+    }
+    if (typeof highlightTraceback === "function") {
+      const pre = document.createElement("pre");
+      host.appendChild(pre);
+      pre.innerHTML = highlightTraceback(
+        'File "<img src=x onerror=\"window.__xssProbe()\">", line 1\n'
+        + 'Error: <script>window.__xssProbe()<\/script>',
+      );
+    }
+    out.scriptTags = host.querySelectorAll("script").length;
+    out.imgTags = host.querySelectorAll("img").length;
+    return out;
+  });
+  // A brief tick so any onerror/onload that WAS going to fire has fired.
+  await page.waitForTimeout(300);
+  const executed = await page.evaluate(() => window.__xssProbe && document.querySelectorAll("script").length);
+  if (boundary.missing.length) {
+    throw new Error(`XSS probe could not reach: ${boundary.missing.join(", ")}`);
+  }
+  if (boundary.executed.length) {
+    throw new Error(`hostile markup executed in renderMd/traceback: ${boundary.executed.join(", ")}`);
+  }
+  if (boundary.scriptTags || boundary.imgTags) {
+    throw new Error(
+      `hostile markup became live nodes (script=${boundary.scriptTags} img=${boundary.imgTags}) — `
+      + "escaping regressed",
+    );
   }
 
   const projects = await api("/projects");
@@ -316,7 +392,7 @@ try {
   // Python service contract. A never-started session still exports a valid,
   // empty notebook with immutable digest metadata.
   const notebookResponse = await page.request.get(
-    new URL(`api/frames/${encodeURIComponent(frameId)}/notebook/export?language=python`, baseUrl).toString(),
+    new URL(`api/v1/frames/${encodeURIComponent(frameId)}/notebook/export?language=python`, baseUrl).toString(),
   );
   if (!notebookResponse.ok()) {
     throw new Error(`notebook export returned HTTP ${notebookResponse.status()}`);
@@ -363,7 +439,7 @@ try {
     throw new Error("artifact restore did not append a fresh current version");
   }
   const artifactBody = await page.request.get(
-    new URL(`api/artifacts/${encodeURIComponent(upload.artifact_id)}`, baseUrl).toString(),
+    new URL(`api/v1/artifacts/${encodeURIComponent(upload.artifact_id)}`, baseUrl).toString(),
   );
   const restoredBodyText = await artifactBody.text();
   if (!artifactBody.ok() || restoredBodyText !== "VERSION-ONE") {
@@ -502,7 +578,7 @@ try {
   // Session packages cross a real binary HTTP boundary. Import always creates
   // a new project/root and leaves it Ended/view-only until explicit recovery.
   const sessionExport = await page.request.get(
-    new URL(`api/frames/${encodeURIComponent(frameId)}/session/export`, baseUrl).toString(),
+    new URL(`api/v1/frames/${encodeURIComponent(frameId)}/session/export`, baseUrl).toString(),
   );
   if (!sessionExport.ok() ||
       !/application\/vnd\.openai4s\.session\+zip/.test(sessionExport.headers()["content-type"] || "") ||
@@ -511,7 +587,7 @@ try {
   }
   const sessionPackage = await sessionExport.body();
   const importResponse = await page.request.fetch(
-    new URL("api/sessions/import", baseUrl).toString(),
+    new URL("api/v1/sessions/import", baseUrl).toString(),
     {
       method: "POST",
       headers: { "Content-Type": "application/vnd.openai4s.session+zip" },

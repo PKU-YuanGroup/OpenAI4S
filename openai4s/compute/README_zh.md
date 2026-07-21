@@ -47,3 +47,5 @@ Python 的 [`host.compute` SDK](../sdk/compute.py) 把每次调用变成一个 `
 - [安全模型](../../docs/security.md)
 - [包边界](../../docs/package-architecture.md)
 - [Worker runtime](../../openai4s_compute_provider/README_zh.md)
+
+- [`safe_archive.py`](safe_archive.py) —— 对来自不受控机器的收割结果先枚举后解包：穿越、绝对路径、链接、设备节点与解压炸弹在写出任何字节之前被拒绝。

@@ -61,3 +61,6 @@ A SQLite transaction can make a defined set of rows atomic. It cannot stretch ac
 - [Web runtime](../../docs/webapp.md)
 - [Security model](../../docs/security.md)
 - [Store facade](../store.py)
+
+- [`migrations.py`](migrations.py) — versioned, transactional schema migrations: fully at N or fully at N-1.
+- [`compute_jobs.py`](compute_jobs.py) — durable remote-job records and their sequenced event stream.

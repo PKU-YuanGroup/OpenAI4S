@@ -25,6 +25,15 @@ PROVIDERS = {
 
 
 class MemorySettings:
+    """Stands in for the Store's settings surface.
+
+    The secret accessors mirror what the real Store does under the plaintext
+    backend — store the value, hand it straight back. Onboarding writes the
+    user's API key through the broker now, so this double has to carry that
+    part of the contract; the tests below assert the key does not leak into a
+    *response*, which is orthogonal to where it is stored.
+    """
+
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
 
@@ -33,6 +42,13 @@ class MemorySettings:
 
     def set_setting(self, key: str, value: str) -> None:
         self.values[key] = value
+
+    def get_secret_setting(self, key: str) -> str:
+        return self.values.get(key) or ""
+
+    def set_secret_setting(self, key: str, value: str, *, scope: str) -> str:
+        self.values[key] = value
+        return value
 
 
 def service(tmp_path: Path) -> tuple[OnboardingService, MemorySettings]:

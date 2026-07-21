@@ -156,7 +156,8 @@ def test_compute_namespace_create_status_concurrency_and_repr():
     assert repr(instance) == ("<host.compute byoc:nvidia image='science:1' gpu='A100'>")
     assert repr(compute) == (
         "<host.compute — create(target) -> ComputeInstance; "
-        "set_concurrency_limit(n); status(); help(host.compute) for the lifecycle>"
+        "set_concurrency_limit(n); status(); reconcile(); "
+        "help(host.compute) for the lifecycle>"
     )
     assert compute.set_concurrency_limit("4") == {"limit": 4}
     assert compute.status() == {"live": 1, "limit": 4}

@@ -501,7 +501,22 @@ class FrameRepository:
         status: str | None = None,
         roots_only: bool = True,
         limit: int = 50,
+        before: tuple[int, str] | None = None,
     ) -> list[dict]:
+        """Newest-first page of frames.
+
+        ``before`` is a keyset cursor — the ``(created_at, frame_id)`` of the
+        last row of the previous page — not an offset. An offset would skip or
+        repeat rows whenever a frame is created or deleted between pages, which
+        for a session list is routine rather than exotic.
+
+        The ``frame_id`` tiebreaker is what makes the cursor sound at all:
+        ``created_at`` is a millisecond timestamp and two sessions created in
+        the same millisecond are not rare (a script, a test, a fast fork). With
+        ordering by timestamp alone their relative order is undefined, so a
+        cursor could land in the middle of a tie and silently drop the rest of
+        it.
+        """
         clauses, params = [], []
         if project_id and project_id != "all":
             clauses.append("project_id=?")
@@ -511,6 +526,10 @@ class FrameRepository:
             params.append(status)
         if roots_only:
             clauses.append("parent_id IS NULL")
+        if before is not None:
+            before_created, before_id = before
+            clauses.append("(created_at < ? OR (created_at = ? AND frame_id < ?))")
+            params.extend([before_created, before_created, before_id])
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._lock:
             rows = self._connection.execute(
@@ -518,7 +537,7 @@ class FrameRepository:
                 "task_summary,model,status,depth,input_tokens,output_tokens,"
                 "cost_usd,created_at,updated_at FROM frames"
                 + where
-                + " ORDER BY created_at DESC LIMIT ?",
+                + " ORDER BY created_at DESC, frame_id DESC LIMIT ?",
                 (*params, limit),
             ).fetchall()
         return [dict(row) for row in rows]

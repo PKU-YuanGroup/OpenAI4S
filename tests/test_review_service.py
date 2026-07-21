@@ -207,6 +207,11 @@ def _service(
         review_evidence=lambda evidence, cfg: reviews["call"](evidence, cfg),
         providers=lambda: provider_registry["value"],
         clean_api_key=lambda value: str(value or "").strip(),
+        # A profile's api_key holds a broker reference once migrated; this
+        # double stands in for the resolution the gateway wires in. Required
+        # rather than defaulted on purpose — a port that quietly fell back to
+        # the raw field would send the reference to the provider as a key.
+        resolve_profile_key=lambda profile: str(profile.get("api_key") or "").strip(),
         job_factory=FakeJob,
         busy_error=BusyError,
         run_reviewer=run_reviewer,

@@ -47,3 +47,5 @@ For `byoc:*`, the manager looks for provider shims under `skills/remote-compute-
 - [Security model](../../docs/security.md)
 - [Package boundaries](../../docs/package-architecture.md)
 - [Worker runtime](../../openai4s_compute_provider/README.md)
+
+- [`safe_archive.py`](safe_archive.py) — enumerate-then-extract for a harvest that arrives from a machine we do not control: traversal, absolute paths, links, device nodes, and decompression bombs are refused before a byte is written.

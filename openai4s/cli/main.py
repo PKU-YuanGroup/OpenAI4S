@@ -107,6 +107,50 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_verify_package(args) -> int:
+    """Verify an exported session/evidence package in a clean environment."""
+    from openai4s.evidence import EvidenceError, verify_package
+
+    try:
+        report = verify_package(args.package)
+    except EvidenceError as e:
+        print(f"cannot verify: {e}")
+        return 2
+    print(f"package: {report['path']}")
+    print(f"  format: {report['format']} (schema {report['schema_version']})")
+    print(f"  archive sha256: {report['archive_sha256']}")
+    print(f"  files verified: {len(report['files_verified'])}")
+    if report["ok"]:
+        print("  OK — every listed file matches its recorded hash, and the")
+        print("       manifest matches its own digest.")
+        print(f"  note: {report['verifies']}")
+        return 0
+    print(f"  FAILED — {len(report['problems'])} problem(s):")
+    for problem in report["problems"]:
+        print(f"    - {problem}")
+    return 1
+
+
+def cmd_diagnostics(args) -> int:
+    """Write a redacted diagnostic bundle for a bug report."""
+    from openai4s.diagnostics import build_bundle
+
+    cfg = get_config()
+    target = (
+        Path(args.output) if args.output else Path.cwd() / "openai4s-diagnostics.zip"
+    )
+    result = build_bundle(cfg, target)
+    print(f"wrote {result['path']}")
+    print(f"  included: {', '.join(result['included']) or 'nothing'}")
+    for item in result["excluded"]:
+        print(f"  excluded: {item['path']} ({item['reason']})")
+    print(
+        "\nLog lines and report fields are redacted, but review the file before "
+        "sharing it — only you know what your own output contains."
+    )
+    return 0
+
+
 def cmd_status(args) -> int:
     cfg = get_config()
     pid = _read_pid(cfg)
@@ -688,6 +732,19 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--no-open", action="store_true", help="don't open a browser")
     ps.set_defaults(fn=cmd_serve)
     sub.add_parser("status", help="check daemon status").set_defaults(fn=cmd_status)
+    pv = sub.add_parser(
+        "verify-package",
+        help="verify an exported session/evidence package (no daemon needed)",
+    )
+    pv.add_argument("package", help="path to the .openai4s-session.zip")
+    pv.set_defaults(fn=cmd_verify_package)
+    pd = sub.add_parser(
+        "diagnostics", help="write a redacted diagnostic bundle for a bug report"
+    )
+    pd.add_argument(
+        "-o", "--output", help="destination zip (default ./openai4s-diagnostics.zip)"
+    )
+    pd.set_defaults(fn=cmd_diagnostics)
     sub.add_parser("stop", help="stop the daemon").set_defaults(fn=cmd_stop)
     sub.add_parser("url", help="print the web UI url").set_defaults(fn=cmd_url)
 
