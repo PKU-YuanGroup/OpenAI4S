@@ -48,11 +48,24 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
   needs from the success side is a documented, stable shape per route, which the
   route/event inventory test enforces.
 - **WebSocket events carry a monotonic `seq` per root frame.** A client resumes
-  with `{"type":"view_session","root_frame_id":…,"since_seq":N}` and receives
-  only events after `N`; `replay_begin` reports `from_seq`/`to_seq` and
+  with `{"type":"view_session","root_frame_id":…,"since_seq":N,"epoch":E}` and
+  receives only events after `N`; `replay_begin` reports `from_seq`/`to_seq`,
+  this daemon run's `epoch`, and
   `gap: true` when the capped buffer no longer reaches back to `N+1`, so a
   client that was away too long can refetch state instead of resuming into a
   hole it cannot detect. `since_seq` absent or `0` replays the whole buffer.
+- A cursor is only meaningful inside the daemon run that issued it. The
+  sequence counter lives in the process, so a restart puts it back to zero
+  while the client still holds a cursor from the previous run — which used to
+  produce no replay frames at all and left the client believing it was caught
+  up on a stream it had entirely missed. The server now declares `gap: true`
+  in that case, detecting it either from a mismatched `epoch` or, for a client
+  that sends none, from its own counter sitting below the presented cursor.
+  The client stores the `epoch`, drops every cursor when it changes, and
+  refetches the session on `gap: true`. A cursor the server cannot place
+  replays *nothing* — the client is about to refetch, so replaying the buffer
+  from the start would render events that are immediately discarded, and a
+  fabricated cursor must never wrap around into a full replay.
   The counter does not reset between turns — a per-turn counter would make a
   stale cursor look already-satisfied and skip the new turn's first events.
   Only `broadcast` events are sequenced; point-to-point snapshots delivered on
@@ -431,7 +444,13 @@ m.frame_id`.
 
 | Event `type` | Fields (beyond `root_frame_id`) | Meaning |
 | --- | --- | --- |
-| `replay_begin` / `replay_end` | — | Bracket the buffered-event replay after `view_session` mid-turn. |
+| `notebook_cell_draft` | `frame_id`, `draft_id`, `revision`, `source`, `status`, `reason` | A Notebook cell the agent is composing, before it runs. Superseded revisions are collapsed in the resume buffer so a reconnect renders only the newest. Emitted by `server/agent_run.py`. |
+| `recovery_state` | `branch_id`, `recovery_id`, `state`, `status`, `message` | A kernel-recovery attempt changing state. Emitted by `server/recovery_execution.py`. |
+| `recovery_log` | `branch_id`, `recovery_id`, plus the journal entry's own fields | One line of a recovery's journal, as it happens. Emitted by `server/recovery_control.py`. |
+| `branch_activated` | `branch_id`, `checkpoint_id`, `ok` | A branch became the session's active one, and its runtime state was reconstructed. Emitted by `server/session_domain.py`. |
+| `cursor_checkpoint_failed` | `branch_id`, `source_kind`, `source_id`, `reason`, `ok: false` | A cell or message completed but its cursor checkpoint could not be captured — so forking from that point will 409 rather than reconstruct state it does not have. Emitted by `server/session_domain.py`. |
+| `delegation_child_event` | `event`, `at`, `child` (a snapshot), plus per-event extras | A sub-agent started, progressed, or finished. Carries no `frame_id` of its own; the hub's emitter attaches `root_frame_id`. Emitted by `agent/delegation.py`. |
+| `replay_begin` / `replay_end` | — | Bracket the buffered-event replay after `view_session` mid-turn. `replay_begin` carries `from_seq`, `to_seq`, the daemon run's `epoch`, and `gap`. |
 | `text_reset` | `frame_id` | Start of a fresh streamed assistant message (clears the live bubble). |
 | `text_chunk` | `frame_id`, `block_type` (`"text"` for prose, `"tool"` for code-cell echo/stdout/errors), `chunk`; a code-cell start also carries `cell_index`, canonical `kernel_id`, and `language` | Incremental stream. The frontend uses the start metadata directly so live Notebook grouping matches the persisted execution log without a status-cache race. |
 | `notebook_cell_start` | `frame_id`, `producing_cell_id`, `cell_index`, `state_revision`, `generation_id`, `kernel_id`, `language`, `origin`, `source`, `status` | Starts/upserts one immutable Cell identity using the exact attempt-bound runtime generation. |

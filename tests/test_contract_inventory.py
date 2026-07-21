@@ -112,3 +112,59 @@ def test_inventory_is_serialisable():
     inv = inventory()
     assert set(inv) == {"http_routes", "ws_inbound", "ws_outbound"}
     assert inv["http_routes"] == sorted(inv["http_routes"])
+
+
+# --------------------------------------------------------------------------
+# the inventory has to see the whole surface, and only the surface
+# --------------------------------------------------------------------------
+
+
+def test_events_emitted_outside_the_gateway_are_in_the_inventory():
+    """The extractor read `gateway.py` alone while events are emitted from the
+    focused services too, so fifteen live event types were invisible to it —
+    and therefore exempt from the documentation gate above."""
+    outbound = websocket_outbound()
+    for event in (
+        "notebook_cell_start",  # server/cell_run.py
+        "notebook_cell_draft",  # server/agent_run.py
+        "recovery_state",  # server/recovery_execution.py
+        "recovery_log",  # server/recovery_control.py
+        "branch_activated",  # server/session_domain.py
+        "checkpoint_created",  # server/session_branching.py
+        "execution_state",  # server/execution_coordinator.py
+        "plan_ready",  # server/plans.py
+        "delegation_child_event",  # agent/delegation.py
+    ):
+        assert event in outbound, f"{event} is emitted but not inventoried"
+
+
+def test_the_inventory_does_not_invent_events():
+    """As wrong as omitting one. `{"type": ...}` is a common shape — JSON
+    schema fragments, ledger states, result payloads — and listing those as
+    protocol would make the contract document a description of nothing."""
+    outbound = websocket_outbound()
+    for not_an_event in ("string", "number", "object", "array", "proposed"):
+        assert not_an_event not in outbound, (
+            f"{not_an_event!r} is a value in some other vocabulary, not a "
+            f"WebSocket event"
+        )
+    # A sidecar warning rides inside a result payload, never over the socket.
+    assert "skill_sidecar_recovery_capture_failed" not in outbound
+
+
+def test_inbound_membership_dispatch_is_inventoried():
+    """`t in {"cancel_execution", "cancel"}` is as much a dispatch as
+    `t == "view_session"`; matching only equality hid two real client
+    messages."""
+    inbound = websocket_inbound()
+    assert {"view_session", "unview_session", "ping"} <= inbound
+    assert {"cancel_execution", "cancel"} <= inbound
+
+
+def test_inbound_scanning_stops_at_the_handler():
+    """Bounded at both ends: an unrelated truthiness check far below the
+    socket handler reuses the same loop variable name, and scanning to
+    end-of-file put its values in the inventory as client messages."""
+    inbound = websocket_inbound()
+    for stray in ("false", "no", "off", "0"):
+        assert stray not in inbound

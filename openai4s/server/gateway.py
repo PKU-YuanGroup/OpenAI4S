@@ -449,6 +449,14 @@ class WSHub:
         # over once, so numbering them would make two clients' cursors disagree
         # about the same stream.
         self._seq: dict[str, int] = {}
+        # Identifies this daemon process to resuming clients. The counter above
+        # is in-process, so a restart puts it back to zero while a client is
+        # still holding a cursor from the previous run -- exactly the "silently
+        # look like you already have everything" case the comment above warns
+        # about, which the counter alone cannot detect once it has been reset.
+        # A client echoes the epoch it last saw; a mismatch means its cursor
+        # describes a stream this process never produced.
+        self._epoch = uuid.uuid4().hex[:16]
 
     def _next_seq_locked(self, root_frame_id: str) -> int:
         nxt = self._seq.get(root_frame_id, 0) + 1
@@ -463,8 +471,17 @@ class WSHub:
         with self._lock:
             self._conns.discard(c)
 
+    @property
+    def epoch(self) -> str:
+        """This process's stream identity. Cursors are only valid within it."""
+        return self._epoch
+
     def subscribe(
-        self, root_frame_id: str, conn: "WSConnection", since_seq: int = 0
+        self,
+        root_frame_id: str,
+        conn: "WSConnection",
+        since_seq: int = 0,
+        epoch: str | None = None,
     ) -> None:
         """Subscribe and enqueue any live replay as one ordered transaction.
 
@@ -477,10 +494,47 @@ class WSHub:
         with self._lock:
             conn.subs.add(root_frame_id)
             buf = self._live.get(root_frame_id)
-            if buf and buf.get("running") and buf.get("events"):
+            stale = self._cursor_is_stale_locked(root_frame_id, since_seq, epoch)
+            if stale:
+                # Declare the gap and replay nothing. The client refetches the
+                # session on `gap`, so anything sent here is rendered and then
+                # immediately discarded -- and replaying the buffer from the
+                # start to serve a cursor we cannot place is exactly the
+                # wrap-around a fabricated cursor must never cause.
+                #
+                # Saying nothing at all, which is what happened before, left
+                # the client believing it was caught up on a stream it had
+                # entirely missed.
+                self._enqueue_replay_locked(
+                    root_frame_id, conn, [], since_seq, forced_gap=True
+                )
+            elif buf and buf.get("running") and buf.get("events"):
                 self._enqueue_replay_locked(
                     root_frame_id, conn, buf["events"], since_seq
                 )
+
+    def _cursor_is_stale_locked(
+        self, root_frame_id: str, since_seq: int, epoch: str | None
+    ) -> bool:
+        """Can this process honour the cursor the client presented?
+
+        Two independent signals, because one of them has to work for clients
+        that predate the other:
+
+        * a different ``epoch`` means the cursor numbers a stream some earlier
+          daemon produced;
+        * our own counter sitting *below* the cursor is proof of the same
+          thing without the client having to tell us -- we cannot have emitted
+          a sequence number we have not reached.
+
+        The second is what catches a restart for a client that sends no epoch
+        at all, so the detection does not depend on the client being updated.
+        """
+        if not since_seq:
+            return False
+        if epoch and epoch != self._epoch:
+            return True
+        return self._seq.get(root_frame_id, 0) < int(since_seq)
 
     def unsubscribe(self, root_frame_id: str, conn: "WSConnection") -> None:
         with self._lock:
@@ -973,19 +1027,22 @@ class WSHub:
             if events:
                 self._enqueue_replay_locked(root_frame_id, conn, events)
 
-    @staticmethod
     def _enqueue_replay_locked(
+        self,
         root_frame_id: str,
         conn: "WSConnection",
         events: list[dict],
         since_seq: int = 0,
+        *,
+        forced_gap: bool = False,
     ) -> None:
         """Replay buffered events, optionally only those after ``since_seq``.
 
-        ``replay_begin`` carries ``from_seq``/``to_seq`` and whether the window
-        was complete. A client that was away longer than the buffer retains
-        cannot be served by a cursor, and telling it so (``gap: true``) lets it
-        refetch state instead of resuming from a hole it cannot see.
+        ``replay_begin`` carries ``from_seq``/``to_seq``, this process's
+        ``epoch``, and whether the window was complete. A client that was away
+        longer than the buffer retains cannot be served by a cursor, and
+        telling it so (``gap: true``) lets it refetch state instead of
+        resuming from a hole it cannot see.
         """
         selected = [e for e in events if int(e.get("seq") or 0) > since_seq]
         first = int(selected[0].get("seq") or 0) if selected else since_seq
@@ -996,9 +1053,14 @@ class WSHub:
                 "root_frame_id": root_frame_id,
                 "from_seq": first,
                 "to_seq": last,
+                # Echoed so the client can tell one daemon's stream from
+                # another's and drop a cursor that belongs to neither.
+                "epoch": self._epoch,
                 # The buffer is capped, so the oldest event it still holds may
                 # be newer than the cursor+1 the client asked for.
-                "gap": bool(since_seq and selected and first > since_seq + 1),
+                "gap": bool(
+                    forced_gap or (since_seq and selected and first > since_seq + 1)
+                ),
             }
         )
         for event in selected:
@@ -8817,7 +8879,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 since_seq = int(msg.get("since_seq") or 0)
                             except (TypeError, ValueError):
                                 since_seq = 0
-                            hub.subscribe(rid, conn, max(0, since_seq))
+                            # The epoch the client last saw. A cursor is only
+                            # meaningful within the daemon run that issued it.
+                            client_epoch = msg.get("epoch")
+                            hub.subscribe(
+                                rid,
+                                conn,
+                                max(0, since_seq),
+                                str(client_epoch) if client_epoch else None,
+                            )
                             # re-surface any tool-call approval prompt that is
                             # still pending, so a mid-pause reconnect can answer.
                             try:

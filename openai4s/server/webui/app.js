@@ -2841,13 +2841,35 @@ function connectWS() {
 // the server replays only what was missed instead of the whole turn — the
 // client would otherwise have to de-duplicate a stream it cannot tell apart.
 S._seqSeen = S._seqSeen || {};
-const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f, since_seq: S._seqSeen[f] || 0 })); } catch {} };
+// The daemon run that issued our cursors. A cursor only means anything within
+// the process that produced it, so it travels with the epoch and the server
+// tells us (gap) when it cannot honour it.
+S._streamEpoch = S._streamEpoch || null;
+const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f, since_seq: S._seqSeen[f] || 0, epoch: S._streamEpoch || undefined })); } catch {} };
 const unsub = (f) => { try { S.ws && S.ws.readyState === 1 && f && S.ws.send(JSON.stringify({ type: "unview_session", root_frame_id: f })); } catch {} };
 const conn = (on) => { const d = $("#conn-dot"); if (d) d.className = "dot " + (on ? "on" : "off"); };
 function onEvent(m) {
   const fid = m.root_frame_id || m.frame_id;
-  if (m.type === "replay_begin") { if (mine(fid)) { if (S.stream && S.stream.wrap) S.stream.wrap.remove(); S.stream = null; S.liveCells = []; S._liveCell = null; } }
-  else if (m.type === "replay_end") { if (mine(fid)) down(); }
+  if (m.type === "replay_begin") {
+    // A restarted daemon issues a new epoch; every cursor we hold describes a
+    // stream it never produced, so drop them all rather than resuming from a
+    // position it cannot interpret.
+    if (m.epoch && m.epoch !== S._streamEpoch) { S._streamEpoch = m.epoch; S._seqSeen = {}; }
+    if (mine(fid)) {
+      if (S.stream && S.stream.wrap) S.stream.wrap.remove();
+      S.stream = null; S.liveCells = []; S._liveCell = null;
+      // `gap` means the server could not serve our cursor — the buffer had
+      // aged past it, or it belonged to a previous run. Replaying from a hole
+      // we cannot see would leave the transcript quietly wrong, so reload it.
+      if (m.gap) { S._seqSeen[fid] = 0; S._replayGap = fid; }
+    }
+  }
+  else if (m.type === "replay_end") {
+    if (mine(fid)) {
+      if (S._replayGap === fid) { S._replayGap = null; openConversation(fid, S.project); }
+      down();
+    }
+  }
   else if (m.type === "text_reset") { if (mine(fid)) startStream(); }
   else if (m.type === "notebook_cell_draft") { if (mine(fid)) nbCellDraft(m); }
   else if (m.type === "notebook_cell_start") { if (mine(fid)) nbCellStart(m); }
