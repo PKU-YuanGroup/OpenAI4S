@@ -156,6 +156,12 @@ jobs:
         run: uv run pytest
       - name: Run deterministic harness contracts
         run: uv run python -m harness.cli run --tier pr --offline
+      # Reruns the suite with the response capture installed and compares what
+      # the routes returned against docs/response-schemas.json. One matrix entry
+      # is enough: the shapes are the server's, not the interpreter's.
+      - name: Check the frozen response shapes still match reality
+        if: matrix.python-version == '3.12'
+        run: uv run python scripts/capture_response_schemas.py --check
 
   browser-smoke:
     name: Browser workbench E2E (Chromium)

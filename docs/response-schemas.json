@@ -1,0 +1,6555 @@
+{
+  "note": "Captured from real responses, not written by hand. Regenerate with scripts/capture_response_schemas.py. A route absent here is one no offline test exercises: that is a coverage fact, not permission to change it freely.",
+  "routes": {
+    "DELETE /artifacts/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)(?:/.*)? [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /skills/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/lineage [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "dependency_mappings": {
+            "properties": {
+              "inputs": {
+                "type": "array"
+              }
+            },
+            "required": [
+              "inputs"
+            ],
+            "type": "object"
+          },
+          "filename": {
+            "type": "null"
+          },
+          "interactions": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "dependency_mappings",
+          "filename",
+          "interactions"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/renderer [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "immutable": {
+            "properties": {
+              "checksum": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "size_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "checksum",
+              "created_at",
+              "size_bytes"
+            ],
+            "type": "object"
+          },
+          "matched_by": {
+            "type": "string"
+          },
+          "provenance": {
+            "properties": {
+              "lineage_available": {
+                "type": "boolean"
+              },
+              "producing_cell_id": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "lineage_available",
+              "producing_cell_id"
+            ],
+            "type": "object"
+          },
+          "renderer": {
+            "properties": {
+              "capabilities": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "content_types": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "extensions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "interactive": {
+                "type": "boolean"
+              },
+              "kinds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "label": {
+                "type": "string"
+              },
+              "renderer_id": {
+                "type": "string"
+              },
+              "sandboxed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "capabilities",
+              "content_types",
+              "extensions",
+              "interactive",
+              "kinds",
+              "label",
+              "renderer_id",
+              "sandboxed"
+            ],
+            "type": "object"
+          },
+          "trusted_html": {
+            "type": "boolean"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "content_type",
+          "filename",
+          "immutable",
+          "matched_by",
+          "provenance",
+          "renderer",
+          "trusted_html",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/action-timeline [ok]": {
+      "schema": {
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "first_ordinal": {
+            "type": "integer"
+          },
+          "groups": {
+            "items": {
+              "properties": {
+                "attempts": {
+                  "type": "array"
+                },
+                "branch_id": {
+                  "type": "string"
+                },
+                "cost": {
+                  "type": "null"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "events": {
+                  "items": {
+                    "properties": {
+                      "artifacts": {
+                        "type": "array"
+                      },
+                      "created_at": {
+                        "type": "integer"
+                      },
+                      "event_id": {
+                        "type": "string"
+                      },
+                      "is_error": {
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "type": "null"
+                      },
+                      "outcome": {
+                        "type": "string"
+                      },
+                      "resource_keys": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "sequence": {
+                        "type": "integer"
+                      },
+                      "side_effect_class": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "artifacts",
+                      "created_at",
+                      "event_id",
+                      "is_error",
+                      "name",
+                      "outcome",
+                      "resource_keys",
+                      "sequence",
+                      "side_effect_class",
+                      "type"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "group_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "language": {
+                  "type": "null"
+                },
+                "model": {
+                  "type": "null"
+                },
+                "ordinal": {
+                  "type": "integer"
+                },
+                "owner": {
+                  "type": "string"
+                },
+                "permission": {
+                  "type": "null"
+                },
+                "provider": {
+                  "type": "null"
+                },
+                "replay_policy": {
+                  "type": "string"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "turn_id": {
+                  "type": "string"
+                },
+                "usage": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "attempts",
+                "branch_id",
+                "cost",
+                "created_at",
+                "events",
+                "group_id",
+                "kind",
+                "language",
+                "model",
+                "ordinal",
+                "owner",
+                "permission",
+                "provider",
+                "replay_policy",
+                "root_frame_id",
+                "status",
+                "title",
+                "turn_id",
+                "usage"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "has_earlier": {
+            "type": "boolean"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "last_ordinal": {
+            "type": "integer"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "total_count": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch_id",
+          "count",
+          "first_ordinal",
+          "groups",
+          "has_earlier",
+          "has_more",
+          "last_ordinal",
+          "root_frame_id",
+          "running",
+          "total_count",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/branches [ok]": {
+      "schema": {
+        "properties": {
+          "branches": {
+            "items": {
+              "properties": {
+                "activatable": {
+                  "type": "boolean"
+                },
+                "active": {
+                  "type": "boolean"
+                },
+                "base_checkpoint_id": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "branch_id": {
+                  "type": "string"
+                },
+                "checkpoints": {
+                  "items": {
+                    "properties": {
+                      "action_cursor": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "artifact_versions": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "branch_id": {
+                        "type": "string"
+                      },
+                      "capability_state": {
+                        "properties": {
+                          "states": {
+                            "items": {
+                              "properties": {
+                                "created_at": {
+                                  "type": "integer"
+                                },
+                                "enabled": {
+                                  "type": "boolean"
+                                },
+                                "kind": {
+                                  "type": "string"
+                                },
+                                "metadata": {
+                                  "properties": {},
+                                  "required": [],
+                                  "type": "object"
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "scope": {
+                                  "type": "string"
+                                },
+                                "scope_id": {
+                                  "type": "string"
+                                },
+                                "updated_at": {
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "created_at",
+                                "enabled",
+                                "kind",
+                                "metadata",
+                                "name",
+                                "scope",
+                                "scope_id",
+                                "updated_at"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "version": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "states",
+                          "version"
+                        ],
+                        "type": "object"
+                      },
+                      "cell_cursor": {
+                        "type": "integer"
+                      },
+                      "checkpoint_id": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "type": "integer"
+                      },
+                      "environment_pins": {
+                        "properties": {
+                          "python": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "python"
+                        ],
+                        "type": "object"
+                      },
+                      "generation_refs": {
+                        "properties": {},
+                        "required": [],
+                        "type": "object"
+                      },
+                      "internal": {
+                        "type": "boolean"
+                      },
+                      "message_cursor": {
+                        "type": "integer"
+                      },
+                      "metadata": {
+                        "properties": {
+                          "memories": {
+                            "type": "array"
+                          },
+                          "plans": {
+                            "type": "array"
+                          },
+                          "project_id": {
+                            "type": "string"
+                          },
+                          "state_source": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "memories",
+                          "plans",
+                          "project_id",
+                          "state_source"
+                        ],
+                        "type": "object"
+                      },
+                      "parent_checkpoint_id": {
+                        "type": [
+                          "null",
+                          "string"
+                        ]
+                      },
+                      "permission_state": {
+                        "properties": {
+                          "conversation": {
+                            "items": {
+                              "properties": {
+                                "created_at": {
+                                  "type": "integer"
+                                },
+                                "decision": {
+                                  "type": "string"
+                                },
+                                "pattern": {
+                                  "type": "string"
+                                },
+                                "rule_id": {
+                                  "type": "string"
+                                },
+                                "scope": {
+                                  "type": "string"
+                                },
+                                "scope_id": {
+                                  "type": "string"
+                                },
+                                "tool": {
+                                  "type": "string"
+                                },
+                                "updated_at": {
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "created_at",
+                                "decision",
+                                "pattern",
+                                "rule_id",
+                                "scope",
+                                "scope_id",
+                                "tool",
+                                "updated_at"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "global": {
+                            "type": "array"
+                          },
+                          "project": {
+                            "type": "array"
+                          }
+                        },
+                        "required": [
+                          "conversation",
+                          "global",
+                          "project"
+                        ],
+                        "type": "object"
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "recovery_recipe": {
+                        "properties": {
+                          "artifact_hashes": {
+                            "properties": {
+                              "analysis.txt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "analysis.txt"
+                            ],
+                            "type": "object"
+                          },
+                          "environment_requirements": {
+                            "properties": {},
+                            "required": [],
+                            "type": "object"
+                          },
+                          "namespace_coverage": {
+                            "type": "string"
+                          },
+                          "required_symbols": {
+                            "properties": {},
+                            "required": [],
+                            "type": "object"
+                          },
+                          "steps": {
+                            "items": {
+                              "properties": {
+                                "kind": {
+                                  "type": "string"
+                                },
+                                "payload": {
+                                  "properties": {
+                                    "tree_id": {
+                                      "type": "string"
+                                    },
+                                    "version_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [],
+                                  "type": "object"
+                                },
+                                "replay_policy": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "payload",
+                                "replay_policy"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "summary": {
+                            "properties": {
+                              "manual_cells": {
+                                "type": "integer"
+                              },
+                              "safe_replay_cells": {
+                                "type": "integer"
+                              },
+                              "state_cells": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "manual_cells",
+                              "safe_replay_cells",
+                              "state_cells"
+                            ],
+                            "type": "object"
+                          },
+                          "version": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "artifact_hashes",
+                          "environment_requirements",
+                          "namespace_coverage",
+                          "required_symbols",
+                          "steps",
+                          "summary",
+                          "version"
+                        ],
+                        "type": "object"
+                      },
+                      "root_frame_id": {
+                        "type": "string"
+                      },
+                      "source_id": {
+                        "type": "null"
+                      },
+                      "source_kind": {
+                        "type": "null"
+                      },
+                      "workspace_tree_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "action_cursor",
+                      "artifact_versions",
+                      "branch_id",
+                      "capability_state",
+                      "cell_cursor",
+                      "checkpoint_id",
+                      "created_at",
+                      "environment_pins",
+                      "generation_refs",
+                      "internal",
+                      "message_cursor",
+                      "metadata",
+                      "parent_checkpoint_id",
+                      "permission_state",
+                      "reason",
+                      "recovery_recipe",
+                      "root_frame_id",
+                      "source_id",
+                      "source_kind",
+                      "workspace_tree_id"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "head_checkpoint_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "null"
+                },
+                "parent_branch_id": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                },
+                "view_only": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "activatable",
+                "active",
+                "base_checkpoint_id",
+                "branch_id",
+                "checkpoints",
+                "created_at",
+                "head_checkpoint_id",
+                "name",
+                "parent_branch_id",
+                "root_frame_id",
+                "updated_at",
+                "view_only"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "capabilities": {
+            "properties": {
+              "activate": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              "checkpoint": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              "fork": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "fork_from_cell": {
+                    "type": "boolean"
+                  },
+                  "fork_from_cell_reason": {
+                    "type": "null"
+                  },
+                  "fork_from_message": {
+                    "type": "boolean"
+                  },
+                  "fork_from_message_reason": {
+                    "type": "null"
+                  },
+                  "reason": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "fork_from_cell",
+                  "fork_from_cell_reason",
+                  "fork_from_message",
+                  "fork_from_message_reason",
+                  "reason",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "promote": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              "revert": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              "revert_preview": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "reason"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "activate",
+              "checkpoint",
+              "fork",
+              "promote",
+              "revert",
+              "revert_preview"
+            ],
+            "type": "object"
+          },
+          "current_branch_id": {
+            "type": "string"
+          },
+          "root_frame_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branches",
+          "capabilities",
+          "current_branch_id",
+          "root_frame_id"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/context [ok]": {
+      "schema": {
+        "properties": {
+          "compaction_count": {
+            "type": "integer"
+          },
+          "compaction_history": {
+            "type": "array"
+          },
+          "compressed": {
+            "type": "boolean"
+          },
+          "handoff": {
+            "type": "boolean"
+          },
+          "layers": {
+            "items": {
+              "properties": {
+                "compressed": {
+                  "type": "boolean"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "token_count": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "compressed",
+                "kind",
+                "name",
+                "status",
+                "token_count"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "message_count": {
+            "type": "integer"
+          },
+          "output_reserve": {
+            "type": "integer"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "token_count": {
+            "type": "integer"
+          },
+          "token_limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "compaction_count",
+          "compaction_history",
+          "compressed",
+          "handoff",
+          "layers",
+          "message_count",
+          "output_reserve",
+          "root_frame_id",
+          "token_count",
+          "token_limit"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/delegations [ok]": {
+      "schema": {
+        "properties": {
+          "budget": {
+            "type": "null"
+          },
+          "children": {
+            "type": "array"
+          },
+          "initialized": {
+            "type": "boolean"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "stats": {
+            "properties": {
+              "done": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              },
+              "pending": {
+                "type": "integer"
+              },
+              "running": {
+                "type": "integer"
+              },
+              "stopped": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "done",
+              "failed",
+              "pending",
+              "running",
+              "stopped",
+              "total"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "budget",
+          "children",
+          "initialized",
+          "root_frame_id",
+          "stats"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/execution-log [ok]": {
+      "schema": {
+        "properties": {
+          "entries": {
+            "items": {
+              "properties": {
+                "attempt": {
+                  "type": "integer"
+                },
+                "attempt_count": {
+                  "type": "integer"
+                },
+                "attempt_group_id": {
+                  "type": "string"
+                },
+                "cell_index": {
+                  "type": "integer"
+                },
+                "code_hash": {
+                  "type": "string"
+                },
+                "cpu_seconds": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "error": {
+                  "type": "string"
+                },
+                "figures": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "files_read": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "files_written": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "fork_checkpoint_id": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "generation_id": {
+                  "type": "null"
+                },
+                "is_latest_attempt": {
+                  "type": "boolean"
+                },
+                "kernel_id": {
+                  "type": "string"
+                },
+                "language": {
+                  "type": "string"
+                },
+                "mutation_uncertain": {
+                  "type": "boolean"
+                },
+                "origin": {
+                  "type": "string"
+                },
+                "peak_rss_kb": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "pin": {
+                  "type": "boolean"
+                },
+                "producing_cell_id": {
+                  "type": "string"
+                },
+                "replay_policy": {
+                  "type": "string"
+                },
+                "revision_of": {
+                  "type": "null"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "stale": {
+                  "type": "boolean"
+                },
+                "stale_reasons": {
+                  "type": "array"
+                },
+                "state_revision": {
+                  "type": "integer"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "stderr": {
+                  "type": "string"
+                },
+                "stdout": {
+                  "type": "string"
+                },
+                "variable_deletes": {
+                  "type": "array"
+                },
+                "variable_reads": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "variable_writes": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "visibility": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "attempt",
+                "attempt_count",
+                "attempt_group_id",
+                "cell_index",
+                "code_hash",
+                "cpu_seconds",
+                "error",
+                "figures",
+                "files_read",
+                "files_written",
+                "fork_checkpoint_id",
+                "generation_id",
+                "is_latest_attempt",
+                "kernel_id",
+                "language",
+                "mutation_uncertain",
+                "origin",
+                "peak_rss_kb",
+                "pin",
+                "producing_cell_id",
+                "replay_policy",
+                "revision_of",
+                "source",
+                "stale",
+                "stale_reasons",
+                "state_revision",
+                "status",
+                "stderr",
+                "stdout",
+                "variable_deletes",
+                "variable_reads",
+                "variable_writes",
+                "visibility"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "kernels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries",
+          "kernels"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/kernel/variables [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/kernel/variables [ok]": {
+      "schema": {
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "generation_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "language": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "state_revision": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "variables": {
+            "items": {
+              "properties": {
+                "fingerprint": {
+                  "type": "string"
+                },
+                "length": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "preview": {
+                  "type": "number"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "available",
+          "branch_id",
+          "generation_id",
+          "language",
+          "root_frame_id",
+          "state",
+          "state_revision",
+          "truncated",
+          "variables"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/messages [ok]": {
+      "schema": {
+        "properties": {
+          "messages": {
+            "items": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "fork_checkpoint_id": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "message_id": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "content",
+                "created_at",
+                "fork_checkpoint_id",
+                "message_id",
+                "role"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/notebook/export [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/recovery [ok]": {
+      "schema": {
+        "properties": {
+          "attempts": {
+            "type": "array"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "current": {
+            "type": "null"
+          },
+          "generations": {
+            "properties": {
+              "python": {
+                "type": "null"
+              },
+              "r": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "python",
+              "r"
+            ],
+            "type": "object"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempts",
+          "branch_id",
+          "current",
+          "generations",
+          "root_frame_id",
+          "state"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/recovery/actions [ok]": {
+      "schema": {
+        "properties": {
+          "actions": {
+            "items": {
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "requires_confirmation": {
+                  "type": "boolean"
+                },
+                "requires_execution_ticket": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "enabled",
+                "id",
+                "reason",
+                "requires_confirmation",
+                "requires_execution_ticket"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "checkpoint_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "actions",
+          "branch_id",
+          "checkpoint_id",
+          "root_frame_id",
+          "state"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/review-settings [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/review-settings [ok]": {
+      "schema": {
+        "properties": {
+          "auto_review": {
+            "type": "boolean"
+          },
+          "delegation_enabled": {
+            "type": "boolean"
+          },
+          "inherits_auto_review": {
+            "type": "boolean"
+          },
+          "reviewer_model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "auto_review",
+          "delegation_enabled",
+          "inherits_auto_review",
+          "reviewer_model"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/security [ok]": {
+      "schema": {
+        "properties": {
+          "notebook": {
+            "properties": {
+              "interactive": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "interactive"
+            ],
+            "type": "object"
+          },
+          "permission": {
+            "properties": {
+              "mode": {
+                "type": "string"
+              },
+              "pending_count": {
+                "type": "integer"
+              },
+              "unattended": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "pending_count",
+              "unattended"
+            ],
+            "type": "object"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "sandbox": {
+            "properties": {
+              "backend": {
+                "type": "null"
+              },
+              "detail": {
+                "type": "string"
+              },
+              "enforced": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "network_policy": {
+                "type": "string"
+              },
+              "runtimes": {
+                "type": "array"
+              },
+              "self_test_passed": {
+                "type": "boolean"
+              },
+              "state": {
+                "type": "string"
+              },
+              "warning": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "backend",
+              "detail",
+              "enforced",
+              "mode",
+              "network_policy",
+              "runtimes",
+              "self_test_passed",
+              "state",
+              "warning"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "notebook",
+          "permission",
+          "root_frame_id",
+          "sandbox"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /model-endpoints/discover [ok]": {
+      "schema": {
+        "properties": {
+          "cached": {
+            "type": "boolean"
+          },
+          "endpoints": {
+            "items": {
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "models": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "models"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "mutated_settings": {
+            "type": "boolean"
+          },
+          "probed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cached",
+          "endpoints",
+          "mutated_settings",
+          "probed"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects [ok]": {
+      "schema": {
+        "properties": {
+          "projects": {
+            "items": {
+              "properties": {
+                "context": {
+                  "type": "string"
+                },
+                "conversation_count": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "is_example": {
+                  "type": "boolean"
+                },
+                "last_active_at": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "context",
+                "conversation_count",
+                "created_at",
+                "description",
+                "id",
+                "is_example",
+                "last_active_at",
+                "name",
+                "project_id",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "projects",
+          "total"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects/([^/]+)/skills/([^/]+)/versions [ok]": {
+      "schema": {
+        "properties": {
+          "events": {
+            "items": {
+              "properties": {
+                "created_at": {
+                  "type": "integer"
+                },
+                "event": {
+                  "type": "string"
+                },
+                "event_id": {
+                  "type": "string"
+                },
+                "from_version_id": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "metadata": {
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "source"
+                  ],
+                  "type": "object"
+                },
+                "to_version_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "created_at",
+                "event",
+                "event_id",
+                "from_version_id",
+                "metadata",
+                "to_version_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "installation": {
+            "properties": {
+              "active_version_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "installation_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "normalized_name": {
+                "type": "string"
+              },
+              "scope": {
+                "type": "string"
+              },
+              "scope_id": {
+                "type": "string"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "active_version_id",
+              "created_at",
+              "installation_id",
+              "name",
+              "normalized_name",
+              "scope",
+              "scope_id",
+              "slug",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "status": {
+            "properties": {
+              "active": {
+                "type": "boolean"
+              },
+              "active_version_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "installed": {
+                "type": "boolean"
+              },
+              "manifest": {
+                "properties": {
+                  "distribution_scope": {
+                    "type": "string"
+                  },
+                  "document_sha256": {
+                    "type": "string"
+                  },
+                  "files": {
+                    "items": {
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "sha256": {
+                          "type": "string"
+                        },
+                        "size": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "sha256",
+                        "size"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "origin": {
+                    "type": "string"
+                  },
+                  "schema_version": {
+                    "type": "integer"
+                  },
+                  "sidecar": {
+                    "properties": {
+                      "gate": {
+                        "properties": {
+                          "error": {
+                            "type": "null"
+                          },
+                          "ok": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "error",
+                          "ok"
+                        ],
+                        "type": "object"
+                      },
+                      "present": {
+                        "type": "boolean"
+                      },
+                      "sha256": {
+                        "type": "null"
+                      },
+                      "size": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "gate",
+                      "present",
+                      "sha256",
+                      "size"
+                    ],
+                    "type": "object"
+                  },
+                  "slug": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "distribution_scope",
+                  "document_sha256",
+                  "files",
+                  "name",
+                  "origin",
+                  "schema_version",
+                  "sidecar",
+                  "slug"
+                ],
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "read_only": {
+                "type": "boolean"
+              },
+              "rollback_available": {
+                "type": "boolean"
+              },
+              "scope": {
+                "type": "string"
+              },
+              "scope_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "active",
+              "active_version_id",
+              "created_at",
+              "installed",
+              "manifest",
+              "name",
+              "read_only",
+              "rollback_available",
+              "scope",
+              "scope_id"
+            ],
+            "type": "object"
+          },
+          "versions": {
+            "items": {
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "manifest": {
+                  "properties": {
+                    "distribution_scope": {
+                      "type": "string"
+                    },
+                    "document_sha256": {
+                      "type": "string"
+                    },
+                    "files": {
+                      "items": {
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "sha256": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "sha256",
+                          "size"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "origin": {
+                      "type": "string"
+                    },
+                    "schema_version": {
+                      "type": "integer"
+                    },
+                    "sidecar": {
+                      "properties": {
+                        "gate": {
+                          "properties": {
+                            "error": {
+                              "type": "null"
+                            },
+                            "ok": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "error",
+                            "ok"
+                          ],
+                          "type": "object"
+                        },
+                        "present": {
+                          "type": "boolean"
+                        },
+                        "sha256": {
+                          "type": "null"
+                        },
+                        "size": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "gate",
+                        "present",
+                        "sha256",
+                        "size"
+                      ],
+                      "type": "object"
+                    },
+                    "slug": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "distribution_scope",
+                    "document_sha256",
+                    "files",
+                    "name",
+                    "origin",
+                    "schema_version",
+                    "sidecar",
+                    "slug"
+                  ],
+                  "type": "object"
+                },
+                "version_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "active",
+                "created_at",
+                "manifest",
+                "version_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "events",
+          "installation",
+          "status",
+          "versions"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects/([^/]+)/skills/catalog [ok]": {
+      "schema": {
+        "properties": {
+          "skills": {
+            "items": {
+              "properties": {
+                "activeVersionId": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "displayName": {
+                  "type": "string"
+                },
+                "editable": {
+                  "type": "boolean"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "origin": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": "string"
+                },
+                "versioned": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "activeVersionId",
+                "description",
+                "displayName",
+                "editable",
+                "enabled",
+                "name",
+                "origin",
+                "scope",
+                "versioned"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "skills"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /skills/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "editable": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "GET /skills/([^/]+)/versions [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /skills/([^/]+)/versions [ok]": {
+      "schema": {
+        "properties": {
+          "events": {
+            "items": {
+              "properties": {
+                "created_at": {
+                  "type": "integer"
+                },
+                "event": {
+                  "type": "string"
+                },
+                "event_id": {
+                  "type": "string"
+                },
+                "from_version_id": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "metadata": {
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "source"
+                  ],
+                  "type": "object"
+                },
+                "to_version_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "created_at",
+                "event",
+                "event_id",
+                "from_version_id",
+                "metadata",
+                "to_version_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "installation": {
+            "properties": {
+              "active_version_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "installation_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "normalized_name": {
+                "type": "string"
+              },
+              "scope": {
+                "type": "string"
+              },
+              "scope_id": {
+                "type": "string"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "active_version_id",
+              "created_at",
+              "installation_id",
+              "name",
+              "normalized_name",
+              "scope",
+              "scope_id",
+              "slug",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "status": {
+            "properties": {
+              "active": {
+                "type": "boolean"
+              },
+              "active_version_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "installed": {
+                "type": "boolean"
+              },
+              "manifest": {
+                "properties": {
+                  "distribution_scope": {
+                    "type": "string"
+                  },
+                  "document_sha256": {
+                    "type": "string"
+                  },
+                  "files": {
+                    "items": {
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "sha256": {
+                          "type": "string"
+                        },
+                        "size": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "sha256",
+                        "size"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "origin": {
+                    "type": "string"
+                  },
+                  "schema_version": {
+                    "type": "integer"
+                  },
+                  "sidecar": {
+                    "properties": {
+                      "gate": {
+                        "properties": {
+                          "error": {
+                            "type": "null"
+                          },
+                          "ok": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "error",
+                          "ok"
+                        ],
+                        "type": "object"
+                      },
+                      "present": {
+                        "type": "boolean"
+                      },
+                      "sha256": {
+                        "type": "null"
+                      },
+                      "size": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "gate",
+                      "present",
+                      "sha256",
+                      "size"
+                    ],
+                    "type": "object"
+                  },
+                  "slug": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "distribution_scope",
+                  "document_sha256",
+                  "files",
+                  "name",
+                  "origin",
+                  "schema_version",
+                  "sidecar",
+                  "slug"
+                ],
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "read_only": {
+                "type": "boolean"
+              },
+              "rollback_available": {
+                "type": "boolean"
+              },
+              "scope": {
+                "type": "string"
+              },
+              "scope_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "active",
+              "active_version_id",
+              "created_at",
+              "installed",
+              "manifest",
+              "name",
+              "read_only",
+              "rollback_available",
+              "scope",
+              "scope_id"
+            ],
+            "type": "object"
+          },
+          "versions": {
+            "items": {
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "manifest": {
+                  "properties": {
+                    "distribution_scope": {
+                      "type": "string"
+                    },
+                    "document_sha256": {
+                      "type": "string"
+                    },
+                    "files": {
+                      "items": {
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "sha256": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "sha256",
+                          "size"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "origin": {
+                      "type": "string"
+                    },
+                    "schema_version": {
+                      "type": "integer"
+                    },
+                    "sidecar": {
+                      "properties": {
+                        "gate": {
+                          "properties": {
+                            "error": {
+                              "type": "null"
+                            },
+                            "ok": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "error",
+                            "ok"
+                          ],
+                          "type": "object"
+                        },
+                        "present": {
+                          "type": "boolean"
+                        },
+                        "sha256": {
+                          "type": "null"
+                        },
+                        "size": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "gate",
+                        "present",
+                        "sha256",
+                        "size"
+                      ],
+                      "type": "object"
+                    },
+                    "slug": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "distribution_scope",
+                    "document_sha256",
+                    "files",
+                    "name",
+                    "origin",
+                    "schema_version",
+                    "sidecar",
+                    "slug"
+                  ],
+                  "type": "object"
+                },
+                "version_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "active",
+                "created_at",
+                "manifest",
+                "version_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "events",
+          "installation",
+          "status",
+          "versions"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /skills/catalog [ok]": {
+      "schema": {
+        "properties": {
+          "skills": {
+            "items": {
+              "properties": {
+                "activeVersionId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                },
+                "displayName": {
+                  "type": "string"
+                },
+                "editable": {
+                  "type": "boolean"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "origin": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": "string"
+                },
+                "versioned": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "activeVersionId",
+                "description",
+                "displayName",
+                "editable",
+                "enabled",
+                "name",
+                "origin",
+                "scope",
+                "versioned"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "skills"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/review-settings [ok]": {
+      "schema": {
+        "properties": {
+          "auto_review": {
+            "type": "boolean"
+          },
+          "delegation_enabled": {
+            "type": "boolean"
+          },
+          "inherits_auto_review": {
+            "type": "boolean"
+          },
+          "reviewer_model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "auto_review",
+          "delegation_enabled",
+          "inherits_auto_review",
+          "reviewer_model"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /skills/catalog/([^/]+)/enabled [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/([^/]+)/versions/([^/]+)/restore [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/([^/]+)/versions/([^/]+)/restore [ok]": {
+      "schema": {
+        "properties": {
+          "artifact": {
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "checksum": {
+                "type": "string"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "filename": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "is_user_upload": {
+                "type": "boolean"
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              },
+              "version_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "checksum",
+              "content_type",
+              "created_at",
+              "filename",
+              "id",
+              "is_user_upload",
+              "priority",
+              "project_id",
+              "root_frame_id",
+              "size_bytes",
+              "version_id"
+            ],
+            "type": "object"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "restored_from_version_id": {
+            "type": "string"
+          },
+          "snapshot_verified": {
+            "type": "boolean"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact",
+          "ok",
+          "restored_from_version_id",
+          "snapshot_verified",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)(?:/.*)? [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "method",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)(?:/.*)? [ok]": {
+      "schema": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "checkpoint_id": {
+            "type": "string"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "owner": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "recovery_id": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "properties": {
+                "candidate_generation_id": {
+                  "type": "string"
+                },
+                "issues": {
+                  "type": "array"
+                },
+                "manifest_id": {
+                  "type": "string"
+                },
+                "replayed_steps": {
+                  "type": "array"
+                },
+                "skipped_steps": {
+                  "type": "array"
+                },
+                "source_generation_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "candidate_generation_id",
+                "issues",
+                "manifest_id",
+                "replayed_steps",
+                "skipped_steps",
+                "source_generation_id",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "branch_id",
+          "checkpoint_id",
+          "execution_id",
+          "ok",
+          "owner",
+          "recovery_id",
+          "results",
+          "root_frame_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/(?:checkpoints|branches/checkpoints) [ok]": {
+      "schema": {
+        "properties": {
+          "action_cursor": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "artifact_versions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "capability_state": {
+            "properties": {
+              "states": {
+                "items": {
+                  "properties": {
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "metadata": {
+                      "properties": {},
+                      "required": [],
+                      "type": "object"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "scope_id": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "created_at",
+                    "enabled",
+                    "kind",
+                    "metadata",
+                    "name",
+                    "scope",
+                    "scope_id",
+                    "updated_at"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "version": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "states",
+              "version"
+            ],
+            "type": "object"
+          },
+          "cell_cursor": {
+            "type": "integer"
+          },
+          "checkpoint_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "environment_pins": {
+            "properties": {
+              "python": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "python"
+            ],
+            "type": "object"
+          },
+          "generation_refs": {
+            "properties": {
+              "python": {
+                "properties": {
+                  "bootstrap": {
+                    "properties": {
+                      "bootstrap_code_sha256": {
+                        "type": "string"
+                      },
+                      "environment": {
+                        "properties": {
+                          "base_prefix": {
+                            "type": "string"
+                          },
+                          "environment_name": {
+                            "type": "string"
+                          },
+                          "environment_root": {
+                            "type": "null"
+                          },
+                          "interpreter_prefix": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "base_prefix",
+                          "environment_name",
+                          "environment_root",
+                          "interpreter_prefix"
+                        ],
+                        "type": "object"
+                      },
+                      "environment_hash": {
+                        "type": "string"
+                      },
+                      "environment_name": {
+                        "type": "string"
+                      },
+                      "environment_root": {
+                        "type": "null"
+                      },
+                      "host_capability_version": {
+                        "type": "string"
+                      },
+                      "init_hooks": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "interpreter": {
+                        "type": "string"
+                      },
+                      "language": {
+                        "type": "string"
+                      },
+                      "loaded_sidecars": {
+                        "type": "array"
+                      },
+                      "locale": {
+                        "properties": {
+                          "default_encoding": {
+                            "type": "string"
+                          },
+                          "filesystem_encoding": {
+                            "type": "string"
+                          },
+                          "filesystem_errors": {
+                            "type": "string"
+                          },
+                          "lc_ctype": {
+                            "type": "string"
+                          },
+                          "preferred_encoding": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "default_encoding",
+                          "filesystem_encoding",
+                          "filesystem_errors",
+                          "lc_ctype",
+                          "preferred_encoding"
+                        ],
+                        "type": "object"
+                      },
+                      "package_manifest": {
+                        "items": {
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "version": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "version"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "project_init_hooks": {
+                        "type": "array"
+                      },
+                      "provenance_version": {
+                        "type": "string"
+                      },
+                      "random_seed_policy": {
+                        "type": "string"
+                      },
+                      "runtime_version": {
+                        "type": "string"
+                      },
+                      "sdk_version": {
+                        "type": "string"
+                      },
+                      "sidecar_capture_status": {
+                        "type": "string"
+                      },
+                      "sidecars": {
+                        "type": "array"
+                      },
+                      "status": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "integer"
+                      },
+                      "working_directory": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "bootstrap_code_sha256",
+                      "environment",
+                      "environment_hash",
+                      "environment_name",
+                      "environment_root",
+                      "host_capability_version",
+                      "init_hooks",
+                      "interpreter",
+                      "language",
+                      "loaded_sidecars",
+                      "locale",
+                      "package_manifest",
+                      "project_init_hooks",
+                      "provenance_version",
+                      "random_seed_policy",
+                      "runtime_version",
+                      "sdk_version",
+                      "sidecar_capture_status",
+                      "sidecars",
+                      "status",
+                      "version",
+                      "working_directory"
+                    ],
+                    "type": "object"
+                  },
+                  "bootstrap_manifest_id": {
+                    "type": "string"
+                  },
+                  "environment": {
+                    "properties": {
+                      "environment_name": {
+                        "type": "string"
+                      },
+                      "environment_root": {
+                        "type": "null"
+                      },
+                      "interpreter": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "items": {
+                          "type": [
+                            "null",
+                            "string"
+                          ]
+                        },
+                        "type": "array"
+                      },
+                      "runtime": {
+                        "type": "string"
+                      },
+                      "sandbox": {
+                        "properties": {
+                          "backend": {
+                            "type": "string"
+                          },
+                          "detail": {
+                            "type": "string"
+                          },
+                          "enforced": {
+                            "type": "boolean"
+                          },
+                          "mode": {
+                            "type": "string"
+                          },
+                          "network_policy": {
+                            "type": "string"
+                          },
+                          "self_test_passed": {
+                            "type": "boolean"
+                          },
+                          "state": {
+                            "type": "string"
+                          },
+                          "temp_dir": {
+                            "type": "string"
+                          },
+                          "warning": {
+                            "type": "null"
+                          },
+                          "workspace": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "backend",
+                          "detail",
+                          "enforced",
+                          "mode",
+                          "network_policy",
+                          "self_test_passed",
+                          "state",
+                          "temp_dir",
+                          "warning",
+                          "workspace"
+                        ],
+                        "type": "object"
+                      },
+                      "worker_argv": {
+                        "type": "null"
+                      },
+                      "working_directory": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "environment_name",
+                      "environment_root",
+                      "interpreter",
+                      "key",
+                      "runtime",
+                      "sandbox",
+                      "worker_argv",
+                      "working_directory"
+                    ],
+                    "type": "object"
+                  },
+                  "environment_manifest_id": {
+                    "type": "string"
+                  },
+                  "generation_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bootstrap",
+                  "bootstrap_manifest_id",
+                  "environment",
+                  "environment_manifest_id",
+                  "generation_id",
+                  "state"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [],
+            "type": "object"
+          },
+          "internal": {
+            "type": "boolean"
+          },
+          "message_cursor": {
+            "type": "integer"
+          },
+          "metadata": {
+            "properties": {
+              "memories": {
+                "type": "array"
+              },
+              "plans": {
+                "type": "array"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "state_source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "memories",
+              "plans",
+              "project_id",
+              "state_source"
+            ],
+            "type": "object"
+          },
+          "parent_checkpoint_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "permission_state": {
+            "properties": {
+              "conversation": {
+                "items": {
+                  "properties": {
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string"
+                    },
+                    "pattern": {
+                      "type": "string"
+                    },
+                    "rule_id": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "scope_id": {
+                      "type": "string"
+                    },
+                    "tool": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "created_at",
+                    "decision",
+                    "pattern",
+                    "rule_id",
+                    "scope",
+                    "scope_id",
+                    "tool",
+                    "updated_at"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "global": {
+                "items": {
+                  "properties": {
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string"
+                    },
+                    "pattern": {
+                      "type": "string"
+                    },
+                    "rule_id": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "scope_id": {
+                      "type": "string"
+                    },
+                    "tool": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "created_at",
+                    "decision",
+                    "pattern",
+                    "rule_id",
+                    "scope",
+                    "scope_id",
+                    "tool",
+                    "updated_at"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "project": {
+                "type": "array"
+              }
+            },
+            "required": [
+              "conversation",
+              "global",
+              "project"
+            ],
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "recovery_recipe": {
+            "properties": {
+              "artifact_hashes": {
+                "properties": {
+                  "analysis.txt": {
+                    "type": "string"
+                  },
+                  "results/out.csv": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "environment_requirements": {
+                "properties": {
+                  "python": {
+                    "properties": {
+                      "base_prefix": {
+                        "type": "string"
+                      },
+                      "environment_hash": {
+                        "type": "string"
+                      },
+                      "environment_name": {
+                        "type": "string"
+                      },
+                      "host_capability_version": {
+                        "type": "string"
+                      },
+                      "interpreter_prefix": {
+                        "type": "string"
+                      },
+                      "provenance_version": {
+                        "type": "string"
+                      },
+                      "runtime_version": {
+                        "type": "string"
+                      },
+                      "sdk_version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "base_prefix",
+                      "environment_hash",
+                      "environment_name",
+                      "host_capability_version",
+                      "interpreter_prefix",
+                      "provenance_version",
+                      "runtime_version",
+                      "sdk_version"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "namespace_coverage": {
+                "type": "string"
+              },
+              "required_symbols": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "steps": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "payload": {
+                      "properties": {
+                        "tree_id": {
+                          "type": "string"
+                        },
+                        "version_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "type": "object"
+                    },
+                    "replay_policy": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "payload",
+                    "replay_policy"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "summary": {
+                "properties": {
+                  "manual_cells": {
+                    "type": "integer"
+                  },
+                  "safe_replay_cells": {
+                    "type": "integer"
+                  },
+                  "state_cells": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "manual_cells",
+                  "safe_replay_cells",
+                  "state_cells"
+                ],
+                "type": "object"
+              },
+              "version": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artifact_hashes",
+              "environment_requirements",
+              "namespace_coverage",
+              "required_symbols",
+              "steps",
+              "summary",
+              "version"
+            ],
+            "type": "object"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "null"
+          },
+          "source_kind": {
+            "type": "null"
+          },
+          "workspace_tree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action_cursor",
+          "artifact_versions",
+          "branch_id",
+          "capability_state",
+          "cell_cursor",
+          "checkpoint_id",
+          "created_at",
+          "environment_pins",
+          "generation_refs",
+          "internal",
+          "message_cursor",
+          "metadata",
+          "parent_checkpoint_id",
+          "permission_state",
+          "reason",
+          "recovery_recipe",
+          "root_frame_id",
+          "source_id",
+          "source_kind",
+          "workspace_tree_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/(?:revert/apply|branches/revert) [ok]": {
+      "schema": {
+        "properties": {
+          "checkpoint": {
+            "properties": {
+              "action_cursor": {
+                "type": "integer"
+              },
+              "artifact_versions": {
+                "type": "array"
+              },
+              "branch_id": {
+                "type": "string"
+              },
+              "capability_state": {
+                "properties": {
+                  "states": {
+                    "type": "array"
+                  },
+                  "version": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "states",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "cell_cursor": {
+                "type": "integer"
+              },
+              "checkpoint_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "environment_pins": {
+                "properties": {
+                  "python": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "python"
+                ],
+                "type": "object"
+              },
+              "generation_refs": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "internal": {
+                "type": "boolean"
+              },
+              "message_cursor": {
+                "type": "integer"
+              },
+              "metadata": {
+                "properties": {
+                  "history_projection": {
+                    "properties": {
+                      "base_checkpoint_id": {
+                        "type": "string"
+                      },
+                      "resume_cursors": {
+                        "properties": {
+                          "action_cursor": {
+                            "type": "integer"
+                          },
+                          "cell_cursor": {
+                            "type": "integer"
+                          },
+                          "message_cursor": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "action_cursor",
+                          "cell_cursor",
+                          "message_cursor"
+                        ],
+                        "type": "object"
+                      },
+                      "version": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "base_checkpoint_id",
+                      "resume_cursors",
+                      "version"
+                    ],
+                    "type": "object"
+                  },
+                  "operation_id": {
+                    "type": "string"
+                  },
+                  "requires_kernel_recovery": {
+                    "type": "boolean"
+                  },
+                  "reverted_to": {
+                    "type": "string"
+                  },
+                  "undo_checkpoint_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "history_projection",
+                  "operation_id",
+                  "requires_kernel_recovery",
+                  "reverted_to",
+                  "undo_checkpoint_id"
+                ],
+                "type": "object"
+              },
+              "parent_checkpoint_id": {
+                "type": "string"
+              },
+              "permission_state": {
+                "properties": {
+                  "conversation": {
+                    "type": "array"
+                  },
+                  "global": {
+                    "type": "array"
+                  },
+                  "project": {
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "conversation",
+                  "global",
+                  "project"
+                ],
+                "type": "object"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "recovery_recipe": {
+                "properties": {
+                  "artifact_hashes": {
+                    "properties": {},
+                    "required": [],
+                    "type": "object"
+                  },
+                  "environment_requirements": {
+                    "properties": {},
+                    "required": [],
+                    "type": "object"
+                  },
+                  "namespace_coverage": {
+                    "type": "string"
+                  },
+                  "required_symbols": {
+                    "properties": {},
+                    "required": [],
+                    "type": "object"
+                  },
+                  "steps": {
+                    "items": {
+                      "properties": {
+                        "kind": {
+                          "type": "string"
+                        },
+                        "payload": {
+                          "properties": {
+                            "tree_id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "tree_id"
+                          ],
+                          "type": "object"
+                        },
+                        "replay_policy": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "payload",
+                        "replay_policy"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "summary": {
+                    "properties": {
+                      "manual_cells": {
+                        "type": "integer"
+                      },
+                      "safe_replay_cells": {
+                        "type": "integer"
+                      },
+                      "state_cells": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "manual_cells",
+                      "safe_replay_cells",
+                      "state_cells"
+                    ],
+                    "type": "object"
+                  },
+                  "version": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "artifact_hashes",
+                  "environment_requirements",
+                  "namespace_coverage",
+                  "required_symbols",
+                  "steps",
+                  "summary",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "source_id": {
+                "type": "null"
+              },
+              "source_kind": {
+                "type": "null"
+              },
+              "workspace_tree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action_cursor",
+              "artifact_versions",
+              "branch_id",
+              "capability_state",
+              "cell_cursor",
+              "checkpoint_id",
+              "created_at",
+              "environment_pins",
+              "generation_refs",
+              "internal",
+              "message_cursor",
+              "metadata",
+              "parent_checkpoint_id",
+              "permission_state",
+              "reason",
+              "recovery_recipe",
+              "root_frame_id",
+              "source_id",
+              "source_kind",
+              "workspace_tree_id"
+            ],
+            "type": "object"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "operation": {
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "error": {
+                "type": "null"
+              },
+              "finished_at": {
+                "type": "integer"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "operation_id": {
+                "type": "string"
+              },
+              "preview": {
+                "properties": {
+                  "actions": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
+                    ],
+                    "type": "object"
+                  },
+                  "applied_workspace": {
+                    "properties": {
+                      "applied": {
+                        "type": "boolean"
+                      },
+                      "baseline_tree_id": {
+                        "type": "string"
+                      },
+                      "conflicts": {
+                        "type": "array"
+                      },
+                      "deletes": {
+                        "type": "array"
+                      },
+                      "observed_tree_id": {
+                        "type": "string"
+                      },
+                      "preserved_untracked": {
+                        "type": "array"
+                      },
+                      "target_tree_id": {
+                        "type": "string"
+                      },
+                      "unchanged": {
+                        "type": "array"
+                      },
+                      "writes": {
+                        "items": {
+                          "properties": {
+                            "from_blob": {
+                              "type": "string"
+                            },
+                            "operation": {
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "size": {
+                              "type": "integer"
+                            },
+                            "to_blob": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "from_blob",
+                            "operation",
+                            "path",
+                            "size",
+                            "to_blob"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "applied",
+                      "baseline_tree_id",
+                      "conflicts",
+                      "deletes",
+                      "observed_tree_id",
+                      "preserved_untracked",
+                      "target_tree_id",
+                      "unchanged",
+                      "writes"
+                    ],
+                    "type": "object"
+                  },
+                  "artifacts": {
+                    "properties": {
+                      "added": {
+                        "type": "array"
+                      },
+                      "removed": {
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "added",
+                      "removed"
+                    ],
+                    "type": "object"
+                  },
+                  "branch_id": {
+                    "type": "string"
+                  },
+                  "can_apply": {
+                    "type": "boolean"
+                  },
+                  "capabilities": {
+                    "properties": {
+                      "changed": {
+                        "properties": {},
+                        "required": [],
+                        "type": "object"
+                      },
+                      "has_changes": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "changed",
+                      "has_changes"
+                    ],
+                    "type": "object"
+                  },
+                  "current_checkpoint_id": {
+                    "type": "string"
+                  },
+                  "environment": {
+                    "properties": {
+                      "changed": {
+                        "properties": {},
+                        "required": [],
+                        "type": "object"
+                      },
+                      "has_changes": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "changed",
+                      "has_changes"
+                    ],
+                    "type": "object"
+                  },
+                  "messages": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
+                    ],
+                    "type": "object"
+                  },
+                  "notebook": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
+                    ],
+                    "type": "object"
+                  },
+                  "permissions": {
+                    "properties": {
+                      "changed": {
+                        "properties": {},
+                        "required": [],
+                        "type": "object"
+                      },
+                      "has_changes": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "changed",
+                      "has_changes"
+                    ],
+                    "type": "object"
+                  },
+                  "root_frame_id": {
+                    "type": "string"
+                  },
+                  "target_checkpoint_id": {
+                    "type": "string"
+                  },
+                  "workspace": {
+                    "properties": {
+                      "baseline_tree_id": {
+                        "type": "string"
+                      },
+                      "conflicts": {
+                        "type": "array"
+                      },
+                      "deletes": {
+                        "type": "array"
+                      },
+                      "observed_tree_id": {
+                        "type": "string"
+                      },
+                      "preserved_untracked": {
+                        "type": "array"
+                      },
+                      "target_tree_id": {
+                        "type": "string"
+                      },
+                      "unchanged": {
+                        "type": "array"
+                      },
+                      "writes": {
+                        "items": {
+                          "properties": {
+                            "from_blob": {
+                              "type": "string"
+                            },
+                            "operation": {
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "size": {
+                              "type": "integer"
+                            },
+                            "to_blob": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "from_blob",
+                            "operation",
+                            "path",
+                            "size",
+                            "to_blob"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "baseline_tree_id",
+                      "conflicts",
+                      "deletes",
+                      "observed_tree_id",
+                      "preserved_untracked",
+                      "target_tree_id",
+                      "unchanged",
+                      "writes"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "actions",
+                  "applied_workspace",
+                  "artifacts",
+                  "branch_id",
+                  "can_apply",
+                  "capabilities",
+                  "current_checkpoint_id",
+                  "environment",
+                  "messages",
+                  "notebook",
+                  "permissions",
+                  "root_frame_id",
+                  "target_checkpoint_id",
+                  "workspace"
+                ],
+                "type": "object"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "source_checkpoint_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "target_checkpoint_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch_id",
+              "created_at",
+              "error",
+              "finished_at",
+              "kind",
+              "operation_id",
+              "preview",
+              "root_frame_id",
+              "source_checkpoint_id",
+              "status",
+              "target_checkpoint_id"
+            ],
+            "type": "object"
+          },
+          "projection": {
+            "properties": {
+              "artifacts": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "version_count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "version_count"
+                ],
+                "type": "object"
+              },
+              "capabilities": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "session_override_count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "session_override_count"
+                ],
+                "type": "object"
+              },
+              "checkpoint_id": {
+                "type": "string"
+              },
+              "current_branch_id": {
+                "type": "string"
+              },
+              "environment": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "python": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "python"
+                ],
+                "type": "object"
+              },
+              "partial": {
+                "type": "boolean"
+              },
+              "permissions": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "conversation_rule_count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "conversation_rule_count"
+                ],
+                "type": "object"
+              },
+              "previous_branch_id": {
+                "type": "string"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "session_state": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "available": {
+                    "type": "boolean"
+                  },
+                  "checkpoint_id": {
+                    "type": "string"
+                  },
+                  "memory": {
+                    "properties": {
+                      "applied": {
+                        "type": "boolean"
+                      },
+                      "count": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "applied",
+                      "count"
+                    ],
+                    "type": "object"
+                  },
+                  "partial": {
+                    "type": "boolean"
+                  },
+                  "plans": {
+                    "properties": {
+                      "applied": {
+                        "type": "boolean"
+                      },
+                      "count": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "applied",
+                      "count"
+                    ],
+                    "type": "object"
+                  },
+                  "review": {
+                    "properties": {
+                      "annotation_count": {
+                        "type": "integer"
+                      },
+                      "applied": {
+                        "type": "boolean"
+                      },
+                      "settings_count": {
+                        "type": "integer"
+                      },
+                      "step_count": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "annotation_count",
+                      "applied",
+                      "settings_count",
+                      "step_count"
+                    ],
+                    "type": "object"
+                  },
+                  "state_sha256": {
+                    "type": "string"
+                  },
+                  "trust_state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "available",
+                  "checkpoint_id",
+                  "memory",
+                  "partial",
+                  "plans",
+                  "review",
+                  "state_sha256",
+                  "trust_state"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "artifacts",
+              "capabilities",
+              "checkpoint_id",
+              "current_branch_id",
+              "environment",
+              "partial",
+              "permissions",
+              "previous_branch_id",
+              "root_frame_id",
+              "session_state"
+            ],
+            "type": "object"
+          },
+          "requires_kernel_recovery": {
+            "type": "boolean"
+          },
+          "undo_checkpoint_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkpoint",
+          "ok",
+          "operation",
+          "projection",
+          "requires_kernel_recovery",
+          "undo_checkpoint_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/artifacts/promote [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "checksum": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "storage_path": {
+            "type": "string"
+          },
+          "version_id": {
+            "type": "string"
+          },
+          "version_number": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "checksum",
+          "content_type",
+          "filename",
+          "size_bytes",
+          "storage_path",
+          "version_id",
+          "version_number"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/branches/([^/]+)/activate [ok]": {
+      "schema": {
+        "properties": {
+          "activation_state": {
+            "type": "string"
+          },
+          "checkpoint_id": {
+            "type": "string"
+          },
+          "current_branch_id": {
+            "type": "string"
+          },
+          "dimensions": {
+            "properties": {
+              "artifacts": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "version_count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "version_count"
+                ],
+                "type": "object"
+              },
+              "capabilities": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "session_override_count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "session_override_count"
+                ],
+                "type": "object"
+              },
+              "environment": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "python": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "python"
+                ],
+                "type": "object"
+              },
+              "memories": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              "namespace": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "issues": {
+                    "type": "array"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "issues",
+                  "status"
+                ],
+                "type": "object"
+              },
+              "permissions": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "conversation_rule_count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "conversation_rule_count"
+                ],
+                "type": "object"
+              },
+              "plans": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              "provider_history": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "applied"
+                ],
+                "type": "object"
+              },
+              "workspace": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "deletes_count": {
+                    "type": "integer"
+                  },
+                  "preserved_untracked_count": {
+                    "type": "integer"
+                  },
+                  "writes_count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "deletes_count",
+                  "preserved_untracked_count",
+                  "writes_count"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "artifacts",
+              "capabilities",
+              "environment",
+              "memories",
+              "namespace",
+              "permissions",
+              "plans",
+              "provider_history",
+              "workspace"
+            ],
+            "type": "object"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "owner": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "previous_branch_id": {
+            "type": "string"
+          },
+          "recovery": {
+            "type": "null"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "activation_state",
+          "checkpoint_id",
+          "current_branch_id",
+          "dimensions",
+          "execution_id",
+          "ok",
+          "owner",
+          "previous_branch_id",
+          "recovery",
+          "root_frame_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/branches/fork [ok]": {
+      "schema": {
+        "properties": {
+          "activatable": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "base_checkpoint_id": {
+            "type": "string"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "from_checkpoint_id": {
+            "type": "string"
+          },
+          "head_checkpoint_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "parent_branch_id": {
+            "type": "string"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer"
+          },
+          "view_only": {
+            "type": "boolean"
+          },
+          "workspace_isolated": {
+            "type": "boolean"
+          },
+          "workspace_materialized": {
+            "type": "boolean"
+          },
+          "workspace_tree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "activatable",
+          "active",
+          "base_checkpoint_id",
+          "branch_id",
+          "created_at",
+          "from_checkpoint_id",
+          "head_checkpoint_id",
+          "name",
+          "parent_branch_id",
+          "root_frame_id",
+          "source_id",
+          "source_kind",
+          "updated_at",
+          "view_only",
+          "workspace_isolated",
+          "workspace_materialized",
+          "workspace_tree_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/cancel [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "frame_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "frame_id",
+          "ok",
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/cancel [ok]": {
+      "schema": {
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "frame_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "execution_id",
+          "frame_id",
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/decision [ok]": {
+      "schema": {
+        "properties": {
+          "allow": {
+            "type": "boolean"
+          },
+          "continuation_authorization": {
+            "type": "string"
+          },
+          "continuation_expires_at": {
+            "type": "integer"
+          },
+          "decision_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "original_action_executed": {
+            "type": "boolean"
+          },
+          "requires_continue": {
+            "type": "boolean"
+          },
+          "resolution_context": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "allow",
+          "continuation_authorization",
+          "continuation_expires_at",
+          "decision_id",
+          "ok",
+          "original_action_executed",
+          "requires_continue",
+          "resolution_context",
+          "scope"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/kernel/env [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/kernel/execute [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/kernel/execute [ok]": {
+      "schema": {
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "frame_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "owner": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "queue_position": {
+            "type": "null"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "execution_id",
+          "frame_id",
+          "job_id",
+          "owner",
+          "queue_position",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/kernel/install [ok]": {
+      "schema": {
+        "properties": {
+          "installed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "installed",
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/kernel/interrupt [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/kernel/interrupt [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/kernel/restart [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/kernel/start [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/kernel/stop [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/revert/undo [ok]": {
+      "schema": {
+        "properties": {
+          "checkpoint": {
+            "properties": {
+              "action_cursor": {
+                "type": "integer"
+              },
+              "artifact_versions": {
+                "type": "array"
+              },
+              "branch_id": {
+                "type": "string"
+              },
+              "capability_state": {
+                "properties": {
+                  "states": {
+                    "type": "array"
+                  },
+                  "version": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "states",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "cell_cursor": {
+                "type": "integer"
+              },
+              "checkpoint_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "environment_pins": {
+                "properties": {
+                  "python": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "python"
+                ],
+                "type": "object"
+              },
+              "generation_refs": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "internal": {
+                "type": "boolean"
+              },
+              "message_cursor": {
+                "type": "integer"
+              },
+              "metadata": {
+                "properties": {
+                  "history_projection": {
+                    "properties": {
+                      "base_checkpoint_id": {
+                        "type": "string"
+                      },
+                      "resume_cursors": {
+                        "properties": {
+                          "action_cursor": {
+                            "type": "integer"
+                          },
+                          "cell_cursor": {
+                            "type": "integer"
+                          },
+                          "message_cursor": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "action_cursor",
+                          "cell_cursor",
+                          "message_cursor"
+                        ],
+                        "type": "object"
+                      },
+                      "version": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "base_checkpoint_id",
+                      "resume_cursors",
+                      "version"
+                    ],
+                    "type": "object"
+                  },
+                  "operation_id": {
+                    "type": "string"
+                  },
+                  "requires_kernel_recovery": {
+                    "type": "boolean"
+                  },
+                  "reverted_to": {
+                    "type": "string"
+                  },
+                  "undo_checkpoint_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "history_projection",
+                  "operation_id",
+                  "requires_kernel_recovery",
+                  "reverted_to",
+                  "undo_checkpoint_id"
+                ],
+                "type": "object"
+              },
+              "parent_checkpoint_id": {
+                "type": "string"
+              },
+              "permission_state": {
+                "properties": {
+                  "conversation": {
+                    "type": "array"
+                  },
+                  "global": {
+                    "type": "array"
+                  },
+                  "project": {
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "conversation",
+                  "global",
+                  "project"
+                ],
+                "type": "object"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "recovery_recipe": {
+                "properties": {
+                  "artifact_hashes": {
+                    "properties": {},
+                    "required": [],
+                    "type": "object"
+                  },
+                  "environment_requirements": {
+                    "properties": {},
+                    "required": [],
+                    "type": "object"
+                  },
+                  "namespace_coverage": {
+                    "type": "string"
+                  },
+                  "required_symbols": {
+                    "properties": {},
+                    "required": [],
+                    "type": "object"
+                  },
+                  "steps": {
+                    "items": {
+                      "properties": {
+                        "kind": {
+                          "type": "string"
+                        },
+                        "payload": {
+                          "properties": {
+                            "tree_id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "tree_id"
+                          ],
+                          "type": "object"
+                        },
+                        "replay_policy": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "payload",
+                        "replay_policy"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "summary": {
+                    "properties": {
+                      "manual_cells": {
+                        "type": "integer"
+                      },
+                      "safe_replay_cells": {
+                        "type": "integer"
+                      },
+                      "state_cells": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "manual_cells",
+                      "safe_replay_cells",
+                      "state_cells"
+                    ],
+                    "type": "object"
+                  },
+                  "version": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "artifact_hashes",
+                  "environment_requirements",
+                  "namespace_coverage",
+                  "required_symbols",
+                  "steps",
+                  "summary",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "source_id": {
+                "type": "null"
+              },
+              "source_kind": {
+                "type": "null"
+              },
+              "workspace_tree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action_cursor",
+              "artifact_versions",
+              "branch_id",
+              "capability_state",
+              "cell_cursor",
+              "checkpoint_id",
+              "created_at",
+              "environment_pins",
+              "generation_refs",
+              "internal",
+              "message_cursor",
+              "metadata",
+              "parent_checkpoint_id",
+              "permission_state",
+              "reason",
+              "recovery_recipe",
+              "root_frame_id",
+              "source_id",
+              "source_kind",
+              "workspace_tree_id"
+            ],
+            "type": "object"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "operation": {
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "error": {
+                "type": "null"
+              },
+              "finished_at": {
+                "type": "integer"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "operation_id": {
+                "type": "string"
+              },
+              "preview": {
+                "properties": {
+                  "actions": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
+                    ],
+                    "type": "object"
+                  },
+                  "applied_workspace": {
+                    "properties": {
+                      "applied": {
+                        "type": "boolean"
+                      },
+                      "baseline_tree_id": {
+                        "type": "string"
+                      },
+                      "conflicts": {
+                        "type": "array"
+                      },
+                      "deletes": {
+                        "type": "array"
+                      },
+                      "observed_tree_id": {
+                        "type": "string"
+                      },
+                      "preserved_untracked": {
+                        "type": "array"
+                      },
+                      "target_tree_id": {
+                        "type": "string"
+                      },
+                      "unchanged": {
+                        "type": "array"
+                      },
+                      "writes": {
+                        "items": {
+                          "properties": {
+                            "from_blob": {
+                              "type": "string"
+                            },
+                            "operation": {
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "size": {
+                              "type": "integer"
+                            },
+                            "to_blob": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "from_blob",
+                            "operation",
+                            "path",
+                            "size",
+                            "to_blob"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "applied",
+                      "baseline_tree_id",
+                      "conflicts",
+                      "deletes",
+                      "observed_tree_id",
+                      "preserved_untracked",
+                      "target_tree_id",
+                      "unchanged",
+                      "writes"
+                    ],
+                    "type": "object"
+                  },
+                  "artifacts": {
+                    "properties": {
+                      "added": {
+                        "type": "array"
+                      },
+                      "removed": {
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "added",
+                      "removed"
+                    ],
+                    "type": "object"
+                  },
+                  "branch_id": {
+                    "type": "string"
+                  },
+                  "can_apply": {
+                    "type": "boolean"
+                  },
+                  "capabilities": {
+                    "properties": {
+                      "changed": {
+                        "properties": {},
+                        "required": [],
+                        "type": "object"
+                      },
+                      "has_changes": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "changed",
+                      "has_changes"
+                    ],
+                    "type": "object"
+                  },
+                  "current_checkpoint_id": {
+                    "type": "string"
+                  },
+                  "environment": {
+                    "properties": {
+                      "changed": {
+                        "properties": {},
+                        "required": [],
+                        "type": "object"
+                      },
+                      "has_changes": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "changed",
+                      "has_changes"
+                    ],
+                    "type": "object"
+                  },
+                  "messages": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
+                    ],
+                    "type": "object"
+                  },
+                  "notebook": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
+                    ],
+                    "type": "object"
+                  },
+                  "permissions": {
+                    "properties": {
+                      "changed": {
+                        "properties": {},
+                        "required": [],
+                        "type": "object"
+                      },
+                      "has_changes": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "changed",
+                      "has_changes"
+                    ],
+                    "type": "object"
+                  },
+                  "root_frame_id": {
+                    "type": "string"
+                  },
+                  "target_checkpoint_id": {
+                    "type": "string"
+                  },
+                  "workspace": {
+                    "properties": {
+                      "baseline_tree_id": {
+                        "type": "string"
+                      },
+                      "conflicts": {
+                        "type": "array"
+                      },
+                      "deletes": {
+                        "type": "array"
+                      },
+                      "observed_tree_id": {
+                        "type": "string"
+                      },
+                      "preserved_untracked": {
+                        "type": "array"
+                      },
+                      "target_tree_id": {
+                        "type": "string"
+                      },
+                      "unchanged": {
+                        "type": "array"
+                      },
+                      "writes": {
+                        "items": {
+                          "properties": {
+                            "from_blob": {
+                              "type": "string"
+                            },
+                            "operation": {
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "size": {
+                              "type": "integer"
+                            },
+                            "to_blob": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "from_blob",
+                            "operation",
+                            "path",
+                            "size",
+                            "to_blob"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "baseline_tree_id",
+                      "conflicts",
+                      "deletes",
+                      "observed_tree_id",
+                      "preserved_untracked",
+                      "target_tree_id",
+                      "unchanged",
+                      "writes"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "actions",
+                  "applied_workspace",
+                  "artifacts",
+                  "branch_id",
+                  "can_apply",
+                  "capabilities",
+                  "current_checkpoint_id",
+                  "environment",
+                  "messages",
+                  "notebook",
+                  "permissions",
+                  "root_frame_id",
+                  "target_checkpoint_id",
+                  "workspace"
+                ],
+                "type": "object"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "source_checkpoint_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "target_checkpoint_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch_id",
+              "created_at",
+              "error",
+              "finished_at",
+              "kind",
+              "operation_id",
+              "preview",
+              "root_frame_id",
+              "source_checkpoint_id",
+              "status",
+              "target_checkpoint_id"
+            ],
+            "type": "object"
+          },
+          "projection": {
+            "properties": {
+              "artifacts": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "version_count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "version_count"
+                ],
+                "type": "object"
+              },
+              "capabilities": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "session_override_count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "session_override_count"
+                ],
+                "type": "object"
+              },
+              "checkpoint_id": {
+                "type": "string"
+              },
+              "current_branch_id": {
+                "type": "string"
+              },
+              "environment": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "python": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "python"
+                ],
+                "type": "object"
+              },
+              "partial": {
+                "type": "boolean"
+              },
+              "permissions": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "conversation_rule_count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "conversation_rule_count"
+                ],
+                "type": "object"
+              },
+              "previous_branch_id": {
+                "type": "string"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "session_state": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "available": {
+                    "type": "boolean"
+                  },
+                  "checkpoint_id": {
+                    "type": "string"
+                  },
+                  "memory": {
+                    "properties": {
+                      "applied": {
+                        "type": "boolean"
+                      },
+                      "count": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "applied",
+                      "count"
+                    ],
+                    "type": "object"
+                  },
+                  "partial": {
+                    "type": "boolean"
+                  },
+                  "plans": {
+                    "properties": {
+                      "applied": {
+                        "type": "boolean"
+                      },
+                      "count": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "applied",
+                      "count"
+                    ],
+                    "type": "object"
+                  },
+                  "review": {
+                    "properties": {
+                      "annotation_count": {
+                        "type": "integer"
+                      },
+                      "applied": {
+                        "type": "boolean"
+                      },
+                      "settings_count": {
+                        "type": "integer"
+                      },
+                      "step_count": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "annotation_count",
+                      "applied",
+                      "settings_count",
+                      "step_count"
+                    ],
+                    "type": "object"
+                  },
+                  "state_sha256": {
+                    "type": "string"
+                  },
+                  "trust_state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "available",
+                  "checkpoint_id",
+                  "memory",
+                  "partial",
+                  "plans",
+                  "review",
+                  "state_sha256",
+                  "trust_state"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "artifacts",
+              "capabilities",
+              "checkpoint_id",
+              "current_branch_id",
+              "environment",
+              "partial",
+              "permissions",
+              "previous_branch_id",
+              "root_frame_id",
+              "session_state"
+            ],
+            "type": "object"
+          },
+          "requires_kernel_recovery": {
+            "type": "boolean"
+          },
+          "undo_checkpoint_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkpoint",
+          "ok",
+          "operation",
+          "projection",
+          "requires_kernel_recovery",
+          "undo_checkpoint_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/review [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/[^/]+/(?:revert/preview|branches/revert-preview) [ok]": {
+      "schema": {
+        "properties": {
+          "preview": {
+            "properties": {
+              "actions": {
+                "properties": {
+                  "delta": {
+                    "type": "integer"
+                  },
+                  "from": {
+                    "type": "integer"
+                  },
+                  "to": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "delta",
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
+              "artifacts": {
+                "properties": {
+                  "added": {
+                    "type": "array"
+                  },
+                  "removed": {
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "added",
+                  "removed"
+                ],
+                "type": "object"
+              },
+              "branch_id": {
+                "type": "string"
+              },
+              "can_apply": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "properties": {
+                  "changed": {
+                    "properties": {},
+                    "required": [],
+                    "type": "object"
+                  },
+                  "has_changes": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "changed",
+                  "has_changes"
+                ],
+                "type": "object"
+              },
+              "current_checkpoint_id": {
+                "type": "string"
+              },
+              "environment": {
+                "properties": {
+                  "changed": {
+                    "properties": {},
+                    "required": [],
+                    "type": "object"
+                  },
+                  "has_changes": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "changed",
+                  "has_changes"
+                ],
+                "type": "object"
+              },
+              "messages": {
+                "properties": {
+                  "delta": {
+                    "type": "integer"
+                  },
+                  "from": {
+                    "type": "integer"
+                  },
+                  "to": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "delta",
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
+              "notebook": {
+                "properties": {
+                  "delta": {
+                    "type": "integer"
+                  },
+                  "from": {
+                    "type": "integer"
+                  },
+                  "to": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "delta",
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
+              "permissions": {
+                "properties": {
+                  "changed": {
+                    "properties": {},
+                    "required": [],
+                    "type": "object"
+                  },
+                  "has_changes": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "changed",
+                  "has_changes"
+                ],
+                "type": "object"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "target_checkpoint_id": {
+                "type": "string"
+              },
+              "workspace": {
+                "properties": {
+                  "baseline_tree_id": {
+                    "type": "string"
+                  },
+                  "conflicts": {
+                    "type": "array"
+                  },
+                  "deletes": {
+                    "type": "array"
+                  },
+                  "observed_tree_id": {
+                    "type": "string"
+                  },
+                  "preserved_untracked": {
+                    "type": "array"
+                  },
+                  "target_tree_id": {
+                    "type": "string"
+                  },
+                  "unchanged": {
+                    "type": "array"
+                  },
+                  "writes": {
+                    "items": {
+                      "properties": {
+                        "from_blob": {
+                          "type": "string"
+                        },
+                        "operation": {
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": "string"
+                        },
+                        "size": {
+                          "type": "integer"
+                        },
+                        "to_blob": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "from_blob",
+                        "operation",
+                        "path",
+                        "size",
+                        "to_blob"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "baseline_tree_id",
+                  "conflicts",
+                  "deletes",
+                  "observed_tree_id",
+                  "preserved_untracked",
+                  "target_tree_id",
+                  "unchanged",
+                  "writes"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "actions",
+              "artifacts",
+              "branch_id",
+              "can_apply",
+              "capabilities",
+              "current_checkpoint_id",
+              "environment",
+              "messages",
+              "notebook",
+              "permissions",
+              "root_frame_id",
+              "target_checkpoint_id",
+              "workspace"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "preview"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+      "schema": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "checkpoint_id": {
+            "type": "null"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "owner": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "recovery_id": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "properties": {
+                "candidate_generation_id": {
+                  "type": "string"
+                },
+                "issues": {
+                  "items": {
+                    "properties": {
+                      "error": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "error",
+                      "type"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "manifest_id": {
+                  "type": "string"
+                },
+                "replayed_steps": {
+                  "type": "array"
+                },
+                "skipped_steps": {
+                  "type": "array"
+                },
+                "source_generation_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "candidate_generation_id",
+                "issues",
+                "manifest_id",
+                "replayed_steps",
+                "skipped_steps",
+                "source_generation_id",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "branch_id",
+          "checkpoint_id",
+          "execution_id",
+          "ok",
+          "owner",
+          "recovery_id",
+          "results",
+          "root_frame_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /model-profiles/([^/]+)/activate [ok]": {
+      "schema": {
+        "properties": {
+          "active_id": {
+            "type": "string"
+          },
+          "has_api_key": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active_id",
+          "has_api_key",
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /projects/([^/]+)/skills/([^/]+)/rollback [ok]": {
+      "schema": {
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "manifest": {
+            "properties": {
+              "distribution_scope": {
+                "type": "string"
+              },
+              "document_sha256": {
+                "type": "string"
+              },
+              "files": {
+                "items": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "sha256",
+                    "size"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "name": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "schema_version": {
+                "type": "integer"
+              },
+              "sidecar": {
+                "properties": {
+                  "gate": {
+                    "properties": {
+                      "error": {
+                        "type": "null"
+                      },
+                      "ok": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "error",
+                      "ok"
+                    ],
+                    "type": "object"
+                  },
+                  "present": {
+                    "type": "boolean"
+                  },
+                  "sha256": {
+                    "type": "null"
+                  },
+                  "size": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "gate",
+                  "present",
+                  "sha256",
+                  "size"
+                ],
+                "type": "object"
+              },
+              "slug": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "distribution_scope",
+              "document_sha256",
+              "files",
+              "name",
+              "origin",
+              "schema_version",
+              "sidecar",
+              "slug"
+            ],
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "previous_version_id": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "scope_id": {
+            "type": "string"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "manifest",
+          "name",
+          "ok",
+          "previous_version_id",
+          "scope",
+          "scope_id",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /sessions/import [ok]": {
+      "schema": {
+        "properties": {
+          "active_branch_id": {
+            "type": "string"
+          },
+          "explicit_recovery_required": {
+            "type": "boolean"
+          },
+          "identity_remap": {
+            "properties": {
+              "actions": {
+                "type": "integer"
+              },
+              "artifacts": {
+                "type": "integer"
+              },
+              "cells": {
+                "type": "integer"
+              },
+              "checkpoints": {
+                "type": "integer"
+              },
+              "versions": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "actions",
+              "artifacts",
+              "cells",
+              "checkpoints",
+              "versions"
+            ],
+            "type": "object"
+          },
+          "kernel_state": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_sha256": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer"
+          },
+          "trust_state": {
+            "type": "string"
+          },
+          "view_only": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active_branch_id",
+          "explicit_recovery_required",
+          "identity_remap",
+          "kernel_state",
+          "ok",
+          "package_sha256",
+          "project_id",
+          "root_frame_id",
+          "schema_version",
+          "trust_state",
+          "view_only"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /sessions/verify [ok]": {
+      "schema": {
+        "properties": {
+          "archive_sha256": {
+            "type": "string"
+          },
+          "files_verified": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "format": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "type": "integer"
+          },
+          "verifies": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "archive_sha256",
+          "files_verified",
+          "format",
+          "ok",
+          "path",
+          "problems",
+          "schema_version",
+          "verifies"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /skills [ok]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "POST /skills/([^/]+)/rollback [ok]": {
+      "schema": {
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "manifest": {
+            "properties": {
+              "distribution_scope": {
+                "type": "string"
+              },
+              "document_sha256": {
+                "type": "string"
+              },
+              "files": {
+                "items": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "sha256",
+                    "size"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "name": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "schema_version": {
+                "type": "integer"
+              },
+              "sidecar": {
+                "properties": {
+                  "gate": {
+                    "properties": {
+                      "error": {
+                        "type": "null"
+                      },
+                      "ok": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "error",
+                      "ok"
+                    ],
+                    "type": "object"
+                  },
+                  "present": {
+                    "type": "boolean"
+                  },
+                  "sha256": {
+                    "type": "null"
+                  },
+                  "size": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "gate",
+                  "present",
+                  "sha256",
+                  "size"
+                ],
+                "type": "object"
+              },
+              "slug": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "distribution_scope",
+              "document_sha256",
+              "files",
+              "name",
+              "origin",
+              "schema_version",
+              "sidecar",
+              "slug"
+            ],
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "previous_version_id": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "scope_id": {
+            "type": "string"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "manifest",
+          "name",
+          "ok",
+          "previous_version_id",
+          "scope",
+          "scope_id",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /skills/import [ok]": {
+      "schema": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "ok",
+          "origin",
+          "slug"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /skills/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "ok",
+          "origin",
+          "slug"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "schema_version": 1
+}

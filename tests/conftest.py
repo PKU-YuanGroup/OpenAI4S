@@ -65,3 +65,35 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     yield
     reset_singletons()
+
+
+# ---------------------------------------------------------------------------
+# response-shape capture (off unless asked for)
+# ---------------------------------------------------------------------------
+#
+# `scripts/capture_response_schemas.py` sets OPENAI4S_CAPTURE_SCHEMAS to a path
+# and reruns this suite; every gateway response the tests provoke along the way
+# is generalised into a shape and frozen. Without the variable this costs one
+# environment lookup at collection time and changes nothing.
+
+
+def pytest_configure(config):
+    destination = os.environ.get("OPENAI4S_CAPTURE_SCHEMAS")
+    if not destination:
+        return
+    from openai4s.server import gateway as gateway_mod
+    from openai4s.server import response_capture
+
+    recorder = response_capture.Recorder()
+    response_capture.install(gateway_mod, recorder)
+    config._openai4s_recorder = (recorder, Path(destination))
+
+
+def pytest_unconfigure(config):
+    captured = getattr(config, "_openai4s_recorder", None)
+    if not captured:
+        return
+    recorder, destination = captured
+    from openai4s.server import response_capture
+
+    response_capture.save(recorder.document(), destination)

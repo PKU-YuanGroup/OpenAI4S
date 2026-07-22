@@ -88,3 +88,5 @@ gateway.py
 
 - [`security_headers.py`](security_headers.py) —— 基于 hash 的 CSP 与加固响应头，作用于每一个响应。
 - [`contract.py`](contract.py) —— 版本化对外面的统一信封、错误码与 route/event 清单。
+- [`response_schema.py`](response_schema.py) —— 一套小而明确的形状代数（类型、必填键、元素形状），零依赖，因为 core 只用标准库。它回答的是「这个响应的形状变了吗」；它不是 JSON Schema draft-2020-12，也不假装是。
+- [`response_capture.py`](response_capture.py) —— 观测各 route 真实返回了什么，并固化进 [`docs/response-schemas.json`](../../docs/response-schemas.json)。它从外面包住 `make_handler` 的 `_api`，而不是在 `_json` 里挂钩子：gateway 测试会把 `handler._json` 换成自己的收集器，钩在真正的 `_json` 里会漏掉几乎所有 route，却看起来在正常工作。这里没有任何代码跑在生产路径上。
