@@ -52,10 +52,37 @@ def type_of(value: Any) -> str:
     return "string"
 
 
+def _is_data_key(key: Any) -> bool:
+    """Whether a key is user data rather than a field name.
+
+    Some responses carry maps keyed by things the caller supplied -- an
+    artifact-hash map keyed by workspace path, for instance. Inferring those as
+    records freezes one run's fixture filenames (`analysis.txt`,
+    `results/out.csv`) into the published contract: they are not guarantees,
+    they churn with the tests, and a client reading the file would think the
+    server promises a field called `results/out.csv`.
+
+    A path separator or a dot is the tell. No field name in this API has one,
+    and every data key seen so far does.
+    """
+    text = str(key)
+    return "/" in text or "\\" in text or "." in text
+
+
 def infer(value: Any) -> dict[str, Any]:
     """The shape of one observed value."""
     kind = type_of(value)
     if kind == "object":
+        if value and any(_is_data_key(key) for key in value):
+            # A map: the keys are data, so only the value shape is contract.
+            values: dict[str, Any] | None = None
+            for item in value.values():
+                observed = infer(item)
+                values = observed if values is None else merge(values, observed)
+            shape: dict[str, Any] = {"type": "object", "keys": "data"}
+            if values:
+                shape["values"] = values
+            return shape
         return {
             "type": "object",
             "properties": {
@@ -91,7 +118,19 @@ def merge(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
         "type": sorted(types)[0] if len(types) == 1 else sorted(types)
     }
 
-    if "object" in types:
+    if "object" in types and (_is_map(left) or _is_map(right)):
+        # Once either observation showed data keys, the union of both key sets
+        # is data too. Merging a map into a record would resurrect the very
+        # fixture filenames the map form exists to keep out.
+        merged["keys"] = "data"
+        left_values = left.get("values")
+        right_values = right.get("values")
+        if left_values and right_values:
+            merged["values"] = merge(left_values, right_values)
+        elif left_values or right_values:
+            merged["values"] = left_values or right_values
+
+    elif "object" in types:
         left_props = left.get("properties") or {}
         right_props = right.get("properties") or {}
         properties: dict[str, Any] = {}
@@ -121,6 +160,11 @@ def merge(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _is_map(schema: dict[str, Any]) -> bool:
+    """Whether a shape describes an object whose keys are data, not fields."""
+    return schema.get("keys") == "data"
+
+
 def _type_set(schema: dict[str, Any]) -> set[str]:
     declared = schema.get("type")
     if isinstance(declared, list):
@@ -146,7 +190,14 @@ def validate(value: Any, schema: dict[str, Any], path: str = "$") -> list[str]:
         problems.append(f"{path}: expected {'/'.join(sorted(allowed))}, got {actual}")
         return problems
 
-    if actual == "object":
+    if actual == "object" and _is_map(schema):
+        # The keys are data, so an unfamiliar one is not drift. Only the value
+        # shape is a promise, and that still has to hold.
+        values = schema.get("values")
+        if values:
+            for key, item in sorted(value.items()):
+                problems.extend(validate(item, values, f"{path}[{key!r}]"))
+    elif actual == "object":
         properties = schema.get("properties") or {}
         for key in schema.get("required") or ():
             if key not in value:

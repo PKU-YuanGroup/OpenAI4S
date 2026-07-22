@@ -29,6 +29,11 @@ ARTIFACT = Path(__file__).resolve().parents[2] / "docs" / "response-schemas.json
 
 SCHEMA_VERSION = 1
 
+#: How many incompatibilities to name per route before summarising the rest.
+#: One structural change can break dozens of nested fields, and a wall of them
+#: buries the first one, which is usually the cause of all the others.
+_MAX_REPORTED = 6
+
 
 def specificity(route: str) -> int:
     """How much of a route is fixed text rather than wildcard.
@@ -220,12 +225,19 @@ def check(observed: dict[str, Any], frozen: dict[str, Any]) -> list[str]:
         actual = observed_routes[key].get("schema") or {}
         if expected == actual:
             continue
-        # Say which way it moved: a response that still satisfies the frozen
-        # shape is additive, and one that does not is a break.
-        widened = not check_compatible(expected, actual)
-        problems.append(
-            f"{key}: shape changed ({'additive' if widened else 'BREAKING'})"
-        )
+        # Say which way it moved, and for a break say exactly which field. A
+        # bare "shape changed (BREAKING)" on a response that nests an
+        # environment snapshot ten levels deep tells a reader that something is
+        # wrong and nothing about where, which is a bug report nobody can act
+        # on -- and this gate's whole job is to be actionable.
+        breaks = check_compatible(expected, actual)
+        if not breaks:
+            problems.append(f"{key}: shape changed (additive)")
+            continue
+        detail = "; ".join(breaks[:_MAX_REPORTED])
+        if len(breaks) > _MAX_REPORTED:
+            detail += f"; (+{len(breaks) - _MAX_REPORTED} more)"
+        problems.append(f"{key}: shape changed (BREAKING) -- {detail}")
     return problems
 
 
@@ -250,6 +262,17 @@ def check_compatible(frozen: dict[str, Any], observed: dict[str, Any]) -> list[s
         problems.append(
             f"type widened from {sorted(frozen_types)} to {sorted(observed_types)}"
         )
+
+    if frozen.get("keys") == "data" or observed.get("keys") == "data":
+        # A map has no per-key guarantees to lose, so the only promise that can
+        # break is the shape of its values. Comparing a map against a record
+        # would otherwise report every key of one as dropped from the other.
+        frozen_values = frozen.get("values")
+        observed_values = observed.get("values")
+        if frozen_values and observed_values:
+            for problem in check_compatible(frozen_values, observed_values):
+                problems.append(f"[*].{problem}")
+        return problems
 
     lost = set(frozen.get("required") or ()) - set(observed.get("required") or ())
     for key in sorted(lost):

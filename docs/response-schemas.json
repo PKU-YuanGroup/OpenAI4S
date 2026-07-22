@@ -613,15 +613,11 @@
                       "recovery_recipe": {
                         "properties": {
                           "artifact_hashes": {
-                            "properties": {
-                              "analysis.txt": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "analysis.txt"
-                            ],
-                            "type": "object"
+                            "keys": "data",
+                            "type": "object",
+                            "values": {
+                              "type": "string"
+                            }
                           },
                           "environment_requirements": {
                             "properties": {},
@@ -3346,16 +3342,11 @@
           "recovery_recipe": {
             "properties": {
               "artifact_hashes": {
-                "properties": {
-                  "analysis.txt": {
-                    "type": "string"
-                  },
-                  "results/out.csv": {
-                    "type": "string"
-                  }
-                },
-                "required": [],
-                "type": "object"
+                "keys": "data",
+                "type": "object",
+                "values": {
+                  "type": "string"
+                }
               },
               "environment_requirements": {
                 "properties": {

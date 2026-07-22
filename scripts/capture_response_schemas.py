@@ -51,7 +51,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         captured = Path(tmp) / "captured.json"
         code = _run_suite(captured)
-        if code != 0:
+        if code != 0 and args.check:
             # A failing suite exercises fewer routes, so comparing what it did
             # capture against the frozen file would blame this change for gaps
             # the failures caused. Fix the tests first.
@@ -62,6 +62,18 @@ def main() -> int:
                 file=sys.stderr,
             )
             return code
+        if code != 0:
+            # Regeneration must still work here. The suite contains tests that
+            # validate this very artifact, so a stale file makes them fail --
+            # and refusing to write on a failing suite would mean the only way
+            # to fix the file is blocked by the file being unfixed. Say the
+            # capture may be short and let the coverage line be the check.
+            print(
+                f"\nwarning: the suite failed (pytest exited {code}), so this "
+                "capture may have missed routes. Compare the coverage line "
+                "below against the previous run before committing.",
+                file=sys.stderr,
+            )
         if not captured.is_file():
             print(
                 "no responses were captured; the suite did not reach the gateway",

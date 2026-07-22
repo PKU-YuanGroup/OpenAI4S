@@ -125,6 +125,99 @@ def test_a_new_key_is_reported_as_drift():
 
 
 # --------------------------------------------------------------------------
+# maps: objects whose keys are data, not fields
+# --------------------------------------------------------------------------
+
+
+def test_an_object_keyed_by_workspace_paths_is_not_frozen_as_a_record():
+    """`recovery_recipe.artifact_hashes` is keyed by the files a run happened to
+    write. Inferring it as a record published one fixture's `analysis.txt` and
+    `results/out.csv` as though the server promised fields by those names."""
+    schema = infer({"analysis.txt": "ab", "results/out.csv": "cd"})
+
+    assert schema["keys"] == "data"
+    assert "properties" not in schema
+    assert schema["values"] == {"type": "string"}
+
+
+def test_a_map_admits_keys_it_has_never_seen():
+    schema = infer({"results/out.csv": "cd"})
+    assert validate({"something/else.txt": "ef"}, schema) == []
+
+
+def test_a_map_still_promises_the_shape_of_its_values():
+    """Free keys are not a free pass: the values are the part clients read."""
+    schema = infer({"results/out.csv": "cd"})
+    assert validate({"a/b.txt": 5}, schema) != []
+
+
+def test_one_data_key_is_enough_to_make_the_whole_object_a_map():
+    """Requiring *every* key to look like data is the tempting reading, and it
+    is the wrong trade. An object mixing a path key with a plain one would then
+    be frozen as a record and publish the path as a field name -- the exact bug
+    this form exists to prevent. Treating it as a map costs the plain key's
+    guarantee, which is the smaller harm and the recoverable one."""
+    schema = infer({"count": 3, "a/b.txt": "h"})
+    assert schema["keys"] == "data"
+    assert "properties" not in schema
+
+
+def test_a_record_is_not_mistaken_for_a_map():
+    """Ordinary field names have no dot or slash, and demoting a real record to
+    free keys would silently drop every guarantee it had."""
+    schema = infer({"checkpoint_id": "c1", "cell_cursor": 3})
+    assert schema.get("keys") != "data"
+    assert schema["required"] == ["cell_cursor", "checkpoint_id"]
+
+
+def test_merging_a_map_with_another_map_keeps_the_keys_free():
+    merged = merge(infer({"a/b.txt": "x"}), infer({"c/d.txt": "y"}))
+    assert merged["keys"] == "data"
+    assert "properties" not in merged
+
+
+def test_a_map_and_a_record_merge_to_a_map():
+    """A one-key observation can look like a record; the later observation that
+    proves the keys are data has to win, or the fixture names come back."""
+    merged = merge(infer({"only.txt": "x"}), infer({"a/b.txt": "y", "c": "z"}))
+    assert merged["keys"] == "data"
+
+
+def test_comparing_a_map_against_a_record_does_not_report_every_key_as_dropped():
+    frozen_shape = infer({"a/b.txt": "x"})
+    observed_shape = infer({"c/d.txt": "y"})
+    assert check_compatible(frozen_shape, observed_shape) == []
+
+
+def test_a_maps_value_type_changing_is_still_a_break():
+    frozen_shape = infer({"a/b.txt": "x"})
+    observed_shape = infer({"a/b.txt": 1})
+    assert check_compatible(frozen_shape, observed_shape) != []
+
+
+def test_no_frozen_route_publishes_a_fixture_filename_as_a_field(frozen):
+    """The regression this form exists to prevent. A field name containing a
+    path separator is a workspace path that leaked into the contract."""
+    offenders = []
+
+    def walk(node, where):
+        if not isinstance(node, dict):
+            return
+        for key, child in (node.get("properties") or {}).items():
+            if "/" in key or "\\" in key:
+                offenders.append(f"{where}.{key}")
+            walk(child, f"{where}.{key}")
+        for extra in ("items", "values"):
+            child = node.get(extra)
+            if isinstance(child, dict) and child:
+                walk(child, f"{where}[]")
+
+    for route, entry in frozen["routes"].items():
+        walk(entry.get("schema") or {}, route)
+    assert offenders == []
+
+
+# --------------------------------------------------------------------------
 # breaking vs additive -- the distinction the gate exists to make
 # --------------------------------------------------------------------------
 
@@ -183,6 +276,18 @@ def test_check_calls_a_shape_change_breaking_or_additive():
 
     assert "additive" in check(additive, frozen_doc)[0]
     assert "BREAKING" in check(breaking, frozen_doc)[0]
+
+
+def test_a_breaking_report_names_the_field_that_broke():
+    """These responses nest an environment snapshot ten levels deep. "shape
+    changed (BREAKING)" with no field is a bug report nobody can act on, and
+    being actionable is this gate's entire job."""
+    frozen_doc = {
+        "routes": {"GET /x [ok]": {"schema": infer({"id": "a", "name": "n"})}}
+    }
+    observed_doc = {"routes": {"GET /x [ok]": {"schema": infer({"id": "a"})}}}
+
+    assert "name" in check(observed_doc, frozen_doc)[0]
 
 
 def test_check_reports_a_route_that_lost_its_coverage():
