@@ -72,9 +72,21 @@ def main() -> int:
 
     routes = observed.get("routes") or {}
     covered = {key.split(" ", 1)[1].rsplit(" [", 1)[0] for key in routes}
-    total = len(contract.http_routes())
+    known = contract.http_routes()
+    uncovered = sorted(known - covered)
     print(f"captured {len(routes)} route/status shapes")
-    print(f"coverage: {len(covered)}/{total} routes exercised by the offline suite")
+    print(
+        f"coverage: {len(covered)}/{len(known)} routes exercised by the offline suite"
+    )
+
+    if uncovered:
+        # The count on its own is not actionable. These are the routes whose
+        # responses nothing checks, so they are also the list of tests worth
+        # writing next -- and leaving it as a number is how a known gap turns
+        # into a forgotten one.
+        print(f"\n{len(uncovered)} routes no offline test reaches:")
+        for route in uncovered:
+            print(f"  {route}")
 
     if args.check:
         problems = response_capture.check(observed, response_capture.load())

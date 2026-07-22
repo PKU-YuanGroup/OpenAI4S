@@ -11,7 +11,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `build_macos_dmg.sh` | 打包 macOS `.app` 与 `.dmg`。内核要靠 `sys.executable` 拉起 worker，一旦把应用 freeze 掉就会坏，所以这里改成内嵌一份可重定位的独立 CPython，源码以散装 `.py` 的形式原样带上，并把 CORE 科学栈预装进运行时，首次启动不需要联网。签名只是 ad-hoc，不使用 Apple Developer 凭据。 |
-| `capture_response_schemas.py` | 重新生成（加 `--check` 则是校验）[`docs/response-schemas.json`](../docs/response-schemas.json)。装上捕获后跑一遍离线套件，记录每条 route 真正返回了什么；从真实响应导出的 schema 不可能描述代码根本不会产生的响应，覆盖率也因此是量出来的数字而不是一句断言。`--check` 只在会打断客户端的变化上失败——字段被删、保证被撤、类型被放宽。仅仅增量移动的形状、以及新增或丢失覆盖的 route 会打印但不失败：捕获结果本身还取决于装了哪些可选 extra、以及某个平台跳过了哪些测试，而一道总在狼来了的门最后只会被人重新生成到失去意义。 |
+| `capture_response_schemas.py` | 重新生成（加 `--check` 则是校验）[`docs/response-schemas.json`](../docs/response-schemas.json)。装上捕获后跑一遍离线套件，记录每条 route 真正返回了什么；从真实响应导出的 schema 不可能描述代码根本不会产生的响应，覆盖率也因此是量出来的数字而不是一句断言。`--check` 只在会打断客户端的变化上失败——字段被删、保证被撤、类型被放宽。仅仅增量移动的形状、以及新增或丢失覆盖的 route 会打印但不失败：捕获结果本身还取决于装了哪些可选 extra、以及某个平台跳过了哪些测试，而一道总在狼来了的门最后只会被人重新生成到失去意义。两种模式都会逐条列出没有任何离线测试触达的 route——今天是 143 条里的 93 条——因为光有一个覆盖率数字，谁也没法据此行动。 |
 | `check_directory_readmes.py` | 本文件必须通过的那项 CI 检查。每个受维护目录都要有 `README.md` 和 `README_zh.md`，两者标题序列与表格行数一致，每个直属文件和子目录都以反引号形式出现过，相对链接在磁盘上确实能解析到。 |
 | `dmg_bundled_packages.txt` | 预装进 macOS 应用的科学栈,每行 `<pip 名> <import 名>`——即默认 `python.yml` 内核环境里可 pip 安装的超集(rdkit、scanpy、numba、umap、单细胞、化学信息学……)。单一事实来源:`build_macos_dmg.sh` 按 pip 名安装,`verify_macos_bundle.py` 校验每个 import 都从 bundle 内解析,两者不会漂移。torch/fair-esm 以及 conda 专属的 R 与 bioconda 工具刻意不含。 |
 | `make_app_icon.py` | 按品牌标识的实测几何——五个成键原子、中央终端方块、红色提示符 `>` 与光标条——用平面矢量图元重绘 `assets/app-icon-1024.png`，超采样后落到 Big Sur 图标网格上。该标识在仓库里只有 150px 的字形和 64px 的 favicon 两份位图，放大到 `.icns` 需要的 1024px 都会糊。仅开发用：依赖 Pillow，而 DMG 构建真正消费的是它提交进仓库的产物。 |
