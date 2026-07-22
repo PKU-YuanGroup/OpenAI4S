@@ -220,18 +220,6 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 
 ---
 
-## ✨ Star 历史
-
-<a href="https://www.star-history.com/?repos=PKU-YuanGroup%2FOpenAI4S&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=PKU-YuanGroup/OpenAI4S&type=date&theme=dark&legend=top-left&sealed_token=tXwdGRCr3f-z1z8jgUOb1LUaPHwq9008wrTkaLBHVH4lQQDeSr_uyDT_1NcLONdaOxKx9l0uvSHEToe73WVGac02UiFVnXE-W_0z8C1AFwJfPJ0S87FJYQ" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=PKU-YuanGroup/OpenAI4S&type=date&legend=top-left&sealed_token=tXwdGRCr3f-z1z8jgUOb1LUaPHwq9008wrTkaLBHVH4lQQDeSr_uyDT_1NcLONdaOxKx9l0uvSHEToe73WVGac02UiFVnXE-W_0z8C1AFwJfPJ0S87FJYQ" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=PKU-YuanGroup/OpenAI4S&type=date&legend=top-left&sealed_token=tXwdGRCr3f-z1z8jgUOb1LUaPHwq9008wrTkaLBHVH4lQQDeSr_uyDT_1NcLONdaOxKx9l0uvSHEToe73WVGac02UiFVnXE-W_0z8C1AFwJfPJ0S87FJYQ" />
- </picture>
-</a>
-
----
-
 ## ✏️ 引用
 
 ```bibtex
