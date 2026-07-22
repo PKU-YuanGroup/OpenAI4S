@@ -109,7 +109,9 @@ def test_contributors_workflow_updates_protected_main_through_a_pr():
         ".github/contributors/",
         "needs.update.outputs.pull-request-number != ''",
         "needs.update.outputs.pull-request-operation != 'closed'",
-        'gh workflow run ci.yml --ref "$UPDATE_BRANCH"',
+        "gh workflow run ci.yml",
+        '--repo "$GITHUB_REPOSITORY"',
+        '--ref "$UPDATE_BRANCH"',
     ):
         assert contract in workflow
 

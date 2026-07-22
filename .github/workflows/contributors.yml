@@ -92,4 +92,7 @@ jobs:
       - name: Run required checks for the generated PR
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run ci.yml --ref "$UPDATE_BRANCH"
+        run: >-
+          gh workflow run ci.yml
+          --repo "$GITHUB_REPOSITORY"
+          --ref "$UPDATE_BRANCH"
