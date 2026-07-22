@@ -23,6 +23,7 @@ outside its domain never reaches the wire.
 | --- | --- |
 | `__init__.py` | Re-exports `classify_error` and the two sanitisers. Imports nothing that can send; importing this package must remain free of side effects, because "off by default" has to hold at import time too. |
 | `schema.py` | The complete declaration of what telemetry may say: five domain classes (`Enum`, `Count`, `Bucket`, `Version`, `OpaqueId`) and the field table. There is deliberately no `STRING`, `TEXT`, `JSON`, `MAP` or `LIST` domain, so adding a field that *could* carry prose requires adding a domain class — a diff that reads as a privacy decision rather than one more routine line. `classify_error` is the only permitted way to turn an exception into a value, by membership and never by passthrough. |
+| `consent.py` | Whether telemetry may run, and the identity it runs under. The install id lives **inside** the consent record, so revoking destroys permission and identity in one operation — with two rows, "revoke" could clear the flag and leave a stable identifier behind, and an id that outlives its consent is not anonymous but pseudonymous with a longer memory than the user agreed to. Re-consenting mints a fresh id. `OPENAI4S_TELEMETRY` can only turn telemetry **off**: refusing needs no permission, but a line in a Dockerfile is not consent. |
 
 ## Fields that look like enumerations and are not
 
