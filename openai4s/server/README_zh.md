@@ -88,5 +88,6 @@ gateway.py
 
 - [`security_headers.py`](security_headers.py) —— 基于 hash 的 CSP 与加固响应头，作用于每一个响应。
 - [`contract.py`](contract.py) —— 版本化对外面的统一信封、错误码与 route/event 清单。
+- [`errors.py`](errors.py) —— `GatewayError` 与稳定机器错误码。独立成模块，是因为 `GatewayError` 原本位于 gateway 自身 import 区块下方约 5800 行处，兄弟模块从那里 import 它构成循环导入，会让 daemon 在**启动时**就失败。从 `Handler._api` 里切出的每个路由组都要抛这个异常，否则每抽一次就要重新踩一次这个坑。gateway 仍然再导出原来的名字。
 - [`response_schema.py`](response_schema.py) —— 一套小而明确的形状代数（类型、必填键、元素形状），零依赖，因为 core 只用标准库。它回答的是「这个响应的形状变了吗」；它不是 JSON Schema draft-2020-12，也不假装是。
 - [`response_capture.py`](response_capture.py) —— 观测各 route 真实返回了什么，并固化进 [`docs/response-schemas.json`](../../docs/response-schemas.json)。它从外面包住 `make_handler` 的 `_api`，而不是在 `_json` 里挂钩子：gateway 测试会把 `handler._json` 换成自己的收集器，钩在真正的 `_json` 里会漏掉几乎所有 route，却看起来在正常工作。这里没有任何代码跑在生产路径上。字段**类型**随宿主机变化的子树（内核的 `sandbox` 块：能强制 sandbox 时 `backend` 是字符串，不能时是 null）记为不透明而不予固化——固化它等于把捕获时那台机器钉进契约，然后判定其他每一台机器都是破坏性变更。这份清单只收「类型随宿主机变化」的子树，不是给形状不方便的 route 停车用的。

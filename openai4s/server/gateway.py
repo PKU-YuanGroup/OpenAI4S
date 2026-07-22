@@ -82,6 +82,7 @@ from openai4s.server.artifacts import (
 )
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.server.completions import completion_message, response_language
+from openai4s.server.errors import ERROR_CODES, GatewayError, error_code_for
 from openai4s.server.execution_coordinator import (
     ExecutionCancelled,
     WebExecutionCoordinator,
@@ -196,29 +197,12 @@ _WATCHDOG_INTERRUPT_GRACE_S = 10.0
 _WATCHDOG_KILL_GRACE_S = 10.0
 
 
-# Stable, machine-readable error codes. A client that has to match on English
-# prose is coupled to wording nobody thinks of as an interface, so it breaks the
-# first time a message is improved. Status alone is too coarse: several distinct
-# failures share 400, and a client retrying "invalid cursor" the way it retries
-# "rate limited" is a bug the contract should prevent.
-_ERROR_CODES = {
-    400: "bad_request",
-    401: "unauthorized",
-    403: "forbidden",
-    404: "not_found",
-    405: "method_not_allowed",
-    409: "conflict",
-    413: "payload_too_large",
-    422: "unprocessable",
-    423: "locked",
-    429: "rate_limited",
-    500: "internal_error",
-    503: "unavailable",
-}
-
-
-def _error_code_for(status: int) -> str:
-    return _ERROR_CODES.get(int(status), "error" if status < 500 else "internal_error")
+# Re-exported from openai4s.server.errors, which owns them so that route
+# modules can raise GatewayError without importing this file (that import is a
+# cycle: GatewayError sat ~5,800 lines below gateway's own imports, so a sibling
+# importing it failed the daemon at boot).
+_ERROR_CODES = ERROR_CODES
+_error_code_for = error_code_for
 
 
 def _encode_frame_cursor(created_at: int, frame_id: str) -> str:
@@ -5866,19 +5850,6 @@ def _environment_snapshot() -> dict:
 # --------------------------------------------------------------------------- #
 #  HTTP + WS request handler
 # --------------------------------------------------------------------------- #
-class GatewayError(Exception):
-    """An HTTP failure with a status, a human message, and an optional stable
-    machine code. ``error_code`` overrides the status-derived default when a
-    single status covers genuinely different failures a client must tell
-    apart."""
-
-    def __init__(self, code: int, message: str, error_code: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.error_code = error_code
-
-
 def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     store = get_store(cfg.db_path)
     model_discovery = LocalModelDiscoveryService()
