@@ -628,8 +628,7 @@
                             "type": "string"
                           },
                           "required_symbols": {
-                            "properties": {},
-                            "required": [],
+                            "keys": "data",
                             "type": "object"
                           },
                           "steps": {
@@ -3336,8 +3335,7 @@
                 "type": "string"
               },
               "required_symbols": {
-                "properties": {},
-                "required": [],
+                "keys": "data",
                 "type": "object"
               },
               "steps": {
@@ -3590,8 +3588,7 @@
               "recovery_recipe": {
                 "properties": {
                   "artifact_hashes": {
-                    "properties": {},
-                    "required": [],
+                    "keys": "data",
                     "type": "object"
                   },
                   "environment_requirements": {
@@ -3603,8 +3600,7 @@
                     "type": "string"
                   },
                   "required_symbols": {
-                    "properties": {},
-                    "required": [],
+                    "keys": "data",
                     "type": "object"
                   },
                   "steps": {
@@ -4987,8 +4983,7 @@
               "recovery_recipe": {
                 "properties": {
                   "artifact_hashes": {
-                    "properties": {},
-                    "required": [],
+                    "keys": "data",
                     "type": "object"
                   },
                   "environment_requirements": {
@@ -5000,8 +4995,7 @@
                     "type": "string"
                   },
                   "required_symbols": {
-                    "properties": {},
-                    "required": [],
+                    "keys": "data",
                     "type": "object"
                   },
                   "steps": {

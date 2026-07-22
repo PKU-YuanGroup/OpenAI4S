@@ -52,6 +52,23 @@ def type_of(value: Any) -> str:
     return "string"
 
 
+#: Fields whose keys are data, declared by name rather than guessed.
+#:
+#: `_is_data_key` reads the key: a slash or a dot means a path. That catches
+#: what it was written against and nothing else, because the tell is a property
+#: of the *observed* keys, not of the field. A workspace file called
+#: `patient_4471` or `Makefile` has neither, so the same field was inferred as
+#: a map in one capture and as a record in another -- and in the record case
+#: one run's filenames were published as required contract fields.
+#:
+#: A declaration cannot have that failure mode: `artifact_hashes` is keyed by
+#: workspace path and `required_symbols` by identifiers out of agent-written
+#: code, whatever any particular run happens to produce. Keys that really are a
+#: bounded vocabulary (`generation_refs` and friends are keyed by language) stay
+#: records, because there the key IS contract.
+_MAP_FIELDS = frozenset({"artifact_hashes", "required_symbols"})
+
+
 def _is_data_key(key: Any) -> bool:
     """Whether a key is user data rather than a field name.
 
@@ -62,18 +79,25 @@ def _is_data_key(key: Any) -> bool:
     they churn with the tests, and a client reading the file would think the
     server promises a field called `results/out.csv`.
 
-    A path separator or a dot is the tell. No field name in this API has one,
-    and every data key seen so far does.
+    A path separator or a dot is the tell -- for the keys it was written
+    against. It is a one-way signal and cannot be anything else: a key that HAS
+    one is data, a key that lacks one may still be data (`Makefile`,
+    `patient_4471`). `_MAP_FIELDS` covers that by declaring the field instead of
+    reading its keys; this stays as the fallback for fields nobody has declared.
     """
     text = str(key)
     return "/" in text or "\\" in text or "." in text
 
 
-def infer(value: Any) -> dict[str, Any]:
-    """The shape of one observed value."""
+def infer(value: Any, field: str | None = None) -> dict[str, Any]:
+    """The shape of one observed value.
+
+    ``field`` is the key this value was found under, so a declared map stays a
+    map even on a run whose keys happen to look like field names.
+    """
     kind = type_of(value)
     if kind == "object":
-        if value and any(_is_data_key(key) for key in value):
+        if field in _MAP_FIELDS or (value and any(_is_data_key(key) for key in value)):
             # A map: the keys are data, so only the value shape is contract.
             values: dict[str, Any] | None = None
             for item in value.values():
@@ -86,7 +110,7 @@ def infer(value: Any) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                str(key): infer(item) for key, item in sorted(value.items())
+                str(key): infer(item, str(key)) for key, item in sorted(value.items())
             },
             # Every key of the first observation is required until a later
             # observation proves otherwise; `merge` demotes them. Starting

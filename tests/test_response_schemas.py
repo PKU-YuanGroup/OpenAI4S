@@ -39,7 +39,7 @@ from openai4s.server.response_capture import (
     route_for,
     specificity,
 )
-from openai4s.server.response_schema import infer, merge, type_of, validate
+from openai4s.server.response_schema import _MAP_FIELDS, infer, merge, type_of, validate
 
 
 @pytest.fixture(scope="module")
@@ -513,3 +513,55 @@ def test_the_artifact_records_no_observation_counts(frozen):
     a diff, and the file is worth reading only when a shape moved."""
     for entry in frozen["routes"].values():
         assert set(entry) == {"schema"}
+
+
+def test_a_declared_map_stays_a_map_when_its_keys_look_like_field_names():
+    """The hole in reading the keys instead of declaring the field. A workspace
+    file called `Makefile` or `patient_4471` has no dot and no slash, so the
+    same field was inferred as a map on one run and as a record on another --
+    and in the record case one run's filenames were published as required
+    contract fields."""
+    schema = infer({"Makefile": "ab", "patient_4471": "cd"}, "artifact_hashes")
+
+    assert schema["keys"] == "data"
+    assert "properties" not in schema
+
+
+def test_a_declared_map_is_recognised_wherever_it_is_nested():
+    schema = infer({"recovery_recipe": {"artifact_hashes": {"Makefile": "ab"}}})
+    inner = schema["properties"]["recovery_recipe"]["properties"]["artifact_hashes"]
+    assert inner["keys"] == "data"
+
+
+def test_a_field_keyed_by_a_bounded_vocabulary_stays_a_record():
+    """`generation_refs` is keyed by language. There the key IS contract, and
+    demoting it to free keys would drop a real guarantee."""
+    schema = infer({"python": {"state": "active"}}, "generation_refs")
+    assert schema.get("keys") != "data"
+    assert "python" in schema["properties"]
+
+
+def test_no_frozen_route_publishes_a_dotless_filename_as_a_field(frozen):
+    """The regression, checked against the committed artifact: a declared map
+    field must never carry `properties` there."""
+    offenders = []
+
+    def walk(node, where):
+        if not isinstance(node, dict):
+            return
+        for key, child in (node.get("properties") or {}).items():
+            if (
+                key in _MAP_FIELDS
+                and isinstance(child, dict)
+                and child.get("properties")
+            ):
+                offenders.append(f"{where}.{key}")
+            walk(child, f"{where}.{key}")
+        for extra in ("items", "values"):
+            child = node.get(extra)
+            if isinstance(child, dict) and child:
+                walk(child, f"{where}[]")
+
+    for route, entry in frozen["routes"].items():
+        walk(entry.get("schema") or {}, route)
+    assert offenders == []
