@@ -370,3 +370,68 @@ def test_a_matched_path_with_the_wrong_method_falls_through_to_404(tmp_path):
     assert code == 404
     assert payload["path"] == f"/frames/{fid}/kernel/execute"
     assert payload["method"] == "GET"
+
+
+# --------------------------------------------------------------------------
+# the extraction itself
+# --------------------------------------------------------------------------
+
+
+def test_the_group_reports_when_it_does_not_own_a_path():
+    """The tri-state contract, checked directly rather than through the chain.
+    A module that answered `bool(regex_matched)` would claim these."""
+    from openai4s.server import kernel_routes
+
+    for path in ("/projects", "/frames/f-1/messages", "/artifacts/a-1"):
+        assert (
+            kernel_routes.handle(None, "GET", path, {}, None, None) is False
+        ), f"{path} is not a kernel route"
+
+
+@pytest.mark.stubbed_backend
+def test_a_matched_path_with_the_wrong_method_is_reported_unhandled(tmp_path):
+    """Matched-but-not-handled has to reach the caller as False, or the twelve
+    wrong-method 404s become empty responses."""
+    from openai4s.server import kernel_routes
+
+    _runner, handler, fid = _setup(tmp_path)
+    emitted = []
+    handler._json = lambda value, code=200: emitted.append((code, value))
+
+    handled = kernel_routes.handle(
+        handler, "GET", f"/frames/{fid}/kernel/execute", {}, None, None
+    )
+    assert handled is False
+    assert emitted == [], "nothing may be emitted for a path it did not handle"
+
+
+def test_the_moved_routes_are_still_contract_inventory():
+    """The failure prerequisite 3 exists to prevent: routes that leave
+    gateway.py must not leave the documented surface with it."""
+    from openai4s.server.contract import http_routes
+
+    routes = http_routes()
+    for path in (
+        "/frames/([^/]+)/kernel",
+        "/frames/([^/]+)/kernel/execute",
+        "/frames/([^/]+)/kernel/variables",
+        "/frames/([^/]+)/status",
+        "/frames/([^/]+)/environments",
+        "/frames/([^/]+)/execution",
+    ):
+        assert path in routes, f"{path} fell out of the inventory when it moved"
+
+
+def test_the_quarantine_guard_still_covers_the_mutating_routes(tmp_path):
+    """The position dependency, verified rather than asserted in a comment.
+    Nothing inside the extracted module re-checks writability, so a call site
+    moved above that guard would make the code-execution endpoint live on a
+    session imported from an untrusted archive and marked view-only."""
+    from openai4s.server.session_package import session_import_quarantine_key
+
+    runner, handler, fid = _setup(tmp_path, notebook_repl=True)
+    runner.store.set_setting(session_import_quarantine_key(fid), "1")
+
+    with pytest.raises(gateway_mod.GatewayError) as raised:
+        _call(handler, "POST", f"/frames/{fid}/kernel/execute", body={"code": "1"})
+    assert raised.value.code == 423
