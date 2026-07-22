@@ -1,0 +1,32 @@
+# `openai4s/telemetry/`
+
+选择加入的匿名遥测。**默认关闭**：没有记录同意时，这里不会打开任何 socket、不做域名解析、不启动线程。
+
+冻结的决策（[`docs/v02-decisions.md`](../../docs/v02-decisions.md)）是「仅计数与枚举——零自由文本」，强制方式写的是「用白名单……断言出站载荷没有清单外的键」。
+
+**键**白名单做不到这件事，攻击只有一行：
+
+```python
+{"error_type": "ValueError"}                                     # 枚举
+{"error_type": "FileNotFoundError: /home/y/unpublished/cohort.csv"}
+```
+
+同一个键。第二条带着研究对象和某个人的家目录，而未发表的研究数据正是本产品要处理的东西。所以这里的白名单是针对**值**的：每个字段声明取值域，域外的值永远到不了线上。
+
+| 文件 | 用途 |
+| --- | --- |
+| `__init__.py` | 再导出 `classify_error` 与两个净化函数。不 import 任何能发送数据的东西；import 本包必须保持无副作用，因为「默认关闭」在 import 阶段也必须成立。 |
+| `schema.py` | 遥测可以说什么的完整声明：五个取值域类（`Enum`、`Count`、`Bucket`、`Version`、`OpaqueId`）与字段表。刻意没有 `STRING`、`TEXT`、`JSON`、`MAP`、`LIST` 域，因此新增一个**可能**携带自由文本的字段必须先新增一个域类——那是一份读起来像隐私决策的 diff，而不是表格里又多一行例行公事。`classify_error` 是把异常转成遥测值的唯一途径，只按成员判定，绝不透传。 |
+
+## 看起来像枚举、其实不是的字段
+
+以下每一条都对着真实代码路径核实过，而且每一条都能轻易骗过一次随意的评审：
+
+- **`type(e).__name__`** —— 内核 cell 执行的是 agent 写的代码，所以类名是用户撰写的文本。`class Cohort4471NonResponder(Exception)` 直接点名了研究对象。
+- **skill 名** —— 原样取自它的 `SKILL.md` frontmatter。
+- **环境名** —— 用户配置的根目录下的目录名。
+- **LLM provider 的 `error.code`** —— provider 经常在那里返回整句话，并且照抄请求内容。
+
+## 这里绝不能复用什么
+
+`openai4s.observability.redact` 是为**凭据**校准的，`_looks_opaque` 刻意豁免以 `/` 开头的值，并且有测试钉住这一行为。把它对准研究数据，效果恰好相反：绝对路径原样通过，无害的环境名反被打码。一个长得像保护、实际不保护的闸门比没有闸门更糟，所以有测试断言本包不 import 它。

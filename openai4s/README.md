@@ -51,6 +51,7 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 | [`server/`](./server/) | The stdlib HTTP/WebSocket workbench: session services, projections, recovery, and the static UI. Several specialized UI and recovery workflows remain Partial. |
 | [`share/`](./share/) | Web sharing transport: the tunnel wire protocol, a stdlib WSS client, the daemon's outbound `TunnelClient`, the stateless public relay, and the SSRF-hardened bundle fetch. The snapshot itself is built server-side in `server/share_projection.py`. |
 | [`skills_loader/`](./skills_loader/) | Finds Skills and discloses them progressively: name and summary first, the body only on load. It also validates sidecars, installs versions, and rolls them back. |
+| [`telemetry/`](./telemetry/) | Opt-in anonymous telemetry, off by default. Counts and enumerations only, zero free text — and the enforcement is over **values**: `{"error_type": "ValueError"}` and `{"error_type": "FileNotFoundError: /home/y/unpublished/cohort.csv"}` pass the same key check. There is deliberately no domain that can hold free text, so adding such a field requires adding a domain class. |
 | [`storage/`](./storage/) | Focused SQLite repositories used through `Store`. |
 | [`tools/`](./tools/) | Class-based provider-native control tools. Each one carries its own schema. Around them sit the registry, the dynamic-tool lifecycle, and compatibility support for fenced calls. |
 
