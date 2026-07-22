@@ -84,3 +84,36 @@ def test_dependabot_tracks_uv_hooks_and_workflow_actions():
     assert config.count("package-ecosystem:") == 3
     for ecosystem in ('"uv"', '"pre-commit"', '"github-actions"'):
         assert f"package-ecosystem: {ecosystem}" in config
+
+
+def test_contributors_workflow_updates_protected_main_through_a_pr():
+    workflow = (WORKFLOWS / "contributors.yml").read_text(encoding="utf-8")
+    ci_workflow = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    uses = [line for line in workflow.splitlines() if line.lstrip().startswith("uses:")]
+
+    # This workflow receives write access, so mutable action tags are not safe.
+    assert uses
+    assert all(PINNED_ACTION.fullmatch(line) for line in uses)
+
+    for contract in (
+        "contents: write",
+        "pull-requests: write",
+        "actions: write",
+        "UPDATE_BRANCH: docs/community-contributors",
+        "persist-credentials: false",
+        "pillow-12.3.0-",
+        "#sha256=78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91",
+        "peter-evans/create-pull-request@",
+        "base: main",
+        "add-paths:",
+        ".github/contributors/",
+        "needs.update.outputs.pull-request-number != ''",
+        "needs.update.outputs.pull-request-operation != 'closed'",
+        'gh workflow run ci.yml --ref "$UPDATE_BRANCH"',
+    ):
+        assert contract in workflow
+
+    assert "[skip ci]" not in workflow
+    assert not re.search(r"(?m)^\s*git push(?:\s|$)", workflow)
+    assert "pull_request_target" not in workflow
+    assert "workflow_dispatch:" in ci_workflow

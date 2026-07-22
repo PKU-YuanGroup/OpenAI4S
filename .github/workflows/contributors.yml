@@ -8,44 +8,88 @@ name: Contributors
 on:
   push:
     branches: [main]
-    # Do not re-trigger on the workflow's own README commit.
+    # Do not re-trigger after the generated contributor PR is merged.
     paths-ignore:
       - README.md
       - README_zh.md
+      - .github/contributors/**
   schedule:
     - cron: "0 3 * * 1" # weekly, Monday 03:00 UTC
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: contributors-${{ github.ref }}
-  cancel-in-progress: true
+  group: contributors-update
+  cancel-in-progress: false
 
 jobs:
   update:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      pull-request-number: ${{ steps.cpr.outputs.pull-request-number }}
+      pull-request-operation: ${{ steps.cpr.outputs.pull-request-operation }}
+    env:
+      UPDATE_BRANCH: docs/community-contributors
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out the protected base branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
       - name: Install Pillow (circular avatar crop)
-        run: python -m pip install --quiet Pillow
+        env:
+          PILLOW_WHEEL: https://files.pythonhosted.org/packages/84/21/a35af28dcc61f37ed850a2d64c65c701321dfbf25085e469d5559360cbbf/pillow-12.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91
+        run: python -m pip install --quiet "$PILLOW_WHEEL"
       - name: Regenerate contributor wall
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python scripts/update_contributors.py
-      - name: Commit if changed
-        run: |
-          if [ -n "$(git status --porcelain README.md README_zh.md)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add README.md README_zh.md
-            git commit -m "docs(readme): refresh community contributors [skip ci]"
-            git push
-          else
-            echo "Community contributors already up to date."
-          fi
+      - name: Create or update contributor PR
+        id: cpr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ github.token }}
+          base: main
+          branch: ${{ env.UPDATE_BRANCH }}
+          delete-branch: true
+          add-paths: |
+            README.md
+            README_zh.md
+            .github/contributors/
+          commit-message: "docs(readme): refresh community contributors"
+          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          title: "docs(readme): refresh community contributors"
+          body: |
+            Automated refresh from the GitHub contributors API.
+            Includes both README walls and the generated circular avatar assets.
+
+  # GITHUB_TOKEN-created PR events wait for manual approval. An explicit
+  # workflow_dispatch is the recursion-safe path that starts required checks.
+  checks:
+    name: Dispatch required checks for the generated PR
+    needs: update
+    if: >-
+      needs.update.outputs.pull-request-number != '' &&
+      needs.update.outputs.pull-request-operation != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    env:
+      UPDATE_BRANCH: docs/community-contributors
+    steps:
+      - name: Run required checks for the generated PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref "$UPDATE_BRANCH"
