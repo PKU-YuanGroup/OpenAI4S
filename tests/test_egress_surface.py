@@ -78,6 +78,12 @@ _DECLARED: dict[str, str] = {
     "openai4s/share/fetch.py": (
         "downloads a shared session bundle, with its own SSRF hardening."
     ),
+    "openai4s/telemetry/sender.py": (
+        "opt-in telemetry, and the only module here that is off by default. It "
+        "refuses before it resolves: no consent, no redirect, no plain HTTP, "
+        "and no payload it did not get from wire.seal. See "
+        "tests/test_telemetry_off_by_default.py for the proof."
+    ),
     "openai4s/share/ws_client.py": (
         "the outbound tunnel a share opens to the relay. Off unless sharing "
         "is configured."
@@ -147,7 +153,7 @@ def test_every_declaration_states_a_reason():
 def test_the_surface_is_small_enough_to_review():
     """Seven modules is reviewable. If this fails, the question is not how to
     raise the bound -- it is why the surface grew."""
-    assert len(_DECLARED) <= 8
+    assert len(_DECLARED) <= 9
 
 
 def test_the_scan_finds_a_planted_call():
