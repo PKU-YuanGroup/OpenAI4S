@@ -62,13 +62,36 @@ _WS_INBOUND_ITEM = re.compile(r'"([a-z_]+)"')
 _WS_OUTBOUND = re.compile(r'"type"\s*:\s*"([a-z_]+)"')
 
 
+#: Modules that hold route branches carved out of `Handler._api`. The
+#: decomposition moves groups of routes into siblings, and a route that moved
+#: is still surface -- but `_source()` read gateway.py alone, so the first
+#: extraction would have dropped 12 routes out of the inventory and orphaned 11
+#: frozen response shapes. The tempting repair (regenerate the artifact until
+#: the tests pass) is the damaging one: those shapes get re-filed under the
+#: catch-all `/frames/([^/]+)(?:/.*)?` and the per-route contract is gone.
+#:
+#: Same reasoning that already widened WS-event scanning to the whole package
+#: above; HTTP routes were simply never widened with it.
+_ROUTE_MODULES = ("kernel_routes.py",)
+
+
+def _route_sources() -> list[str]:
+    """gateway.py plus every module that owns extracted route branches."""
+    texts = [_GATEWAY.read_text("utf-8")]
+    for name in _ROUTE_MODULES:
+        path = _SERVER_PKG / name
+        if path.is_file():
+            texts.append(path.read_text("utf-8"))
+    return texts
+
+
 def _source() -> str:
     return _GATEWAY.read_text("utf-8")
 
 
 def http_routes(source: str | None = None) -> set[str]:
-    """Every path `Handler._api` can match, relative to the API root."""
-    text = source if source is not None else _source()
+    """Every path the HTTP surface can match, relative to the API root."""
+    text = source if source is not None else "\n".join(_route_sources())
     routes = set(_EXACT.findall(text)) | set(_PATTERN.findall(text))
     routes |= set(_PREFIX.findall(text))
     for group in _MEMBERSHIP.findall(text):

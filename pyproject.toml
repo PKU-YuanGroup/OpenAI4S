@@ -107,6 +107,11 @@ markers = [
     "slow: slow but still offline test",
     "golden: golden-trace comparison test",
     "smoke: minimal smoke test",
+    # A test that replaces a service with a stub must not contribute a shape to
+    # docs/response-schemas.json: that file's whole claim is that it was
+    # captured from real responses, and a fabricated shape published as a
+    # promise is worse than an absent one because it gets believed.
+    "stubbed_backend: drives routes against stubbed services; excluded from response-shape capture",
     # Opt-in markers (EXCLUDED from the default run and from default PR CI;
     # these may require secrets, hardware, or live services).
     "external: requires any live external resource (umbrella marker)",

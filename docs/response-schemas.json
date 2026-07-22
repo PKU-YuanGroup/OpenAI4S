@@ -1246,6 +1246,27 @@
         "type": "object"
       }
     },
+    "GET /frames/([^/]+)/kernel/execute [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "method",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
     "GET /frames/([^/]+)/kernel/variables [error]": {
       "schema": {
         "properties": {

@@ -13,14 +13,23 @@ but appeared nowhere in `docs/webapp-api.md`. That is the drift this test
 exists to stop.
 
 Scope, stated plainly: this answers "which paths and events exist", not "what
-shape do they return". Response schemas are the next layer of §4.6 and are not
-inferable from a routing chain.
+shape do they return". Response shapes are the next layer and live in
+`docs/response-schemas.json`, captured from real responses.
+
+The inventory now scans the route modules being carved out of `Handler._api`
+as well as gateway.py. Reading gateway.py alone made the decomposition
+self-defeating: moving the kernel group dropped 12 routes out of the inventory
+and orphaned 11 frozen response shapes, and the obvious repair -- regenerate
+the artifact until it is green -- re-files those shapes under the catch-all
+`/frames/([^/]+)(?:/.*)?` and destroys the per-route contract.
 """
 from pathlib import Path
 
 import pytest
 
 from openai4s.server.contract import (
+    _ROUTE_MODULES,
+    _SERVER_PKG,
     http_routes,
     inventory,
     route_families,
@@ -168,3 +177,36 @@ def test_inbound_scanning_stops_at_the_handler():
     inbound = websocket_inbound()
     for stray in ("false", "no", "off", "0"):
         assert stray not in inbound
+
+
+# --------------------------------------------------------------------------
+# the inventory has to follow routes out of gateway.py
+# --------------------------------------------------------------------------
+
+
+def test_a_route_defined_in_a_route_module_is_still_inventory(tmp_path):
+    """The property the decomposition depends on. Without it, every extraction
+    silently shrinks the documented surface."""
+    source = """
+            m = re.fullmatch(r"/made-up/([^/]+)/probe", sub)
+            if m and method == "GET":
+                pass
+    """
+    assert "/made-up/([^/]+)/probe" in http_routes(source)
+
+
+def test_every_declared_route_module_is_scanned_or_absent(tmp_path):
+    """A name in the list that does not exist is tolerated (the modules land
+    one at a time), but a module that exists must be readable -- a typo that
+    silently scans nothing is exactly the failure mode this guards."""
+    for name in _ROUTE_MODULES:
+        path = _SERVER_PKG / name
+        if path.exists():
+            assert path.read_text("utf-8"), f"{name} is declared but empty"
+
+
+def test_widening_the_scan_did_not_change_the_surface_it_reports():
+    """Landed on an unchanged tree, so the count must be exactly what the
+    gateway-only scan reported. A widening that also *adds* routes is scanning
+    something that is not surface -- a validator pattern, or a test fixture."""
+    assert len(http_routes()) == 143

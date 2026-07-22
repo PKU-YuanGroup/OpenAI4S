@@ -148,9 +148,16 @@ class Recorder:
         self.shapes: dict[str, dict[str, Any]] = {}
         self.counts: dict[str, int] = {}
         self.unmatched: set[str] = set()
+        #: Set while a test drives routes against stubbed services. Their
+        #: responses are fabrications, and this file's entire claim is that it
+        #: was captured from real ones -- a made-up shape published as a promise
+        #: is worse than an absent one, because it gets believed.
+        self.paused = False
         self._patterns = _patterns()
 
     def observe(self, method: str, path: str, code: int, body: Any) -> None:
+        if self.paused:
+            return
         if not isinstance(body, dict) and not isinstance(body, list):
             # Only JSON documents have a shape worth freezing.
             return

@@ -89,6 +89,28 @@ def pytest_configure(config):
     config._openai4s_recorder = (recorder, Path(destination))
 
 
+@pytest.fixture(autouse=True)
+def _pause_capture_for_stubbed_backends(request):
+    """A test that stubs the service must not publish a response shape.
+
+    `docs/response-schemas.json` claims to be captured from real responses. A
+    test that replaces `runner.restart_kernel` with a lambda returning
+    `{"ok": ...}` would otherwise freeze that fabrication as the route's
+    contract -- provenance that is wrong rather than absent, which is the worse
+    failure because a reader believes it.
+    """
+    captured = getattr(request.config, "_openai4s_recorder", None)
+    if not captured or request.node.get_closest_marker("stubbed_backend") is None:
+        yield
+        return
+    recorder = captured[0]
+    previous, recorder.paused = recorder.paused, True
+    try:
+        yield
+    finally:
+        recorder.paused = previous
+
+
 def pytest_unconfigure(config):
     captured = getattr(config, "_openai4s_recorder", None)
     if not captured:
