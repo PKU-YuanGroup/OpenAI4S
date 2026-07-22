@@ -27,6 +27,7 @@
 | `startup-guide.md` | 双语 macOS `.dmg` 上手全流程：安装、Gatekeeper，以及在 UI 里配置模型 + Tavily 搜索 Key。 |
 | `webapp-api.md` | REST/WebSocket 功能面的详细契约与兼容行为。 |
 | `response-schemas.json` | 离线套件触达的每条 HTTP 响应的形状，从真实响应里抓取固化，不是手写的。由 [`scripts/capture_response_schemas.py`](../scripts/capture_response_schemas.py) 生成；这里出现 diff 就意味着某条 route 改变了它的返回。覆盖率是部分的，而且刻意可见：文件里没有的 route，就是没有任何离线测试触达的 route。 |
+| `v02-decisions.md` | nextgen 改进提案第 8 节里那些待定决策的所有者签署答复，2026-07-20 冻结。依赖其中任何一条的工作，在答案被记录到一个 reviewer 查得到的地方之前不得启动。每一行还写明这个选择放弃了什么——代价看不见的决策，后来会被悄悄推翻。|
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
 | `webshare.md` | Web 分享：只读快照 + 出站 relay 隧道、部署方式与信任模型。 |
 
