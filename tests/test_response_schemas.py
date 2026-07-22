@@ -30,6 +30,7 @@ import pytest
 
 from openai4s.server import contract
 from openai4s.server.response_capture import (
+    _MACHINE_STATE_KEYS,
     ARTIFACT,
     Recorder,
     check,
@@ -297,6 +298,105 @@ def test_check_reports_a_route_that_lost_its_coverage():
     assert check({"routes": {}}, frozen_doc) == [
         "GET /x [ok]: frozen but no longer observed"
     ]
+
+
+# --------------------------------------------------------------------------
+# machine state is not contract
+# --------------------------------------------------------------------------
+
+
+def _checkpoint_body(*, enforced):
+    """A checkpoint response, as the two hosts really differ.
+
+    A developer's macOS enforces a Seatbelt sandbox; a CI runner with no
+    bubblewrap has none, and the block collapses to nulls plus a warning.
+    """
+    sandbox = (
+        {"backend": "seatbelt", "self_test_passed": True, "warning": None}
+        if enforced
+        else {"backend": None, "self_test_passed": None, "warning": "no backend"}
+    )
+    return {
+        "checkpoint_id": "cp-1",
+        "cell_cursor": 3,
+        "generation_refs": {"python": {"environment": {"sandbox": sandbox}}},
+    }
+
+
+def test_a_sandbox_block_is_recorded_as_opaque():
+    recorder = Recorder()
+    recorder.observe(
+        "POST", "/frames/f-1/checkpoints", 200, _checkpoint_body(enforced=True)
+    )
+    schema = next(iter(recorder.document()["routes"].values()))["schema"]
+    sandbox = schema["properties"]["generation_refs"]["properties"]["python"][
+        "properties"
+    ]["environment"]["properties"]["sandbox"]
+
+    assert sandbox == {"type": "object", "machine_state": True}
+
+
+def test_the_same_route_on_a_host_without_a_sandbox_is_not_a_breaking_change():
+    """The failure that took two CI rounds to name. `backend` is a string where
+    a sandbox exists and null where none does, so freezing that block pins the
+    machine the capture ran on and calls every other machine a break."""
+    documents = []
+    for enforced in (True, False):
+        recorder = Recorder()
+        recorder.observe(
+            "POST", "/frames/f-1/checkpoints", 200, _checkpoint_body(enforced=enforced)
+        )
+        documents.append(recorder.document())
+
+    assert check(documents[1], documents[0]) == []
+
+
+def test_eliding_leaves_the_rest_of_the_response_frozen():
+    """The reason this is surgical rather than a route-level exemption: the
+    route's real contract -- the checkpoint id, the cursors -- is still pinned."""
+    recorder = Recorder()
+    recorder.observe(
+        "POST", "/frames/f-1/checkpoints", 200, _checkpoint_body(enforced=True)
+    )
+    schema = next(iter(recorder.document()["routes"].values()))["schema"]
+
+    assert "checkpoint_id" in schema["required"]
+    assert schema["properties"]["cell_cursor"] == {"type": "integer"}
+
+
+def test_machine_state_is_elided_wherever_it_is_nested():
+    """Kernel environment snapshots ride inside arrays too, and an elision that
+    only handled objects would leave the host-specific block frozen there."""
+    recorder = Recorder()
+    recorder.observe(
+        "GET", "/frames/f-1/branches", 200, {"items": [{"sandbox": {"backend": "x"}}]}
+    )
+    schema = next(iter(recorder.document()["routes"].values()))["schema"]
+
+    assert schema["properties"]["items"]["items"]["properties"]["sandbox"] == {
+        "type": "object",
+        "machine_state": True,
+    }
+
+
+def test_no_frozen_route_pins_a_sandbox_block(frozen):
+    offenders = []
+
+    def walk(node, where):
+        if not isinstance(node, dict):
+            return
+        for key, child in (node.get("properties") or {}).items():
+            if key in _MACHINE_STATE_KEYS and child.get("properties"):
+                offenders.append(f"{where}.{key}")
+            walk(child, f"{where}.{key}")
+        for extra in ("items", "values"):
+            child = node.get(extra)
+            if isinstance(child, dict) and child:
+                walk(child, f"{where}[]")
+
+    for route, entry in frozen["routes"].items():
+        walk(entry.get("schema") or {}, route)
+    assert offenders == []
 
 
 # --------------------------------------------------------------------------

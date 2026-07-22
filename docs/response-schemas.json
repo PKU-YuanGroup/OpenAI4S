@@ -1572,46 +1572,7 @@
             "type": "string"
           },
           "sandbox": {
-            "properties": {
-              "backend": {
-                "type": "null"
-              },
-              "detail": {
-                "type": "string"
-              },
-              "enforced": {
-                "type": "boolean"
-              },
-              "mode": {
-                "type": "string"
-              },
-              "network_policy": {
-                "type": "string"
-              },
-              "runtimes": {
-                "type": "array"
-              },
-              "self_test_passed": {
-                "type": "boolean"
-              },
-              "state": {
-                "type": "string"
-              },
-              "warning": {
-                "type": "null"
-              }
-            },
-            "required": [
-              "backend",
-              "detail",
-              "enforced",
-              "mode",
-              "network_policy",
-              "runtimes",
-              "self_test_passed",
-              "state",
-              "warning"
-            ],
+            "machine_state": true,
             "type": "object"
           }
         },
@@ -3115,50 +3076,7 @@
                         "type": "string"
                       },
                       "sandbox": {
-                        "properties": {
-                          "backend": {
-                            "type": "string"
-                          },
-                          "detail": {
-                            "type": "string"
-                          },
-                          "enforced": {
-                            "type": "boolean"
-                          },
-                          "mode": {
-                            "type": "string"
-                          },
-                          "network_policy": {
-                            "type": "string"
-                          },
-                          "self_test_passed": {
-                            "type": "boolean"
-                          },
-                          "state": {
-                            "type": "string"
-                          },
-                          "temp_dir": {
-                            "type": "string"
-                          },
-                          "warning": {
-                            "type": "null"
-                          },
-                          "workspace": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "backend",
-                          "detail",
-                          "enforced",
-                          "mode",
-                          "network_policy",
-                          "self_test_passed",
-                          "state",
-                          "temp_dir",
-                          "warning",
-                          "workspace"
-                        ],
+                        "machine_state": true,
                         "type": "object"
                       },
                       "worker_argv": {

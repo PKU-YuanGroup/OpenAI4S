@@ -29,6 +29,20 @@ ARTIFACT = Path(__file__).resolve().parents[2] / "docs" / "response-schemas.json
 
 SCHEMA_VERSION = 1
 
+#: Subtrees that describe the machine rather than the API. A response may
+#: embed a live kernel environment snapshot, and inside it the sandbox block
+#: reports what the host can actually enforce: on a developer's macOS it is
+#: `backend: "seatbelt", warning: null`, and on a CI runner with no bubblewrap
+#: it is `backend: null, warning: "<why>"`. The *types* legitimately differ, so
+#: freezing that shape pins the machine the capture ran on and calls every
+#: other machine a breaking change. Recorded opaquely: the field is still known
+#: to exist, its interior is not a promise.
+#:
+#: Add to this only for a subtree whose type varies with the host. It is not a
+#: place to park a route whose shape is merely inconvenient -- that is what the
+#: coverage number is for.
+_MACHINE_STATE_KEYS = frozenset({"sandbox"})
+
 #: How many incompatibilities to name per route before summarising the rest.
 #: One structural change can break dozens of nested fields, and a wall of them
 #: buries the first one, which is usually the cause of all the others.
@@ -96,6 +110,37 @@ def route_for(path: str, patterns=None) -> str | None:
     return None
 
 
+def elide_machine_state(schema: dict[str, Any]) -> dict[str, Any]:
+    """Replace machine-state subtrees with an opaque object.
+
+    Applied when the document is written, not while observing, so merging never
+    sees the marker and two captures of the same route still generalise
+    normally before their host-specific parts are dropped.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    result: dict[str, Any] = {
+        key: value
+        for key, value in schema.items()
+        if key not in ("properties", "items", "values")
+    }
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        result["properties"] = {
+            key: (
+                {"type": "object", "machine_state": True}
+                if key in _MACHINE_STATE_KEYS
+                else elide_machine_state(value)
+            )
+            for key, value in properties.items()
+        }
+    for nested in ("items", "values"):
+        child = schema.get(nested)
+        if isinstance(child, dict):
+            result[nested] = elide_machine_state(child)
+    return result
+
+
 class Recorder:
     """Accumulates one schema per ``METHOD route`` and status class."""
 
@@ -137,7 +182,8 @@ class Recorder:
             # unrelated new test that happens to touch a route produce a diff,
             # and the file is worth reviewing only when a shape moved.
             "routes": {
-                key: {"schema": self.shapes[key]} for key in sorted(self.shapes)
+                key: {"schema": elide_machine_state(self.shapes[key])}
+                for key in sorted(self.shapes)
             },
         }
 
