@@ -33,7 +33,6 @@ class ArtifactHarness:
             store=self.store,
             workspace_for=lambda frame_id: self.workspace,
             broadcast=lambda frame_id, event: self.broadcasts.append((frame_id, event)),
-            environment_snapshot=self.environment_snapshot,
             guess_content_type=lambda name: "text/csv"
             if name.endswith(".csv")
             else "application/octet-stream",
@@ -45,16 +44,20 @@ class ArtifactHarness:
             workspace=self.workspace,
         )
 
-    def environment_snapshot(self) -> dict:
-        self.environment_calls += 1
-        return {
-            "kind": "python",
-            "python_version": "3.14.0",
-            "implementation": "CPython",
-            "platform": "test",
-            "packages": [{"name": "numpy", "version": "2.0"}],
-            "package_count": 1,
-        }
+    def count_environment_captures(self) -> None:
+        """Freezing once per capture is the invariant, not once per file.
+
+        Previously counted through an injected `environment_snapshot` port;
+        the snapshot now comes from the kernel generation, so the counter
+        wraps the method that must stay called exactly once.
+        """
+        original = self.manager.capture_environment
+
+        def counting(*args, **kwargs):
+            self.environment_calls += 1
+            return original(*args, **kwargs)
+
+        self.manager.capture_environment = counting
 
 
 def test_register_freezes_version_before_emitting_event(tmp_path):
@@ -492,6 +495,7 @@ def test_python_capture_uses_one_environment_and_orders_figure_first(tmp_path):
         assert Path(version["snapshot_path"]).is_file()
         events.append(event)
 
+    harness.count_environment_captures()
     captured = harness.manager.capture(
         harness.session,
         1,

@@ -230,7 +230,9 @@ def test_the_manifest_migration_upgrades_a_pre_manifest_database(tmp_path):
     assert row["status"] == states.SUCCEEDED, "the historical row survives"
     assert row["artifact_manifest"] is None
     assert row["integrity_sha256"] is None
-    assert [m["name"] for m in reopened.schema_state()["applied"]] == [
+    # This test is about migrations 1-3; asserting the whole list would make it
+    # fail every time an unrelated later migration is added.
+    assert [m["name"] for m in reopened.schema_state()["applied"]][:3] == [
         "legacy_baseline",
         "compute_job_states",
         "compute_job_manifest",

@@ -34,6 +34,8 @@ capable of stepping on a system interpreter.
 """
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 import threading
@@ -316,16 +318,19 @@ def _version(import_name: str) -> str | None:
 
 
 def full_freeze() -> list[dict]:
-    """Complete environment freeze: every installed distribution as
+    """Complete freeze of **this process**: every installed distribution as
     ``{"name", "version"}``, de-duplicated and sorted case-insensitively.
 
-    This is the ``pip freeze`` / ``conda list`` equivalent of the interpreter the
-    session kernel runs in — the worker is spawned with ``sys.executable`` and
-    shares this process's site-packages (kernel/manager.py), so a daemon-side
-    freeze reflects exactly what agent cells (and therefore a figure's code) could
-    import. It backs the artifact-provenance "Environment" view, so a figure
-    records the full package set that produced it — not just the curated
-    ``installed_report()`` subset.
+    Read the name literally. This describes the interpreter it runs in, which
+    is the daemon's. It used to be documented as describing "the interpreter
+    the session kernel runs in", on the reasoning that a worker is spawned with
+    ``sys.executable`` and shares this process's site-packages — true when the
+    daemon interpreter was the only kernel there was, and no longer true now
+    that a cell may run in a selected conda environment or in R at all.
+    Attributing this list to such a kernel is how an R artifact came to carry a
+    Python package list.
+
+    Use :func:`freeze_for` when the interpreter is not this one.
     """
     try:
         from importlib.metadata import distributions
@@ -350,6 +355,59 @@ def full_freeze() -> list[dict]:
             ver = None
         seen[key] = {"name": name, "version": ver}
     return sorted(seen.values(), key=lambda d: d["name"].lower())
+
+
+def freeze_for(interpreter: str | None, *, timeout: float = 20.0) -> list[dict] | None:
+    """Freeze an arbitrary interpreter, or None when it cannot be asked.
+
+    Returns None rather than falling back to this process's own packages: a
+    freeze attributed to the wrong interpreter is worse than an absent one,
+    because it is believed. The caller records the absence and why.
+
+    Runs the target interpreter once. Callers cache per kernel generation --
+    an environment does not change within one -- so this is not on the
+    per-artifact path.
+    """
+    if not interpreter:
+        return None
+    if os.path.realpath(str(interpreter)) == os.path.realpath(sys.executable):
+        # Same interpreter: the in-process read is exact and free.
+        return full_freeze()
+    probe = (
+        "import json,sys\n"
+        "try:\n"
+        "    from importlib.metadata import distributions\n"
+        "except Exception:\n"
+        "    print('[]'); sys.exit(0)\n"
+        "seen={}\n"
+        "for d in distributions():\n"
+        "    try:\n"
+        "        m=d.metadata; n=(m['Name'] if m else None) or None\n"
+        "    except Exception:\n"
+        "        n=None\n"
+        "    if not n: continue\n"
+        "    n=n.strip(); k=n.lower()\n"
+        "    if k in seen: continue\n"
+        "    try: v=d.version\n"
+        "    except Exception: v=None\n"
+        "    seen[k]={'name':n,'version':v}\n"
+        "print(json.dumps(sorted(seen.values(), key=lambda x: x['name'].lower())))\n"
+    )
+    try:
+        proc = subprocess.run(
+            [str(interpreter), "-I", "-c", probe],
+            capture_output=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        parsed = json.loads(proc.stdout.decode("utf-8", "replace") or "null")
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, list) else None
 
 
 def status() -> dict:

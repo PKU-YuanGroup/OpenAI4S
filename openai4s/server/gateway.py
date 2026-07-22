@@ -1671,7 +1671,6 @@ class SessionRunner:
                 "broadcast",
                 lambda root_frame_id, event: self.hub.emitter(root_frame_id)(event),
             ),
-            environment_snapshot=_environment_snapshot,
             guess_content_type=_guess_ctype,
             checksum=_sha256,
         )
@@ -5836,13 +5835,19 @@ def _host_info() -> dict:
 
 
 def _environment_snapshot() -> dict:
-    """Full snapshot of the kernel's compute environment for artifact provenance:
-    interpreter kind + version + platform + the COMPLETE package→version freeze.
+    """This **daemon process's** interpreter, version, platform and package set.
 
-    The session kernel is spawned with ``sys.executable`` and shares this
-    interpreter's site-packages, so a daemon-side freeze reflects exactly what a
-    figure's code could import. This is the data behind the Provenance →
-    Environment tab (the reference daemon's per-artifact package manifest)."""
+    Read the scope literally. It used to be documented as "the kernel's compute
+    environment" and used as artifact provenance, on the reasoning that a
+    kernel is spawned with ``sys.executable`` and shares this interpreter's
+    site-packages. That stopped being true once a cell could run in a selected
+    conda environment or in R, and the result was artifacts stamped with a
+    Python package list that had never been theirs.
+
+    Artifact provenance now comes from the kernel generation instead -- see
+    ``ArtifactManager.capture_environment``. What remains here serves the two
+    REST reads that genuinely ask about the daemon: the environment probe and
+    the workbench's runtime panel."""
     import platform as _pf
 
     from openai4s.kernel import preinstall

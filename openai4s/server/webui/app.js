@@ -6481,10 +6481,20 @@ async function renderProvEnvironment(body, a) {
   const pkgs = env.packages || [];
   const chips = el("div", "env-chips");
   chips.appendChild(chip("Environment", env.kind || "python"));
-  chips.appendChild(chip(env.implementation || "Python", env.python_version || "?"));
+  // Only claim a Python version when the record has one. An R kernel's
+  // snapshot leaves it null, and "Python ?" would put back exactly the
+  // misattribution the snapshot was fixed to stop telling.
+  if (env.python_version) chips.appendChild(chip(env.implementation || "Python", env.python_version));
+  if (env.environment_name) chips.appendChild(chip("Env", publicText(env.environment_name, 48)));
   chips.appendChild(chip("Packages", String(env.package_count != null ? env.package_count : pkgs.length)));
   body.appendChild(chips);
+  if (env.interpreter) body.appendChild(el("div", "env-plat", publicText(env.interpreter, 160)));
   if (env.platform) body.appendChild(el("div", "env-plat", env.platform));
+  // Why a package list is empty matters: "none installed" and "this runtime
+  // has no Python distributions" look identical without it.
+  if (env.packages_unavailable) {
+    body.appendChild(el("div", "env-src warn", publicText(env.packages_unavailable, 200)));
+  }
   // provenance honesty: say whether this is the recorded production env or a live fallback
   const captured = env.source !== "live";
   const note = el("div", "env-src" + (captured ? " ok" : " warn"));

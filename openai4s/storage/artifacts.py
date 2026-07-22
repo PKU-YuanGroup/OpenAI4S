@@ -684,12 +684,19 @@ class ArtifactRepository:
         packages_json = json.dumps(packages, separators=(",", ":"))
         remote = snapshot.get("remote") or []
         remote_json = json.dumps(remote, separators=(",", ":"), sort_keys=True)
+        # The interpreter and environment name are part of the identity, not
+        # decoration: without them an R kernel and a Python one in a conda env
+        # collapse onto the same row whenever their package lists happen to
+        # match -- and which environment produced a result is precisely what
+        # provenance is for.
         basis = "|".join(
             [
                 snapshot.get("kind") or "",
                 snapshot.get("python_version") or "",
                 snapshot.get("implementation") or "",
                 snapshot.get("platform") or "",
+                str(snapshot.get("interpreter") or ""),
+                str(snapshot.get("environment_name") or ""),
                 packages_json,
                 remote_json,
             ]
@@ -703,7 +710,9 @@ class ArtifactRepository:
                 self._connection.execute(
                     "INSERT INTO env_snapshots(snapshot_id,created_at,kind,"
                     "python_version,implementation,platform,package_count,"
-                    "packages_json,remote_json) VALUES(?,?,?,?,?,?,?,?,?)",
+                    "packages_json,remote_json,interpreter,environment_name,"
+                    "generation_id,packages_unavailable) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         snapshot_id,
                         self._clock_ms(),
@@ -714,6 +723,10 @@ class ArtifactRepository:
                         int(snapshot.get("package_count") or len(packages)),
                         packages_json,
                         remote_json if remote else None,
+                        snapshot.get("interpreter"),
+                        snapshot.get("environment_name"),
+                        snapshot.get("generation_id"),
+                        snapshot.get("packages_unavailable"),
                     ),
                 )
                 self._connection.commit()

@@ -8,6 +8,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import platform as _pf
 import re
 import shutil
 import uuid
@@ -144,6 +145,22 @@ def _write_confined_text(workspace: Path, relative: Path, content: str) -> Path:
     return target
 
 
+def _same_interpreter(interpreter: Any) -> bool:
+    """True when the kernel ran in this very process's interpreter.
+
+    Only then may this process's own version strings be attributed to it.
+    """
+    import os
+    import sys
+
+    if not interpreter:
+        return True
+    try:
+        return os.path.realpath(str(interpreter)) == os.path.realpath(sys.executable)
+    except OSError:
+        return False
+
+
 class ArtifactManager:
     def __init__(
         self,
@@ -152,7 +169,6 @@ class ArtifactManager:
         store: Any,
         workspace_for: Callable[[str], Path],
         broadcast: Callable[[str, dict], None],
-        environment_snapshot: Callable[[], dict],
         guess_content_type: Callable[[str], str],
         checksum: Callable[[Path], str],
     ) -> None:
@@ -160,7 +176,6 @@ class ArtifactManager:
         self.store = store
         self.workspace_for = workspace_for
         self.broadcast = broadcast
-        self.environment_snapshot = environment_snapshot
         self.guess_content_type = guess_content_type
         self.checksum = checksum
 
@@ -719,8 +734,17 @@ class ArtifactManager:
         figure_set = set(figures)
         files_written: list[str] = []
         artifacts: list[dict] = []
+        # `language` and the session's frame id were already in scope here and
+        # simply were not passed on, which is why every artifact was stamped
+        # with the daemon's Python environment regardless of what ran.
         env_snapshot_id = (
-            self.capture_environment(drain_remote_provenance) if changed else None
+            self.capture_environment(
+                drain_remote_provenance,
+                root_frame_id=getattr(session, "root_frame_id", None),
+                language=language,
+            )
+            if changed
+            else None
         )
         for path in sorted(
             changed,
@@ -744,11 +768,28 @@ class ArtifactManager:
         return CaptureResult(figures, files_written, artifacts)
 
     def capture_environment(
-        self, drain_remote_provenance: Callable[[], Any] | None = None
+        self,
+        drain_remote_provenance: Callable[[], Any] | None = None,
+        *,
+        root_frame_id: str | None = None,
+        language: str = "python",
     ) -> str | None:
-        """Freeze the local env plus buffered remote-compute provenance once."""
+        """Record the environment of the kernel that produced these files.
+
+        It used to record the *daemon's* — a zero-argument freeze of this
+        process, stamped ``kind: "python"`` whatever had actually run. An R
+        cell's artifact therefore carried a Python package list, and so did a
+        Python cell running in a selected conda environment. Both are the same
+        failure: provenance that is wrong rather than absent, presented by the
+        UI as the kernel's own.
+
+        The kernel generation is the authority. It knows the runtime, the
+        interpreter, and the environment name, and its id ties the artifact to
+        one exact kernel lifetime.
+        """
         try:
-            snapshot = self.environment_snapshot()
+            generation = self._generation_for(root_frame_id, language)
+            snapshot = self._snapshot_for(generation, language)
             if drain_remote_provenance is not None:
                 remote = drain_remote_provenance()
                 if remote:
@@ -756,6 +797,84 @@ class ArtifactManager:
             return self.store.upsert_env_snapshot(snapshot)
         except Exception:  # noqa: BLE001 — provenance cannot break artifact saving
             return None
+
+    def _generation_for(
+        self, root_frame_id: str | None, language: str
+    ) -> dict[str, Any] | None:
+        if not root_frame_id:
+            return None
+        latest = getattr(self.store, "latest_kernel_generation", None)
+        if latest is None:
+            return None
+        try:
+            return latest(root_frame_id, language)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _snapshot_for(
+        self, generation: dict[str, Any] | None, language: str
+    ) -> dict[str, Any]:
+        """Build the snapshot from what the generation actually says.
+
+        With no generation on record -- a cell that wrote files before any
+        kernel was registered, or a store that predates them -- fall back to
+        describing this process, but say so, so a reader can tell a measured
+        environment from an assumed one.
+        """
+        from openai4s.kernel import preinstall
+
+        environment = (generation or {}).get("environment")
+        environment = environment if isinstance(environment, dict) else {}
+        runtime = str(environment.get("runtime") or language or "python").lower()
+        interpreter = environment.get("interpreter")
+
+        snapshot: dict[str, Any] = {
+            "kind": runtime,
+            "interpreter": interpreter,
+            "environment_name": environment.get("environment_name"),
+            "platform": _pf.platform(),
+        }
+        if generation:
+            snapshot["generation_id"] = generation.get("generation_id")
+            snapshot["environment_manifest_id"] = generation.get(
+                "environment_manifest_id"
+            )
+        else:
+            snapshot["provenance"] = "assumed: no kernel generation on record"
+
+        if runtime == "python":
+            packages = (
+                preinstall.freeze_for(interpreter)
+                if interpreter
+                else preinstall.full_freeze()
+            )
+            if packages is None:
+                # Naming the interpreter we could not read beats implying the
+                # daemon's packages were this kernel's.
+                snapshot["packages"] = []
+                snapshot["package_count"] = 0
+                snapshot[
+                    "packages_unavailable"
+                ] = f"could not read distributions from {interpreter!r}"
+            else:
+                snapshot["packages"] = packages
+                snapshot["package_count"] = len(packages)
+            snapshot["python_version"] = (
+                _pf.python_version() if _same_interpreter(interpreter) else None
+            )
+            snapshot["implementation"] = (
+                _pf.python_implementation() if _same_interpreter(interpreter) else None
+            )
+        else:
+            # A non-Python kernel has no Python package set, and claiming an
+            # empty one would read as "nothing installed" rather than "not
+            # applicable".
+            snapshot["packages"] = []
+            snapshot["package_count"] = 0
+            snapshot[
+                "packages_unavailable"
+            ] = f"{runtime} kernel: Python distribution metadata does not apply"
+        return snapshot
 
 
 def _capture_snippet(index: int) -> str:

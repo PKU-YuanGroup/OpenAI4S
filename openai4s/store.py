@@ -211,17 +211,28 @@ CREATE INDEX IF NOT EXISTS ix_ver_artifact ON artifact_versions(artifact_id);
 
 -- De-duplicated environment snapshots (one row per distinct kernel env). An
 -- artifact_version references one via env_snapshot_id so a figure records the
--- package set that PRODUCED it (see gateway._environment_snapshot).
+-- environment that PRODUCED it -- taken from that cell's kernel generation,
+-- not from the daemon (see ArtifactManager.capture_environment).
 CREATE TABLE IF NOT EXISTS env_snapshots (
     snapshot_id    TEXT PRIMARY KEY,
     created_at     INTEGER NOT NULL,
-    kind           TEXT,
-    python_version TEXT,
+    kind           TEXT,              -- the RUNTIME: "python" | "r"
+    python_version TEXT,              -- NULL unless the kernel was this interpreter
     implementation TEXT,
     platform       TEXT,
     package_count  INTEGER,
     packages_json  TEXT,
-    remote_json    TEXT               -- JSON list of remote-GPU job provenance
+    remote_json    TEXT,              -- JSON list of remote-GPU job provenance
+    -- Which kernel this actually describes. Without these two, an R kernel and
+    -- a Python one in a conda env are indistinguishable rows, and the identity
+    -- of the environment is exactly what provenance is for.
+    interpreter    TEXT,
+    environment_name TEXT,
+    -- The generation that produced the artifact, and why a package list may be
+    -- absent (an R kernel has no Python distributions; a foreign interpreter
+    -- may refuse to be read). Absence with a reason beats a borrowed list.
+    generation_id  TEXT,
+    packages_unavailable TEXT
 );
 
 CREATE TABLE IF NOT EXISTS compaction_archives (
@@ -881,6 +892,7 @@ class Store:
                     1: ("legacy_baseline", self._apply_legacy_baseline),
                     2: ("compute_job_states", self._apply_compute_job_states),
                     3: ("compute_job_manifest", self._apply_compute_job_manifest),
+                    4: ("artifact_env_identity", self._apply_artifact_env_identity),
                 },
             )
             if report["migrated"]:
@@ -927,6 +939,36 @@ class Store:
                 "WHERE status=?",
                 (status, reason, legacy),
             )
+
+    def _apply_artifact_env_identity(self, conn: sqlite3.Connection) -> None:
+        """Version 4: say WHICH kernel an artifact's environment describes.
+
+        Historical rows keep NULL. They were written by a snapshot that could
+        only ever describe the daemon, so backfilling them with the daemon's
+        identity would turn an unattributed record into a confidently wrong
+        one -- the very failure this migration exists to stop.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(env_snapshots)").fetchall()
+        }
+        for column in (
+            "interpreter",
+            "environment_name",
+            "generation_id",
+            "packages_unavailable",
+        ):
+            if column in have:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE env_snapshots ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"env_snapshots.{column} could not be added: {e}"
+                    ) from e
 
     def _apply_compute_job_manifest(self, conn: sqlite3.Connection) -> None:
         """Version 3: room to record what a job actually produced.
