@@ -36,12 +36,23 @@ for accession in ACCESSIONS:
     records.append(hit)
 
 host.write_file("raw_uniprot.json", json.dumps(records, indent=2))
-raw = host.save_artifact("raw_uniprot.json")     # -> {"version_id": ...}
+raw = host.save_artifact(
+    "raw_uniprot.json",
+    source=records[0]["provenance"],             # where it came from, and when
+)                                                # -> {"version_id": ...}
 ```
 
 Save the raw response **before** analysing it. The analysis is a claim; the raw
 response is the evidence for it, and a claim whose evidence was never written
 down cannot be rechecked later.
+
+`source` is the other half. Every `host.science.search` result carries a
+`provenance` envelope naming the database, the exact request, the moment it was
+fetched and a hash of the bytes that came back. Pass it and the artifact can
+answer *when was this true* and *was it the same data* — without it a saved
+file records what you have but not what it is evidence of, and a rerun that
+quietly returned something different is indistinguishable from one that did
+not.
 
 ### 2. Analyse
 

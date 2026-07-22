@@ -134,6 +134,7 @@ def test_save_artifact_return_shape_and_version_row_columns(tmp_path):
         "frame_id",
         "created_at",
         "env_snapshot_id",
+        "source",
     }
     assert row["path"] == str(f)
     assert row["snapshot_path"] is None  # bound later by the gateway snapshotter

@@ -49,6 +49,25 @@ def same_file_path(left: str, right: str) -> bool:
     )
 
 
+def _encode_source(source: Any) -> str | None:
+    """Store a retrieval envelope as canonical JSON, or nothing at all.
+
+    Canonical so two versions derived from the same retrieval compare equal as
+    text -- "these came from the same data" should be checkable rather than a
+    matter of key ordering.
+    """
+    if source in (None, "", {}, []):
+        return None
+    if isinstance(source, str):
+        return source
+    try:
+        return json.dumps(
+            source, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 class ArtifactRepository:
     """Own artifacts, versions, environment snapshots, and lineage edges."""
 
@@ -240,6 +259,7 @@ class ArtifactRepository:
         priority: int = 0,
         env_snapshot_id: str | None = None,
         snapshot_path: str | None = None,
+        source: Any = None,
     ) -> dict:
         (
             explicit_scope,
@@ -281,8 +301,8 @@ class ArtifactRepository:
             self._connection.execute(
                 "INSERT INTO artifact_versions(version_id,artifact_id,filename,"
                 "content_type,size_bytes,checksum,path,snapshot_path,"
-                "producing_cell_id,frame_id,created_at,env_snapshot_id) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "producing_cell_id,frame_id,created_at,env_snapshot_id,source) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     version_id,
                     artifact_id,
@@ -296,6 +316,7 @@ class ArtifactRepository:
                     frame_id,
                     now,
                     env_snapshot_id,
+                    _encode_source(source),
                 ),
             )
             if new_artifact:
@@ -350,6 +371,7 @@ class ArtifactRepository:
         env_snapshot_id: str | None = None,
         snapshot_path: str | None = None,
         input_version_ids: list[str] | tuple[str, ...] | None = None,
+        source: Any = None,
         preserve_filename: bool = False,
         preserve_content_type: bool = False,
         reuse_policy: str = "any",
@@ -439,7 +461,8 @@ class ArtifactRepository:
                         "UPDATE artifact_versions SET filename=?,"
                         "content_type=COALESCE(?,content_type),size_bytes=?,"
                         "checksum=?,path=?,snapshot_path=COALESCE(snapshot_path,?),"
-                        "env_snapshot_id=COALESCE(env_snapshot_id,?) "
+                        "env_snapshot_id=COALESCE(env_snapshot_id,?),"
+                        "source=COALESCE(source,?) "
                         "WHERE version_id=?",
                         (
                             stored_filename,
@@ -449,6 +472,7 @@ class ArtifactRepository:
                             path,
                             snapshot_path,
                             env_snapshot_id,
+                            _encode_source(source),
                             version_id,
                         ),
                     )
@@ -465,7 +489,8 @@ class ArtifactRepository:
                         "INSERT INTO artifact_versions(version_id,artifact_id,"
                         "filename,content_type,size_bytes,checksum,path,"
                         "snapshot_path,producing_cell_id,frame_id,created_at,"
-                        "env_snapshot_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "env_snapshot_id,source) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             version_id,
                             artifact_id,
@@ -479,6 +504,7 @@ class ArtifactRepository:
                             frame_id,
                             now,
                             env_snapshot_id,
+                            _encode_source(source),
                         ),
                     )
                     if artifact is None:

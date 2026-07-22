@@ -205,7 +205,14 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
     snapshot_path TEXT,
     producing_cell_id TEXT,
     frame_id      TEXT,
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    -- Where the data came from, when a version was derived from retrieved
+    -- data rather than computed from nothing. JSON: the retrieval provenance
+    -- envelope (database, source, retrieved_at, request_url, query,
+    -- normalization_version, per-response hashes). This is a property of the
+    -- VERSION, not the artifact: rerunning the same analysis a month later
+    -- produces the same file from a different retrieval.
+    source        TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_ver_artifact ON artifact_versions(artifact_id);
 
@@ -893,6 +900,7 @@ class Store:
                     2: ("compute_job_states", self._apply_compute_job_states),
                     3: ("compute_job_manifest", self._apply_compute_job_manifest),
                     4: ("artifact_env_identity", self._apply_artifact_env_identity),
+                    5: ("artifact_source", self._apply_artifact_source),
                 },
             )
             if report["migrated"]:
@@ -939,6 +947,34 @@ class Store:
                 "WHERE status=?",
                 (status, reason, legacy),
             )
+
+    def _apply_artifact_source(self, conn: sqlite3.Connection) -> None:
+        """Version 5: where a version's data came from.
+
+        The Evidence scorecard asks every release-grade artifact to carry a
+        source. There was no column at all, so the clause was structurally
+        unmeetable rather than sparsely met.
+
+        Historical rows keep NULL. A version written before retrieval was
+        recorded has no recoverable source, and inventing one would be the same
+        mistake as backfilling an environment: an unattributed record turned
+        into a confidently wrong one.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(artifact_versions)").fetchall()
+        }
+        if "source" in have:
+            return
+        try:
+            conn.execute("ALTER TABLE artifact_versions ADD COLUMN source TEXT")
+        except sqlite3.OperationalError as e:
+            if not _is_duplicate_column(e):
+                raise MigrationError(
+                    f"artifact_versions.source could not be added: {e}"
+                ) from e
 
     def _apply_artifact_env_identity(self, conn: sqlite3.Connection) -> None:
         """Version 4: say WHICH kernel an artifact's environment describes.
@@ -2117,8 +2153,10 @@ class Store:
         priority: int = 0,
         env_snapshot_id: str | None = None,
         snapshot_path: str | None = None,
+        source: Any = None,
     ) -> dict:
         return self._artifacts.save_artifact(
+            source=source,
             path=path,
             filename=filename,
             content_type=content_type,
@@ -2149,6 +2187,7 @@ class Store:
         project_id: str | None = None,
         env_snapshot_id: str | None = None,
         snapshot_path: str | None = None,
+        source: Any = None,
         input_version_ids: list[str] | tuple[str, ...] | None = None,
         preserve_filename: bool = False,
         preserve_content_type: bool = False,
@@ -2166,6 +2205,7 @@ class Store:
             project_id=project_id,
             env_snapshot_id=env_snapshot_id,
             snapshot_path=snapshot_path,
+            source=source,
             input_version_ids=input_version_ids,
             preserve_filename=preserve_filename,
             preserve_content_type=preserve_content_type,

@@ -76,6 +76,7 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "compute_job_states",
         "compute_job_manifest",
         "artifact_env_identity",
+        "artifact_source",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

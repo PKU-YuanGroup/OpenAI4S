@@ -959,6 +959,11 @@ class SessionPackageService:
                         "frame_id",
                         "created_at",
                         "env_snapshot_id",
+                        # Where the data came from. A package whose artifacts
+                        # cannot say that is missing the half of provenance a
+                        # recipient most needs -- the environment answers "how
+                        # was this made", the source answers "from what".
+                        "source",
                     )
                 }
                 record["filename"] = filename
@@ -2409,6 +2414,11 @@ class SessionPackageService:
                     env_snapshot_id=env_map.get(
                         str(version.get("env_snapshot_id") or "")
                     ),
+                    # Carried across verbatim. Unlike ids, a retrieval envelope
+                    # is not remapped on import: it describes an event on
+                    # someone else's machine, and rewriting it would be a claim
+                    # about a retrieval this installation never made.
+                    source=version.get("source"),
                 )
                 new_artifact = str(record["artifact_id"])
                 if source_artifact:

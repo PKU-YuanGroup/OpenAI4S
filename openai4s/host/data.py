@@ -350,6 +350,7 @@ class HostDataService:
                 frame_id=self._frame_id(),
                 snapshot_path=str(destination),
                 input_version_ids=spec.get("input_version_ids") or [],
+                source=spec.get("source"),
                 reuse_policy="provisional",
             )
         except Exception:

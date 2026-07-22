@@ -9,8 +9,10 @@ persistent Python kernel.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -111,6 +113,11 @@ _FILTERS = frozenset({"organism_id", "species", "year_from", "year_to", "work_ty
 _SPECIES = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _MAX_RESPONSE_CHARS = 5_000_000
 
+#: Bumped whenever the shape a record is normalized into changes. Two results
+#: with the same upstream bytes but different normalization versions are not
+#: the same evidence, and without this a reader has no way to tell.
+NORMALIZATION_VERSION = 1
+
 
 class ScienceConnectorService:
     """Query fixed public APIs and return one stable cross-database envelope."""
@@ -120,6 +127,9 @@ class ScienceConnectorService:
         fetch: Callable[[str, str, float, int], str] | None = None,
     ) -> None:
         self._fetch = fetch or self._default_fetch
+        # Upstream responses observed during the call in flight. Reset per
+        # search so one query never inherits another's provenance.
+        self._responses: list[dict[str, Any]] = []
 
     def list_databases(self, domain: str = "all") -> dict[str, Any]:
         selected = str(domain or "all").strip().lower()
@@ -190,6 +200,8 @@ class ScienceConnectorService:
             )
 
         adapter = getattr(self, f"_search_{database_id}")
+        self._responses = []
+        retrieved_at = int(time.time() * 1000)
         try:
             results, next_cursor, request_url = adapter(
                 normalized_query,
@@ -204,6 +216,8 @@ class ScienceConnectorService:
             raise ScienceConnectorError(
                 f"{metadata.label} request failed: {type(exc).__name__}: {exc}"
             ) from exc
+        responses = list(self._responses)
+        self._responses = []
         return {
             "database": database_id,
             "source": metadata.label,
@@ -212,6 +226,20 @@ class ScienceConnectorService:
             "results": results[:requested_limit],
             "next_cursor": next_cursor or None,
             "request_url": request_url,
+            # The provenance envelope. Without it a retrieved record cannot
+            # answer the two questions that decide whether it is evidence:
+            # when was this true, and was it the same bytes I am looking at?
+            "provenance": {
+                "database": database_id,
+                "source": metadata.label,
+                "retrieved_at": retrieved_at,
+                "request_url": request_url,
+                "query": normalized_query,
+                "filters": dict(active_filters),
+                "normalization_version": NORMALIZATION_VERSION,
+                "responses": responses,
+                "response_sha256": _combined_digest(responses),
+            },
         }
 
     @staticmethod
@@ -251,6 +279,7 @@ class ScienceConnectorService:
 
     def _json(self, url: str, timeout: float, *, allow_empty: bool = False) -> Any:
         raw = self._fetch(url, "json", timeout, _MAX_RESPONSE_CHARS)
+        self._observe(url, raw)
         if allow_empty and not raw.strip():
             return None
         try:
@@ -261,7 +290,30 @@ class ScienceConnectorService:
             ) from exc
 
     def _text(self, url: str, timeout: float) -> str:
-        return self._fetch(url, "text", timeout, _MAX_RESPONSE_CHARS)
+        raw = self._fetch(url, "text", timeout, _MAX_RESPONSE_CHARS)
+        self._observe(url, raw)
+        return raw
+
+    def _observe(self, url: str, raw: str) -> None:
+        """Note what came back, before anything interprets it.
+
+        Every adapter reaches upstream through `_json`/`_text`, so hashing here
+        covers all seven sources without one of them having to remember to.
+        The hash is of the bytes as received: a normalizer improved later must
+        not silently change what the record claims arrived.
+
+        A search may make several requests (a query then a detail fetch). All
+        of them are kept, in order, because a result assembled from two
+        responses is only reproducible if both are named.
+        """
+        payload = raw if isinstance(raw, str) else ""
+        self._responses.append(
+            {
+                "url": _string(url, 4000),
+                "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+                "bytes": len(payload.encode("utf-8")),
+            }
+        )
 
     def _search_uniprot(self, query, limit, cursor, filters, timeout):
         del cursor
@@ -600,6 +652,21 @@ class ScienceConnectorService:
         meta = payload.get("meta") or {}
         next_cursor = _string(meta.get("next_cursor"), 2000)
         return results, next_cursor, url
+
+
+def _combined_digest(responses: list[dict[str, Any]]) -> str | None:
+    """One hash over every upstream response a search consumed.
+
+    A single value the caller can carry on a derived artifact, in the order the
+    requests were made -- reordering them would be a different retrieval and
+    must not hash the same.
+    """
+    if not responses:
+        return None
+    if len(responses) == 1:
+        return str(responses[0].get("sha256") or "") or None
+    joined = "|".join(str(item.get("sha256") or "") for item in responses)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
 def _record(

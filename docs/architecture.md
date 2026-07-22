@@ -169,6 +169,24 @@ pass through the normal network switch, SSRF and redirect guards, egress
 allowlist, permission/audit envelope, and untrusted-output screening. See
 [Scientific database connectors](science-connectors.md).
 
+Every search result carries a **provenance envelope**: the database, the exact
+request, the filters, when it was fetched, the normalization version, and a
+SHA-256 of the bytes upstream actually returned (per request, in the order
+made, plus one combined digest). Pass it to
+`host.save_artifact(..., source=result["provenance"])` and it is stored on the
+artifact *version* — a property of that version rather than the artifact,
+because rerunning the same analysis a month later produces the same file from
+a different retrieval. It travels into an exported session package unchanged,
+and is deliberately not remapped on import: it describes an event on someone
+else's machine.
+
+Two questions decide whether retrieved data is evidence, and neither could be
+answered before: *when was this true* (a public database is a moving target, so
+without a timestamp a changed result and a changed analysis are
+indistinguishable) and *was it the same bytes* (without a response hash, a
+rerun that quietly returned something different reads exactly like one that did
+not).
+
 Native `Tool` classes that declare `writes_files=True` are wrapped by the Web
 adapter in a per-call workspace transaction. Every write/edit is diffed and
 registered as a versioned Artifact immediately, including repeated edits to
