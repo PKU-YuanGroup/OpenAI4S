@@ -159,21 +159,13 @@ def reconcile(
     return ordered, unmatched
 
 
-def _patterns(declared: Any) -> list[str]:
-    """Normalise the several shapes `outputs` arrives in.
+def _declared_items(declared: Any) -> list[Any]:
+    """Normalise the several shapes `outputs` arrives in into a flat list.
 
-    Only *featured, local* patterns are reconciled. The documented list form
-    mixes bare globs with ``{'glob': ..., 'visibility': ...}`` entries, and a
-    `hidden` entry is explicitly something the caller does not want surfaced —
-    failing a job over one would punish them for saying so. The same applies to
-    ``{'residency': 'remote'}``: the caller asked for that output to *stay* on
-    the cluster, so its absence from the harvest is the requested outcome, not
-    an unmet promise.
-
-    An unrecognised shape yields no patterns, which means "nothing declared".
-    That is the lenient direction on purpose: this decides whether a job is
-    marked failed, and inventing a pattern from a shape we do not understand
-    would fail correct jobs.
+    An unrecognised shape yields nothing, which means "nothing declared". That
+    is the lenient direction on purpose: this decides whether a job is marked
+    failed, and inventing a pattern from a shape we do not understand would
+    fail correct jobs.
     """
     if declared is None:
         return []
@@ -189,26 +181,86 @@ def _patterns(declared: Any) -> list[str]:
         declared = declared.get("featured") or declared.get("outputs") or []
     if not isinstance(declared, (list, tuple)):
         return []
+    return list(declared)
 
+
+def _glob_of(item: Any) -> str:
+    if isinstance(item, dict):
+        item = item.get("glob") or item.get("pattern") or item.get("path")
+    return str(item or "").strip()
+
+
+def _is_remote(item: Any) -> bool:
+    return (
+        isinstance(item, dict)
+        and str(item.get("residency", "local")).strip().lower() == "remote"
+    )
+
+
+def _patterns(declared: Any) -> list[str]:
+    """The globs a harvest is expected to satisfy.
+
+    Only *featured, local* patterns are reconciled. The documented list form
+    mixes bare globs with ``{'glob': ..., 'visibility': ...}`` entries, and a
+    `hidden` entry is explicitly something the caller does not want surfaced —
+    failing a job over one would punish them for saying so. The same applies to
+    ``{'residency': 'remote'}``: the caller asked for that output to *stay* on
+    the cluster, so its absence from the harvest is the requested outcome, not
+    an unmet promise.
+    """
     patterns: list[str] = []
-    for item in declared:
+    for item in _declared_items(declared):
         if isinstance(item, dict):
             if str(item.get("visibility", "featured")).strip().lower() == "hidden":
                 continue
-            if str(item.get("residency", "local")).strip().lower() == "remote":
+            if _is_remote(item):
                 continue
-            glob = item.get("glob") or item.get("pattern") or item.get("path")
-            item = glob
-        text = str(item or "").strip()
+        text = _glob_of(item)
         if text:
             patterns.append(text)
     return patterns
+
+
+def remote_patterns(declared: Any) -> list[str]:
+    """The globs the caller asked to keep on the cluster.
+
+    ``_patterns`` already skips these so a stay-remote output is never counted
+    missing — but that was only half the contract, and the quiet half. The
+    transport still tarred the file, downloaded it and listed it in
+    ``output_files``: the declaration said "do not move this", and the only
+    thing it changed was whether the job got *blamed* for not moving it.
+
+    These are the patterns the harvest itself must exclude.
+    """
+    patterns: list[str] = []
+    for item in _declared_items(declared):
+        if not _is_remote(item):
+            continue
+        text = _glob_of(item)
+        if text:
+            patterns.append(text)
+    return patterns
+
+
+def matches_any(path: str, patterns: list[str]) -> bool:
+    """Does one harvested path match any of these globs?
+
+    Path *or* basename, the same pair of tests ``reconcile`` uses, so an
+    exclusion and a promise can never disagree about what a pattern covers.
+    """
+    name = Path(path).name
+    return any(
+        fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(name, pattern)
+        for pattern in patterns
+    )
 
 
 __all__ = [
     "build_manifest",
     "hash_file",
     "manifest_digest",
+    "matches_any",
     "reconcile",
+    "remote_patterns",
     "unverified",
 ]

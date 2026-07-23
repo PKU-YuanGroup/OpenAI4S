@@ -236,6 +236,7 @@ _HARVEST_EXCLUDES = (
     f"{_HARVEST_ARCHIVE}.tmp",
     ".openai4s-harvest.list",
     ".openai4s-harvest.skipped",
+    ".openai4s-harvest.stayed",
     "run.sh",
     ".rc",
     ".rc.tmp",
@@ -245,27 +246,75 @@ _HARVEST_EXCLUDES = (
 )
 
 _HARVEST_TAG = "OPENAI4S_HARVEST"
+#: Path lines are tagged rather than bare so a path containing a space, or a
+#: chatty login profile, cannot be confused for one another.
+_HARVEST_SKIPPED_TAG = "OPENAI4S_HARVEST_SKIPPED"
+_HARVEST_STAYED_TAG = "OPENAI4S_HARVEST_STAYED"
 
 
-def _ssh_harvest_script(workdir: str, max_file_bytes: int) -> str:
+def _find_stay_clause(patterns: list[str]) -> tuple[str, str]:
+    """``(exclusion, selection)`` find expressions for stay-remote globs.
+
+    Path *and* basename, mirroring ``manifest.matches_any`` — a declaration
+    that keeps a file out of the reconciler must keep the same file out of the
+    archive, or the two halves of the contract disagree.
+    """
+    if not patterns:
+        return "", ""
+    exclusion_parts: list[str] = []
+    selection_parts: list[str] = []
+    for pattern in patterns:
+        rel = pattern.lstrip("/")
+        if rel.startswith("./"):
+            rel = rel[2:]
+        path_form = shlex.quote(f"./{rel}")
+        name_form = shlex.quote(rel)
+        exclusion_parts.append(f"! -path {path_form} ! -name {name_form}")
+        selection_parts.append(f"-path {path_form} -o -name {name_form}")
+    return (
+        " ".join(exclusion_parts),
+        "\\( " + " -o ".join(selection_parts) + " \\)",
+    )
+
+
+def _ssh_harvest_script(
+    workdir: str, max_file_bytes: int, exclude_patterns: list[str] | None = None
+) -> str:
     """Stage the job's work directory into one archive, remotely.
 
     One archive rather than a file list: it is one transfer to check the return
     code of, and it goes through the same enumerate-then-extract safety gate as
     the byoc harvest. Oversized files are enumerated and *excluded* rather than
     silently truncating the transfer, so the caller learns what stayed behind.
+
+    ``exclude_patterns`` are the caller's ``residency: remote`` declarations.
+    They are applied *here*, in the ``find`` that builds the archive, because
+    that is the only place the bytes can be stopped before they move. Excluding
+    them after the download would satisfy the manifest and violate the promise.
     """
+    patterns = list(exclude_patterns or [])
     excludes = " ".join(f"! -name {shlex.quote(name)}" for name in _HARVEST_EXCLUDES)
+    stay_exclusion, stay_selection = _find_stay_clause(patterns)
     # `find -size +Nc` is POSIX and counts bytes; `-size +Nk` would round.
     size_test = f"-size +{int(max_file_bytes)}c"
     listing = ".openai4s-harvest.list"
     skipped = ".openai4s-harvest.skipped"
+    stayed = ".openai4s-harvest.stayed"
+    stay_scan = (
+        f"find . -type f {excludes} {stay_selection} -print > {stayed} 2>/dev/null; "
+        if stay_selection
+        else f": > {stayed}; "
+    )
     return (
         f"cd {workdir} 2>/dev/null || "
         f"{{ echo 'openai4s: work directory is gone' >&2; exit 3; }}; "
-        f"rm -f {_HARVEST_ARCHIVE} {_HARVEST_ARCHIVE}.tmp {listing} {skipped}; "
-        f"find . -type f {excludes} {size_test} -print > {skipped} 2>/dev/null; "
-        f"find . -type f {excludes} ! {size_test} -print > {listing} 2>/dev/null; "
+        f"rm -f {_HARVEST_ARCHIVE} {_HARVEST_ARCHIVE}.tmp {listing} {skipped} "
+        f"{stayed}; "
+        f"{stay_scan}"
+        f"find . -type f {excludes} {stay_exclusion} {size_test} "
+        f"-print > {skipped} 2>/dev/null; "
+        f"find . -type f {excludes} {stay_exclusion} ! {size_test} "
+        f"-print > {listing} 2>/dev/null; "
         f"if [ -s {listing} ]; then "
         # Same tar hardening the byoc wrapper applies, for the same reason: a
         # login profile is free to export TAR_OPTIONS or GZIP, and GNU tar and
@@ -282,18 +331,52 @@ def _ssh_harvest_script(workdir: str, max_file_bytes: int) -> str:
         f"else echo '{_HARVEST_TAG} empty'; fi; "
         # The paths left behind, one per line, with find's leading "./" removed
         # so they read the same as the manifest's relative paths.
-        f"sed 's|^\\./||' {skipped} 2>/dev/null; "
-        f"rm -f {listing} {skipped}; exit 0"
+        f"sed 's|^\\./|{_HARVEST_SKIPPED_TAG} |' {skipped} 2>/dev/null; "
+        f"sed 's|^\\./|{_HARVEST_STAYED_TAG} |' {stayed} 2>/dev/null; "
+        f"rm -f {listing} {skipped} {stayed}; exit 0"
     )
 
 
-def _parse_harvest_ack(stdout: str) -> tuple[str, list[str]]:
-    """Split the harvest reply into ``(marker, oversized paths)``."""
+def _prune_local_matches(dest: Path, patterns: list[str]) -> list[str]:
+    """Delete anything under ``dest`` a stay-remote glob covers.
+
+    Returns the relative paths removed. Silence here would be the worst of
+    both worlds — the file gone locally *and* unmentioned — so the caller
+    reports them exactly as if the remote had excluded them.
+    """
+    removed: list[str] = []
+    for path in sorted(dest.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(dest).as_posix()
+        if manifest.matches_any(rel, patterns):
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            removed.append(rel)
+    return removed
+
+
+def _parse_harvest_ack(stdout: str) -> tuple[str, list[str], list[str]]:
+    """Split the harvest reply into ``(marker, oversized, stayed)``.
+
+    The tagged forms are checked before the bare marker because both begin
+    with it; an untagged line after a marker is still read as oversized, which
+    keeps a harvest staged by an older wrapper readable.
+    """
     marker = ""
     oversized: list[str] = []
+    stayed: list[str] = []
     for line in stdout.splitlines():
         text = line.strip()
         if not text:
+            continue
+        if text.startswith(f"{_HARVEST_SKIPPED_TAG} "):
+            oversized.append(text[len(_HARVEST_SKIPPED_TAG) + 1 :])
+            continue
+        if text.startswith(f"{_HARVEST_STAYED_TAG} "):
+            stayed.append(text[len(_HARVEST_STAYED_TAG) + 1 :])
             continue
         if text.startswith(_HARVEST_TAG):
             parts = text.split()
@@ -301,7 +384,7 @@ def _parse_harvest_ack(stdout: str) -> tuple[str, list[str]]:
             continue
         if marker:
             oversized.append(text)
-    return marker, oversized
+    return marker, oversized, stayed
 
 
 # The submit acknowledgement line. Tagged so a login banner, a `.bashrc` echo,
@@ -543,12 +626,94 @@ class ComputeManager:
         return job
 
     def _persist(self, job_id: str, **fields: Any) -> None:
+        """Non-terminal bookkeeping. Never used for an end state — see
+        :meth:`_commit_terminal`, which must not swallow anything."""
         if self._store is None:
             return
         try:
             self._store.update_compute_job(job_id, **fields)
         except Exception:  # noqa: BLE001 - never fail an op on bookkeeping
             pass
+
+    def _commit_terminal(
+        self,
+        job: dict,
+        status: str,
+        *,
+        event: str | None = None,
+        event_payload: dict | None = None,
+        **fields: Any,
+    ) -> dict | None:
+        """Write an end state to the ledger *before* anything else believes it.
+
+        Returns ``None`` when the write landed, and the row that actually won
+        when the compare-and-swap lost — having first re-synced the in-memory
+        job to it. The caller must report *that* state.
+
+        The repository's compare-and-swap was already correct. What was not:
+        every caller here set ``job["status"]`` first and then handed the write
+        to ``_persist``, which swallows exceptions. A cancel racing a result
+        therefore left SQLite at ``succeeded`` while memory *and the answer
+        returned to the caller* said ``cancelled``. Nothing downstream could
+        detect the disagreement, because both halves were confident.
+
+        So the order is inverted and the exception is not swallowed:
+
+          * persist first — a status nothing durable holds is not a status;
+          * only then update memory and emit the event, so an observer never
+            sees a terminal state the ledger has not accepted;
+          * a lost compare-and-swap re-reads the row and reports the conflict;
+          * any *other* persistence failure propagates. A terminal state we
+            could not record is a fact the caller has to hear: the row stays
+            live and ``reconcile`` will keep surfacing it, which is the safe
+            direction, but claiming success over a failed write is not.
+        """
+        job_id = job["job_id"]
+        if self._store is None:
+            job["status"] = status
+            if event:
+                self._event(job_id, event, event_payload)
+            return None
+        try:
+            self._store.update_compute_job(job_id, status=status, **fields)
+        except states.IllegalTransition:
+            row = self._store.get_compute_job(job_id) or {}
+            actual = row.get("status") or status
+            job["status"] = actual
+            if row.get("exit_code") is not None:
+                job["exit_code"] = row["exit_code"]
+            self._event(
+                job_id,
+                "terminal_conflict",
+                {"requested": status, "actual": actual},
+            )
+            return row or {"job_id": job_id, "status": actual}
+        job["status"] = status
+        if event:
+            self._event(job_id, event, event_payload)
+        return None
+
+    @staticmethod
+    def _terminal_conflict_result(
+        job: dict, requested: str, row: dict, output_files: list[str]
+    ) -> dict:
+        """A poll that harvested real files onto a job that had already ended.
+
+        The harvest is kept — the bytes are on disk and throwing them away
+        helps nobody — but the *verdict* is the one the ledger holds, not the
+        one this poll computed.
+        """
+        return {
+            "status": row.get("status"),
+            "job_id": job["job_id"],
+            "exit_code": row.get("exit_code"),
+            "output_files": output_files,
+            "conflict": {"requested": requested, "actual": row.get("status")},
+            "hint": (
+                "this job reached a terminal state before the poll completed; "
+                "the recorded outcome is authoritative and was not overwritten"
+            ),
+        }
 
     def _event(self, job_id: str, kind: str, payload: dict | None = None) -> None:
         if self._store is None:
@@ -1535,8 +1700,6 @@ class ComputeManager:
         unverified = bool(phase_err or harvest_error or missing or unverified_files)
         if unverified and status == states.SUCCEEDED:
             status = states.FAILED
-        job["status"] = status
-        job["exit_code"] = exit_code
         notes = []
         if missing:
             notes.append(f"declared outputs never arrived: {', '.join(missing)}")
@@ -1545,9 +1708,11 @@ class ComputeManager:
                 f"harvested but unreadable, so unverifiable: "
                 f"{', '.join(unverified_files)}"
             )
-        self._persist(
-            job["job_id"],
-            status=status,
+        conflict = self._commit_terminal(
+            job,
+            status,
+            event=status,
+            event_payload={"exit_code": exit_code},
             exit_code=exit_code,
             terminal_at=_now_ms(),
             reason=phase_err or harvest_error or "; ".join(notes) or "",
@@ -1557,7 +1722,9 @@ class ComputeManager:
             artifact_manifest=entries,
             integrity_sha256=manifest.manifest_digest(entries),
         )
-        self._event(job["job_id"], status, {"exit_code": exit_code})
+        if conflict is not None:
+            return self._terminal_conflict_result(job, status, conflict, out_files)
+        job["exit_code"] = exit_code
         result = {
             "status": status,
             "exit_code": exit_code,
@@ -1579,6 +1746,21 @@ class ComputeManager:
             result["unharvested_outputs"] = missing
         if unverified_files:
             result["unverified_files"] = unverified_files
+        stay_remote = manifest.remote_patterns(job.get("outputs"))
+        if stay_remote:
+            # Stated rather than silently ignored. The provider wrapper tars
+            # the whole `out/` tree from inside the sandbox, so this transport
+            # cannot keep a declared file behind — and a caller who asked for
+            # that has to hear it did not happen, not discover it later from a
+            # file listing.
+            result["residency_unenforced"] = {
+                "patterns": stay_remote,
+                "note": (
+                    "residency: remote is enforced on the ssh transport; this "
+                    "provider archives the whole out/ directory in-sandbox, so "
+                    "these files were harvested anyway"
+                ),
+            }
         return result
 
     def _harvest(self, job_id: str, stage: Path) -> list[dict]:
@@ -1661,7 +1843,10 @@ class ComputeManager:
 
         dest = self._hpc_root / job["job_id"]
         dest.mkdir(parents=True, exist_ok=True)
-        harvest_error, oversized = self._harvest_ssh(alias, workdir, dest)
+        stay_remote = manifest.remote_patterns(job.get("outputs"))
+        harvest_error, oversized, stayed = self._harvest_ssh(
+            alias, workdir, dest, stay_remote
+        )
         entries = manifest.build_manifest(dest)
         featured, missing = manifest.reconcile(entries, job.get("outputs"))
         unverified_files = manifest.unverified(entries)
@@ -1688,8 +1873,6 @@ class ComputeManager:
         unaccounted = bool(missing or unverified_files)
         if unaccounted and status == states.SUCCEEDED:
             status = states.FAILED
-        job["status"] = status
-        job["exit_code"] = exit_code
         notes = []
         if missing:
             notes.append(
@@ -1701,9 +1884,11 @@ class ComputeManager:
                 f"harvested but unreadable, so unverifiable: "
                 f"{', '.join(unverified_files)}"
             )
-        self._persist(
-            job["job_id"],
-            status=status,
+        conflict = self._commit_terminal(
+            job,
+            status,
+            event=status,
+            event_payload={"exit_code": exit_code},
             exit_code=exit_code,
             terminal_at=_now_ms(),
             reason=harvest_error or "; ".join(notes) or "",
@@ -1715,7 +1900,14 @@ class ComputeManager:
             artifact_manifest=entries,
             integrity_sha256=manifest.manifest_digest(entries),
         )
-        self._event(job["job_id"], status, {"exit_code": exit_code})
+        if conflict is not None:
+            return self._terminal_conflict_result(
+                job,
+                status,
+                conflict,
+                [str(dest / item["path"]) for item in entries],
+            )
+        job["exit_code"] = exit_code
         result = {
             "status": status,
             "exit_code": exit_code,
@@ -1728,15 +1920,15 @@ class ComputeManager:
             # are still there — but the declared outputs are now here too.
             "left_on_remote": True,
         }
-        if oversized:
-            result["left_on_remote_files"] = [
-                {
-                    "path": rel,
-                    "uri": f"{alias}:{workdir}/{rel}",
-                    "reason": "threshold",
-                }
-                for rel in oversized
-            ]
+        left_behind = [
+            {"path": rel, "uri": f"{alias}:{workdir}/{rel}", "reason": "threshold"}
+            for rel in oversized
+        ] + [
+            {"path": rel, "uri": f"{alias}:{workdir}/{rel}", "reason": "residency"}
+            for rel in stayed
+        ]
+        if left_behind:
+            result["left_on_remote_files"] = left_behind
         if harvest_error:
             result["harvest_error"] = harvest_error
         if missing:
@@ -1769,13 +1961,17 @@ class ComputeManager:
         }
 
     def _harvest_ssh(
-        self, alias: str, workdir: str, dest: Path
-    ) -> tuple[str | None, list[str]]:
+        self,
+        alias: str,
+        workdir: str,
+        dest: Path,
+        exclude_patterns: list[str] | None = None,
+    ) -> tuple[str | None, list[str], list[str]]:
         """Pull the job's whole work directory back.
 
-        Returns ``(error, left_on_remote)``: an error string or None, and the
-        relative paths deliberately left behind for being over the per-file
-        ceiling.
+        Returns ``(error, oversized, stayed)``: an error string or None, the
+        relative paths left behind for being over the per-file ceiling, and the
+        ones left behind because the caller declared ``residency: remote``.
 
         This used to copy ``stdout.log`` and ``stderr.log`` and nothing else,
         while ``submit_job`` accepted an ``outputs`` declaration and the
@@ -1789,28 +1985,39 @@ class ComputeManager:
         hostile-input-safe extractor the byoc path uses, because the bytes come
         from a machine we do not control either way.
         """
-        script = _ssh_harvest_script(workdir, HARVEST_MAX_FILE_BYTES)
+        patterns = list(exclude_patterns or [])
+        script = _ssh_harvest_script(workdir, HARVEST_MAX_FILE_BYTES, patterns)
         try:
             proc = subprocess.run(
                 ["ssh", alias, script], capture_output=True, timeout=300
             )
         except (subprocess.TimeoutExpired, OSError) as e:
-            return f"harvest failed to run on {alias}: {e}", []
+            return f"harvest failed to run on {alias}: {e}", [], []
         if proc.returncode != 0:
             return (
-                f"harvest staging exited {proc.returncode} on {alias}: "
-                f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
-            ), []
-        marker, oversized = _parse_harvest_ack(proc.stdout.decode("utf-8", "replace"))
+                (
+                    f"harvest staging exited {proc.returncode} on {alias}: "
+                    f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
+                ),
+                [],
+                [],
+            )
+        marker, oversized, stayed = _parse_harvest_ack(
+            proc.stdout.decode("utf-8", "replace")
+        )
         if marker == "empty":
             # The job wrote nothing at all. That is a fact about the job, not a
             # transport failure; `reconcile` decides whether it is acceptable.
-            return None, oversized
+            return None, oversized, stayed
         if marker != "archive":
             return (
-                f"harvest produced no acknowledgement on {alias}; "
-                f"the work directory may be gone"
-            ), oversized
+                (
+                    f"harvest produced no acknowledgement on {alias}; "
+                    f"the work directory may be gone"
+                ),
+                oversized,
+                stayed,
+            )
         with tempfile.TemporaryDirectory(prefix="openai4s-ssh-harvest-") as td:
             local = Path(td) / "harvest.tar.gz"
             try:
@@ -1825,15 +2032,22 @@ class ComputeManager:
                     f"harvest from {alias}:{workdir}",
                 )
             except ComputeError as e:
-                return str(e), oversized
+                return str(e), oversized, stayed
             if not local.is_file():
-                return f"harvest archive never arrived from {alias}", oversized
+                return f"harvest archive never arrived from {alias}", oversized, stayed
             try:
                 safe_extract_tar(local, dest)
             except UnsafeArchiveError as e:
-                return f"harvest archive rejected: {e}", oversized
+                return f"harvest archive rejected: {e}", oversized, stayed
         self._cleanup_remote_archive(alias, workdir)
-        return None, oversized
+        if patterns:
+            # The remote `find` is the exclusion that matters, and it is the
+            # one that stops the bytes moving. This is the second gate, on the
+            # side we control: `find`'s pattern semantics are not identical to
+            # fnmatch's on every host, and a stay-remote file that slipped
+            # through must not survive on local disk to be listed as an output.
+            stayed.extend(_prune_local_matches(dest, patterns))
+        return None, oversized, sorted(set(stayed))
 
     @staticmethod
     def _cleanup_remote_archive(alias: str, workdir: str) -> None:
@@ -1919,14 +2133,29 @@ class ComputeManager:
                     indeterminate=True,
                 )
             self._terminate_sandbox(rest, sandbox_id)
-        job["status"] = states.CANCELLED
-        self._persist(
-            job["job_id"],
-            status=states.CANCELLED,
+        conflict = self._commit_terminal(
+            job,
+            states.CANCELLED,
+            event="cancelled",
             terminal_at=_now_ms(),
             termination_reason=states.REASON_USER_CANCELLED,
         )
-        self._event(job["job_id"], "cancelled")
+        if conflict is not None:
+            # The job had already ended by the time we stopped it. The remote
+            # really was signalled, so the cancel was not a no-op — but the
+            # outcome on record is the one that happened, and the caller is
+            # told that rather than the one it asked for.
+            return {
+                "status": conflict.get("status"),
+                "conflict": {
+                    "requested": states.CANCELLED,
+                    "actual": conflict.get("status"),
+                },
+                "hint": (
+                    "the job reached a terminal state before the cancel "
+                    "landed; the recorded outcome is unchanged"
+                ),
+            }
         return {"status": "cancelled"}
 
     def close(self, kw: dict) -> dict:
@@ -1949,6 +2178,7 @@ class ComputeManager:
         fam, rest = self._split(provider)
         released: list[str] = []
         unreleased: list[dict] = []
+        already: list[dict] = []
 
         with self._lock:
             targets = [
@@ -2003,17 +2233,28 @@ class ComputeManager:
                 self._persist(jid, reason=f"close could not confirm: {exc}")
                 self._event(jid, "close_unconfirmed", {"error": str(exc)})
                 continue
-            job["status"] = states.CANCELLED
             # In-memory only meant a restart rehydrated the job as live, so it
             # kept occupying a concurrency slot and kept being reconciled
-            # against a provider that had already released it.
-            self._persist(
-                jid,
-                status=states.CANCELLED,
+            # against a provider that had already released it. Ledger first,
+            # for the same reason as `cancel`: a close that lost the race to a
+            # result used to report a release of a job it never ended.
+            conflict = self._commit_terminal(
+                job,
+                states.CANCELLED,
+                event="closed",
+                event_payload={"provider": provider},
                 terminal_at=_now_ms(),
                 termination_reason=states.REASON_HANDLE_CLOSED,
             )
-            self._event(jid, "closed", {"provider": provider})
+            if conflict is not None:
+                already.append(
+                    {
+                        "job_id": jid,
+                        "status": conflict.get("status"),
+                        "note": "already terminal before this close",
+                    }
+                )
+                continue
             released.append(jid)
 
         # The warm sandbox outlives the jobs that ran in it, so release it even
@@ -2038,6 +2279,10 @@ class ComputeManager:
             "sandbox_released": terminated and not unreleased,
             "released": released,
         }
+        if already:
+            # Not a failure and not a release: the job ended on its own before
+            # the close reached it, and the recorded outcome is its own.
+            result["already_terminal"] = already
         if unreleased:
             result["unreleased"] = unreleased
             result["error_kind"] = "unknown_state"

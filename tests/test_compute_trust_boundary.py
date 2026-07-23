@@ -537,6 +537,53 @@ class TestAgainstRealBash:
             time.sleep(0.05)
         assert res["status"] == "succeeded"
 
+    def test_an_output_declared_remote_is_never_moved(self, local_ssh):
+        """The other half of the same declaration, and the one that was missing.
+
+        `residency: remote` was honoured only by the *reconciler*: the job was
+        no longer blamed for the file staying put, while the harvest tarred it,
+        downloaded it, and listed it in `output_files` regardless. The
+        declaration's entire purpose is that the bytes do not move.
+        """
+        out = local_ssh.submit(
+            {
+                "provider": "ssh:lab",
+                "command": (
+                    "mkdir -p ckpt; printf 'weights' > ckpt/model.pt; "
+                    "printf 'done' > report.txt"
+                ),
+                "outputs": [
+                    "report.txt",
+                    {"glob": "ckpt/*.pt", "residency": "remote"},
+                ],
+            }
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        for _ in range(200):
+            res = local_ssh._result_ssh(job)
+            if res["status"] != "running":
+                break
+            time.sleep(0.05)
+
+        assert res["status"] == "succeeded"
+        harvested = {Path(p).name for p in res["output_files"]}
+        assert "report.txt" in harvested
+        assert (
+            "model.pt" not in harvested
+        ), f"a residency:remote output was downloaded and listed: {harvested}"
+        local_copy = Path(res["output_files"][0]).parent / "ckpt" / "model.pt"
+        assert not local_copy.exists(), "it must not be on local disk at all"
+        # The workdir carries a literal `~`; the remote shell expands it, and
+        # the fixture points HOME at the temp tree standing in for the cluster.
+        remote_workdir = Path(job["workdir"].replace("~", os.environ["HOME"], 1))
+        assert (
+            remote_workdir / "ckpt" / "model.pt"
+        ).is_file(), "and it must still be on the cluster, where it was asked to stay"
+        left = {item["path"]: item for item in res["left_on_remote_files"]}
+        assert "ckpt/model.pt" in left
+        assert left["ckpt/model.pt"]["reason"] == "residency"
+        assert left["ckpt/model.pt"]["uri"].startswith("lab:")
+
     def test_an_oversized_output_stays_on_the_host_and_says_so(
         self, local_ssh, monkeypatch
     ):
