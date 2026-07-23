@@ -79,7 +79,15 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
     QUEUED: frozenset({STAGING, CANCELLED, FAILED, UNKNOWN}),
     # A claimed row goes straight to `unknown` when we cannot tell whether the
     # submit landed — that edge is the whole reason the row is written first.
-    STAGING: frozenset({SUBMITTED, RUNNING, FAILED, CANCELLED, UNKNOWN}),
+    # ``succeeded``/``timed_out`` are permitted directly too: the persistence
+    # of the intermediate ``running`` state is deliberately best-effort, so a
+    # submit that landed and finished can have its result verify a terminal
+    # state while the durable row is still ``staging``. Forbidding those edges
+    # made ``_commit_terminal`` read the verified result as a conflict and left
+    # the row — and every later result — stuck at ``staging``.
+    STAGING: frozenset(
+        {SUBMITTED, RUNNING, SUCCEEDED, FAILED, TIMED_OUT, CANCELLED, UNKNOWN}
+    ),
     SUBMITTED: frozenset({RUNNING, SUCCEEDED, FAILED, TIMED_OUT, CANCELLED, UNKNOWN}),
     RUNNING: frozenset({SUCCEEDED, FAILED, TIMED_OUT, CANCELLED, UNKNOWN}),
     # `unknown` is reconcilable, not terminal: a later probe may resolve it

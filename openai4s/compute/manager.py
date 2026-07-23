@@ -678,6 +678,26 @@ class ComputeManager:
         except Exception:  # noqa: BLE001 - never fail an op on bookkeeping
             pass
 
+    def _persist_terminal(self, job_id: str, **fields: Any) -> bool:
+        """Write a terminal state for a job that has no in-memory row yet.
+
+        Returns whether the durable write actually landed. Unlike ``_persist``
+        it does not swallow a storage failure into a false success: the submit
+        paths that use it fall back to an indeterminate, reconcilable state
+        when it returns ``False``, rather than reporting a rejection the ledger
+        never recorded. An ``IllegalTransition`` counts as landed — the row is
+        already terminal, which is a stronger guarantee than the one asked for.
+        """
+        if self._store is None:
+            return True
+        try:
+            self._store.update_compute_job(job_id, **fields)
+            return True
+        except states.IllegalTransition:
+            return True
+        except Exception:  # noqa: BLE001 - a swallowed terminal write is the bug
+            return False
+
     def _commit_terminal(
         self,
         job: dict,
@@ -829,14 +849,19 @@ class ComputeManager:
         if sandbox_id:
             fields["sandbox_id"] = sandbox_id
             fields["receipt"] = sandbox_id
-        if rejected:
-            self._persist(
-                job_id,
-                status=states.FAILED,
-                terminal_at=_now_ms(),
-                termination_reason=states.REASON_SUBMIT_REJECTED,
-                **fields,
-            )
+        # A rejection is only durably a rejection if the terminal write lands.
+        # `_persist` swallows every storage error, so a locked or full SQLite
+        # let submit report a definite `failed` while the durable claim stayed
+        # `staging` — rehydrated as a live job on restart. If the terminal write
+        # cannot be made, this is no longer a clean rejection: fall through to
+        # the indeterminate path, which keeps the job live and reconcilable.
+        if rejected and self._persist_terminal(
+            job_id,
+            status=states.FAILED,
+            terminal_at=_now_ms(),
+            termination_reason=states.REASON_SUBMIT_REJECTED,
+            **fields,
+        ):
             self._event(job_id, "submit_rejected", {"error": str(exc), "kind": kind})
         else:
             self._persist(
@@ -1215,13 +1240,20 @@ class ComputeManager:
         reply = json.loads(reply_path.read_text("utf-8"))
         if not reply.get("ok"):
             # A written reply is the helper speaking for itself: it reached the
-            # provider and the provider said no. That is a definite rejection
-            # unless the helper explicitly marks it otherwise.
+            # provider and the provider said no. That is a definite rejection —
+            # *unless* the failure is transient. The resident protocol carries
+            # only ok/kind/msg, never `indeterminate`, and a `transient` failure
+            # is precisely the one whose effect is uncertain: a `docker run`
+            # that timed out may already have created a container. Inferring
+            # indeterminacy from the transient kind is what keeps that container
+            # reconcilable instead of recording a terminal `failed` over a
+            # resource that may still be billing.
+            kind = reply.get("kind") or "transient"
             raise self._helper_error(
                 stage,
                 reply.get("msg") or "provider op failed",
-                reply.get("kind") or "transient",
-                indeterminate=bool(reply.get("indeterminate")),
+                kind,
+                indeterminate=bool(reply.get("indeterminate")) or kind == "transient",
             )
         return reply
 

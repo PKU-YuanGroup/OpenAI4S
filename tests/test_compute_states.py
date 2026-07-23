@@ -79,6 +79,23 @@ def test_staging_is_live_everywhere_it_is_live_anywhere():
     assert states.is_live(states.STAGING)
 
 
+def test_staging_can_reach_a_verified_terminal_state_directly():
+    """Persisting the intermediate `running` is best-effort. A submit that
+    landed and finished can have its result verify a terminal state while the
+    durable row is still `staging`; forbidding that edge left the row — and
+    every later result — stuck there."""
+    for terminal in (
+        states.SUCCEEDED,
+        states.TIMED_OUT,
+        states.FAILED,
+        states.CANCELLED,
+    ):
+        assert states.can_transition(states.STAGING, terminal), (
+            f"staging -> {terminal} must be allowed, or a best-effort running "
+            f"persist failure strands the job"
+        )
+
+
 # --------------------------------------------------------------------------
 # enforcement at the write
 # --------------------------------------------------------------------------

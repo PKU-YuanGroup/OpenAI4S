@@ -508,3 +508,68 @@ def test_a_harvested_file_that_cannot_be_read_is_not_a_delivered_output(
     finally:
         for path in blocked:
             path.chmod(0o600)
+
+
+# --------------------------------------------------------------------------
+# a transient reply is uncertain, not a definite rejection
+# --------------------------------------------------------------------------
+
+
+def test_a_transient_helper_reply_is_indeterminate_not_terminal(byoc, monkeypatch, cfg):
+    """The resident protocol carries only ok/kind/msg, never `indeterminate`.
+
+    A `transient` failure — a `docker run` that timed out — may already have
+    created a container. Recording it as terminal `failed` makes reconcile skip
+    a resource that may still be billing. It must stay live and reconcilable.
+    """
+
+    def behaviour(op, stage):
+        _reply(stage, {"ok": False, "kind": "transient", "msg": "docker run timed out"})
+        return 0
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen", _fake_popen(behaviour)
+    )
+    with pytest.raises(ComputeError) as error:
+        byoc.submit({"provider": "byoc:fake", "command": "train.py"})
+    assert error.value.indeterminate is True
+
+    row = get_store(cfg.db_path).list_compute_jobs()[0]
+    assert row["status"] == states.UNKNOWN
+    assert byoc._live_count() == 1, "a possibly-billing container stays tracked"
+
+
+def test_a_rejection_that_cannot_be_persisted_is_not_a_clean_rejection(
+    byoc, monkeypatch, cfg
+):
+    """`_persist` swallows storage errors. A locked SQLite let submit report a
+    definite `failed` while the durable claim stayed `staging`, rehydrated as a
+    live job on restart. A rejection the ledger never recorded is not clean."""
+
+    def behaviour(op, stage):
+        _reply(stage, {"ok": False, "kind": "invalid_request", "msg": "no such gpu"})
+        return 0
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen", _fake_popen(behaviour)
+    )
+
+    real_update = byoc._store.update_compute_job
+
+    def flaky_update(job_id, **fields):
+        if fields.get("status") == states.FAILED:
+            raise sqlite3.OperationalError("database is locked")
+        return real_update(job_id, **fields)
+
+    monkeypatch.setattr(byoc._store, "update_compute_job", flaky_update)
+
+    with pytest.raises(ComputeError):
+        byoc.submit({"provider": "byoc:fake", "command": "train.py"})
+
+    row = get_store(cfg.db_path).list_compute_jobs()[0]
+    assert row["status"] != states.STAGING, (
+        "a rejection whose terminal write failed must not leave the row at "
+        "staging to be rehydrated as live"
+    )
+    # It falls through to the indeterminate path, which is reconcilable.
+    assert row["status"] == states.UNKNOWN
