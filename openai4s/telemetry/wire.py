@@ -26,11 +26,24 @@ _SEAL = object()
 
 
 class SealedPayload:
-    """Bytes that have been through the declaration. Construct via `seal`."""
+    """Bytes that have been through the declaration. Construct via `seal`.
 
-    __slots__ = ("body", "record_count")
+    The install id is carried alongside the body, not merely buried in it, so
+    the sender can check that the identity this payload was sealed under is
+    still the identity the user has authorised. Sealing happens on the caller's
+    thread and sending happens later on another; between those two moments a
+    revoke can land, and a re-grant after it mints a *different* id. Without
+    this field the sender could only ask "does some consent exist", and a
+    payload stamped with the revoked identity would go out under the new
+    permission — linking two participation periods the user was promised were
+    unlinkable.
+    """
 
-    def __init__(self, token: object, body: bytes, record_count: int) -> None:
+    __slots__ = ("body", "install_id", "record_count")
+
+    def __init__(
+        self, token: object, body: bytes, record_count: int, install_id: str = ""
+    ) -> None:
         if token is not _SEAL:
             raise TypeError(
                 "SealedPayload is built by openai4s.telemetry.wire.seal(); "
@@ -39,6 +52,7 @@ class SealedPayload:
             )
         self.body = body
         self.record_count = record_count
+        self.install_id = install_id
 
 
 def _os_name() -> str:
@@ -97,7 +111,7 @@ def seal(install_id: str, records: list[dict[str, Any]]) -> SealedPayload | None
 
     envelope["events"] = clean
     body = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return SealedPayload(_SEAL, body, len(clean))
+    return SealedPayload(_SEAL, body, len(clean), str(envelope["install_id"]))
 
 
 __all__ = ["SealedPayload", "seal"]

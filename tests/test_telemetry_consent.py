@@ -216,3 +216,63 @@ def test_the_consent_module_cannot_reach_the_network():
                 "http.client",
                 "urllib.request",
             }
+
+
+# --------------------------------------------------------------------------
+# a record nobody can parse is a record nobody agreed to
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ['"v2"', "[]", "{}", '"1"', "1.5", "0", "-3"])
+def test_a_corrupt_schema_version_reads_as_no_consent(store, bad):
+    """`read()` documents that a malformed row is treated as no consent, and
+    `int(record.get("schema_version") or 1)` broke that contract by *raising*
+    for anything non-numeric — escaping the function entirely rather than
+    returning None. The route then answered 500, and `grant()` inherited the
+    same exception because it calls `read()` first, so the record could not
+    even be repaired by consenting again."""
+    store.set_setting(
+        consent_mod.CONSENT_KEY,
+        '{"install_id": "'
+        + "a" * 32
+        + '", "granted_at": 1, "schema_version": '
+        + bad
+        + "}",
+    )
+    assert consent_mod.read(store) is None
+    assert consent_mod.enabled(store) is False
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        '{"install_id": "%s", "granted_at": 1}',
+        '{"install_id": "%s", ' '"granted_at": 1, "schema_version": null}',
+    ],
+)
+def test_an_unspecified_schema_version_is_old_not_malformed(store, record):
+    """A row written before the field existed — or one that spells "absent" as
+    JSON null — is still a real grant, not a corrupt record."""
+    store.set_setting(consent_mod.CONSENT_KEY, record % ("c" * 32))
+    recorded = consent_mod.read(store)
+    assert recorded is not None and recorded.schema_version == 1
+
+
+def test_a_boolean_is_not_an_integer_schema_version(store):
+    """`isinstance(True, int)` is True in Python, which is exactly the kind of
+    accident this check exists to refuse."""
+    store.set_setting(
+        consent_mod.CONSENT_KEY,
+        '{"install_id": "' + "d" * 32 + '", "granted_at": 1, "schema_version": true}',
+    )
+    assert consent_mod.read(store) is None
+
+
+def test_granting_over_a_corrupt_record_mints_a_fresh_identity(store):
+    store.set_setting(
+        consent_mod.CONSENT_KEY,
+        '{"install_id": "' + "e" * 32 + '", "granted_at": 1, "schema_version": "x"}',
+    )
+    granted = consent_mod.grant(store)
+    assert granted is not None
+    assert granted.install_id != "e" * 32

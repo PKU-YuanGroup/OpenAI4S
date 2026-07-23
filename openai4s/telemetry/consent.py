@@ -88,12 +88,27 @@ def read(store: Any) -> Consent | None:
         return None
     if not all(c in "0123456789abcdef" for c in install_id):
         return None
-    if not isinstance(granted_at, int):
+    if not isinstance(granted_at, int) or isinstance(granted_at, bool):
+        return None
+    # `int(...)` on a non-numeric string raises, which escaped this function
+    # entirely — past the "a malformed row is no consent" contract stated
+    # above. The consent GET then answered 500, and `grant()` could not repair
+    # the row either, because it calls `read()` first and inherited the same
+    # exception. A record nobody can parse is a record nobody agreed to.
+    schema_version = record.get("schema_version")
+    if schema_version is None:
+        # A row written before the field existed is not malformed, just old.
+        schema_version = 1
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version < 1
+    ):
         return None
     return Consent(
         install_id=install_id,
         granted_at=granted_at,
-        schema_version=int(record.get("schema_version") or 1),
+        schema_version=schema_version,
     )
 
 

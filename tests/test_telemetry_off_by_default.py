@@ -55,8 +55,8 @@ def no_egress(monkeypatch):
     return attempts
 
 
-def _payload():
-    return wire.seal("0" * 32, [{"event": "daemon_start", "outcome": "ok"}])
+def _payload(install_id: str = "0" * 32):
+    return wire.seal(install_id, [{"event": "daemon_start", "outcome": "ok"}])
 
 
 # --------------------------------------------------------------------------
@@ -205,7 +205,8 @@ def test_the_sender_actually_installs_that_handler(store, monkeypatch):
     choosing where research telemetry goes. So observe the construction."""
     import urllib.request
 
-    consent_mod.grant(store)
+    granted = consent_mod.grant(store)
+    assert granted is not None
     handlers: list[object] = []
 
     class _Stub:
@@ -217,7 +218,9 @@ def test_the_sender_actually_installs_that_handler(store, monkeypatch):
         return _Stub()
 
     monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
-    sender_mod.send(store, _payload())
+    # Sealed under the identity that is actually authorised, or the sender
+    # refuses before it ever builds an opener.
+    sender_mod.send(store, _payload(granted.install_id))
 
     assert any(
         h is sender_mod._NoRedirects for h in handlers
@@ -253,3 +256,77 @@ def test_seal_refuses_to_produce_an_empty_report(store):
 
 def test_seal_refuses_without_a_well_formed_identity():
     assert wire.seal("not-32-hex", [{"event": "daemon_start"}]) is None
+
+
+# --------------------------------------------------------------------------
+# a revoked identity does not come back under the next permission
+# --------------------------------------------------------------------------
+
+
+def test_a_payload_sealed_under_a_revoked_identity_is_not_sent(store, no_egress):
+    """The regression, and the sharpest privacy claim in this subsystem.
+
+    Sealing happens on the caller's thread; sending happens later on another.
+    Between those two moments the user can revoke — which destroys the id — and
+    grant again, which mints a *different* one. The sender only asked whether
+    *some* consent existed, so the payload stamped with the old identity went
+    out under the new permission, linking two participation periods that the
+    id-inside-the-consent-record design exists specifically to keep unlinkable.
+
+    The network guard is the assertion that matters: not merely "returns
+    False", but that the old id never reaches a socket.
+    """
+    first = consent_mod.grant(store)
+    assert first is not None
+    stale = wire.seal(first.install_id, [{"event": "daemon_start", "outcome": "ok"}])
+
+    consent_mod.revoke(store)
+    second = consent_mod.grant(store)
+    assert second is not None and second.install_id != first.install_id
+
+    assert sender_mod.send(store, stale) is False
+    assert no_egress == []
+
+
+def test_a_payload_sealed_under_the_current_identity_is_accepted(store, monkeypatch):
+    """The check must not become a blanket refusal: the ordinary path still
+    sends. Stubbed at the opener so nothing actually leaves."""
+    granted = consent_mod.grant(store)
+    assert granted is not None
+    payload = wire.seal(
+        granted.install_id, [{"event": "daemon_start", "outcome": "ok"}]
+    )
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    class _Opener:
+        def open(self, _request, timeout=None):
+            return _Response()
+
+    monkeypatch.setattr(
+        sender_mod.urllib.request, "build_opener", lambda *_h: _Opener()
+    )
+    assert sender_mod.send(store, payload) is True
+
+
+def test_a_payload_with_no_identity_is_refused(store, no_egress):
+    """A payload that cannot say who it belongs to cannot be matched against
+    the current consent, so it is not sendable."""
+    consent_mod.grant(store)
+    payload = wire.seal("f" * 32, [{"event": "daemon_start", "outcome": "ok"}])
+    payload.install_id = ""
+
+    assert sender_mod.send(store, payload) is False
+    assert no_egress == []
+
+
+def test_the_sealed_payload_records_the_identity_it_was_sealed_under(store):
+    payload = wire.seal("a" * 32, [{"event": "daemon_start", "outcome": "ok"}])
+    assert payload is not None and payload.install_id == "a" * 32

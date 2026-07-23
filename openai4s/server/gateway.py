@@ -8375,7 +8375,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # Changing the recorded consent is a deliberate act by a
                     # person using this install; granting mints the anonymous
                     # id, revoking destroys it. Neither ever sends.
-                    want = bool(self._body().get("enabled"))
+                    #
+                    # The JSON type has to be Boolean, not merely truthy.
+                    # `bool()` maps the string "false", `{}` with any key, and
+                    # `[]` with any element onto True — so a form serialiser
+                    # that sends `"false"`, or any client that does not read
+                    # this contract closely, would *grant* telemetry consent
+                    # while asking to revoke it. A privacy boundary must fail
+                    # with a 400 rather than resolve an ambiguous request in
+                    # the permissive direction.
+                    want = self._body().get("enabled")
+                    if not isinstance(want, bool):
+                        self._json(
+                            {
+                                "error": "telemetry consent requires "
+                                "'enabled' to be a JSON boolean",
+                                "received_type": type(want).__name__,
+                            },
+                            400,
+                        )
+                        return
                     if want:
                         granted = _consent.grant(store)
                         self._json(

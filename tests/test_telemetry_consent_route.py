@@ -108,3 +108,74 @@ def test_the_route_is_in_the_contract_inventory():
     from openai4s.server.contract import http_routes
 
     assert "/telemetry/consent" in http_routes()
+
+
+# --------------------------------------------------------------------------
+# a privacy boundary refuses an ambiguous request
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["false", "true", "0", "1", 0, 1, {}, {"a": 1}, [], ["x"], None],
+)
+def test_a_non_boolean_enabled_is_rejected(gw, value):
+    """The regression.
+
+    `bool()` maps the *string* "false", any non-empty dict, and any non-empty
+    list onto True — so a form serialiser that sends `"false"`, or a client
+    that did not read the contract closely, granted telemetry consent while
+    asking to revoke it. Resolving an ambiguous privacy request in the
+    permissive direction is the one direction that must never be the default.
+    """
+    _runner, handler = gw
+    code, body = _call(handler, "PUT", {"enabled": value})
+    assert code == 400
+    assert "boolean" in body["error"]
+
+
+def test_a_rejected_request_changes_nothing(gw):
+    _runner, handler = gw
+    _call(handler, "PUT", {"enabled": True})
+    _call(handler, "PUT", {"enabled": "false"})
+    assert _call(handler, "GET")[1]["enabled"] is True, "a 400 is not a revoke"
+
+
+def test_a_missing_enabled_is_rejected_rather_than_read_as_revoke(gw):
+    _runner, handler = gw
+    code, _body = _call(handler, "PUT", {})
+    assert code == 400
+
+
+def test_real_booleans_still_work(gw):
+    _runner, handler = gw
+    assert _call(handler, "PUT", {"enabled": True})[1]["enabled"] is True
+    assert _call(handler, "PUT", {"enabled": False})[1]["enabled"] is False
+
+
+def test_a_corrupt_record_does_not_make_the_get_fail(gw):
+    """`int(...)` on a non-numeric schema_version escaped `read()` entirely,
+    past its own "a malformed row is no consent" contract — so the GET
+    answered 500 and `grant()` could not repair the row either, because it
+    calls `read()` first and inherited the same exception."""
+    runner, handler = gw
+    runner.store.set_setting(
+        consent_mod.CONSENT_KEY,
+        '{"install_id": "' + "a" * 32 + '", "granted_at": 1, "schema_version": "v2"}',
+    )
+    code, body = _call(handler, "GET")
+    assert code == 200
+    assert body["enabled"] is False
+
+
+def test_granting_repairs_a_corrupt_record(gw):
+    """The other half: a user who clicks the toggle must be able to get out of
+    the broken state without editing the database."""
+    runner, handler = gw
+    runner.store.set_setting(
+        consent_mod.CONSENT_KEY,
+        '{"install_id": "' + "b" * 32 + '", "granted_at": 1, "schema_version": []}',
+    )
+    assert _call(handler, "PUT", {"enabled": True})[1]["enabled"] is True
+    recorded = consent_mod.read(runner.store)
+    assert recorded is not None and recorded.install_id != "b" * 32

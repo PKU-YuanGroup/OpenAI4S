@@ -987,6 +987,7 @@ Object.assign(I18N.zh, {
   "toast.network.enabled": "联网已启用",
   "toast.telemetry.on": "匿名统计已开启",
   "toast.telemetry.off": "匿名统计已关闭，身份一并删除",
+  "toast.telemetry.failed": "统计开关未能保存，已恢复原状态：{0}",
   "toast.perm.enterTool": "请填写工具名",
   "toast.perm.resetDone": "已恢复默认规则",
   "toast.perm.ruleUpdated": "已更新规则",
@@ -1827,6 +1828,7 @@ Object.assign(I18N.en, {
   "toast.network.enabled": "Network access enabled",
   "toast.telemetry.on": "Anonymous statistics on",
   "toast.telemetry.off": "Anonymous statistics off; the identity was deleted too",
+  "toast.telemetry.failed": "Could not save the statistics setting; restored the previous state: {0}",
   "toast.perm.enterTool": "Please enter a tool name",
   "toast.perm.resetDone": "Default rules restored",
   "toast.perm.ruleUpdated": "Rule updated",
@@ -7124,7 +7126,56 @@ async function telemetryRow(c) {
   row.appendChild(info);
   const tg = el("button", "toggle" + (d.enabled ? " on" : "") + (d.env_locked ? " off" : ""));
   if (d.env_locked) { tg.disabled = true; }
-  else { tg.onclick = async () => { const on = tg.classList.toggle("on"); try { const r = await api("/telemetry/consent", { method: "PUT", body: JSON.stringify({ enabled: on }) }); tg.classList.toggle("on", !!r.enabled); info.lastChild.textContent = r.enabled ? t("cust.telemetry.on") : t("cust.telemetry.off"); hint(r.enabled ? t("toast.telemetry.on") : t("toast.telemetry.off")); } catch {} }; }
+  // A privacy toggle must never end up showing a state the server does not
+  // hold. The old handler flipped optimistically, swallowed failures without
+  // restoring, and stayed clickable while a PUT was in flight — so two rapid
+  // clicks raced and whichever response arrived *last* won, regardless of
+  // which click the user made last.
+  //
+  // Two variables instead of reading the DOM: `desired` is what the user has
+  // asked for, `confirmed` is what the server last told us it holds. Clicks
+  // only move `desired`; one drain loop reconciles the difference, never with
+  // two requests in flight. Extra clicks during a round trip are therefore
+  // coalesced rather than dropped — the last one the user made is the one that
+  // ends up applied — and the button stays live instead of going dead mid-
+  // request.
+  else {
+    let running = false;
+    let desired = !!d.enabled;
+    let confirmed = !!d.enabled;
+    const paint = (on) => {
+      tg.classList.toggle("on", !!on);
+      info.lastChild.textContent = on ? t("cust.telemetry.on") : t("cust.telemetry.off");
+    };
+    const drain = async () => {
+      if (running) return;
+      running = true;
+      try {
+        while (desired !== confirmed) {
+          const want = desired;
+          try {
+            const r = await api("/telemetry/consent", { method: "PUT", body: JSON.stringify({ enabled: want }) });
+            confirmed = !!r.enabled;
+            // The server is authoritative: a grant vetoed by the environment
+            // comes back disabled, and retrying it forever would be a spin.
+            // Only overwrite the ask if the user has not since changed it.
+            if (confirmed !== want && desired === want) desired = confirmed;
+            hint(confirmed ? t("toast.telemetry.on") : t("toast.telemetry.off"));
+          } catch (e) {
+            // The server still holds `confirmed`; abandon the ask rather than
+            // leave the control showing a state that was never applied.
+            desired = confirmed;
+            hint(t("toast.telemetry.failed", (e && e.message) || ""));
+          }
+          // Only repaint once the ask and the truth agree. Painting every
+          // round trip would flash the now-stale server state at a user who
+          // has already clicked again, mid-drain.
+          if (desired === confirmed) paint(confirmed);
+        }
+      } finally { running = false; }
+    };
+    tg.onclick = () => { desired = !desired; paint(desired); drain(); };
+  }
   row.appendChild(tg); c.appendChild(row);
 }
 async function custMemory(c) { try {

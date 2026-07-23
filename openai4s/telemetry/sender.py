@@ -71,7 +71,18 @@ def send(store: Any, payload: SealedPayload) -> bool:
         return False
     if len(payload.body) > MAX_BODY_BYTES:
         return False
-    if not consent_mod.enabled(store):
+    current = consent_mod.read(store)
+    if current is None:
+        return False
+    # Not "is telemetry enabled" but "is *this identity* still the one that was
+    # authorised". The payload was sealed on another thread, at an earlier
+    # moment; a revoke since then destroys the id it was stamped with, and a
+    # re-grant after the revoke mints a different one. Checking only that some
+    # consent exists would send the old id under the new permission — linking
+    # two participation periods that revocation promised were unlinkable, which
+    # is precisely the property the id-inside-the-consent-record design exists
+    # to provide.
+    if not payload.install_id or payload.install_id != current.install_id:
         return False
     target = endpoint()
     if target is None:
