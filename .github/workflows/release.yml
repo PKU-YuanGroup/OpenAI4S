@@ -104,7 +104,10 @@ jobs:
 
   attach:
     name: Attach assets to the GitHub Release
-    if: github.event_name == 'release'
+    # `created` fires for a non-draft release too, and running there would put
+    # us back where we started: assets uploaded to a version people can already
+    # see. Draft-first means the draft is the only entry point.
+    if: github.event_name == 'release' && github.event.release.draft
     needs: [build, macos-app]
     runs-on: ubuntu-latest
     permissions:
@@ -150,7 +153,10 @@ jobs:
 
   publish:
     name: Publish to PyPI with OIDC
-    if: github.event_name == 'release'
+    # Same gate. A version number, once taken on an index, is taken forever, so
+    # this job may only run from the staged path where every check has already
+    # passed.
+    if: github.event_name == 'release' && github.event.release.draft
     # The PyPI upload is the one step in this pipeline that cannot be undone —
     # a version number, once taken, is taken forever, and yanking is a
     # different thing from never having published. So it goes last, behind

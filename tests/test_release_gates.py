@@ -191,7 +191,17 @@ def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
 
     for contract in (
-        "types: [published]",
+        # Draft-first: the workflow runs on `created`, which fires for a draft,
+        # and every job that touches the outside world additionally requires
+        # `github.event.release.draft`. Triggering on `published` — as this
+        # file used to — means the version is visible while its assets are
+        # still uploading, which is the half-published state the proposal
+        # names. The two lines below have to move together: `created` without
+        # the draft condition is worse than `published`, because it fires for
+        # a public release as well.
+        "types: [created]",
+        "github.event.release.draft",
+        "scripts/release_pipeline.py",
         "scripts/verify_release_tag.py",
         "git cat-file -t",
         "git merge-base --is-ancestor HEAD origin/main",
@@ -245,3 +255,21 @@ def test_distribution_manifest_keeps_release_and_runtime_resources():
         "global-exclude *.py[cod]",
     ):
         assert contract in manifest
+
+
+def test_a_public_release_cannot_re_enter_the_pipeline():
+    """The hole `created` opens, closed explicitly.
+
+    `release: [created]` fires for a *non-draft* release too. Without the draft
+    condition on the jobs that go outside, cutting a release directly — no
+    draft — would run the whole pipeline against a version people can already
+    see, which is exactly the half-published state draft-first exists to end.
+    Found by the gate above when the trigger changed, which is what it is for.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    for job in ("attach:", "publish:"):
+        start = workflow.index(job)
+        block = workflow[start : start + 600]
+        assert "github.event.release.draft" in block, (
+            f"the {job.rstrip(':')} job may run on a release that is already " f"public"
+        )
