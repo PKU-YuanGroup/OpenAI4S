@@ -1301,6 +1301,82 @@ def test_reproduce_notes_name_every_runtime_that_produced_an_artifact():
     assert "runtime: r on linux" in notes
 
 
+def test_reproduce_notes_do_not_collapse_two_distinct_environments():
+    """Same runtime, version and platform but different environments — two
+    conda envs, two kernel generations — must stay two bullets, or the file
+    claims one environment and keeps only the larger package count."""
+    from openai4s.server.session_package import _reproduce_notes
+
+    notes = _reproduce_notes(
+        root_frame_id="frame-1",
+        project_name="TwoEnvs",
+        environment={
+            "generations": [],
+            "artifact_environment_snapshots": [
+                {
+                    "kind": "python",
+                    "python_version": "3.12.0",
+                    "platform": "linux",
+                    "environment_name": "phylo",
+                    "generation_id": "gen-a",
+                    "package_count": 40,
+                },
+                {
+                    "kind": "python",
+                    "python_version": "3.12.0",
+                    "platform": "linux",
+                    "environment_name": "struct",
+                    "generation_id": "gen-b",
+                    "package_count": 12,
+                },
+            ],
+        },
+        artifacts={"artifacts": []},
+        lineage_edges=[],
+    ).decode("utf-8")
+
+    assert "(phylo)" in notes and "40 package(s)" in notes
+    assert "(struct)" in notes and "12 package(s)" in notes
+    assert notes.count("- runtime:") == 2, "two distinct environments, two bullets"
+
+
+def test_reproduce_notes_separate_two_r_environments_with_no_python_version():
+    """R environments have an empty Python version, so they collapse even more
+    readily — the generation id is what keeps them apart."""
+    from openai4s.server.session_package import _reproduce_notes
+
+    notes = _reproduce_notes(
+        root_frame_id="frame-1",
+        project_name="TwoR",
+        environment={
+            "generations": [],
+            "artifact_environment_snapshots": [
+                {
+                    "kind": "r",
+                    "python_version": None,
+                    "platform": "linux",
+                    "environment_name": "r-4.3",
+                    "generation_id": "gen-r1",
+                    "package_count": 5,
+                },
+                {
+                    "kind": "r",
+                    "python_version": None,
+                    "platform": "linux",
+                    "environment_name": "r-4.4",
+                    "generation_id": "gen-r2",
+                    "package_count": 9,
+                },
+            ],
+        },
+        artifacts={"artifacts": []},
+        lineage_edges=[],
+    ).decode("utf-8")
+
+    assert notes.count("- runtime:") == 2
+    assert "(r-4.3)" in notes and "(r-4.4)" in notes
+
+
 def test_reproduce_notes_say_so_when_nothing_was_recorded():
     """Silence beats a fabricated default: an export with no environment
     snapshot must not print a runtime it never observed."""

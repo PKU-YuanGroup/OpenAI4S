@@ -150,23 +150,47 @@ def _environment_lines(snapshots: list[Any]) -> list[str]:
     has two, and collapsing them onto one line is how an R artifact came to be
     described by a Python freeze in the first place.
     """
-    seen: dict[tuple[str, str, str], int] = {}
+    # Key on the environment's *identity*, not just its runtime shape. Two
+    # distinct conda environments — or kernel generations — with the same
+    # runtime, Python version and platform used to collapse into one bullet,
+    # and two R environments collapse even more readily because their Python
+    # version is empty. The file then claimed one environment and kept only the
+    # larger package count, despite promising one bullet per distinct
+    # environment.
+    seen: dict[tuple, dict[str, Any]] = {}
     for row in snapshots:
         if not isinstance(row, Mapping):
             continue
         kind = str(row.get("kind") or "unknown")
         version = str(row.get("python_version") or "")
         platform_name = str(row.get("platform") or "unknown")
-        key = (kind, version, platform_name)
+        environment_name = str(row.get("environment_name") or "")
+        generation_id = str(row.get("generation_id") or "")
+        key = (kind, version, platform_name, environment_name, generation_id)
         count = row.get("package_count")
         if not isinstance(count, int):
             packages = row.get("packages")
             count = len(packages) if isinstance(packages, list) else 0
-        seen[key] = max(seen.get(key, 0), count)
+        entry = seen.get(key)
+        if entry is None:
+            seen[key] = {
+                "kind": kind,
+                "version": version,
+                "platform": platform_name,
+                "environment_name": environment_name,
+                "count": count,
+            }
+        else:
+            entry["count"] = max(entry["count"], count)
     lines = []
-    for (kind, version, platform_name), count in sorted(seen.items()):
-        label = f"{kind} {version}".strip()
-        lines.append(f"- runtime: {label} on {platform_name} — {count} package(s)")
+    for _key, entry in sorted(seen.items()):
+        label = f"{entry['kind']} {entry['version']}".strip()
+        if entry["environment_name"]:
+            label += f" ({entry['environment_name']})"
+        lines.append(
+            f"- runtime: {label} on {entry['platform']} — "
+            f"{entry['count']} package(s)"
+        )
     return lines
 
 
