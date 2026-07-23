@@ -204,3 +204,21 @@ def test_an_unrecognised_stop_reason_is_error_not_ok():
     assert turn_outcome("some_new_reason") == "error"
     assert turn_outcome("") == "error"
     assert turn_outcome(None) == "error"
+
+
+def test_a_regrant_mid_session_gets_its_own_session_start(store, captured):
+    """A revoke and regrant mints a new install id — a new participation
+    period. Keying dedup on the frame alone left the new period without a
+    session_start, so its turns had no session in front of them."""
+    consent_mod.grant(store)
+    emit_session_start("frame-x", store=store, surface="web")
+    first_id = captured[0][0]
+
+    consent_mod.revoke(store)
+    consent_mod.grant(store)  # a new install id
+    emit_session_start("frame-x", store=store, surface="web")
+
+    ids = [install for install, _b in captured]
+    assert len(captured) == 2, "the new identity must get its own session_start"
+    assert ids[0] != ids[1], "the two periods are under different identities"
+    assert ids[0] == first_id

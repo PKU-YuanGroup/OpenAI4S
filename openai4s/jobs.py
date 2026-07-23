@@ -338,9 +338,21 @@ class JobManager:
             return {"ok": True, "status": "cancelled"}
 
         stopped, detail = _stop_process_group(proc, pgid)
+        # "already exited" means the process was gone before we signalled — it
+        # finished on its own, not because we stopped it. Any other success
+        # detail ("exited on SIGTERM", "killed") means our signal ended it.
+        finished_on_its_own = detail == "already exited"
         with job._lock:
             if stopped:
-                job.status = "cancelled"
+                if finished_on_its_own and job.status in ("done", "failed"):
+                    # `_run` recorded the real terminal result of a job that
+                    # ended on its own. Reporting `cancelled` over a real exit
+                    # code is a false outcome, so keep what actually happened.
+                    pass
+                else:
+                    # We ended it (or it is not terminal yet), which overrides
+                    # the `failed` `_run` derives from the signal-killed exit.
+                    job.status = "cancelled"
             status = job.status
         if not stopped:
             job.append(f"\n[job] cancel failed: {detail}\n")
@@ -349,7 +361,7 @@ class JobManager:
                 "status": status,
                 "error": f"the job is still running: {detail}",
             }
-        return {"ok": True, "status": "cancelled"}
+        return {"ok": True, "status": status}
 
     def list(self) -> list[dict]:
         with self._lock:

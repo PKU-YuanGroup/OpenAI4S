@@ -32,9 +32,11 @@ _LOCK = threading.Lock()
 _BUFFER: list[dict[str, Any]] = []
 _MAX_BUFFER = 256
 
-#: Session ids seen this process, so `session_start` fires once each. A set,
-#: not persisted: it is a dedup within one run, not a durable fact.
-_SEEN_SESSIONS: set[str] = set()
+#: ``(install_id, root_frame_id)`` pairs seen this process, so `session_start`
+#: fires once per session per identity. Keyed by identity too, so a revoke and
+#: regrant mid-session — a new install id — is a new participation period that
+#: gets its own session_start. A set, not persisted: a dedup within one run.
+_SEEN_SESSIONS: set[tuple[str, str]] = set()
 
 
 def _store_for(store: Any) -> Any | None:
@@ -112,24 +114,31 @@ def turn_outcome(stop_reason: Any) -> str:
 
 
 def emit_session_start(root_frame_id: str, *, store: Any = None, **fields: Any) -> None:
-    """`session_start`, at most once per session per process.
+    """`session_start`, at most once per session **per install identity**.
 
-    The dedup mark is set only *after* consent, because it used to be set
-    first: a session's first turn on the default-off install marked the frame
-    seen, `emit` then dropped the event for lack of consent, and if the user
-    opted in and continued the same session every later call returned early —
-    so that participation period sent `turn_complete` records with no
-    `session_start` in front of them. Checking consent here, before the mark,
-    keeps the once-per-session guarantee tied to an event that actually went.
+    The dedup mark is set only *after* consent, and it is keyed by
+    ``(install_id, root_frame_id)`` rather than the frame alone. Both matter:
+
+    * set-before-consent marked a default-off session seen, `emit` dropped the
+      event, and a later opt-in on the same session sent turns with no
+      session_start in front of them;
+    * keying by frame alone meant a revoke-and-regrant mid-session — which mints
+      a *new* install id — still found the frame marked, so the new
+      participation period also had turns with no session_start. A new identity
+      is a new participation period, and it gets its own session_start.
     """
     try:
         target = _store_for(store)
-        if target is None or consent_mod.read(target) is None:
+        if target is None:
             return
+        consent = consent_mod.read(target)
+        if consent is None:
+            return
+        key = (consent.install_id, root_frame_id)
         with _LOCK:
-            if root_frame_id in _SEEN_SESSIONS:
+            if key in _SEEN_SESSIONS:
                 return
-            _SEEN_SESSIONS.add(root_frame_id)
+            _SEEN_SESSIONS.add(key)
     except Exception:  # noqa: BLE001
         return
     emit("session_start", store=target, **fields)

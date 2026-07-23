@@ -305,3 +305,38 @@ def test_a_normal_job_still_completes_and_captures_output(manager):
     detail = manager.get(job["id"])
     assert detail["exit_code"] == 0
     assert "hello-from-the-job" in detail["output"]
+
+
+def test_cancel_preserves_a_terminal_result_when_the_job_already_finished(
+    manager, tmp_path, monkeypatch
+):
+    """The race review named: a job exits on its own *after* cancel's initial
+    check but *before* `_stop_process_group` returns. `_run` records the real
+    terminal result during that window, and cancel must not overwrite it with
+    `cancelled` — a job that finished was not cancelled."""
+    job = manager.submit("sleep 60", kind="bash")
+    assert _wait_for(lambda: manager._jobs[job["id"]]._proc is not None)
+    j = manager._jobs[job["id"]]
+
+    # Simulate the process finishing on its own during the stop call: `_run`
+    # recorded `failed`, and the stop helper reports the group was already gone.
+    def already_exited(proc, pgid=None):
+        with j._lock:
+            j.status = "failed"  # as _run would, on the natural exit
+        return True, "already exited"
+
+    monkeypatch.setattr("openai4s.jobs._stop_process_group", already_exited)
+
+    out = manager.cancel(job["id"])
+
+    assert (
+        out["status"] == "failed"
+    ), "cancel overwrote the real terminal result with 'cancelled'"
+    assert manager.get(job["id"])["status"] == "failed"
+
+    # Clean up the real sleep the fake stop did not touch.
+    real = j._proc
+    try:
+        os.killpg(os.getpgid(real.pid), signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        pass
