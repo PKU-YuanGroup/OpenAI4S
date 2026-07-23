@@ -19,9 +19,16 @@ alike from a distance:
   depends on is not in it. That is the contract changing under us, and it is the
   thing this whole exercise exists to catch.
 
+There is a third case, and leaving it unnamed is what made the runner crash: the
+API answered 200, every *required* path is still there, and the connector still
+refused the body -- an optional field changed type, a nested shape moved. That
+is neither weather nor a missing field, so it gets its own status,
+**parse_error**, rather than falling through code that assumed a parsed result
+existed.
+
 A run's exit code is 0 when nothing drifted (including when a source was merely
-unreachable), and non-zero only on real drift, so a trend gate can key on it
-without flaking on an upstream outage.
+unreachable), and non-zero on real drift or a parse error, so a trend gate can
+key on it without flaking on an upstream outage.
 """
 from __future__ import annotations
 
@@ -78,13 +85,23 @@ def check_source(
     captured: dict[str, str] = {}
 
     def capturing(url, fmt, timeout, max_chars):
-        body = (real_fetch or default_fetch)(url, fmt, timeout, max_chars)
-        captured["last"] = body
-        return body
+        payload = (real_fetch or default_fetch)(url, fmt, timeout, max_chars)
+        # A fetch may answer with the content alone or with a mapping that also
+        # describes the raw response bytes. Capture the *content*, since that is
+        # what the connector parses and therefore what a drift check must look
+        # at, but hand the whole payload back so the provenance envelope still
+        # gets its raw digest.
+        captured["last"] = (
+            str(payload.get("content") or "")
+            if isinstance(payload, dict)
+            else str(payload or "")
+        )
+        return payload
 
     last_error = ""
     for attempt in range(_RETRIES):
         captured.clear()
+        result: Any = None
         service = ScienceConnectorService(fetch=capturing)
         try:
             result = service.search(
@@ -129,6 +146,18 @@ def check_source(
                 missing_required=drift["required"],
                 missing_expected=drift["expected"],
             )
+        if result is None:
+            # 200, every required path present, and the connector still refused
+            # the body. Reaching here used to read `result`, which the failure
+            # path had never assigned — so the nightly run died with an
+            # UnboundLocalError instead of reporting anything at all. This is a
+            # real finding and it needs a name of its own: the contract the
+            # manifest declares is intact, and something outside it changed.
+            return _outcome(
+                "parse_error",
+                detail=last_error or "the connector rejected a 200 response",
+                missing_expected=drift["expected"],
+            )
         records = len(result.get("results") or []) if isinstance(result, dict) else 0
         return _outcome("ok", records=records, missing_expected=drift["expected"])
 
@@ -139,7 +168,13 @@ def run(ids: tuple[str, ...] = CANARY_IDS, **kwargs: Any) -> dict[str, Any]:
     results = {source: check_source(source, **kwargs) for source in ids}
     drifted = sorted(s for s, r in results.items() if r["status"] == "drift")
     unreachable = sorted(s for s, r in results.items() if r["status"] == "unreachable")
-    return {"results": results, "drifted": drifted, "unreachable": unreachable}
+    parse_errors = sorted(s for s, r in results.items() if r["status"] == "parse_error")
+    return {
+        "results": results,
+        "drifted": drifted,
+        "unreachable": unreachable,
+        "parse_errors": parse_errors,
+    }
 
 
 def main() -> int:
@@ -160,7 +195,7 @@ def main() -> int:
                 line += f"  ({outcome['records']} records)"
                 if outcome.get("missing_expected"):
                     line += f"  degraded: {outcome['missing_expected']}"
-            elif outcome["status"] == "unreachable":
+            elif outcome["status"] in ("unreachable", "parse_error"):
                 line += f"  ({outcome.get('detail', '')})"
             print(line)
         if report["unreachable"]:
@@ -173,10 +208,17 @@ def main() -> int:
                 f"\nDRIFT in {report['drifted']}: a field the connector depends "
                 "on is gone from a 200 response. The parser needs updating."
             )
+        if report["parse_errors"]:
+            print(
+                f"\nPARSE ERROR in {report['parse_errors']}: a 200 response "
+                "carrying every required field that the connector still could "
+                "not read. Something outside the manifest changed shape."
+            )
 
-    # Non-zero only on real drift, so a scheduled trend gate does not flake on an
-    # upstream outage.
-    return 1 if report["drifted"] else 0
+    # Non-zero on a real contract problem — drift, or a 200 the connector could
+    # not read — so a scheduled trend gate does not flake on an upstream outage
+    # but does not stay silent about a break either.
+    return 1 if (report["drifted"] or report["parse_errors"]) else 0
 
 
 if __name__ == "__main__":

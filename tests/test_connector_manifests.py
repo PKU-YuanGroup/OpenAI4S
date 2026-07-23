@@ -179,3 +179,55 @@ def test_a_manifest_reports_a_missing_required_path():
 
     assert manifest.check(healthy)["required"] == []
     assert manifest.check(drifted)["required"] == ["results.[].primaryAccession"]
+
+
+# --------------------------------------------------------------------------
+# a key that survived with a null in it is still a break
+# --------------------------------------------------------------------------
+
+
+def test_a_required_field_emptied_to_null_is_drift():
+    """The regression.
+
+    `resolve` returns `[None]` for a key present with a null value, and a
+    truthy list read as "present" meant the check passed while every adapter
+    dropped every record. It is also the *likelier* shape of a real API change:
+    a renamed field usually leaves the old one in place and empty for a
+    deprecation window, which is precisely when a canary needs to fire.
+    """
+    manifest = MANIFEST_BY_ID["uniprot"]
+    drift = manifest.check({"results": [{"primaryAccession": None}]})
+    assert drift["required"] == ["results.[].primaryAccession"]
+
+
+def test_a_required_field_emptied_to_an_empty_string_is_drift():
+    manifest = MANIFEST_BY_ID["uniprot"]
+    drift = manifest.check({"results": [{"primaryAccession": ""}]})
+    assert drift["required"] == ["results.[].primaryAccession"]
+
+
+def test_one_usable_value_among_nulls_is_still_present():
+    """Partial nulls are normal in real data; the connector still works."""
+    manifest = MANIFEST_BY_ID["uniprot"]
+    drift = manifest.check(
+        {"results": [{"primaryAccession": None}, {"primaryAccession": "P01308"}]}
+    )
+    assert drift["required"] == []
+
+
+def test_a_falsy_but_real_value_is_not_drift():
+    """`0` is a score, not an absence. Treating every falsy value as missing
+    would alarm on correct data, which is how a canary gets muted."""
+    from openai4s.host.connector_manifest import present
+
+    assert present({"result_set": [{"score": 0}]}, ("result_set", EACH, "score"))
+    assert present({"result_set": [{"ok": False}]}, ("result_set", EACH, "ok"))
+
+
+def test_resolve_still_reports_what_the_document_literally_contains():
+    """The accessor is not the judge: `[None]` is a true statement about a
+    document that has the key with a null in it, and other callers may need
+    that distinction."""
+    assert resolve(
+        {"results": [{"primaryAccession": None}]}, ("results", EACH, "primaryAccession")
+    ) == [None]

@@ -158,22 +158,80 @@ def test_a_run_reports_each_source_and_separates_drift_from_outage():
     assert report["unreachable"] == ["pdb"]
 
 
-def test_only_drift_is_a_nonzero_exit(monkeypatch):
+def _report(**kw):
+    base = {"results": {}, "drifted": [], "unreachable": [], "parse_errors": []}
+    base.update(kw)
+    return base
+
+
+def test_only_a_contract_problem_is_a_nonzero_exit(monkeypatch):
     """The property a scheduled trend gate depends on: an upstream outage does
-    not fail the run, only a real contract change does."""
+    not fail the run, only a real contract problem does."""
     # all unreachable -> exit 0
-    monkeypatch.setattr(
-        canary,
-        "run",
-        lambda *a, **k: {"results": {}, "drifted": [], "unreachable": ["uniprot"]},
-    )
+    monkeypatch.setattr(canary, "run", lambda *a, **k: _report(unreachable=["uniprot"]))
     monkeypatch.setattr("sys.argv", ["connector_canary.py"])
     assert canary.main() == 0
 
     # a drift -> exit 1
-    monkeypatch.setattr(
-        canary,
-        "run",
-        lambda *a, **k: {"results": {}, "drifted": ["uniprot"], "unreachable": []},
-    )
+    monkeypatch.setattr(canary, "run", lambda *a, **k: _report(drifted=["uniprot"]))
     assert canary.main() == 1
+
+    # a 200 the connector could not read is also a contract problem, and
+    # staying silent about it would make the canary pointless in exactly the
+    # case that used to crash it.
+    monkeypatch.setattr(canary, "run", lambda *a, **k: _report(parse_errors=["pdb"]))
+    assert canary.main() == 1
+
+
+# --------------------------------------------------------------------------
+# a 200 the connector cannot read is a finding, not a crash
+# --------------------------------------------------------------------------
+
+
+def test_a_parser_failure_on_a_valid_200_is_classified_not_crashed(monkeypatch):
+    """The regression.
+
+    When a 200 carries every required field but some optional field changed
+    type, `service.search()` raises and `result` is never assigned — and the
+    code below the drift check read it anyway. The nightly run died with an
+    UnboundLocalError instead of reporting drift, a parse error, or anything at
+    all.
+    """
+    body = json.dumps(
+        {"results": [{"primaryAccession": "P01308", "sequence": "not-an-object"}]}
+    )
+
+    def fetch(_url, _fmt, _timeout, _max_chars):
+        return body
+
+    def exploding_search(self, *_a, **_k):
+        from openai4s.host.science import ScienceConnectorError
+
+        # Mimic the connector refusing a body it could not normalise, *after*
+        # the fetch has been captured.
+        self._fetch(_a[0] if _a else "https://example.invalid", "json", 5.0, 10)
+        raise ScienceConnectorError("uniprot request failed: TypeError: ...")
+
+    monkeypatch.setattr(
+        "openai4s.host.science.ScienceConnectorService.search",
+        exploding_search,
+        raising=True,
+    )
+    outcome = canary.check_source("uniprot", fetch=fetch, sleep=lambda _s: None)
+
+    assert outcome["status"] == "parse_error"
+    assert "uniprot request failed" in outcome["detail"]
+
+
+def test_a_dict_shaped_fetch_payload_is_still_captured_for_the_drift_check():
+    """The transport may answer with `{content, raw_sha256, raw_bytes}` so the
+    provenance envelope can hash the wire. Capturing that dict as if it were
+    the body would make every check read "upstream body was not JSON"."""
+    body = json.dumps({"results": [{"primaryAccession": "P01308"}]})
+
+    def fetch(_url, _fmt, _timeout, _max_chars):
+        return {"content": body, "raw_sha256": "0" * 64, "raw_bytes": len(body)}
+
+    outcome = canary.check_source("uniprot", fetch=fetch, sleep=lambda _s: None)
+    assert outcome["status"] == "ok"
+    assert outcome["records"] >= 1

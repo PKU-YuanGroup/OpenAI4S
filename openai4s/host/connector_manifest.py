@@ -57,6 +57,32 @@ def resolve(document: Any, path: Path) -> list[Any]:
     return frontier
 
 
+def _usable(value: Any) -> bool:
+    """Whether a resolved value is one a connector parser could actually use.
+
+    ``None`` and ``""`` are not. Every adapter skips a record whose identifier
+    is falsy, so an upstream that keeps the key and starts filling it with null
+    has broken the connector exactly as thoroughly as one that removed the key
+    — and that is the more likely shape of a real API change, because renaming
+    a field usually leaves the old one present and empty for a deprecation
+    window.
+
+    ``0`` and ``False`` are usable: a score of zero is a score.
+    """
+    return value is not None and value != ""
+
+
+def present(document: Any, path: Path) -> bool:
+    """Whether ``path`` resolves to at least one usable value.
+
+    Separate from ``resolve``, which reports what the document literally
+    contains — ``[None]`` for a key present with a null value is a true
+    statement about the document, and the judgement about whether that counts
+    belongs to the check, not the accessor.
+    """
+    return any(_usable(value) for value in resolve(document, path))
+
+
 def _label(path: Path) -> str:
     return ".".join("[]" if step is EACH else str(step) for step in path)
 
@@ -85,13 +111,19 @@ class ConnectorManifest:
         """Which declared paths are missing from an upstream document.
 
         Structural: it reports absence, not correctness. A required path with no
-        values is drift; an expected path with none is degradation.
+        usable values is drift; an expected path with none is degradation.
+
+        "No usable values", not "no values". ``resolve`` returns ``[None]`` for
+        a key that exists with a null value, and a truthy list read as
+        "present" meant the single most likely shape of a real API change — the
+        field kept, emptied, deprecated — passed the check while the connector
+        silently dropped every record.
         """
         missing_required = [
-            _label(p) for p in self.required if not resolve(upstream, p)
+            _label(p) for p in self.required if not present(upstream, p)
         ]
         missing_expected = [
-            _label(p) for p in self.expected if not resolve(upstream, p)
+            _label(p) for p in self.expected if not present(upstream, p)
         ]
         return {"required": missing_required, "expected": missing_expected}
 
@@ -173,5 +205,6 @@ __all__ = [
     "EACH",
     "MANIFESTS",
     "MANIFEST_BY_ID",
+    "present",
     "resolve",
 ]

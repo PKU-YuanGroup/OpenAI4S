@@ -4156,45 +4156,18 @@ class SessionRunner:
         the wrong endpoint; leaving them empty lets LLMConfig.__post_init__
         re-resolve the new provider's defaults.
         """
-        import dataclasses
+        # The resolution itself lives in openai4s.llm.resolve, shared with
+        # `doctor`. It had a second implementation there that read cfg.llm
+        # alone, so an install configured entirely through the UI — the
+        # documented path, since the daemon boots with no key — was diagnosed
+        # `model FAIL` while working perfectly.
+        from openai4s.llm.resolve import resolve_llm_config
 
-        base = self.cfg.llm
-        try:
-            s = {
-                k: self.store.get_setting(k)
-                for k in ("llm_model", "llm_base_url", "llm_provider")
-            }
-            # Through the broker, not get_setting: after migration the row
-            # holds a reference, and handing that to the provider as an API key
-            # would fail auth in a way that looks like a bad key.
-            s["llm_api_key"] = self.store.get_secret_setting("llm_api_key")
-        except Exception:  # noqa: BLE001
-            s = {}
-        model_ov = st.model if (st is not None and st.model) else s.get("llm_model")
-        over: dict = {}
-        api_key = _clean_api_key(s.get("llm_api_key"))
-        if api_key:
-            over["api_key"] = api_key
-        if s.get("llm_base_url"):
-            over["base_url"] = s["llm_base_url"]
-        if model_ov:
-            over["model"] = model_ov
-        prov = s.get("llm_provider")
-        if prov and prov != base.provider:
-            over["provider"] = prov
-            # Re-resolve the new provider's key too unless a real runtime key
-            # setting was supplied; otherwise dataclasses.replace would carry
-            # the previous provider's resolved key into the new provider.
-            over.setdefault("api_key", "")
-            # force re-resolution of the NEW provider's defaults unless explicitly set
-            over.setdefault("base_url", "")
-            over.setdefault("model", "")
-        if not over:
-            return base
-        try:
-            return dataclasses.replace(base, **over)
-        except Exception:  # noqa: BLE001
-            return base
+        return resolve_llm_config(
+            self.cfg.llm,
+            self.store,
+            model_override=(st.model if (st is not None and st.model) else None),
+        )
 
     @staticmethod
     def _friendly_error(exc: Exception) -> str:

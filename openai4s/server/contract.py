@@ -220,9 +220,23 @@ def websocket_outbound(source: str | None = None) -> set[str]:
 
 
 def inventory() -> dict:
+    """The machine-readable surface: every route and event this build exposes.
+
+    ``http_routes`` gets no ``source`` argument so it reads the full route set
+    — gateway.py *plus* the modules route branches were extracted into.
+    Handing it the gateway text alone defeated the very widening
+    ``_route_sources`` exists for: ``http_routes()`` reported 144 routes while
+    ``inventory()["http_routes"]`` reported 132, and the 12 endpoints in
+    kernel_routes.py were absent from the artifact that is supposed to be the
+    contract. A surface missing from the inventory is a surface nothing checks.
+
+    The two websocket scans keep the gateway text on purpose: inbound types are
+    bounded to the socket handler that lives there, and ``websocket_outbound``
+    reads the service modules from disk itself.
+    """
     text = _source()
     return {
-        "http_routes": sorted(http_routes(text)),
+        "http_routes": sorted(http_routes()),
         "ws_inbound": sorted(websocket_inbound(text)),
         "ws_outbound": sorted(websocket_outbound(text)),
     }

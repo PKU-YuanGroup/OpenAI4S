@@ -210,3 +210,41 @@ def test_widening_the_scan_did_not_change_the_surface_it_reports():
     gateway-only scan reported. A widening that also *adds* routes is scanning
     something that is not surface -- a validator pattern, or a test fixture."""
     assert len(http_routes()) == 144
+
+
+# --------------------------------------------------------------------------
+# the inventory is the contract, so it has to see the whole surface
+# --------------------------------------------------------------------------
+
+
+def test_the_inventory_covers_every_route_the_router_can_match():
+    """The regression.
+
+    `_route_sources` was widened to read the modules route branches were
+    extracted into, and `inventory()` then handed `http_routes` the gateway
+    text alone — defeating the widening at the one call site that produces the
+    machine-readable artifact. `http_routes()` reported 144 routes while the
+    inventory reported 132, and the 12 endpoints in kernel_routes.py were
+    absent from the thing that is supposed to *be* the contract.
+    """
+    from openai4s.server.contract import http_routes, inventory
+
+    assert set(inventory()["http_routes"]) == set(http_routes())
+
+
+def test_an_extracted_route_module_is_in_the_inventory():
+    """Named concretely so the next extraction cannot quietly shrink it."""
+    from pathlib import Path
+
+    from openai4s.server.contract import inventory
+
+    module = Path("openai4s/server/kernel_routes.py")
+    if not module.is_file():
+        import pytest
+
+        pytest.skip("kernel_routes.py has been renamed; update this test with it")
+    listed = set(inventory()["http_routes"])
+    # Any exact route string the extracted module owns must be present.
+    text = module.read_text("utf-8")
+    owned = {r for r in listed if f'"{r}"' in text}
+    assert owned, "no route from the extracted module appears in the inventory"

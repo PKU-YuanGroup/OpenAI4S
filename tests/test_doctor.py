@@ -33,6 +33,22 @@ def _by_name(result):
     return {c["name"]: c for c in result["checks"]}
 
 
+def _no_ambient_key(monkeypatch):
+    """Clear the suite's fake keys so a no-credential case is really one.
+
+    conftest exports OPENAI4S_LLM_API_KEY for every test, and LLMConfig
+    re-resolves from the environment on every `dataclasses.replace` — so
+    without this the "no key configured" tests silently have one.
+    """
+    for var in (
+        "OPENAI4S_LLM_API_KEY",
+        "OPENAI4S_DEEPSEEK_API_KEY",
+        "OPENAI4S_CLAUDE_API_KEY",
+        "OPENAI4S_CHATGPT_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 # --------------------------------------------------------------------------
 # it runs at all, without a daemon
 # --------------------------------------------------------------------------
@@ -200,3 +216,189 @@ def test_the_json_form_is_machine_readable(monkeypatch, capsys):
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["status"] == doctor.OK
     assert parsed["checks"][0]["name"] == "model"
+
+
+# --------------------------------------------------------------------------
+# a diagnostic that disagrees with the runtime is worse than none
+# --------------------------------------------------------------------------
+
+
+def test_a_model_configured_only_in_the_ui_is_not_reported_as_missing(cfg, monkeypatch):
+    """The regression.
+
+    The daemon boots with no key — that is the documented path — and the model
+    is configured from Customize → Models, which writes to the store. Reading
+    `cfg.llm` alone therefore diagnosed `model FAIL` on an installation that
+    worked, sending the user to fix something that was not broken.
+    """
+    from openai4s.store import get_store
+
+    _no_ambient_key(monkeypatch)
+    cfg.llm.api_key = ""
+    store = get_store(cfg.db_path)
+    store.set_setting("llm_provider", "claude")
+    store.set_setting("llm_model", "claude-sonnet-5")
+    store.set_secret_setting("llm_api_key", "sk-configured-in-the-ui", scope="llm")
+
+    check = _by_name(doctor.report(cfg))["model"]
+    assert check["status"] == doctor.OK
+    assert check["facts"]["provider"] == "claude"
+    assert check["facts"]["model"] == "claude-sonnet-5"
+    assert "sk-configured-in-the-ui" not in json.dumps(check)
+
+
+def test_a_local_endpoint_needs_no_credential(cfg, monkeypatch):
+    """Ollama, LM Studio, vLLM and llama.cpp authenticate by being unreachable
+    from anywhere else. Demanding a key from them demands a credential that
+    does not exist."""
+    from openai4s.store import get_store
+
+    _no_ambient_key(monkeypatch)
+    cfg.llm.api_key = ""
+    store = get_store(cfg.db_path)
+    store.set_setting("llm_base_url", "http://127.0.0.1:11434/v1")
+
+    check = _by_name(doctor.report(cfg))["model"]
+    assert check["status"] == doctor.OK
+    assert check["facts"]["endpoint_is_loopback"] is True
+    assert check["facts"]["api_key_configured"] is False
+
+
+def test_a_remote_endpoint_without_a_key_still_fails(cfg, monkeypatch):
+    """The loopback exemption must not become a blanket one."""
+    from openai4s.store import get_store
+
+    _no_ambient_key(monkeypatch)
+    cfg.llm.api_key = ""
+    store = get_store(cfg.db_path)
+    store.set_setting("llm_base_url", "https://api.example.com/v1")
+
+    check = _by_name(doctor.report(cfg))["model"]
+    assert check["status"] == doctor.FAIL
+
+
+def test_the_doctor_and_the_runtime_resolve_the_same_model(cfg):
+    """The whole point: two implementations of one question is how they came
+    to disagree. There is now one, and both call it."""
+    from openai4s.llm.resolve import resolve_llm_config
+    from openai4s.store import get_store
+
+    store = get_store(cfg.db_path)
+    store.set_setting("llm_provider", "claude")
+    store.set_setting("llm_model", "claude-opus-4-8")
+
+    resolved = resolve_llm_config(cfg.llm, store)
+    check = _by_name(doctor.report(cfg))["model"]
+    assert check["facts"]["provider"] == resolved.provider
+    assert check["facts"]["model"] == resolved.model
+
+
+def test_r_is_resolved_the_way_the_r_kernel_resolves_it(cfg, monkeypatch):
+    """`shutil.which("Rscript")` reported "R cells will not run" on exactly the
+    installations `openai4s setup` had just built an R environment for: a conda
+    env's bin directory is not on the daemon's PATH."""
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.discover_environments",
+        lambda *a, **k: [
+            types.SimpleNamespace(name="py", rscript=None),
+            types.SimpleNamespace(name="r", rscript="/opt/envs/r/bin/Rscript"),
+        ],
+    )
+    monkeypatch.setattr(doctor.shutil, "which", lambda _name: None)
+
+    check = _by_name(doctor.report(cfg))["runtime"]
+    assert check["status"] == doctor.OK
+    assert check["facts"]["rscript"] is True
+    assert check["facts"]["rscript_path"] == "/opt/envs/r/bin/Rscript"
+
+
+def test_no_r_anywhere_still_warns(cfg, monkeypatch):
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.discover_environments",
+        lambda *a, **k: [types.SimpleNamespace(name="py", rscript=None)],
+    )
+    monkeypatch.setattr("openai4s.kernel.r_kernel.shutil.which", lambda _n: None)
+
+    check = _by_name(doctor.report(cfg))["runtime"]
+    assert check["status"] == doctor.WARN
+    assert "R cells will not run" in check["detail"]
+
+
+def test_a_backend_whose_self_test_fails_is_not_reported_active(cfg, monkeypatch):
+    """The most important thing this command can get wrong before a release.
+
+    `bwrap` installed but unprivileged user namespaces disabled, or a Seatbelt
+    profile the OS rejects, both leave a host where the runtime degrades in
+    `auto` and refuses to start in `enforce` — while this check said "active"
+    and the gate that reads it saw nothing.
+    """
+    from openai4s.security.sandbox import KernelSandbox, SandboxStatus
+
+    def failing_sandbox(_workspace, **_kw):
+        return KernelSandbox(
+            status=SandboxStatus(
+                mode="auto",
+                state="degraded",
+                backend="bwrap",
+                enforced=False,
+                self_test_passed=False,
+                network_policy="not_enforced",
+                workspace=str(_workspace),
+                temp_dir=None,
+                detail="self-test could not create a user namespace",
+                warning="user namespaces are disabled by this kernel",
+            )
+        )
+
+    monkeypatch.setattr(
+        "openai4s.security.sandbox.create_kernel_sandbox", failing_sandbox
+    )
+    check = _by_name(doctor.report(cfg))["isolation"]
+    assert check["status"] == doctor.WARN
+    assert check["facts"]["self_test_passed"] is False
+    assert "self-test failed" in check["detail"]
+    assert "user namespaces" in check["detail"]
+
+
+def test_enforce_with_a_failing_self_test_fails(cfg, monkeypatch):
+    from openai4s.security.sandbox import SandboxUnavailableError
+
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "enforce")
+
+    def refusing(_workspace, **_kw):
+        raise SandboxUnavailableError("self-test failed under enforce")
+
+    monkeypatch.setattr("openai4s.security.sandbox.create_kernel_sandbox", refusing)
+    check = _by_name(doctor.report(cfg))["isolation"]
+    assert check["status"] == doctor.FAIL
+    assert "self-test failed under enforce" in check["detail"]
+
+
+def test_the_real_network_kill_switch_is_what_decides_connector_reach(cfg, monkeypatch):
+    """The global switch is OPENAI4S_ALLOW_NETWORK. OPENAI4S_EGRESS selects
+    whether an *allowlist* is enforced, and its default `off` means fail-open —
+    so reading `off` as "offline" inverted both answers at once."""
+    monkeypatch.setenv("OPENAI4S_ALLOW_NETWORK", "0")
+    check = _by_name(doctor.report(cfg))["connectors"]
+    assert check["status"] == doctor.WARN
+    assert check["facts"]["network_allowed"] is False
+    assert "OPENAI4S_ALLOW_NETWORK" in check["detail"]
+
+
+def test_the_default_egress_mode_is_not_reported_as_offline(cfg, monkeypatch):
+    """`OPENAI4S_EGRESS=off` is the default and means the allowlist is not
+    enforced — everything is reachable."""
+    monkeypatch.setenv("OPENAI4S_EGRESS", "off")
+    monkeypatch.delenv("OPENAI4S_ALLOW_NETWORK", raising=False)
+    check = _by_name(doctor.report(cfg))["connectors"]
+    assert check["status"] == doctor.OK
+    assert check["facts"]["egress_mode"] == "off"
+    assert check["facts"]["network_allowed"] is True
+
+
+def test_an_enforced_allowlist_is_reported_as_such(cfg, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_EGRESS", "allowlist")
+    monkeypatch.delenv("OPENAI4S_ALLOW_NETWORK", raising=False)
+    check = _by_name(doctor.report(cfg))["connectors"]
+    assert check["status"] == doctor.OK
+    assert "allowlist enforced" in check["detail"]

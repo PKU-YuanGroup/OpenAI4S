@@ -56,9 +56,33 @@ class Check:
         }
 
 
+def _store_for(cfg: Any) -> Any:
+    """The store, or None when it cannot be opened.
+
+    Several checks need to see what the UI configured, and none of them may
+    fail because the database is missing — a fresh install is exactly when this
+    command gets run.
+    """
+    try:
+        from openai4s.store import get_store
+
+        return get_store(cfg.db_path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _model(cfg: Any) -> Check:
-    """Can we reach a model at all? Configuration only — no network call."""
-    llm = cfg.llm
+    """Can we reach a model at all? Configuration only — no network call.
+
+    Resolved the way a real turn resolves it: process config **plus** the
+    Customize → Models settings held in the store. Reading `cfg.llm` alone
+    diagnosed the documented setup path as broken — the daemon boots with no
+    key and the model is configured from the UI — so an install that worked
+    was told its model check had failed.
+    """
+    from openai4s.llm.resolve import is_loopback_endpoint, resolve_llm_config
+
+    llm = resolve_llm_config(cfg.llm, _store_for(cfg))
     try:
         from openai4s.llm.registry import provider_spec
 
@@ -72,8 +96,16 @@ def _model(cfg: Any) -> Check:
             "one in the UI under Customize -> Models.",
         )
     model = llm.model or spec.get("model")
+    base_url = getattr(llm, "base_url", "") or ""
+    keyless = is_loopback_endpoint(base_url)
+    facts = {
+        "provider": llm.provider,
+        "model": model,
+        "api_key_configured": bool(llm.api_key),
+        "endpoint_is_loopback": keyless,
+    }
     # The value is never reported, only whether one resolved.
-    if not llm.api_key:
+    if not llm.api_key and not keyless:
         return Check(
             "model",
             FAIL,
@@ -82,13 +114,24 @@ def _model(cfg: Any) -> Check:
             f"Set OPENAI4S_{llm.provider.upper()}_API_KEY (or the generic "
             f"OPENAI4S_LLM_API_KEY), or add it in the UI under "
             f"Customize -> Models.",
-            {"provider": llm.provider, "model": model, "api_key_configured": False},
+            facts,
+        )
+    if keyless and not llm.api_key:
+        # Ollama, LM Studio, vLLM and llama.cpp authenticate by being
+        # unreachable from anywhere else. Demanding a key from them is
+        # demanding a credential that does not exist.
+        return Check(
+            "model",
+            OK,
+            f"provider {llm.provider!r}, model {model!r}, local endpoint "
+            f"{base_url} (no credential required)",
+            facts=facts,
         )
     return Check(
         "model",
         OK,
         f"provider {llm.provider!r}, model {model!r}, credential configured",
-        facts={"provider": llm.provider, "model": model, "api_key_configured": True},
+        facts=facts,
     )
 
 
@@ -106,8 +149,22 @@ def _runtime(cfg: Any) -> Check:
         facts["environments_error"] = str(e)
         envs = []
 
-    r_path = shutil.which("Rscript")
+    # The resolver the R kernel itself uses: the selected env's own Rscript, an
+    # env literally named `r`, any env carrying one, then PATH. `which` alone
+    # reported "R cells will not run" on the very installations `openai4s setup`
+    # had just built an R environment for, because a conda env's bin directory
+    # is not on the daemon's PATH — and it could not name which interpreter
+    # would actually be chosen.
+    try:
+        from openai4s.kernel.r_kernel import resolve_r_interpreter
+
+        r_path = resolve_r_interpreter()
+    except Exception as e:  # noqa: BLE001 - resolution failing is the finding
+        facts["rscript_error"] = str(e)
+        r_path = None
     facts["rscript"] = bool(r_path)
+    if r_path:
+        facts["rscript_path"] = str(r_path)
     if not envs:
         return Check(
             "runtime",
@@ -123,11 +180,11 @@ def _runtime(cfg: Any) -> Check:
         return Check(
             "runtime",
             WARN,
-            f"{detail}, but Rscript is not on PATH — R cells will not run",
+            f"{detail}, but no Rscript could be resolved — R cells will not run",
             "Run `openai4s setup --only r` if you need the R channel.",
             facts,
         )
-    return Check("runtime", OK, f"{detail}, Rscript present", facts=facts)
+    return Check("runtime", OK, f"{detail}, Rscript at {r_path}", facts=facts)
 
 
 def _isolation(cfg: Any) -> Check:
@@ -144,21 +201,47 @@ def _isolation(cfg: Any) -> Check:
             "sandbox itself.",
             facts,
         )
+    # The binary being installed is not the boundary. `bwrap` present but
+    # unprivileged user namespaces disabled by the kernel, or a Seatbelt
+    # profile the OS rejects, both leave a host where the *runtime* degrades in
+    # `auto` and refuses to start in `enforce` — while this check said "active"
+    # and the release gate it feeds saw nothing. So build the real thing: it
+    # runs the same self-test the kernel runs, in a temp workspace it removes
+    # afterwards. A bounded, self-cleaning side effect is the price of an
+    # answer that means something.
+    sandbox = None
     try:
-        import platform as _platform
+        import tempfile
 
-        from openai4s.security.sandbox import _detect_backend
+        from openai4s.security.sandbox import create_kernel_sandbox
 
-        # Detection only. Constructing a real sandbox would allocate a private
-        # temp directory and run the self-test, which is a side effect a
-        # diagnostic has no business causing.
-        backend, _executable, reason = _detect_backend(
-            platform_name=_platform.system().lower(), which=shutil.which
-        )
-        facts["available"] = backend is not None
-        facts["backend"] = backend
-        reason = reason or ""
-    except Exception as e:  # noqa: BLE001
+        with tempfile.TemporaryDirectory(prefix="openai4s-doctor-sandbox-") as probe:
+            sandbox = create_kernel_sandbox(probe, mode=mode)
+            status = sandbox.status
+            facts.update(
+                {
+                    "backend": status.backend,
+                    "available": status.backend is not None,
+                    "enforced": status.enforced,
+                    "self_test_passed": status.self_test_passed,
+                    "state": status.state,
+                    "network_policy": status.network_policy,
+                }
+            )
+            reason = status.detail or ""
+            warning = status.warning or ""
+    except Exception as e:  # noqa: BLE001 - in `enforce` this is the refusal
+        facts.setdefault("available", False)
+        if mode == "enforce":
+            return Check(
+                "isolation",
+                FAIL,
+                f"OPENAI4S_KERNEL_SANDBOX=enforce and the boundary could not be "
+                f"established: {e}",
+                "Install bubblewrap (Linux) or run on macOS with Seatbelt "
+                "available; enforce deliberately refuses to run unconfined.",
+                facts,
+            )
         return Check(
             "isolation",
             WARN,
@@ -167,21 +250,42 @@ def _isolation(cfg: Any) -> Check:
             "rather than a degradation.",
             facts,
         )
-    if facts["available"]:
+    finally:
+        if sandbox is not None:
+            try:
+                sandbox.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if facts.get("enforced"):
         return Check(
             "isolation",
             OK,
-            f"kernel sandbox active via {facts['backend']} (mode {mode})",
+            f"kernel sandbox active via {facts['backend']} (mode {mode}); "
+            f"self-test passed",
             facts=facts,
         )
     if mode == "enforce":
         return Check(
             "isolation",
             FAIL,
-            f"OPENAI4S_KERNEL_SANDBOX=enforce but no backend is usable: "
+            f"OPENAI4S_KERNEL_SANDBOX=enforce but the boundary does not hold: "
             f"{reason or 'unavailable'}",
             "Install bubblewrap (Linux) or run on macOS with Seatbelt "
             "available; enforce deliberately refuses to run unconfined.",
+            facts,
+        )
+    # Present-but-not-holding is the case worth separating: it is the one a
+    # user is most likely to have assumed was fine.
+    if facts.get("available") and facts.get("self_test_passed") is False:
+        return Check(
+            "isolation",
+            WARN,
+            f"{facts['backend']} is installed but its self-test failed, so "
+            f"cells run unconfined: {warning or reason or 'unavailable'}",
+            "Fix the backend (on Linux, unprivileged user namespaces are the "
+            "usual cause) — OPENAI4S_KERNEL_SANDBOX=enforce refuses instead of "
+            "degrading.",
             facts,
         )
     return Check(
@@ -236,32 +340,36 @@ def _connectors(cfg: Any) -> Check:
     except Exception as e:  # noqa: BLE001
         facts["connector_store_error"] = str(e)
 
-    offline = (os.environ.get("OPENAI4S_EGRESS") or "").strip().lower() in {
-        "off",
-        "deny",
-        "block",
-    }
-    facts["egress_blocked"] = offline
-    if offline:
+    # The global kill switch is OPENAI4S_ALLOW_NETWORK; OPENAI4S_EGRESS selects
+    # whether an *allowlist* is enforced, and its default — `off` — means
+    # fail-open, i.e. everything is reachable. Reading `off` as "offline"
+    # inverted both answers at once: a genuinely network-disabled install was
+    # reported as able to reach seven databases, and the default configuration
+    # was reported as unable to reach any.
+    from openai4s import egress, webtools
+
+    network = webtools.network_allowed()
+    mode = egress.egress_mode()
+    facts["network_allowed"] = network
+    facts["egress_mode"] = mode
+    if not network:
         return Check(
             "connectors",
             WARN,
             f"{len(facts['science_databases'])} science databases are built in, "
-            f"but application egress is blocked, so none can be reached",
-            "Unset OPENAI4S_EGRESS to allow the allowlisted public APIs.",
+            f"but networking is disabled (OPENAI4S_ALLOW_NETWORK=0), so none "
+            f"can be reached",
+            "Enable it in Customize -> Network, or set " "OPENAI4S_ALLOW_NETWORK=1.",
             facts,
         )
-    return Check(
-        "connectors",
-        OK,
-        f"{len(facts['science_databases'])} science databases built in"
-        + (
-            f", {facts['configured_connectors']} connector(s) configured"
-            if "configured_connectors" in facts
-            else ""
-        ),
-        facts=facts,
-    )
+    detail = f"{len(facts['science_databases'])} science databases built in"
+    if "configured_connectors" in facts:
+        detail += f", {facts['configured_connectors']} connector(s) configured"
+    if mode == "allowlist":
+        granted = sorted(egress.granted_domains())
+        facts["egress_allowlist_size"] = len(granted)
+        detail += f"; egress allowlist enforced ({len(granted)} domain(s))"
+    return Check("connectors", OK, detail, facts=facts)
 
 
 def _remote(cfg: Any) -> Check:
