@@ -72,6 +72,9 @@ def _signed_dmg(assets: Path, name: str = "OpenAI4S-0.2.0-arm64.dmg") -> Path:
                 ],
                 "adhoc": False,
                 "developer_id": True,
+                # A real receipt records the deep verification result, and the
+                # gate requires it to have succeeded.
+                "verify_returncode": 0,
             }
         ),
         encoding="utf-8",
@@ -638,3 +641,80 @@ def test_the_finalize_step_can_be_re_run_alone_after_a_failed_flip(assets):
     assert [call[1] for call in calls] == [
         "edit"
     ], "re-running the flip must not rebuild, re-upload or re-verify anything"
+
+
+# --------------------------------------------------------------------------
+# a signature that does not verify is not a signature; a version is exact
+# --------------------------------------------------------------------------
+
+
+def test_a_receipt_whose_deep_verification_failed_is_not_developer_id(tmp_path):
+    """describe_macos_image records both the authorities and whether
+    `codesign --verify` succeeded. A Developer ID authority string with a
+    failed deep verification is a broken signature, not a valid one."""
+    from scripts.release_pipeline import SIGNATURE_RECEIPT_SUFFIX, read_signature
+
+    dmg = tmp_path / "x.dmg"
+    dmg.write_bytes(b"img")
+    dmg.with_name(dmg.name + SIGNATURE_RECEIPT_SUFFIX).write_text(
+        json.dumps(
+            {
+                "authorities": ["Developer ID Application: Example Inc"],
+                "adhoc": False,
+                "verify_returncode": 1,  # the deep verification FAILED
+            }
+        ),
+        encoding="utf-8",
+    )
+    info = read_signature(dmg, lambda argv: _completed())
+    assert info["developer_id"] is False, (
+        "a Developer ID authority with a failed deep verification must not "
+        "count as signed"
+    )
+
+
+def test_release_mode_rejects_an_image_whose_signature_does_not_verify(assets):
+    dmg = assets / "OpenAI4S-0.2.0-arm64.dmg"
+    dmg.write_bytes(b"dmg")
+    from scripts.release_pipeline import SIGNATURE_RECEIPT_SUFFIX
+
+    dmg.with_name(dmg.name + SIGNATURE_RECEIPT_SUFFIX).write_text(
+        json.dumps(
+            {
+                "authorities": ["Developer ID Application: Example Inc"],
+                "adhoc": False,
+                "verify_returncode": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = _pipeline(assets, mode="release").run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+
+
+@pytest.mark.parametrize(
+    "filename,version,matches",
+    [
+        ("openai4s-0.2.0-py3-none-any.whl", "0.2.0", True),
+        ("openai4s-0.2.0.tar.gz", "0.2.0", True),
+        ("OpenAI4S-0.2.0-arm64.dmg", "0.2.0", True),
+        ("openai4s-0.2.0rc1-py3-none-any.whl", "0.2.0", False),
+        ("openai4s-10.2.0-py3-none-any.whl", "0.2.0", False),
+        ("openai4s-0.2.0.post1.tar.gz", "0.2.0", False),
+    ],
+)
+def test_the_version_is_matched_exactly_not_as_a_substring(filename, version, matches):
+    from scripts.release_pipeline import _asset_version
+
+    assert (_asset_version(filename) == version) is matches
+
+
+def test_a_prerelease_leftover_does_not_stage_for_the_final_tag(assets):
+    """The substring guard let `0.2.0rc1` satisfy a `0.2.0` release on the
+    staging path, where it is the only version check."""
+    (assets / "openai4s-0.2.0rc1-py3-none-any.whl").write_bytes(b"prerelease")
+    report = _pipeline(assets, from_artifacts=True).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "assets"
+    assert "another version" in report["steps"][-1]["detail"]

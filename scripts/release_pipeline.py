@@ -156,6 +156,27 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _asset_version(filename: str) -> str | None:
+    """The exact version encoded in a distribution filename, or None.
+
+    Wheels are ``<name>-<version>-<pytag>-...whl`` and sdists
+    ``<name>-<version>.tar.gz``; the DMG and zip use ``<Name>-<version>-...``.
+    A substring test (`"0.2.0" in name`) matched `0.2.0rc1` and `10.2.0`, so
+    the version is taken as the field after the first ``<name>-`` and compared
+    whole.
+    """
+    stem = filename
+    for suffix in (".tar.gz", ".whl", ".dmg", ".zip"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    parts = stem.split("-")
+    if len(parts) < 2:
+        return None
+    # The version is the second dash-separated field (after the project name).
+    return parts[1] or None
+
+
 # --------------------------------------------------------------------------
 # what is actually in the release
 # --------------------------------------------------------------------------
@@ -385,12 +406,20 @@ def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, An
         except (OSError, ValueError) as e:
             return {"source": "receipt", "error": f"unreadable receipt: {e}"}
         authorities = [str(a) for a in (payload.get("authorities") or [])]
+        # A Developer ID *authority string* is not a valid signature: the
+        # receipt also records whether `codesign --verify --deep --strict`
+        # succeeded, and a nonzero result means the signature does not verify
+        # (tampered, broken, or revoked). Requiring a successful verification
+        # stops release mode from accepting an image whose deep check failed.
+        verify_rc = payload.get("verify_returncode")
+        names_developer_id = any(
+            DEVELOPER_ID_AUTHORITY in authority for authority in authorities
+        )
         return {
             "source": "receipt",
             "authorities": authorities,
-            "developer_id": any(
-                DEVELOPER_ID_AUTHORITY in authority for authority in authorities
-            ),
+            "developer_id": names_developer_id and verify_rc == 0,
+            "verify_returncode": verify_rc,
             "adhoc": bool(payload.get("adhoc")),
         }
     if not shutil.which("codesign"):
@@ -408,12 +437,19 @@ def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, An
         for line in text.splitlines()
         if line.startswith("Authority=")
     ]
+    # `--display` only reads the signature; it does not check that it verifies.
+    # Run the strict deep verification separately, and only treat the image as
+    # Developer-ID-signed when it both names that authority and verifies.
+    verified = runner(["codesign", "--verify", "--deep", "--strict", str(dmg)])
+    verify_rc = getattr(verified, "returncode", None)
+    names_developer_id = any(
+        DEVELOPER_ID_AUTHORITY in authority for authority in authorities
+    )
     return {
         "source": "codesign",
         "authorities": authorities,
-        "developer_id": any(
-            DEVELOPER_ID_AUTHORITY in authority for authority in authorities
-        ),
+        "developer_id": names_developer_id and verify_rc == 0,
+        "verify_returncode": verify_rc,
         "adhoc": "Signature=adhoc" in text,
         "returncode": getattr(completed, "returncode", None),
     }
@@ -541,13 +577,14 @@ class Pipeline:
             for path in self.assets_dir.glob("*")
             if path.is_file() and path.suffix in DISTRIBUTION_SUFFIXES
         )
-        # A distribution whose filename does not carry this version is a
+        # A distribution whose version is not exactly this release's is a
         # leftover from another build — belt to the `step_build` clear's
         # braces, and the only guard on the staging path, where build does not
-        # run and the directory is populated by an earlier job. Publishing a
-        # stale version under this release is exactly the mismatch the whole
-        # pipeline exists to prevent.
-        self.assets = [p for p in candidates if self.version in p.name]
+        # run and the directory is populated by an earlier job. A *substring*
+        # test let `0.2.0` match `0.2.0rc1` and `10.2.0`, so a stale prerelease
+        # or a wrong wheel could be staged for the final tag; the version is
+        # parsed out of the filename and compared exactly instead.
+        self.assets = [p for p in candidates if _asset_version(p.name) == self.version]
         wrong_version = [p.name for p in candidates if p not in self.assets]
         if wrong_version:
             raise ReleaseError(
