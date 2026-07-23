@@ -49,4 +49,22 @@ class GatewayError(Exception):
         self.error_code = error_code
 
 
-__all__ = ["ERROR_CODES", "GatewayError", "error_code_for"]
+def gateway_error_payload(error: GatewayError) -> dict:
+    """The response body a raised GatewayError becomes.
+
+    Shared with the contract capture, which has to reproduce the dispatcher's
+    conversion exactly: a second copy of this two-line shape is how a captured
+    error contract comes to describe a body the server does not send.
+    """
+    payload = {"error": error.message}
+    if error.error_code:
+        payload["code"] = error.error_code
+    return payload
+
+
+__all__ = [
+    "ERROR_CODES",
+    "GatewayError",
+    "error_code_for",
+    "gateway_error_payload",
+]

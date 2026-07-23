@@ -146,6 +146,10 @@ class Recorder:
 
     def __init__(self) -> None:
         self.shapes: dict[str, dict[str, Any]] = {}
+        #: Non-JSON answers, keyed by route: what kind of thing came back, with
+        #: which statuses and content types. A stream and an unexercised route
+        #: are not the same fact and must not look alike.
+        self.kinds: dict[str, dict[str, set]] = {}
         self.counts: dict[str, int] = {}
         self.unmatched: set[str] = set()
         #: Set while a test drives routes against stubbed services. Their
@@ -155,13 +159,26 @@ class Recorder:
         self.paused = False
         self._patterns = _patterns()
 
-    def observe(self, method: str, path: str, code: int, body: Any) -> None:
+    def observe(
+        self,
+        method: str,
+        path: str,
+        code: int,
+        body: Any,
+        route: str | None = None,
+    ) -> None:
         if self.paused:
             return
         if not isinstance(body, dict) and not isinstance(body, list):
             # Only JSON documents have a shape worth freezing.
             return
-        route = route_for(path, self._patterns)
+        # A driver that knows which route it is probing says so. Re-deriving it
+        # from the path cannot distinguish two inventory entries that match the
+        # same concrete path -- `/frames/([^/]+)/shares` and
+        # `/frames/[^/]+/shares` are both real entries, and only one of them
+        # can ever win a lookup, so the other would be permanently unattributed
+        # and counted as uncovered forever.
+        route = route or route_for(path, self._patterns)
         if route is None:
             self.unmatched.add(f"{method} {path}")
             return
@@ -174,6 +191,70 @@ class Recorder:
         existing = self.shapes.get(key)
         self.shapes[key] = observed if existing is None else merge(existing, observed)
         self.counts[key] = self.counts.get(key, 0) + 1
+        # A JSON body is also a *kind* of answer, with a status. Recording the
+        # shape without the status left the contract entry for a JSON-only
+        # route claiming no status code at all.
+        self._note(method, route, int(code), JSON, "application/json")
+
+    def observe_raw(
+        self,
+        method: str,
+        path: str,
+        code: int,
+        content_type: str,
+        length: int,
+        route: str | None = None,
+    ) -> None:
+        """Record a response that is not a JSON document.
+
+        A route that streams, redirects, or hands back bytes still has a
+        contract — it is just not a schema. Recording only ``_json`` meant those
+        routes were indistinguishable from routes nothing exercised, so the
+        coverage number could never reach the surface it was measuring.
+        """
+        if self.paused:
+            return
+        route = route or route_for(path, self._patterns)
+        if route is None:
+            self.unmatched.add(f"{method} {path}")
+            return
+        self._note(
+            method,
+            route,
+            int(code),
+            _kind_of(code, content_type, length),
+            str(content_type or "").split(";")[0].strip(),
+        )
+
+    def _note(
+        self, method: str, route: str, code: int, kind: str, content_type: str
+    ) -> None:
+        record = self.kinds.setdefault(
+            f"{method} {route}",
+            {"kinds": set(), "statuses": set(), "content_types": set()},
+        )
+        record["kinds"].add(kind)
+        record["statuses"].add(int(code))
+        if content_type:
+            record["content_types"].add(content_type)
+
+    def contracts(self) -> dict[str, dict[str, Any]]:
+        """One contract record per route, whichever way it answers."""
+        merged: dict[str, dict[str, Any]] = {}
+        for key, record in self.kinds.items():
+            target = merged.setdefault(
+                key, {"kinds": set(), "statuses": set(), "content_types": set()}
+            )
+            for field in ("kinds", "statuses", "content_types"):
+                target[field] |= record[field]
+        return {
+            key: {
+                "kinds": sorted(value["kinds"]),
+                "statuses": sorted(value["statuses"]),
+                "content_types": sorted(value["content_types"]),
+            }
+            for key, value in sorted(merged.items())
+        }
 
     def document(self) -> dict[str, Any]:
         return {
@@ -193,6 +274,34 @@ class Recorder:
                 for key in sorted(self.shapes)
             },
         }
+
+
+#: Response kinds. Every route answers with exactly one of these, and a route
+#: that answers with none of them is one nothing has exercised.
+JSON = "json"
+STREAM = "stream"
+REDIRECT = "redirect"
+EMPTY = "empty"
+BINARY = "binary"
+
+
+def _kind_of(code: int, content_type: str, length: int) -> str:
+    """Classify by what actually came back, never by what a route is named.
+
+    Derived rather than declared: a hand-maintained list of "these routes
+    stream" drifts the moment a route changes, and drifts silently, which is
+    the failure this whole artifact exists to avoid.
+    """
+    if 300 <= int(code) < 400:
+        return REDIRECT
+    ctype = str(content_type or "").split(";")[0].strip().lower()
+    if ctype == "text/event-stream":
+        return STREAM
+    if ctype == "application/json":
+        return JSON
+    if int(length) == 0:
+        return EMPTY
+    return BINARY
 
 
 def install(gateway_module, recorder: Recorder):
@@ -221,7 +330,18 @@ def install(gateway_module, recorder: Recorder):
                     pass
                 return reply(value, code)
 
+            raw = self._send
+            had_own_send = "_send" in self.__dict__
+
+            def observing_send(code, body, ctype, extra=None):
+                try:
+                    recorder.observe_raw(method, sub, code, ctype, len(body or b""))
+                except Exception:  # noqa: BLE001 - never break a response
+                    pass
+                return raw(code, body, ctype, extra)
+
             self._json = observing
+            self._send = observing_send
             try:
                 return inner_api(self, method, sub)
             finally:
@@ -229,12 +349,93 @@ def install(gateway_module, recorder: Recorder):
                     self._json = reply
                 else:
                     self.__dict__.pop("_json", None)
+                if had_own_send:
+                    self._send = raw
+                else:
+                    self.__dict__.pop("_send", None)
 
         handler_class._api = _api
         return handler_class
 
     gateway_module.make_handler = make_handler
     return original
+
+
+#: The verbs every route is probed with. A route that implements only GET
+#: answers the rest with a 404/405, which is that pair's contract.
+PROBE_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+
+def concrete_path(route: str) -> str:
+    """A concrete path the route pattern matches.
+
+    Placeholders are filled with an id shaped like the ones the app mints, so a
+    handler parses the segment and then fails on the *lookup* — a 404 for a
+    missing resource is a contract, a 500 from an unparseable id is not.
+    """
+    path = re.sub(r"\(\?:/\.\*\)\?", "", route)
+    path = re.sub(r"\(\?:[^)]*\)\??", "", path)
+    path = path.replace("([^/]+)", "probe-id")
+    path = path.replace("(.+)", "probe-id")
+    path = path.replace("([0-9]+)", "1")
+    path = re.sub(r"\([^)]*\)", "probe-id", path)
+    return path or "/"
+
+
+def drive_all_routes(recorder: "Recorder", make_handler, config, runner) -> None:
+    """Ask every known route for an answer, against a real handler.
+
+    One implementation, shared by the two capture scripts and the coverage
+    test, because three copies of "how to drive the surface" is three chances
+    for the published contract to describe something nothing drives.
+
+    Observations are attributed to the route being probed rather than derived
+    from the path: two inventory entries can match the same concrete path
+    (``/frames/([^/]+)/shares`` and ``/frames/[^/]+/shares`` are both real), and
+    only one can ever win a lookup — the other would be permanently
+    unattributed and counted as uncovered forever.
+    """
+    from openai4s.server.errors import GatewayError, gateway_error_payload
+
+    # The handler factory is passed in, exactly as `install` takes the gateway
+    # module: this file must not import the gateway, because the gateway
+    # imports this file's siblings and the declared facade boundary is what
+    # keeps that from becoming a cycle.
+    handler_class = make_handler(config, runner.hub, runner)
+    for route in sorted(contract.http_routes()):
+        path = concrete_path(route)
+        for method in PROBE_METHODS:
+            handler = object.__new__(handler_class)
+            handler._query = lambda: {}
+            handler._body = lambda: {}
+            handler.headers = {}
+            handler._correlation_id = ""
+            handler._last_status = 0
+            handler._json = (
+                lambda value, code=200, _m=method, _p=path, _r=route: recorder.observe(
+                    _m, _p, code, value, route=_r
+                )
+            )
+            handler._send = (
+                lambda code, body, ctype, extra=None, _m=method, _p=path, _r=route: (
+                    recorder.observe_raw(
+                        _m, _p, code, ctype, len(body or b""), route=_r
+                    )
+                )
+            )
+            try:
+                handler._api(method, path)
+            except GatewayError as error:
+                # What the dispatcher does with a raised GatewayError, recorded
+                # here rather than through the handler: the capture wrapper
+                # restores `_json` in its `finally`, so by this line the
+                # observing collector is already gone.
+                recorder.observe(
+                    method, path, error.code, gateway_error_payload(error), route=route
+                )
+            except Exception:  # noqa: BLE001 - a route that cannot answer has
+                # no contract to record; the coverage gate is what reports it.
+                continue
 
 
 def load(path: Path | None = None) -> dict[str, Any]:

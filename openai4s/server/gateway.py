@@ -82,7 +82,12 @@ from openai4s.server.artifacts import (
 )
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.server.completions import completion_message, response_language
-from openai4s.server.errors import ERROR_CODES, GatewayError, error_code_for
+from openai4s.server.errors import (
+    ERROR_CODES,
+    GatewayError,
+    error_code_for,
+    gateway_error_payload,
+)
 from openai4s.server.execution_coordinator import (
     ExecutionCancelled,
     WebExecutionCoordinator,
@@ -6357,10 +6362,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json({"error": "not found"}, 404)
             except GatewayError as ge:
                 try:
-                    payload = {"error": ge.message}
-                    if ge.error_code:
-                        payload["code"] = ge.error_code
-                    self._json(payload, ge.code)
+                    self._json(gateway_error_payload(ge), ge.code)
                 except (BrokenPipeError, ConnectionResetError):
                     self.close_connection = True
             except (BrokenPipeError, ConnectionResetError):

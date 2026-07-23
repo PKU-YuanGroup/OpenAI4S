@@ -162,6 +162,12 @@ jobs:
       - name: Check the frozen response shapes still match reality
         if: matrix.python-version == '3.12'
         run: uv run python scripts/capture_response_schemas.py --check
+      # The companion gate: every route the router can match must have a
+      # recorded response *kind* and status, not only the ones that return
+      # JSON. Cheap — it drives the surface directly rather than rerunning the
+      # suite — so it is not restricted to one matrix entry.
+      - name: Check every route still has a response contract
+        run: uv run python scripts/capture_response_contract.py --check
 
   browser-smoke:
     name: Browser workbench E2E (Chromium)
