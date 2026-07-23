@@ -26,9 +26,14 @@ is neither weather nor a missing field, so it gets its own status,
 **parse_error**, rather than falling through code that assumed a parsed result
 existed.
 
+There is a fourth: the API answered with a **permanent** client error — a 404
+or 410 for a removed route, a 401/403 for an auth or contract change. That is
+the contract breaking, not the weather, so it is `http_error` and fails the
+run rather than being retried into `unreachable`. 408 and 429 stay transient.
+
 A run's exit code is 0 when nothing drifted (including when a source was merely
-unreachable), and non-zero on real drift or a parse error, so a trend gate can
-key on it without flaking on an upstream outage.
+unreachable), and non-zero on real drift, a parse error, or a permanent client
+error, so a trend gate can key on it without flaking on an upstream outage.
 """
 from __future__ import annotations
 
@@ -53,6 +58,38 @@ _BACKOFF_S = 2.0
 
 def _outcome(status: str, **extra: Any) -> dict[str, Any]:
     return {"status": status, **extra}
+
+
+#: Client-error statuses that are the *contract* breaking rather than the API's
+#: weather. 408 (timeout) and 429 (rate limit) are deliberately excluded —
+#: those are transient and belong on the retry path.
+_PERMANENT_CLIENT_ERRORS = frozenset({400, 401, 403, 404, 405, 406, 410, 422})
+
+
+def _permanent_http_status(exc: BaseException) -> int | None:
+    """The HTTP status of a permanent client error, or None.
+
+    An upstream route removal reaches here as a ``urllib.error.HTTPError`` (or
+    a ``ScienceConnectorError`` wrapping one) whose ``code`` is a 4xx that will
+    not resolve on retry. Anything else — a timeout, a DNS failure, a 5xx — is
+    transient and returns None so the caller keeps retrying.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        code = getattr(current, "code", None)
+        try:
+            code_int = int(code)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            code_int = None
+        if code_int in _PERMANENT_CLIENT_ERRORS:
+            return code_int
+        # Walk the whole chain: the connector wraps the transport error, and a
+        # transport layer may itself have wrapped the HTTPError, so the code can
+        # be more than one `__cause__` deep.
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def check_source(
@@ -111,6 +148,13 @@ def check_source(
                 filters=manifest.probe_filters or None,
             )
         except ScienceConnectorError as exc:
+            # The connector normalises every transport failure into this type,
+            # so a permanent client error (a removed route, an auth change)
+            # arrives here wrapping the original HTTPError. Classify it before
+            # treating an empty capture as a retryable outage.
+            code = _permanent_http_status(exc)
+            if code is not None:
+                return _outcome("http_error", code=code, detail=f"HTTP {code}: {exc}")
             # The connector could not trust the response. If we captured a body,
             # the API answered 200 with something we could not parse -- inspect
             # it for real drift below. If we captured nothing, the request never
@@ -121,6 +165,14 @@ def check_source(
                     sleep(_BACKOFF_S * (attempt + 1))
                 continue
         except Exception as exc:  # noqa: BLE001 - transport/timeout/DNS
+            code = _permanent_http_status(exc)
+            if code is not None:
+                # A route that was removed answers 404/410, an auth or contract
+                # change 401/403. These are the API's *contract* breaking, not
+                # its weather — retrying them and then reporting `unreachable`
+                # let the scheduled canary exit 0 while the connector was
+                # already broken. Fail the run instead.
+                return _outcome("http_error", code=code, detail=f"HTTP {code}: {exc}")
             last_error = f"{type(exc).__name__}: {exc}"
             if attempt < _RETRIES - 1:
                 sleep(_BACKOFF_S * (attempt + 1))
@@ -169,11 +221,13 @@ def run(ids: tuple[str, ...] = CANARY_IDS, **kwargs: Any) -> dict[str, Any]:
     drifted = sorted(s for s, r in results.items() if r["status"] == "drift")
     unreachable = sorted(s for s, r in results.items() if r["status"] == "unreachable")
     parse_errors = sorted(s for s, r in results.items() if r["status"] == "parse_error")
+    http_errors = sorted(s for s, r in results.items() if r["status"] == "http_error")
     return {
         "results": results,
         "drifted": drifted,
         "unreachable": unreachable,
         "parse_errors": parse_errors,
+        "http_errors": http_errors,
     }
 
 
@@ -215,10 +269,22 @@ def main() -> int:
                 "not read. Something outside the manifest changed shape."
             )
 
-    # Non-zero on a real contract problem — drift, or a 200 the connector could
-    # not read — so a scheduled trend gate does not flake on an upstream outage
-    # but does not stay silent about a break either.
-    return 1 if (report["drifted"] or report["parse_errors"]) else 0
+        if report.get("http_errors"):
+            print(
+                f"\nHTTP ERROR in {report['http_errors']}: a permanent client "
+                "error (a removed route, an auth/contract change). The "
+                "connector's endpoint is broken, not merely unreachable."
+            )
+
+    # Non-zero on a real contract problem — drift, a 200 the connector could
+    # not read, or a permanent client error like a removed route — so a
+    # scheduled trend gate does not flake on an upstream outage but does not
+    # stay silent about a break either.
+    return (
+        1
+        if (report["drifted"] or report["parse_errors"] or report.get("http_errors"))
+        else 0
+    )
 
 
 if __name__ == "__main__":

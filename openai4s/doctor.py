@@ -97,12 +97,28 @@ def _model(cfg: Any) -> Check:
         )
     model = llm.model or spec.get("model")
     base_url = getattr(llm, "base_url", "") or ""
+    # Ask the same question the client asks. The request path allows a keyless
+    # call when `get_model_capabilities(...).local_endpoint` is true, which
+    # covers `host.docker.internal`, `.local` hosts, and private/link-local
+    # addresses — not only literal loopback. Using the narrower loopback rule
+    # here reported a working keyless setup (Ollama behind `host.docker.
+    # internal`, a `.local` box) as a model failure.
     keyless = is_loopback_endpoint(base_url)
+    try:
+        from openai4s.llm.capabilities import get_model_capabilities
+
+        keyless = bool(
+            get_model_capabilities(
+                llm.provider, model, base_url=base_url or spec.get("base_url")
+            ).local_endpoint
+        )
+    except Exception:  # noqa: BLE001 - fall back to the loopback rule
+        pass
     facts = {
         "provider": llm.provider,
         "model": model,
         "api_key_configured": bool(llm.api_key),
-        "endpoint_is_loopback": keyless,
+        "endpoint_is_local": keyless,
     }
     # The value is never reported, only whether one resolved.
     if not llm.api_key and not keyless:
@@ -209,11 +225,16 @@ def _isolation(cfg: Any) -> Check:
     # runs the same self-test the kernel runs, in a temp workspace it removes
     # afterwards. A bounded, self-cleaning side effect is the price of an
     # answer that means something.
+    # Imported before the try so the `except SandboxConfigurationError` clause
+    # can always be evaluated, even if constructing the sandbox is what fails.
+    from openai4s.security.sandbox import (
+        SandboxConfigurationError,
+        create_kernel_sandbox,
+    )
+
     sandbox = None
     try:
         import tempfile
-
-        from openai4s.security.sandbox import create_kernel_sandbox
 
         with tempfile.TemporaryDirectory(prefix="openai4s-doctor-sandbox-") as probe:
             sandbox = create_kernel_sandbox(probe, mode=mode)
@@ -230,6 +251,20 @@ def _isolation(cfg: Any) -> Check:
             )
             reason = status.detail or ""
             warning = status.warning or ""
+    except SandboxConfigurationError as e:
+        # A typo in OPENAI4S_KERNEL_SANDBOX, or a malformed raw-network flag,
+        # makes *every* kernel spawn raise this — the system is unusable
+        # regardless of which mode was intended. Reporting a warning unless the
+        # mode happens to read `enforce` let a broken config exit as usable.
+        facts.setdefault("available", False)
+        return Check(
+            "isolation",
+            FAIL,
+            f"the kernel sandbox is misconfigured, so no cell can run: {e}",
+            "Fix the OPENAI4S_KERNEL_SANDBOX / OPENAI4S_KERNEL_ALLOW_RAW_NETWORK "
+            "value; the sandbox accepts only auto, enforce, or off.",
+            facts,
+        )
     except Exception as e:  # noqa: BLE001 - in `enforce` this is the refusal
         facts.setdefault("available", False)
         if mode == "enforce":
@@ -386,9 +421,34 @@ def _remote(cfg: Any) -> Check:
 
     ssh_available = (Path(cfg.skills_dir) / "remote-compute-ssh").is_dir()
     facts["ssh_family"] = ssh_available
-    confinement = (
-        (os.environ.get("OPENAI4S_COMPUTE_CONFINEMENT") or "auto").strip().lower()
-    )
+    # Validate through the *runtime* parser, not a lowercase(). A value like
+    # `enfore` makes `ComputeManager` construction raise, so remote compute is
+    # unusable — but a bare string reached `posture()` as an auto-like mode (or
+    # was skipped on an SSH-only setup) and doctor could report OK.
+    raw_confinement = os.environ.get("OPENAI4S_COMPUTE_CONFINEMENT")
+    try:
+        from openai4s.compute.manager import _CONFINEMENT_ENV, _confinement_mode
+
+        confinement = _confinement_mode(raw_confinement)
+    except Exception as e:  # noqa: BLE001 - an invalid mode is a hard config fault
+        facts["confinement_mode"] = (raw_confinement or "").strip()
+        if providers:
+            return Check(
+                "remote",
+                FAIL,
+                f"{len(providers)} BYOC provider(s) present but the confinement "
+                f"mode is invalid, so remote compute cannot start: {e}",
+                "Set OPENAI4S_COMPUTE_CONFINEMENT to auto, enforce, or off.",
+                facts,
+            )
+        return Check(
+            "remote",
+            WARN,
+            f"OPENAI4S_COMPUTE_CONFINEMENT is invalid ({e}); it must be auto, "
+            f"enforce, or off",
+            "Fix or unset it.",
+            facts,
+        )
     facts["confinement_mode"] = confinement
 
     if not providers and not ssh_available:

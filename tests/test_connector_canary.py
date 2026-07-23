@@ -235,3 +235,66 @@ def test_a_dict_shaped_fetch_payload_is_still_captured_for_the_drift_check():
     outcome = canary.check_source("uniprot", fetch=fetch, sleep=lambda _s: None)
     assert outcome["status"] == "ok"
     assert outcome["records"] >= 1
+
+
+# --------------------------------------------------------------------------
+# a permanent HTTP client error is a broken contract, not weather
+# --------------------------------------------------------------------------
+
+
+class _HTTPError(Exception):
+    """Stands in for urllib.error.HTTPError, which carries a `.code`."""
+
+    def __init__(self, code):
+        super().__init__(f"HTTP {code}")
+        self.code = code
+
+
+def test_a_removed_route_reads_as_http_error_not_unreachable():
+    """A 404/410 is the API's contract breaking. Retrying it and reporting
+    `unreachable` let the scheduled canary exit 0 while it was already broken."""
+    calls = {"n": 0}
+
+    def gone(url, fmt, timeout, max_chars):
+        calls["n"] += 1
+        raise _HTTPError(410)
+
+    outcome = canary.check_source("uniprot", fetch=gone, sleep=_no_sleep)
+    assert outcome["status"] == "http_error"
+    assert outcome["code"] == 410
+    assert calls["n"] == 1, "a permanent client error must not be retried"
+
+
+def test_a_wrapped_http_error_is_still_classified():
+    """The connector wraps transport errors; the code must survive the wrap."""
+
+    def wrapped(url, fmt, timeout, max_chars):
+        try:
+            raise _HTTPError(404)
+        except _HTTPError as inner:
+            raise RuntimeError("connector could not trust the response") from inner
+
+    outcome = canary.check_source("uniprot", fetch=wrapped, sleep=_no_sleep)
+    assert outcome["status"] == "http_error"
+    assert outcome["code"] == 404
+
+
+def test_a_rate_limit_is_transient_not_a_contract_break():
+    """429 and 408 stay on the retry path — they are the API's weather."""
+    calls = {"n": 0}
+
+    def throttled(url, fmt, timeout, max_chars):
+        calls["n"] += 1
+        raise _HTTPError(429)
+
+    outcome = canary.check_source("uniprot", fetch=throttled, sleep=_no_sleep)
+    assert outcome["status"] == "unreachable"
+    assert calls["n"] == canary._RETRIES
+
+
+def test_the_run_fails_on_a_permanent_http_error():
+    def gone(url, fmt, timeout, max_chars):
+        raise _HTTPError(404)
+
+    report = canary.run(("uniprot",), fetch=gone, sleep=_no_sleep)
+    assert report["http_errors"] == ["uniprot"]

@@ -146,16 +146,23 @@ def _write_confined_text(workspace: Path, relative: Path, content: str) -> Path:
     return target
 
 
-def _same_interpreter(interpreter: Any) -> bool:
+def _same_interpreter(interpreter: Any, has_generation: bool = False) -> bool:
     """True when the kernel ran in this very process's interpreter.
 
     Only then may this process's own version strings be attributed to it.
+
+    A *missing* interpreter is the daemon fallback only when there is no
+    generation on record. With a generation but no interpreter — a legacy or
+    imported one — the runtime is unknown, and stamping the daemon's Python
+    version and implementation onto it is the same confidently-wrong provenance
+    the package-list path already refuses. So a missing interpreter matches
+    only in the no-generation case.
     """
     import os
     import sys
 
     if not interpreter:
-        return True
+        return not has_generation
     try:
         return os.path.realpath(str(interpreter)) == os.path.realpath(sys.executable)
     except OSError:
@@ -894,10 +901,14 @@ class ArtifactManager:
                 snapshot["packages"] = packages
                 snapshot["package_count"] = len(packages)
             snapshot["python_version"] = (
-                _pf.python_version() if _same_interpreter(interpreter) else None
+                _pf.python_version()
+                if _same_interpreter(interpreter, bool(generation))
+                else None
             )
             snapshot["implementation"] = (
-                _pf.python_implementation() if _same_interpreter(interpreter) else None
+                _pf.python_implementation()
+                if _same_interpreter(interpreter, bool(generation))
+                else None
             )
         else:
             # A non-Python kernel has no Python package set, and claiming an

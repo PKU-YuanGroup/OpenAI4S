@@ -201,3 +201,74 @@ def test_live_events_continue_the_same_sequence_after_a_resume(hub_with_turn):
     hub.subscribe("f1", back, since_seq=2)
     hub.broadcast("f1", {"type": "text_chunk", "d": "D"})
     assert _seqs(back) == [3, 4, 5]
+
+
+# --------------------------------------------------------------------------
+# every subscription carries the epoch, even an idle one
+# --------------------------------------------------------------------------
+
+
+def _epoch_of(conn):
+    for event in conn.sent:
+        if event.get("type") == "replay_begin":
+            return event.get("epoch")
+    return None
+
+
+def test_an_idle_subscription_still_receives_the_epoch():
+    """An idle frame — no running turn — used to send nothing, so the client
+    recorded its next cursor with a null epoch. After a restart the numeric
+    stale check then accepted that epoch-less cursor and skipped the new
+    daemon's early events."""
+    hub = WSHub()
+    conn = _Conn()
+    hub.add(conn)
+    hub.subscribe("idle-frame", conn, since_seq=0)
+
+    assert (
+        _epoch_of(conn) == hub.epoch
+    ), "an idle subscription must still hand the client this daemon's epoch"
+    assert _chunks(conn) == [], "there is nothing to replay, only the epoch"
+
+
+def test_a_cursor_from_a_previous_daemon_is_rejected_even_when_numerically_placeable():
+    """The exact skipped-events scenario.
+
+    A client subscribed to an idle frame under daemon A (epoch A), recorded a
+    cursor, then daemon B (epoch B) restarted and emitted events reaching that
+    cursor's number before the client reconnected. The cursor is numerically
+    placeable, so only the epoch can catch it — which is why every subscription
+    must carry one.
+    """
+    daemon_a = WSHub()
+    first = _Conn()
+    daemon_a.add(first)
+    daemon_a.subscribe("f1", first, since_seq=0)
+    epoch_a = _epoch_of(first)
+    assert epoch_a == daemon_a.epoch
+
+    # Daemon B restarts (a new epoch) and runs a turn on the same frame,
+    # emitting events 1..4.
+    daemon_b = WSHub()
+    watcher = _Conn()
+    daemon_b.add(watcher)
+    daemon_b.subscribe("f1", watcher, since_seq=0)
+    for event in (
+        {"type": "text_reset"},
+        {"type": "text_chunk", "d": "X"},
+        {"type": "text_chunk", "d": "Y"},
+        {"type": "text_chunk", "d": "Z"},
+    ):
+        daemon_b.broadcast("f1", dict(event))
+    assert daemon_b.epoch != epoch_a
+
+    # The client reconnects to daemon B presenting its old cursor AND old
+    # epoch. Numerically seq(4) >= 2, but the epoch does not match, so the gap
+    # must be declared rather than the early events silently skipped.
+    reconnect = _Conn()
+    daemon_b.add(reconnect)
+    daemon_b.subscribe("f1", reconnect, since_seq=2, epoch=epoch_a)
+    begin = next(e for e in reconnect.sent if e.get("type") == "replay_begin")
+    assert (
+        begin["gap"] is True
+    ), "a cursor from a previous daemon must be declared a gap, not accepted"

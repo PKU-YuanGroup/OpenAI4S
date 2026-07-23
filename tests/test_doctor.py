@@ -260,8 +260,23 @@ def test_a_local_endpoint_needs_no_credential(cfg, monkeypatch):
 
     check = _by_name(doctor.report(cfg))["model"]
     assert check["status"] == doctor.OK
-    assert check["facts"]["endpoint_is_loopback"] is True
+    assert check["facts"]["endpoint_is_local"] is True
     assert check["facts"]["api_key_configured"] is False
+
+
+def test_a_dot_local_endpoint_needs_no_credential(cfg, monkeypatch):
+    """The runtime allows keyless for `.local`/private/docker hosts too, so
+    doctor must not report a working keyless setup as a model failure."""
+    from openai4s.store import get_store
+
+    _no_ambient_key(monkeypatch)
+    cfg.llm.api_key = ""
+    store = get_store(cfg.db_path)
+    store.set_setting("llm_base_url", "http://ollama.local:11434/v1")
+
+    check = _by_name(doctor.report(cfg))["model"]
+    assert check["status"] in (doctor.OK, doctor.WARN)
+    assert check["facts"]["endpoint_is_local"] is True
 
 
 def test_a_remote_endpoint_without_a_key_still_fails(cfg, monkeypatch):

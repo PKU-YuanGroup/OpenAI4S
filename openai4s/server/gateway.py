@@ -501,6 +501,16 @@ class WSHub:
                 self._enqueue_replay_locked(
                     root_frame_id, conn, buf["events"], since_seq
                 )
+            else:
+                # Idle, and the cursor (if any) is placeable. Still send the
+                # epoch handshake — an empty replay envelope carries it — so the
+                # client records its next cursor stamped with *this* daemon's
+                # epoch. Without it, a subscription that hit neither branch left
+                # the client with a null epoch, and after a restart the numeric
+                # stale check would accept that epoch-less cursor and skip the
+                # new daemon's early events. The envelope is two frames with no
+                # payload; the epoch is the point.
+                self._enqueue_replay_locked(root_frame_id, conn, [], since_seq)
 
     def _cursor_is_stale_locked(
         self, root_frame_id: str, since_seq: int, epoch: str | None
