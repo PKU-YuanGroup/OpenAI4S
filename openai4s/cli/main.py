@@ -726,6 +726,17 @@ def cmd_benchmark(args) -> int:
             f"{report['skipped']} skipped "
             f"across {report['workflows']} workflow(s)"
         )
+    # Zero workflows is a failure, not a pass. An installed wheel that did not
+    # ship the manifests would otherwise report "0 failed" and exit 0 — a
+    # silent green on the suite that is supposed to decide whether a release is
+    # good. There is always at least one workflow in a correct install.
+    if report["workflows"] == 0:
+        print(
+            "error: no benchmark workflows were found; the manifests are "
+            "missing from this installation",
+            file=sys.stderr,
+        )
+        return 1
     return 1 if report["failed"] else 0
 
 

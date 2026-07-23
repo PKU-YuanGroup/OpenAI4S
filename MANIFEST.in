@@ -7,6 +7,7 @@ include scripts/setup_envs.sh
 include scripts/*.py
 recursive-include docs *.md
 recursive-include skills *.html *.json *.lock *.md *.py
+recursive-include workflows *.json
 recursive-include openai4s/compute/templates *.tmpl
 recursive-include openai4s/kernel *.R
 recursive-include openai4s/server/webui *.css *.gif *.html *.js *.woff2

@@ -89,3 +89,54 @@ def test_case(workflow, case):
     if result.skipped:
         pytest.skip(result.detail)
     assert result.passed, f"{case.id} ({case.outcome}): {result.detail}"
+
+
+# --------------------------------------------------------------------------
+# the manifests must ship, and the root parameter must be honoured
+# --------------------------------------------------------------------------
+
+
+def test_the_workflows_are_shipped_as_package_data():
+    """An installed wheel that did not ship the manifests would make
+    `openai4s benchmark` report a green run over zero workflows."""
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
+    include = pyproject["tool"]["setuptools"]["packages"]["find"]["include"]
+    assert "workflows*" in include, (
+        "the benchmark manifests are not packaged; an installed benchmark "
+        "would find nothing and pass silently"
+    )
+    manifest = (root / "MANIFEST.in").read_text("utf-8")
+    assert "recursive-include workflows" in manifest
+    build = (root / "scripts" / "build_macos_dmg.sh").read_text("utf-8")
+    assert "/workflows" in build, "the DMG does not copy the workflow manifests"
+
+
+def test_run_all_honours_the_root_it_is_given(tmp_path):
+    """The parameter was accepted and ignored, so a caller pointing at another
+    suite silently got the repository default."""
+    from openai4s.benchmark.runner import run_all
+
+    empty = tmp_path / "empty-suite"
+    empty.mkdir()
+    report = run_all(empty)
+    assert (
+        report["workflows"] == 0
+    ), "run_all ran the default suite instead of the empty root it was given"
+
+
+def test_the_cli_treats_zero_workflows_as_a_failure(monkeypatch, capsys, tmp_path):
+    """Zero workflows is not a pass. A packaging regression must not exit 0."""
+    import importlib
+    import types
+
+    from openai4s.benchmark import model as bmodel
+
+    cli = importlib.import_module("openai4s.cli.main")
+    monkeypatch.setattr(bmodel, "WORKFLOW_ROOT", tmp_path / "no-workflows")
+    rc = cli.cmd_benchmark(types.SimpleNamespace(list=False, json=False))
+    assert rc == 1
+    assert "no benchmark workflows" in capsys.readouterr().err

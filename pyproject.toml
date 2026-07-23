@@ -74,6 +74,11 @@ include = [
     # adding a runtime resource-loader dependency.
     "skills*",
     "envs*",
+    # The benchmark manifests. Without this an installed `openai4s benchmark`
+    # resolved `<site-packages>/workflows`, found nothing, and reported zero
+    # failures across zero workflows with exit code 0 — a silent pass on the
+    # thing that is supposed to decide whether a release is good.
+    "workflows*",
 ]
 
 [tool.setuptools.package-data]

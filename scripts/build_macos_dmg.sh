@@ -149,7 +149,8 @@ rsync -a \
   --exclude '.claude' \
   "$REPO_ROOT/openai4s" "$REPO_ROOT/openai4s_compute_provider" \
   "$REPO_ROOT/openai4s_worker_runtime" \
-  "$REPO_ROOT/envs" "$REPO_ROOT/skills" "$REPO_ROOT/scripts" "$REPO_ROOT/docs" \
+  "$REPO_ROOT/envs" "$REPO_ROOT/skills" "$REPO_ROOT/workflows" \
+  "$REPO_ROOT/scripts" "$REPO_ROOT/docs" \
   "$SRC/"
 cp "$REPO_ROOT/README.md" "$REPO_ROOT/README_zh.md" "$REPO_ROOT/LICENSE" \
    "$REPO_ROOT/.env.example" "$REPO_ROOT/pyproject.toml" "$SRC/" 2>/dev/null || true

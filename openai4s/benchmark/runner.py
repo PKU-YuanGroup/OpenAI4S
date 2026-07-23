@@ -157,7 +157,10 @@ def run_case(workflow: Workflow, case: Case, root: Path | None = None) -> CaseRe
 
 
 def run_all(root: Path | None = None) -> dict[str, Any]:
-    workflows = load_workflows()
+    # The parameter was accepted and ignored, so a caller pointing at a
+    # different suite silently got the repository default — a valid-looking
+    # report for workflows nobody asked to run.
+    workflows = load_workflows(root)
     results = [
         run_case(workflow, case) for workflow in workflows for case in workflow.cases
     ]
