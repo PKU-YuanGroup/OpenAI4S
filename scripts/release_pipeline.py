@@ -473,16 +473,44 @@ class Pipeline:
             )
         if self.dry_run:
             return StepResult("build", True, "would build sdist and wheel")
+        # Clear the output directory first. It is reused across runs, and
+        # `step_assets` collects *every* wheel/sdist/dmg/zip it finds — so a
+        # previous build's artifacts would be smoke-tested, hashed into the
+        # SBOM and checksums, and uploaded alongside (or instead of) this
+        # version's. `--clear` here mirrors what the CI `uv build --clear`
+        # does, so the two build paths agree.
+        if self.assets_dir.exists():
+            for stale in self.assets_dir.glob("*"):
+                if stale.is_file() and stale.suffix in (
+                    *DISTRIBUTION_SUFFIXES,
+                    ".json",
+                ):
+                    stale.unlink()
+                elif stale.name == "SHA256SUMS":
+                    stale.unlink()
         self.assets_dir.mkdir(parents=True, exist_ok=True)
-        completed = self._run(
-            [sys.executable, "-m", "build", "--outdir", str(self.assets_dir)]
-        )
+        # `uv build`, not `python -m build`: the documented invocation is
+        # `uv run python scripts/release_pipeline.py`, which runs in the locked
+        # project environment — and `build` is not a locked dependency, so the
+        # module import failed before any release check ran. `uv build` is the
+        # frontend that is always available there.
+        completed = self._build_frontend()
         if completed.returncode != 0:
             raise ReleaseError(
                 f"build failed ({completed.returncode}): "
                 f"{(completed.stderr or b'').decode('utf-8', 'replace')[-2000:]}"
             )
         return StepResult("build", True, f"built into {self.assets_dir}")
+
+    def _build_frontend(self):
+        """Build with uv when available, falling back to `python -m build`."""
+        if shutil.which("uv"):
+            return self._run(
+                ["uv", "build", "--no-sources", "--out-dir", str(self.assets_dir)]
+            )
+        return self._run(
+            [sys.executable, "-m", "build", "--outdir", str(self.assets_dir)]
+        )
 
     def step_test(self) -> StepResult:
         if self.from_artifacts:
@@ -503,11 +531,24 @@ class Pipeline:
         if self.dry_run:
             self.assets = [self.assets_dir / f"openai4s-{self.version}.whl"]
             return StepResult("assets", True, "would collect built assets")
-        self.assets = sorted(
+        candidates = sorted(
             path
             for path in self.assets_dir.glob("*")
             if path.is_file() and path.suffix in DISTRIBUTION_SUFFIXES
         )
+        # A distribution whose filename does not carry this version is a
+        # leftover from another build — belt to the `step_build` clear's
+        # braces, and the only guard on the staging path, where build does not
+        # run and the directory is populated by an earlier job. Publishing a
+        # stale version under this release is exactly the mismatch the whole
+        # pipeline exists to prevent.
+        self.assets = [p for p in candidates if self.version in p.name]
+        wrong_version = [p.name for p in candidates if p not in self.assets]
+        if wrong_version:
+            raise ReleaseError(
+                f"the asset directory holds distributions for another version: "
+                f"{wrong_version}; refusing to stage a mixed release"
+            )
         if not self.assets:
             raise ReleaseError(f"no release assets were produced in {self.assets_dir}")
         self.incoming = {a.name: sha256_file(a) for a in self.assets}

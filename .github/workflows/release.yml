@@ -111,11 +111,41 @@ jobs:
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - name: Import the Developer ID certificate into a temporary keychain
+        # A signing *identity name* is not a signing *identity*: codesign looks
+        # the name up in a keychain, and a fresh runner has none. Passing only
+        # the name made codesign fail (identity not found) while an empty name
+        # produced an ad-hoc image the gate rejects — so release mode could
+        # never succeed as written. The certificate and its password are
+        # separate secrets; when they are absent the build ad-hoc signs and the
+        # release gate is what refuses to publish it, which is the correct
+        # fail-closed behaviour rather than a green build.
+        if: ${{ secrets.MACOS_SIGNING_CERTIFICATE != '' }}
+        env:
+          MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
+          MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/openai4s-signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          echo "$MACOS_SIGNING_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -P "$MACOS_SIGNING_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          # Put the temporary keychain in the search list so codesign finds it.
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$CERT_PATH"
       - name: Build the .app and .dmg
         # The identity reaches the build, which is the only place it can be
         # used. Passing it only to the staging job — as before — meant setting
         # the secret changed nothing about how the image was signed while
-        # making the gate believe it had been.
+        # making the gate believe it had been. The certificate the identity
+        # names was imported into the keychain above.
         env:
           OPENAI4S_MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: bash scripts/build_macos_dmg.sh

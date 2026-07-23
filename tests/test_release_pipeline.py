@@ -84,6 +84,12 @@ def _pipeline(assets, **kw):
     kw.setdefault("gh", lambda argv: _completed(0, b'{"assets": [], "isDraft": true}'))
     kw.setdefault("smoke", lambda wheel: "smoke injected")
     kw.setdefault("pypi_check", lambda project, version: True)
+    # The `assets` fixture provides already-built distributions, which is the
+    # staging job's input. Default to that mode so `step_build` does not clear
+    # them and then find nothing to collect (the mock runner does not rebuild).
+    # Tests that exercise the build/test steps themselves pass from_artifacts
+    # explicitly.
+    kw.setdefault("from_artifacts", True)
     return Pipeline("0.2.0", assets_dir=assets, **kw)
 
 
@@ -212,13 +218,67 @@ def test_a_failing_step_stops_the_pipeline_there(assets):
             return _completed(1, b"", b"no build backend")
         return _completed()
 
-    pipeline = _pipeline(assets, runner=refuse)
+    # from_artifacts=False so the build step actually runs and can fail.
+    pipeline = _pipeline(assets, from_artifacts=False, runner=refuse)
     report = pipeline.run()
 
     assert report["ok"] is False
     assert report["stopped_at"] == "build"
     assert [step["step"] for step in report["steps"]] == ["build"]
     assert pipeline.performed == [], "no step may be recorded as done after a stop"
+
+
+def test_the_build_uses_a_frontend_available_in_the_locked_environment(assets):
+    """`python -m build` is not a locked dependency, so the documented
+    `uv run python scripts/release_pipeline.py` failed to import it before any
+    release check ran."""
+    seen: list = []
+
+    def runner(argv, cwd=None):
+        seen.append([str(a) for a in argv])
+        return _completed()
+
+    _pipeline(assets, from_artifacts=False, runner=runner).run()
+    build_cmds = [c for c in seen if "build" in c]
+    assert build_cmds, "no build was invoked"
+    assert build_cmds[0][0] == "uv", (
+        "the build must use the uv frontend that exists in the locked env, "
+        "not `python -m build`"
+    )
+
+
+def test_a_stale_distribution_from_a_previous_build_is_not_published(assets):
+    """`dist` is reused; collecting every wheel it holds would smoke-test,
+    hash and upload a previous version's artifacts."""
+    (assets / "openai4s-0.1.9-py3-none-any.whl").write_bytes(b"old-wheel")
+    report = _pipeline(assets, from_artifacts=True).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "assets"
+    assert "another version" in report["steps"][-1]["detail"]
+
+
+def test_the_build_clears_stale_artifacts_before_building(tmp_path):
+    """The non-staging path clears the directory, so a leftover cannot survive
+    into the collected asset set."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "openai4s-0.1.9-py3-none-any.whl").write_bytes(b"old")
+
+    def runner(argv, cwd=None):
+        # Simulate the build writing this version's artifacts.
+        (dist / "openai4s-0.2.0-py3-none-any.whl").write_bytes(b"new-wheel")
+        (dist / "openai4s-0.2.0.tar.gz").write_bytes(b"new-sdist")
+        return _completed()
+
+    report = _pipeline(dist, from_artifacts=False, runner=runner).run()
+    names = {
+        Path(a).name
+        for step in report["steps"]
+        if step["step"] == "assets"
+        for a in step["facts"].get("assets", [])
+    }
+    assert "openai4s-0.1.9-py3-none-any.whl" not in names, "the stale wheel survived"
+    assert "openai4s-0.2.0-py3-none-any.whl" in names
 
 
 def test_a_wheel_that_does_not_survive_a_clean_install_stops_the_run(assets):
@@ -236,7 +296,9 @@ def test_a_release_is_never_published_when_a_check_failed(assets):
             return _completed(1)
         return _completed()
 
-    report = _pipeline(assets, mode="release", runner=refuse).run()
+    report = _pipeline(
+        assets, mode="release", from_artifacts=False, runner=refuse
+    ).run()
     assert report["published"] is False
     assert "publish" not in [step["step"] for step in report["steps"]]
 

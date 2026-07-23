@@ -315,6 +315,13 @@ def test_the_signing_identity_reaches_the_build_that_can_use_it():
     build = (ROOT / "scripts" / "build_macos_dmg.sh").read_text("utf-8")
     assert '--sign "$SIGNING_IDENTITY"' in build
 
+    # A signing *identity name* is not a signing *identity*: codesign looks it
+    # up in a keychain a fresh runner does not have, so release mode could
+    # never succeed without importing the certificate first.
+    assert "security create-keychain" in macos
+    assert "security import" in macos
+    assert "MACOS_SIGNING_CERTIFICATE" in macos
+
     attach = workflow[workflow.index("  attach:") : workflow.index("  pypi:")]
     assert "OPENAI4S_MACOS_SIGNING_IDENTITY" not in attach, (
         "the staging job cannot sign anything, so an identity there can only "
