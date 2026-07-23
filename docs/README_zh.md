@@ -18,6 +18,7 @@
 | `configuration.md` | provider、环境、daemon、内核与数据目录分别怎么配置。 |
 | `jupyter.md` | 可选的 Jupyter 适配器：它对外暴露什么、执行边界划在哪里，以及相关的兼容说明。 |
 | `package-architecture.md` | 分解工作期间使用的历史清单，记录包与归属关系。 |
+| `platforms.md` | 代码实际强制执行的平台支持矩阵：macOS 稳定、Linux beta、Windows **拒绝启动**而不是仅仅警告。它点名尚未满足的门槛（Developer ID 签名与公证）而不是暗示已经满足，并解释各层级差异的来源——不是代码不同，而是被证明的程度不同。 |
 | `plan-corecoder-refactor.md` | 内部的历史重构计划；不进入公开网站的内容。 |
 | `refactor-plan.md` | 为保留决策上下文而留存的历史迁移计划。 |
 | `release-validation.md` | 发布要过的几道关卡：离线 CI、发布包检查、import 冒烟，以及有意留在 CI 之外的外部关卡。 |

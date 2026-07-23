@@ -20,6 +20,7 @@ and the internal plans in this directory are not published by that site.
 | `configuration.md` | How the provider, environment, daemon, kernel, and data directory are configured. |
 | `jupyter.md` | The optional Jupyter adapter: what it exposes, the execution boundaries it keeps, and the compatibility notes. |
 | `package-architecture.md` | Historical package/ownership inventory used during decomposition work. |
+| `platforms.md` | The supported-platform matrix the code enforces: macOS stable, Linux beta, Windows **refused** rather than warned about. Names the gates not yet met (Developer ID signing and notarization) instead of implying they are, and explains why the tiers differ — not the code, but what has been proven. |
 | `plan-corecoder-refactor.md` | Internal historical refactor plan; excluded from public website content. |
 | `refactor-plan.md` | Historical migration plan retained for decision context. |
 | `release-validation.md` | The gates a release passes: offline CI, package artifacts, import smoke, and the external gates that deliberately stay outside CI. |

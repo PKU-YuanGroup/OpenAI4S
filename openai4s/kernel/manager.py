@@ -76,6 +76,15 @@ class Kernel:
             raise
 
     def _spawn(self) -> "subprocess.Popen":
+        # Fail closed on an unsupported platform, here rather than in a warning
+        # at onboarding: every Python and R kernel passes through this method,
+        # so there is no route that reaches a subprocess without being asked.
+        # A program that warns and proceeds has made a different promise from
+        # one that refuses, and a half-working kernel is the worse outcome for
+        # a product whose claim is that its results can be trusted.
+        from openai4s.platform_support import require_supported
+
+        require_supported()
         command = self.argv or [self.python, "-u", str(_WORKER)]
         proc = subprocess.Popen(
             self._sandbox.wrap_command(command),

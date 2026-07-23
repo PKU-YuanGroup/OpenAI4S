@@ -227,6 +227,27 @@ jobs:
           OPENAI4S_KERNEL_SANDBOX: enforce
         run: uv run python -m harness.smoke.macos_sandbox
 
+  linux-sandbox-smoke:
+    name: Linux bubblewrap enforcement (nightly)
+    # The frozen platform matrix puts Linux at beta "after enforced bubblewrap
+    # E2E", gated on a real enforced sandbox rather than a probe that degrades.
+    # macOS had this proof; Linux did not, so its tier rested on nothing.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Install the zero-dependency runtime
+        run: uv sync --locked
+      - name: Require real bubblewrap isolation and child-env scrubbing
+        env:
+          OPENAI4S_KERNEL_SANDBOX: enforce
+        run: uv run python -m harness.smoke.linux_sandbox
+
   connector-canary:
     name: Science connector canary (nightly)
     # Schedule and manual only: a public API's outage is not a reason to fail a
