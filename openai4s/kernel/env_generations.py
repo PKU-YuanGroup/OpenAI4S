@@ -399,8 +399,6 @@ class EnvironmentStore:
         """
         name = plan.name
         previous = self.current_id(name)
-        if not plan.changes:
-            return ApplyResult(name, True, self.current(name), previous, plan.reason)
 
         env_dir = self._env_dir(name)
         env_dir.mkdir(parents=True, exist_ok=True)
@@ -421,6 +419,30 @@ class EnvironmentStore:
                     f"against the new current generation"
                 )
             previous = observed
+
+            # A no-op is a claim too: "nothing changed since the plan". Validate
+            # it under the *same* lock and the same checks, because a spec edited
+            # or a pointer moved between plan and apply means that claim is now
+            # false — and returning success without checking reported an env
+            # that no longer matched the plan.
+            if not plan.changes:
+                live_spec = Path(spec)
+                try:
+                    current_sha = _sha256_file(live_spec)
+                except OSError as e:
+                    raise EnvironmentError_(
+                        f"the spec for {name!r} could not be read at apply "
+                        f"time: {e}"
+                    )
+                if current_sha != plan.spec_sha256:
+                    raise EnvironmentError_(
+                        f"the spec for {name!r} changed since the no-op plan "
+                        f"was made ({plan.spec_sha256[:12]} -> "
+                        f"{current_sha[:12]}); re-plan"
+                    )
+                return ApplyResult(
+                    name, True, self.current(name), previous, plan.reason
+                )
             # The spec is re-hashed *here*, under the lock, and then copied.
             # The manifest recorded `plan.spec_sha256` while the build read the
             # live YAML through a path captured at plan time, so a file edited
@@ -576,12 +598,20 @@ class EnvironmentStore:
                 f"generation {generation_id!r} no longer has its prefix on "
                 f"disk ({target.prefix}); it cannot be restored by pointer"
             )
-        previous = self.current_id(name)
+        # `previous`, the pointer move, and the history append happen under one
+        # lock. Reading `previous` before the lock let an apply that ran while
+        # this rollback waited move the pointer X->Y, so the rollback recorded
+        # and returned X though it displaced Y; appending history after the lock
+        # let another operation be logged in between. All three inside keeps the
+        # record consistent with what actually happened.
         with _apply_lock(self._env_dir(name)):
+            previous = self.current_id(name)
             self._point_at(name, generation_id)
-        self._log(
-            name, "rolled_back", {"generation_id": generation_id, "previous": previous}
-        )
+            self._log(
+                name,
+                "rolled_back",
+                {"generation_id": generation_id, "previous": previous},
+            )
         return ApplyResult(name, True, target, previous, "pointer moved")
 
     # --- immutability -----------------------------------------------------
@@ -785,36 +815,73 @@ class _apply_lock:
     def __init__(self, env_dir: Path):
         self._path = env_dir / "apply.lock"
         self._fd: int | None = None
+        #: Unique per instance, written into the lock so ownership can be
+        #: re-verified — a pid alone is reused across a restart.
+        self._token = uuid.uuid4().hex
+
+    def _payload(self) -> bytes:
+        return f"{os.getpid()}:{self._token}".encode("ascii")
+
+    def _acquire_fresh(self) -> None:
+        self._fd = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.write(self._fd, self._payload())
 
     def __enter__(self):
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            self._fd = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            self._acquire_fresh()
+            return self
         except FileExistsError:
-            if _stale_lock(self._path.parent):
-                try:
-                    os.unlink(self._path)
-                except OSError:  # pragma: no cover
-                    pass
-                self._fd = os.open(
-                    self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
-                )
-            else:
-                raise ConcurrentApply(
-                    f"another apply is in progress for this environment "
-                    f"({self._path}); wait for it or remove the lock if the "
-                    f"process that held it is gone"
-                )
-        os.write(self._fd, str(os.getpid()).encode("ascii"))
+            pass
+        if not _stale_lock(self._path.parent):
+            raise ConcurrentApply(
+                f"another apply is in progress for this environment "
+                f"({self._path}); wait for it or remove the lock if the "
+                f"process that held it is gone"
+            )
+        # Reclaim a stale lock atomically. Unlink-then-create let two processes
+        # both pass `_stale_lock`, both unlink, and both create — and the first
+        # to exit then deleted the second's new lock. Moving the stale file
+        # aside with `os.replace` is the atomic primitive: of all racers, only
+        # the one that finds the stale lock still present succeeds; the rest see
+        # it already gone and must not create their own, or two applies run.
+        aside = self._path.with_name(f".apply.lock.stale.{self._token}")
+        try:
+            os.replace(self._path, aside)
+        except FileNotFoundError:
+            raise ConcurrentApply(
+                f"another apply reclaimed the stale lock for {self._path} first"
+            )
+        try:
+            os.unlink(aside)
+        except OSError:  # pragma: no cover
+            pass
+        try:
+            self._acquire_fresh()
+        except FileExistsError:
+            # A fresh apply grabbed the slot in the gap after we reclaimed.
+            raise ConcurrentApply(
+                f"another apply acquired {self._path} during reclamation"
+            )
         return self
 
     def __exit__(self, *_exc):
         if self._fd is not None:
             os.close(self._fd)
+            self._fd = None
+        # Only remove the lock if it is still *ours*. A token check stops this
+        # process from deleting a lock a later apply legitimately created after
+        # this one's was reclaimed as stale — the "first process deletes the
+        # second's lock on exit" race.
         try:
-            os.unlink(self._path)
+            holder = self._path.read_bytes()
         except OSError:  # pragma: no cover
-            pass
+            return False
+        if holder == self._payload():
+            try:
+                os.unlink(self._path)
+            except OSError:  # pragma: no cover
+                pass
         return False
 
 

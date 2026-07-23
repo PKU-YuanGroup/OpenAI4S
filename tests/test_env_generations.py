@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -541,3 +542,106 @@ def test_the_cli_lists_generations_and_the_current_one(tmp_path, monkeypatch, ca
     payload = json.loads(out.out)["python"]
     assert payload["current"]
     assert payload["generations"][0]["generation_id"] == payload["current"]
+
+
+# --------------------------------------------------------------------------
+# lock and no-op consistency under contention
+# --------------------------------------------------------------------------
+
+
+def test_two_processes_reclaiming_one_stale_lock_do_not_both_run(tmp_path, monkeypatch):
+    """Unlink-then-create let both racers pass `_stale_lock`, both unlink, and
+    both create; the first to exit then deleted the second's new lock. Only one
+    may hold a reclaimed stale lock at a time."""
+    env_dir = tmp_path / "environments" / "python"
+    env_dir.mkdir(parents=True)
+    lock = env_dir / "apply.lock"
+    lock.write_text("99999:dead", encoding="utf-8")
+    old = os.stat(lock).st_mtime - eg.LOCK_STALE_S - 60
+    os.utime(lock, (old, old))
+
+    held: list[str] = []
+    errors: list[BaseException] = []
+    start = threading.Barrier(2, timeout=10)
+
+    def contend(tag):
+        try:
+            start.wait()
+            with eg._apply_lock(env_dir):
+                held.append(tag)
+                time.sleep(0.1)  # hold it so the other cannot also be inside
+        except eg.ConcurrentApply:
+            pass
+        except threading.BrokenBarrierError:
+            pass
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=contend, args=("a",)),
+        threading.Thread(target=contend, args=("b",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+
+    assert not errors, errors
+    # At most one reclaimer runs; the other is refused with ConcurrentApply.
+    assert len(held) <= 1, f"two applies both reclaimed the stale lock: {held}"
+
+
+def test_the_lock_owner_does_not_delete_a_later_lock_on_exit(tmp_path):
+    """A process reclaimed as stale must not, on exit, unlink a lock a fresh
+    apply legitimately created after it."""
+    env_dir = tmp_path / "environments" / "python"
+    env_dir.mkdir(parents=True)
+
+    first = eg._apply_lock(env_dir)
+    first.__enter__()
+    lock = env_dir / "apply.lock"
+    # A second, legitimate owner overwrites the lock (as a reclaim would).
+    lock.write_bytes(b"1234:fresh-owner")
+
+    first.__exit__(None, None, None)
+
+    assert (
+        lock.read_bytes() == b"1234:fresh-owner"
+    ), "the exiting process deleted a lock that was no longer its own"
+    # cleanup
+    try:
+        lock.unlink()
+    except OSError:
+        pass
+
+
+def test_a_no_op_apply_is_refused_when_the_spec_changed_since_the_plan(store, tmp_path):
+    """A no-op is a claim that nothing changed. If the spec was edited between
+    plan and apply, returning success reported an env that no longer matches."""
+    spec = _spec(tmp_path)
+    _apply(store, spec)  # make it current
+    plan = store.plan("python", spec, tool="fake-conda")
+    assert plan.action == eg.NOOP
+
+    spec.write_text("numpy\nscipy\n", encoding="utf-8")  # edited after planning
+
+    with pytest.raises(eg.EnvironmentError_, match="changed since the no-op plan"):
+        store.apply(plan, spec, tool="fake-conda", build=_build, verify=_verify)
+
+
+def test_a_no_op_apply_is_refused_when_the_pointer_moved_since_the_plan(
+    store, tmp_path
+):
+    """Another apply landing between plan and a no-op apply means the no-op's
+    world no longer exists."""
+    spec = _spec(tmp_path)
+    _apply(store, spec)
+    stale_plan = store.plan("python", spec, tool="fake-conda")
+    assert stale_plan.action == eg.NOOP
+
+    # Someone else applies a different spec, moving the pointer.
+    spec.write_text("numpy\npandas\n", encoding="utf-8")
+    _apply(store, spec)
+
+    with pytest.raises(eg.ConcurrentApply):
+        store.apply(stale_plan, spec, tool="fake-conda", build=_build, verify=_verify)
