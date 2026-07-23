@@ -170,8 +170,18 @@ jobs:
         run: uv run python scripts/capture_response_contract.py --check
 
   browser-smoke:
-    name: Browser workbench E2E (Chromium)
+    name: Browser workbench E2E (${{ matrix.engine }})
     runs-on: ubuntu-latest
+    # Chromium is the engine the app is developed against, so it is the one
+    # least likely to surprise anyone. The defects a matrix catches are the
+    # ones a single engine cannot: a WebSocket close code Firefox reports
+    # differently, a fetch abort WebKit surfaces as another error, a DOM API
+    # one engine has and another does not. `fail-fast: false` so one engine's
+    # failure still leaves the other two's results visible.
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -184,7 +194,7 @@ jobs:
         run: |
           uv sync --locked
           npm install --no-save --ignore-scripts playwright@1.54.1
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps ${{ matrix.engine }}
       - name: Start the daemon and open the real workbench
         env:
           OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-browser-smoke
@@ -212,7 +222,14 @@ jobs:
             fi
             sleep 0.25
           done
-          node tests/browser_smoke.mjs
+          # The full workbench walk stays Chromium-only: it is long, and its
+          # value is depth rather than engine coverage. The matrix file is the
+          # breadth pass — session, artifact, consent, cancel, recovery — and
+          # it runs in every engine.
+          if [ "${{ matrix.engine }}" = "chromium" ]; then
+            node tests/browser_smoke.mjs
+          fi
+          node tests/browser_matrix.mjs --browser=${{ matrix.engine }}
       - name: Show daemon log after a failure
         if: failure()
         run: cat "${RUNNER_TEMP}/openai4s-browser.log" || true
