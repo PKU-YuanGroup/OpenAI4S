@@ -483,13 +483,15 @@ def test_a_harvested_file_that_cannot_be_read_is_not_a_delivered_output(
     def fake_harvest(job_id, _stage):
         from openai4s.compute import manifest
 
-        dest = byoc._hpc_root / job_id
-        dest.mkdir(parents=True, exist_ok=True)
-        target = dest / "model.pt"
+        # Build in a host-owned staging dir, as the real harvest now does, and
+        # return (entries, staging) so the caller can publish it to the
+        # workspace.
+        staging = byoc._host_staging_dir(job_id)
+        target = staging / "model.pt"
         target.write_bytes(b"weights")
         target.chmod(0o000)
         blocked.append(target)
-        return manifest.build_manifest(dest)
+        return manifest.build_manifest(staging), staging
 
     monkeypatch.setattr(byoc, "_harvest", fake_harvest, raising=True)
     try:
@@ -506,8 +508,15 @@ def test_a_harvested_file_that_cannot_be_read_is_not_a_delivered_output(
         row = get_store(cfg.db_path).list_compute_jobs()[0]
         assert row["termination_reason"] == states.REASON_OUTPUTS_UNVERIFIED
     finally:
+        # The harvest published the staging tree into the workspace, so the
+        # blocked file now lives under dest; chmod whichever copy still exists
+        # so tmp cleanup can remove it.
         for path in blocked:
-            path.chmod(0o600)
+            for candidate in (path, byoc._hpc_root / out["job_id"] / path.name):
+                try:
+                    candidate.chmod(0o600)
+                except OSError:
+                    pass
 
 
 # --------------------------------------------------------------------------

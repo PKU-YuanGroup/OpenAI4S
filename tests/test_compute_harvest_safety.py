@@ -16,12 +16,13 @@ Two P1s from the second review, plus one P2, all in the compute manager:
 """
 from __future__ import annotations
 
+import subprocess
 import types
 from pathlib import Path
 
 import pytest
 
-from openai4s.compute import manifest
+from openai4s.compute import manifest, states
 from openai4s.compute.manager import ComputeError, ComputeManager
 from openai4s.config import Config
 
@@ -83,6 +84,71 @@ def test_a_legitimate_harvest_dir_is_allowed_and_contained(cfg, tmp_path):
     dest = manager._safe_harvest_dest("job-abc")
     assert dest.is_dir()
     assert Path(manager._hpc_root_real) in dest.resolve().parents
+
+
+def test_the_staging_dir_is_host_owned_and_outside_the_workspace(cfg, tmp_path):
+    ws = tmp_path / "ws"
+    manager = _manager(cfg, ws)
+    staging = manager._host_staging_dir("job-abc")
+    assert staging.is_dir()
+    # Never under the kernel-writable workspace, so a cell cannot pre-plant it.
+    assert ws.resolve() not in staging.resolve().parents
+    assert Path(cfg.data_dir).resolve() in staging.resolve().parents
+
+
+def test_a_planted_output_is_not_counted_as_produced(cfg, tmp_path):
+    """The trust-boundary defect: a cell creates the declared output under the
+    workspace harvest dir before polling. The manifest is built from a host-
+    owned staging tree, so the plant is not counted and the wholesale publish
+    discards it."""
+    ws = tmp_path / "ws"
+    manager = _manager(cfg, ws)
+    manager._jobs["job-plant"] = {
+        "job_id": "job-plant",
+        "provider": "ssh:lab",
+        "alias": "lab",
+        "workdir": str(tmp_path / "remote"),
+        "status": states.RUNNING,
+        "pid": "1",
+        "pgid": "1",
+        "outputs": ["model.pt"],
+    }
+    (tmp_path / "remote").mkdir()
+
+    # The cell plants the declared output where the workspace harvest lands.
+    planted_dir = ws / "hpc" / "job-plant"
+    planted_dir.mkdir(parents=True)
+    (planted_dir / "model.pt").write_bytes(b"forged-weights")
+
+    # The remote produced nothing: the harvest is empty.
+    def fake_harvest_ssh(alias, workdir, staging, exclude):
+        return None, [], []  # no error, nothing oversized, nothing stayed
+
+    manager._harvest_ssh = fake_harvest_ssh
+
+    def probe_says_exit_zero(argv, *a, **k):
+        return subprocess.CompletedProcess(argv, 0, b"RC 0 -\n", b"")
+
+    import openai4s.compute.manager as mod
+
+    original_run = mod.subprocess.run
+    mod.subprocess.run = probe_says_exit_zero
+    try:
+        result = manager._result_ssh(manager._jobs["job-plant"])
+    finally:
+        mod.subprocess.run = original_run
+
+    # The planted file must not be counted as a produced output, and the job
+    # must not be marked succeeded off forged bytes.
+    harvested = {Path(p).name for p in result["output_files"]}
+    assert (
+        "model.pt" not in harvested
+    ), f"a planted output was counted as produced: {harvested}"
+    assert (
+        result["status"] != states.SUCCEEDED
+    ), "an empty harvest with a planted file must not report success"
+    # And the plant is gone from the published workspace dir.
+    assert not (planted_dir / "model.pt").exists()
 
 
 # --------------------------------------------------------------------------

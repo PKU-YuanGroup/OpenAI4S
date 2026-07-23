@@ -551,7 +551,6 @@ def test_a_job_that_never_produced_its_declared_outputs_is_not_a_success(
 def test_a_harvest_is_recorded_with_hashes(byoc, monkeypatch, cfg):
     """Nothing in the compute package hashed anything, so a transfer that
     stopped halfway was indistinguishable from a complete one."""
-    harvested = byoc._hpc_root
 
     def behaviour(op):
         if op == "create":
@@ -566,10 +565,9 @@ def test_a_harvest_is_recorded_with_hashes(byoc, monkeypatch, cfg):
     def fake_harvest(job_id, _stage):
         from openai4s.compute import manifest as _manifest
 
-        dest = harvested / job_id
-        dest.mkdir(parents=True, exist_ok=True)
-        (dest / "model.pt").write_bytes(b"weights")
-        return _manifest.build_manifest(dest)
+        staging = byoc._host_staging_dir(job_id)
+        (staging / "model.pt").write_bytes(b"weights")
+        return _manifest.build_manifest(staging), staging
 
     monkeypatch.setattr(byoc, "_harvest", fake_harvest, raising=True)
 
@@ -606,11 +604,10 @@ def test_featured_files_is_the_declared_subset(byoc, monkeypatch):
     def fake_harvest(job_id, _stage):
         from openai4s.compute import manifest as _manifest
 
-        dest = byoc._hpc_root / job_id
-        dest.mkdir(parents=True, exist_ok=True)
-        (dest / "scores.csv").write_text("a\n1\n", encoding="utf-8")
-        (dest / "stdout.log").write_text("noise\n", encoding="utf-8")
-        return _manifest.build_manifest(dest)
+        staging = byoc._host_staging_dir(job_id)
+        (staging / "scores.csv").write_text("a\n1\n", encoding="utf-8")
+        (staging / "stdout.log").write_text("noise\n", encoding="utf-8")
+        return _manifest.build_manifest(staging), staging
 
     monkeypatch.setattr(byoc, "_harvest", fake_harvest, raising=True)
 

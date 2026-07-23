@@ -590,6 +590,16 @@ class ComputeManager:
         # per-job dir — with a symlink and redirect the harvest anywhere the
         # daemon can write. `_safe_harvest_dest` checks against this.
         self._hpc_root_real = os.path.realpath(self._hpc_root)
+        # Remote outputs are *extracted and hashed* here, always under the data
+        # dir and never in the kernel-writable workspace. The workspace copy
+        # under `_hpc_root` exists only so `host.save_artifact` (which requires a
+        # path inside the session root) can reach the files — but building the
+        # manifest there let a cell plant `hpc/<job_id>/<declared-output>` before
+        # polling, so an exit-0 job was marked succeeded with locally forged
+        # bytes. The trusted manifest is built from this host-owned staging, and
+        # only then is the verified tree published into the workspace.
+        self._hpc_stage_root = Path(cfg.data_dir) / "hpc-stage"
+        self._hpc_stage_root.mkdir(parents=True, exist_ok=True)
         self._rehydrate()
         self._confinement_mode = _confinement_mode()
         # See _confinement_gate: no host-side byoc boundary exists yet, so the
@@ -631,6 +641,37 @@ class ComputeManager:
                 "unsafe_archive",
             )
         return dest
+
+    def _host_staging_dir(self, job_id: str) -> Path:
+        """A fresh, host-owned, unguessable directory to extract a harvest into.
+
+        Under the data dir, never the workspace, and with a random suffix so a
+        cell cannot pre-create it. This is where the *trusted* manifest is
+        built — the workspace copy is only for `save_artifact` reachability.
+        """
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(job_id or "")).strip("._") or "job"
+        return Path(tempfile.mkdtemp(prefix=f"{name}-", dir=str(self._hpc_stage_root)))
+
+    def _publish_harvest(self, staging: Path, dest: Path) -> None:
+        """Replace the workspace harvest dir wholesale with the verified tree.
+
+        The manifest was already built from ``staging`` (host-owned), so this
+        move is only about making the files reachable to ``save_artifact``.
+        Replacing wholesale discards anything a cell planted under ``dest``.
+        """
+        try:
+            if dest.exists():
+                shutil.rmtree(dest)
+        except OSError:
+            pass
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(staging, dest)
+        except OSError:
+            # Cross-device (staging under data dir, dest under a workspace on
+            # another mount): fall back to a copy, then drop the staging tree.
+            shutil.copytree(staging, dest, dirs_exist_ok=True)
+            shutil.rmtree(staging, ignore_errors=True)
 
     # --- durability -------------------------------------------------------
     def _rehydrate(self) -> None:
@@ -1725,14 +1766,20 @@ class ComputeManager:
                         "harvested output as unverified"
                     ),
                 }
+            harvested: Path | None = None
             try:
-                entries = self._harvest(job["job_id"], stage)
+                entries, harvested = self._harvest(job["job_id"], stage)
                 harvest_error = None
             except UnsafeArchiveError as e:
                 entries = []
                 harvest_error = str(e)
 
+        # `entries` was built from the host-owned staging dir, so reconcile is
+        # immune to a planted file. Only now is the verified tree published into
+        # the workspace copy that `save_artifact` can reach.
         dest = self._safe_harvest_dest(job["job_id"])
+        if harvested is not None:
+            self._publish_harvest(harvested, dest)
         out_files = [str(dest / item["path"]) for item in entries]
         featured, missing = manifest.reconcile(entries, job.get("outputs"))
         featured_files = [str(dest / rel) for rel in featured]
@@ -1817,24 +1864,27 @@ class ComputeManager:
             }
         return result
 
-    def _harvest(self, job_id: str, stage: Path) -> list[dict]:
-        """Unpack the remote's out.tar.gz into hpc/<job_id>/ and record it.
+    def _harvest(self, job_id: str, stage: Path) -> tuple[list[dict], Path | None]:
+        """Unpack the remote's out.tar.gz and record it.
 
-        Returns the manifest — path, size and sha256 per file — rather than a
-        bare path list, because a path list cannot tell a complete transfer
-        from one that stopped halfway.
+        Returns ``(entries, harvested)``: the manifest — path, size and sha256
+        per file — and the host-owned directory the bytes were extracted into,
+        or ``None`` when there was nothing to harvest. The manifest is built
+        from that host-owned directory, never the kernel-writable workspace, so
+        a cell cannot plant a declared output and have it counted as produced.
+        The caller publishes ``harvested`` into the workspace afterwards.
 
         Raises UnsafeArchiveError if the archive is hostile; the caller must
         treat that as a failed harvest, never a partial success.
         """
-        dest = self._safe_harvest_dest(job_id)
         tgz = stage / "out.tar.gz"
         if not tgz.exists():
             # No archive at all. Previously this returned an empty list with no
             # error and the caller went on to call the job succeeded.
-            return []
-        safe_extract_tar(tgz, dest)
-        return manifest.build_manifest(dest)
+            return [], None
+        harvested = self._host_staging_dir(job_id)
+        safe_extract_tar(tgz, harvested)
+        return manifest.build_manifest(harvested), harvested
 
     def _result_ssh(self, job: dict) -> dict:
         alias, workdir = job["alias"], job["workdir"]
@@ -1894,14 +1944,22 @@ class ComputeManager:
         except ValueError:
             return self._ssh_unknown(job, f"unparseable exit code {rc_text!r}")
 
-        dest = self._safe_harvest_dest(job["job_id"])
+        # Extract and hash under a host-owned staging dir, never the kernel-
+        # writable workspace: a cell could otherwise plant `hpc/<job_id>/<file>`
+        # before polling and have `build_manifest` count it as a produced
+        # output, so an exit-0 job was marked succeeded with forged bytes.
+        staging = self._host_staging_dir(job["job_id"])
         stay_remote = manifest.remote_patterns(job.get("outputs"))
         harvest_error, oversized, stayed = self._harvest_ssh(
-            alias, workdir, dest, stay_remote
+            alias, workdir, staging, stay_remote
         )
-        entries = manifest.build_manifest(dest)
+        entries = manifest.build_manifest(staging)
         featured, missing = manifest.reconcile(entries, job.get("outputs"))
         unverified_files = manifest.unverified(entries)
+        # The manifest is trusted (built from staging); publish it into the
+        # workspace copy `save_artifact` can reach, replacing any planted files.
+        dest = self._safe_harvest_dest(job["job_id"])
+        self._publish_harvest(staging, dest)
 
         if timed_out:
             # The wrapper's own marker, not the exit code. `timeout` reports
