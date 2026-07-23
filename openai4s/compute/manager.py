@@ -912,60 +912,25 @@ class ComputeManager:
     def confinement_status(self) -> dict:
         """Machine-readable posture for the UI/status surface.
 
+        The description itself lives in ``security.byoc_confinement`` so that
+        every surface answers from the same self-test. `doctor` had its own
+        opinion and contradicted this one.
+
         Never silent about a degradation: a user must not read "the helper ran"
         as "the helper was confined".
         """
         from openai4s.security import byoc_confinement
 
-        can_confine, reason = byoc_confinement.available()
-        if self._confinement_mode == "off":
-            return {
-                "mode": "off",
-                "enforced": False,
-                "state": "disabled",
-                "detail": (
-                    f"{_CONFINEMENT_ENV}=off: the provider helper is spawned "
-                    f"with no OS boundary by explicit configuration."
-                ),
-            }
-        if can_confine:
-            isolated = byoc_confinement.network_isolated()
-            return {
-                "mode": self._confinement_mode,
-                "enforced": True,
-                "state": "active",
-                "backend": reason,
-                # Its own field, and never folded into `enforced`. "The helper
-                # is confined" is read by most people as "the helper cannot
-                # phone home", and the filesystem boundary says nothing about
-                # the network — a boundary nobody mentions is one people assume.
-                "network_isolated": isolated,
-                "detail": (
-                    f"the provider helper runs under {reason}: writes confined "
-                    f"to its stage directory and the user's home replaced, so "
-                    f"credentials, keys and history are not reachable. The "
-                    f"helper verifies this from inside before it reads a "
-                    f"credential and exits without acting if it does not hold. "
-                    + (
-                        "The network is isolated too."
-                        if isolated
-                        else "The network is NOT isolated: outbound egress is "
-                        "a separate capability and it is not enabled, so the "
-                        "helper can still reach the internet."
-                    )
-                ),
-            }
-        return {
-            "mode": self._confinement_mode,
-            "enforced": False,
-            "state": "unavailable",
-            "detail": (
-                f"no OS boundary can be established for the provider helper "
-                f"here: {reason}. Remote compute remains a Prototype "
-                f"capability on this host. Set {_CONFINEMENT_ENV}=enforce to "
-                f"refuse byoc ops rather than run unconfined."
-            ),
-        }
+        status = byoc_confinement.posture(self._confinement_mode)
+        if status["state"] == "disabled":
+            status["detail"] = f"{_CONFINEMENT_ENV}=off: " + status["detail"]
+        elif status["state"] == "unavailable":
+            status["detail"] += (
+                f". Remote compute remains a Prototype capability on this "
+                f"host. Set {_CONFINEMENT_ENV}=enforce to refuse byoc ops "
+                f"rather than run unconfined."
+            )
+        return status
 
     def _confinement_gate(self, pid: str) -> None:
         """Fail closed when the caller demanded a boundary we cannot establish.

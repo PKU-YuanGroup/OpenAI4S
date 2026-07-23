@@ -398,18 +398,41 @@ def _remote(cfg: Any) -> Check:
             "no remote compute configured; everything runs locally",
             facts=facts,
         )
-    if providers and confinement == "enforce":
-        # Stated plainly because it is a refusal by construction, not a bug.
-        return Check(
-            "remote",
-            FAIL,
-            f"{len(providers)} BYOC provider(s) present but "
-            f"OPENAI4S_COMPUTE_CONFINEMENT=enforce, which this host cannot "
-            f"satisfy: no OS boundary is applied to the provider helper",
-            "Set it to `auto` to accept unconfined remote execution, or keep "
-            "`enforce` and use the ssh family instead.",
-            facts,
-        )
+    if providers:
+        # Ask the same module the runtime asks, and run the same bounded
+        # boundary self-test it runs. This used to be an unconditional FAIL
+        # under `enforce` — "no OS boundary is applied to the provider helper"
+        # — on hosts where Seatbelt or bubblewrap was implemented, self-tested
+        # and actually applied. It contradicted the runtime status and told the
+        # user to weaken their configuration to fix a problem they did not have.
+        from openai4s.security import byoc_confinement
+
+        posture = byoc_confinement.posture(confinement)
+        facts["confinement_state"] = posture["state"]
+        facts["confinement_backend"] = posture.get("backend")
+        facts["confinement_network_isolated"] = posture.get("network_isolated")
+        if confinement == "enforce" and not posture["enforced"]:
+            return Check(
+                "remote",
+                FAIL,
+                f"{len(providers)} BYOC provider(s) present and "
+                f"OPENAI4S_COMPUTE_CONFINEMENT=enforce, which this host cannot "
+                f"satisfy: {posture['detail']}",
+                "Install the backend for this platform (bubblewrap on Linux), "
+                "or use the ssh family, which needs no helper confinement. "
+                "Setting `auto` accepts unconfined remote execution.",
+                facts,
+            )
+        if not posture["enforced"]:
+            return Check(
+                "remote",
+                WARN,
+                f"{len(providers)} BYOC provider(s) run without an OS "
+                f"boundary: {posture['detail']}",
+                "Set OPENAI4S_COMPUTE_CONFINEMENT=enforce to refuse byoc ops "
+                "rather than run the provider helper unconfined.",
+                facts,
+            )
     parts = []
     if providers:
         parts.append(f"{len(providers)} BYOC provider(s)")

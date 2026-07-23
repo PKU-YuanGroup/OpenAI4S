@@ -52,7 +52,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
+import threading
 from pathlib import Path
 
 #: Where the sandbox binary lives on macOS. Probed rather than assumed so a
@@ -92,17 +95,38 @@ def _canonical(path: str | os.PathLike[str]) -> str:
     return os.path.realpath(str(path))
 
 
+def helper_package_dir() -> str:
+    """The confined helper's own package directory — that directory alone.
+
+    This used to be its *parent*, which in a source or editable install is the
+    repository root. The home denial was then reopened over everything beneath
+    it: an untracked ``.env``, ``.git`` and its objects, unrelated source and
+    data — all readable by a provider shim that, by design, also has the
+    network. The boundary was "the user's credentials are not reachable", and
+    the allowance handed back the file most likely to hold them.
+
+    The parent was on the list because ``__main__.py`` put it on ``sys.path``
+    to ``import openai4s_compute_provider``, and a package import lists the
+    directory it searches. The entrypoint now loads its own package by file
+    location instead, so nothing above this directory has to be readable.
+    """
+    return str(
+        Path(__file__).resolve().parent.parent.parent / "openai4s_compute_provider"
+    )
+
+
 def runtime_read_paths(extra: tuple[str, ...] = ()) -> list[str]:
     """Directories the helper must be able to read to exist as a process.
 
-    The interpreter, its standard library and site-packages, and the helper's
-    own package tree. Anything else under the home directory stays denied.
+    The interpreter, its standard library and site-packages, the helper's own
+    package directory, and whatever the caller names for the provider shim.
+    Anything else under the home directory stays denied — including the tree
+    this file lives in.
     """
     candidates = [
         sys.prefix,
         sys.base_prefix,
-        # The helper package and the provider shim it loads.
-        str(Path(__file__).resolve().parent.parent.parent),
+        helper_package_dir(),
         *extra,
     ]
     seen: list[str] = []
@@ -223,17 +247,185 @@ def network_isolated() -> bool:
     return False
 
 
-def available() -> tuple[bool, str]:
-    """Whether a boundary can be established here, and why not when it cannot."""
-    if sys.platform == "darwin":
-        if shutil.which(_SEATBELT):
-            return True, "macOS Seatbelt"
-        return False, f"{_SEATBELT} is not on PATH"
+#: How long a boundary self-test may take. It starts one process and lists one
+#: directory; anything slower is a host problem, not a slow probe.
+SELF_TEST_TIMEOUT_S = 30.0
+
+#: Cached self-test verdicts, keyed by everything that could change the answer.
+_SELF_TEST: dict[tuple, tuple[bool, str]] = {}
+_SELF_TEST_LOCK = threading.Lock()
+
+
+def _self_test_key(executable: str) -> tuple:
+    """Everything a cached verdict is only valid for.
+
+    The binary and its mtime (an upgrade or a replacement changes the answer),
+    the home the boundary is built around, and the platform. A verdict cached
+    across a configuration change would be exactly the stale confidence this
+    self-test exists to remove.
+    """
+    try:
+        stamp = os.stat(executable).st_mtime_ns
+    except OSError:
+        stamp = 0
+    return (sys.platform, executable, stamp, _canonical(Path.home()))
+
+
+def _probe_argv(executable: str, stage: str, home: str) -> list[str]:
+    """A bounded command that only passes if the boundary really applied.
+
+    Not "did the backend exit 0" — a bwrap that cannot unshare, or a Seatbelt
+    profile that failed to compile, can still run a command. The test is the
+    filesystem invariant itself: from inside, the home directory must be empty
+    (Linux, where it is a tmpfs) or unreadable (macOS, where reads are denied).
+    """
     if sys.platform.startswith("linux"):
-        if shutil.which(_BWRAP):
-            return True, "Linux bubblewrap"
-        return False, f"{_BWRAP} is not on PATH"
+        script = f'[ -z "$(ls -A {home!r} 2>/dev/null)" ]'
+        return build_bwrap_argv(
+            ["/bin/sh", "-c", script], stage, executable=executable, home=home
+        )
+    script = f"ls {home!r} >/dev/null 2>&1 && exit 1; exit 0"
+    return [executable, "-p", build_profile(stage, home=home), "/bin/sh", "-c", script]
+
+
+def self_test(*, force: bool = False) -> tuple[bool, str]:
+    """Actually establish a boundary once, and see whether it holds.
+
+    ``shutil.which`` answers whether a binary is installed. On a Linux host
+    where unprivileged user namespaces or mounts are disabled, ``bwrap`` is
+    installed and cannot confine anything — so confinement was reported active,
+    the enforce gate let the op proceed, and the real invocation died before the
+    helper started. That failure was then classified as an indeterminate remote
+    operation: the worst available reading of a host that simply cannot sandbox.
+
+    The verdict is cached, and the key covers the backend binary, its mtime and
+    the home directory — so a configuration or environment change invalidates
+    it rather than being papered over by a stale success.
+    """
+    executable = shutil.which(_BWRAP if sys.platform.startswith("linux") else _SEATBELT)
+    if not executable:
+        binary = _BWRAP if sys.platform.startswith("linux") else _SEATBELT
+        return False, f"{binary} is not on PATH"
+    key = _self_test_key(executable)
+    if not force:
+        with _SELF_TEST_LOCK:
+            cached = _SELF_TEST.get(key)
+        if cached is not None:
+            return cached
+
+    verdict: tuple[bool, str]
+    backend = (
+        "Linux bubblewrap" if sys.platform.startswith("linux") else "macOS Seatbelt"
+    )
+    try:
+        with tempfile.TemporaryDirectory(prefix="openai4s-confine-selftest-") as stage:
+            argv = _probe_argv(executable, stage, _canonical(Path.home()))
+            completed = subprocess.run(
+                argv, capture_output=True, timeout=SELF_TEST_TIMEOUT_S
+            )
+        if completed.returncode == 0:
+            verdict = (True, backend)
+        else:
+            detail = (
+                completed.stderr.decode("utf-8", "replace").strip()
+                or f"exit {completed.returncode}"
+            )
+            verdict = (
+                False,
+                f"{backend} is installed but did not establish a filesystem "
+                f"boundary here: {detail}",
+            )
+    except subprocess.TimeoutExpired:
+        verdict = (
+            False,
+            f"{backend} did not answer its boundary self-test within "
+            f"{SELF_TEST_TIMEOUT_S:.0f}s",
+        )
+    except OSError as e:
+        verdict = (False, f"{backend} could not be started: {e}")
+
+    with _SELF_TEST_LOCK:
+        _SELF_TEST[key] = verdict
+    return verdict
+
+
+def reset_self_test_cache() -> None:
+    """Forget every cached verdict. For tests and for configuration changes."""
+    with _SELF_TEST_LOCK:
+        _SELF_TEST.clear()
+
+
+def available() -> tuple[bool, str]:
+    """Whether a boundary can be established here, and why not when it cannot.
+
+    "Installed" is not "works": this runs the self-test above rather than
+    reporting on the presence of a binary.
+    """
+    if sys.platform == "darwin" or sys.platform.startswith("linux"):
+        return self_test()
     return False, f"no confinement backend for platform {sys.platform!r}"
+
+
+def posture(mode: str) -> dict:
+    """The one description of this host's confinement, for every surface.
+
+    Both the runtime status and ``openai4s doctor`` read this. They disagreed
+    before: doctor reported, unconditionally, that no OS boundary existed and
+    told the user to weaken ``enforce`` to ``auto`` — on a host where the
+    boundary was implemented, self-tested and applied.
+    """
+    normalised = (mode or "auto").strip().lower()
+    if normalised == "off":
+        return {
+            "mode": "off",
+            "enforced": False,
+            "state": "disabled",
+            "backend": None,
+            "network_isolated": False,
+            "detail": (
+                "the provider helper is spawned with no OS boundary by "
+                "explicit configuration"
+            ),
+        }
+    ok, reason = available()
+    if ok:
+        isolated = network_isolated()
+        return {
+            "mode": normalised,
+            "enforced": True,
+            "state": "active",
+            "backend": reason,
+            # Its own field, and never folded into `enforced`. "The helper is
+            # confined" is read by most people as "the helper cannot phone
+            # home", and the filesystem boundary says nothing about the
+            # network — a boundary nobody mentions is one people assume.
+            "network_isolated": isolated,
+            "detail": (
+                f"the provider helper runs under {reason}: writes confined to "
+                f"its stage directory and the user's home replaced, so "
+                f"credentials, keys and history are not reachable. The helper "
+                f"verifies this from inside before it reads a credential and "
+                f"exits without acting if it does not hold. "
+                + (
+                    "The network is isolated too."
+                    if isolated
+                    else "The network is NOT isolated: outbound egress is a "
+                    "separate capability and it is not enabled, so the helper "
+                    "can still reach the internet."
+                )
+            ),
+        }
+    return {
+        "mode": normalised,
+        "enforced": False,
+        "state": "unavailable",
+        "backend": None,
+        "network_isolated": False,
+        "detail": (
+            f"no OS boundary can be established for the provider helper here: "
+            f"{reason}"
+        ),
+    }
 
 
 def probe_environment(home: str | os.PathLike[str] | None = None) -> dict[str, str]:
@@ -279,11 +471,16 @@ def wrap(
 
 __all__ = [
     "ConfinementUnavailable",
+    "SELF_TEST_TIMEOUT_S",
     "available",
     "build_bwrap_argv",
     "build_profile",
+    "helper_package_dir",
     "network_isolated",
+    "posture",
     "probe_environment",
+    "reset_self_test_cache",
     "runtime_read_paths",
+    "self_test",
     "wrap",
 ]
