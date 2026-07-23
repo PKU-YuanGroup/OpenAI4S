@@ -22,6 +22,7 @@
 | `source_secret_scan.py` | 扫描发布源码树里形似凭据的内容，失败即拒绝。它只打印检测器名、路径和行号，绝不回显匹配到的值。零依赖：候选文件由 git 挑出，git 不可用时（例如解包后的源码归档）退回到确定性的文件系统遍历。 |
 | `update_contributors.py` | 重建 Community Contributors 墙。用仓库自己的 token 从 GitHub API 拉取贡献者，把每个头像裁成圆形 PNG 写入 `.github/contributors/`，再改写两份根 README 中 `CONTRIBUTORS` 标记之间的区块。需要 Pillow。 |
 | `verify_macos_bundle.py` | 只用标准库检查构建好的 `.app` 或 `.dmg`——这是 wheel 检查看不到的那份契约。它以只读方式挂载镜像，然后在下列情况下失败关闭：内嵌解释器没能随 bundle 重定位、预装运行时缺了任何一个 `CORE_PACKAGES` 导入、`Info.plist` 与 `openai4s.__version__` 对不上、缺少 Web UI / R worker / compute 模板 / Skill 目录、`python -m openai4s --help` 无法离线运行、代码签名校验不过，或者镜像里混进了 dotenv 及任何形似凭据的内容。 |
+| `describe_macos_image.py` | 挂载构建好的 `.dmg`，在旁边写两份佐证：从 `codesign` 读出的签名 authority 链，以及镜像里真正内嵌的运行时的包清单。发布暂存作业跑在 Linux 上、两样都拿不到，所以这份证据必须在构建镜像的那台机器上产生并随镜像一起走——没有它，发布闸门只能退回去读「签名身份变量是否非空」，而 ad-hoc 签名的镜像同样满足这一条。 |
 | `verify_release_artifacts.py` | 只用标准库检查构建好的 wheel 与 sdist。先看必需文件是否齐全、有没有夹带不该带的东西（symlink、字节码、缓存、`.env`），再读 wheel metadata：MIT 许可、四个 Project-URL、`openai4s` 控制台入口点、平台无关的 `py3-none-any` tag，以及 wheel 里没有测试套件、核心没有非 extra 依赖。 |
 | `verify_release_tag.py` | `vMAJOR.MINOR.PATCH` 形式的 release tag 必须与两处字面版本声明一致：`pyproject.toml` 里的 `[project] version` 和 `openai4s.__version__`；对不上就失败即拒绝。 |
 

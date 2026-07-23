@@ -1,43 +1,72 @@
 name: Publish release
 
-# Draft-first. `release: [created]` fires for a **draft** release too, which is
-# the whole point: the assets, the SBOM and the provenance are built, verified,
-# staged and re-verified while nothing is public, and the release is flipped to
-# published only after every one of those held. Triggering on `published` — as
-# this file used to — means the version is already visible while its assets are
-# still being uploaded, which is the half-published state the proposal names.
+# Draft-first, and reachable.
+#
+# This used to trigger on `release: [created]` with every outward-facing job
+# gated on `github.event.release.draft`. GitHub does not emit `release.created`
+# for a *draft* release, so the intended entry point could never fire; a
+# non-draft creation does emit it, and then the draft conditions skipped
+# attachment and publication. The pipeline was unreachable by construction.
+#
+# The entry point is now explicit: a maintainer creates the draft release (or
+# lets the tag push create it), then runs this workflow against that tag. With
+# `publish` unset it is a dry run — everything is built and verified, nothing
+# leaves. With `publish` set the run must name an existing *draft*, which the
+# guard job proves before anything else starts.
 #
 # The ordering and every check live in scripts/release_pipeline.py rather than
 # in this file, because a step that can only run on a release event is tested
 # by the thing it is supposed to protect. That script runs on a laptop, under
 # --dry-run, and under pytest.
 on:
-  release:
-    types: [created]
-  # Dry run: build and verify every artifact for a tag or branch without
-  # publishing anything. Nothing in this path touches PyPI or the Release.
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Tag or branch to build (dry run — nothing is published)"
+      tag:
+        description: "Release tag to build (e.g. v0.2.0). Required to publish."
         required: false
         default: ""
+      publish:
+        description: "Stage onto the existing draft, publish to PyPI, then make the GitHub release public"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
 
 jobs:
+  guard:
+    name: Require an existing draft release
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: The named tag must exist and must still be a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$TAG" ]; then
+            echo '::error::publishing requires the "tag" input'
+            exit 1
+          fi
+          if ! gh release view "$TAG" --json isDraft > release.json; then
+            echo "::error::no release $TAG exists; create the draft first"
+            exit 1
+          fi
+          if [ "$(jq -r .isDraft release.json)" != "true" ]; then
+            echo "::error::$TAG is already public; staging assets onto it is the half-published state this pipeline exists to prevent"
+            exit 1
+          fi
+
   build:
     name: Build verified distributions
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the immutable release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.release.tag_name || inputs.ref || github.ref }}
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
           persist-credentials: false
       - name: Install uv
@@ -45,12 +74,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Match the tag to both version declarations
-        if: github.event_name == 'release'
-        run: uv run --locked python scripts/verify_release_tag.py "${GITHUB_REF_NAME}"
+        if: inputs.tag != ''
+        run: uv run --locked python scripts/verify_release_tag.py "${{ inputs.tag }}"
       - name: Require an annotated tag on main
-        if: github.event_name == 'release'
+        if: inputs.publish
         run: |
-          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" != "tag" ]; then
+          if [ "$(git cat-file -t "${{ inputs.tag }}")" != "tag" ]; then
             echo "::error::Release tags must be annotated."
             exit 1
           fi
@@ -73,42 +102,51 @@ jobs:
     name: Build the macOS app image (arm64)
     # The DMG embeds a relocatable CPython plus the native science wheels, so it
     # cannot be cross-built: this must run on an Apple Silicon runner.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
     runs-on: macos-14
     steps:
       - name: Checkout the immutable release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.release.tag_name || inputs.ref || github.ref }}
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - name: Build the .app and .dmg
+        # The identity reaches the build, which is the only place it can be
+        # used. Passing it only to the staging job — as before — meant setting
+        # the secret changed nothing about how the image was signed while
+        # making the gate believe it had been.
+        env:
+          OPENAI4S_MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: bash scripts/build_macos_dmg.sh
       - name: Verify the image
         # Fails closed on a runtime that did not relocate, an incomplete science
         # stack, a missing Web UI / R worker, a broken signature, or any
         # credential material swept into the bundle.
         run: python3 scripts/verify_macos_bundle.py dist/*.dmg
+      - name: Record what actually signed the image, and what is inside it
+        # The staging job runs on Linux and has no `codesign`, so the evidence
+        # has to be produced here and travel with the image. Without it the
+        # gate had nothing to read and fell back to "the identity variable is
+        # set", which an ad-hoc image satisfies.
+        run: python3 scripts/describe_macos_image.py dist/*.dmg
       - name: Upload the verified app image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-app-image
           path: |
             dist/*.dmg
-            dist/*.dmg.sha256
+            dist/*.dmg.codesign.json
+            dist/*.dmg.components.json
           if-no-files-found: error
           retention-days: 1
 
   attach:
-    name: Attach assets to the GitHub Release
-    # `created` fires for a non-draft release too, and running there would put
-    # us back where we started: assets uploaded to a version people can already
-    # see. Draft-first means the draft is the only entry point.
-    if: github.event_name == 'release' && github.event.release.draft
-    needs: [build, macos-app]
+    name: Stage assets onto the draft
+    # Staging only. This job never makes anything public: the flip lives in
+    # `finalize`, after PyPI.
+    if: inputs.publish
+    needs: [guard, build, macos-app]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -126,48 +164,32 @@ jobs:
       - name: Check out the pipeline
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.tag }}
           path: source
-      - name: Publish one checksum file covering every asset
-        run: |
-          cd assets
-          rm -f OpenAI4S-*.dmg.sha256   # the per-image sidecar is folded into SHA256SUMS
-          sha256sum openai4s-*.whl openai4s-*.tar.gz OpenAI4S-*.dmg > SHA256SUMS
-          cat SHA256SUMS
-      # Everything below — SBOM, provenance, verification, the staged upload,
-      # the read-back, and the flip to published — is one script, so it is the
-      # same code a maintainer can run with --dry-run on a laptop. The build
-      # and test steps are skipped here because this job's inputs are the
-      # artifacts the earlier jobs already produced and verified.
-      - name: Stage, prove and verify the release, then publish it
+      # `--from-artifacts` is what stops this job from re-running `build` and
+      # `pytest`: its inputs are the artifacts the earlier jobs produced and
+      # verified, and rebuilding here would put different bytes on GitHub than
+      # PyPI receives. `--stop-after reverify` is what stops it from publishing.
+      - name: Stage, prove and verify the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          OPENAI4S_MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          TAG: ${{ inputs.tag }}
         run: |
           python source/scripts/release_pipeline.py \
-            --version "${GITHUB_REF_NAME#v}" \
+            --version "${TAG#v}" \
             --mode release \
+            --from-artifacts \
+            --stop-after reverify \
             --assets-dir assets \
             --json
 
-  publish:
+  pypi:
     name: Publish to PyPI with OIDC
-    # Same gate. A version number, once taken on an index, is taken forever, so
-    # this job may only run from the staged path where every check has already
-    # passed.
-    if: github.event_name == 'release' && github.event.release.draft
-    # The PyPI upload is the one step in this pipeline that cannot be undone —
-    # a version number, once taken, is taken forever, and yanking is a
-    # different thing from never having published. So it goes last, behind
-    # every other required asset.
-    #
-    # `needs: build` alone let it run while the macOS image had failed to
-    # build or failed `verify_macos_bundle.py`: `attach` would skip, and the
-    # result was a release published on PyPI whose GitHub Release carried no
-    # assets at all. That is precisely the half-published state this pipeline
-    # exists to prevent.
-    needs: [build, macos-app, attach]
+    if: inputs.publish
+    # A version number, once taken on an index, is taken forever, so this may
+    # only run from the staged path where every check has already passed.
+    needs: [guard, build, macos-app, attach]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -189,3 +211,37 @@ jobs:
         # container (and the OIDC exchange) ever starts. `release/v1` is PyPA's
         # documented, image-backed ref.
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  finalize:
+    name: Make the GitHub release public
+    # The last cross-channel step, and the only irreversible one on this side.
+    # Flipping the draft inside `attach` — with PyPI running afterwards — meant
+    # an OIDC failure, a denied environment approval or a rejected upload left
+    # a public release with no matching package version.
+    #
+    # If this job fails after PyPI succeeded, the release stays a draft and
+    # nothing needs rebuilding: re-run this workflow with the same tag, or run
+    # `release_pipeline.py --only publish` by hand. Do not bump the version and
+    # do not rebuild — the artifacts on the draft are the ones PyPI has.
+    if: inputs.publish
+    needs: [attach, pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the pipeline
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.tag }}
+          path: source
+      - name: Publish, once PyPI has the version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          python source/scripts/release_pipeline.py \
+            --version "${TAG#v}" \
+            --mode release \
+            --only publish \
+            --json

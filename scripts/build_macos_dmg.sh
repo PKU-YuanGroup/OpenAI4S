@@ -335,9 +335,22 @@ echo "   compiled: $(find "$APP" -name '*.pyc' | wc -l | tr -d ' ') .pyc files"
 # --------------------------------------------------------------------------- #
 # 9) ad-hoc codesign (no Apple Developer credentials; required on Apple Silicon)
 # --------------------------------------------------------------------------- #
-echo "-- [9/10] ad-hoc codesigning --"
-codesign --force --deep --sign - --timestamp=none "$APP" 2>&1 | tail -2 || true
-codesign --verify --deep "$APP" && echo "   codesign verify: OK" || echo "   codesign verify: WARN (ad-hoc)"
+SIGNING_IDENTITY="${OPENAI4S_MACOS_SIGNING_IDENTITY:-}"
+if [ -n "$SIGNING_IDENTITY" ]; then
+  # A configured identity must actually be *used*. It used to be read only by
+  # the release gate, which marked the image signed without inspecting it — so
+  # setting the secret changed nothing about the image and everything about
+  # what the pipeline believed.
+  echo "-- [9/10] codesigning with Developer ID --"
+  codesign --force --deep --options runtime --timestamp \
+    --sign "$SIGNING_IDENTITY" "$APP"
+  codesign --verify --deep --strict "$APP"
+  echo "   codesign verify: OK (Developer ID)"
+else
+  echo "-- [9/10] ad-hoc codesigning (no OPENAI4S_MACOS_SIGNING_IDENTITY) --"
+  codesign --force --deep --sign - --timestamp=none "$APP" 2>&1 | tail -2 || true
+  codesign --verify --deep "$APP" && echo "   codesign verify: OK" || echo "   codesign verify: WARN (ad-hoc)"
+fi
 
 # --------------------------------------------------------------------------- #
 # 10) build the DMG

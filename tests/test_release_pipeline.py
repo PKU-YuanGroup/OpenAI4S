@@ -1,15 +1,21 @@
 """The release pipeline, tested without cutting a release.
 
 That is the whole reason it is a script. A step embedded in a workflow that
-triggers `on: release` can only be exercised by the event it is supposed to
-protect, so the first time anyone learns it is wrong is on a real version.
+triggers on a release event can only be exercised by the event it is supposed
+to protect, so the first time anyone learns it is wrong is on a real version.
 
 What these pin, in order of how much they would cost to get wrong:
 
-  * publishing is last, and nothing irreversible runs before every check;
-  * a failure stops the pipeline — the steps after it must not run;
-  * release mode refuses to publish an unsigned disk image;
-  * notarization is never reported as verified.
+  * the GitHub flip is the *last* cross-channel step and refuses to run until
+    PyPI actually has the version — a public release with no matching package
+    is the half-published state this pipeline exists to prevent;
+  * a staging run does not rebuild: GitHub and PyPI must receive the same bytes;
+  * a disk image is signed on evidence, never on a configured variable;
+  * the read-back compares content, not filenames;
+  * SHA256SUMS covers everything and is itself uploaded;
+  * the SBOM describes the wheel and the image, not the machine that staged it;
+  * provenance names the repository this source actually lives in;
+  * a failure stops the pipeline — the steps after it must not run.
 """
 from __future__ import annotations
 
@@ -24,13 +30,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.release_pipeline import (  # noqa: E402
     EXTERNAL,
+    STAGING_SKIPPED,
     STEPS,
     Pipeline,
     ReleaseError,
     build_provenance,
     build_sbom,
+    canonical_source_uri,
+    read_signature,
     sha256_file,
+    wheel_components,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _completed(returncode=0, stdout=b"", stderr=b""):
@@ -46,10 +58,61 @@ def assets(tmp_path):
     return directory
 
 
+def _signed_dmg(assets: Path, name: str = "OpenAI4S-0.2.0-arm64.dmg") -> Path:
+    """A disk image with the receipt a macOS build job would have written."""
+    dmg = assets / name
+    dmg.write_bytes(b"dmg-bytes")
+    dmg.with_name(dmg.name + ".codesign.json").write_text(
+        json.dumps(
+            {
+                "authorities": [
+                    "Developer ID Application: Example Inc (ABCDE12345)",
+                    "Developer ID Certification Authority",
+                    "Apple Root CA",
+                ],
+                "adhoc": False,
+                "developer_id": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return dmg
+
+
 def _pipeline(assets, **kw):
     kw.setdefault("runner", lambda argv, cwd=None: _completed())
-    kw.setdefault("gh", lambda argv: _completed(0, b'{"assets": []}'))
+    kw.setdefault("gh", lambda argv: _completed(0, b'{"assets": [], "isDraft": true}'))
+    kw.setdefault("smoke", lambda wheel: "smoke injected")
+    kw.setdefault("pypi_check", lambda project, version: True)
     return Pipeline("0.2.0", assets_dir=assets, **kw)
+
+
+def _gh_for(assets: Path, *, is_draft=True, corrupt=None, drop=None):
+    """A gh stand-in that behaves like a release the assets were uploaded to."""
+
+    def gh(argv):
+        verb = argv[1]
+        if verb == "view" and "isDraft" in argv:
+            return _completed(0, json.dumps({"isDraft": is_draft}).encode())
+        if verb == "view":
+            listing = [
+                {"name": path.name, "size": path.stat().st_size}
+                for path in sorted(assets.glob("*"))
+                if path.name != drop
+            ]
+            return _completed(0, json.dumps({"assets": listing}).encode())
+        if verb == "download":
+            pattern = argv[argv.index("--pattern") + 1]
+            destination = Path(argv[argv.index("--dir") + 1])
+            source = assets / pattern
+            payload = source.read_bytes()
+            if pattern == corrupt:
+                payload = payload + b"-tampered"
+            (destination / pattern).write_bytes(payload)
+            return _completed()
+        return _completed()
+
+    return gh
 
 
 # --------------------------------------------------------------------------
@@ -65,7 +128,7 @@ def test_publishing_is_the_last_step():
 
 def test_nothing_external_happens_before_everything_local_has_passed():
     first_external = min(STEPS.index(name) for name in EXTERNAL)
-    for name in ("build", "test", "assets", "sbom", "provenance", "verify"):
+    for name in ("build", "test", "assets", "smoke", "sbom", "provenance", "verify"):
         assert STEPS.index(name) < first_external, f"{name} runs after going public"
 
 
@@ -74,11 +137,68 @@ def test_assets_are_verified_before_they_are_staged_and_again_after_upload():
     assert STEPS.index("upload") < STEPS.index("reverify") < STEPS.index("publish")
 
 
+def test_the_checksum_manifest_is_written_after_everything_it_covers():
+    for produced in ("sbom", "provenance"):
+        assert STEPS.index(produced) < STEPS.index("checksums")
+    assert STEPS.index("checksums") < STEPS.index("upload")
+
+
 def test_a_dry_run_touches_nothing_and_still_reports_every_step(assets):
     report = _pipeline(assets, dry_run=True).run()
     assert report["ok"] and report["published"] is False
     assert [step["step"] for step in report["steps"]] == list(STEPS)
     assert not (assets / "sbom.cdx.json").exists()
+
+
+# --------------------------------------------------------------------------
+# staging consumes; it does not produce
+# --------------------------------------------------------------------------
+
+
+def test_a_staging_run_does_not_rebuild_or_retest(assets):
+    """Its inputs *are* an earlier verified build. Rebuilding here would put
+    different bytes on GitHub than PyPI receives for the same version."""
+    ran: list[str] = []
+
+    def runner(argv, cwd=None):
+        ran.append(" ".join(str(a) for a in argv))
+        return _completed()
+
+    report = _pipeline(assets, from_artifacts=True, runner=runner).run()
+
+    assert report["ok"], report
+    joined = " ".join(ran)
+    assert "-m build" not in joined, "staging re-ran the build"
+    assert "-m pytest" not in joined, "staging re-ran the suite"
+    for name in STAGING_SKIPPED:
+        step = next(s for s in report["steps"] if s["step"] == name)
+        assert step["facts"].get("from_artifacts") is True
+
+
+def test_a_distribution_that_changed_after_collection_stops_the_run(assets):
+    pipeline = _pipeline(assets, from_artifacts=True)
+
+    def rewrite(wheel):
+        wheel.write_bytes(b"different-bytes")
+        return "smoke"
+
+    pipeline._smoke = rewrite
+    report = pipeline.run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    assert "different bytes" in report["steps"][-1]["detail"]
+
+
+def test_stop_after_runs_a_prefix_and_only_runs_one_step(assets):
+    staged = _pipeline(assets, stop_after="reverify").run()
+    assert [s["step"] for s in staged["steps"]] == list(
+        STEPS[: STEPS.index("reverify") + 1]
+    )
+    assert staged["published"] is False
+
+    final = _pipeline(assets, mode="release", only="publish", gh=_gh_for(assets)).run()
+    assert [s["step"] for s in final["steps"]] == ["publish"]
 
 
 # --------------------------------------------------------------------------
@@ -101,6 +221,15 @@ def test_a_failing_step_stops_the_pipeline_there(assets):
     assert pipeline.performed == [], "no step may be recorded as done after a stop"
 
 
+def test_a_wheel_that_does_not_survive_a_clean_install_stops_the_run(assets):
+    def broken(wheel):
+        raise ReleaseError("the wheel does not install in a clean environment")
+
+    report = _pipeline(assets, smoke=broken).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "smoke"
+
+
 def test_a_release_is_never_published_when_a_check_failed(assets):
     def refuse(argv, cwd=None):
         if "pytest" in " ".join(str(a) for a in argv):
@@ -120,37 +249,71 @@ def test_missing_assets_stop_the_run_before_anything_is_staged(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# signing: fail closed, and never overclaim
+# signing: evidence, not configuration
 # --------------------------------------------------------------------------
 
 
-def test_release_mode_refuses_an_unsigned_disk_image(assets, monkeypatch):
-    """ "The certificate was not configured" is not a reason to publish
-    anyway — that is exactly the outcome signing exists to prevent."""
-    (assets / "OpenAI4S-0.2.0-arm64.dmg").write_bytes(b"dmg-bytes")
-    monkeypatch.delenv("OPENAI4S_MACOS_SIGNING_IDENTITY", raising=False)
+def test_release_mode_refuses_an_image_with_no_developer_id_signature(
+    assets, monkeypatch
+):
+    """Setting the secret used to be enough. The build script only ad-hoc
+    signs, so a configured identity made an ad-hoc image pass this gate as
+    Developer-ID-signed — the exact outcome signing exists to prevent."""
+    dmg = assets / "OpenAI4S-0.2.0-arm64.dmg"
+    dmg.write_bytes(b"dmg-bytes")
+    dmg.with_name(dmg.name + ".codesign.json").write_text(
+        json.dumps({"authorities": [], "adhoc": True, "developer_id": False}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI4S_MACOS_SIGNING_IDENTITY", "Developer ID: Example")
 
     report = _pipeline(assets, mode="release").run()
+
     assert report["ok"] is False
     assert report["stopped_at"] == "verify"
-    assert "refusing to publish unsigned" in report["steps"][-1]["detail"]
+    assert "Developer ID Application" in report["steps"][-1]["detail"]
+
+
+def test_a_real_developer_id_receipt_passes_the_gate(assets, monkeypatch):
+    _signed_dmg(assets)
+    monkeypatch.delenv("OPENAI4S_MACOS_SIGNING_IDENTITY", raising=False)
+
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+
+    assert report["ok"], report
+    verify = next(s for s in report["steps"] if s["step"] == "verify")
+    signature = verify["facts"]["signatures"]["OpenAI4S-0.2.0-arm64.dmg"]
+    assert signature["developer_id"] is True
+    assert signature["source"] == "receipt"
 
 
 def test_local_mode_builds_an_unsigned_image_without_pretending(assets, monkeypatch):
     """A laptop has no Developer ID, and the pipeline still has to be
     exercisable there — it just may not claim what it did not do."""
-    (assets / "OpenAI4S-0.2.0-arm64.dmg").write_bytes(b"dmg-bytes")
+    dmg = assets / "OpenAI4S-0.2.0-arm64.dmg"
+    dmg.write_bytes(b"dmg-bytes")
+    dmg.with_name(dmg.name + ".codesign.json").write_text(
+        json.dumps({"authorities": [], "adhoc": True, "developer_id": False}),
+        encoding="utf-8",
+    )
     monkeypatch.delenv("OPENAI4S_MACOS_SIGNING_IDENTITY", raising=False)
 
     report = _pipeline(assets, mode="local").run()
     verify = next(s for s in report["steps"] if s["step"] == "verify")
     assert report["ok"] is True
-    assert verify["facts"]["signing_identity_configured"] is False
+    assert verify["facts"]["signatures"][dmg.name]["developer_id"] is False
+
+
+def test_a_missing_receipt_is_not_read_as_a_signature(tmp_path):
+    dmg = tmp_path / "x.dmg"
+    dmg.write_bytes(b"not really an image")
+    info = read_signature(dmg, lambda argv: _completed(1, b"", b""))
+    assert info.get("developer_id") is not True
 
 
 def test_notarization_is_never_reported_as_verified(assets, monkeypatch):
-    monkeypatch.setenv("OPENAI4S_MACOS_SIGNING_IDENTITY", "Developer ID: Example")
-    report = _pipeline(assets, mode="release").run()
+    _signed_dmg(assets)
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
     verify = next(s for s in report["steps"] if s["step"] == "verify")
     assert verify["facts"]["notarized"] is None
     assert (
@@ -164,8 +327,7 @@ def test_notarization_is_never_reported_as_verified(assets, monkeypatch):
 
 
 def test_the_sbom_names_the_assets_and_their_digests(assets):
-    pipeline = _pipeline(assets)
-    pipeline.run()
+    _pipeline(assets).run()
     document = json.loads((assets / "sbom.cdx.json").read_text())
 
     assert document["bomFormat"] == "CycloneDX"
@@ -177,16 +339,76 @@ def test_the_sbom_names_the_assets_and_their_digests(assets):
     assert referenced[wheel.name] == sha256_file(wheel)
 
 
+def test_the_sbom_components_come_from_the_wheel_and_the_image(assets):
+    """Not from the machine assembling the release, which on the staging job is
+    an Ubuntu runner with none of this installed."""
+    import zipfile
+
+    wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "openai4s-0.2.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: openai4s\nVersion: 0.2.0\n"
+            "Requires-Dist: numpy>=1.26 ; extra == 'science'\n",
+        )
+    dmg = _signed_dmg(assets)
+    dmg.with_name(dmg.name + ".components.json").write_text(
+        json.dumps({"packages": [{"name": "scipy", "version": "1.14.0"}]}),
+        encoding="utf-8",
+    )
+
+    _pipeline(assets).run()
+    document = json.loads((assets / "sbom.cdx.json").read_text())
+    names = {component["name"] for component in document["components"]}
+
+    assert "openai4s" in names, "the shipped component is missing from its own SBOM"
+    assert "scipy" in names, "the image's embedded runtime is not described"
+    assert "numpy" in names
+
+
+def test_an_image_with_no_component_inventory_is_named_not_omitted(assets):
+    _signed_dmg(assets)
+    _pipeline(assets).run()
+    document = json.loads((assets / "sbom.cdx.json").read_text())
+    properties = document["metadata"].get("properties") or []
+    assert any("components-unread" in p["name"] for p in properties)
+
+
+def test_the_provenance_points_at_the_repository_this_source_lives_in(
+    assets, monkeypatch
+):
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    monkeypatch.delenv("GITHUB_SERVER_URL", raising=False)
+    _pipeline(
+        assets,
+        runner=lambda argv, cwd=None: (
+            _completed(0, b"git@github.com:PKU-YuanGroup/OpenAI4S.git\n")
+            if "remote.origin.url" in " ".join(str(a) for a in argv)
+            else _completed(0, b"abc123\n")
+        ),
+    ).run()
+    document = json.loads((assets / "provenance.intoto.json").read_text())
+    uri = document["predicate"]["buildDefinition"]["resolvedDependencies"][0]["uri"]
+
+    assert (
+        "openai4s/openai4s" not in uri
+    ), "the attestation pointed consumers at a repository this project is not"
+    assert "PKU-YuanGroup/OpenAI4S" in uri
+
+
+def test_the_canonical_uri_prefers_the_running_repository(monkeypatch):
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "PKU-YuanGroup/OpenAI4S")
+    assert canonical_source_uri() == "git+https://github.com/PKU-YuanGroup/OpenAI4S"
+
+
 def test_the_provenance_binds_the_digests_and_claims_no_author(assets):
-    pipeline = _pipeline(assets)
-    pipeline.run()
+    _pipeline(assets).run()
     document = json.loads((assets / "provenance.intoto.json").read_text())
 
     subjects = {item["name"]: item["digest"]["sha256"] for item in document["subject"]}
     wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
     assert subjects[wheel.name] == sha256_file(wheel)
-    # It is unsigned, so it must say so rather than reading as an attestation
-    # of who built it.
     assert document["predicate"]["unsigned"] is True
     assert "does not establish who produced" in document["predicate"]["note"]
 
@@ -208,41 +430,136 @@ def test_provenance_subjects_are_sorted_so_two_runs_agree(tmp_path):
     assert [item["name"] for item in document["subject"]] == ["a.whl", "b.whl"]
 
 
+def test_the_wheel_metadata_is_where_the_component_list_comes_from(tmp_path):
+    import zipfile
+
+    wheel = tmp_path / "openai4s-0.2.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "openai4s-0.2.0.dist-info/METADATA",
+            "Name: openai4s\nVersion: 0.2.0\nRequires-Dist: rich>=13\n",
+        )
+    components = wheel_components(wheel)
+    assert components[0] == {"name": "openai4s", "version": "0.2.0", "scope": "shipped"}
+    assert {"name": "rich", "version": "", "scope": "declared-dependency"} in components
+
+
 # --------------------------------------------------------------------------
-# staging
+# checksums cover everything, and ship
 # --------------------------------------------------------------------------
 
 
-def test_an_upload_that_lost_an_asset_stops_before_publish(assets, monkeypatch):
-    """A local checksum cannot see a transfer that dropped bytes, which is why
-    the read-back exists at all."""
-    monkeypatch.setenv("OPENAI4S_MACOS_SIGNING_IDENTITY", "Developer ID: Example")
+def test_the_checksum_manifest_covers_every_asset_and_is_itself_uploaded(assets):
+    uploaded: list[str] = []
 
     def gh(argv):
-        if argv[1] == "view":
-            return _completed(0, json.dumps({"assets": []}).encode())
+        if argv[1] == "upload":
+            uploaded.extend(Path(a).name for a in argv[3:] if not a.startswith("--"))
+        return _gh_for(assets)(argv)
+
+    _signed_dmg(assets)
+    pipeline = _pipeline(assets, mode="release", gh=gh)
+    report = pipeline.run()
+    assert report["ok"], report
+
+    manifest = (assets / "SHA256SUMS").read_text("utf-8")
+    for name in ("sbom.cdx.json", "provenance.intoto.json", "openai4s-0.2.0.tar.gz"):
+        assert name in manifest, f"{name} shipped unhashed"
+    assert "SHA256SUMS" in uploaded, "the manifest itself was never uploaded"
+
+
+# --------------------------------------------------------------------------
+# staging and the read-back
+# --------------------------------------------------------------------------
+
+
+def test_the_draft_must_already_exist_and_still_be_a_draft(assets):
+    def gh(argv):
+        if argv[1] == "view" and "isDraft" in argv:
+            return _completed(0, json.dumps({"isDraft": False}).encode())
         return _completed()
 
     report = _pipeline(assets, mode="release", gh=gh).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "draft"
+    assert "already public" in report["steps"][-1]["detail"]
+
+
+def test_an_upload_that_lost_an_asset_stops_before_publish(assets):
+    _signed_dmg(assets)
+    report = _pipeline(
+        assets, mode="release", gh=_gh_for(assets, drop="openai4s-0.2.0.tar.gz")
+    ).run()
     assert report["ok"] is False
     assert report["stopped_at"] == "reverify"
     assert report["published"] is False
 
 
-def test_a_complete_release_publishes_last(assets, monkeypatch):
-    monkeypatch.setenv("OPENAI4S_MACOS_SIGNING_IDENTITY", "Developer ID: Example")
+def test_an_asset_whose_name_survived_but_whose_bytes_did_not_is_caught(assets):
+    """The check compared filenames, so a truncated or replaced asset passed."""
+    _signed_dmg(assets)
+    report = _pipeline(
+        assets,
+        mode="release",
+        gh=_gh_for(assets, corrupt="openai4s-0.2.0-py3-none-any.whl"),
+    ).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "reverify"
+    assert "do not match" in report["steps"][-1]["detail"]
+
+
+# --------------------------------------------------------------------------
+# the cross-channel order
+# --------------------------------------------------------------------------
+
+
+def test_the_github_flip_waits_for_the_package_to_be_on_pypi(assets):
+    """Flipping first left a public release with no matching package version
+    whenever OIDC, the environment approval or the upload failed."""
+    _signed_dmg(assets)
+    report = _pipeline(
+        assets,
+        mode="release",
+        gh=_gh_for(assets),
+        pypi_check=lambda project, version: False,
+    ).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "publish"
+    assert "not on PyPI" in report["steps"][-1]["detail"]
+    assert "draft is untouched" in report["steps"][-1]["detail"]
+
+
+def test_a_complete_release_publishes_last(assets):
+    _signed_dmg(assets)
     calls: list[list[str]] = []
+
+    inner = _gh_for(assets)
 
     def gh(argv):
         calls.append(list(argv))
-        if argv[1] == "view":
-            names = [{"name": path.name} for path in Path(assets).glob("*")]
-            return _completed(0, json.dumps({"assets": names}).encode())
-        return _completed()
+        return inner(argv)
 
     report = _pipeline(assets, mode="release", gh=gh).run()
 
     assert report["ok"] and report["published"] is True
     verbs = [call[1] for call in calls]
-    assert verbs.index("create") < verbs.index("upload") < verbs.index("edit")
+    assert verbs.index("upload") < verbs.index("edit")
     assert calls[-1][-1] == "--draft=false", "publishing is the final act"
+
+
+def test_the_finalize_step_can_be_re_run_alone_after_a_failed_flip(assets):
+    """The documented compensation: PyPI has it, the draft is still a draft."""
+    calls: list[list[str]] = []
+
+    def gh(argv):
+        calls.append(list(argv))
+        return _completed()
+
+    report = _pipeline(assets, mode="release", only="publish", gh=gh).run()
+
+    assert report["ok"] is True
+    assert [call[1] for call in calls] == [
+        "edit"
+    ], "re-running the flip must not rebuild, re-upload or re-verify anything"
