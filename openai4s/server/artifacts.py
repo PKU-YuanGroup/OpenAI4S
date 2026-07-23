@@ -158,13 +158,15 @@ def _same_interpreter(interpreter: Any, has_generation: bool = False) -> bool:
     the package-list path already refuses. So a missing interpreter matches
     only in the no-generation case.
     """
-    import os
-    import sys
-
     if not interpreter:
         return not has_generation
+    # Same executable *and* same environment. A virtualenv's bin/python is a
+    # symlink to the base python, so a resolved-executable match alone would
+    # stamp the daemon's version/implementation onto a different environment.
+    from openai4s.kernel.preinstall import _is_this_interpreter
+
     try:
-        return os.path.realpath(str(interpreter)) == os.path.realpath(sys.executable)
+        return _is_this_interpreter(str(interpreter))
     except OSError:
         return False
 

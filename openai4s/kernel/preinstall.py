@@ -361,6 +361,38 @@ def full_freeze() -> list[dict]:
     return sorted(seen.values(), key=lambda d: d["name"].lower())
 
 
+def _interpreter_prefix(interpreter: str) -> str:
+    """`<prefix>` for an interpreter at `<prefix>/bin/python`, resolved.
+
+    A virtualenv's ``bin/python`` is a symlink to the base python, so comparing
+    the *resolved executable* treats two different environments as one. The
+    prefix — the directory holding ``bin/`` (and ``pyvenv.cfg``) — is what
+    actually selects site-packages, and it is not resolved through the symlink.
+    """
+    path = Path(interpreter)
+    parent = path.parent
+    if parent.name in ("bin", "Scripts"):
+        return str(parent.parent)
+    return str(parent)
+
+
+def _is_this_interpreter(interpreter: str) -> bool:
+    """Whether `interpreter` is this process's *environment*, not just its
+    resolved base executable. A venv shares the base python but not the prefix.
+    """
+    try:
+        same_exe = os.path.realpath(str(interpreter)) == os.path.realpath(
+            sys.executable
+        )
+    except OSError:
+        return False
+    if not same_exe:
+        return False
+    return os.path.realpath(_interpreter_prefix(str(interpreter))) == os.path.realpath(
+        sys.prefix
+    )
+
+
 def _confined_probe(
     base_argv: list[str], workspace: str
 ) -> tuple[list[str], dict[str, str], Any]:
@@ -396,15 +428,48 @@ def _confined_probe(
         }
 
     sandbox: Any = None
+    mode = (os.environ.get("OPENAI4S_KERNEL_SANDBOX") or "auto").strip().lower()
     try:
         from openai4s.security.sandbox import create_kernel_sandbox
 
         sandbox = create_kernel_sandbox(workspace)
         argv = list(sandbox.wrap_command(base_argv))
         env = sandbox.apply_environment(env)
-    except Exception:  # noqa: BLE001 - degrade to the scrubbed env alone
+    except Exception:  # noqa: BLE001
+        # Fail closed under enforce. Silently launching the foreign interpreter
+        # unconfined when the boundary could not be built violates the mode's
+        # contract and lets it reach daemon-readable files and the network
+        # despite the scrubbed env. `auto` still degrades to the scrubbed env
+        # alone, which is a strict improvement over the daemon's full context.
+        if mode == "enforce":
+            raise
         argv = list(base_argv)
     return argv, env, sandbox
+
+
+def run_confined_probe(
+    base_argv: list[str], *, timeout: float
+) -> "subprocess.CompletedProcess":
+    """Run a short probe against a foreign interpreter, confined.
+
+    Shared by the freeze probe and the environment-verification probes: both
+    execute a *foreign* interpreter (its executable, `.pth` files and
+    sitecustomize run before the supplied code), so both need the scrubbed
+    child environment and the OS boundary a kernel cell gets. Raises under
+    ``OPENAI4S_KERNEL_SANDBOX=enforce`` when the boundary cannot be built,
+    rather than degrading to an unconfined launch.
+    """
+    workspace = tempfile.mkdtemp(prefix="openai4s-probe-")
+    argv, env, sandbox = _confined_probe(base_argv, workspace)
+    try:
+        return subprocess.run(argv, capture_output=True, timeout=timeout, env=env)
+    finally:
+        if sandbox is not None:
+            try:
+                sandbox.close()
+            except Exception:  # noqa: BLE001
+                pass
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 def freeze_for(interpreter: str | None, *, timeout: float = 20.0) -> list[dict] | None:
@@ -420,8 +485,11 @@ def freeze_for(interpreter: str | None, *, timeout: float = 20.0) -> list[dict] 
     """
     if not interpreter:
         return None
-    if os.path.realpath(str(interpreter)) == os.path.realpath(sys.executable):
-        # Same interpreter: the in-process read is exact and free.
+    if _is_this_interpreter(interpreter):
+        # Same interpreter *and* same environment: the in-process read is exact
+        # and free. A realpath match alone is not enough — a virtualenv is a
+        # symlink to the same base python but selects a different prefix and
+        # site-packages, so freezing this process would record the wrong set.
         return full_freeze()
     probe = (
         "import json,sys\n"
@@ -447,30 +515,17 @@ def freeze_for(interpreter: str | None, *, timeout: float = 20.0) -> list[dict] 
     # artifact from a selected environment, one a sandboxed kernel produced —
     # and `-I` only isolates Python's own path/env handling. It does nothing to
     # stop the executable, native startup, or a `.pth`/sitecustomize hook from
-    # reading the daemon's API and cloud credentials out of the environment,
-    # touching daemon files, or reaching the network. So the probe runs with
-    # the same scrubbed child environment and OS boundary a kernel cell gets,
-    # never the daemon's full context.
-    workspace = tempfile.mkdtemp(prefix="openai4s-freeze-")
-    argv, env, sandbox = _confined_probe(
-        [str(interpreter), "-I", "-c", probe], workspace
-    )
+    # reading the daemon's credentials, touching daemon files, or reaching the
+    # network. It runs through the shared confined path, which fails closed
+    # under enforce.
     try:
-        proc = subprocess.run(
-            argv,
-            capture_output=True,
-            timeout=timeout,
-            env=env,
+        proc = run_confined_probe(
+            [str(interpreter), "-I", "-c", probe], timeout=timeout
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    finally:
-        if sandbox is not None:
-            try:
-                sandbox.close()
-            except Exception:  # noqa: BLE001
-                pass
-        shutil.rmtree(workspace, ignore_errors=True)
+    except Exception:  # noqa: BLE001 - enforce with no boundary → absent, not wrong
+        return None
     if proc.returncode != 0:
         return None
     try:

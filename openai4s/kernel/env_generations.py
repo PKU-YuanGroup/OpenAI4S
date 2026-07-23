@@ -97,10 +97,21 @@ PROBE_TIMEOUT_S = 60.0
 
 
 def _run_probe(argv: Sequence[str], *, label: str) -> None:
-    """Start an interpreter and require it to exit cleanly."""
+    """Start a freshly-built interpreter and require it to exit cleanly.
+
+    Confined, because the interpreter being verified is *foreign*: a hostile
+    Python `.pth`/sitecustomize or a substituted executable runs before the
+    probe's own code, so a bare launch would inherit the CLI's full
+    environment — including keys loaded from `.env` — and touch daemon files
+    and the network. The shared confined path scrubs the environment and, where
+    a boundary can be built, applies the OS sandbox; under
+    ``OPENAI4S_KERNEL_SANDBOX=enforce`` it fails closed rather than degrade.
+    """
+    from openai4s.kernel import preinstall
+
     try:
-        completed = subprocess.run(  # noqa: S603 - argv is built here
-            list(argv), capture_output=True, timeout=PROBE_TIMEOUT_S
+        completed = preinstall.run_confined_probe(
+            [str(part) for part in argv], timeout=PROBE_TIMEOUT_S
         )
     except PermissionError as e:
         raise EnvironmentError_(f"{label} is not executable: {e}")
@@ -108,6 +119,10 @@ def _run_probe(argv: Sequence[str], *, label: str) -> None:
         raise EnvironmentError_(f"{label} could not start: {e}")
     except subprocess.TimeoutExpired:
         raise EnvironmentError_(f"{label} did not finish within {PROBE_TIMEOUT_S:.0f}s")
+    except Exception as e:  # noqa: BLE001 - enforce with no boundary is a refusal
+        raise EnvironmentError_(
+            f"{label} could not be verified under the required OS boundary: {e}"
+        )
     if completed.returncode != 0:
         raise EnvironmentError_(
             f"{label} exited {completed.returncode}: "

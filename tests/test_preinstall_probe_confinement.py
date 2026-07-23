@@ -92,3 +92,57 @@ def test_the_probe_source_no_longer_runs_the_interpreter_bare():
     assert "_confined_probe(" in source
     assert "build_kernel_environment" in source
     assert "create_kernel_sandbox" in source
+
+
+def test_enforce_mode_fails_closed_when_no_boundary_can_be_built(monkeypatch, tmp_path):
+    """Under enforce, a probe whose OS boundary cannot be established must not
+    silently launch the foreign interpreter unconfined."""
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "enforce")
+
+    from openai4s.security import sandbox as sandbox_mod
+
+    def refuse(*_a, **_k):
+        raise sandbox_mod.SandboxUnavailableError("no backend on this host")
+
+    monkeypatch.setattr(sandbox_mod, "create_kernel_sandbox", refuse)
+
+    with pytest.raises(Exception) as error:
+        preinstall.run_confined_probe([sys.executable, "-c", "pass"], timeout=10)
+    assert "backend" in str(error.value) or "boundary" in str(error.value).lower()
+
+
+def test_auto_mode_still_runs_when_no_boundary_is_available(monkeypatch):
+    """The degrade path: `auto` runs the probe with the scrubbed env even when
+    no OS boundary can be built."""
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "auto")
+
+    from openai4s.security import sandbox as sandbox_mod
+
+    monkeypatch.setattr(
+        sandbox_mod,
+        "create_kernel_sandbox",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            sandbox_mod.SandboxUnavailableError("none")
+        ),
+    )
+    proc = preinstall.run_confined_probe(
+        [sys.executable, "-c", "print('ok')"], timeout=10
+    )
+    assert proc.returncode == 0
+    assert b"ok" in proc.stdout
+
+
+def test_a_virtualenv_is_not_this_interpreter(tmp_path):
+    """A venv symlinks the base python but selects a different prefix. Treating
+    it as this process would freeze the daemon's packages under its id."""
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").symlink_to(sys.executable)
+    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+
+    assert not preinstall._is_this_interpreter(str(venv / "bin" / "python")), (
+        "a venv shares the base executable but not the prefix, so it is a "
+        "distinct interpreter"
+    )
+    # ...and this process's own interpreter still matches itself.
+    assert preinstall._is_this_interpreter(sys.executable)
