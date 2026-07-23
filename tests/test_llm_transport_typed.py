@@ -350,3 +350,74 @@ def test_sse_read_failure_before_any_event_is_retryable(monkeypatch):
     seen = []
     post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
     assert seen == [{"delta": "ok"}]
+
+
+# --------------------------------------------------------------------------
+# Stop has to work after the wait has already begun
+# --------------------------------------------------------------------------
+
+
+def test_a_cancel_during_the_backoff_wait_stops_it(monkeypatch):
+    """The regression.
+
+    The cancellation checks sat either side of a single blocking sleep, so a
+    user pressing Stop one millisecond into a 300-second `Retry-After` was
+    parked for the full five minutes with nothing able to interrupt it. The
+    only test for this cancelled *before* the wait began — the case that
+    already worked.
+    """
+    from openai4s.llm import transport as transport_mod
+
+    slept: list[float] = []
+    cancelled = {"now": False}
+
+    def sleeper(seconds):
+        slept.append(seconds)
+        # Stop is pressed after the wait is under way.
+        if len(slept) == 2:
+            cancelled["now"] = True
+
+    attempts = {"n": 0}
+
+    def attempt():
+        attempts["n"] += 1
+        raise transport_mod.TransportError(
+            "429 slow down", retryable=True, retry_after=300.0
+        )
+
+    with pytest.raises(transport_mod.TransportError) as error:
+        transport_mod._retry_loop(
+            attempt,
+            provider="x",
+            operation="chat",
+            max_attempts=3,
+            base_backoff=1.0,
+            max_backoff=600.0,
+            retry_budget=600.0,
+            should_cancel=lambda: cancelled["now"],
+            sleep=sleeper,
+        )
+
+    assert "cancelled" in str(error.value)
+    assert attempts["n"] == 1, "the retry must not be attempted after a stop"
+    assert sum(slept) < 300.0, "the full Retry-After must not have been waited out"
+    assert len(slept) <= 4, "a cancelled wait stops promptly, not after a busy loop"
+
+
+def test_a_wait_with_no_cancel_hook_is_still_a_single_sleep():
+    """Slicing exists to poll for cancellation. With nothing to poll for it
+    would only invent wake-ups — and would break the injected-sleep contract
+    the rest of this file reads."""
+    from openai4s.llm import transport as transport_mod
+
+    slept: list[float] = []
+    assert transport_mod._wait(2.0, slept.append, None) is False
+    assert slept == [2.0]
+
+
+def test_an_uncancelled_wait_sleeps_the_whole_delay():
+    from openai4s.llm import transport as transport_mod
+
+    slept: list[float] = []
+    assert transport_mod._wait(1.0, slept.append, lambda: False) is False
+    assert sum(slept) == pytest.approx(1.0)

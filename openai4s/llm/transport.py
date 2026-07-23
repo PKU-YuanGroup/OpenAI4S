@@ -139,6 +139,33 @@ def _url_error(
     )
 
 
+#: How often a backoff wait looks up to see whether the turn was cancelled.
+#: Short enough that Stop feels immediate, long enough that a five-minute
+#: `Retry-After` costs a bounded number of checks rather than a busy loop.
+CANCEL_POLL_S = 0.25
+
+
+def _wait(delay: float, do_sleep, should_cancel) -> bool:
+    """Wait ``delay`` seconds, returning early if the turn is cancelled.
+
+    Sliced only when there is something to poll for. With no ``should_cancel``
+    the wait is a single call, which keeps the injected-sleep contract the
+    tests rely on — one sleep, one recorded delay — and avoids inventing
+    wake-ups for a caller that cannot be interrupted anyway.
+    """
+    if should_cancel is None:
+        do_sleep(delay)
+        return False
+    remaining = float(delay)
+    while remaining > 0:
+        if should_cancel():
+            return True
+        step = remaining if remaining < CANCEL_POLL_S else CANCEL_POLL_S
+        do_sleep(step)
+        remaining -= step
+    return bool(should_cancel())
+
+
 def _sleep_for(err: TransportError, attempt: int, base: float, cap: float) -> float:
     """Honour Retry-After when present, else exponential backoff with jitter."""
     if err.retry_after is not None:
@@ -160,11 +187,17 @@ def _retry_loop(
     retry_budget: float,
     should_cancel=None,
     sleep=None,
-):
+):  # noqa: C901
     # Resolved per call, not captured as a default: a default argument is
     # evaluated once at def time, which would pin the original time.sleep and
     # silently ignore any test that patches it.
     do_sleep = sleep if sleep is not None else time.sleep
+    # A retry that has already begun waiting must still be stoppable. The
+    # cancellation checks used to sit either side of a single blocking sleep,
+    # so pressing Stop one millisecond into a 300-second `Retry-After` left the
+    # turn parked for the full five minutes with nothing able to interrupt it —
+    # and the only test for it cancelled *before* the wait began, which is the
+    # case that already worked.
     spent = 0.0
     for attempt in range(1, max_attempts + 1):
         try:
@@ -201,7 +234,7 @@ def _retry_loop(
                     status=err.status,
                     retryable=False,
                 ) from err
-            do_sleep(delay)
+            _wait(delay, do_sleep, should_cancel)
             spent += delay
             if should_cancel is not None and should_cancel():
                 raise TransportError(

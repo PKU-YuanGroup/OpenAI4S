@@ -1004,10 +1004,13 @@ def test_helper_wedge_is_killed_and_reported_unknown(mgr, monkeypatch, tmp_path)
     assert killed.get("yes"), "a helper past its deadline must actually be killed"
 
 
-def test_confinement_enforce_fails_closed(mgr, monkeypatch):
-    """No host-side boundary exists for the byoc helper, so `enforce` refuses
-    the op rather than pretending. Passing expect_confined=1 here would only
-    make the helper exit 71."""
+def test_confinement_enforce_fails_closed_where_no_boundary_exists(mgr, monkeypatch):
+    """`enforce` refuses rather than pretending. Passing expect_confined=1 into
+    an unconfined helper would only make it exit 71 while proving nothing."""
+    monkeypatch.setattr(
+        "openai4s.security.byoc_confinement.available",
+        lambda: (False, "no backend on this host"),
+    )
     monkeypatch.setenv("OPENAI4S_COMPUTE_CONFINEMENT", "enforce")
     mgr._confinement_mode = "enforce"
     mgr._providers["fake"] = {
@@ -1019,12 +1022,26 @@ def test_confinement_enforce_fails_closed(mgr, monkeypatch):
     with pytest.raises(ComputeError) as e:
         mgr.submit({"provider": "byoc:fake", "command": "run"})
     assert e.value.error_kind == "confinement_unavailable"
+    assert "no backend on this host" in str(e.value)
 
 
-def test_confinement_status_never_claims_an_unverified_boundary(mgr):
+def test_confinement_status_matches_what_can_actually_be_applied(mgr, monkeypatch):
+    """The posture must track the boundary, in both directions: silence about a
+    degradation and a claim about an unbuilt boundary are the same defect."""
+    monkeypatch.setattr(
+        "openai4s.security.byoc_confinement.available",
+        lambda: (False, "no backend on this host"),
+    )
     st = mgr.confinement_status()
-    assert st["enforced"] is False
-    assert st["state"] == "unavailable"
+    assert st["enforced"] is False and st["state"] == "unavailable"
+    assert "no backend on this host" in st["detail"]
+
+    monkeypatch.setattr(
+        "openai4s.security.byoc_confinement.available",
+        lambda: (True, "macOS Seatbelt"),
+    )
+    st = mgr.confinement_status()
+    assert st["enforced"] is True and st["state"] == "active"
 
 
 def test_confinement_mode_rejects_garbage(mgr, monkeypatch):

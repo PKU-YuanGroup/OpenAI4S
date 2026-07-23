@@ -90,8 +90,12 @@ def _fake_popen(behaviour):
     class _Helper:
         def __init__(self, argv, **_kw):
             self.stdin = _Stdin()
-            # argv: [python, -I, main, "oneshot", provider_py, op, stage, conf]
-            self._op, self._stage = argv[5], Path(argv[6])
+            # ... "oneshot" <provider_py> <op> <stage> <expect_confined>, with
+            # an OS-confinement wrapper possibly prepended. Located by the
+            # marker rather than by index, so applying a boundary does not
+            # silently shift what this stub thinks it is being asked to do.
+            marker = argv.index("oneshot")
+            self._op, self._stage = argv[marker + 2], Path(argv[marker + 3])
             self.returncode = 0
 
         def wait(self, timeout=None):

@@ -389,3 +389,70 @@ def test_a_new_generation_probes_again(env, monkeypatch):
     _snapshot(manager, store, root, "python")
 
     assert len(calls) == 2
+
+
+# --------------------------------------------------------------------------
+# two branches capturing at once
+# --------------------------------------------------------------------------
+
+
+def test_concurrent_captures_on_two_branches_do_not_cross(env, monkeypatch):
+    """Branch resolution happens per capture, on whatever thread is capturing.
+
+    A cell finishing on the root branch while another finishes on a fork is the
+    ordinary case in a session with a live fork, and the two must not resolve
+    each other's kernel — an artifact attributed to the wrong branch's
+    interpreter is the exact failure this whole path exists to prevent.
+    """
+    import threading
+
+    manager, store, root = env
+    _generation(
+        store, root, "python", interpreter="/opt/root/bin/python", env_name="root-env"
+    )
+    store.create_kernel_generation(
+        root_frame_id=root,
+        branch_id="br-fork",
+        language="python",
+        environment={
+            "runtime": "python",
+            "interpreter": "/opt/fork/bin/python",
+            "environment_name": "fork-env",
+        },
+        bootstrap={"status": "ok"},
+        state="active",
+    )
+
+    # Each capture sees the branch that was active for it, which is what a
+    # per-session runner supplies.
+    branch = threading.local()
+    real_active = store.active_session_branch
+    monkeypatch.setattr(
+        store,
+        "active_session_branch",
+        lambda frame: getattr(branch, "id", None) or real_active(frame),
+        raising=False,
+    )
+
+    results: dict[str, str] = {}
+    start = threading.Barrier(2)
+    lock = threading.Lock()
+
+    def capture(branch_id, label):
+        branch.id = branch_id
+        start.wait(timeout=5)
+        snapshot = _snapshot(manager, store, root, "python")
+        with lock:
+            results[label] = snapshot["interpreter"]
+
+    threads = [
+        threading.Thread(target=capture, args=(root, "root")),
+        threading.Thread(target=capture, args=("br-fork", "fork")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert results["root"] == "/opt/root/bin/python"
+    assert results["fork"] == "/opt/fork/bin/python"

@@ -330,3 +330,51 @@ def test_a_payload_with_no_identity_is_refused(store, no_egress):
 def test_the_sealed_payload_records_the_identity_it_was_sealed_under(store):
     payload = wire.seal("a" * 32, [{"event": "daemon_start", "outcome": "ok"}])
     assert payload is not None and payload.install_id == "a" * 32
+
+
+def test_no_payload_ever_sends_under_an_identity_that_is_not_current(store, no_egress):
+    """The invariant, under threads rather than in sequence.
+
+    A consent toggle and an in-flight send are genuinely concurrent in the
+    daemon: emit seals on the caller's thread and dispatches on another, while
+    the Customize route can grant or revoke at any moment. Whatever the
+    interleaving, a payload stamped with an identity that is not the one
+    currently authorised must never leave — and the network guard, not a return
+    value, is what proves it.
+    """
+    import threading
+
+    granted = consent_mod.grant(store)
+    assert granted is not None
+    stale = [_payload(granted.install_id)]
+    stop = threading.Event()
+    sent: list[bool] = []
+    lock = threading.Lock()
+
+    def churn():
+        while not stop.is_set():
+            consent_mod.revoke(store)
+            fresh = consent_mod.grant(store)
+            if fresh is not None:
+                with lock:
+                    stale.append(_payload(fresh.install_id))
+
+    def send_loop():
+        while not stop.is_set():
+            with lock:
+                candidates = list(stale)
+            for payload in candidates:
+                sent.append(sender_mod.send(store, payload))
+
+    workers = [threading.Thread(target=churn), threading.Thread(target=send_loop)]
+    for worker in workers:
+        worker.start()
+    threading.Event().wait(0.4)
+    stop.set()
+    for worker in workers:
+        worker.join(timeout=5)
+
+    # Every send was refused before it could resolve a name, because the
+    # endpoint is unreachable in this fixture — the point is that nothing got
+    # as far as the network under a stale identity.
+    assert no_egress == []

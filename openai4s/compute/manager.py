@@ -146,6 +146,11 @@ TERM_GRACE_S = 60
 # command in it whenever a deadline is requested.
 _TIMEOUT_EXIT_CODE = 124
 
+# The confined helper's own verdict when the boundary the host applied does not
+# hold from inside. It exits before reading the credential and before any
+# provider call, so nothing has happened when this is seen.
+_EXIT_UNCONFINED = 71
+
 
 def _safe_remote_path(value: str, *, label: str) -> str:
     """A remote path that cannot walk out of where the caller said it was going.
@@ -742,19 +747,45 @@ class ComputeManager:
     def confinement_status(self) -> dict:
         """Machine-readable posture for the UI/status surface.
 
-        Deliberately reports ``enforced: False`` rather than staying silent —
-        a user must not read "the helper ran" as "the helper was confined".
+        Never silent about a degradation: a user must not read "the helper ran"
+        as "the helper was confined".
         """
+        from openai4s.security import byoc_confinement
+
+        can_confine, reason = byoc_confinement.available()
+        if self._confinement_mode == "off":
+            return {
+                "mode": "off",
+                "enforced": False,
+                "state": "disabled",
+                "detail": (
+                    f"{_CONFINEMENT_ENV}=off: the provider helper is spawned "
+                    f"with no OS boundary by explicit configuration."
+                ),
+            }
+        if can_confine:
+            return {
+                "mode": self._confinement_mode,
+                "enforced": True,
+                "state": "active",
+                "backend": reason,
+                "detail": (
+                    f"the provider helper runs under {reason}: writes confined "
+                    f"to its stage directory and the home directory "
+                    f"unreadable. The helper verifies the boundary from inside "
+                    f"before it reads a credential, and exits without acting "
+                    f"if it does not hold."
+                ),
+            }
         return {
             "mode": self._confinement_mode,
             "enforced": False,
             "state": "unavailable",
             "detail": (
-                "byoc helper confinement is not implemented host-side: the "
-                "helper is spawned without an OS boundary, so its confinement "
-                "probe cannot pass. Remote compute remains a Prototype "
-                f"capability. Set {_CONFINEMENT_ENV}=enforce to refuse byoc "
-                "ops until a verified boundary exists."
+                f"no OS boundary can be established for the provider helper "
+                f"here: {reason}. Remote compute remains a Prototype "
+                f"capability on this host. Set {_CONFINEMENT_ENV}=enforce to "
+                f"refuse byoc ops rather than run unconfined."
             ),
         }
 
@@ -762,20 +793,24 @@ class ComputeManager:
         """Fail closed when the caller demanded a boundary we cannot establish.
 
         The helper ships a confinement probe (`expect_confined`) and an exit
-        code for failing it, but nothing on the host ever wraps the helper in
-        a sandbox or supplies the probe's netns anchor — so confinement is a
-        designed, not a built, boundary. `enforce` therefore refuses the op
-        outright. That is the honest answer: passing `expect_confined=1` here
-        would only make the helper kill itself with exit 71, and defaulting it
-        on would break every byoc user while proving nothing.
+        code for failing it; the host now supplies the boundary that probe
+        looks for, where one exists. Where none does — see
+        ``security/byoc_confinement`` for why Linux is an open decision rather
+        than an omission — `enforce` refuses the op outright, because passing
+        `expect_confined=1` into an unconfined helper would only make it kill
+        itself with exit 71 while proving nothing.
         """
-        if self._confinement_mode == "enforce":
+        if self._confinement_mode != "enforce":
+            return
+        from openai4s.security import byoc_confinement
+
+        can_confine, reason = byoc_confinement.available()
+        if not can_confine:
             raise ComputeError(
                 f"byoc provider {pid!r} refused: {_CONFINEMENT_ENV}=enforce "
                 f"requires verified helper confinement, which this host cannot "
-                f"establish (no OS boundary is applied to the provider helper). "
-                f"Fix the deployment or set {_CONFINEMENT_ENV}=auto to accept "
-                f"unconfined execution.",
+                f"establish ({reason}). Fix the deployment or set "
+                f"{_CONFINEMENT_ENV}=auto to accept unconfined execution.",
                 "confinement_unavailable",
             )
 
@@ -879,7 +914,13 @@ class ComputeManager:
             json.dumps({**req, "stage": str(stage), "install_id": self._install_id}),
             encoding="utf-8",
         )
-        argv = [
+        # Wrap in the OS boundary when this host can supply one. The helper's
+        # own probe is what turns the wrapping into evidence: it checks from
+        # inside, before it reads a credential, and exits 71 without acting if
+        # the boundary does not hold. Asking for the check without supplying
+        # the boundary would only make it kill itself, so the two travel
+        # together.
+        base = [
             sys.executable,
             "-I",
             _HELPER_MAIN,
@@ -887,8 +928,30 @@ class ComputeManager:
             prov["provider_py"],
             op,
             str(stage),
-            "1" if expect_confined else "0",
         ]
+        # The unconfined form, kept whatever happens: it is what a degraded
+        # `auto` falls back to, and reconstructing it from a wrapped argv would
+        # be a parsing trick waiting to be wrong.
+        plain_argv = [*base, "1" if expect_confined else "0"]
+        argv, confined = plain_argv, False
+        if self._confinement_mode != "off":
+            from openai4s.security import byoc_confinement
+
+            try:
+                argv = byoc_confinement.wrap(
+                    [*base, "1"],
+                    stage,
+                    read_paths=tuple(
+                        byoc_confinement.runtime_read_paths(
+                            (str(Path(prov["provider_py"]).resolve().parent),)
+                        )
+                    ),
+                )
+                confined = True
+            except byoc_confinement.ConfinementUnavailable:
+                # `enforce` already refused in _confinement_gate; reaching here
+                # in `auto` is the documented visible degradation.
+                argv = plain_argv
         # Scrub inherited secrets from the child env; the helper's own prologue
         # also drops the provider's secret_env_prefixes.
         env = {
@@ -896,28 +959,34 @@ class ComputeManager:
             for k, v in os.environ.items()
             if not k.startswith(("NGC_", "NVIDIA_", "HF_"))
         }
-        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, env=env)
-        proc.stdin.write((json.dumps({"op": "auth", **creds}) + "\n").encode("utf-8"))
-        proc.stdin.close()
         # A hard host-side deadline. The helper has its own poll budget, but a
         # wedged exec stream (or a provider SDK blocking on a socket) leaves it
         # with none — and a bare wait() would block the dispatcher forever.
         deadline = timeout if timeout is not None else self._HELPER_TIMEOUT_S
-        try:
-            proc.wait(timeout=deadline)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
-            raise self._helper_error(
-                stage,
-                f"provider helper for op {op!r} exceeded the {deadline}s host "
-                f"deadline and was killed; the remote operation may or may not "
-                f"have taken effect",
-                "unknown_state",
-                indeterminate=True,
+        proc = self._spawn_helper(argv, creds, env, deadline, op, stage)
+        if proc.returncode == _EXIT_UNCONFINED and confined:
+            # The host wrapped the helper and the helper looked from inside and
+            # disagreed. It exits before reading the credential and before any
+            # provider call, so nothing happened and there is nothing to
+            # reconcile — which is what makes a retry safe here and nowhere
+            # else in this module.
+            if self._confinement_mode == "enforce":
+                raise ComputeError(
+                    f"provider helper for op {op!r} refused to run: the OS "
+                    f"boundary this host applied did not hold when the helper "
+                    f"checked it from inside, and "
+                    f"{_CONFINEMENT_ENV}=enforce does not accept unconfined "
+                    f"execution",
+                    "confinement_unavailable",
+                    indeterminate=False,
+                )
+            self._audit(
+                "compute_confinement_degraded",
+                op=op,
+                detail="helper reported the applied boundary did not hold",
+            )
+            proc = self._spawn_helper(
+                [*plain_argv[:-1], "0"], creds, env, deadline, op, stage
             )
         reply_path = stage / "reply.json"
         if not reply_path.exists():
@@ -948,6 +1017,37 @@ class ComputeManager:
                 indeterminate=bool(reply.get("indeterminate")),
             )
         return reply
+
+    def _spawn_helper(
+        self,
+        argv: list[str],
+        creds: dict,
+        env: dict,
+        deadline: float,
+        op: str,
+        stage: Path,
+    ) -> Any:
+        """One helper process, credential on stdin, under a hard deadline."""
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, env=env)
+        proc.stdin.write((json.dumps({"op": "auth", **creds}) + "\n").encode("utf-8"))
+        proc.stdin.close()
+        try:
+            proc.wait(timeout=deadline)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+            raise self._helper_error(
+                stage,
+                f"provider helper for op {op!r} exceeded the {deadline}s host "
+                f"deadline and was killed; the remote operation may or may not "
+                f"have taken effect",
+                "unknown_state",
+                indeterminate=True,
+            )
+        return proc
 
     @staticmethod
     def _helper_error(
