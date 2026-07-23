@@ -321,6 +321,11 @@ def test_the_signing_identity_reaches_the_build_that_can_use_it():
     assert "security create-keychain" in macos
     assert "security import" in macos
     assert "MACOS_SIGNING_CERTIFICATE" in macos
+    # `secrets` is not available in a step-level `if`; the certificate's
+    # presence is surfaced at job level and the import conditions on that env
+    # value, or the step is silently unreachable in a real signed run.
+    assert "HAS_SIGNING_CERT" in macos
+    assert "if: ${{ env.HAS_SIGNING_CERT == 'true' }}" in macos
 
     attach = workflow[workflow.index("  attach:") : workflow.index("  pypi:")]
     assert "OPENAI4S_MACOS_SIGNING_IDENTITY" not in attach, (

@@ -103,6 +103,11 @@ jobs:
     # The DMG embeds a relocatable CPython plus the native science wheels, so it
     # cannot be cross-built: this must run on an Apple Silicon runner.
     runs-on: macos-14
+    # The `secrets` context is not available in a step-level `if`, so the
+    # certificate's presence is surfaced here, at job level, where secrets are
+    # allowed — the import step then conditions on this env value instead.
+    env:
+      HAS_SIGNING_CERT: ${{ secrets.MACOS_SIGNING_CERTIFICATE != '' }}
     steps:
       - name: Checkout the immutable release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -120,7 +125,7 @@ jobs:
         # separate secrets; when they are absent the build ad-hoc signs and the
         # release gate is what refuses to publish it, which is the correct
         # fail-closed behaviour rather than a green build.
-        if: ${{ secrets.MACOS_SIGNING_CERTIFICATE != '' }}
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
         env:
           MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
           MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}

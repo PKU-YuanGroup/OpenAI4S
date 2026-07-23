@@ -228,6 +228,19 @@ def test_a_failing_step_stops_the_pipeline_there(assets):
     assert pipeline.performed == [], "no step may be recorded as done after a stop"
 
 
+def test_the_assets_dir_is_absolute_so_subprocesses_from_root_find_it(tmp_path):
+    """The staging job passes `--assets-dir assets`, a sibling of the checkout,
+    while `_run` executes from ROOT. A relative path made pip and gh look under
+    ROOT/assets, where the wheel is not."""
+    from scripts.release_pipeline import Pipeline
+
+    pipe = Pipeline("0.2.0", assets_dir="assets")
+    assert pipe.assets_dir.is_absolute(), (
+        "a relative assets dir would resolve against each subprocess's cwd, "
+        "not the directory the staging job actually populated"
+    )
+
+
 def test_the_build_uses_a_frontend_available_in_the_locked_environment(assets):
     """`python -m build` is not a locked dependency, so the documented
     `uv run python scripts/release_pipeline.py` failed to import it before any

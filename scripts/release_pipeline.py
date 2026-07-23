@@ -440,7 +440,12 @@ class Pipeline:
         self.version = version
         self.mode = mode
         self.dry_run = dry_run
-        self.assets_dir = Path(assets_dir or ROOT / "dist")
+        # Absolute at construction: `_run` executes subprocesses from ROOT
+        # (the checkout), while the staging job passes `--assets-dir assets`
+        # as a *sibling* of the checkout. A relative path would make pip in
+        # `step_smoke`, and the gh upload/download, look for the wheel under
+        # ROOT/assets, where it does not exist.
+        self.assets_dir = Path(assets_dir or ROOT / "dist").resolve()
         self._run = runner or _run
         self._gh = gh or (lambda argv: _run(["gh", *argv]))
         self._pypi_check = pypi_check or _pypi_has_version
