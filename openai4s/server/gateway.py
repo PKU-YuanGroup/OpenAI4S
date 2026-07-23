@@ -8357,6 +8357,37 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     }
                 )
                 return
+            if sub == "/telemetry/consent":
+                from openai4s.telemetry import consent as _consent
+
+                if method == "GET":
+                    active = _consent.read(store)
+                    self._json(
+                        {
+                            "enabled": active is not None,
+                            # The environment can veto; say so, so the UI does
+                            # not present a toggle that silently does nothing.
+                            "env_locked": _consent.env_forbids(),
+                        }
+                    )
+                    return
+                if method in ("PUT", "PATCH", "POST"):
+                    # Changing the recorded consent is a deliberate act by a
+                    # person using this install; granting mints the anonymous
+                    # id, revoking destroys it. Neither ever sends.
+                    want = bool(self._body().get("enabled"))
+                    if want:
+                        granted = _consent.grant(store)
+                        self._json(
+                            {
+                                "enabled": granted is not None,
+                                "env_locked": _consent.env_forbids(),
+                            }
+                        )
+                    else:
+                        _consent.revoke(store)
+                        self._json({"enabled": False, "env_locked": False})
+                    return
             if sub == "/memory" and method == "POST":
                 b = self._body()
                 self._json(

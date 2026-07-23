@@ -209,4 +209,4 @@ def test_widening_the_scan_did_not_change_the_surface_it_reports():
     """Landed on an unchanged tree, so the count must be exactly what the
     gateway-only scan reported. A widening that also *adds* routes is scanning
     something that is not surface -- a validator pattern, or a test fixture."""
-    assert len(http_routes()) == 143
+    assert len(http_routes()) == 144

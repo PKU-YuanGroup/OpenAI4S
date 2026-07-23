@@ -18,3 +18,4 @@ node_modules/
 # release build outputs (DMG is uploaded as a GitHub Release asset, not committed)
 dist/
 .build/
+*.isorted

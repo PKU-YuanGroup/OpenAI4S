@@ -433,6 +433,10 @@ Object.assign(I18N.zh, {
   "cust.network.disabledDesc": "已禁用 — 智能体仅用本地知识与已有文件",
   "cust.network.enabledDesc": "已启用 — 智能体可实时检索文献、抓取数据库、下载数据包",
   "cust.network.title": "网络",
+  "cust.telemetry.name": "匿名用量统计",
+  "cust.telemetry.off": "已关闭 — 没有任何数据离开这台机器",
+  "cust.telemetry.on": "已开启 — 仅发送匿名计数（版本、系统、成功/失败），绝不含提示词、文件名或数据",
+  "cust.telemetry.envlock": "已被环境变量 OPENAI4S_TELEMETRY 关闭",
   "cust.perm.decision.ask": "询问",
   "cust.perm.desc": "控制哪些工具需要你的批准。优先级：越具体越优先；同等具体时 本对话 > 本项目 > 全局。默认安全优先：读取放行，写入 / 命令 / 联网 / 装包 需批准，.env 读取被拒。",
   "cust.perm.noRules": "（无规则）",
@@ -981,6 +985,8 @@ Object.assign(I18N.zh, {
   "toast.models.updated": "已更新：{0}",
   "toast.network.disabled": "联网已禁用",
   "toast.network.enabled": "联网已启用",
+  "toast.telemetry.on": "匿名统计已开启",
+  "toast.telemetry.off": "匿名统计已关闭，身份一并删除",
   "toast.perm.enterTool": "请填写工具名",
   "toast.perm.resetDone": "已恢复默认规则",
   "toast.perm.ruleUpdated": "已更新规则",
@@ -1267,6 +1273,10 @@ Object.assign(I18N.en, {
   "cust.network.disabledDesc": "Disabled — the agent uses only local knowledge and existing files",
   "cust.network.enabledDesc": "Enabled — the agent can search literature in real time, scrape databases, and download data packages",
   "cust.network.title": "Network",
+  "cust.telemetry.name": "Anonymous usage statistics",
+  "cust.telemetry.off": "Off — nothing leaves this machine",
+  "cust.telemetry.on": "On — anonymous counts only (version, OS, success/failure); never prompts, file names, or data",
+  "cust.telemetry.envlock": "Disabled by the OPENAI4S_TELEMETRY environment variable",
   "cust.perm.decision.ask": "Ask",
   "cust.perm.desc": "Control which tools need your approval. Priority: the more specific, the higher; at equal specificity, This conversation > This project > Global. Safe by default: reads are allowed, writes / commands / network / package installs need approval, .env reads are denied.",
   "cust.perm.noRules": "(no rules)",
@@ -1815,6 +1825,8 @@ Object.assign(I18N.en, {
   "toast.models.updated": "Updated: {0}",
   "toast.network.disabled": "Network access disabled",
   "toast.network.enabled": "Network access enabled",
+  "toast.telemetry.on": "Anonymous statistics on",
+  "toast.telemetry.off": "Anonymous statistics off; the identity was deleted too",
   "toast.perm.enterTool": "Please enter a tool name",
   "toast.perm.resetDone": "Default rules restored",
   "toast.perm.ruleUpdated": "Rule updated",
@@ -7102,7 +7114,19 @@ async function searchKeyRow(c) {
   const sub = el("div", "job-submit"); sub.appendChild(kin); sub.appendChild(sv); info.appendChild(sub);
   row.appendChild(info); c.appendChild(row);
 }
-async function custNetwork(c) { try { const d = await api("/preferences/builtin-allowlist"); c.innerHTML = ""; c.appendChild(hdr(t("cust.network.title"), t("cust.network.desc"))); const master = el("div", "cust-row"); const mi = el("div", "info"); mi.appendChild(el("div", "nm", t("cust.network.allowName"))); mi.appendChild(el("div", "ds", d.enabled ? t("cust.network.enabledDesc") : t("cust.network.disabledDesc"))); master.appendChild(mi); const tg = el("button", "toggle" + (d.enabled ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { const r = await api("/network/status", { method: "PUT", body: JSON.stringify({ enabled: on }) }); hint(r.enabled ? t("toast.network.enabled") : t("toast.network.disabled")); } catch {} }; master.appendChild(tg); c.appendChild(master); await searchKeyRow(c); ((d && d.groups) || []).forEach(g => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, g.name || g.label)); info.appendChild(nm); const box = el("div", "ds"); (g.domains || []).slice(0, 12).forEach(dm => box.appendChild(el("span", "pill", dm))); info.appendChild(box); row.appendChild(info); c.appendChild(row); }); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
+async function custNetwork(c) { try { const d = await api("/preferences/builtin-allowlist"); c.innerHTML = ""; c.appendChild(hdr(t("cust.network.title"), t("cust.network.desc"))); const master = el("div", "cust-row"); const mi = el("div", "info"); mi.appendChild(el("div", "nm", t("cust.network.allowName"))); mi.appendChild(el("div", "ds", d.enabled ? t("cust.network.enabledDesc") : t("cust.network.disabledDesc"))); master.appendChild(mi); const tg = el("button", "toggle" + (d.enabled ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { const r = await api("/network/status", { method: "PUT", body: JSON.stringify({ enabled: on }) }); hint(r.enabled ? t("toast.network.enabled") : t("toast.network.disabled")); } catch {} }; master.appendChild(tg); c.appendChild(master); await searchKeyRow(c); ((d && d.groups) || []).forEach(g => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, g.name || g.label)); info.appendChild(nm); const box = el("div", "ds"); (g.domains || []).slice(0, 12).forEach(dm => box.appendChild(el("span", "pill", dm))); info.appendChild(box); row.appendChild(info); c.appendChild(row); }); await telemetryRow(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
+
+async function telemetryRow(c) {
+  let d; try { d = await api("/telemetry/consent"); } catch { return; }
+  const row = el("div", "cust-row"); const info = el("div", "info");
+  info.appendChild(el("div", "nm", t("cust.telemetry.name")));
+  info.appendChild(el("div", "ds", d.env_locked ? t("cust.telemetry.envlock") : (d.enabled ? t("cust.telemetry.on") : t("cust.telemetry.off"))));
+  row.appendChild(info);
+  const tg = el("button", "toggle" + (d.enabled ? " on" : "") + (d.env_locked ? " off" : ""));
+  if (d.env_locked) { tg.disabled = true; }
+  else { tg.onclick = async () => { const on = tg.classList.toggle("on"); try { const r = await api("/telemetry/consent", { method: "PUT", body: JSON.stringify({ enabled: on }) }); tg.classList.toggle("on", !!r.enabled); info.lastChild.textContent = r.enabled ? t("cust.telemetry.on") : t("cust.telemetry.off"); hint(r.enabled ? t("toast.telemetry.on") : t("toast.telemetry.off")); } catch {} }; }
+  row.appendChild(tg); c.appendChild(row);
+}
 async function custMemory(c) { try {
   const m = await api("/memory/enabled");
   const mem = await api("/memory?project_id=all").catch(() => ({ memories: [] }));

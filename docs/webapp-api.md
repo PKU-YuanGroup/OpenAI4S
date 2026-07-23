@@ -415,6 +415,8 @@ the route index so the surface is discoverable from one place.
 | `GET|PUT|PATCH|POST /network/status` | Write toggles `OPENAI4S_ALLOW_NETWORK` (process env + setting); always returns `{"enabled":bool}`. |
 | `GET /preferences/builtin-allowlist` | `{"enabled","egress_mode","granted":[domains],"groups"}`. |
 | `GET|PUT|PATCH|POST /search/config` | Tavily key config; write accepts `{api_key}` or `{clear_api_key}`; always returns `{"endpoint":"https://api.tavily.com/search","api_key_configured":bool}` — the key itself is never echoed. |
+| `GET /telemetry/consent` | `{"enabled":bool,"env_locked":bool}`. Opt-in anonymous telemetry, off by default; `env_locked` is true when `OPENAI4S_TELEMETRY` vetoes it, so the UI can disable a toggle that would otherwise do nothing. |
+| `PUT|PATCH|POST /telemetry/consent` | Body `{enabled}`. Granting records consent and mints the anonymous install id; revoking deletes both. Neither ever transmits — see `openai4s/telemetry/`. Returns the same shape as the GET. |
 
 ## 3. WebSocket contract (`/api/v1/ws`)
 
