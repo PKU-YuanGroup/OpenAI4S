@@ -633,6 +633,16 @@ class EnvironmentStore:
         """
         env_dir = self._env_dir(name)
         abandoned = []
+        # A build in flight has a `building.json` and no manifest — exactly the
+        # shape of an abandoned one. But while `apply()` holds the lock and conda
+        # is still writing the prefix, calling it abandoned invites a cleanup
+        # (`discard()`) that deletes the prefix mid-write and fails the live
+        # transaction. When a *non-stale* apply lock is present, a build is
+        # potentially live, so it is not reported as abandoned. A stale lock, or
+        # no lock, means no apply owns it and it really is abandoned.
+        apply_in_progress = (env_dir / "apply.lock").exists() and not _stale_lock(
+            env_dir
+        )
 
         def _record_abandoned(child: Path) -> None:
             marker = child / _BUILDING
@@ -657,8 +667,11 @@ class EnvironmentStore:
                 # A directory built at its final location is a generation once
                 # it has a manifest; anything without one — a `building.json`
                 # from a crashed or failed build, or a half-removed dir — is an
-                # abandoned build.
+                # abandoned build, unless an apply is actively holding the lock,
+                # in which case it may be the build in progress.
                 if (child / "manifest.json").is_file():
+                    continue
+                if apply_in_progress:
                     continue
                 _record_abandoned(child)
         # Legacy layout: builds that used to live under `.staging-` before the
@@ -843,14 +856,32 @@ class _apply_lock:
         # both pass `_stale_lock`, both unlink, and both create — and the first
         # to exit then deleted the second's new lock. Moving the stale file
         # aside with `os.replace` is the atomic primitive: of all racers, only
-        # the one that finds the stale lock still present succeeds; the rest see
-        # it already gone and must not create their own, or two applies run.
+        # the one that finds a file still present succeeds; the rest see it gone
+        # and must not create their own, or two applies run.
         aside = self._path.with_name(f".apply.lock.stale.{self._token}")
         try:
             os.replace(self._path, aside)
         except FileNotFoundError:
             raise ConcurrentApply(
                 f"another apply reclaimed the stale lock for {self._path} first"
+            )
+        # But `os.replace` moves *whatever is at the path* — and between two
+        # racers both passing `_stale_lock`, the first can already have replaced
+        # the stale file with its own fresh lock, which the second would then
+        # move aside. Verify the file we moved is genuinely stale; if it is a
+        # freshly-created lock, restore it and yield rather than displace a live
+        # owner.
+        try:
+            still_stale = (time.time() - os.stat(aside).st_mtime) > LOCK_STALE_S
+        except OSError:  # pragma: no cover
+            still_stale = True
+        if not still_stale:
+            try:
+                os.replace(aside, self._path)
+            except OSError:  # pragma: no cover
+                pass
+            raise ConcurrentApply(
+                f"another apply holds a fresh lock for {self._path}; not stale"
             )
         try:
             os.unlink(aside)

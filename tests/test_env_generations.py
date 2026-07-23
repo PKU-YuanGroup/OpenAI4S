@@ -645,3 +645,65 @@ def test_a_no_op_apply_is_refused_when_the_pointer_moved_since_the_plan(
 
     with pytest.raises(eg.ConcurrentApply):
         store.apply(stale_plan, spec, tool="fake-conda", build=_build, verify=_verify)
+
+
+# --------------------------------------------------------------------------
+# stale-lock reclamation must not displace a live owner; recover must not
+# report a build an apply is still writing
+# --------------------------------------------------------------------------
+
+
+def test_reclaim_does_not_displace_a_freshly_created_lock(tmp_path, monkeypatch):
+    """Two racers both pass `_stale_lock`; the first reclaims and creates a
+    fresh lock, and the second must not then move *that* lock aside — a check
+    that the file it moved is genuinely stale is what stops it."""
+    env_dir = tmp_path / "environments" / "python"
+    env_dir.mkdir(parents=True)
+    lock = env_dir / "apply.lock"
+    lock.write_text("99999:dead", encoding="utf-8")
+    old = os.stat(lock).st_mtime - eg.LOCK_STALE_S - 60
+    os.utime(lock, (old, old))
+
+    first = eg._apply_lock(env_dir)
+    first.__enter__()  # reclaims: lock now holds first's fresh, recent payload
+    try:
+        # A second racer that also saw the stale lock now tries to reclaim, but
+        # the file at the path is first's fresh lock — it must be refused.
+        second = eg._apply_lock(env_dir)
+        with pytest.raises(eg.ConcurrentApply):
+            second.__enter__()
+        # first still owns the lock.
+        assert lock.read_bytes() == first._payload()
+    finally:
+        first.__exit__(None, None, None)
+
+
+def test_recover_does_not_report_a_build_an_apply_is_still_writing(tmp_path):
+    """A live build has a `building.json` and no manifest — the shape of an
+    abandoned one. While an apply holds the lock, calling it abandoned invites a
+    discard that deletes the prefix mid-write."""
+    root = tmp_path / "environments"
+    store = eg.EnvironmentStore(root, runner=lambda a, c: _completed())
+    env_dir = root / "python"
+    (env_dir / "generations" / "env-live").mkdir(parents=True)
+    (env_dir / "generations" / "env-live" / "building.json").write_text(
+        json.dumps({"generation_id": "env-live", "state": eg.STAGING}),
+        encoding="utf-8",
+    )
+
+    # No lock: it really is abandoned.
+    assert [a["generation_id"] for a in store.recover("python")["abandoned"]] == [
+        "env-live"
+    ]
+
+    # A live apply holds a fresh lock: the build must not be reported abandoned.
+    (env_dir / "apply.lock").write_text(f"{os.getpid()}:live", encoding="utf-8")
+    assert store.recover("python")["abandoned"] == []
+
+    # A stale lock is no protection: the build is abandoned after all.
+    lock = env_dir / "apply.lock"
+    old = os.stat(lock).st_mtime - eg.LOCK_STALE_S - 60
+    os.utime(lock, (old, old))
+    assert [a["generation_id"] for a in store.recover("python")["abandoned"]] == [
+        "env-live"
+    ]
