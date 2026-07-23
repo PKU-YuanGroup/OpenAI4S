@@ -22,6 +22,7 @@ import urllib.request
 from typing import Any
 
 from openai4s.telemetry import consent as consent_mod
+from openai4s.telemetry import gate
 from openai4s.telemetry.wire import SealedPayload
 
 #: The only endpoint built in. Not configurable except for self-hosting, and
@@ -71,6 +72,18 @@ def send(store: Any, payload: SealedPayload) -> bool:
         return False
     if len(payload.body) > MAX_BODY_BYTES:
         return False
+    # The authorisation check and the socket open are one critical section.
+    # Read consent here and open the socket after releasing, and a revoke that
+    # lands in between returns to its caller while this payload — sealed under
+    # the identity it just destroyed — is still on its way to the opener. The
+    # barrier is the same lock `consent.revoke` takes, so the two cannot
+    # interleave: either this send begins before the revoke, or it re-reads a
+    # row that is gone and refuses.
+    with gate.transmitting():
+        return _send_locked(store, payload)
+
+
+def _send_locked(store: Any, payload: SealedPayload) -> bool:
     current = consent_mod.read(store)
     if current is None:
         return False

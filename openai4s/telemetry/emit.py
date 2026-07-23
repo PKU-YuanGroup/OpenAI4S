@@ -117,28 +117,32 @@ def emit_session_start(root_frame_id: str, *, store: Any = None, **fields: Any) 
 
 
 def _dispatch(store: Any, install_id: str, batch: list[dict[str, Any]]) -> None:
-    """Seal and send on a background thread. Never on the caller's thread."""
-    from openai4s.telemetry import sender as sender_mod
-    from openai4s.telemetry import wire
+    """Seal and hand to the transmission gate. Never on the caller's thread.
+
+    This used to start a daemon thread per flush. ``_MAX_BUFFER`` bounded the
+    *records* and nothing bounded the threads, sockets or payloads in flight,
+    so at a high event rate — or against a collector that simply stalls —
+    every event cleared the buffer and started another thread. A five-second
+    stall was enough to turn an event rate into a thread rate inside the
+    daemon. The gate owns one worker and one bounded queue; overflow is a
+    counted drop, never a block on the caller.
+    """
+    from openai4s.telemetry import gate, wire
 
     payload = wire.seal(install_id, batch)
     if payload is None:
         return
-
-    def _run() -> None:
-        try:
-            sender_mod.send(store, payload)
-        except Exception:  # noqa: BLE001
-            pass
-
-    threading.Thread(target=_run, name="openai4s-telemetry", daemon=True).start()
+    gate.submit(store, payload)
 
 
 def _reset_for_tests() -> None:
     """Clear process-local dedup and buffer. Test hook only."""
+    from openai4s.telemetry import gate
+
     with _LOCK:
         _BUFFER.clear()
         _SEEN_SESSIONS.clear()
+    gate._reset_for_tests()
 
 
 __all__ = ["emit", "emit_session_start"]

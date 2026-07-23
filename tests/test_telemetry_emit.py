@@ -108,33 +108,28 @@ def test_a_dispatch_that_crashes_does_not_propagate(store, monkeypatch):
 
 def test_the_send_happens_off_the_calling_thread(store, monkeypatch):
     """A slow collector must not add latency to a turn, so the actual send runs
-    on a background thread, never inline."""
+    on a background thread, never inline.
+
+    It is now the gate's single worker rather than a thread per flush, so the
+    property is asserted on where the send *ran* rather than on a Thread being
+    constructed — the worker may well have been started by an earlier event.
+    """
     consent_mod.grant(store)
-    threads: list = []
-    real_thread = threading.Thread
-
-    def spy(*args, **kwargs):
-        t = real_thread(*args, **kwargs)
-        threads.append(t)
-        return t
-
-    monkeypatch.setattr(threading, "Thread", spy)
-
     sent_on: list = []
+    done = threading.Event()
     from openai4s.telemetry import sender as sender_mod
 
-    monkeypatch.setattr(
-        sender_mod,
-        "send",
-        lambda store, payload: sent_on.append(threading.current_thread().name),
-    )
+    def record(store, payload):
+        sent_on.append(threading.current_thread().name)
+        done.set()
+
+    monkeypatch.setattr(sender_mod, "send", record)
 
     emit("daemon_start", store=store, surface="web")
-    for t in threads:
-        t.join(timeout=2)
 
-    assert sent_on and sent_on[0] != threading.current_thread().name
-    assert any(t.name == "openai4s-telemetry" for t in threads)
+    assert done.wait(timeout=5), "the send never ran"
+    assert sent_on[0] != threading.current_thread().name
+    assert sent_on[0] == "openai4s-telemetry"
 
 
 # --------------------------------------------------------------------------

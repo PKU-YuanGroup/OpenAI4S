@@ -148,8 +148,19 @@ def revoke(store: Any) -> None:
     There is deliberately no way to revoke while keeping the id, and no
     tombstone recording that a grant once existed: a record of participation is
     itself a fact about the user that outlives their withdrawal of it.
+
+    The delete happens inside the transmission barrier, and anything still
+    queued is dropped with it. Without that, revoke returned while a payload
+    that had *already passed* its consent check was still on its way to the
+    socket — so "with no consent, not a single packet leaves the machine" held
+    only for callers who happened not to be mid-send. Deleting the row is not
+    the same as stopping the sends it authorised, and this is where the two are
+    made the same thing.
     """
-    store.delete_setting(CONSENT_KEY)
+    from openai4s.telemetry import gate
+
+    with gate.revoking():
+        store.delete_setting(CONSENT_KEY)
 
 
 __all__ = [

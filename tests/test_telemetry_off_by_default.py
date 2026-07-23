@@ -346,6 +346,12 @@ def test_no_payload_ever_sends_under_an_identity_that_is_not_current(store, no_e
 
     granted = consent_mod.grant(store)
     assert granted is not None
+    consent_mod.revoke(store)
+    # Every payload here was sealed under an identity that has *already* been
+    # destroyed, so any egress at all is a violation. Seeding the list with the
+    # currently-authorised id instead would make a legitimate send indis-
+    # tinguishable from the leak, and the assertion would be measuring the
+    # scheduler rather than the invariant.
     stale = [_payload(granted.install_id)]
     stop = threading.Event()
     sent: list[bool] = []
@@ -353,11 +359,12 @@ def test_no_payload_ever_sends_under_an_identity_that_is_not_current(store, no_e
 
     def churn():
         while not stop.is_set():
-            consent_mod.revoke(store)
             fresh = consent_mod.grant(store)
-            if fresh is not None:
-                with lock:
-                    stale.append(_payload(fresh.install_id))
+            if fresh is None:
+                continue
+            consent_mod.revoke(store)
+            with lock:
+                stale.append(_payload(fresh.install_id))
 
     def send_loop():
         while not stop.is_set():
