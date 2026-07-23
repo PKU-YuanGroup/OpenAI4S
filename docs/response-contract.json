@@ -462,7 +462,7 @@
         404
       ]
     },
-    "/frames/([^/]+)/(?:": {
+    "/frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution)": {
       "content_types": [
         "application/json"
       ],
@@ -886,6 +886,7 @@
         "json"
       ],
       "statuses": [
+        202,
         404
       ]
     },
@@ -911,7 +912,7 @@
         404
       ]
     },
-    "/frames/([^/]+)/recovery/actions/": {
+    "/frames/([^/]+)/recovery/actions/(restore|retry|restart_fresh)": {
       "content_types": [
         "application/json"
       ],
@@ -1056,6 +1057,7 @@
       ],
       "statuses": [
         200,
+        403,
         404
       ]
     },

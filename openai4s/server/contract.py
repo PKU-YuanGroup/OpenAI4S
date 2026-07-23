@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import ast
 import re
+import textwrap
 from pathlib import Path
 
 _GATEWAY = Path(__file__).with_name("gateway.py")
@@ -89,15 +90,69 @@ def _source() -> str:
     return _GATEWAY.read_text("utf-8")
 
 
+def _fullmatch_patterns(text: str) -> set[str]:
+    """Parameterised routes, read as constant expressions rather than scanned.
+
+    A regex scan takes the first string literal it sees. The gateway builds one
+    matcher out of adjacent raw literals across several lines, so the scan
+    produced ``/frames/([^/]+)/(?:`` — a fragment that cannot match anything and
+    is not a route. It was still counted as one: the contract driver
+    concretised it, recorded the 404 that a non-route naturally produces, and
+    that 404 went into the claimed coverage.
+
+    Python's parser joins implicitly concatenated literals before the AST
+    exists, so reading the call's first argument as a constant gets the whole
+    pattern — and anything that is *not* a constant is not something this can
+    describe, so it is left out rather than half-read.
+    """
+    try:
+        tree = ast.parse(textwrap.dedent(text))
+    except SyntaxError:
+        # A fragment rather than a module — the tests hand this function one,
+        # and so would any future caller scanning a snippet. Fall back to the
+        # scan, which reads the first literal of a concatenation: the
+        # completeness filter in `http_routes` is what stops the truncation
+        # that produces from being counted, in either path.
+        return set(_PATTERN.findall(text))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        if _callee_name(node) != "fullmatch":
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            found.add(first.value)
+    return found
+
+
+def is_complete_matcher(route: str) -> bool:
+    """Can this entry stand for a route at all?
+
+    A path, and a regex that compiles. An entry that cannot form a complete
+    matcher describes no surface, so counting it as covered — on the strength
+    of the 404 it earns for not being a route — inflates the number that is
+    supposed to mean "every endpoint has an observed response".
+    """
+    if not route.startswith("/"):
+        return False
+    try:
+        re.compile(route)
+    except re.error:
+        return False
+    return True
+
+
 def http_routes(source: str | None = None) -> set[str]:
     """Every path the HTTP surface can match, relative to the API root."""
     text = source if source is not None else "\n".join(_route_sources())
-    routes = set(_EXACT.findall(text)) | set(_PATTERN.findall(text))
+    routes = set(_EXACT.findall(text)) | _fullmatch_patterns(text)
     routes |= set(_PREFIX.findall(text))
     for group in _MEMBERSHIP.findall(text):
         routes |= set(_MEMBER_ITEM.findall(group))
-    # A route is a path; anything else that slipped through is not surface.
-    return {r for r in routes if r.startswith("/")}
+    # A route is a path that can match something. Anything else is not surface,
+    # and must not be counted as covered.
+    return {route for route in routes if is_complete_matcher(route)}
 
 
 def websocket_inbound(source: str | None = None) -> set[str]:

@@ -115,9 +115,24 @@ def main() -> int:
 
     routes = drive()
     known = contract.http_routes()
-    covered = sorted(set(routes) & known)
-    missing = sorted(known - set(routes))
+    # An entry whose own concretisation does not match it drives nothing: the
+    # request lands on no handler, and the 404 that comes back describes the
+    # probe rather than the surface. Counting that as covered is how a
+    # truncated pattern assembled from adjacent string literals came to be one
+    # of the 144.
+    unreachable = sorted(route for route in known if response_capture.unroutable(route))
+    covered = sorted((set(routes) & known) - set(unreachable))
+    missing = sorted(known - set(routes)) + unreachable
     payload = document(routes)
+
+    if unreachable:
+        print(
+            f"  {len(unreachable)} inventory entr(y/ies) cannot be driven and "
+            f"are NOT counted as covered:",
+            file=sys.stderr,
+        )
+        for route in unreachable:
+            print(f"    {route}", file=sys.stderr)
 
     if args.check:
         current = json.loads(ARTIFACT.read_text("utf-8")) if ARTIFACT.is_file() else {}

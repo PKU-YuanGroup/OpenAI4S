@@ -366,6 +366,70 @@ def install(gateway_module, recorder: Recorder):
 PROBE_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 
 
+def _sample(pattern: str, index: int = 0) -> tuple[str, int]:
+    """Walk a route pattern and build one string it matches.
+
+    Substitution could not do this. A pattern like
+    ``/frames/([^/]+)/(?:action-timeline|…|recovery(?:/actions…)?|…)`` has an
+    alternation whose branches contain nested optional groups, and stripping
+    ``(?:[^)]*)`` stops at the *first* closing parenthesis — leaving a mangled
+    remainder that matches nothing. The path then routed nowhere, the handler
+    answered 404 because there was no such endpoint, and that 404 was recorded
+    as this route's observed contract.
+
+    The first alternative is taken and optional groups are omitted, which
+    yields the shortest real path through the pattern.
+    """
+    branches: list[list[str]] = [[]]
+    while index < len(pattern):
+        char = pattern[index]
+        if char == ")":
+            break
+        if char == "|":
+            branches.append([])
+            index += 1
+            continue
+        if char == "(":
+            inner_start = index + 1
+            if pattern.startswith("?:", inner_start):
+                inner_start += 2
+            inner, index = _sample(pattern, inner_start)
+            if index < len(pattern) and pattern[index] == ")":
+                index += 1
+            if index < len(pattern) and pattern[index] in "?*":
+                inner = ""  # optional: the shortest match omits it
+                index += 1
+            elif index < len(pattern) and pattern[index] == "+":
+                index += 1
+            branches[-1].append(inner)
+            continue
+        if char == "[":
+            close = pattern.find("]", index + 1)
+            if close < 0:  # pragma: no cover - not a pattern we emit
+                branches[-1].append(char)
+                index += 1
+                continue
+            klass = pattern[index : close + 1]
+            index = close + 1
+            if index < len(pattern) and pattern[index] in "+*?":
+                index += 1
+            branches[-1].append("1" if "0-9" in klass else "probe-id")
+            continue
+        if char == ".":
+            index += 1
+            if index < len(pattern) and pattern[index] in "+*?":
+                index += 1
+            branches[-1].append("probe-id")
+            continue
+        if char == "\\":
+            branches[-1].append(pattern[index + 1 : index + 2])
+            index += 2
+            continue
+        branches[-1].append(char)
+        index += 1
+    return "".join(branches[0]), index
+
+
 def concrete_path(route: str) -> str:
     """A concrete path the route pattern matches.
 
@@ -373,13 +437,24 @@ def concrete_path(route: str) -> str:
     handler parses the segment and then fails on the *lookup* — a 404 for a
     missing resource is a contract, a 500 from an unparseable id is not.
     """
-    path = re.sub(r"\(\?:/\.\*\)\?", "", route)
-    path = re.sub(r"\(\?:[^)]*\)\??", "", path)
-    path = path.replace("([^/]+)", "probe-id")
-    path = path.replace("(.+)", "probe-id")
-    path = path.replace("([0-9]+)", "1")
-    path = re.sub(r"\([^)]*\)", "probe-id", path)
-    return path or "/"
+    return _sample(route)[0] or "/"
+
+
+def unroutable(route: str) -> bool:
+    """Does this entry fail to describe a path that reaches it?
+
+    A route whose own concretisation does not match it drives nothing: the
+    request lands on no handler, and the 404 that comes back is a fact about
+    the probe rather than about the surface. Counting it as covered inflates
+    the number that is supposed to mean "every endpoint has an observed
+    response".
+    """
+    if not contract.is_complete_matcher(route):
+        return True
+    try:
+        return re.fullmatch(route, concrete_path(route)) is None
+    except re.error:  # pragma: no cover - is_complete_matcher already compiled
+        return True
 
 
 def drive_all_routes(recorder: "Recorder", make_handler, config, runner) -> None:

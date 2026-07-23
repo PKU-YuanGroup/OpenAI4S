@@ -23,10 +23,12 @@ and orphaned 11 frozen response shapes, and the obvious repair -- regenerate
 the artifact until it is green -- re-files those shapes under the catch-all
 `/frames/([^/]+)(?:/.*)?` and destroys the per-route contract.
 """
+import re
 from pathlib import Path
 
 import pytest
 
+from openai4s.server import contract
 from openai4s.server.contract import (
     _ROUTE_MODULES,
     _SERVER_PKG,
@@ -248,3 +250,69 @@ def test_an_extracted_route_module_is_in_the_inventory():
     text = module.read_text("utf-8")
     owned = {r for r in listed if f'"{r}"' in text}
     assert owned, "no route from the extracted module appears in the inventory"
+
+
+# --------------------------------------------------------------------------
+# an entry that cannot match anything is not a route
+# --------------------------------------------------------------------------
+
+
+def test_no_inventory_entry_is_an_incomplete_matcher():
+    """The reproduction: a `re.fullmatch` assembled from adjacent raw literals.
+
+    A regex scan takes the first literal it sees, so the gateway's multi-line
+    pattern entered the inventory as `/frames/([^/]+)/(?:` — a fragment that
+    cannot match anything. The contract driver then concretised it, recorded
+    the 404 that a non-route naturally earns, and counted that toward the
+    published coverage.
+    """
+    for route in contract.http_routes():
+        assert contract.is_complete_matcher(route), (
+            f"{route!r} cannot form a complete matcher, so it describes no "
+            f"surface and must not be counted as one"
+        )
+        assert route.count("(") == route.count(")"), route
+
+
+def test_a_pattern_split_across_string_literals_is_read_whole():
+    source = (
+        "def _api(self, sub):\n"
+        "    if re.fullmatch(\n"
+        '        r"/frames/([^/]+)/(?:"\n'
+        '        r"alpha|beta"\n'
+        '        r")", sub):\n'
+        "        return 1\n"
+    )
+    routes = contract.http_routes(source)
+    assert routes == {"/frames/([^/]+)/(?:alpha|beta)"}
+
+
+def test_a_non_constant_pattern_is_left_out_rather_than_half_read():
+    source = (
+        "def _api(self, sub):\n"
+        "    if re.fullmatch(build_pattern(), sub):\n"
+        "        return 1\n"
+    )
+    assert contract.http_routes(source) == set()
+
+
+def test_every_route_concretises_to_a_path_that_reaches_it():
+    """A route whose own probe does not match it drives nothing, so its 404 is
+    a fact about the probe rather than about the surface."""
+    from openai4s.server import response_capture
+
+    unroutable = sorted(
+        route for route in contract.http_routes() if response_capture.unroutable(route)
+    )
+    assert unroutable == [], (
+        f"these entries cannot be driven and must not count as covered: "
+        f"{unroutable}"
+    )
+
+
+def test_an_alternation_is_sampled_rather_than_stripped():
+    from openai4s.server.response_capture import concrete_path
+
+    route = "/frames/([^/]+)/(?:action-timeline|context|recovery(?:/actions)?)"
+    assert concrete_path(route) == "/frames/probe-id/action-timeline"
+    assert re.fullmatch(route, concrete_path(route))
