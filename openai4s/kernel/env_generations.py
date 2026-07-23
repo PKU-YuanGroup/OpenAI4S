@@ -33,10 +33,14 @@ gets an environment that is neither.
             prefix/                   # the environment itself
         history.jsonl                 # append-only, what happened and when
 
-A generation directory is created under a ``.staging-`` name and renamed into
-``generations/`` only once its manifest says ``ready``. So a crash mid-build
-leaves rubbish that is visibly not a generation, rather than a generation that
-is quietly incomplete.
+The environment is built **at its final prefix**, not in a staging directory
+that is renamed — Conda bakes the absolute prefix into scripts, activation
+hooks and package metadata, so a relocated environment is broken. What is made
+atomic is instead the generation's *visibility*: ``manifest.json`` is written
+last, and the ``current`` pointer is flipped last. While a build is in flight
+the directory holds a ``building.json`` and no manifest, so ``get``/``list``
+ignore it and discovery never serves it; a crash therefore leaves something
+visibly not a generation, cleaned up by ``recover``/``discard``.
 """
 from __future__ import annotations
 
@@ -60,6 +64,13 @@ SUPERSEDED = "superseded"
 CREATE = "create"
 REPLACE = "replace"
 NOOP = "noop"
+
+#: Written while a generation is being built at its final location, and removed
+#: (or replaced by ``manifest.json``) when it finishes. Its presence — with no
+#: manifest — is what marks a directory as an abandoned build rather than a
+#: generation, now that the bytes are no longer built in a separate staging dir
+#: and renamed.
+_BUILDING = "building.json"
 
 Runner = Callable[[Sequence[str], Path], "subprocess.CompletedProcess[bytes]"]
 
@@ -299,6 +310,9 @@ class EnvironmentStore:
         directory = self._generations_dir(name)
         if not directory.is_dir():
             return []
+        # `get` keys on `manifest.json`, which a half-built or failed directory
+        # does not have (it has `building.json`) — so an abandoned build is not
+        # in the list, exactly as it was not when builds lived under `.staging-`.
         found = [self.get(name, child.name) for child in sorted(directory.iterdir())]
         return [g for g in found if g is not None]
 
@@ -428,15 +442,29 @@ class EnvironmentStore:
                 )
 
             generation_id = "env-" + uuid.uuid4().hex[:16]
-            staging = env_dir / f".staging-{generation_id}"
-            if staging.exists():  # pragma: no cover - a uuid collision
-                shutil.rmtree(staging, ignore_errors=True)
-            staging.mkdir(parents=True)
+            # Build *at the final prefix*, not in a staging directory that is
+            # later renamed. Conda bakes the environment's absolute prefix into
+            # scripts, activation hooks, and package metadata, so renaming
+            # `.staging-<id>/prefix` to `generations/<id>/prefix` produced a
+            # generally unusable environment — and the recorded interpreter
+            # still named the vanished staging path. What must be atomic is the
+            # *visibility* of the generation, not the location of its bytes.
+            #
+            # Visibility comes from two things, both flipped last: the `ready`
+            # marker (so `get`/`list` ignore a half-built directory) and the
+            # `current` pointer (so discovery never serves one). A crash mid-
+            # build therefore leaves a `generations/<id>` with a `building.json`
+            # and no `manifest.json` — visibly not a generation, and cleaned up
+            # by `recover`/`discard` exactly as the old `.staging-` dir was.
+            gen_dir = self._generations_dir(name) / generation_id
+            if gen_dir.exists():  # pragma: no cover - a uuid collision
+                shutil.rmtree(gen_dir, ignore_errors=True)
+            gen_dir.mkdir(parents=True)
             # Build from an immutable copy. Re-hashing closes the plan→apply
             # window; the copy closes the apply→build one, which no hash can.
-            staged_spec = staging / f"spec{live.suffix or '.yml'}"
+            staged_spec = gen_dir / f"spec{live.suffix or '.yml'}"
             shutil.copyfile(live, staged_spec)
-            prefix = staging / "prefix"
+            prefix = gen_dir / "prefix"
             record = {
                 "generation_id": generation_id,
                 "environment": name,
@@ -446,7 +474,10 @@ class EnvironmentStore:
                 "created_at": _now_ms(),
                 "tool": tool,
             }
-            _write_json(staging / "manifest.json", record)
+            # `building.json`, not `manifest.json`: until the build succeeds this
+            # directory is not a generation, and `get`/`list` key on the
+            # manifest's presence.
+            _write_json(gen_dir / _BUILDING, record)
 
             # `stderr` is bound before the try so a build() that raises before
             # the runner ever ran cannot reach the failure path with an unbound
@@ -472,7 +503,7 @@ class EnvironmentStore:
                     if isinstance(e, EnvironmentError_)
                     else f"{type(e).__name__}: {e}"
                 )
-                return self._fail(name, staging, record, detail, stderr)
+                return self._fail(name, gen_dir, record, detail, stderr)
 
             record.update(
                 {
@@ -481,13 +512,11 @@ class EnvironmentStore:
                     "packages": list(packages),
                 }
             )
-            _write_json(staging / "manifest.json", record)
-            # Only now does it become a generation. A crash before this leaves
-            # a `.staging-` directory, which is visibly not one.
-            final = self._generations_dir(name) / generation_id
-            os.replace(staging, final)
-            record["prefix"] = str(final / "prefix")
-            _write_json(final / "manifest.json", record)
+            # The manifest is written last and atomically: a reader sees either
+            # no manifest (not a generation) or a complete READY one. Only then
+            # is the building marker removed.
+            _write_json(gen_dir / "manifest.json", record)
+            (gen_dir / _BUILDING).unlink(missing_ok=True)
             self._point_at(name, generation_id)
             self._log(
                 name,
@@ -503,17 +532,19 @@ class EnvironmentStore:
         return ApplyResult(name, True, self.get(name, generation_id), previous)
 
     def _fail(
-        self, name: str, staging: Path, record: dict, detail: str, stderr: str
+        self, name: str, gen_dir: Path, record: dict, detail: str, stderr: str
     ) -> ApplyResult:
         """Record the failure without touching the current environment."""
         record.update({"state": FAILED, "detail": detail})
         try:
-            _write_json(staging / "manifest.json", record)
+            # The failure marker, not a manifest: a directory with a
+            # `building.json` and no `manifest.json` is evidence of an abandoned
+            # build, which `get`/`list` ignore and `recover`/`discard` clean up.
+            # Nothing points at it and it can never become current.
+            _write_json(gen_dir / _BUILDING, record)
         except OSError:  # pragma: no cover
             pass
         self._log(name, "apply_failed", {"detail": detail})
-        # Deliberately left on disk under `.staging-`: it is evidence, it is
-        # not a generation, and nothing can point at it.
         return ApplyResult(
             name,
             False,
@@ -572,6 +603,37 @@ class EnvironmentStore:
         """
         env_dir = self._env_dir(name)
         abandoned = []
+
+        def _record_abandoned(child: Path) -> None:
+            marker = child / _BUILDING
+            try:
+                record = json.loads(marker.read_text("utf-8"))
+            except (OSError, ValueError):
+                record = {"state": "unknown"}
+            abandoned.append(
+                {
+                    "path": str(child),
+                    "generation_id": record.get("generation_id") or child.name,
+                    "state": record.get("state", "unknown"),
+                    "detail": record.get("detail", ""),
+                }
+            )
+
+        generations = self._generations_dir(name)
+        if generations.is_dir():
+            for child in sorted(generations.iterdir()):
+                if not child.is_dir():
+                    continue
+                # A directory built at its final location is a generation once
+                # it has a manifest; anything without one — a `building.json`
+                # from a crashed or failed build, or a half-removed dir — is an
+                # abandoned build.
+                if (child / "manifest.json").is_file():
+                    continue
+                _record_abandoned(child)
+        # Legacy layout: builds that used to live under `.staging-` before the
+        # move to final-prefix builds. Still cleaned up so an upgrade does not
+        # strand them.
         if env_dir.is_dir():
             for child in sorted(env_dir.iterdir()):
                 if not child.name.startswith(".staging-"):
@@ -604,10 +666,22 @@ class EnvironmentStore:
             candidate.resolve().relative_to(env_dir)
         except ValueError:
             raise EnvironmentError_(f"{path!r} is not inside {env_dir}")
-        if not candidate.name.startswith(".staging-"):
+        legacy = candidate.name.startswith(".staging-")
+        # A generation is a directory under `generations/` with a manifest.
+        # A build that never got one — `building.json` present, or nothing —
+        # is discardable; a real generation is immutable and never current.
+        in_generations = (
+            candidate.parent.resolve() == self._generations_dir(name).resolve()
+        )
+        is_generation = in_generations and (candidate / "manifest.json").is_file()
+        if is_generation or (not legacy and not in_generations):
             raise ImmutableGeneration(
                 f"{path!r} is not an abandoned build; applied generations are "
                 f"immutable and are removed by pruning, not by discard"
+            )
+        if in_generations and candidate.name == self.current_id(name):
+            raise ImmutableGeneration(
+                f"{path!r} is the current generation and cannot be discarded"
             )
         shutil.rmtree(candidate, ignore_errors=True)
         return not candidate.exists()

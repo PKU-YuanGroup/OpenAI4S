@@ -185,6 +185,10 @@ class Environment:
 # --------------------------------------------------------------------------- #
 _LOCK = threading.Lock()
 _CACHE: list[Environment] | None = None
+#: The generation-pointer fingerprint the cache was built for. When it differs
+#: from the live one — an `env apply`/`rollback` in another process moved a
+#: pointer — the cache is rebuilt even without an explicit invalidation.
+_CACHE_POINTERS: tuple = ()
 
 
 def _hidden_names() -> set[str]:
@@ -362,6 +366,38 @@ def _generation_environments() -> list[Environment]:
     return found
 
 
+def _pointer_fingerprint() -> tuple:
+    """A cheap signature of every environment's ``current`` pointer.
+
+    ``invalidate_cache`` only clears the cache of the process that moved the
+    pointer. ``openai4s env apply`` and ``rollback`` run in a *separate*
+    process from a live daemon, so the daemon kept serving its old
+    ``Environment`` objects and newly spawned sessions ran the pre-switch
+    interpreter until a restart. Discovery therefore compares this fingerprint
+    on every call and rescans when it changes, so a pointer moved by any
+    process is seen by every process — a few tiny file reads, against the cost
+    of a stale interpreter.
+    """
+    root = _generation_root()
+    if root is None or not root.is_dir():
+        return ()
+    marks: list[tuple] = []
+    try:
+        children = sorted(root.iterdir())
+    except OSError:
+        return ()
+    for env_dir in children:
+        pointer = env_dir / "current"
+        try:
+            stat = pointer.stat()
+            marks.append(
+                (env_dir.name, pointer.read_text("utf-8").strip(), stat.st_mtime_ns)
+            )
+        except OSError:
+            continue
+    return tuple(marks)
+
+
 def _base_environment() -> Environment:
     """The daemon's own interpreter as a first-class env (the preinstalled
     stack lives here). Never prepends anything to PATH."""
@@ -378,11 +414,17 @@ def _base_environment() -> Environment:
 
 def discover_environments(force: bool = False) -> list[Environment]:
     """All offerable environments (cached). ``base`` first, then the discovered
-    conda envs sorted by name. Set ``force`` to rescan the disk."""
-    global _CACHE
+    conda envs sorted by name. Set ``force`` to rescan the disk.
+
+    The cache is also invalidated implicitly when a ``current`` pointer moves —
+    including from another process — so a daemon does not keep serving the
+    interpreter from before an ``env apply``/``rollback`` run by the CLI."""
+    global _CACHE, _CACHE_POINTERS
     with _LOCK:
-        if _CACHE is not None and not force:
+        pointers = _pointer_fingerprint()
+        if _CACHE is not None and not force and pointers == _CACHE_POINTERS:
             return _CACHE
+        _CACHE_POINTERS = pointers
         hidden = _hidden_names()
         found: dict[str, Environment] = {"base": _base_environment()}
         # Applied generations first: the pointer is an explicit act by the

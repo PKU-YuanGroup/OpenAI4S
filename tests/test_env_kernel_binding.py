@@ -160,6 +160,56 @@ def test_rollback_moves_what_the_next_kernel_runs(cfg, tmp_path):
     assert first in result["stdout"]
 
 
+def test_a_pointer_moved_by_another_process_is_seen_without_invalidation(cfg, tmp_path):
+    """The daemon-vs-CLI defect.
+
+    ``invalidate_cache`` only clears the cache of the process that moved the
+    pointer. A separate process (a live daemon) kept serving the old
+    interpreter until restart. Discovery now compares a pointer fingerprint,
+    so a move done through a *different* store — standing in for the CLI —
+    is visible here without anyone calling ``invalidate_cache``.
+    """
+    spec = tmp_path / "science.yml"
+    spec.write_text("name: science\ndependencies: [python]\n", encoding="utf-8")
+    first = _build_generation(_store(cfg), "science", spec)
+
+    spec.write_text("name: science\ndependencies: [python, numpy]\n", encoding="utf-8")
+    second = _build_generation(_store(cfg), "science", spec)
+
+    # Warm this process's cache on the current (second) generation.
+    envmod.invalidate_cache()
+    assert second in (envmod.get_environment("science").interpreter or "")
+
+    # A *different* store rolls the pointer back — as the CLI would, in its own
+    # process — and this process is told nothing.
+    _store(cfg).rollback("science", first)
+
+    # No invalidate_cache() here: discovery must notice the pointer moved.
+    resolved = envmod.get_environment("science")
+    assert first in (resolved.interpreter or ""), (
+        "a pointer moved by another process was not picked up; a daemon would "
+        "keep running the pre-rollback interpreter"
+    )
+
+
+def test_the_recorded_interpreter_is_where_the_generation_actually_lives(cfg, tmp_path):
+    """Conda bakes its absolute prefix in, so a build that is later relocated is
+    broken and its recorded interpreter names a path that no longer exists."""
+    spec = tmp_path / "science.yml"
+    spec.write_text("name: science\ndependencies: [python]\n", encoding="utf-8")
+    store = _store(cfg)
+    generation_id = _build_generation(store, "science", spec)
+
+    generation = store.get("science", generation_id)
+    assert Path(generation.interpreter).is_file(), (
+        "the recorded interpreter must point at the generation's real location, "
+        "not a staging path that was renamed away"
+    )
+    assert generation_id in generation.interpreter
+    assert generation_id in generation.prefix
+    assert ".staging-" not in generation.interpreter
+
+
 def test_a_generation_environment_wins_over_a_conda_env_of_the_same_name(
     cfg, tmp_path, monkeypatch
 ):

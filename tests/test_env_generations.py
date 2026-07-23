@@ -187,10 +187,15 @@ def test_a_failed_build_never_becomes_a_generation(tmp_path):
     _apply(store, _spec(tmp_path))
 
     assert store.list("python") == [], "a failed build is not a generation"
-    env_dir = tmp_path / "environments" / "python"
-    staged = [p for p in env_dir.iterdir() if p.name.startswith(".staging-")]
-    assert staged, "the evidence is kept, under a name that is visibly not one"
-    record = json.loads((staged[0] / "manifest.json").read_text())
+    # The evidence lives at the generation's final location now (conda bakes in
+    # its prefix, so builds can no longer be relocated), and it is visibly not
+    # a generation: a `building.json` marked FAILED and no `manifest.json`.
+    gens = tmp_path / "environments" / "python" / "generations"
+    failed = [
+        p for p in gens.iterdir() if p.is_dir() and not (p / "manifest.json").is_file()
+    ]
+    assert failed, "the evidence is kept, under a directory that is not a generation"
+    record = json.loads((failed[0] / "building.json").read_text())
     assert record["state"] == eg.FAILED
 
 
