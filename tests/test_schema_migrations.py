@@ -531,11 +531,14 @@ def _rewind_to_version_six(db: Path) -> None:
         conn.close()
 
 
-def test_an_unverifiable_generation_attribution_is_cleared(tmp_path):
+def test_an_unverifiable_generation_attribution_is_labelled_not_erased(tmp_path):
     """A row whose id predates the generation-aware address may have been
-    shared by any number of kernels, and which ones is not recoverable —
-    sharing leaves no trace. An unattributed record is honest; a confidently
-    wrong one is what this whole subsystem exists to prevent."""
+    shared by a second kernel, and which rows actually were is not recoverable
+    — sharing leaves no trace.
+
+    Clearing the attribution would trade one wrong answer for a missing one and
+    discard provenance that is right far more often than not. It is kept and
+    qualified instead: a reader that needs certainty filters on the label."""
     db = Config(data_dir=tmp_path).db_path
     store = get_store(db)
     _legacy_env_snapshot(db, "env-legacyaddress", "gen-1")
@@ -546,11 +549,12 @@ def test_an_unverifiable_generation_attribution_is_cleared(tmp_path):
     assert upgraded.schema_state()["version"] == SCHEMA_VERSION
     row = upgraded.get_env_snapshot("env-legacyaddress")
     assert row is not None, "the environment itself is untouched"
-    assert row["generation_id"] is None
-    assert row["interpreter"] == "/usr/bin/python3", "only the claim is dropped"
+    assert row["generation_id"] == "gen-1", "provenance is never silently dropped"
+    assert row["generation_confidence"] == "legacy_unverified"
+    assert row["interpreter"] == "/usr/bin/python3"
 
 
-def test_a_correctly_addressed_row_keeps_its_generation(tmp_path):
+def test_a_correctly_addressed_row_is_labelled_verified(tmp_path):
     """Idempotence: a row written after the fix hashes to its own id, so a
     re-run of the migration must leave it alone."""
     from openai4s.storage.artifacts import env_snapshot_id
@@ -572,4 +576,8 @@ def test_a_correctly_addressed_row_keeps_its_generation(tmp_path):
     store.close()
     _rewind_to_version_six(db)
 
-    assert get_store(db).get_env_snapshot(correct)["generation_id"] == "gen-1"
+    row = get_store(db).get_env_snapshot(correct)
+    assert row["generation_id"] == "gen-1"
+    assert (
+        row["generation_confidence"] == "verified"
+    ), "an address that includes its generation cannot have been shared"

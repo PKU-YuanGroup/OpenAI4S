@@ -239,6 +239,13 @@ CREATE TABLE IF NOT EXISTS env_snapshots (
     -- absent (an R kernel has no Python distributions; a foreign interpreter
     -- may refuse to be read). Absence with a reason beats a borrowed list.
     generation_id  TEXT,
+    -- How far the generation above can be trusted. `verified` means the row's
+    -- own address includes it, so it cannot have been shared by a second
+    -- kernel; `legacy_unverified` means it was written before that was true --
+    -- the named generation did produce this environment, but it may not be the
+    -- only one that did. Kept and labelled rather than cleared: a missing
+    -- attribution is not more honest than a qualified one, it is just emptier.
+    generation_confidence TEXT,
     packages_unavailable TEXT,
     -- Whether this row was measured from a kernel generation or assumed from
     -- the daemon. The fallback path has always set this and it was dropped at
@@ -1056,7 +1063,7 @@ class Store:
                 ) from e
 
     def _apply_env_snapshot_generation(self, conn: sqlite3.Connection) -> None:
-        """Version 7: retire generation attributions that cannot be trusted.
+        """Version 7: qualify generation attributions instead of destroying them.
 
         ``env_snapshots`` rows are content-addressed, and until now the address
         did not include ``generation_id`` while ``upsert_env_snapshot`` never
@@ -1067,16 +1074,25 @@ class Store:
         column on the artifact carries a generation, so nothing could catch it.
 
         Which historical rows were actually shared is not recoverable: sharing
-        leaves no trace. What *is* recoverable is which rows predate the fix —
-        their id does not match the generation-aware basis — and for those the
-        attribution is unverifiable. They are cleared rather than kept, on the
-        same principle the rest of this file follows: an unattributed record is
-        honest, a confidently wrong one is not. The environment itself (kind,
-        interpreter, packages) is untouched; only the claim about which kernel
-        lifetime produced it goes.
+        leaves no trace. The first version of this migration answered that by
+        clearing ``generation_id`` on every row written before the fix — which
+        trades one wrong answer for a *missing* one and silently discards
+        provenance that is right far more often than not.
 
-        Idempotent: a row written after the fix hashes to its own id and is
-        left alone, so a re-run converges.
+        So the value is kept and **labelled**. ``generation_confidence`` says
+        which reading applies:
+
+          * ``verified`` — the row's address includes its generation, so it
+            cannot have been shared;
+          * ``legacy_unverified`` — written before the fix. The named
+            generation produced this environment; it may not be the only one
+            that did.
+
+        A reader that needs certainty filters on the label. Nothing is lost,
+        and nothing claims more than it can support.
+
+        Idempotent: the label is derived from the row's own address, so a
+        re-run recomputes the same answer.
 
         Runs inside the transaction owned by ``run_migrations``.
         """
@@ -1086,8 +1102,17 @@ class Store:
             r["name"]
             for r in conn.execute("PRAGMA table_info(env_snapshots)").fetchall()
         }
-        if "generation_id" not in have:
-            return
+        if "generation_confidence" not in have:
+            try:
+                conn.execute(
+                    "ALTER TABLE env_snapshots ADD COLUMN generation_confidence TEXT"
+                )
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"env_snapshots.generation_confidence could not be "
+                        f"added: {e}"
+                    ) from e
         rows = conn.execute(
             "SELECT snapshot_id,kind,python_version,implementation,platform,"
             "interpreter,environment_name,generation_id,packages_json,remote_json "
@@ -1107,11 +1132,15 @@ class Store:
                 packages_json=row["packages_json"] or "[]",
                 remote_json=row["remote_json"] or "[]",
             )
-            if expected == row["snapshot_id"]:
-                continue
             conn.execute(
-                "UPDATE env_snapshots SET generation_id=NULL WHERE snapshot_id=?",
-                (row["snapshot_id"],),
+                "UPDATE env_snapshots SET generation_confidence=? "
+                "WHERE snapshot_id=?",
+                (
+                    "verified"
+                    if expected == row["snapshot_id"]
+                    else "legacy_unverified",
+                    row["snapshot_id"],
+                ),
             )
 
     def _apply_env_snapshot_provenance(self, conn: sqlite3.Connection) -> None:

@@ -188,10 +188,29 @@ class ByocResident:
                 return True
             except Exception:
                 return False
-        # Linux: confined <=> a network-namespace unshare put us in a fresh
-        # netns. Compare against the host's netns inode (passed via env at
-        # spawn); comparing against PID 1's fails under a pid-namespace
-        # unshare, and iface enumeration is brittle.
+        # Linux: the invariant is the *filesystem* one, matching macOS. A
+        # network-namespace check was the original design, and a helper whose
+        # whole job is calling a provider's REST API cannot live in an empty
+        # netns without a host egress proxy in front of it — so it could never
+        # pass, and Linux stayed unconfined waiting for a decision. Network
+        # isolation is now a separate capability that the host reports on
+        # explicitly; this asks only whether the user's home has been replaced.
+        #
+        # `$HOME` under bwrap's `--tmpfs` is readable and *empty*, not EPERM, so
+        # emptiness cannot be the test — an empty home is a legitimate home.
+        # The host passes the device id of the real home and a differing one in
+        # here means the tmpfs is mounted. Same shape as the netns-inode anchor
+        # this replaces: the value has to come from outside, because a confined
+        # process cannot obtain it.
+        home = os.path.expanduser("~")
+        host_dev = os.environ.get("OPENAI4S_HOST_HOME_DEV")
+        if host_dev:
+            try:
+                return os.stat(home).st_dev != int(host_dev)
+            except (OSError, ValueError):
+                return False
+        # No anchor supplied: fall back to the netns comparison a host a
+        # release behind may still be establishing.
         try:
             mine = os.stat("/proc/self/ns/net").st_ino
         except OSError:

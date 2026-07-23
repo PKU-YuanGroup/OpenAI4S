@@ -779,8 +779,9 @@ class ArtifactRepository:
                     "INSERT INTO env_snapshots(snapshot_id,created_at,kind,"
                     "python_version,implementation,platform,package_count,"
                     "packages_json,remote_json,interpreter,environment_name,"
-                    "generation_id,packages_unavailable,provenance) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "generation_id,generation_confidence,packages_unavailable,"
+                    "provenance) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         snapshot_id,
                         self._clock_ms(),
@@ -794,6 +795,9 @@ class ArtifactRepository:
                         snapshot.get("interpreter"),
                         snapshot.get("environment_name"),
                         snapshot.get("generation_id"),
+                        # Written now means addressed with its generation in
+                        # the basis, so it cannot be shared by a later kernel.
+                        "verified" if snapshot.get("generation_id") else None,
                         snapshot.get("packages_unavailable"),
                         # Measured from a kernel generation, or assumed from
                         # this process? The fallback path has always said so

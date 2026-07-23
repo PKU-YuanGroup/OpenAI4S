@@ -764,17 +764,30 @@ class ComputeManager:
                 ),
             }
         if can_confine:
+            isolated = byoc_confinement.network_isolated()
             return {
                 "mode": self._confinement_mode,
                 "enforced": True,
                 "state": "active",
                 "backend": reason,
+                # Its own field, and never folded into `enforced`. "The helper
+                # is confined" is read by most people as "the helper cannot
+                # phone home", and the filesystem boundary says nothing about
+                # the network — a boundary nobody mentions is one people assume.
+                "network_isolated": isolated,
                 "detail": (
                     f"the provider helper runs under {reason}: writes confined "
-                    f"to its stage directory and the home directory "
-                    f"unreadable. The helper verifies the boundary from inside "
-                    f"before it reads a credential, and exits without acting "
-                    f"if it does not hold."
+                    f"to its stage directory and the user's home replaced, so "
+                    f"credentials, keys and history are not reachable. The "
+                    f"helper verifies this from inside before it reads a "
+                    f"credential and exits without acting if it does not hold. "
+                    + (
+                        "The network is isolated too."
+                        if isolated
+                        else "The network is NOT isolated: outbound egress is "
+                        "a separate capability and it is not enabled, so the "
+                        "helper can still reach the internet."
+                    )
                 ),
             }
         return {
@@ -959,6 +972,13 @@ class ComputeManager:
             for k, v in os.environ.items()
             if not k.startswith(("NGC_", "NVIDIA_", "HF_"))
         }
+        if confined:
+            # The anchor the helper's own check compares against. It cannot be
+            # obtained from inside the boundary, which is the point: the value
+            # has to come from the side that is not confined.
+            from openai4s.security import byoc_confinement
+
+            env.update(byoc_confinement.probe_environment())
         # A hard host-side deadline. The helper has its own poll budget, but a
         # wedged exec stream (or a provider SDK blocking on a socket) leaves it
         # with none — and a bare wait() would block the dispatcher forever.

@@ -186,3 +186,104 @@ def test_confinement_off_is_reported_as_a_deliberate_choice(tmp_path, monkeypatc
     assert status["state"] == "disabled"
     assert status["enforced"] is False
     assert "explicit configuration" in status["detail"]
+
+
+# --------------------------------------------------------------------------
+# Linux: the same filesystem invariant, and an honest answer about the network
+# --------------------------------------------------------------------------
+
+
+def test_the_linux_wrapper_replaces_the_home_directory():
+    """The invariant, by owner decision, is the filesystem one on both
+    platforms. `--tmpfs $HOME` is what makes the user's files not be there."""
+    argv = bc.build_bwrap_argv(
+        ["python", "-c", "pass"],
+        "/tmp/stage",
+        executable="/usr/bin/bwrap",
+        home="/home/researcher",
+        read_paths=("/opt/py",),
+    )
+    assert "--tmpfs" in argv
+    # Canonicalised, like every other path in the boundary: the kernel
+    # resolves before it evaluates the mount, so an unresolved path is a
+    # rule against a directory that does not exist.
+    assert argv[argv.index("--tmpfs") + 1] == os.path.realpath("/home/researcher")
+
+
+def test_the_linux_wrapper_binds_the_runtime_back_over_the_tmpfs():
+    """bwrap applies mounts in order, so the interpreter's own paths have to
+    come *after* the tmpfs or nothing can start — the Linux form of the same
+    failure the macOS profile hit."""
+    argv = bc.build_bwrap_argv(
+        ["python"],
+        "/tmp/stage",
+        executable="/usr/bin/bwrap",
+        home="/home/researcher",
+        read_paths=("/opt/py",),
+    )
+    assert argv.index("--tmpfs") < argv.index("--ro-bind", argv.index("--tmpfs"))
+    assert "/opt/py" in argv
+
+
+def test_the_linux_wrapper_makes_only_the_stage_writable():
+    argv = bc.build_bwrap_argv(
+        ["python"],
+        "/tmp/stage",
+        executable="/usr/bin/bwrap",
+        home="/home/researcher",
+        read_paths=("/opt/py",),
+    )
+    binds = [argv[i + 1] for i, part in enumerate(argv) if part == "--bind"]
+    assert binds == [os.path.realpath("/tmp/stage")]
+
+
+def test_the_linux_wrapper_does_not_claim_network_isolation():
+    """Network isolation is a separate capability and it is not enabled.
+    Adding `--unshare-net` here would cut the helper off from the API that is
+    its entire purpose — and claiming it without adding it would be worse."""
+    argv = bc.build_bwrap_argv(
+        ["python"], "/tmp/stage", executable="/usr/bin/bwrap", home="/home/r"
+    )
+    assert "--unshare-net" not in argv
+    assert bc.network_isolated() is False
+
+
+def test_the_status_says_out_loud_that_the_network_is_not_isolated(
+    tmp_path, monkeypatch
+):
+    """ "The helper is confined" is read as "the helper cannot phone home"."""
+    import types
+
+    from openai4s.compute.manager import ComputeManager
+
+    monkeypatch.setattr(bc, "available", lambda: (True, "Linux bubblewrap"))
+    (tmp_path / "skills").mkdir()
+    cfg = types.SimpleNamespace(data_dir=tmp_path, skills_dir=tmp_path / "skills")
+    status = ComputeManager(cfg).confinement_status()
+
+    assert status["enforced"] is True
+    assert status["network_isolated"] is False
+    assert "NOT isolated" in status["detail"]
+
+
+def test_the_host_supplies_the_anchor_the_probe_needs():
+    """A confined process cannot obtain the device id of the real home, which
+    is exactly why the comparison value has to be handed in from outside."""
+    env = bc.probe_environment()
+    assert env["OPENAI4S_HOST_HOME_DEV"].isdigit()
+
+
+def test_the_helper_probe_reads_that_anchor(monkeypatch, tmp_path):
+    """Drive the helper's own check rather than restating it: a host that
+    supplies an anchor the helper ignores is confinement theatre."""
+    import openai4s_compute_provider._resident as resident
+
+    if sys.platform == "darwin":
+        pytest.skip("the anchor path is the Linux branch of the probe")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI4S_HOST_HOME_DEV", str(os.stat(tmp_path).st_dev))
+    probe = resident.Resident.__dict__["_probe_confined"]
+    assert probe(object()) is False, "same device: not confined"
+
+    monkeypatch.setenv("OPENAI4S_HOST_HOME_DEV", "999999")
+    assert probe(object()) is True, "a different device means the tmpfs is in place"

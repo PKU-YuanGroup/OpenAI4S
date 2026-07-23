@@ -456,3 +456,21 @@ def test_concurrent_captures_on_two_branches_do_not_cross(env, monkeypatch):
 
     assert results["root"] == "/opt/root/bin/python"
     assert results["fork"] == "/opt/fork/bin/python"
+
+
+def test_a_freshly_written_snapshot_is_labelled_verified(env):
+    """Written now means addressed with its generation in the basis, so no
+    later kernel can resolve to this row."""
+    manager, store, root = env
+    _generation(store, root, "r", interpreter="/usr/bin/Rscript", env_name="r-mini")
+    assert _snapshot(manager, store, root, "r")["generation_confidence"] == "verified"
+
+
+def test_an_assumed_snapshot_claims_no_generation_confidence(env):
+    """No generation, nothing to qualify — and the `provenance` marker already
+    says the environment itself was assumed."""
+    manager, store, root = env
+    snapshot = _snapshot(manager, store, root, "python")
+    assert snapshot["generation_id"] is None
+    assert snapshot["generation_confidence"] is None
+    assert "assumed" in (snapshot["provenance"] or "")

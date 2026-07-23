@@ -33,17 +33,20 @@ boundary being built: the boundary is "the user's documents, credentials, ssh
 keys and shell history are not readable", and an interpreter that cannot import
 itself confines nothing because it never runs.
 
-## Linux
+## Linux, and what "confined" is allowed to mean
 
-Not implemented, and deliberately not faked. The helper's Linux invariant is a
-*fresh network namespace* — which is incompatible with a helper whose purpose
-is to reach a provider API over that network. Reconciling the two needs a
-decision that is not this module's to make: either egress moves behind a host
-proxy so the helper really can live in an empty netns, or the Linux invariant
-becomes a filesystem one to match macOS. Until that is decided, Linux reports
-`unavailable` with the reason, `auto` runs unconfined and says so, and
-`enforce` refuses — the same posture as before, but now for a stated reason
-rather than for lack of any implementation at all.
+The invariant is the **filesystem** one, on both platforms, by owner decision.
+The helper's original Linux check was a fresh network namespace, which a helper
+whose entire job is calling a provider API cannot have without a host egress
+proxy in front of it. Rather than leave Linux unconfined waiting for that,
+Linux gets the same boundary macOS has — `--tmpfs $HOME` with the interpreter's
+own paths bound back over it — through bubblewrap.
+
+Network isolation is therefore a **separate capability, and it is not enabled**.
+That is not a detail to leave implicit: "the helper is confined" is read by most
+people as "the helper cannot phone home", so `network_isolated()` exists as its
+own question and `confinement_status()` answers it out loud. A boundary nobody
+mentions is a boundary people assume.
 """
 from __future__ import annotations
 
@@ -55,6 +58,9 @@ from pathlib import Path
 #: Where the sandbox binary lives on macOS. Probed rather than assumed so a
 #: stripped system reports unavailable instead of failing at exec time.
 _SEATBELT = "sandbox-exec"
+
+#: The Linux backend. Same filesystem invariant, different mechanism.
+_BWRAP = "bwrap"
 
 
 class ConfinementUnavailable(RuntimeError):
@@ -156,6 +162,67 @@ def build_profile(
     return "\n".join(lines) + "\n"
 
 
+def build_bwrap_argv(
+    argv: list[str],
+    stage: str | os.PathLike[str],
+    *,
+    executable: str,
+    home: str | os.PathLike[str] | None = None,
+    read_paths: tuple[str, ...] = (),
+) -> list[str]:
+    """The Linux form of the same filesystem invariant.
+
+    `--tmpfs $HOME` replaces the user's home with an empty filesystem, then the
+    interpreter's own paths are bound back on top — bwrap applies mounts in
+    order, so a later bind wins over the tmpfs beneath it. The result is the
+    macOS profile's shape: the helper's stage is writable, the user's files are
+    not there at all, and everything the interpreter needs to run is.
+
+    **No `--unshare-net`.** Network isolation is a separate capability with its
+    own decision behind it (a helper whose job is calling a provider API cannot
+    live in an empty netns without a host egress proxy), so it is deliberately
+    not claimed here — and ``confinement_status`` reports it as not isolated
+    rather than staying quiet, because a boundary nobody mentions is one people
+    assume.
+    """
+    home_dir = _canonical(home if home is not None else Path.home())
+    stage_dir = _canonical(stage)
+    wrapped = [
+        str(executable),
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        # The invariant: the user's home is not the user's home in here.
+        "--tmpfs",
+        home_dir,
+    ]
+    for path in list(read_paths) or runtime_read_paths():
+        # Bound back *after* the tmpfs so the interpreter can still start; a
+        # read-only bind, because nothing here needs to write to them.
+        wrapped.extend(["--ro-bind", path, path])
+    wrapped.extend(["--bind", stage_dir, stage_dir, "--chdir", stage_dir, "--"])
+    wrapped.extend(str(part) for part in argv)
+    return wrapped
+
+
+def network_isolated() -> bool:
+    """Whether the boundary also isolates the network. It does not.
+
+    Stated as its own question rather than folded into `available()`, because
+    the two are separate capabilities and conflating them is how "the helper is
+    confined" comes to be read as "the helper cannot reach the network".
+    """
+    return False
+
+
 def available() -> tuple[bool, str]:
     """Whether a boundary can be established here, and why not when it cannot."""
     if sys.platform == "darwin":
@@ -163,13 +230,27 @@ def available() -> tuple[bool, str]:
             return True, "macOS Seatbelt"
         return False, f"{_SEATBELT} is not on PATH"
     if sys.platform.startswith("linux"):
-        return False, (
-            "the helper's Linux confinement invariant is a fresh network "
-            "namespace, which a helper that must reach a provider API cannot "
-            "have; reconciling the two is an open decision (host egress proxy, "
-            "or a filesystem invariant matching macOS)"
-        )
+        if shutil.which(_BWRAP):
+            return True, "Linux bubblewrap"
+        return False, f"{_BWRAP} is not on PATH"
     return False, f"no confinement backend for platform {sys.platform!r}"
+
+
+def probe_environment(home: str | os.PathLike[str] | None = None) -> dict[str, str]:
+    """What the confined helper needs from the host to verify the boundary.
+
+    The helper checks from inside, and on Linux the filesystem invariant is not
+    self-evident: an empty `$HOME` could be an empty home. So the host passes
+    the device id of the *real* home, and a differing one inside means the
+    tmpfs is in place. Same shape as the netns-inode anchor this replaces —
+    the host supplies the value to compare against, because the confined
+    process cannot obtain it.
+    """
+    home_dir = _canonical(home if home is not None else Path.home())
+    try:
+        return {"OPENAI4S_HOST_HOME_DEV": str(os.stat(home_dir).st_dev)}
+    except OSError:
+        return {}
 
 
 def wrap(
@@ -182,6 +263,13 @@ def wrap(
     ok, reason = available()
     if not ok:
         raise ConfinementUnavailable(reason)
+    if sys.platform.startswith("linux"):
+        executable = shutil.which(_BWRAP)
+        if not executable:  # pragma: no cover - available() already checked
+            raise ConfinementUnavailable(f"{_BWRAP} is not on PATH")
+        return build_bwrap_argv(
+            argv, stage, executable=executable, read_paths=read_paths
+        )
     executable = shutil.which(_SEATBELT)
     if not executable:  # pragma: no cover - available() already checked
         raise ConfinementUnavailable(f"{_SEATBELT} is not on PATH")
@@ -192,7 +280,10 @@ def wrap(
 __all__ = [
     "ConfinementUnavailable",
     "available",
+    "build_bwrap_argv",
     "build_profile",
+    "network_isolated",
+    "probe_environment",
     "runtime_read_paths",
     "wrap",
 ]
