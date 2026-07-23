@@ -1,0 +1,144 @@
+"""The one call the rest of the program makes: `emit(...)`.
+
+Everything upstream of here is about not sending the wrong thing. This module is
+about not harming the program that is trying to tell the truth. Three rules:
+
+* **It never raises.** A telemetry bug must not become a failed turn. Every
+  path is wrapped, and the wrap is the feature, not defensive habit.
+* **It never blocks.** The send happens on a daemon thread, so a slow or
+  unreachable collector cannot add a second to a turn that had nothing to do
+  with telemetry.
+* **It reads consent every time.** There is no cached "enabled" that could
+  outlive a revoke. The check is one SQLite read of one row.
+
+And it does all of that only after consent, so on the overwhelmingly common
+path -- no consent -- `emit` is a settings read that returns None and stops.
+
+Records are accumulated per install and flushed as one envelope, because one
+POST carrying five counts is less to send, and less to receive, than five.
+"""
+from __future__ import annotations
+
+import threading
+from typing import Any
+
+from openai4s.telemetry import consent as consent_mod
+from openai4s.telemetry import schema
+
+#: Buffered records, flushed together. Bounded: past the cap the oldest are
+#: dropped, because a telemetry buffer that grows without limit is a memory bug
+#: wearing a privacy feature's clothes.
+_LOCK = threading.Lock()
+_BUFFER: list[dict[str, Any]] = []
+_MAX_BUFFER = 256
+
+#: Session ids seen this process, so `session_start` fires once each. A set,
+#: not persisted: it is a dedup within one run, not a durable fact.
+_SEEN_SESSIONS: set[str] = set()
+
+
+def _store_for(store: Any) -> Any | None:
+    if store is not None:
+        return store
+    # No store passed: resolve the daemon's, but never construct one just to
+    # emit -- that would touch disk on the disabled path.
+    try:
+        from openai4s.config import get_config
+        from openai4s.store import get_store
+
+        return get_store(get_config().db_path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def emit(event: str, *, store: Any = None, **fields: Any) -> None:
+    """Record one event. Safe on any thread, cheap when telemetry is off.
+
+    The heavy lifting -- sanitising, buffering, sending -- happens only after
+    the consent read succeeds, so a disabled install pays one row lookup.
+    """
+    try:
+        target = _store_for(store)
+        if target is None:
+            return
+        active = consent_mod.read(target)
+        if active is None:
+            return
+        record = schema.sanitise_record({"event": event, **fields})
+        if not record.get("event"):
+            return
+
+        with _LOCK:
+            _BUFFER.append(record)
+            if len(_BUFFER) > _MAX_BUFFER:
+                del _BUFFER[: len(_BUFFER) - _MAX_BUFFER]
+            batch = list(_BUFFER)
+            _BUFFER.clear()
+
+        _dispatch(target, active.install_id, batch)
+    except Exception:  # noqa: BLE001 - telemetry must never break a caller
+        pass
+
+
+#: The engine owns the stop-reason vocabulary (openai4s/agent/engine.py and
+#: loop.py): completed, done, cancelled, max_turns, stopped, failed. Mapping it
+#: to the telemetry `outcome` enum is done here, as a pure function, so it can
+#: be tested against the real values rather than guessed at the call site.
+_OUTCOME = {
+    "completed": "ok",
+    "done": "ok",
+    "stopped": "ok",
+    "cancelled": "cancelled",
+    "max_turns": "timeout",
+    "failed": "error",
+}
+
+
+def turn_outcome(stop_reason: Any) -> str:
+    """A stop reason as one of the declared `outcome` enum members.
+
+    Unknown reasons map to "error" rather than being dropped: a stop this
+    function does not recognise is more likely a failure it has not seen than a
+    success worth reporting as one.
+    """
+    return _OUTCOME.get(str(stop_reason or ""), "error")
+
+
+def emit_session_start(root_frame_id: str, *, store: Any = None, **fields: Any) -> None:
+    """`session_start`, at most once per session per process."""
+    try:
+        with _LOCK:
+            if root_frame_id in _SEEN_SESSIONS:
+                return
+            _SEEN_SESSIONS.add(root_frame_id)
+    except Exception:  # noqa: BLE001
+        return
+    emit("session_start", store=store, **fields)
+
+
+def _dispatch(store: Any, install_id: str, batch: list[dict[str, Any]]) -> None:
+    """Seal and send on a background thread. Never on the caller's thread."""
+    from openai4s.telemetry import sender as sender_mod
+    from openai4s.telemetry import wire
+
+    payload = wire.seal(install_id, batch)
+    if payload is None:
+        return
+
+    def _run() -> None:
+        try:
+            sender_mod.send(store, payload)
+        except Exception:  # noqa: BLE001
+            pass
+
+    threading.Thread(target=_run, name="openai4s-telemetry", daemon=True).start()
+
+
+def _reset_for_tests() -> None:
+    """Clear process-local dedup and buffer. Test hook only."""
+    with _LOCK:
+        _BUFFER.clear()
+        _SEEN_SESSIONS.clear()
+
+
+__all__ = ["emit", "emit_session_start"]

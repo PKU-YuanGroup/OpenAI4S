@@ -4942,7 +4942,31 @@ class SessionRunner:
         result = engine.run(state)
         st.last_engine_completion = result.completion
         st.last_model_prose = events.model_prose
+        self._telemetry_turn(st, result)
         return result.stop_reason
+
+    def _telemetry_turn(self, st: SessionState, result: Any) -> None:
+        """Opt-in lifecycle telemetry for a completed turn. A no-op unless the
+        user recorded consent; it cannot raise and does not block the turn.
+
+        `session_start` is deduplicated to the first turn of each session in
+        this process, so it marks "a session did some work" rather than "a page
+        was opened", which is the more honest and the less identifying signal.
+        """
+        try:
+            from openai4s.telemetry.emit import emit, emit_session_start, turn_outcome
+
+            store = self.store
+            emit_session_start(st.root_frame_id, store=store, surface="web")
+            emit(
+                "turn_complete",
+                store=store,
+                surface="web",
+                outcome=turn_outcome(getattr(result, "stop_reason", "")),
+                count=1,
+            )
+        except Exception:  # noqa: BLE001 - telemetry must never break a turn
+            pass
 
     def _execute_with_watchdog(
         self,
@@ -9038,6 +9062,14 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         threading.Thread(
             target=_seed_demo_bg, name="openai4s-demo-seed", daemon=True
         ).start()
+
+    # Opt-in, off by default: a no-op that reads one settings row unless the
+    # user has recorded consent. It cannot raise (emit swallows everything) and
+    # cannot block (it sends on a daemon thread), so it is safe on the path that
+    # has to bind the port.
+    from openai4s.telemetry.emit import emit as _telemetry_emit
+
+    _telemetry_emit("daemon_start", store=get_store(cfg.db_path), surface="web")
     return httpd
 
 
