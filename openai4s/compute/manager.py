@@ -51,6 +51,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tarfile
@@ -757,15 +758,11 @@ class ComputeManager:
         except Exception:  # noqa: BLE001 - never fail an op on bookkeeping
             pass
 
-    def _persist_terminal(self, job_id: str, **fields: Any) -> bool:
-        """Write a terminal state for a job that has no in-memory row yet.
-
-        Returns whether the durable write actually landed. Unlike ``_persist``
-        it does not swallow a storage failure into a false success: the submit
-        paths that use it fall back to an indeterminate, reconcilable state
-        when it returns ``False``, rather than reporting a rejection the ledger
-        never recorded. An ``IllegalTransition`` counts as landed — the row is
-        already terminal, which is a stronger guarantee than the one asked for.
+    def _checked_update(self, job_id: str, **fields: Any) -> bool:
+        """Update a job row *without* swallowing a storage failure into a false
+        success. Returns whether the write landed. An ``IllegalTransition``
+        counts as landed — the row is already in a stronger, definite state
+        than the one asked for.
         """
         if self._store is None:
             return True
@@ -774,8 +771,98 @@ class ComputeManager:
             return True
         except states.IllegalTransition:
             return True
-        except Exception:  # noqa: BLE001 - a swallowed terminal write is the bug
+        except Exception:  # noqa: BLE001 - a swallowed durable write is the bug
             return False
+
+    def _persist_terminal(self, job_id: str, **fields: Any) -> bool:
+        """Write a terminal state for a job that has no in-memory row yet.
+
+        Returns whether the durable write actually landed. Unlike ``_persist``
+        it does not swallow a storage failure into a false success: the submit
+        paths that use it fall back to an indeterminate, reconcilable state
+        when it returns ``False``, rather than reporting a rejection the ledger
+        never recorded.
+        """
+        return self._checked_update(job_id, **fields)
+
+    def _persist_receipt(self, job_id: str, **fields: Any) -> bool:
+        """Non-swallowing write of a submit-*success* receipt — the RUNNING
+        transition that records the sandbox_id / remote pid.
+
+        That receipt is the only durable handle able to name a now-billing
+        resource after a restart. Writing it through the swallow-everything
+        ``_persist`` *after* the in-memory write let a dropped write (SQLite
+        BUSY, disk full) report a clean ``running`` over a row still at
+        ``staging`` with no receipt — an orphan that bills forever with nothing
+        able to name it. The submit paths degrade to an indeterminate,
+        reconcilable state when this returns ``False``.
+        """
+        return self._checked_update(job_id, **fields)
+
+    def _degrade_submit_to_indeterminate(
+        self,
+        job_id: str,
+        *,
+        provider: str,
+        reason: str,
+        sandbox_id: str | None = None,
+        alias: str | None = None,
+        workdir: str | None = None,
+        pid: str | None = None,
+        pgid: str | None = None,
+        extra_return: dict | None = None,
+    ) -> dict:
+        """A submit whose remote op succeeded but whose durable receipt could
+        not be written. The resource is live and billing; keep it nameable and
+        reconcilable exactly as :meth:`_fail_submit` does for an indeterminate
+        submit — never report a clean ``running`` the ledger never recorded.
+        """
+        fields: dict[str, Any] = {"reason": reason}
+        receipt = sandbox_id or pid
+        if sandbox_id:
+            fields["sandbox_id"] = sandbox_id
+        if alias:
+            fields["alias"] = alias
+        if workdir:
+            fields["workdir"] = workdir
+        if pid:
+            fields["pid"] = pid
+            fields["pgid"] = pgid
+        if receipt:
+            fields["receipt"] = receipt
+        self._persist(
+            job_id,
+            status=states.UNKNOWN,
+            termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+            **fields,
+        )
+        self._track_live(
+            job_id,
+            provider,
+            states.UNKNOWN,
+            sandbox_id=sandbox_id,
+            alias=alias,
+            workdir=workdir,
+            pid=pid,
+            pgid=pgid,
+            receipt=receipt,
+            termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+            reason=reason,
+        )
+        self._event(
+            job_id,
+            "submit_indeterminate",
+            {"reason": reason, "sandbox_id": sandbox_id, "pid": pid},
+        )
+        out = {
+            "job_id": job_id,
+            "status": states.UNKNOWN,
+            "reason": reason,
+            "concurrency": {"live": self._live_count(), "limit": self._limit},
+        }
+        if extra_return:
+            out.update(extra_return)
+        return out
 
     def _commit_terminal(
         self,
@@ -993,8 +1080,31 @@ class ComputeManager:
                 idempotency_key=idempotency_key,
                 outputs=outputs,
             )
-        except Exception:  # noqa: BLE001 - degrade to in-memory rather than
-            # refuse to run; a job we cannot record is still better than none.
+        except sqlite3.IntegrityError as exc:
+            # The serial pre-check above cannot see a same-key row a concurrent
+            # submitter has not committed yet; two callers both read None, then
+            # both INSERT, and the UNIQUE idempotency index is the only thing
+            # that stops the second billable remote run. Swallowing this raced a
+            # duplicate job with no durable row (unrecoverable after restart).
+            # A UNIQUE violation must REFUSE, naming the winner — not degrade.
+            if idempotency_key:
+                winner = self._store.compute_job_by_idempotency_key(idempotency_key)
+                if winner is not None:
+                    raise ComputeError(
+                        f"a job for idempotency key {idempotency_key!r} already "
+                        f"exists ({winner['job_id']}, status "
+                        f"{winner.get('status')!r}); reconcile it instead of "
+                        f"submitting again",
+                        "duplicate_request",
+                    ) from exc
+            # An integrity error with no idempotency key means a genuine
+            # constraint bug (e.g. a job_id collision), not a race to paper
+            # over — surface it rather than run unrecorded.
+            raise
+        except Exception:  # noqa: BLE001 - a transient/operational DB failure
+            # (BUSY, disk) is not a duplicate; degrade to in-memory rather than
+            # refuse. reconcile() cannot see this job, but the run still
+            # completes and reports instead of being denied outright.
             pass
         return job_id
 
@@ -1511,6 +1621,28 @@ class ComputeManager:
             # the byoc arm never did.
             self._fail_submit(job_id, exc, provider=f"byoc:{pid}", sandbox_id=sid)
             raise
+        # The sandbox id is the receipt — what reconcile/terminate need to reach
+        # this work after a restart, and what stops an orphaned sandbox from
+        # billing unnoticed. Persist it to the ledger BEFORE memory believes the
+        # job is cleanly running (ledger-before-memory, as `_commit_terminal`),
+        # and do not swallow a dropped write: a live sandbox reported as clean
+        # `running` over a `staging` row with no receipt is the exact orphan the
+        # failure path was already hardened against.
+        landed = self._persist_receipt(
+            job_id,
+            status=states.RUNNING,
+            sandbox_id=sid,
+            receipt=sid,
+            submitted_at=_now_ms(),
+        )
+        if not landed:
+            return self._degrade_submit_to_indeterminate(
+                job_id,
+                provider=f"byoc:{pid}",
+                sandbox_id=sid,
+                reason="submit succeeded but the receipt could not be persisted",
+                extra_return={"egress": prov["meta"].get("egress")},
+            )
         with self._lock:
             self._jobs[job_id] = {
                 "job_id": job_id,
@@ -1520,16 +1652,6 @@ class ComputeManager:
                 "outputs": kw.get("outputs"),
                 "creds": bool(creds),
             }
-        # The sandbox id is the receipt — it is what reconcile/terminate need to
-        # reach this work after a restart, and what stops an orphaned sandbox
-        # from billing unnoticed.
-        self._persist(
-            job_id,
-            status=states.RUNNING,
-            sandbox_id=sid,
-            receipt=sid,
-            submitted_at=_now_ms(),
-        )
         self._event(job_id, "submitted", {"sandbox_id": sid})
         return {
             "job_id": job_id,
@@ -1714,6 +1836,33 @@ class ComputeManager:
                 "unknown_state",
                 indeterminate=True,
             )
+        # The remote pid is the provider's receipt: evidence the job exists out
+        # there, independent of anything this process chose to believe. Persist
+        # it to the ledger BEFORE memory believes the job is cleanly running,
+        # and do not swallow a dropped write — a running ssh job reported as
+        # clean `running` over a `staging` row with no pid is unrecoverable
+        # after a restart, the same orphan class the byoc arm just closed.
+        landed = self._persist_receipt(
+            job_id,
+            status=states.RUNNING,
+            alias=alias,
+            workdir=workdir,
+            pid=pid,
+            pgid=pgid,
+            receipt=pid,
+            submitted_at=_now_ms(),
+        )
+        if not landed:
+            return self._degrade_submit_to_indeterminate(
+                job_id,
+                provider=f"ssh:{alias}",
+                alias=alias,
+                workdir=workdir,
+                pid=pid,
+                pgid=pgid,
+                reason="submit succeeded but the receipt could not be persisted",
+                extra_return={"remote_workdir": workdir},
+            )
         with self._lock:
             self._jobs[job_id] = {
                 "job_id": job_id,
@@ -1725,18 +1874,6 @@ class ComputeManager:
                 "pgid": pgid,
                 "outputs": kw.get("outputs"),
             }
-        # The remote pid is the provider's receipt: evidence the job exists out
-        # there, independent of anything this process chose to believe.
-        self._persist(
-            job_id,
-            status=states.RUNNING,
-            alias=alias,
-            workdir=workdir,
-            pid=pid,
-            pgid=pgid,
-            receipt=pid,
-            submitted_at=_now_ms(),
-        )
         self._event(job_id, "submitted", {"pid": pid, "pgid": pgid, "workdir": workdir})
         return {
             "job_id": job_id,

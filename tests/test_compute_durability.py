@@ -231,6 +231,58 @@ def test_jobs_without_a_key_are_not_deduplicated(cfg, monkeypatch):
     assert a["job_id"] != b["job_id"]
 
 
+def test_a_concurrent_same_key_submit_is_refused_not_duplicated(cfg, monkeypatch):
+    """The serial pre-check cannot see a same-key row a concurrent submitter has
+    not committed yet. Both read None, both INSERT, and the UNIQUE idempotency
+    index is the only thing that stops the second billable remote run. Swallowing
+    that IntegrityError raced a duplicate job with no durable row (unrecoverable
+    after a restart); the loser must be refused, naming the winner.
+    """
+    submits: list = []
+
+    def fake_run(*a, **k):
+        submits.append(a)
+        return _Proc(0, _ack("31337"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
+    manager = ComputeManager(cfg)
+
+    # The winner's row is already committed, so the UNIQUE index will reject the
+    # loser's INSERT — exactly as a concurrent submitter's committed row would.
+    manager._store.create_compute_job(
+        job_id="job-winner",
+        provider="ssh:lab",
+        status="staging",
+        idempotency_key="dup-key",
+    )
+
+    # ...but the loser's serial pre-check races ahead of that row being visible
+    # to it: force the first lookup to miss, the post-IntegrityError re-read to
+    # find the winner.
+    real_lookup = manager._store.compute_job_by_idempotency_key
+    calls = {"n": 0}
+
+    def racing_lookup(key):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real_lookup(key)
+
+    monkeypatch.setattr(manager._store, "compute_job_by_idempotency_key", racing_lookup)
+
+    with pytest.raises(ComputeError) as e:
+        manager.submit(
+            {
+                "provider": "ssh:lab",
+                "command": "sleep 600",
+                "idempotency_key": "dup-key",
+            }
+        )
+    assert e.value.error_kind == "duplicate_request"
+    assert "job-winner" in str(e.value)
+    assert submits == [], "a duplicate remote job was launched under the same key"
+
+
 # --------------------------------------------------------------------------
 # the row is written before the submit
 # --------------------------------------------------------------------------
@@ -255,6 +307,63 @@ def test_an_indeterminate_submit_leaves_a_reconcilable_row(cfg, monkeypatch):
     assert len(rows) == 1
     assert rows[0]["status"] == "unknown"
     assert rows[0]["workdir"], "the workdir is what makes it findable by hand"
+
+
+def test_a_dropped_submit_receipt_degrades_to_reconcilable_not_clean_running(
+    cfg, monkeypatch
+):
+    """The submit-success asymmetry the earlier round left open.
+
+    The failure path was hardened to never report a definite state the ledger
+    did not record, but the *success* path still wrote the RUNNING receipt (the
+    pid / sandbox_id that names a now-billing resource) through the
+    swallow-everything `_persist` — and only after the in-memory write. A dropped
+    receipt write left submit returning a clean `running` over a row stuck at
+    `staging` with no receipt: a live job unrecoverable after a restart. The
+    receipt must be a checked write; a drop degrades to the same
+    UNKNOWN/reconcilable state, never a clean `running`.
+    """
+    import sqlite3
+
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _Proc(0, _ack("31337")), raising=True
+    )
+    manager = ComputeManager(cfg)
+
+    # Drop exactly the durable RUNNING receipt write, as a locked/full SQLite
+    # would at that instant. Every other durable write still lands.
+    real_update = manager._store.update_compute_job
+
+    def failing_receipt_write(job_id, **fields):
+        if fields.get("status") == "running":
+            raise sqlite3.OperationalError("database is locked")
+        return real_update(job_id, **fields)
+
+    monkeypatch.setattr(manager._store, "update_compute_job", failing_receipt_write)
+
+    out = manager.submit({"provider": "ssh:lab", "command": "sleep 600"})
+
+    # Not a clean `running`: an indeterminate, reconcilable state.
+    assert (
+        out["status"] == "unknown"
+    ), "submit reported a clean 'running' though the receipt write was dropped"
+    job_id = out["job_id"]
+
+    store = get_store(cfg.db_path)
+    row = store.get_compute_job(job_id)
+    assert row is not None
+    assert row["status"] == "unknown", "the durable row was left at staging/running"
+    assert row["receipt"] == "31337", "the pid receipt was not preserved for recovery"
+    assert row["termination_reason"] == "submit_indeterminate"
+
+    # It still occupies a concurrency slot in-process...
+    assert manager._live_count() == 1
+    # ...and after a restart it is recoverable *with its receipt* — the live job
+    # is nameable, not an orphan reported as cleanly running then lost.
+    report = ComputeManager(cfg).reconcile()
+    recovered = {j["job_id"]: j for j in report["recovered"]}
+    assert job_id in recovered
+    assert recovered[job_id]["receipt"] == "31337"
 
 
 def test_a_rejected_submit_is_recorded_as_failed(cfg, monkeypatch):

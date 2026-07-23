@@ -104,19 +104,28 @@ class ComputeJobRepository:
         """
         now = self._clock_ms()
         with self._lock:
-            self._connection.execute(
-                "INSERT INTO compute_jobs(job_id,idempotency_key,provider,status,"
-                "outputs,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                (
-                    job_id,
-                    idempotency_key,
-                    provider,
-                    status,
-                    json.dumps(outputs) if outputs is not None else None,
-                    now,
-                    now,
-                ),
-            )
+            try:
+                self._connection.execute(
+                    "INSERT INTO compute_jobs(job_id,idempotency_key,provider,"
+                    "status,outputs,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        job_id,
+                        idempotency_key,
+                        provider,
+                        status,
+                        json.dumps(outputs) if outputs is not None else None,
+                        now,
+                        now,
+                    ),
+                )
+            except Exception:
+                # A UNIQUE violation on the idempotency index (a concurrent
+                # same-key submit) leaves the deferred transaction open on this
+                # shared connection; roll it back so the caller's follow-up read
+                # of the winning row is not stranded inside a poisoned txn. The
+                # error propagates — the caller decides refuse-vs-degrade.
+                self._connection.rollback()
+                raise
             self._connection.commit()
         self.append_event(job_id, "created", {"provider": provider})
         return self.get(job_id) or {}

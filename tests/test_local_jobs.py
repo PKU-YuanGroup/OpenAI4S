@@ -340,3 +340,62 @@ def test_cancel_preserves_a_terminal_result_when_the_job_already_finished(
         os.killpg(os.getpgid(real.pid), signal.SIGKILL)
     except (ProcessLookupError, OSError):
         pass
+
+
+def test_cancel_does_not_mislabel_a_natural_finish_still_being_recorded(
+    manager, tmp_path, monkeypatch
+):
+    """The narrower window the earlier fix missed.
+
+    `_stop_process_group` returns "already exited" once the process is *reaped*,
+    which does not imply `_run` has written its terminal status yet — `_run`
+    records asynchronously, after the reap. The earlier guard only preserved the
+    natural result when `job.status` was *already* terminal, so a cancel landing
+    in the gap (status still `running`) stamped `cancelled` over a job that
+    actually exited 0. cancel must never write `cancelled` when it did not stop
+    the process; it must wait for `_run` to publish the true outcome.
+    """
+    from openai4s import jobs as jobs_mod
+    from openai4s.jobs import Job
+
+    # A real, already-exited process (rc 0) — nothing here is hypothetical.
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+
+    job = Job("bash", "true", str(tmp_path))
+    job.status = "running"
+    job._proc = proc
+    job._pgid = None
+
+    # Stand in for `_run`'s still-pending terminal write: it publishes the true
+    # exit exactly as `_run` does — only if cancel has not stamped cancelled.
+    release = threading.Event()
+
+    def deferred_run():
+        release.wait(5.0)
+        with job._lock:
+            if job.status != "cancelled":
+                job.status = "done"
+        job.exit_code = 0
+
+    worker = threading.Thread(target=deferred_run, daemon=True)
+    job._thread = worker
+    worker.start()
+    manager._jobs[job.id] = job
+
+    # The process is gone, so the stop helper reports "already exited" while the
+    # status is still `running` (the write is pending on `deferred_run`).
+    monkeypatch.setattr(
+        jobs_mod, "_stop_process_group", lambda p, g=None: (True, "already exited")
+    )
+    # Let `_run` publish the true result while cancel is waiting on it.
+    threading.Timer(0.1, release.set).start()
+
+    out = manager.cancel(job.id)
+
+    assert out["status"] == "done", (
+        "cancel mislabelled a job that finished on its own (rc 0) as cancelled "
+        "because _run had not yet recorded the terminal status"
+    )
+    assert job.status == "done"
+    assert job.exit_code == 0

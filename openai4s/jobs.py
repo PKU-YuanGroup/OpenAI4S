@@ -169,6 +169,11 @@ class Job:
         # when it most needs signalling.
         self._pgid: int | None = None
         self._lock = threading.Lock()
+        # The worker thread running `_run`. `cancel` joins it briefly when the
+        # process turns out to have already exited, so it can report the real
+        # terminal result `_run` is about to publish rather than a transient
+        # `running` or a mislabelled `cancelled`.
+        self._thread: threading.Thread | None = None
 
     def append(self, text: str) -> None:
         with self._lock:
@@ -208,6 +213,12 @@ class Job:
 
 
 class JobManager:
+    #: How long `cancel` waits for `_run` to publish the true terminal result of
+    #: a job that turned out to have already exited. The process is reaped, so
+    #: `_run` only has to finish draining a now-closed stdout pipe; this is a
+    #: generous cap on that, not an expected wait.
+    _TERMINAL_JOIN_S = 5.0
+
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -236,9 +247,11 @@ class JobManager:
             self._jobs[job.id] = job
             self._order.append(job.id)
             self._prune_locked()
-        threading.Thread(
+        thread = threading.Thread(
             target=self._run, args=(job,), daemon=True, name=f"os-job-{job.id}"
-        ).start()
+        )
+        job._thread = thread
+        thread.start()
         return job.to_dict()
 
     def _run(self, job: Job) -> None:
@@ -342,18 +355,28 @@ class JobManager:
         # finished on its own, not because we stopped it. Any other success
         # detail ("exited on SIGTERM", "killed") means our signal ended it.
         finished_on_its_own = detail == "already exited"
-        with job._lock:
-            if stopped:
-                if finished_on_its_own and job.status in ("done", "failed"):
-                    # `_run` recorded the real terminal result of a job that
-                    # ended on its own. Reporting `cancelled` over a real exit
-                    # code is a false outcome, so keep what actually happened.
-                    pass
-                else:
+        if stopped and finished_on_its_own:
+            # The process was reaped before our signal did anything, so `_run`
+            # is about to publish (or already published) its real terminal exit
+            # code. Gating on `job.status` already being terminal was a race:
+            # `_run` records asynchronously *after* the process is reaped, so a
+            # cancel landing in that window found status still `running`, took
+            # the else branch, and stamped `cancelled` over a job that actually
+            # succeeded (rc 0). Never write `cancelled` when we did not stop it;
+            # join `_run` briefly so we report the true outcome, not a transient
+            # `running`.
+            worker = job._thread
+            if worker is not None and worker is not threading.current_thread():
+                worker.join(timeout=self._TERMINAL_JOIN_S)
+            with job._lock:
+                status = job.status
+        else:
+            with job._lock:
+                if stopped:
                     # We ended it (or it is not terminal yet), which overrides
                     # the `failed` `_run` derives from the signal-killed exit.
                     job.status = "cancelled"
-            status = job.status
+                status = job.status
         if not stopped:
             job.append(f"\n[job] cancel failed: {detail}\n")
             return {
