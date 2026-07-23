@@ -36,11 +36,15 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from importlib import util as _importutil
+from pathlib import Path
+from typing import Any
 
 # (pip name, import name) — the always-available baseline. Only packages that
 # wheel reliably on modern CPythons (incl. 3.13/3.14) live here; heavy GPU /
@@ -357,6 +361,52 @@ def full_freeze() -> list[dict]:
     return sorted(seen.values(), key=lambda d: d["name"].lower())
 
 
+def _confined_probe(
+    base_argv: list[str], workspace: str
+) -> tuple[list[str], dict[str, str], Any]:
+    """Wrap the freeze probe in the kernel's child env and OS boundary.
+
+    Returns ``(argv, env, sandbox)``. The environment is always the scrubbed
+    kernel child env — that alone removes the credential vector. The OS sandbox
+    is applied when one can be built; when it cannot (``auto`` on a host with no
+    backend) the scrubbed env still stands, which is a strict improvement over
+    the daemon's full context. ``sandbox`` is returned so the caller can close
+    it; it may be ``None``. ``workspace`` is the caller-owned temp cwd.
+    """
+    interpreter = base_argv[0]
+    # `<prefix>/bin/python` → `<prefix>`. The freeze does not need the env's
+    # tools on PATH, but binding it keeps the child consistent with a kernel.
+    env_root: str | None = None
+    try:
+        parent = Path(interpreter).resolve().parent
+        if parent.name in ("bin", "Scripts"):
+            env_root = str(parent.parent)
+    except OSError:
+        env_root = None
+
+    try:
+        from openai4s.kernel.environment import build_kernel_environment
+
+        env = build_kernel_environment(mode="probe", cwd=workspace, env_root=env_root)
+    except Exception:  # noqa: BLE001 - a scrub failure must not run unconfined
+        env = {
+            "PATH": os.environ.get("PATH", os.defpath),
+            "HOME": workspace,
+            "TMPDIR": workspace,
+        }
+
+    sandbox: Any = None
+    try:
+        from openai4s.security.sandbox import create_kernel_sandbox
+
+        sandbox = create_kernel_sandbox(workspace)
+        argv = list(sandbox.wrap_command(base_argv))
+        env = sandbox.apply_environment(env)
+    except Exception:  # noqa: BLE001 - degrade to the scrubbed env alone
+        argv = list(base_argv)
+    return argv, env, sandbox
+
+
 def freeze_for(interpreter: str | None, *, timeout: float = 20.0) -> list[dict] | None:
     """Freeze an arbitrary interpreter, or None when it cannot be asked.
 
@@ -393,14 +443,34 @@ def freeze_for(interpreter: str | None, *, timeout: float = 20.0) -> list[dict] 
         "    seen[k]={'name':n,'version':v}\n"
         "print(json.dumps(sorted(seen.values(), key=lambda x: x['name'].lower())))\n"
     )
+    # Confine the probe. This launches a *foreign* interpreter — for an
+    # artifact from a selected environment, one a sandboxed kernel produced —
+    # and `-I` only isolates Python's own path/env handling. It does nothing to
+    # stop the executable, native startup, or a `.pth`/sitecustomize hook from
+    # reading the daemon's API and cloud credentials out of the environment,
+    # touching daemon files, or reaching the network. So the probe runs with
+    # the same scrubbed child environment and OS boundary a kernel cell gets,
+    # never the daemon's full context.
+    workspace = tempfile.mkdtemp(prefix="openai4s-freeze-")
+    argv, env, sandbox = _confined_probe(
+        [str(interpreter), "-I", "-c", probe], workspace
+    )
     try:
         proc = subprocess.run(
-            [str(interpreter), "-I", "-c", probe],
+            argv,
             capture_output=True,
             timeout=timeout,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return None
+    finally:
+        if sandbox is not None:
+            try:
+                sandbox.close()
+            except Exception:  # noqa: BLE001
+                pass
+        shutil.rmtree(workspace, ignore_errors=True)
     if proc.returncode != 0:
         return None
     try:
