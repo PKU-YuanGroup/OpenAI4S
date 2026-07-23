@@ -39,7 +39,17 @@ The daemon forwards **only** the keys a provider declares in its `provider.json`
 `outputs` is a promise, not a hint: a pattern that matches nothing when the
 harvest is reconciled makes the job `failed` even if it exited 0. Every harvest
 records `{path, size, sha256}` per file plus a digest over the set, which is
-also what makes a transfer truncated at rc==0 visible.
+also what makes a transfer truncated at rc==0 visible. A path alone is not
+evidence — a harvested file that could not be read carries no hash, is never
+counted as discharging the pattern that named it, and comes back in
+`unverified_files`.
+
+Both transports harvest the same way. On `ssh:*` the job's work directory is
+staged into one archive on the host and pulled back through the same
+hostile-input-safe extractor the `byoc:*` archive goes through; files over
+~100 MB, and any output declared `{glob, residency:'remote'}`, stay on the
+cluster and come back named in `left_on_remote_files` with a URI the next job
+can chain from.
 
 On `byoc:*`, `provider_params[<id>]["timeout"]` is the **container's**
 lifetime, which is a different clock from the job's. The host stamps when the

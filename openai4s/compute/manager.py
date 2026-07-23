@@ -89,16 +89,44 @@ def _confinement_mode(value: str | None = None) -> str:
     return mode
 
 
+# Error kinds that, by themselves, mean "the remote may or may not have acted".
+# Everything else is a definite rejection *only* when the raiser says so —
+# `indeterminate` is the explicit signal, and this set is merely its default.
+_INDETERMINATE_KINDS = frozenset({"unknown_state"})
+
+
 class ComputeError(RuntimeError):
     """Surface as {'error', 'error_kind', ...} on the wire; the SDK turns a
-    non-status error into a RuntimeError carrying .error_kind."""
+    non-status error into a RuntimeError carrying .error_kind.
+
+    ``indeterminate`` is the field that decides whether a failed submit is
+    recorded as terminal ``failed`` or as live ``unknown``. It is carried
+    explicitly rather than inferred from ``kind`` because the two questions are
+    different: ``kind`` says what went wrong, ``indeterminate`` says whether
+    work may nonetheless be running (and billing) on the other end. A helper
+    that dies before writing its reply is ``transient`` by kind and thoroughly
+    indeterminate by fact.
+    """
 
     def __init__(
-        self, msg: str, kind: str = "transient", concurrency: dict | None = None
+        self,
+        msg: str,
+        kind: str = "transient",
+        concurrency: dict | None = None,
+        *,
+        indeterminate: bool | None = None,
     ):
         super().__init__(msg)
         self.error_kind = kind
         self.concurrency = concurrency
+        self.indeterminate = (
+            (kind in _INDETERMINATE_KINDS)
+            if indeterminate is None
+            else bool(indeterminate)
+        )
+        # Set by _run_helper when the stage dir still names a sandbox: a live
+        # billable resource the reply never got to mention.
+        self.sandbox_id: str | None = None
 
 
 # Ceiling on one direct scp. The job path stages inputs through a manifest and
@@ -186,33 +214,179 @@ def _sandbox_lifetime_s(spec: Any) -> int:
     return 0
 
 
-def _ssh_cancel_script(pid: str) -> str:
+# Per-file ceiling on what an ssh harvest pulls back automatically, matching
+# what the bundled skill documents. Anything larger stays on the cluster — it
+# is usually already where the next job wants it — and comes back named in
+# `left_on_remote_files` so it can still be chained or fetched deliberately.
+HARVEST_MAX_FILE_BYTES = 100 * 1024 * 1024
+
+# Staged inside the job's own work directory, so it is cleaned up with it.
+_HARVEST_ARCHIVE = ".openai4s-harvest.tar.gz"
+
+# Control files the job's own machinery wrote. They are the *protocol*, not the
+# job's output, and re-harvesting them would put a second copy of the exit code
+# and the pgid into the artifact record.
+_HARVEST_EXCLUDES = (
+    _HARVEST_ARCHIVE,
+    f"{_HARVEST_ARCHIVE}.tmp",
+    ".openai4s-harvest.list",
+    ".openai4s-harvest.skipped",
+    "run.sh",
+    ".rc",
+    ".rc.tmp",
+    ".pgid",
+    ".pgid.tmp",
+    ".timeout",
+)
+
+_HARVEST_TAG = "OPENAI4S_HARVEST"
+
+
+def _ssh_harvest_script(workdir: str, max_file_bytes: int) -> str:
+    """Stage the job's work directory into one archive, remotely.
+
+    One archive rather than a file list: it is one transfer to check the return
+    code of, and it goes through the same enumerate-then-extract safety gate as
+    the byoc harvest. Oversized files are enumerated and *excluded* rather than
+    silently truncating the transfer, so the caller learns what stayed behind.
+    """
+    excludes = " ".join(f"! -name {shlex.quote(name)}" for name in _HARVEST_EXCLUDES)
+    # `find -size +Nc` is POSIX and counts bytes; `-size +Nk` would round.
+    size_test = f"-size +{int(max_file_bytes)}c"
+    listing = ".openai4s-harvest.list"
+    skipped = ".openai4s-harvest.skipped"
+    return (
+        f"cd {workdir} 2>/dev/null || "
+        f"{{ echo 'openai4s: work directory is gone' >&2; exit 3; }}; "
+        f"rm -f {_HARVEST_ARCHIVE} {_HARVEST_ARCHIVE}.tmp {listing} {skipped}; "
+        f"find . -type f {excludes} {size_test} -print > {skipped} 2>/dev/null; "
+        f"find . -type f {excludes} ! {size_test} -print > {listing} 2>/dev/null; "
+        f"if [ -s {listing} ]; then "
+        # Same tar hardening the byoc wrapper applies, for the same reason: a
+        # login profile is free to export TAR_OPTIONS or GZIP, and GNU tar and
+        # its gzip both honour them, so the archive's shape would be partly
+        # chosen by the remote environment. COPYFILE_DISABLE additionally stops
+        # bsdtar (macOS) from emitting an AppleDouble `._name` sidecar beside
+        # every file, which would arrive as a phantom extra "output".
+        f"if env -u TAR_OPTIONS -u GZIP COPYFILE_DISABLE=1 "
+        f"tar -czf {_HARVEST_ARCHIVE}.tmp -T {listing} 2>/dev/null; then "
+        f"mv -f {_HARVEST_ARCHIVE}.tmp {_HARVEST_ARCHIVE}; "
+        f"echo '{_HARVEST_TAG} archive'; "
+        f"else rm -f {_HARVEST_ARCHIVE}.tmp; "
+        f"echo 'openai4s: tar failed' >&2; exit 4; fi; "
+        f"else echo '{_HARVEST_TAG} empty'; fi; "
+        # The paths left behind, one per line, with find's leading "./" removed
+        # so they read the same as the manifest's relative paths.
+        f"sed 's|^\\./||' {skipped} 2>/dev/null; "
+        f"rm -f {listing} {skipped}; exit 0"
+    )
+
+
+def _parse_harvest_ack(stdout: str) -> tuple[str, list[str]]:
+    """Split the harvest reply into ``(marker, oversized paths)``."""
+    marker = ""
+    oversized: list[str] = []
+    for line in stdout.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith(_HARVEST_TAG):
+            parts = text.split()
+            marker = parts[1] if len(parts) > 1 else ""
+            continue
+        if marker:
+            oversized.append(text)
+    return marker, oversized
+
+
+# The submit acknowledgement line. Tagged so a login banner, a `.bashrc` echo,
+# or a motd cannot be mistaken for the job's identity — an untagged `echo $!`
+# meant the first line of any chatty profile became the "pid" we later signalled.
+_SSH_SUBMIT_TAG = "OPENAI4S_JOB"
+
+
+def _parse_ssh_submit_ack(stdout: str) -> tuple[str, str]:
+    """Pull ``(pid, pgid)`` out of the tagged acknowledgement line.
+
+    Returns empty strings when the host said nothing identifiable, which the
+    caller must treat as an indeterminate submit rather than a success.
+    """
+    for line in reversed(stdout.splitlines()):
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == _SSH_SUBMIT_TAG:
+            pid = parts[1].strip()
+            pgid = parts[2].strip() if len(parts) >= 3 else ""
+            if pid.isdigit():
+                # 0 is "the caller's own group" and 1 is init's; a job's group
+                # can be neither, and recording one would arm a cancel that
+                # signals something catastrophic.
+                if not (pgid.isdigit() and int(pgid) > 1):
+                    pgid = ""
+                return pid, pgid
+    return "", ""
+
+
+def _ssh_cancel_script(pgid: str, pid: str = "") -> str:
     """TERM the job's process group, escalate to KILL, then confirm.
 
-    Three things this replaces, all of which let a cancel report success over
-    a job that was still running:
+    Four things this replaces, all of which let a cancel report success over a
+    job that was still running:
 
-      * ``kill -TERM <pid>`` signalled only the outer ``bash -c``. The job is
-        launched under job control so its pid is also its process group id,
-        and ``kill -- -<pgid>`` reaches the whole tree — `run.sh` and every
-        process it started, which are the ones actually holding the
-        allocation.
+      * ``kill -TERM <pid>`` signalled only the outer ``bash -c``. The whole
+        command tree — `run.sh` and every process it started, which are the
+        ones actually holding the allocation — lives in the job's process
+        group, and only ``kill -- -<pgid>`` reaches it.
+      * the pgid was *assumed* to equal ``$!``. It does not in a
+        non-interactive login shell, so the group being signalled frequently
+        did not exist. This script is now handed the group the host itself
+        reported at submit.
       * a process that ignores SIGTERM was never escalated to SIGKILL.
       * nothing checked afterwards. The final ``kill -0`` is what makes the
         non-zero exit — and therefore the caller's ``unknown_state`` — mean
         "we looked, and it is still there".
+
+    ``pid`` is the job's own process, signalled alongside the group as a belt:
+    if the group turned out to be shared or stale, the leader still dies, and
+    the confirmation below checks both.
     """
-    quoted = shlex.quote(str(pid))
+    group = shlex.quote(str(pgid))
+    leader = shlex.quote(str(pid or ""))
     return (
-        f"pgid={quoted}; "
-        # `kill -0` on the group first: a job that already finished is a
-        # successful cancel, not an error.
-        f'kill -0 -- -"$pgid" 2>/dev/null || exit 0; '
-        f'kill -TERM -- -"$pgid" 2>/dev/null; '
+        f"pgid={group}; pid={leader}; "
+        # A job submitted before the pgid was recorded still has one; ask the
+        # host for it rather than falling back to signalling the pid as if it
+        # were a group. If the process is already gone `ps` says nothing, and
+        # `alive` below is then false — which is a successful cancel.
+        f'[ -n "$pgid" ] || pgid=$(ps -o pgid= -p "$pid" 2>/dev/null '
+        f"| tr -d ' \\t\\n'); "
+        # 0 means "my own process group" and 1 is init's. Signalling either is
+        # catastrophic and neither can ever be a job's group, so an
+        # unresolvable pgid becomes *no* group rather than a dangerous one.
+        f"case \"$pgid\" in ''|0|1|-*) pgid= ;; esac; "
+        # `kill -0` first: a job that already finished is a successful cancel,
+        # not an error. Both identities are probed, because either one going
+        # quiet is not on its own proof the other did.
+        #
+        # No `--` before the negative pid. dash's `kill` builtin rejects it
+        # outright ("Illegal number: -"), and every signal here was wrapped in
+        # `2>/dev/null`, so on a dash login shell — Debian/Ubuntu's /bin/sh,
+        # and the login shell of most slim containers — nothing was ever
+        # signalled, the follow-up `kill -0` failed the same way, and the
+        # script exited 0. The user was told the allocation was freed. The
+        # signal name already consumed the option slot, so `-PGID` is
+        # unambiguous without it, and this form works in dash, ash and bash.
+        f"alive() {{ "
+        f'if [ -n "$pgid" ] && kill -0 -"$pgid" 2>/dev/null; then return 0; fi; '
+        f'[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }}; '
+        f"sig() {{ "
+        f'[ -n "$pgid" ] && kill -"$1" -"$pgid" 2>/dev/null; '
+        f'[ -n "$pid" ] && kill -"$1" "$pid" 2>/dev/null; return 0; }}; '
+        f"alive || exit 0; "
+        f"sig TERM; "
         f"for _ in 1 2 3 4 5 6 7 8 9 10; do "
-        f'kill -0 -- -"$pgid" 2>/dev/null || exit 0; sleep 1; done; '
-        f'kill -KILL -- -"$pgid" 2>/dev/null; sleep 1; '
-        f'if kill -0 -- -"$pgid" 2>/dev/null; then '
+        f"alive || exit 0; sleep 1; done; "
+        f"sig KILL; sleep 1; "
+        f"if alive; then "
         f"echo 'process group survived SIGKILL' >&2; exit 1; fi; exit 0"
     )
 
@@ -310,7 +484,16 @@ class ComputeManager:
         self._sandbox_deadlines: dict[str, float] = {}
         self._lock = threading.RLock()
         self._limit: int | None = None
-        self._hpc_root = Path(cfg.data_dir) / "hpc"
+        # Harvest into the *session workspace*, which is what both the docs
+        # ("harvests out.tar.gz back into the workspace under hpc/<job_id>/")
+        # and the bundled skills describe. It used to land under the global
+        # data dir, so every documented success path — harvest, then
+        # `host.save_artifact(path)` on a featured file — hit "path escapes the
+        # workspace" from the Host file service, which only resolves inside the
+        # session root. A job could not publish its own outputs.
+        #
+        # Without a workspace (the CLI) the data dir is still the right home.
+        self._hpc_root = Path(workspace or cfg.data_dir) / "hpc"
         self._hpc_root.mkdir(parents=True, exist_ok=True)
         self._rehydrate()
         self._confinement_mode = _confinement_mode()
@@ -345,9 +528,11 @@ class ComputeManager:
             "outputs": record.get("outputs"),
             "idempotency_key": record.get("idempotency_key"),
             "receipt": record.get("receipt"),
+            "termination_reason": record.get("termination_reason"),
+            "reason": record.get("reason"),
             "recovered": True,
         }
-        for key in ("alias", "workdir", "pid", "sandbox_id"):
+        for key in ("alias", "workdir", "pid", "pgid", "sandbox_id"):
             if record.get(key):
                 job[key] = record[key]
         return job
@@ -368,8 +553,32 @@ class ComputeManager:
         except Exception:  # noqa: BLE001
             pass
 
+    def _track_live(
+        self, job_id: str, provider: str, status: str, **fields: Any
+    ) -> None:
+        """Keep a live-but-unresolved job in the in-process view too.
+
+        ``_live_count`` reads ``self._jobs``, and only a *successful* submit
+        ever wrote there — so an indeterminate submit occupied no concurrency
+        slot until a restart happened to rehydrate it from the database. That
+        is backwards: a job whose fate is unknown is exactly the one that may
+        be consuming the provider's capacity, and the session would cheerfully
+        oversubscribe on top of it.
+        """
+        with self._lock:
+            job = self._jobs.setdefault(
+                job_id, {"job_id": job_id, "provider": provider}
+            )
+            job["status"] = status
+            job.update({k: v for k, v in fields.items() if v})
+
     def _fail_submit(
-        self, job_id: str, exc: BaseException, *, sandbox_id: str | None = None
+        self,
+        job_id: str,
+        exc: BaseException,
+        *,
+        provider: str,
+        sandbox_id: str | None = None,
     ) -> None:
         """Give a submit that raised an honest terminal state, never `staging`.
 
@@ -388,11 +597,19 @@ class ComputeManager:
         it lived only in the in-memory ``_sandboxes`` map, so a create that
         succeeded followed by a submit that failed left a sandbox nobody could
         name after a restart.
+
+        The rejection test reads ``exc.indeterminate``, never the error *kind*.
+        Kind answers "what went wrong"; only the raiser knows whether anything
+        may nonetheless be running. Inferring from kind meant every
+        ``transient`` was treated as a definite refusal — including the helper
+        dying before it could write a reply, which is the single case most
+        likely to have left work behind.
         """
         kind = getattr(exc, "error_kind", None)
+        sandbox_id = sandbox_id or getattr(exc, "sandbox_id", None)
         rejected = (
             isinstance(exc, ComputeError)
-            and kind not in (None, "unknown_state")
+            and not getattr(exc, "indeterminate", True)
             and not sandbox_id
         )
         fields: dict[str, Any] = {"reason": str(exc)}
@@ -414,6 +631,14 @@ class ComputeManager:
                 status=states.UNKNOWN,
                 termination_reason=states.REASON_SUBMIT_INDETERMINATE,
                 **fields,
+            )
+            self._track_live(
+                job_id,
+                provider,
+                states.UNKNOWN,
+                sandbox_id=sandbox_id,
+                termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+                reason=str(exc),
             )
             self._event(
                 job_id,
@@ -465,21 +690,44 @@ class ComputeManager:
         one with its receipt and let a poll — or a human — resolve it.
         """
         recovered = [job for job in self._jobs.values() if job.get("recovered")]
+        entries = []
+        for job in recovered:
+            # A submit whose outcome was never established is the row that
+            # actually costs money: the provider may have taken the work, and
+            # nothing here can name what it created. Say so, rather than
+            # offering the same "poll it" hint as an ordinary running job.
+            indeterminate = job.get("termination_reason") in (
+                states.REASON_SUBMIT_INDETERMINATE,
+            )
+            entry = {
+                "job_id": job["job_id"],
+                "provider": job["provider"],
+                "status": job.get("status"),
+                "receipt": job.get("receipt"),
+                "hint": (
+                    "poll with .result() to resolve; it may have finished "
+                    "while the daemon was down"
+                ),
+            }
+            if job.get("workdir"):
+                entry["remote_workdir"] = job["workdir"]
+            if job.get("sandbox_id"):
+                entry["sandbox_id"] = job["sandbox_id"]
+            if indeterminate:
+                entry["orphan_risk"] = True
+                entry["reason"] = job.get("reason")
+                entry["hint"] = (
+                    "this submit's outcome was never established — the "
+                    "provider may have accepted the work. Inspect the receipt "
+                    "or workdir before resubmitting; it is not retried "
+                    "automatically because guessing wrong costs either a "
+                    "duplicate charge or a lost result"
+                )
+            entries.append(entry)
         return {
-            "recovered": [
-                {
-                    "job_id": job["job_id"],
-                    "provider": job["provider"],
-                    "status": job.get("status"),
-                    "receipt": job.get("receipt"),
-                    "hint": (
-                        "poll with .result() to resolve; it may have finished "
-                        "while the daemon was down"
-                    ),
-                }
-                for job in recovered
-            ],
-            "count": len(recovered),
+            "recovered": entries,
+            "count": len(entries),
+            "orphan_risk_count": sum(1 for e in entries if e.get("orphan_risk")),
         }
 
     def job_history(self, kw: dict) -> dict:
@@ -663,26 +911,68 @@ class ComputeManager:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 pass
-            raise ComputeError(
+            raise self._helper_error(
+                stage,
                 f"provider helper for op {op!r} exceeded the {deadline}s host "
                 f"deadline and was killed; the remote operation may or may not "
                 f"have taken effect",
                 "unknown_state",
+                indeterminate=True,
             )
         reply_path = stage / "reply.json"
         if not reply_path.exists():
-            raise ComputeError(
+            # The helper died between doing the work and reporting it. It may
+            # have created the sandbox, or submitted the job, or neither — and
+            # this used to be classified `transient`, which _fail_submit read
+            # as an explicit provider rejection and persisted as terminal
+            # `failed`. A job the provider had already accepted then became
+            # invisible: reconcile skips terminal rows, so it kept running and
+            # kept billing with nothing left that would ever look for it.
+            raise self._helper_error(
+                stage,
                 f"provider helper for op {op!r} exited (rc={proc.returncode}) "
-                f"without a reply",
-                "transient",
+                f"without a reply; the remote operation may or may not have "
+                f"taken effect",
+                "unknown_state",
+                indeterminate=True,
             )
         reply = json.loads(reply_path.read_text("utf-8"))
         if not reply.get("ok"):
-            raise ComputeError(
+            # A written reply is the helper speaking for itself: it reached the
+            # provider and the provider said no. That is a definite rejection
+            # unless the helper explicitly marks it otherwise.
+            raise self._helper_error(
+                stage,
                 reply.get("msg") or "provider op failed",
                 reply.get("kind") or "transient",
+                indeterminate=bool(reply.get("indeterminate")),
             )
         return reply
+
+    @staticmethod
+    def _helper_error(
+        stage: Path, msg: str, kind: str, *, indeterminate: bool
+    ) -> ComputeError:
+        """Build the error, carrying any sandbox the stage dir still names.
+
+        ``_op_create`` writes ``stage/sandbox_id`` the instant the provider
+        returns one — before the ownership read-back, before ``reply.json`` —
+        precisely so a helper that dies mid-op still leaves the host able to
+        name what it created. Nothing read that file, so a create that landed
+        and then crashed produced an unnameable, unterminatable, billing
+        sandbox. The helper removes the file again once it has *confirmed* the
+        sandbox is gone, so its presence means "may still exist".
+        """
+        error = ComputeError(msg, kind, indeterminate=indeterminate)
+        try:
+            observed = (stage / "sandbox_id").read_text("utf-8").strip()
+        except (OSError, ValueError):
+            observed = ""
+        if observed:
+            error.sandbox_id = observed
+            # A live resource we can name is never a clean rejection.
+            error.indeterminate = True
+        return error
 
     def _provider_creds(self, prov: dict) -> dict:
         """Collect the provider's declared secret env vars into the auth
@@ -801,7 +1091,7 @@ class ComputeManager:
             # `_sandboxes` map and vanished with the process. The ssh arm has
             # had this discipline since it was written (see `_submit_ssh`);
             # the byoc arm never did.
-            self._fail_submit(job_id, exc, sandbox_id=sid)
+            self._fail_submit(job_id, exc, provider=f"byoc:{pid}", sandbox_id=sid)
             raise
         with self._lock:
             self._jobs[job_id] = {
@@ -850,25 +1140,55 @@ class ComputeManager:
         # believes a limit is in force.
         timeout_s = int(kw.get("timeout_seconds") or 0)
         body = "bash run.sh"
+        marker = ""
         if timeout_s > 0:
-            # -k gives the job a grace period to flush before SIGKILL. GNU
-            # `timeout` exits 124 on expiry, which _result_ssh maps to
-            # `timed_out` rather than a plain non-zero failure. `gtimeout` is
-            # the same binary under the name Homebrew's coreutils installs,
-            # so a macOS host is not silently denied a deadline.
+            # -k gives the job a grace period to flush before SIGKILL.
+            # `gtimeout` is the same binary under the name Homebrew's coreutils
+            # installs, so a macOS host is not silently denied a deadline.
             body = (
                 "_o4s_to=$(command -v timeout || command -v gtimeout); "
                 f'"$_o4s_to" -k 10 -s TERM {timeout_s} bash run.sh'
             )
+            # The deadline writes its OWN marker, and the host reads that
+            # marker rather than sniffing the exit code. `timeout` reports
+            # expiry as 124, but 124 is also just a number a command may exit
+            # with — and with no deadline armed at all, a plain `exit 124` was
+            # being reported to the user as `timed_out`, sending them to look
+            # for a walltime that was never set. The wall-clock test is what
+            # separates "the deadline fired" from "the command happened to
+            # return the same code": only a run that reached its budget can
+            # have been ended by it. (A command that exits 124 in the final
+            # second of its own budget remains indistinguishable; that is
+            # inherent, and is the same contract the byoc wrapper documents.)
+            marker = (
+                f'if {{ [ "$rc" -eq {_TIMEOUT_EXIT_CODE} ] || [ "$rc" -eq 137 ]; }} '
+                f'&& [ "$_o4s_wall" -ge {max(timeout_s - 1, 0)} ]; '
+                f"then : > .timeout; fi; "
+            )
+        # The job records its own identity before it does anything else.
+        # `$!` is a pid, and in the non-interactive login shell that `ssh host
+        # cmd` actually gets — dash, ash, or bash without job control — it is
+        # NOT the process group id: `set -m` does not enable job control there,
+        # so the background job simply inherits the login shell's group.
+        # Cancellation signalled `-$!`, found no such group, and on several
+        # shells still exited 0 — reporting a freed allocation over a command
+        # tree that kept running. Reading the real pgid back off the host is
+        # the only thing that makes the group we signal verifiable.
         inner = (
+            "_o4s_pg=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' \\t\\n'); "
+            'printf "%s %s" "$$" "$_o4s_pg" > .pgid.tmp; mv -f .pgid.tmp .pgid; '
+            "_o4s_t0=$(date +%s); "
             f"{body} > stdout.log 2> stderr.log; rc=$?; "
+            "_o4s_wall=$(( $(date +%s) - _o4s_t0 )); "
+            f"{marker}"
+            # .rc last: a reader that sees an exit code can trust every marker
+            # beside it is already settled.
             'printf "%s" "$rc" > .rc.tmp; mv -f .rc.tmp .rc'
         )
-        # `set -m` enables job control, which puts the background job in a
-        # process group of its own whose id equals the pid we record. Without
-        # it the job shares the login shell's group, and cancelling could only
-        # signal the outer `bash -c` — `run.sh`'s children, the processes
-        # actually holding the allocation, survived and kept running.
+        # setsid puts the job in a session of its own, so the group we signal
+        # contains the job and nothing else. It is absent on stock macOS, which
+        # is why it is probed rather than required — the read-back above is
+        # what makes cancellation correct either way.
         #
         # The braces are load-bearing. `&` binds looser than `&&`, so
         # `mkdir && cd && cat > run.sh && nohup ... & echo $!` makes the WHOLE
@@ -888,11 +1208,20 @@ class ComputeManager:
             if timeout_s > 0
             else ""
         )
+        launch = (
+            "_o4s_ss=; command -v setsid >/dev/null 2>&1 && _o4s_ss=setsid; "
+            f"nohup $_o4s_ss bash -c {shlex.quote(inner)} >/dev/null 2>&1 & "
+            "_o4s_bg=$!; _o4s_n=0; "
+            'while [ ! -s .pgid ] && [ "$_o4s_n" -lt 10 ]; do '
+            "sleep 1; _o4s_n=$(( _o4s_n + 1 )); done; "
+            "set -- $(cat .pgid 2>/dev/null); "
+            f'printf "{_SSH_SUBMIT_TAG} %s %s\\n" "${{1:-$_o4s_bg}}" "${{2:-}}"'
+        )
         remote = (
             f"mkdir -p {workdir} && cd {workdir} && "
             f"{guard}"
-            f"cat > run.sh && rm -f .rc .rc.tmp && "
-            f"{{ set -m; nohup bash -c {shlex.quote(inner)} >/dev/null 2>&1 & echo $!; }}"
+            f"cat > run.sh && rm -f .rc .rc.tmp .pgid .pgid.tmp .timeout && "
+            f"{{ {launch}; }}"
         )
         try:
             proc = subprocess.run(
@@ -905,17 +1234,68 @@ class ComputeManager:
             # We do not know whether the remote shell ran. The claim row stays
             # at `staging` with the workdir recorded, which is what makes this
             # reconcilable instead of an orphan.
-            self._persist(job_id, status=states.UNKNOWN, workdir=workdir, reason=str(e))
+            self._persist(
+                job_id,
+                status=states.UNKNOWN,
+                workdir=workdir,
+                reason=str(e),
+                termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+            )
+            self._track_live(
+                job_id,
+                f"ssh:{alias}",
+                states.UNKNOWN,
+                alias=alias,
+                workdir=workdir,
+                termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+                reason=str(e),
+            )
             self._event(job_id, "submit_indeterminate", {"error": str(e)})
-            raise ComputeError(f"ssh submit failed: {e}", "unknown_state")
+            raise ComputeError(
+                f"ssh submit failed: {e}", "unknown_state", indeterminate=True
+            )
         if proc.returncode != 0:
-            self._persist(job_id, status=states.FAILED, reason="ssh submit rejected")
+            self._persist(
+                job_id,
+                status=states.FAILED,
+                reason="ssh submit rejected",
+                workdir=workdir,
+                termination_reason=states.REASON_SUBMIT_REJECTED,
+                terminal_at=_now_ms(),
+            )
             self._event(job_id, "submit_rejected", {"rc": proc.returncode})
             raise ComputeError(
                 proc.stderr.decode("utf-8", "replace") or "ssh submit failed",
                 "transient",
+                indeterminate=False,
             )
-        pid = proc.stdout.decode().strip()
+        pid, pgid = _parse_ssh_submit_ack(proc.stdout.decode("utf-8", "replace"))
+        if not pid:
+            # The shell exited 0 but said nothing we can identify the job by.
+            # Anything may be running out there under a pid we never learned.
+            self._persist(
+                job_id,
+                status=states.UNKNOWN,
+                workdir=workdir,
+                reason="ssh submit produced no job acknowledgement",
+                termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+            )
+            self._track_live(
+                job_id,
+                f"ssh:{alias}",
+                states.UNKNOWN,
+                alias=alias,
+                workdir=workdir,
+                termination_reason=states.REASON_SUBMIT_INDETERMINATE,
+                reason="ssh submit produced no job acknowledgement",
+            )
+            self._event(job_id, "submit_indeterminate", {"stdout": proc.stdout[:200]})
+            raise ComputeError(
+                f"ssh submit to {alias} exited 0 without acknowledging a job "
+                f"id; something may be running in {workdir}",
+                "unknown_state",
+                indeterminate=True,
+            )
         with self._lock:
             self._jobs[job_id] = {
                 "job_id": job_id,
@@ -924,6 +1304,7 @@ class ComputeManager:
                 "workdir": workdir,
                 "status": "running",
                 "pid": pid,
+                "pgid": pgid,
                 "outputs": kw.get("outputs"),
             }
         # The remote pid is the provider's receipt: evidence the job exists out
@@ -934,10 +1315,11 @@ class ComputeManager:
             alias=alias,
             workdir=workdir,
             pid=pid,
+            pgid=pgid,
             receipt=pid,
             submitted_at=_now_ms(),
         )
-        self._event(job_id, "submitted", {"pid": pid, "workdir": workdir})
+        self._event(job_id, "submitted", {"pid": pid, "pgid": pgid, "workdir": workdir})
         return {
             "job_id": job_id,
             "status": "running",
@@ -1026,21 +1408,29 @@ class ComputeManager:
         # the single worst outcome available here, so it is a failure with the
         # cause recorded rather than a status of its own. `phase_err` is the
         # wrapper's own tar/mv losing the outputs; `missing` is the job simply
-        # not producing what it promised, which nothing checked before.
-        unverified = bool(phase_err or harvest_error or missing)
+        # not producing what it promised, which nothing checked before; and
+        # `unverified_files` is a file that arrived but could not be read, so
+        # there is no content hash standing behind it.
+        unverified_files = manifest.unverified(entries)
+        unverified = bool(phase_err or harvest_error or missing or unverified_files)
         if unverified and status == states.SUCCEEDED:
             status = states.FAILED
         job["status"] = status
         job["exit_code"] = exit_code
-        missing_note = (
-            f"declared outputs never arrived: {', '.join(missing)}" if missing else ""
-        )
+        notes = []
+        if missing:
+            notes.append(f"declared outputs never arrived: {', '.join(missing)}")
+        if unverified_files:
+            notes.append(
+                f"harvested but unreadable, so unverifiable: "
+                f"{', '.join(unverified_files)}"
+            )
         self._persist(
             job["job_id"],
             status=status,
             exit_code=exit_code,
             terminal_at=_now_ms(),
-            reason=phase_err or harvest_error or missing_note or "",
+            reason=phase_err or harvest_error or "; ".join(notes) or "",
             termination_reason=(
                 states.REASON_OUTPUTS_UNVERIFIED if unverified else None
             ),
@@ -1065,6 +1455,10 @@ class ComputeManager:
         if harvest_error:
             result["harvest_error"] = harvest_error
             result["error_kind"] = "unsafe_archive"
+        if missing:
+            result["unharvested_outputs"] = missing
+        if unverified_files:
+            result["unverified_files"] = unverified_files
         return result
 
     def _harvest(self, job_id: str, stage: Path) -> list[dict]:
@@ -1094,9 +1488,15 @@ class ComputeManager:
         # writes .rc *before* it exits: a live pid is authoritatively running,
         # and a dead pid means .rc is already durable if it will ever be. The
         # reverse order would race a just-finished job into `unknown`.
+        # The `.timeout` marker rides back with the exit code: the wrapper
+        # writes it only when the deadline it was given is what ended the run,
+        # so the host never has to infer a walltime kill from the number 124 —
+        # which a command is free to exit with on its own, deadline or not.
         probe = (
             f"if kill -0 {shlex.quote(pid)} 2>/dev/null; then echo RUNNING; "
-            f"elif [ -f {workdir}/.rc ]; then cat {workdir}/.rc; "
+            f"elif [ -f {workdir}/.rc ]; then "
+            f'printf "RC %s %s\\n" "$(cat {workdir}/.rc)" '
+            f'"$([ -f {workdir}/.timeout ] && echo TIMEOUT || echo -)"; '
             f"else echo NORC; fi"
         )
         try:
@@ -1127,52 +1527,70 @@ class ComputeManager:
                 "remote process is no longer alive but wrote no exit code "
                 "(killed, evicted, or the host restarted)",
             )
+        parts = out.split()
+        if len(parts) >= 2 and parts[0] == "RC":
+            rc_text, timed_out = parts[1], (len(parts) > 2 and parts[2] == "TIMEOUT")
+        else:
+            # A job submitted before the marker existed still answers with a
+            # bare exit code. Nothing claims a deadline fired for those.
+            rc_text, timed_out = out, False
         try:
-            exit_code = int(out)
+            exit_code = int(rc_text)
         except ValueError:
-            return self._ssh_unknown(job, f"unparseable exit code {out!r}")
+            return self._ssh_unknown(job, f"unparseable exit code {rc_text!r}")
 
         dest = self._hpc_root / job["job_id"]
         dest.mkdir(parents=True, exist_ok=True)
-        harvest_error = self._scp_logs(alias, workdir, dest)
+        harvest_error, oversized = self._harvest_ssh(alias, workdir, dest)
         entries = manifest.build_manifest(dest)
         featured, missing = manifest.reconcile(entries, job.get("outputs"))
+        unverified_files = manifest.unverified(entries)
 
-        if exit_code == 0:
-            status = states.SUCCEEDED
-        elif exit_code == _TIMEOUT_EXIT_CODE:
-            # `timeout` exits 124 on expiry. Reporting that as a plain failure
-            # would send the caller looking for a bug in their command.
+        if timed_out:
+            # The wrapper's own marker, not the exit code. `timeout` reports
+            # expiry as 124, but so does any command that chooses to exit 124 —
+            # and with no deadline armed at all there is nothing for a walltime
+            # kill to have come from, so reading 124 as `timed_out` sent the
+            # caller looking for a limit that was never set.
             status = states.TIMED_OUT
+        elif exit_code == 0:
+            status = states.SUCCEEDED
         else:
             status = states.FAILED
         if harvest_error:
             # The job's own verdict is known and trustworthy; only our copy of
-            # its logs is incomplete. Keep the verdict, but never claim a clean
-            # harvest we did not get.
+            # its files is incomplete. Keep the verdict, but never claim a
+            # clean harvest we did not get.
             status = states.FAILED
-        # The ssh path copies back logs, not the declared outputs, so anything
-        # a job promised is by construction still on the remote host. Saying
-        # so is the honest answer; reporting success while the promised files
-        # sit somewhere this process never looked is not.
-        if missing and status == states.SUCCEEDED:
+        # A promise the harvest cannot account for — either the file never
+        # arrived, or it arrived unreadable and so carries no hash. Reporting
+        # success over either is the false success the manifest exists for.
+        unaccounted = bool(missing or unverified_files)
+        if unaccounted and status == states.SUCCEEDED:
             status = states.FAILED
         job["status"] = status
         job["exit_code"] = exit_code
-        missing_note = (
-            f"declared outputs were not harvested (still on {alias}:{workdir}): "
-            f"{', '.join(missing)}"
-            if missing
-            else ""
-        )
+        notes = []
+        if missing:
+            notes.append(
+                f"declared outputs were not harvested (still on "
+                f"{alias}:{workdir}): {', '.join(missing)}"
+            )
+        if unverified_files:
+            notes.append(
+                f"harvested but unreadable, so unverifiable: "
+                f"{', '.join(unverified_files)}"
+            )
         self._persist(
             job["job_id"],
             status=status,
             exit_code=exit_code,
             terminal_at=_now_ms(),
-            reason=harvest_error or missing_note or "",
+            reason=harvest_error or "; ".join(notes) or "",
             termination_reason=(
-                states.REASON_OUTPUTS_UNVERIFIED if (harvest_error or missing) else None
+                states.REASON_OUTPUTS_UNVERIFIED
+                if (harvest_error or unaccounted)
+                else None
             ),
             artifact_manifest=entries,
             integrity_sha256=manifest.manifest_digest(entries),
@@ -1186,12 +1604,25 @@ class ComputeManager:
             "artifact_manifest": entries,
             "integrity_sha256": manifest.manifest_digest(entries),
             "remote_workdir": workdir,
+            # The workdir itself is never deleted by a poll, so the originals
+            # are still there — but the declared outputs are now here too.
             "left_on_remote": True,
         }
+        if oversized:
+            result["left_on_remote_files"] = [
+                {
+                    "path": rel,
+                    "uri": f"{alias}:{workdir}/{rel}",
+                    "reason": "threshold",
+                }
+                for rel in oversized
+            ]
         if harvest_error:
             result["harvest_error"] = harvest_error
         if missing:
             result["unharvested_outputs"] = missing
+        if unverified_files:
+            result["unverified_files"] = unverified_files
         return result
 
     def _ssh_unknown(self, job: dict, reason: str) -> dict:
@@ -1217,31 +1648,139 @@ class ComputeManager:
             ),
         }
 
-    def _scp_logs(self, alias: str, workdir: str, dest: Path) -> str | None:
-        """Copy stdout/stderr back. Returns an error string, or None on success."""
+    def _harvest_ssh(
+        self, alias: str, workdir: str, dest: Path
+    ) -> tuple[str | None, list[str]]:
+        """Pull the job's whole work directory back.
+
+        Returns ``(error, left_on_remote)``: an error string or None, and the
+        relative paths deliberately left behind for being over the per-file
+        ceiling.
+
+        This used to copy ``stdout.log`` and ``stderr.log`` and nothing else,
+        while ``submit_job`` accepted an ``outputs`` declaration and the
+        bundled skill's worked example declares one. Every declared pattern
+        therefore matched nothing, ``reconcile`` reported it missing, and a job
+        that had exited 0 having written exactly what it promised was forced to
+        ``failed``. The documented submit → poll → harvest path could not
+        succeed at all on this transport.
+
+        The archive is built remotely and extracted through the same
+        hostile-input-safe extractor the byoc path uses, because the bytes come
+        from a machine we do not control either way.
+        """
+        script = _ssh_harvest_script(workdir, HARVEST_MAX_FILE_BYTES)
         try:
             proc = subprocess.run(
-                [
-                    "scp",
-                    "-O",
-                    "-q",
-                    f"{alias}:{workdir}/stdout.log",
-                    f"{alias}:{workdir}/stderr.log",
-                    str(dest),
-                ],
-                capture_output=True,
-                timeout=120,
+                ["ssh", alias, script], capture_output=True, timeout=300
             )
         except (subprocess.TimeoutExpired, OSError) as e:
-            return f"log harvest failed to run: {e}"
+            return f"harvest failed to run on {alias}: {e}", []
         if proc.returncode != 0:
             return (
-                f"log harvest exited {proc.returncode}: "
+                f"harvest staging exited {proc.returncode} on {alias}: "
                 f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
+            ), []
+        marker, oversized = _parse_harvest_ack(proc.stdout.decode("utf-8", "replace"))
+        if marker == "empty":
+            # The job wrote nothing at all. That is a fact about the job, not a
+            # transport failure; `reconcile` decides whether it is acceptable.
+            return None, oversized
+        if marker != "archive":
+            return (
+                f"harvest produced no acknowledgement on {alias}; "
+                f"the work directory may be gone"
+            ), oversized
+        with tempfile.TemporaryDirectory(prefix="openai4s-ssh-harvest-") as td:
+            local = Path(td) / "harvest.tar.gz"
+            try:
+                self._run_scp(
+                    [
+                        "scp",
+                        "-O",
+                        "-q",
+                        f"{alias}:{workdir}/{_HARVEST_ARCHIVE}",
+                        str(local),
+                    ],
+                    f"harvest from {alias}:{workdir}",
+                )
+            except ComputeError as e:
+                return str(e), oversized
+            if not local.is_file():
+                return f"harvest archive never arrived from {alias}", oversized
+            try:
+                safe_extract_tar(local, dest)
+            except UnsafeArchiveError as e:
+                return f"harvest archive rejected: {e}", oversized
+        self._cleanup_remote_archive(alias, workdir)
+        return None, oversized
+
+    @staticmethod
+    def _cleanup_remote_archive(alias: str, workdir: str) -> None:
+        """Best effort: the staged tarball doubles the job's remote footprint."""
+        try:
+            subprocess.run(
+                ["ssh", alias, f"rm -f {workdir}/{_HARVEST_ARCHIVE}"],
+                capture_output=True,
+                timeout=30,
             )
-        return None
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
     # --- cancel / close / ssh command / scp -------------------------------
+    def _terminate_ssh_job(self, job: dict) -> None:
+        """Signal the job's process group and confirm it is gone.
+
+        Raises on anything short of confirmation. There is no "probably".
+        """
+        pgid = str(job.get("pgid") or "")
+        pid = str(job.get("pid") or "")
+        if not (pgid or pid):
+            raise ComputeError(
+                f"job {job['job_id']!r} has no recorded remote process to "
+                f"signal; inspect {job.get('workdir')} on {job.get('alias')} "
+                f"by hand",
+                "unknown_state",
+                indeterminate=True,
+            )
+        try:
+            proc = subprocess.run(
+                ["ssh", job["alias"], _ssh_cancel_script(pgid, pid)],
+                capture_output=True,
+                timeout=self._CANCEL_TIMEOUT_S,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            raise ComputeError(
+                f"cancel could not reach {job['alias']}: {e}; the remote "
+                f"job may still be running",
+                "unknown_state",
+                indeterminate=True,
+            )
+        if proc.returncode != 0:
+            # A kill we could not deliver is not a cancellation. Claiming one
+            # leaves the caller believing the allocation is freed. The script
+            # exits non-zero when the group outlived SIGKILL too, so this also
+            # covers "signalled but still there".
+            raise ComputeError(
+                f"cancel failed on {job['alias']} (exit {proc.returncode}): "
+                f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
+                f"; the remote job may still be running",
+                "unknown_state",
+                indeterminate=True,
+            )
+
+    def _terminate_sandbox(self, pid: str, sandbox_id: str) -> None:
+        """Ask the provider to destroy one sandbox. Raises unless it agrees."""
+        prov = self._byoc(pid)
+        with tempfile.TemporaryDirectory(prefix="openai4s-byoc-stage-") as td:
+            self._run_helper(
+                prov,
+                "terminate",
+                {"sandbox_id": sandbox_id},
+                self._provider_creds(prov),
+                Path(td),
+            )
+
     def cancel(self, kw: dict) -> dict:
         with self._lock:
             job = self._jobs.get(kw["job_id"])
@@ -1249,88 +1788,165 @@ class ComputeManager:
             raise ComputeError(f"no such job {kw['job_id']!r}", "not_found")
         fam, rest = self._split(job["provider"])
         if fam == "ssh":
-            try:
-                proc = subprocess.run(
-                    ["ssh", job["alias"], _ssh_cancel_script(job["pid"])],
-                    capture_output=True,
-                    timeout=self._CANCEL_TIMEOUT_S,
-                )
-            except (subprocess.TimeoutExpired, OSError) as e:
-                raise ComputeError(
-                    f"cancel could not reach {job['alias']}: {e}; the remote "
-                    f"job may still be running",
-                    "unknown_state",
-                )
-            if proc.returncode != 0:
-                # A kill we could not deliver is not a cancellation. Claiming
-                # one leaves the caller believing the allocation is freed.
-                # The script exits non-zero when the group outlived SIGKILL
-                # too, so this also covers "signalled but still there".
-                raise ComputeError(
-                    f"cancel failed on {job['alias']} (exit {proc.returncode}): "
-                    f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
-                    f"; the remote job may still be running",
-                    "unknown_state",
-                )
+            self._terminate_ssh_job(job)
         else:
-            prov = self._byoc(rest)
-            with tempfile.TemporaryDirectory(prefix="openai4s-byoc-stage-") as td:
-                self._run_helper(
-                    prov,
-                    "terminate",
-                    {"sandbox_id": job["sandbox_id"]},
-                    self._provider_creds(prov),
-                    Path(td),
+            sandbox_id = job.get("sandbox_id")
+            if not sandbox_id:
+                raise ComputeError(
+                    f"job {job['job_id']!r} has no recorded sandbox to "
+                    f"terminate; it may still be running and billing",
+                    "unknown_state",
+                    indeterminate=True,
                 )
-        job["status"] = "cancelled"
-        self._persist(job["job_id"], status=states.CANCELLED, terminal_at=_now_ms())
+            self._terminate_sandbox(rest, sandbox_id)
+        job["status"] = states.CANCELLED
+        self._persist(
+            job["job_id"],
+            status=states.CANCELLED,
+            terminal_at=_now_ms(),
+            termination_reason=states.REASON_USER_CANCELLED,
+        )
         self._event(job["job_id"], "cancelled")
         return {"status": "cancelled"}
 
     def close(self, kw: dict) -> dict:
+        """Release the handle, terminating what it was holding.
+
+        ``cancelled`` is a *terminal* state, and reconcile skips terminal rows.
+        Writing it over every live job on the strength of having asked to close
+        the handle was therefore a false negative with teeth: an ssh job was
+        never signalled at all, a byoc terminate could fail or — after a
+        restart, with ``_sandboxes`` empty — never be attempted, and the job
+        kept running and kept billing while the ledger said it had been
+        cancelled and nothing would ever look at it again.
+
+        So each job is terminated individually and marked ``cancelled`` only on
+        confirmation. Anything unconfirmed stays live, keeps its concurrency
+        slot, and is reported back by name — the caller is told what it still
+        owns rather than being quietly told it owns nothing.
+        """
         provider = kw["provider"]
         fam, rest = self._split(provider)
+        released: list[str] = []
+        unreleased: list[dict] = []
+
+        with self._lock:
+            targets = [
+                job
+                for jid in (kw.get("job_ids") or [])
+                for job in [self._jobs.get(str(jid))]
+                # Every live state, `staging` and `unknown` included: work whose
+                # fate we do not know is exactly what must not be forgotten.
+                if job is not None and states.is_live(job.get("status"))
+            ]
+
+        # byoc jobs share one sandbox per provider, so terminate it once and
+        # let every job riding on it inherit that single verdict.
+        sandbox_verdicts: dict[str, BaseException | None] = {}
+
+        def _release_sandbox(sandbox_id: str) -> BaseException | None:
+            if sandbox_id not in sandbox_verdicts:
+                try:
+                    self._terminate_sandbox(rest, sandbox_id)
+                    sandbox_verdicts[sandbox_id] = None
+                except BaseException as exc:  # noqa: BLE001
+                    sandbox_verdicts[sandbox_id] = exc
+            return sandbox_verdicts[sandbox_id]
+
+        for job in targets:
+            jid = job["job_id"]
+            job_fam = self._split(job["provider"])[0]
+            try:
+                if job_fam == "ssh":
+                    self._terminate_ssh_job(job)
+                else:
+                    sandbox_id = str(job.get("sandbox_id") or "")
+                    if not sandbox_id:
+                        raise ComputeError(
+                            "no recorded sandbox to terminate",
+                            "unknown_state",
+                            indeterminate=True,
+                        )
+                    failure = _release_sandbox(sandbox_id)
+                    if failure is not None:
+                        raise failure
+            except BaseException as exc:  # noqa: BLE001
+                unreleased.append(
+                    {
+                        "job_id": jid,
+                        "provider": job["provider"],
+                        "status": job.get("status"),
+                        "receipt": job.get("receipt"),
+                        "error": str(exc),
+                    }
+                )
+                self._persist(jid, reason=f"close could not confirm: {exc}")
+                self._event(jid, "close_unconfirmed", {"error": str(exc)})
+                continue
+            job["status"] = states.CANCELLED
+            # In-memory only meant a restart rehydrated the job as live, so it
+            # kept occupying a concurrency slot and kept being reconciled
+            # against a provider that had already released it.
+            self._persist(
+                jid,
+                status=states.CANCELLED,
+                terminal_at=_now_ms(),
+                termination_reason=states.REASON_HANDLE_CLOSED,
+            )
+            self._event(jid, "closed", {"provider": provider})
+            released.append(jid)
+
+        # The warm sandbox outlives the jobs that ran in it, so release it even
+        # when no job ids were named. After a restart `_sandboxes` is empty and
+        # the only surviving name for a container is the one on its job rows —
+        # which is why those are consulted too.
         terminated = True
         if fam == "byoc":
-            sid = self._sandboxes.get(rest)
-            if sid:
-                prov = self._byoc(rest)
-                with tempfile.TemporaryDirectory(prefix="openai4s-byoc-stage-") as td:
-                    try:
-                        self._run_helper(
-                            prov,
-                            "terminate",
-                            {"sandbox_id": sid},
-                            self._provider_creds(prov),
-                            Path(td),
-                        )
-                    except ComputeError:
-                        # Drop the id only once the provider has confirmed the
-                        # sandbox is gone. Forgetting it on a failed terminate
-                        # is how a sandbox bills forever with nothing left in
-                        # this process able to name it.
-                        terminated = False
-                if terminated:
-                    self._sandboxes.pop(rest, None)
-                    self._sandbox_deadlines.pop(rest, None)
-        for jid in kw.get("job_ids") or []:
-            j = self._jobs.get(jid)
-            # Every live state, `staging` and `unknown` included: closing a
-            # handle over work whose fate we do not know still ends our
-            # tracking of it, and leaving it live meant it held a slot forever.
-            if j and states.is_live(j.get("status")):
-                j["status"] = states.CANCELLED
-                # In-memory only meant a restart rehydrated the job as live,
-                # so it kept occupying a concurrency slot and kept being
-                # reconciled against a provider that had already released it.
-                self._persist(
-                    jid,
-                    status=states.CANCELLED,
-                    terminal_at=_now_ms(),
-                    termination_reason=states.REASON_HANDLE_CLOSED,
-                )
-                self._event(jid, "closed", {"provider": provider})
-        return {"status": "closed", "sandbox_released": terminated}
+            for sandbox_id in self._sandbox_ids_for(rest):
+                if _release_sandbox(sandbox_id) is not None:
+                    # Drop the id only once the provider has confirmed the
+                    # sandbox is gone. Forgetting it on a failed terminate is
+                    # how a sandbox bills forever with nothing left in this
+                    # process able to name it.
+                    terminated = False
+            if terminated:
+                self._sandboxes.pop(rest, None)
+                self._sandbox_deadlines.pop(rest, None)
+
+        result = {
+            "status": "closed",
+            "sandbox_released": terminated and not unreleased,
+            "released": released,
+        }
+        if unreleased:
+            result["unreleased"] = unreleased
+            result["error_kind"] = "unknown_state"
+            result["hint"] = (
+                "these jobs could not be confirmed stopped and are still "
+                "tracked as live; they may still be running and billing"
+            )
+        return result
+
+    def _sandbox_ids_for(self, provider_id: str) -> list[str]:
+        """Every sandbox this manager can still name for one byoc provider.
+
+        The warm-reuse map is in-memory, so a restart left it empty and
+        ``close`` had nothing to terminate. The job rows survive the restart,
+        so they are the durable second source.
+        """
+        found: list[str] = []
+        warm = self._sandboxes.get(provider_id)
+        if warm:
+            found.append(warm)
+        with self._lock:
+            jobs = list(self._jobs.values())
+        for job in jobs:
+            if job.get("provider") != f"byoc:{provider_id}":
+                continue
+            sandbox_id = str(job.get("sandbox_id") or "")
+            if sandbox_id and sandbox_id not in found:
+                found.append(sandbox_id)
+        return found
 
     def ssh(self, kw: dict) -> dict:
         """One synchronous command (call_command). byoc runs it inside the

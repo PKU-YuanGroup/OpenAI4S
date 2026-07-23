@@ -35,6 +35,12 @@ _FIELDS = (
     "alias",
     "workdir",
     "pid",
+    # The remote *process group* the job actually landed in, read back from the
+    # host rather than assumed. `$!` is a pid; in a non-interactive login shell
+    # (dash/ash, and bash without job control) it is emphatically not the pgid,
+    # so a cancel that signalled `-$!` found no group and reported success over
+    # a job that was still running. See ComputeManager._submit_ssh.
+    "pgid",
     "sandbox_id",
     "receipt",
     "outputs",
@@ -116,30 +122,67 @@ class ComputeJobRepository:
         return self.get(job_id) or {}
 
     def update(self, job_id: str, **fields: Any) -> dict | None:
+        """Apply one status/field write, atomically with respect to the check.
+
+        The read that validates the transition and the write that performs it
+        are one critical section, guarded twice:
+
+          * the store lock spans both, so two threads in this process cannot
+            interleave read-check-write;
+          * the UPDATE itself is conditional on the status that was read
+            (``WHERE status IS ?``), so a writer that somehow got in anyway —
+            another connection to the same file — loses instead of silently
+            clobbering.
+
+        Without this, a result thread and a cancel thread could both read
+        ``running``, both pass ``check_transition``, and then overwrite each
+        other's terminal state: ``cancelled`` landing on top of ``succeeded``
+        (or the reverse) leaves the ledger claiming an outcome that never
+        happened, and drives resource disposal off the losing one.
+        """
         allowed = {k: v for k, v in fields.items() if k in _FIELDS and k != "job_id"}
         if not allowed:
             return self.get(job_id)
-        if "status" in allowed:
-            # The column used to accept any string, so a typo became a state
-            # and a terminal job could be quietly re-opened by a late probe.
-            current = self.get(job_id)
-            check_transition(
-                job_id,
-                (current or {}).get("status"),
-                str(allowed["status"]),
-            )
         for column in ("outputs", "artifact_manifest"):
             if column in allowed and not isinstance(allowed[column], (str, type(None))):
                 allowed[column] = json.dumps(allowed[column])
-        allowed["updated_at"] = self._clock_ms()
-        assignments = ",".join(f"{k}=?" for k in allowed)
+        requested = str(allowed["status"]) if "status" in allowed else None
         with self._lock:
-            self._connection.execute(
-                f"UPDATE compute_jobs SET {assignments} WHERE job_id=?",
-                (*allowed.values(), job_id),
-            )
+            row = self._connection.execute(
+                "SELECT status FROM compute_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            current = row[0]
+            if requested is not None:
+                # The column used to accept any string, so a typo became a
+                # state and a terminal job could be quietly re-opened by a
+                # late probe.
+                check_transition(job_id, current, requested)
+            allowed["updated_at"] = self._clock_ms()
+            assignments = ",".join(f"{k}=?" for k in allowed)
+            if requested is None:
+                cursor = self._connection.execute(
+                    f"UPDATE compute_jobs SET {assignments} WHERE job_id=?",
+                    (*allowed.values(), job_id),
+                )
+            else:
+                cursor = self._connection.execute(
+                    f"UPDATE compute_jobs SET {assignments} "
+                    f"WHERE job_id=? AND status IS ?",
+                    (*allowed.values(), job_id, current),
+                )
             self._connection.commit()
-        return self.get(job_id)
+            if requested is not None and cursor.rowcount == 0:
+                observed = self._connection.execute(
+                    "SELECT status FROM compute_jobs WHERE job_id=?", (job_id,)
+                ).fetchone()
+                raise IllegalTransition(
+                    job_id,
+                    (observed[0] if observed else None) or "<deleted>",
+                    requested,
+                )
+            return self.get(job_id)
 
     def get(self, job_id: str) -> dict | None:
         with self._lock:

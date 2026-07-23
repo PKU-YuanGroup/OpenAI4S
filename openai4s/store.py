@@ -417,6 +417,10 @@ CREATE TABLE IF NOT EXISTS compute_jobs (
     alias           TEXT,              -- ssh
     workdir         TEXT,              -- ssh
     pid             TEXT,              -- ssh
+    -- The remote process GROUP, read back from the host at submit rather than
+    -- assumed from `$!`. Cancellation signals this; a NULL means we never
+    -- confirmed one and must not guess (see migration 6).
+    pgid            TEXT,              -- ssh
     sandbox_id      TEXT,              -- byoc
     -- The provider's own acknowledgement of the submit. Evidence the job
     -- exists remotely, independent of anything we chose to believe.
@@ -901,6 +905,7 @@ class Store:
                     3: ("compute_job_manifest", self._apply_compute_job_manifest),
                     4: ("artifact_env_identity", self._apply_artifact_env_identity),
                     5: ("artifact_source", self._apply_artifact_source),
+                    6: ("compute_job_pgid", self._apply_compute_job_pgid),
                 },
             )
             if report["migrated"]:
@@ -1005,6 +1010,37 @@ class Store:
                     raise MigrationError(
                         f"env_snapshots.{column} could not be added: {e}"
                     ) from e
+
+    def _apply_compute_job_pgid(self, conn: sqlite3.Connection) -> None:
+        """Version 6: the remote process group, recorded rather than guessed.
+
+        Cancellation signalled ``-$!``. In an interactive shell that is the
+        pgid; in the non-interactive login shell an ``ssh host cmd`` actually
+        gets — dash, ash, or bash without job control — ``set -m`` does not
+        enable job control, so ``$!`` is the child's pid and its group is the
+        login shell's. ``kill -- -<pid>`` then found no such group, exited 0
+        anyway on some hosts, and the caller was told the allocation was freed
+        while the whole command tree kept running.
+
+        Historical rows keep NULL: the group a finished submit landed in is not
+        recoverable after the fact, and ``cancel`` treats a missing pgid as
+        "cannot signal safely" rather than guessing one.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(compute_jobs)").fetchall()
+        }
+        if "pgid" in have:
+            return
+        try:
+            conn.execute("ALTER TABLE compute_jobs ADD COLUMN pgid TEXT")
+        except sqlite3.OperationalError as e:
+            if not _is_duplicate_column(e):
+                raise MigrationError(
+                    f"compute_jobs.pgid could not be added: {e}"
+                ) from e
 
     def _apply_compute_job_manifest(self, conn: sqlite3.Connection) -> None:
         """Version 3: room to record what a job actually produced.

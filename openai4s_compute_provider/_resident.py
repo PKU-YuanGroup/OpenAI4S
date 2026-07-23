@@ -309,23 +309,40 @@ class ByocResident:
         try:
             owner = self._p.read_owner(sid)
         except Exception:
-            self._best_effort_terminate(sid)
+            self._best_effort_terminate(sid, stage=self._stage(req))
             raise
         if owner != req["install_id"]:
-            self._best_effort_terminate(sid)
+            gone = self._best_effort_terminate(sid, stage=self._stage(req))
             raise ByocError(
                 "ownership_mismatch",
                 f"created sandbox {sid} but its owner tag read back as "
                 f"{owner!r}, not this openai4s install — refusing to "
-                f"proceed (sandbox has been best-effort terminated).",
+                f"proceed (sandbox has been "
+                + ("terminated" if gone else "left running — terminate it by hand")
+                + ").",
             )
         return {"ok": True, "sandbox_id": sid}
 
-    def _best_effort_terminate(self, sid: str) -> None:
+    def _best_effort_terminate(self, sid: str, stage: str | None = None) -> bool:
+        """Terminate, and report whether it was *confirmed*.
+
+        The host reads ``stage/sandbox_id`` to learn about a sandbox a dying
+        helper never got to mention. Clearing that file on a confirmed
+        terminate is what keeps the signal honest in both directions: present
+        means "may still exist and may still bill", absent means "nothing was
+        left behind". Swallowing the terminate failure and clearing anyway
+        would recreate the orphan the file exists to prevent.
+        """
         try:
             self._p.terminate(sid)
         except Exception:
-            pass
+            return False
+        if stage:
+            try:
+                os.unlink(os.path.join(stage, "sandbox_id"))
+            except OSError:
+                pass
+        return True
 
     @staticmethod
     def _drain_wait(r) -> int:

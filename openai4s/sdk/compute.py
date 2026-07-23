@@ -106,7 +106,8 @@ class _ComputeJob:
 
         While the job is still running this returns ``{'status': 'running',
         ...}``. Once terminal it returns ``{status, exit_code, output_files,
-        featured_files, left_on_remote, remote_workdir, stdout_tail?,
+        featured_files, left_on_remote, left_on_remote_files?, remote_workdir,
+        stdout_tail?,
         stderr_tail?, job_wall_s?, ...}``. Does NOT raise on
         ``status='failed'`` or ``status='timed_out'`` — read ``exit_code`` /
         ``error_kind``.

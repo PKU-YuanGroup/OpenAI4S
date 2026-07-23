@@ -66,21 +66,27 @@ while the job is still running it returns `{'status': 'running',...}`, and
 the right response is to end the cell and call it again later, not to wait
 inside the cell. Once the status is terminal the dict carries
 `{status, exit_code, output_files, featured_files, artifact_manifest,
-left_on_remote, remote_workdir, stdout_tail,...}` — `featured_files` is the
+left_on_remote, left_on_remote_files?, remote_workdir, stdout_tail,...}` —
+`featured_files` is the
 subset matching your featured `outputs:` globs (omitting `outputs:` features
 everything), and `artifact_manifest` records `{path, size, sha256}` for
 everything harvested.
 A failed job is a returned `status`, not an exception, so read `exit_code`
-rather than expecting `.result()` to raise. Note that a declared `outputs:`
-pattern is a promise the status is checked against: on this ssh path only the
-logs are copied back, so declaring `outputs:` here yields `failed` with
-`unharvested_outputs` naming what is still sitting on the host — fetch those
-with `c.download` rather than expecting the harvest to bring them. Publish what you want with
+rather than expecting `.result()` to raise. A declared `outputs:` pattern is a
+promise the status is checked against: the harvest pulls the whole job workdir
+back, and a pattern that matched nothing yields `failed` with
+`unharvested_outputs` naming what the job promised and did not write. Files
+over ~100 MB stay on the cluster and come back in `left_on_remote_files` with
+`reason:'threshold'` and a `uri` you can chain from or `c.download`; declare
+`{glob, residency:'remote'}` to choose that deliberately, in which case the
+file staying put is the requested outcome and does not fail the job. A file
+that arrived but could not be read carries no hash, so it is never counted as
+delivered — it comes back in `unverified_files`. Publish what you want with
 `host.save_artifact(path)` per file — that step is what gives them
 provenance and surfaces them in the artifact panel.
 `open(r['output_files'][i])` reads any harvested file directly. Chain a
 remote-resident output via
-`inputs:[{remote_path: r['left_on_remote'][i]['uri']}]`. Between the harvest
+`inputs:[{remote_path: r['left_on_remote_files'][i]['uri']}]`. Between the harvest
 and `close` you can still
 `c.download(f"{job.workdir}/<file>")` for anything the harvest missed.
 `c.download('/any/absolute/host/path')` works for **any readable file on
@@ -181,16 +187,15 @@ scratch) they're symlinked, no transfer. Anything over ~100 MB that already
 lives on the host should be a `{remote_path}`, not a `{src}` — staging is
 link-rate and copies into the job workdir. `outputs` — bare string is a featured
 deliverable; `{glob, visibility:'hidden'}` is diagnostic;
-`{glob, residency:'remote'}` stays on the cluster and comes back as
-`left_on_remote`. `harvest:{exclude:['work/**'], max_file_mb, max_total_mb}`
-caps what the harvest pulls. Harvest likewise caps at ~100 MB per file: larger
-outputs stay on the cluster by
-default and come back in `left_on_remote` with `reason:'threshold'` — set
-`residency:'remote'` to choose that, or `max_file_mb`/`max_total_mb` to tighten
-it. A `left_on_remote` URI is for chaining (`inputs:[{remote_path: uri}]`) or
-peeking (`c.call_command(f'head -c 4096 {uri_path}', intent=...)`);
+`{glob, residency:'remote'}` stays on the cluster, is not owed to the harvest,
+and comes back in `left_on_remote_files`. The harvest caps at ~100 MB per file:
+larger outputs stay on the cluster too and come back the same way with
+`reason:'threshold'`. A `left_on_remote_files` URI is for chaining
+(`inputs:[{remote_path: uri}]`) or peeking
+(`c.call_command(f'head -c 4096 {uri_path}', intent=...)`);
 `c.download` it only when you or the user actually need the bytes locally —
 it's link-rate-slow and the file is already where the next job needs it.
+The caps are fixed for now; there is no per-job `harvest:{...}` override.
 
 ```python
 # repl tool — host.compute isn't attached in the `python` tool
@@ -225,7 +230,7 @@ terminal:
 ```python
 # repl tool — one non-blocking probe; harvests once the job is terminal
 r = c.attach_job(job_id).result()
-# r → {status, exit_code, output_files, featured_files, left_on_remote,
+# r → {status, exit_code, output_files, featured_files, left_on_remote_files,
 #      remote_workdir, stdout_tail,...}, or {'status':'running',...} while
 #      it's still going — end the cell and re-run this one later
 print(r['status'], r.get('exit_code'))

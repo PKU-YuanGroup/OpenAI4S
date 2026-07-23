@@ -55,22 +55,42 @@ def build_manifest(root: Path) -> list[dict[str, Any]]:
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
+        error: str | None = None
         try:
             size = path.stat().st_size
             checksum = hash_file(path)
-        except OSError:
+        except OSError as e:
             # A file we cannot read is not a file we can vouch for. Recording
             # it with a null hash keeps it visible instead of dropping it
-            # silently from the record of what arrived.
-            size, checksum = None, None
-        entries.append(
-            {
-                "path": path.relative_to(root).as_posix(),
-                "size": size,
-                "sha256": checksum,
-            }
-        )
+            # silently from the record of what arrived — but the *reason* has
+            # to ride along, because a path with no hash is the one entry a
+            # reader must not mistake for a delivered output.
+            size, checksum, error = None, None, f"{type(e).__name__}: {e}"
+        entry: dict[str, Any] = {
+            "path": path.relative_to(root).as_posix(),
+            "size": size,
+            "sha256": checksum,
+        }
+        if error:
+            entry["error"] = error
+        entries.append(entry)
     return entries
+
+
+def unverified(entries: Iterable[dict[str, Any]]) -> list[str]:
+    """Manifest paths recorded without a content hash.
+
+    A harvested file that could not be read — permissions, a truncated
+    transfer, an I/O error — was recorded with ``size`` and ``sha256`` set to
+    null and then counted as a delivered output, because ``reconcile`` matched
+    on path alone and nothing downstream looked at the hash. A job could
+    therefore exit 0 and be reported ``succeeded`` with not one verifiable
+    content hash behind it, which is precisely the false success the manifest
+    exists to prevent.
+    """
+    return [
+        str(entry.get("path") or "") for entry in entries if not entry.get("sha256")
+    ]
 
 
 def manifest_digest(entries: Iterable[dict[str, Any]]) -> str:
@@ -103,8 +123,15 @@ def reconcile(
 
     With nothing declared, every harvested file is featured — the documented
     behaviour of omitting ``outputs``, and there is nothing to fail against.
+
+    Only *verified* entries can satisfy a pattern. A file whose bytes could not
+    be read has no hash, and a path is not evidence: matching on the path alone
+    let an unreadable file discharge the promise it was named by. A pattern
+    matched exclusively by such files is reported unmatched, which is the
+    honest answer — the job said it would produce that output and nothing here
+    can vouch that it did.
     """
-    paths = [str(item.get("path") or "") for item in entries]
+    paths = [str(item.get("path") or "") for item in entries if item.get("sha256")]
     patterns = _patterns(declared)
     if not patterns:
         return list(paths), []
@@ -135,10 +162,13 @@ def reconcile(
 def _patterns(declared: Any) -> list[str]:
     """Normalise the several shapes `outputs` arrives in.
 
-    Only *featured* patterns are reconciled. The documented list form mixes
-    bare globs with ``{'glob': ..., 'visibility': ...}`` entries, and a
+    Only *featured, local* patterns are reconciled. The documented list form
+    mixes bare globs with ``{'glob': ..., 'visibility': ...}`` entries, and a
     `hidden` entry is explicitly something the caller does not want surfaced —
-    failing a job over one would punish them for saying so.
+    failing a job over one would punish them for saying so. The same applies to
+    ``{'residency': 'remote'}``: the caller asked for that output to *stay* on
+    the cluster, so its absence from the harvest is the requested outcome, not
+    an unmet promise.
 
     An unrecognised shape yields no patterns, which means "nothing declared".
     That is the lenient direction on purpose: this decides whether a job is
@@ -165,6 +195,8 @@ def _patterns(declared: Any) -> list[str]:
         if isinstance(item, dict):
             if str(item.get("visibility", "featured")).strip().lower() == "hidden":
                 continue
+            if str(item.get("residency", "local")).strip().lower() == "remote":
+                continue
             glob = item.get("glob") or item.get("pattern") or item.get("path")
             item = glob
         text = str(item or "").strip()
@@ -178,4 +210,5 @@ __all__ = [
     "hash_file",
     "manifest_digest",
     "reconcile",
+    "unverified",
 ]

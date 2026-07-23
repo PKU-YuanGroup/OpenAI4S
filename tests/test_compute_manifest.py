@@ -7,6 +7,7 @@ reported `succeeded` — the declared patterns were persisted and never read
 back — and a transfer truncated midway was indistinguishable from a complete
 one.
 """
+import os
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from openai4s.compute.manifest import (
     hash_file,
     manifest_digest,
     reconcile,
+    unverified,
 )
 
 
@@ -175,4 +177,78 @@ def test_an_unrecognised_shape_means_nothing_declared(harvest):
     failed, and inventing a pattern from a shape we cannot read would fail
     correct jobs."""
     _featured, unmatched = reconcile(build_manifest(harvest), 12345)
+    assert unmatched == []
+
+
+# --------------------------------------------------------------------------
+# a path is not evidence
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def unreadable(tmp_path):
+    """A harvested file whose bytes cannot be read.
+
+    Permissions here; in the field it is just as likely a truncated transfer or
+    an I/O error on the destination filesystem.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses the permission bits this fixture relies on")
+    root = tmp_path / "hpc" / "job-2"
+    root.mkdir(parents=True)
+    blocked = root / "model.pt"
+    blocked.write_bytes(b"weights")
+    blocked.chmod(0o000)
+    (root / "stdout.log").write_text("done\n", encoding="utf-8")
+    yield root
+    blocked.chmod(0o600)
+
+
+def test_an_unreadable_file_is_recorded_with_the_reason_it_has_no_hash(unreadable):
+    entry = next(e for e in build_manifest(unreadable) if e["path"] == "model.pt")
+    assert entry["sha256"] is None
+    assert entry["size"] is None
+    assert "Error" in entry["error"], "the record must say why it cannot vouch"
+
+
+def test_an_unreadable_file_cannot_discharge_the_promise_it_was_named_by(
+    unreadable,
+):
+    """The regression.
+
+    `reconcile` matched on path alone, so a file that arrived unreadable — no
+    size, no hash, nothing anyone could verify — counted as the declared output
+    being delivered. A job could exit 0 and be reported `succeeded` without one
+    verifiable content hash behind it, which is the exact false success the
+    manifest was added to prevent.
+    """
+    entries = build_manifest(unreadable)
+    featured, unmatched = reconcile(entries, ["model.pt"])
+    assert featured == []
+    assert unmatched == ["model.pt"]
+
+
+def test_unverified_names_every_hashless_entry(unreadable):
+    assert unverified(build_manifest(unreadable)) == ["model.pt"]
+
+
+def test_a_readable_harvest_has_nothing_unverified(harvest):
+    assert unverified(build_manifest(harvest)) == []
+
+
+def test_an_unreadable_file_is_not_featured_even_with_nothing_declared(unreadable):
+    """Omitting `outputs` features everything harvested — everything that can
+    be vouched for, that is."""
+    featured, unmatched = reconcile(build_manifest(unreadable), None)
+    assert featured == ["stdout.log"]
+    assert unmatched == []
+
+
+def test_a_remote_residency_output_is_not_owed(harvest):
+    """`residency: 'remote'` asks for the file to stay on the cluster, so its
+    absence from the harvest is the requested outcome, not an unmet promise."""
+    entries = build_manifest(harvest)
+    _, unmatched = reconcile(
+        entries, [{"glob": "checkpoint.bin", "residency": "remote"}]
+    )
     assert unmatched == []

@@ -45,11 +45,22 @@ class _Proc:
         self.stderr = stderr
 
 
+def _ack(pid, pgid=None):
+    """The tagged submit acknowledgement the remote launcher now prints.
+
+    Tagged because an untagged `echo $!` meant the first line of a chatty
+    `.bashrc` or a login banner became the "pid" the host later signalled.
+    Both fields, because `$!` is a pid and the process *group* is what cancel
+    has to reach.
+    """
+    return f"OPENAI4S_JOB {pid} {pid if pgid is None else pgid}\n".encode()
+
+
 @pytest.fixture
 def submitted(cfg, monkeypatch):
     """One ssh job, submitted and running."""
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"31337\n"), raising=True
+        subprocess, "run", lambda *a, **k: _Proc(0, _ack("31337")), raising=True
     )
     manager = ComputeManager(cfg)
     out = manager.submit(
@@ -88,14 +99,25 @@ def test_a_recovered_job_still_occupies_its_concurrency_slot(cfg, submitted):
     assert ComputeManager(cfg)._live_count() == 1
 
 
+def _ssh_poll(rc: bytes):
+    """A poll makes two ssh round trips: the status probe, then the harvest
+    staging. They must not be answered with the same bytes."""
+
+    def fake_run(argv, **kw):
+        if argv[0] != "ssh":
+            return _Proc(0)
+        if "OPENAI4S_HARVEST" in argv[2]:
+            return _Proc(0, b"OPENAI4S_HARVEST empty\n")
+        return _Proc(0, rc)
+
+    return fake_run
+
+
 def test_a_recovered_job_can_still_be_polled(cfg, submitted, monkeypatch):
     _, job_id = submitted
     restarted = ComputeManager(cfg)
 
-    def fake_run(argv, **kw):
-        return _Proc(0, b"0\n") if argv[0] == "ssh" else _Proc(0)
-
-    monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(subprocess, "run", _ssh_poll(b"0\n"), raising=True)
     assert restarted.result({"job_id": job_id})["status"] == "succeeded"
 
 
@@ -157,7 +179,11 @@ def test_reconcile_does_not_resubmit(cfg, submitted, monkeypatch):
 
 
 def test_reconcile_is_empty_with_nothing_in_flight(cfg):
-    assert ComputeManager(cfg).reconcile() == {"recovered": [], "count": 0}
+    assert ComputeManager(cfg).reconcile() == {
+        "recovered": [],
+        "count": 0,
+        "orphan_risk_count": 0,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -170,7 +196,7 @@ def test_a_duplicate_idempotency_key_is_refused(cfg, submitted, monkeypatch):
     logical work must not become a second remote job."""
     manager, job_id = submitted
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"99999\n"), raising=True
+        subprocess, "run", lambda *a, **k: _Proc(0, _ack("99999")), raising=True
     )
     with pytest.raises(ComputeError) as e:
         manager.submit(
@@ -186,7 +212,7 @@ def test_the_key_survives_a_restart(cfg, submitted, monkeypatch):
     _, _ = submitted
     restarted = ComputeManager(cfg)
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"99999\n"), raising=True
+        subprocess, "run", lambda *a, **k: _Proc(0, _ack("99999")), raising=True
     )
     with pytest.raises(ComputeError, match="duplicate|already exists"):
         restarted.submit(
@@ -197,7 +223,7 @@ def test_the_key_survives_a_restart(cfg, submitted, monkeypatch):
 def test_jobs_without_a_key_are_not_deduplicated(cfg, monkeypatch):
     """Absent a key there is no basis to call two submits the same work."""
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"1\n"), raising=True
+        subprocess, "run", lambda *a, **k: _Proc(0, _ack("1")), raising=True
     )
     manager = ComputeManager(cfg)
     a = manager.submit({"provider": "ssh:lab", "command": "x"})
@@ -480,7 +506,7 @@ def test_a_manager_without_a_store_still_runs_jobs(cfg, monkeypatch):
     """Bookkeeping that cannot reach the database must not refuse to run work —
     that is the old behaviour, which is worse but not nothing."""
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"5\n"), raising=True
+        subprocess, "run", lambda *a, **k: _Proc(0, _ack("5")), raising=True
     )
     manager = ComputeManager(cfg, store=None)
     manager._store = None

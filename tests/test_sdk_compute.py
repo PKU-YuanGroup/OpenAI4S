@@ -459,7 +459,7 @@ def test_the_key_the_sdk_sends_actually_deduplicates(tmp_path, monkeypatch):
 
     class _Proc:
         returncode = 0
-        stdout = b"4242\n"
+        stdout = b"OPENAI4S_JOB 4242 4200\n"
         stderr = b""
 
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(), raising=True)
