@@ -1,8 +1,19 @@
 name: Publish release
 
+# Draft-first. `release: [created]` fires for a **draft** release too, which is
+# the whole point: the assets, the SBOM and the provenance are built, verified,
+# staged and re-verified while nothing is public, and the release is flipped to
+# published only after every one of those held. Triggering on `published` — as
+# this file used to — means the version is already visible while its assets are
+# still being uploaded, which is the half-published state the proposal names.
+#
+# The ordering and every check live in scripts/release_pipeline.py rather than
+# in this file, because a step that can only run on a release event is tested
+# by the thing it is supposed to protect. That script runs on a laptop, under
+# --dry-run, and under pytest.
 on:
   release:
-    types: [published]
+    types: [created]
   # Dry run: build and verify every artifact for a tag or branch without
   # publishing anything. Nothing in this path touches PyPI or the Release.
   workflow_dispatch:
@@ -109,18 +120,33 @@ jobs:
         with:
           name: macos-app-image
           path: assets/
+      - name: Check out the pipeline
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          path: source
       - name: Publish one checksum file covering every asset
         run: |
           cd assets
           rm -f OpenAI4S-*.dmg.sha256   # the per-image sidecar is folded into SHA256SUMS
           sha256sum openai4s-*.whl openai4s-*.tar.gz OpenAI4S-*.dmg > SHA256SUMS
           cat SHA256SUMS
-      - name: Upload the release assets
+      # Everything below — SBOM, provenance, verification, the staged upload,
+      # the read-back, and the flip to published — is one script, so it is the
+      # same code a maintainer can run with --dry-run on a laptop. The build
+      # and test steps are skipped here because this job's inputs are the
+      # artifacts the earlier jobs already produced and verified.
+      - name: Stage, prove and verify the release, then publish it
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" assets/* --clobber
+          OPENAI4S_MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          python source/scripts/release_pipeline.py \
+            --version "${GITHUB_REF_NAME#v}" \
+            --mode release \
+            --assets-dir assets \
+            --json
 
   publish:
     name: Publish to PyPI with OIDC

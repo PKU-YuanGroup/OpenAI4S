@@ -136,3 +136,47 @@ perform live-provider, GPU, SSH, and laboratory validation. Publication needs
 an approved GitHub Release and the separately protected OIDC environment above;
 the other operations require an explicit identity, network service, or
 hardware and remain outside the secret-free default gate.
+
+
+## Draft-first (from v0.2)
+
+The pipeline no longer starts after the release is public. `release.yml`
+triggers on `created`, which fires for a **draft**, and every step runs while
+nothing is visible:
+
+    build → test → assets → SBOM → provenance → verify → draft → upload →
+    re-verify → publish
+
+`publish` is last because it is the only step that cannot be undone. `verify`
+runs before the release is staged so a bad asset is caught while nothing is
+public; `re-verify` reads the assets back *after* upload, because a local
+checksum cannot see a transfer that dropped bytes.
+
+All of it lives in [`scripts/release_pipeline.py`](../scripts/release_pipeline.py),
+not in the workflow YAML, so it can be exercised without cutting a release:
+
+```bash
+uv run python scripts/release_pipeline.py --version 0.2.0 --dry-run
+uv run python scripts/release_pipeline.py --version 0.2.0 --mode local
+```
+
+`--dry-run` performs no external call and is how the *ordering* is tested.
+`--mode local` really builds, hashes, and writes `sbom.cdx.json` (CycloneDX
+1.5) and `provenance.intoto.json` (in-toto/SLSA), and stops before anything is
+published.
+
+### What is and is not claimed about signing
+
+* `--mode release` **fails closed** when `OPENAI4S_MACOS_SIGNING_IDENTITY` is
+  unset and the release contains a `.dmg`. "The certificate was not
+  configured" is not a reason to publish unsigned.
+* `--mode local` builds the unsigned image and reports
+  `signing_identity_configured: false`. It does not pretend.
+* **Notarization is never reported as verified.** It requires Apple's notary
+  service and a paid identity, so the pipeline reports `notarized: null` with
+  the reason. A pipeline that printed `notarized: ok` without one would be
+  precisely the confident wrong answer this project spends its effort removing.
+
+The provenance statement is **unsigned** and says so: it binds the listed
+digests to the build's parameters, and it does not establish who produced them.
+That needs a signature this format does not yet carry.
