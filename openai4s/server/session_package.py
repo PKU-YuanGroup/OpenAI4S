@@ -127,6 +127,49 @@ def _canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _rows(value: Any, key: str) -> list[Any]:
+    """A projection's rows, whether it arrives bare or wrapped.
+
+    The exporter wraps most projections (``{"artifacts": [...]}``); a caller
+    holding just the list is equally valid. Accepting both is what keeps a
+    reader of this function from having to know which is which.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, Mapping):
+        inner = value.get(key)
+        if isinstance(inner, list):
+            return inner
+    return []
+
+
+def _environment_lines(snapshots: list[Any]) -> list[str]:
+    """One bullet per distinct environment that produced an artifact.
+
+    Distinct, not "the first": a session that ran a Python cell and an R cell
+    has two, and collapsing them onto one line is how an R artifact came to be
+    described by a Python freeze in the first place.
+    """
+    seen: dict[tuple[str, str, str], int] = {}
+    for row in snapshots:
+        if not isinstance(row, Mapping):
+            continue
+        kind = str(row.get("kind") or "unknown")
+        version = str(row.get("python_version") or "")
+        platform_name = str(row.get("platform") or "unknown")
+        key = (kind, version, platform_name)
+        count = row.get("package_count")
+        if not isinstance(count, int):
+            packages = row.get("packages")
+            count = len(packages) if isinstance(packages, list) else 0
+        seen[key] = max(seen.get(key, 0), count)
+    lines = []
+    for (kind, version, platform_name), count in sorted(seen.items()):
+        label = f"{kind} {version}".strip()
+        lines.append(f"- runtime: {label} on {platform_name} — {count} package(s)")
+    return lines
+
+
 def _reproduce_notes(
     *,
     root_frame_id: str,
@@ -145,10 +188,20 @@ def _reproduce_notes(
     Deterministic by construction: everything below is derived from the
     package's own contents, so exporting the same session twice produces the
     same bytes and the file's own hash stays meaningful.
+
+    The projections are read in the shape the exporter actually builds them.
+    They were read as a bare artifact list and a single environment dict, but
+    the exporter passes ``{"artifacts": [...]}`` and ``{"generations": [...],
+    "artifact_environment_snapshots": [...]}`` — so every field below resolved
+    to its fallback and a package with complete provenance still printed
+    "runtime python unknown", "packages recorded: 0" and "0 artifact(s)". The
+    one page a recipient reads first was describing an empty archive.
     """
-    artifact_rows = artifacts if isinstance(artifacts, list) else []
-    edges = lineage_edges if isinstance(lineage_edges, list) else []
+    artifact_rows = _rows(artifacts, "artifacts")
+    edges = _rows(lineage_edges, "edges")
     env = environment if isinstance(environment, dict) else {}
+    snapshots = _rows(env.get("artifact_environment_snapshots"), "snapshots")
+    generations = _rows(env.get("generations"), "generations")
 
     lines = [
         f"# Reproducing {project_name or 'this session'}",
@@ -178,18 +231,20 @@ def _reproduce_notes(
         "## What produced it",
         "",
     ]
-    kind = str(env.get("kind") or "python")
-    version = str(env.get("python_version") or env.get("version") or "unknown")
-    platform_name = str(env.get("platform") or "unknown")
+    if snapshots:
+        for line in _environment_lines(snapshots):
+            lines.append(line)
+    else:
+        lines.append("- runtime: not recorded for any artifact in this package")
+    if generations:
+        lines.append(f"- kernel generation(s) recorded: {len(generations)}")
     lines += [
-        f"- runtime: {kind} {version}",
-        f"- platform: {platform_name}",
-        f"- packages recorded: {len(env.get('packages') or [])}",
         f"- source session: `{root_frame_id}`",
         "",
-        "`environment.json` carries the full package freeze. Recreating that",
-        "environment is what makes a rerun comparable; without it, a",
-        "difference in results has no attributable cause.",
+        "`environment.json` carries the full package freeze per artifact",
+        "environment, plus every kernel generation this session ran.",
+        "Recreating that environment is what makes a rerun comparable;",
+        "without it, a difference in results has no attributable cause.",
         "",
         "## What is inside",
         "",

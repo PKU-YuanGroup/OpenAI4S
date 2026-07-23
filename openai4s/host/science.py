@@ -124,7 +124,11 @@ class ScienceConnectorService:
 
     def __init__(
         self,
-        fetch: Callable[[str, str, float, int], str] | None = None,
+        # A fetch may answer with the content alone, or with a mapping that
+        # also describes the raw response bytes. See _retrieve.
+        fetch: (
+            Callable[[str, str, float, int], str | Mapping[str, Any]] | None
+        ) = None,
     ) -> None:
         self._fetch = fetch or self._default_fetch
         # Upstream responses observed during the call in flight. Reset per
@@ -264,7 +268,9 @@ class ScienceConnectorService:
         return values
 
     @staticmethod
-    def _default_fetch(url: str, fmt: str, timeout: float, max_chars: int) -> str:
+    def _default_fetch(
+        url: str, fmt: str, timeout: float, max_chars: int
+    ) -> dict[str, Any]:
         from openai4s import webtools
 
         response = webtools.web_fetch(
@@ -275,11 +281,30 @@ class ScienceConnectorService:
         )
         if response.get("truncated"):
             raise ScienceConnectorError("scientific database response exceeded 5 MB")
-        return str(response.get("content") or "")
+        return {
+            "content": str(response.get("content") or ""),
+            "raw_sha256": response.get("raw_sha256"),
+            "raw_bytes": response.get("raw_bytes"),
+        }
+
+    def _retrieve(
+        self, url: str, fmt: str, timeout: float, max_chars: int
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Fetch, keeping whatever the transport can say about the raw bytes.
+
+        The injectable ``fetch`` may still return a bare string — a caller
+        supplying pre-fetched content has no wire bytes to describe — so both
+        shapes are accepted and the difference is recorded rather than papered
+        over.
+        """
+        payload = self._fetch(url, fmt, timeout, max_chars)
+        if isinstance(payload, Mapping):
+            return str(payload.get("content") or ""), dict(payload)
+        return str(payload or ""), None
 
     def _json(self, url: str, timeout: float, *, allow_empty: bool = False) -> Any:
-        raw = self._fetch(url, "json", timeout, _MAX_RESPONSE_CHARS)
-        self._observe(url, raw)
+        raw, observed = self._retrieve(url, "json", timeout, _MAX_RESPONSE_CHARS)
+        self._observe(url, raw, observed)
         if allow_empty and not raw.strip():
             return None
         try:
@@ -290,30 +315,55 @@ class ScienceConnectorService:
             ) from exc
 
     def _text(self, url: str, timeout: float) -> str:
-        raw = self._fetch(url, "text", timeout, _MAX_RESPONSE_CHARS)
-        self._observe(url, raw)
+        raw, observed = self._retrieve(url, "text", timeout, _MAX_RESPONSE_CHARS)
+        self._observe(url, raw, observed)
         return raw
 
-    def _observe(self, url: str, raw: str) -> None:
+    def _observe(
+        self, url: str, raw: str, observed: Mapping[str, Any] | None = None
+    ) -> None:
         """Note what came back, before anything interprets it.
 
         Every adapter reaches upstream through `_json`/`_text`, so hashing here
         covers all seven sources without one of them having to remember to.
-        The hash is of the bytes as received: a normalizer improved later must
-        not silently change what the record claims arrived.
+
+        The hash is of the **response body as received**, which is not what the
+        string reaching this function contains. `web_fetch` decodes with
+        ``errors="replace"`` — every invalid byte sequence collapses onto the
+        same U+FFFD — and for JSON re-serialises through a load/dump round trip
+        that discards the original whitespace entirely. Hashing the string
+        therefore answered "do these normalise the same", not "are these the
+        same bytes we received", and the recorded length was the normalised
+        length rather than what arrived. Evidence provenance promises the
+        latter.
+
+        When the transport cannot describe the raw bytes — an injected fetch
+        that returns a string — the record says so via ``hashed`` instead of
+        quietly presenting a content hash as a response hash.
 
         A search may make several requests (a query then a detail fetch). All
         of them are kept, in order, because a result assembled from two
         responses is only reproducible if both are named.
         """
         payload = raw if isinstance(raw, str) else ""
-        self._responses.append(
-            {
+        digest = str((observed or {}).get("raw_sha256") or "")
+        size = (observed or {}).get("raw_bytes")
+        if digest and isinstance(size, int):
+            entry = {
                 "url": _string(url, 4000),
-                "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
-                "bytes": len(payload.encode("utf-8")),
+                "sha256": digest,
+                "bytes": int(size),
+                "hashed": "response_bytes",
             }
-        )
+        else:
+            encoded = payload.encode("utf-8")
+            entry = {
+                "url": _string(url, 4000),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+                "bytes": len(encoded),
+                "hashed": "decoded_content",
+            }
+        self._responses.append(entry)
 
     def _search_uniprot(self, query, limit, cursor, filters, timeout):
         del cursor

@@ -49,6 +49,55 @@ def same_file_path(left: str, right: str) -> bool:
     )
 
 
+def env_snapshot_id(
+    *,
+    kind: Any,
+    python_version: Any,
+    implementation: Any,
+    platform: Any,
+    interpreter: Any,
+    environment_name: Any,
+    generation_id: Any,
+    packages_json: str,
+    remote_json: str,
+) -> str:
+    """The content address of one environment observation.
+
+    The interpreter and environment name are part of the identity, not
+    decoration: without them an R kernel and a Python one in a conda env
+    collapse onto the same row whenever their package lists happen to match --
+    and which environment produced a result is precisely what provenance is
+    for.
+
+    So is the **generation**. ``upsert_env_snapshot`` never updates an existing
+    row, so with the generation left out of the basis, a kernel restarted into
+    an unchanged environment produced the same id — and the row already on disk
+    kept naming the *first* generation. Every artifact from generation 2 then
+    pointed at a snapshot recorded as generation 1, and nothing else on the
+    artifact carries a generation, so there was no second source to catch it:
+    the record was silently, confidently wrong about which kernel lifetime
+    produced the file. Including it costs one row per kernel restart and makes
+    ``generation_id`` mean what it says.
+
+    Shared with the numbered migration that repairs legacy rows, so the two
+    cannot drift.
+    """
+    basis = "|".join(
+        [
+            str(kind or ""),
+            str(python_version or ""),
+            str(implementation or ""),
+            str(platform or ""),
+            str(interpreter or ""),
+            str(environment_name or ""),
+            str(generation_id or ""),
+            packages_json,
+            remote_json,
+        ]
+    )
+    return "env-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
 def _encode_source(source: Any) -> str | None:
     """Store a retrieval envelope as canonical JSON, or nothing at all.
 
@@ -710,24 +759,17 @@ class ArtifactRepository:
         packages_json = json.dumps(packages, separators=(",", ":"))
         remote = snapshot.get("remote") or []
         remote_json = json.dumps(remote, separators=(",", ":"), sort_keys=True)
-        # The interpreter and environment name are part of the identity, not
-        # decoration: without them an R kernel and a Python one in a conda env
-        # collapse onto the same row whenever their package lists happen to
-        # match -- and which environment produced a result is precisely what
-        # provenance is for.
-        basis = "|".join(
-            [
-                snapshot.get("kind") or "",
-                snapshot.get("python_version") or "",
-                snapshot.get("implementation") or "",
-                snapshot.get("platform") or "",
-                str(snapshot.get("interpreter") or ""),
-                str(snapshot.get("environment_name") or ""),
-                packages_json,
-                remote_json,
-            ]
+        snapshot_id = env_snapshot_id(
+            kind=snapshot.get("kind"),
+            python_version=snapshot.get("python_version"),
+            implementation=snapshot.get("implementation"),
+            platform=snapshot.get("platform"),
+            interpreter=snapshot.get("interpreter"),
+            environment_name=snapshot.get("environment_name"),
+            generation_id=snapshot.get("generation_id"),
+            packages_json=packages_json,
+            remote_json=remote_json,
         )
-        snapshot_id = "env-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
         with self._lock:
             exists = self._connection.execute(
                 "SELECT 1 FROM env_snapshots WHERE snapshot_id=?", (snapshot_id,)
@@ -737,8 +779,8 @@ class ArtifactRepository:
                     "INSERT INTO env_snapshots(snapshot_id,created_at,kind,"
                     "python_version,implementation,platform,package_count,"
                     "packages_json,remote_json,interpreter,environment_name,"
-                    "generation_id,packages_unavailable) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "generation_id,packages_unavailable,provenance) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         snapshot_id,
                         self._clock_ms(),
@@ -753,6 +795,10 @@ class ArtifactRepository:
                         snapshot.get("environment_name"),
                         snapshot.get("generation_id"),
                         snapshot.get("packages_unavailable"),
+                        # Measured from a kernel generation, or assumed from
+                        # this process? The fallback path has always said so
+                        # and the INSERT dropped it.
+                        snapshot.get("provenance"),
                     ),
                 )
                 self._connection.commit()
@@ -1044,4 +1090,9 @@ class ArtifactRepository:
             self._connection.commit()
 
 
-__all__ = ["ArtifactRepository", "file_identity", "same_file_path"]
+__all__ = [
+    "ArtifactRepository",
+    "env_snapshot_id",
+    "file_identity",
+    "same_file_path",
+]

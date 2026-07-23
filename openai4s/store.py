@@ -239,7 +239,12 @@ CREATE TABLE IF NOT EXISTS env_snapshots (
     -- absent (an R kernel has no Python distributions; a foreign interpreter
     -- may refuse to be read). Absence with a reason beats a borrowed list.
     generation_id  TEXT,
-    packages_unavailable TEXT
+    packages_unavailable TEXT,
+    -- Whether this row was measured from a kernel generation or assumed from
+    -- the daemon. The fallback path has always set this and it was dropped at
+    -- the INSERT, so the one marker separating a measured environment from a
+    -- guessed one never reached the record a reader actually sees.
+    provenance     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS compaction_archives (
@@ -906,6 +911,14 @@ class Store:
                     4: ("artifact_env_identity", self._apply_artifact_env_identity),
                     5: ("artifact_source", self._apply_artifact_source),
                     6: ("compute_job_pgid", self._apply_compute_job_pgid),
+                    7: (
+                        "env_snapshot_generation",
+                        self._apply_env_snapshot_generation,
+                    ),
+                    8: (
+                        "env_snapshot_provenance",
+                        self._apply_env_snapshot_provenance,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1040,6 +1053,94 @@ class Store:
             if not _is_duplicate_column(e):
                 raise MigrationError(
                     f"compute_jobs.pgid could not be added: {e}"
+                ) from e
+
+    def _apply_env_snapshot_generation(self, conn: sqlite3.Connection) -> None:
+        """Version 7: retire generation attributions that cannot be trusted.
+
+        ``env_snapshots`` rows are content-addressed, and until now the address
+        did not include ``generation_id`` while ``upsert_env_snapshot`` never
+        updated an existing row. A kernel restarted into an unchanged
+        environment therefore resolved to the row already on disk — which kept
+        naming the *first* generation. Every artifact produced by the second
+        generation pointed at a snapshot recorded as the first, and no other
+        column on the artifact carries a generation, so nothing could catch it.
+
+        Which historical rows were actually shared is not recoverable: sharing
+        leaves no trace. What *is* recoverable is which rows predate the fix —
+        their id does not match the generation-aware basis — and for those the
+        attribution is unverifiable. They are cleared rather than kept, on the
+        same principle the rest of this file follows: an unattributed record is
+        honest, a confidently wrong one is not. The environment itself (kind,
+        interpreter, packages) is untouched; only the claim about which kernel
+        lifetime produced it goes.
+
+        Idempotent: a row written after the fix hashes to its own id and is
+        left alone, so a re-run converges.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        from openai4s.storage.artifacts import env_snapshot_id
+
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(env_snapshots)").fetchall()
+        }
+        if "generation_id" not in have:
+            return
+        rows = conn.execute(
+            "SELECT snapshot_id,kind,python_version,implementation,platform,"
+            "interpreter,environment_name,generation_id,packages_json,remote_json "
+            "FROM env_snapshots WHERE generation_id IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            expected = env_snapshot_id(
+                kind=row["kind"],
+                python_version=row["python_version"],
+                implementation=row["implementation"],
+                platform=row["platform"],
+                interpreter=row["interpreter"],
+                environment_name=row["environment_name"],
+                generation_id=row["generation_id"],
+                # NULL is how an empty remote list is stored; the basis has
+                # always used "[]" for it.
+                packages_json=row["packages_json"] or "[]",
+                remote_json=row["remote_json"] or "[]",
+            )
+            if expected == row["snapshot_id"]:
+                continue
+            conn.execute(
+                "UPDATE env_snapshots SET generation_id=NULL WHERE snapshot_id=?",
+                (row["snapshot_id"],),
+            )
+
+    def _apply_env_snapshot_provenance(self, conn: sqlite3.Connection) -> None:
+        """Version 8: room for the assumed-vs-measured marker.
+
+        ``_snapshot_for`` has always stamped ``provenance: "assumed: no kernel
+        generation on record"`` on the fallback path, and the INSERT never had
+        a column for it — so the single field that tells a reader whether an
+        environment was *observed* or *guessed from the daemon* was computed
+        and thrown away on every write.
+
+        Historical rows keep NULL. Whether a given old row was measured is not
+        recoverable, and asserting either answer would be the same mistake the
+        marker exists to prevent.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(env_snapshots)").fetchall()
+        }
+        if "provenance" in have:
+            return
+        try:
+            conn.execute("ALTER TABLE env_snapshots ADD COLUMN provenance TEXT")
+        except sqlite3.OperationalError as e:
+            if not _is_duplicate_column(e):
+                raise MigrationError(
+                    f"env_snapshots.provenance could not be added: {e}"
                 ) from e
 
     def _apply_compute_job_manifest(self, conn: sqlite3.Connection) -> None:

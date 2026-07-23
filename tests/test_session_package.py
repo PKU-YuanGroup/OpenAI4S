@@ -1231,3 +1231,108 @@ def test_the_verify_route_answers_without_importing(tmp_path):
         assert any("notebook.json" in p for p in bad["problems"])
     finally:
         runner.close()
+
+
+# --------------------------------------------------------------------------
+# the notes have to describe the package that was actually built
+# --------------------------------------------------------------------------
+
+
+def test_reproduce_notes_read_the_projections_the_exporter_builds():
+    """The regression, at the function's own boundary.
+
+    `_reproduce_notes` read its inputs as a bare artifact list and a single
+    environment dict. The exporter passes `{"artifacts": [...]}` and
+    `{"generations": [...], "artifact_environment_snapshots": [...]}`, so every
+    field resolved to its fallback: a package with complete provenance still
+    printed "runtime python unknown", "packages recorded: 0" and "0
+    artifact(s)". The one page a recipient reads first described an empty
+    archive.
+    """
+    from openai4s.server.session_package import _reproduce_notes
+
+    notes = _reproduce_notes(
+        root_frame_id="frame-1",
+        project_name="Hemoglobin",
+        environment={
+            "generations": [{"generation_id": "gen-1", "language": "python"}],
+            "artifact_environment_snapshots": [
+                {
+                    "kind": "python",
+                    "python_version": "3.12.0",
+                    "platform": "macOS-15",
+                    "package_count": 42,
+                },
+            ],
+        },
+        artifacts={"artifacts": [{"artifact_id": "a-1"}, {"artifact_id": "a-2"}]},
+        lineage_edges=[{"from": "v-1", "to": "v-2"}],
+    ).decode("utf-8")
+
+    assert "python 3.12.0 on macOS-15" in notes
+    assert "42 package(s)" in notes
+    assert "kernel generation(s) recorded: 1" in notes
+    assert "`2` artifact(s)" in notes
+    assert "`1` lineage edge(s)" in notes
+    assert "unknown" not in notes
+
+
+def test_reproduce_notes_name_every_runtime_that_produced_an_artifact():
+    """A session that ran Python and R has two environments. Collapsing them
+    onto one line is how an R artifact came to be described by a Python freeze
+    in the first place."""
+    from openai4s.server.session_package import _reproduce_notes
+
+    notes = _reproduce_notes(
+        root_frame_id="frame-1",
+        project_name="Mixed",
+        environment={
+            "generations": [],
+            "artifact_environment_snapshots": [
+                {"kind": "python", "python_version": "3.12.0", "platform": "linux"},
+                {"kind": "r", "python_version": None, "platform": "linux"},
+            ],
+        },
+        artifacts={"artifacts": []},
+        lineage_edges=[],
+    ).decode("utf-8")
+
+    assert "runtime: python 3.12.0 on linux" in notes
+    assert "runtime: r on linux" in notes
+
+
+def test_reproduce_notes_say_so_when_nothing_was_recorded():
+    """Silence beats a fabricated default: an export with no environment
+    snapshot must not print a runtime it never observed."""
+    from openai4s.server.session_package import _reproduce_notes
+
+    notes = _reproduce_notes(
+        root_frame_id="frame-1",
+        project_name="Empty",
+        environment={"generations": [], "artifact_environment_snapshots": []},
+        artifacts={"artifacts": []},
+        lineage_edges=[],
+    ).decode("utf-8")
+
+    assert "not recorded for any artifact" in notes
+
+
+def test_reproduce_notes_are_deterministic():
+    """The file's own hash is in the manifest, so the same session must export
+    to the same bytes."""
+    from openai4s.server.session_package import _reproduce_notes
+
+    payload = dict(
+        root_frame_id="frame-1",
+        project_name="Determinism",
+        environment={
+            "generations": [{"generation_id": "gen-1"}],
+            "artifact_environment_snapshots": [
+                {"kind": "r", "platform": "linux", "package_count": 0},
+                {"kind": "python", "platform": "linux", "package_count": 3},
+            ],
+        },
+        artifacts={"artifacts": [{"artifact_id": "a-1"}]},
+        lineage_edges=[],
+    )
+    assert _reproduce_notes(**payload) == _reproduce_notes(**payload)

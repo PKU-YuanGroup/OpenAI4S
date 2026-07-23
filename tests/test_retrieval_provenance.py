@@ -231,3 +231,107 @@ def test_the_stored_envelope_is_canonical_so_two_can_be_compared(store, tmp_path
         stored.append(store.version_meta(meta["version_id"])["source"])
 
     assert stored[0] == stored[1]
+
+
+# --------------------------------------------------------------------------
+# "the same bytes" has to mean the bytes that arrived
+# --------------------------------------------------------------------------
+
+
+def _raw_service(bodies):
+    """A connector whose transport reports the raw response, as web_fetch does.
+
+    ``bodies`` is a list of raw byte payloads, consumed in request order.
+    """
+    remaining = list(bodies)
+
+    def fetch(url, _fmt, _timeout, _max_chars):
+        import hashlib
+        import json as _json
+
+        raw = remaining.pop(0)
+        # Exactly what web_fetch does to a JSON body: decode with replacement,
+        # then re-serialise. Both steps discard information.
+        decoded = raw.decode("utf-8", errors="replace")
+        try:
+            content = _json.dumps(_json.loads(decoded), ensure_ascii=False, indent=2)
+        except ValueError:
+            content = decoded
+        return {
+            "content": content,
+            "raw_sha256": hashlib.sha256(raw).hexdigest(),
+            "raw_bytes": len(raw),
+        }
+
+    return ScienceConnectorService(fetch=fetch)
+
+
+def test_two_different_responses_do_not_share_a_hash(store):
+    """The regression.
+
+    `web_fetch` decodes with ``errors="replace"`` and, for JSON, re-serialises
+    through a load/dump round trip. Hashing the *result* of that answered "do
+    these normalise the same", not "are these the same bytes we received" — so
+    a rerun against materially different upstream bytes was recorded as
+    identical evidence. Here the two bodies differ only in whitespace and in an
+    invalid byte that decoding collapses onto U+FFFD.
+    """
+    canonical = json.dumps(_UNIPROT).encode("utf-8")
+    reflowed = json.dumps(_UNIPROT, indent=4).encode("utf-8")
+
+    first = _raw_service([canonical]).search("uniprot", "hemoglobin", limit=1)
+    second = _raw_service([reflowed]).search("uniprot", "hemoglobin", limit=1)
+
+    assert (
+        first["provenance"]["responses"][0]["sha256"]
+        != second["provenance"]["responses"][0]["sha256"]
+    )
+    assert first["provenance"]["responses"][0]["hashed"] == "response_bytes"
+
+
+def test_the_recorded_length_is_what_arrived(store):
+    """The byte count was the length of the *normalised* string, which for a
+    reformatted JSON body is not the number of bytes that crossed the wire."""
+    body = json.dumps(_UNIPROT).encode("utf-8")
+    result = _raw_service([body]).search("uniprot", "hemoglobin", limit=1)
+    assert result["provenance"]["responses"][0]["bytes"] == len(body)
+
+
+def test_the_hash_matches_the_raw_body(store):
+    import hashlib
+
+    body = json.dumps(_UNIPROT).encode("utf-8")
+    result = _raw_service([body]).search("uniprot", "hemoglobin", limit=1)
+    assert (
+        result["provenance"]["responses"][0]["sha256"]
+        == hashlib.sha256(body).hexdigest()
+    )
+
+
+def test_a_transport_that_cannot_describe_the_wire_says_so(store):
+    """A fetch that returns only a string has no raw bytes to offer. Recording
+    a content hash under the same key as a response hash would present a
+    weaker claim as the stronger one."""
+    result = _service().search("uniprot", "hemoglobin", limit=1)
+    assert result["provenance"]["responses"][0]["hashed"] == "decoded_content"
+    assert result["provenance"]["responses"][0]["sha256"]
+
+
+def test_web_fetch_reports_the_raw_body(monkeypatch):
+    """The transport half of the same contract, at its own boundary."""
+    import hashlib
+
+    from openai4s import webtools
+
+    body = b'{"a": 1}'
+    monkeypatch.setattr(
+        webtools,
+        "_http_get",
+        lambda url, **kw: (body, url, "application/json"),
+        raising=True,
+    )
+    response = webtools.web_fetch("https://example.invalid/x", fmt="json")
+    assert response["raw_sha256"] == hashlib.sha256(body).hexdigest()
+    assert response["raw_bytes"] == len(body)
+    # And the normalised content is genuinely different, which is the point.
+    assert response["content"].encode("utf-8") != body

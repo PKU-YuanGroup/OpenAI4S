@@ -78,6 +78,8 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "artifact_env_identity",
         "artifact_source",
         "compute_job_pgid",
+        "env_snapshot_generation",
+        "env_snapshot_provenance",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
@@ -479,3 +481,95 @@ def test_synchronous_stays_full(tmp_path):
     a future 'performance' change has to argue for the durability trade."""
     store = get_store(Config(data_dir=tmp_path).db_path)
     assert store._conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+
+
+# --------------------------------------------------------------------------
+# version 7: a generation attribution that cannot be verified is cleared
+# --------------------------------------------------------------------------
+
+
+def _legacy_env_snapshot(db: Path, snapshot_id: str, generation_id: str) -> None:
+    """Insert a row addressed the way version 6 addressed it.
+
+    The point is the id: before version 7 the address did not include the
+    generation, so a row created by generation 1 was reused verbatim by
+    generation 2 and kept naming the first.
+    """
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO env_snapshots(snapshot_id,created_at,kind,python_version,"
+            "implementation,platform,package_count,packages_json,interpreter,"
+            "environment_name,generation_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                snapshot_id,
+                1,
+                "python",
+                "3.12.0",
+                "CPython",
+                "macOS",
+                0,
+                "[]",
+                "/usr/bin/python3",
+                "base",
+                generation_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _rewind_to_version_six(db: Path) -> None:
+    """Put the database back where an installation upgrading from v0.1 is."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("DELETE FROM schema_migrations WHERE version >= 7")
+        conn.execute("PRAGMA user_version = 6")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_an_unverifiable_generation_attribution_is_cleared(tmp_path):
+    """A row whose id predates the generation-aware address may have been
+    shared by any number of kernels, and which ones is not recoverable —
+    sharing leaves no trace. An unattributed record is honest; a confidently
+    wrong one is what this whole subsystem exists to prevent."""
+    db = Config(data_dir=tmp_path).db_path
+    store = get_store(db)
+    _legacy_env_snapshot(db, "env-legacyaddress", "gen-1")
+    store.close()
+    _rewind_to_version_six(db)
+
+    upgraded = get_store(db)
+    assert upgraded.schema_state()["version"] == SCHEMA_VERSION
+    row = upgraded.get_env_snapshot("env-legacyaddress")
+    assert row is not None, "the environment itself is untouched"
+    assert row["generation_id"] is None
+    assert row["interpreter"] == "/usr/bin/python3", "only the claim is dropped"
+
+
+def test_a_correctly_addressed_row_keeps_its_generation(tmp_path):
+    """Idempotence: a row written after the fix hashes to its own id, so a
+    re-run of the migration must leave it alone."""
+    from openai4s.storage.artifacts import env_snapshot_id
+
+    db = Config(data_dir=tmp_path).db_path
+    store = get_store(db)
+    correct = env_snapshot_id(
+        kind="python",
+        python_version="3.12.0",
+        implementation="CPython",
+        platform="macOS",
+        interpreter="/usr/bin/python3",
+        environment_name="base",
+        generation_id="gen-1",
+        packages_json="[]",
+        remote_json="[]",
+    )
+    _legacy_env_snapshot(db, correct, "gen-1")
+    store.close()
+    _rewind_to_version_six(db)
+
+    assert get_store(db).get_env_snapshot(correct)["generation_id"] == "gen-1"

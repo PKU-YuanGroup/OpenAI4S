@@ -11,6 +11,7 @@ import os
 import platform as _pf
 import re
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -162,6 +163,11 @@ def _same_interpreter(interpreter: Any) -> bool:
 
 
 class ArtifactManager:
+    #: A generation ends when its kernel does, so this cannot grow without
+    #: bound in practice. The ceiling is a backstop against a session that
+    #: restarts its kernel thousands of times, not a tuning knob.
+    _FREEZE_CACHE_MAX = 256
+
     def __init__(
         self,
         *,
@@ -178,6 +184,10 @@ class ArtifactManager:
         self.broadcast = broadcast
         self.guess_content_type = guess_content_type
         self.checksum = checksum
+        # (generation_id, interpreter) -> frozen packages, or None when the
+        # interpreter refused to be read. See _frozen_packages.
+        self._freeze_cache: dict[tuple[str, str], list[dict[str, Any]] | None] = {}
+        self._freeze_lock = threading.Lock()
 
     def _notify(
         self,
@@ -801,13 +811,25 @@ class ArtifactManager:
     def _generation_for(
         self, root_frame_id: str | None, language: str
     ) -> dict[str, Any] | None:
+        """The generation that actually produced these files, on this branch.
+
+        Generations are registered per ``branch_id``, and the repository
+        defaults an omitted one to ``root_frame_id`` — the root branch. Omitting
+        it here meant a file written by a cell on a *forked* branch was
+        attributed to the root branch's most recent kernel, or, if the root had
+        none, degraded to the assumed snapshot. Either way the artifact's
+        interpreter and package provenance described a kernel that did not
+        produce it, which is the failure this whole path exists to prevent.
+        """
         if not root_frame_id:
             return None
         latest = getattr(self.store, "latest_kernel_generation", None)
         if latest is None:
             return None
         try:
-            return latest(root_frame_id, language)
+            active = getattr(self.store, "active_session_branch", None)
+            branch_id = active(root_frame_id) if callable(active) else None
+            return latest(root_frame_id, language, branch_id=branch_id or None)
         except Exception:  # noqa: BLE001
             return None
 
@@ -844,7 +866,7 @@ class ArtifactManager:
 
         if runtime == "python":
             packages = (
-                preinstall.freeze_for(interpreter)
+                self._frozen_packages(interpreter, generation)
                 if interpreter
                 else preinstall.full_freeze()
             )
@@ -875,6 +897,44 @@ class ArtifactManager:
                 "packages_unavailable"
             ] = f"{runtime} kernel: Python distribution metadata does not apply"
         return snapshot
+
+    def _frozen_packages(
+        self, interpreter: Any, generation: dict[str, Any] | None
+    ) -> list[dict[str, Any]] | None:
+        """Freeze a foreign interpreter once per kernel generation.
+
+        ``freeze_for`` launches the target interpreter and enumerates its
+        distributions — up to a 20-second wait. Its docstring says callers
+        cache per generation because an environment cannot change within one;
+        no caller did, so every cell that produced a file paid the full probe
+        again. A persistent kernel writing a figure per cell paid it per
+        figure.
+
+        A failed probe is cached too: an interpreter that could not be read
+        will not become readable within the same generation, and re-paying the
+        timeout to rediscover that is the worst version of this.
+
+        Keyed by generation because that is the exact lifetime over which the
+        answer is constant. Without one there is nothing bounding the
+        environment's stability, so the probe runs.
+        """
+        from openai4s.kernel import preinstall
+
+        generation_id = str((generation or {}).get("generation_id") or "")
+        if not generation_id:
+            return preinstall.freeze_for(interpreter)
+        key = (generation_id, str(interpreter))
+        with self._freeze_lock:
+            if key in self._freeze_cache:
+                return self._freeze_cache[key]
+        packages = preinstall.freeze_for(interpreter)
+        with self._freeze_lock:
+            # Bounded: one entry per (generation, interpreter), and a
+            # generation ends when its kernel does.
+            if len(self._freeze_cache) >= self._FREEZE_CACHE_MAX:
+                self._freeze_cache.clear()
+            self._freeze_cache[key] = packages
+        return packages
 
 
 def _capture_snippet(index: int) -> str:

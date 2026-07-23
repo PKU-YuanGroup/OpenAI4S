@@ -188,3 +188,204 @@ def test_historical_snapshots_are_not_backfilled_with_a_guess(env):
     row = store.get_env_snapshot(legacy)
     assert row["generation_id"] is None
     assert row["interpreter"] is None
+
+
+# --------------------------------------------------------------------------
+# the branch: a fork's artifact must not borrow the root's kernel
+# --------------------------------------------------------------------------
+
+
+def _select_branch(store, root, branch_id):
+    """Make ``branch_id`` the session's active branch.
+
+    Written straight to the selection table rather than driven through
+    checkpoint activation, because what is under test is what
+    ``active_session_branch`` returns — and that reads this row for real.
+    """
+    with store._lock:
+        store._conn.execute(
+            "INSERT OR REPLACE INTO session_branch_selection"
+            "(root_frame_id,current_branch_id,updated_at) VALUES(?,?,?)",
+            (root, branch_id, 1),
+        )
+        store._conn.commit()
+
+
+def test_a_forked_branch_artifact_records_its_own_branch_s_kernel(env):
+    """The regression.
+
+    Generations are keyed by branch, and the repository defaults an omitted
+    ``branch_id`` to ``root_frame_id``. Omitting it here meant a file written
+    by a cell on a forked branch was attributed to whatever kernel the *root*
+    branch last ran — a different interpreter, a different environment, a
+    different package set — and the UI presented that as the artifact's own.
+    """
+    manager, store, root = env
+    _generation(
+        store, root, "python", interpreter="/opt/root/bin/python", env_name="root-env"
+    )
+    store.create_kernel_generation(
+        root_frame_id=root,
+        branch_id="br-fork",
+        language="python",
+        environment={
+            "runtime": "python",
+            "interpreter": "/opt/fork/bin/python",
+            "environment_name": "fork-env",
+        },
+        bootstrap={"status": "ok"},
+        state="active",
+    )
+    _select_branch(store, root, "br-fork")
+
+    snapshot = _snapshot(manager, store, root, "python")
+
+    assert snapshot["interpreter"] == "/opt/fork/bin/python"
+    assert snapshot["environment_name"] == "fork-env"
+
+
+def test_a_fork_with_no_kernel_of_its_own_does_not_borrow_the_root_s(env):
+    """Silence beats the wrong answer: with nothing registered on this branch
+    the snapshot must say it is assumed, not describe the root's kernel."""
+    manager, store, root = env
+    _generation(
+        store, root, "python", interpreter="/opt/root/bin/python", env_name="root-env"
+    )
+    _select_branch(store, root, "br-empty")
+
+    snapshot = _snapshot(manager, store, root, "python")
+
+    assert snapshot["interpreter"] != "/opt/root/bin/python"
+    assert "assumed" in (snapshot.get("provenance") or "")
+
+
+def test_the_root_branch_is_unaffected(env):
+    """No selection row means the root branch, which is what it always was."""
+    manager, store, root = env
+    _generation(
+        store, root, "python", interpreter="/opt/root/bin/python", env_name="root-env"
+    )
+
+    snapshot = _snapshot(manager, store, root, "python")
+
+    assert snapshot["interpreter"] == "/opt/root/bin/python"
+
+
+# --------------------------------------------------------------------------
+# the generation: one snapshot row per kernel lifetime
+# --------------------------------------------------------------------------
+
+
+def test_a_restarted_kernel_gets_its_own_snapshot_row(env):
+    """`upsert_env_snapshot` never updates an existing row, and the snapshot id
+    did not include the generation — so a kernel restarted into an unchanged
+    environment resolved to the row already on disk, which kept naming the
+    *first* generation. Every artifact from generation 2 then pointed at a
+    snapshot recorded as generation 1, and nothing else on the artifact carries
+    a generation, so there was no second source that could catch it.
+    """
+    manager, store, root = env
+    first = _generation(
+        store, root, "r", interpreter="/usr/bin/Rscript", env_name="r-mini"
+    )
+    snapshot_one = _snapshot(manager, store, root, "r")
+
+    second = _generation(
+        store, root, "r", interpreter="/usr/bin/Rscript", env_name="r-mini"
+    )
+    snapshot_two = _snapshot(manager, store, root, "r")
+
+    assert first["generation_id"] != second["generation_id"]
+    assert snapshot_one["snapshot_id"] != snapshot_two["snapshot_id"]
+    assert snapshot_one["generation_id"] == first["generation_id"]
+    assert snapshot_two["generation_id"] == second["generation_id"]
+
+
+def test_the_same_generation_still_reuses_one_row(env):
+    """Content addressing is still the point: two artifacts from the same
+    kernel share one environment record."""
+    manager, store, root = env
+    _generation(store, root, "r", interpreter="/usr/bin/Rscript", env_name="r-mini")
+    assert (
+        _snapshot(manager, store, root, "r")["snapshot_id"]
+        == _snapshot(manager, store, root, "r")["snapshot_id"]
+    )
+
+
+# --------------------------------------------------------------------------
+# the probe: paid once per generation, not once per artifact
+# --------------------------------------------------------------------------
+
+
+def test_a_foreign_interpreter_is_frozen_once_per_generation(env, monkeypatch):
+    """`freeze_for` launches the target interpreter and enumerates its
+    distributions — up to a 20-second wait. Its docstring says callers cache
+    per generation; none did, so a persistent kernel writing a figure per cell
+    paid the full probe per figure."""
+    manager, store, root = env
+    _generation(
+        store, root, "python", interpreter="/opt/other/bin/python", env_name="other"
+    )
+    calls: list[str] = []
+
+    def counting_freeze(interpreter, *, timeout=20.0):
+        calls.append(str(interpreter))
+        return [{"name": "numpy", "version": "1.26.0"}]
+
+    monkeypatch.setattr(
+        "openai4s.kernel.preinstall.freeze_for", counting_freeze, raising=True
+    )
+
+    first = _snapshot(manager, store, root, "python")
+    second = _snapshot(manager, store, root, "python")
+
+    assert calls == ["/opt/other/bin/python"], "one probe, not one per artifact"
+    assert first["snapshot_id"] == second["snapshot_id"]
+    assert first["package_count"] == 1
+
+
+def test_a_failed_probe_is_not_retried_within_the_generation(env, monkeypatch):
+    """An interpreter that could not be read will not become readable inside
+    the same generation, and re-paying the timeout to rediscover that is the
+    worst version of this."""
+    manager, store, root = env
+    _generation(
+        store, root, "python", interpreter="/opt/broken/bin/python", env_name="broken"
+    )
+    calls: list[str] = []
+
+    def failing_freeze(interpreter, *, timeout=20.0):
+        calls.append(str(interpreter))
+        return None
+
+    monkeypatch.setattr(
+        "openai4s.kernel.preinstall.freeze_for", failing_freeze, raising=True
+    )
+
+    snapshot = _snapshot(manager, store, root, "python")
+    _snapshot(manager, store, root, "python")
+
+    assert calls == ["/opt/broken/bin/python"]
+    assert "could not read distributions" in snapshot["packages_unavailable"]
+
+
+def test_a_new_generation_probes_again(env, monkeypatch):
+    """The cache is scoped to a kernel lifetime because that is the exact span
+    over which the answer cannot change. A restart may have installed."""
+    manager, store, root = env
+    calls: list[str] = []
+
+    def counting_freeze(interpreter, *, timeout=20.0):
+        calls.append(str(interpreter))
+        return [{"name": "numpy", "version": str(len(calls))}]
+
+    monkeypatch.setattr(
+        "openai4s.kernel.preinstall.freeze_for", counting_freeze, raising=True
+    )
+
+    _generation(store, root, "python", interpreter="/opt/x/bin/python", env_name="x")
+    _snapshot(manager, store, root, "python")
+    _generation(store, root, "python", interpreter="/opt/x/bin/python", env_name="x")
+    _snapshot(manager, store, root, "python")
+
+    assert len(calls) == 2
