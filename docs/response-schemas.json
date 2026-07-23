@@ -719,27 +719,6 @@
         "type": "object"
       }
     },
-    "DELETE /frames/([^/]+)(?:/.*)? [error]": {
-      "schema": {
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error",
-          "method",
-          "path"
-        ],
-        "type": "object"
-      }
-    },
     "DELETE /frames/([^/]+)(?:/.*)? [ok]": {
       "schema": {
         "properties": {
@@ -753,23 +732,15 @@
         "type": "object"
       }
     },
-    "DELETE /frames/([^/]+)/(?: [error]": {
+    "DELETE /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [error]": {
       "schema": {
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -779,18 +750,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -800,18 +763,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -821,18 +776,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -1476,23 +1423,15 @@
         "type": "object"
       }
     },
-    "DELETE /frames/([^/]+)/recovery/actions/ [error]": {
+    "DELETE /frames/([^/]+)/recovery/actions/(restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -1659,18 +1598,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -1680,18 +1611,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -3934,27 +3857,6 @@
         "type": "object"
       }
     },
-    "GET /frames/([^/]+)(?:/.*)? [error]": {
-      "schema": {
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error",
-          "method",
-          "path"
-        ],
-        "type": "object"
-      }
-    },
     "GET /frames/([^/]+)(?:/.*)? [ok]": {
       "schema": {
         "properties": {},
@@ -3962,23 +3864,15 @@
         "type": "object"
       }
     },
-    "GET /frames/([^/]+)/(?: [error]": {
+    "GET /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [error]": {
       "schema": {
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -3988,18 +3882,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -4009,18 +3895,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -4030,18 +3908,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -4264,27 +4134,6 @@
       }
     },
     "GET /frames/([^/]+)/artifacts/promote [error]": {
-      "schema": {
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error",
-          "method",
-          "path"
-        ],
-        "type": "object"
-      }
-    },
-    "GET /frames/([^/]+)/artifacts\\.zip [error]": {
       "schema": {
         "properties": {
           "error": {
@@ -6077,23 +5926,15 @@
         "type": "object"
       }
     },
-    "GET /frames/([^/]+)/recovery/actions/ [error]": {
+    "GET /frames/([^/]+)/recovery/actions/(restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -6407,18 +6248,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -6428,39 +6261,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
-        ],
-        "type": "object"
-      }
-    },
-    "GET /frames/[^/]+/shares [error]": {
-      "schema": {
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -7099,27 +6903,6 @@
         "type": "object"
       }
     },
-    "GET /projects [error]": {
-      "schema": {
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error",
-          "method",
-          "path"
-        ],
-        "type": "object"
-      }
-    },
     "GET /projects [ok]": {
       "schema": {
         "properties": {
@@ -7227,27 +7010,6 @@
     "GET /projects/([^/]+)/artifacts [ok]": {
       "schema": {
         "type": "array"
-      }
-    },
-    "GET /projects/([^/]+)/artifacts\\.zip [error]": {
-      "schema": {
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error",
-          "method",
-          "path"
-        ],
-        "type": "object"
       }
     },
     "GET /projects/([^/]+)/folders [ok]": {
@@ -9362,27 +9124,6 @@
         "type": "object"
       }
     },
-    "PATCH /frames/([^/]+)(?:/.*)? [error]": {
-      "schema": {
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error",
-          "method",
-          "path"
-        ],
-        "type": "object"
-      }
-    },
     "PATCH /frames/([^/]+)(?:/.*)? [ok]": {
       "schema": {
         "properties": {},
@@ -9390,23 +9131,15 @@
         "type": "object"
       }
     },
-    "PATCH /frames/([^/]+)/(?: [error]": {
+    "PATCH /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [error]": {
       "schema": {
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -9416,18 +9149,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -9437,18 +9162,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -9458,18 +9175,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -10105,23 +9814,15 @@
         "type": "object"
       }
     },
-    "PATCH /frames/([^/]+)/recovery/actions/ [error]": {
+    "PATCH /frames/([^/]+)/recovery/actions/(restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -10305,18 +10006,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -10326,18 +10019,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -12234,145 +11919,20 @@
         "type": "object"
       }
     },
-    "POST /frames/([^/]+)(?:/.*)? [ok]": {
-      "schema": {
-        "properties": {
-          "action": {
-            "type": "string"
-          },
-          "branch_id": {
-            "type": "string"
-          },
-          "checkpoint_id": {
-            "type": "string"
-          },
-          "execution_id": {
-            "type": "string"
-          },
-          "ok": {
-            "type": "boolean"
-          },
-          "owner": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "kind"
-            ],
-            "type": "object"
-          },
-          "recovery_id": {
-            "type": "string"
-          },
-          "results": {
-            "items": {
-              "properties": {
-                "candidate_generation_id": {
-                  "type": "string"
-                },
-                "issues": {
-                  "type": "array"
-                },
-                "manifest_id": {
-                  "type": "string"
-                },
-                "replayed_steps": {
-                  "type": "array"
-                },
-                "skipped_steps": {
-                  "type": "array"
-                },
-                "source_generation_id": {
-                  "type": "string"
-                },
-                "status": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "candidate_generation_id",
-                "issues",
-                "manifest_id",
-                "replayed_steps",
-                "skipped_steps",
-                "source_generation_id",
-                "status"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "root_frame_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "action",
-          "branch_id",
-          "checkpoint_id",
-          "execution_id",
-          "ok",
-          "owner",
-          "recovery_id",
-          "results",
-          "root_frame_id",
-          "status"
-        ],
-        "type": "object"
-      }
-    },
-    "POST /frames/([^/]+)/(?: [error]": {
+    "POST /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [error]": {
       "schema": {
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
     },
-    "POST /frames/([^/]+)/(?:checkpoints|branches/checkpoints) [error]": {
-      "schema": {
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error",
-          "method",
-          "path"
-        ],
-        "type": "object"
-      }
-    },
-    "POST /frames/([^/]+)/(?:checkpoints|branches/checkpoints) [ok]": {
+    "POST /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [ok]": {
       "schema": {
         "properties": {
           "action_cursor": {
@@ -12448,6 +12008,266 @@
           },
           "cell_cursor": {
             "type": "integer"
+          },
+          "checkpoint": {
+            "properties": {
+              "action_cursor": {
+                "type": "integer"
+              },
+              "artifact_versions": {
+                "type": "array"
+              },
+              "branch_id": {
+                "type": "string"
+              },
+              "capability_state": {
+                "properties": {
+                  "states": {
+                    "type": "array"
+                  },
+                  "version": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "states",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "cell_cursor": {
+                "type": "integer"
+              },
+              "checkpoint_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "environment_pins": {
+                "properties": {
+                  "python": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "python"
+                ],
+                "type": "object"
+              },
+              "generation_refs": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "internal": {
+                "type": "boolean"
+              },
+              "message_cursor": {
+                "type": "integer"
+              },
+              "metadata": {
+                "properties": {
+                  "history_projection": {
+                    "properties": {
+                      "base_checkpoint_id": {
+                        "type": "string"
+                      },
+                      "resume_cursors": {
+                        "properties": {
+                          "action_cursor": {
+                            "type": "integer"
+                          },
+                          "cell_cursor": {
+                            "type": "integer"
+                          },
+                          "message_cursor": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "action_cursor",
+                          "cell_cursor",
+                          "message_cursor"
+                        ],
+                        "type": "object"
+                      },
+                      "version": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "base_checkpoint_id",
+                      "resume_cursors",
+                      "version"
+                    ],
+                    "type": "object"
+                  },
+                  "operation_id": {
+                    "type": "string"
+                  },
+                  "requires_kernel_recovery": {
+                    "type": "boolean"
+                  },
+                  "reverted_to": {
+                    "type": "string"
+                  },
+                  "undo_checkpoint_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "history_projection",
+                  "operation_id",
+                  "requires_kernel_recovery",
+                  "reverted_to",
+                  "undo_checkpoint_id"
+                ],
+                "type": "object"
+              },
+              "parent_checkpoint_id": {
+                "type": "string"
+              },
+              "permission_state": {
+                "properties": {
+                  "conversation": {
+                    "type": "array"
+                  },
+                  "global": {
+                    "type": "array"
+                  },
+                  "project": {
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "conversation",
+                  "global",
+                  "project"
+                ],
+                "type": "object"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "recovery_recipe": {
+                "properties": {
+                  "artifact_hashes": {
+                    "keys": "data",
+                    "type": "object"
+                  },
+                  "environment_requirements": {
+                    "properties": {},
+                    "required": [],
+                    "type": "object"
+                  },
+                  "namespace_coverage": {
+                    "type": "string"
+                  },
+                  "required_symbols": {
+                    "keys": "data",
+                    "type": "object"
+                  },
+                  "steps": {
+                    "items": {
+                      "properties": {
+                        "kind": {
+                          "type": "string"
+                        },
+                        "payload": {
+                          "properties": {
+                            "tree_id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "tree_id"
+                          ],
+                          "type": "object"
+                        },
+                        "replay_policy": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "payload",
+                        "replay_policy"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "summary": {
+                    "properties": {
+                      "manual_cells": {
+                        "type": "integer"
+                      },
+                      "safe_replay_cells": {
+                        "type": "integer"
+                      },
+                      "state_cells": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "manual_cells",
+                      "safe_replay_cells",
+                      "state_cells"
+                    ],
+                    "type": "object"
+                  },
+                  "version": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "artifact_hashes",
+                  "environment_requirements",
+                  "namespace_coverage",
+                  "required_symbols",
+                  "steps",
+                  "summary",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "source_id": {
+                "type": "null"
+              },
+              "source_kind": {
+                "type": "null"
+              },
+              "workspace_tree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action_cursor",
+              "artifact_versions",
+              "branch_id",
+              "capability_state",
+              "cell_cursor",
+              "checkpoint_id",
+              "created_at",
+              "environment_pins",
+              "generation_refs",
+              "internal",
+              "message_cursor",
+              "metadata",
+              "parent_checkpoint_id",
+              "permission_state",
+              "reason",
+              "recovery_recipe",
+              "root_frame_id",
+              "source_id",
+              "source_kind",
+              "workspace_tree_id"
+            ],
+            "type": "object"
           },
           "checkpoint_id": {
             "type": "string"
@@ -12729,560 +12549,6 @@
               "plans",
               "project_id",
               "state_source"
-            ],
-            "type": "object"
-          },
-          "parent_checkpoint_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "permission_state": {
-            "properties": {
-              "conversation": {
-                "items": {
-                  "properties": {
-                    "created_at": {
-                      "type": "integer"
-                    },
-                    "decision": {
-                      "type": "string"
-                    },
-                    "pattern": {
-                      "type": "string"
-                    },
-                    "rule_id": {
-                      "type": "string"
-                    },
-                    "scope": {
-                      "type": "string"
-                    },
-                    "scope_id": {
-                      "type": "string"
-                    },
-                    "tool": {
-                      "type": "string"
-                    },
-                    "updated_at": {
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "created_at",
-                    "decision",
-                    "pattern",
-                    "rule_id",
-                    "scope",
-                    "scope_id",
-                    "tool",
-                    "updated_at"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "global": {
-                "items": {
-                  "properties": {
-                    "created_at": {
-                      "type": "integer"
-                    },
-                    "decision": {
-                      "type": "string"
-                    },
-                    "pattern": {
-                      "type": "string"
-                    },
-                    "rule_id": {
-                      "type": "string"
-                    },
-                    "scope": {
-                      "type": "string"
-                    },
-                    "scope_id": {
-                      "type": "string"
-                    },
-                    "tool": {
-                      "type": "string"
-                    },
-                    "updated_at": {
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "created_at",
-                    "decision",
-                    "pattern",
-                    "rule_id",
-                    "scope",
-                    "scope_id",
-                    "tool",
-                    "updated_at"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "project": {
-                "type": "array"
-              }
-            },
-            "required": [
-              "conversation",
-              "global",
-              "project"
-            ],
-            "type": "object"
-          },
-          "reason": {
-            "type": "string"
-          },
-          "recovery_recipe": {
-            "properties": {
-              "artifact_hashes": {
-                "keys": "data",
-                "type": "object",
-                "values": {
-                  "type": "string"
-                }
-              },
-              "environment_requirements": {
-                "properties": {
-                  "python": {
-                    "properties": {
-                      "base_prefix": {
-                        "type": "string"
-                      },
-                      "environment_hash": {
-                        "type": "string"
-                      },
-                      "environment_name": {
-                        "type": "string"
-                      },
-                      "host_capability_version": {
-                        "type": "string"
-                      },
-                      "interpreter_prefix": {
-                        "type": "string"
-                      },
-                      "provenance_version": {
-                        "type": "string"
-                      },
-                      "runtime_version": {
-                        "type": "string"
-                      },
-                      "sdk_version": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "base_prefix",
-                      "environment_hash",
-                      "environment_name",
-                      "host_capability_version",
-                      "interpreter_prefix",
-                      "provenance_version",
-                      "runtime_version",
-                      "sdk_version"
-                    ],
-                    "type": "object"
-                  }
-                },
-                "required": [],
-                "type": "object"
-              },
-              "namespace_coverage": {
-                "type": "string"
-              },
-              "required_symbols": {
-                "keys": "data",
-                "type": "object"
-              },
-              "steps": {
-                "items": {
-                  "properties": {
-                    "kind": {
-                      "type": "string"
-                    },
-                    "payload": {
-                      "properties": {
-                        "tree_id": {
-                          "type": "string"
-                        },
-                        "version_id": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [],
-                      "type": "object"
-                    },
-                    "replay_policy": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "payload",
-                    "replay_policy"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "summary": {
-                "properties": {
-                  "manual_cells": {
-                    "type": "integer"
-                  },
-                  "safe_replay_cells": {
-                    "type": "integer"
-                  },
-                  "state_cells": {
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "manual_cells",
-                  "safe_replay_cells",
-                  "state_cells"
-                ],
-                "type": "object"
-              },
-              "version": {
-                "type": "integer"
-              }
-            },
-            "required": [
-              "artifact_hashes",
-              "environment_requirements",
-              "namespace_coverage",
-              "required_symbols",
-              "steps",
-              "summary",
-              "version"
-            ],
-            "type": "object"
-          },
-          "root_frame_id": {
-            "type": "string"
-          },
-          "source_id": {
-            "type": "null"
-          },
-          "source_kind": {
-            "type": "null"
-          },
-          "workspace_tree_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "action_cursor",
-          "artifact_versions",
-          "branch_id",
-          "capability_state",
-          "cell_cursor",
-          "checkpoint_id",
-          "created_at",
-          "environment_pins",
-          "generation_refs",
-          "internal",
-          "message_cursor",
-          "metadata",
-          "parent_checkpoint_id",
-          "permission_state",
-          "reason",
-          "recovery_recipe",
-          "root_frame_id",
-          "source_id",
-          "source_kind",
-          "workspace_tree_id"
-        ],
-        "type": "object"
-      }
-    },
-    "POST /frames/([^/]+)/(?:revert/apply|branches/revert) [error]": {
-      "schema": {
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error",
-          "method",
-          "path"
-        ],
-        "type": "object"
-      }
-    },
-    "POST /frames/([^/]+)/(?:revert/apply|branches/revert) [ok]": {
-      "schema": {
-        "properties": {
-          "checkpoint": {
-            "properties": {
-              "action_cursor": {
-                "type": "integer"
-              },
-              "artifact_versions": {
-                "type": "array"
-              },
-              "branch_id": {
-                "type": "string"
-              },
-              "capability_state": {
-                "properties": {
-                  "states": {
-                    "type": "array"
-                  },
-                  "version": {
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "states",
-                  "version"
-                ],
-                "type": "object"
-              },
-              "cell_cursor": {
-                "type": "integer"
-              },
-              "checkpoint_id": {
-                "type": "string"
-              },
-              "created_at": {
-                "type": "integer"
-              },
-              "environment_pins": {
-                "properties": {
-                  "python": {
-                    "type": "null"
-                  }
-                },
-                "required": [
-                  "python"
-                ],
-                "type": "object"
-              },
-              "generation_refs": {
-                "properties": {},
-                "required": [],
-                "type": "object"
-              },
-              "internal": {
-                "type": "boolean"
-              },
-              "message_cursor": {
-                "type": "integer"
-              },
-              "metadata": {
-                "properties": {
-                  "history_projection": {
-                    "properties": {
-                      "base_checkpoint_id": {
-                        "type": "string"
-                      },
-                      "resume_cursors": {
-                        "properties": {
-                          "action_cursor": {
-                            "type": "integer"
-                          },
-                          "cell_cursor": {
-                            "type": "integer"
-                          },
-                          "message_cursor": {
-                            "type": "integer"
-                          }
-                        },
-                        "required": [
-                          "action_cursor",
-                          "cell_cursor",
-                          "message_cursor"
-                        ],
-                        "type": "object"
-                      },
-                      "version": {
-                        "type": "integer"
-                      }
-                    },
-                    "required": [
-                      "base_checkpoint_id",
-                      "resume_cursors",
-                      "version"
-                    ],
-                    "type": "object"
-                  },
-                  "operation_id": {
-                    "type": "string"
-                  },
-                  "requires_kernel_recovery": {
-                    "type": "boolean"
-                  },
-                  "reverted_to": {
-                    "type": "string"
-                  },
-                  "undo_checkpoint_id": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "history_projection",
-                  "operation_id",
-                  "requires_kernel_recovery",
-                  "reverted_to",
-                  "undo_checkpoint_id"
-                ],
-                "type": "object"
-              },
-              "parent_checkpoint_id": {
-                "type": "string"
-              },
-              "permission_state": {
-                "properties": {
-                  "conversation": {
-                    "type": "array"
-                  },
-                  "global": {
-                    "type": "array"
-                  },
-                  "project": {
-                    "type": "array"
-                  }
-                },
-                "required": [
-                  "conversation",
-                  "global",
-                  "project"
-                ],
-                "type": "object"
-              },
-              "reason": {
-                "type": "string"
-              },
-              "recovery_recipe": {
-                "properties": {
-                  "artifact_hashes": {
-                    "keys": "data",
-                    "type": "object"
-                  },
-                  "environment_requirements": {
-                    "properties": {},
-                    "required": [],
-                    "type": "object"
-                  },
-                  "namespace_coverage": {
-                    "type": "string"
-                  },
-                  "required_symbols": {
-                    "keys": "data",
-                    "type": "object"
-                  },
-                  "steps": {
-                    "items": {
-                      "properties": {
-                        "kind": {
-                          "type": "string"
-                        },
-                        "payload": {
-                          "properties": {
-                            "tree_id": {
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "tree_id"
-                          ],
-                          "type": "object"
-                        },
-                        "replay_policy": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "kind",
-                        "payload",
-                        "replay_policy"
-                      ],
-                      "type": "object"
-                    },
-                    "type": "array"
-                  },
-                  "summary": {
-                    "properties": {
-                      "manual_cells": {
-                        "type": "integer"
-                      },
-                      "safe_replay_cells": {
-                        "type": "integer"
-                      },
-                      "state_cells": {
-                        "type": "integer"
-                      }
-                    },
-                    "required": [
-                      "manual_cells",
-                      "safe_replay_cells",
-                      "state_cells"
-                    ],
-                    "type": "object"
-                  },
-                  "version": {
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "artifact_hashes",
-                  "environment_requirements",
-                  "namespace_coverage",
-                  "required_symbols",
-                  "steps",
-                  "summary",
-                  "version"
-                ],
-                "type": "object"
-              },
-              "root_frame_id": {
-                "type": "string"
-              },
-              "source_id": {
-                "type": "null"
-              },
-              "source_kind": {
-                "type": "null"
-              },
-              "workspace_tree_id": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "action_cursor",
-              "artifact_versions",
-              "branch_id",
-              "capability_state",
-              "cell_cursor",
-              "checkpoint_id",
-              "created_at",
-              "environment_pins",
-              "generation_refs",
-              "internal",
-              "message_cursor",
-              "metadata",
-              "parent_checkpoint_id",
-              "permission_state",
-              "reason",
-              "recovery_recipe",
-              "root_frame_id",
-              "source_id",
-              "source_kind",
-              "workspace_tree_id"
             ],
             "type": "object"
           },
@@ -13632,6 +12898,109 @@
             ],
             "type": "object"
           },
+          "parent_checkpoint_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "permission_state": {
+            "properties": {
+              "conversation": {
+                "items": {
+                  "properties": {
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string"
+                    },
+                    "pattern": {
+                      "type": "string"
+                    },
+                    "rule_id": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "scope_id": {
+                      "type": "string"
+                    },
+                    "tool": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "created_at",
+                    "decision",
+                    "pattern",
+                    "rule_id",
+                    "scope",
+                    "scope_id",
+                    "tool",
+                    "updated_at"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "global": {
+                "items": {
+                  "properties": {
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string"
+                    },
+                    "pattern": {
+                      "type": "string"
+                    },
+                    "rule_id": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "scope_id": {
+                      "type": "string"
+                    },
+                    "tool": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "created_at",
+                    "decision",
+                    "pattern",
+                    "rule_id",
+                    "scope",
+                    "scope_id",
+                    "tool",
+                    "updated_at"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "project": {
+                "type": "array"
+              }
+            },
+            "required": [
+              "conversation",
+              "global",
+              "project"
+            ],
+            "type": "object"
+          },
           "projection": {
             "properties": {
               "artifacts": {
@@ -13811,20 +13180,180 @@
             ],
             "type": "object"
           },
+          "reason": {
+            "type": "string"
+          },
+          "recovery_recipe": {
+            "properties": {
+              "artifact_hashes": {
+                "keys": "data",
+                "type": "object",
+                "values": {
+                  "type": "string"
+                }
+              },
+              "environment_requirements": {
+                "properties": {
+                  "python": {
+                    "properties": {
+                      "base_prefix": {
+                        "type": "string"
+                      },
+                      "environment_hash": {
+                        "type": "string"
+                      },
+                      "environment_name": {
+                        "type": "string"
+                      },
+                      "host_capability_version": {
+                        "type": "string"
+                      },
+                      "interpreter_prefix": {
+                        "type": "string"
+                      },
+                      "provenance_version": {
+                        "type": "string"
+                      },
+                      "runtime_version": {
+                        "type": "string"
+                      },
+                      "sdk_version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "base_prefix",
+                      "environment_hash",
+                      "environment_name",
+                      "host_capability_version",
+                      "interpreter_prefix",
+                      "provenance_version",
+                      "runtime_version",
+                      "sdk_version"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "namespace_coverage": {
+                "type": "string"
+              },
+              "required_symbols": {
+                "keys": "data",
+                "type": "object"
+              },
+              "steps": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "payload": {
+                      "properties": {
+                        "tree_id": {
+                          "type": "string"
+                        },
+                        "version_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "type": "object"
+                    },
+                    "replay_policy": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "payload",
+                    "replay_policy"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "summary": {
+                "properties": {
+                  "manual_cells": {
+                    "type": "integer"
+                  },
+                  "safe_replay_cells": {
+                    "type": "integer"
+                  },
+                  "state_cells": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "manual_cells",
+                  "safe_replay_cells",
+                  "state_cells"
+                ],
+                "type": "object"
+              },
+              "version": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artifact_hashes",
+              "environment_requirements",
+              "namespace_coverage",
+              "required_symbols",
+              "steps",
+              "summary",
+              "version"
+            ],
+            "type": "object"
+          },
           "requires_kernel_recovery": {
             "type": "boolean"
           },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "null"
+          },
+          "source_kind": {
+            "type": "null"
+          },
           "undo_checkpoint_id": {
+            "type": "string"
+          },
+          "workspace_tree_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/(?:checkpoints|branches/checkpoints) [error]": {
+      "schema": {
+        "properties": {
+          "error": {
             "type": "string"
           }
         },
         "required": [
-          "checkpoint",
-          "ok",
-          "operation",
-          "projection",
-          "requires_kernel_recovery",
-          "undo_checkpoint_id"
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/(?:revert/apply|branches/revert) [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
         ],
         "type": "object"
       }
@@ -13834,18 +13363,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -14863,23 +14384,23 @@
         "type": "object"
       }
     },
-    "POST /frames/([^/]+)/plan/(approve|revise|discard) [error]": {
+    "POST /frames/([^/]+)/plan/(approve|revise|discard) [ok]": {
       "schema": {
         "properties": {
-          "error": {
+          "frame_id": {
             "type": "string"
           },
-          "method": {
+          "job_id": {
             "type": "string"
           },
-          "path": {
+          "status": {
             "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "frame_id",
+          "job_id",
+          "status"
         ],
         "type": "object"
       }
@@ -14910,23 +14431,111 @@
         "type": "object"
       }
     },
-    "POST /frames/([^/]+)/recovery/actions/ [error]": {
+    "POST /frames/([^/]+)/recovery/actions/(restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/recovery/actions/(restore|retry|restart_fresh) [ok]": {
+      "schema": {
+        "properties": {
+          "action": {
             "type": "string"
           },
-          "path": {
+          "branch_id": {
+            "type": "string"
+          },
+          "checkpoint_id": {
+            "type": "string"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "owner": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "recovery_id": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "properties": {
+                "candidate_generation_id": {
+                  "type": "string"
+                },
+                "issues": {
+                  "type": "array"
+                },
+                "manifest_id": {
+                  "type": "string"
+                },
+                "replayed_steps": {
+                  "type": "array"
+                },
+                "skipped_steps": {
+                  "type": "array"
+                },
+                "source_generation_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "candidate_generation_id",
+                "issues",
+                "manifest_id",
+                "replayed_steps",
+                "skipped_steps",
+                "source_generation_id",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "status": {
             "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "action",
+          "branch_id",
+          "checkpoint_id",
+          "execution_id",
+          "ok",
+          "owner",
+          "recovery_id",
+          "results",
+          "root_frame_id",
+          "status"
         ],
         "type": "object"
       }
@@ -15883,18 +15492,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -16151,9 +15752,6 @@
           "execution_id": {
             "type": "string"
           },
-          "method": {
-            "type": "string"
-          },
           "ok": {
             "type": "boolean"
           },
@@ -16171,9 +15769,6 @@
               "kind"
             ],
             "type": "object"
-          },
-          "path": {
-            "type": "string"
           },
           "recovery_id": {
             "type": "string"
@@ -16247,18 +15842,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -16720,27 +16307,6 @@
       }
     },
     "POST /preferences/builtin-allowlist [error]": {
-      "schema": {
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error",
-          "method",
-          "path"
-        ],
-        "type": "object"
-      }
-    },
-    "POST /projects [error]": {
       "schema": {
         "properties": {
           "error": {
@@ -18556,23 +18122,15 @@
         "type": "object"
       }
     },
-    "PUT /frames/([^/]+)/(?: [error]": {
+    "PUT /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [error]": {
       "schema": {
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -18582,18 +18140,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -18603,18 +18153,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -18624,18 +18166,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -19271,23 +18805,15 @@
         "type": "object"
       }
     },
-    "PUT /frames/([^/]+)/recovery/actions/ [error]": {
+    "PUT /frames/([^/]+)/recovery/actions/(restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -19446,18 +18972,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
@@ -19467,18 +18985,10 @@
         "properties": {
           "error": {
             "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
           }
         },
         "required": [
-          "error",
-          "method",
-          "path"
+          "error"
         ],
         "type": "object"
       }
