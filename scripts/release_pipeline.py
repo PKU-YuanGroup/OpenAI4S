@@ -406,6 +406,13 @@ def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, An
         except (OSError, ValueError) as e:
             return {"source": "receipt", "error": f"unreadable receipt: {e}"}
         authorities = [str(a) for a in (payload.get("authorities") or [])]
+        # A receipt must describe *this* image. It records the DMG's digest;
+        # without checking it, a stale or copied receipt from any signed image
+        # could be paired with a different, unsigned DMG on a staging host and
+        # pass the gate. Re-hash and require a match.
+        recorded_digest = str(payload.get("image_sha256") or "")
+        actual_digest = sha256_file(dmg)
+        digest_matches = bool(recorded_digest) and recorded_digest == actual_digest
         # A Developer ID *authority string* is not a valid signature: the
         # receipt also records whether `codesign --verify --deep --strict`
         # succeeded, and a nonzero result means the signature does not verify
@@ -418,8 +425,9 @@ def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, An
         return {
             "source": "receipt",
             "authorities": authorities,
-            "developer_id": names_developer_id and verify_rc == 0,
+            "developer_id": names_developer_id and verify_rc == 0 and digest_matches,
             "verify_returncode": verify_rc,
+            "image_digest_matches": digest_matches,
             "adhoc": bool(payload.get("adhoc")),
         }
     if not shutil.which("codesign"):

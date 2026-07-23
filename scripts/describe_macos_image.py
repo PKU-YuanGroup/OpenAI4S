@@ -22,6 +22,7 @@ list and a reason.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import plistlib
 import subprocess
@@ -141,12 +142,25 @@ def _bundle_version(app: Path) -> str:
     return str(plist.get("CFBundleShortVersionString") or "")
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def describe(dmg: Path) -> tuple[dict, dict]:
     with _mounted(dmg) as app:
         signature = describe_signature(app)
         components = describe_components(app)
         version = _bundle_version(app)
     signature["image"] = dmg.name
+    # Bind the receipt to the exact image it describes. Without a digest a
+    # stale or copied receipt could be paired with a different, unsigned DMG on
+    # a staging host and pass the signing gate. The gate re-hashes the image and
+    # requires this to match.
+    signature["image_sha256"] = _sha256(dmg)
     components["image"] = dmg.name
     components["bundle_version"] = version
     return signature, components

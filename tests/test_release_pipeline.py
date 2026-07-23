@@ -75,6 +75,8 @@ def _signed_dmg(assets: Path, name: str = "OpenAI4S-0.2.0-arm64.dmg") -> Path:
                 # A real receipt records the deep verification result, and the
                 # gate requires it to have succeeded.
                 "verify_returncode": 0,
+                # ...and the digest of the exact image it describes.
+                "image_sha256": sha256_file(dmg),
             }
         ),
         encoding="utf-8",
@@ -718,3 +720,31 @@ def test_a_prerelease_leftover_does_not_stage_for_the_final_tag(assets):
     assert report["ok"] is False
     assert report["stopped_at"] == "assets"
     assert "another version" in report["steps"][-1]["detail"]
+
+
+def test_a_receipt_from_a_different_image_does_not_sign_this_one(tmp_path):
+    """A stale or copied receipt from any signed image must not vouch for a
+    different DMG: the receipt records the image digest, and the gate re-hashes
+    and requires a match."""
+    from scripts.release_pipeline import SIGNATURE_RECEIPT_SUFFIX, read_signature
+
+    dmg = tmp_path / "unsigned.dmg"
+    dmg.write_bytes(b"a-different-unsigned-image")
+    dmg.with_name(dmg.name + SIGNATURE_RECEIPT_SUFFIX).write_text(
+        json.dumps(
+            {
+                "authorities": ["Developer ID Application: Example Inc"],
+                "adhoc": False,
+                "verify_returncode": 0,
+                # The digest of some *other* image, not this one.
+                "image_sha256": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    info = read_signature(dmg, lambda argv: _completed())
+    assert info["developer_id"] is False, (
+        "a receipt whose recorded digest does not match this image must not "
+        "vouch for it"
+    )
+    assert info["image_digest_matches"] is False
