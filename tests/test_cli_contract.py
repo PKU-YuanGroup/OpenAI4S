@@ -149,11 +149,14 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
     assert proc.returncode == 0, proc.stderr
     assert (
         "{serve,status,doctor,verify-package,diagnostics,stop,url,run,init,setup,"
-        "jupyter,share,relay}" in proc.stdout
+        "env,jupyter,share,relay}" in proc.stdout
     )
     for command in (
         "serve",
         "status",
+        # Environments are a transaction, and a transaction nobody can drive
+        # from the command line is one nobody uses.
+        "env",
         # The command for someone whose daemon will not start: if it is not in
         # --help, it does not exist to the person who needs it.
         "doctor",

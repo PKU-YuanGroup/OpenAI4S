@@ -558,6 +558,160 @@ def cmd_setup(args) -> int:
     return 1 if failed else 0
 
 
+# --------------------------------------------------------------------------
+# environments as a transaction: plan / apply / rollback
+# --------------------------------------------------------------------------
+
+
+def _env_store(cfg, runner=None):
+    from openai4s.kernel.env_generations import EnvironmentStore
+
+    return EnvironmentStore(Path(cfg.data_dir) / "environments", runner=runner)
+
+
+def _env_spec(name: str) -> Path:
+    return _envs_dir() / f"{name}.yml"
+
+
+def _env_verify(prefix: Path) -> tuple[str, list[str]]:
+    """Prove the generation runs before anything points at it.
+
+    A build that exits 0 having produced nothing usable is the false success
+    this step exists to catch, and it is the same rule the compute manager
+    applies to a job that exits 0 having written no outputs.
+    """
+    for candidate in (prefix / "bin" / "python", prefix / "bin" / "Rscript"):
+        if candidate.is_file():
+            break
+    else:
+        raise RuntimeError(
+            f"the build produced no interpreter under {prefix}; refusing to "
+            f"make it current"
+        )
+    packages: list[str] = []
+    python = prefix / "bin" / "python"
+    if python.is_file():
+        try:
+            from openai4s.kernel import preinstall
+
+            frozen = preinstall.freeze_for(str(python)) or []
+            packages = [f"{item['name']}=={item.get('version')}" for item in frozen]
+        except Exception:  # noqa: BLE001 - a package list is not the gate
+            packages = []
+    return str(candidate), packages
+
+
+def cmd_env_plan(args) -> int:
+    cfg = get_config()
+    tool = _find_conda_tool() or "conda"
+    store = _env_store(cfg)
+    plans = [store.plan(name, _env_spec(name), tool=tool) for name in args.names]
+    if args.json:
+        print(json.dumps([p.public() for p in plans], indent=2, sort_keys=True))
+    else:
+        for plan in plans:
+            print(f"  [{plan.name}] {plan.action}: {plan.reason}")
+    return 0
+
+
+def cmd_env_apply(args) -> int:
+    cfg = get_config()
+    tool = _find_conda_tool()
+    if not tool:
+        print("error: no conda/mamba/micromamba found on PATH.", file=sys.stderr)
+        return 1
+    store = _env_store(cfg)
+    failed = 0
+    for name in args.names:
+        spec = _env_spec(name)
+        plan = store.plan(name, spec, tool=tool)
+        if not plan.changes:
+            print(f"  [{name}] up to date ({plan.reason})")
+            continue
+        if args.dry_run:
+            print(f"  [{name}] would {plan.action}: {plan.reason}")
+            continue
+
+        def build(prefix: Path, _spec=spec, _tool=tool):
+            return [
+                _tool,
+                "env",
+                "create",
+                "--yes",
+                "--prefix",
+                str(prefix),
+                "-f",
+                str(_spec),
+            ]
+
+        result = store.apply(plan, spec, tool=tool, build=build, verify=_env_verify)
+        if result.ok:
+            print(f"  [{name}] now generation {result.generation.id}")
+        else:
+            failed += 1
+            print(f"  [{name}] FAILED: {result.detail}", file=sys.stderr)
+            print(
+                f"  [{name}] the current environment is unchanged "
+                f"({result.previous or 'none'})",
+                file=sys.stderr,
+            )
+    return 1 if failed else 0
+
+
+def cmd_env_list(args) -> int:
+    store = _env_store(get_config())
+    names = args.names or store.environments()
+    payload = {
+        name: {
+            "current": store.current_id(name),
+            "generations": [g.public() for g in store.list(name)],
+        }
+        for name in names
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for name, info in payload.items():
+            print(f"  {name}: current={info['current'] or '-'}")
+            for generation in info["generations"]:
+                mark = "*" if generation["generation_id"] == info["current"] else " "
+                print(
+                    f"   {mark} {generation['generation_id']} "
+                    f"{generation['state']} "
+                    f"({generation['package_count']} packages)"
+                )
+    return 0
+
+
+def cmd_env_rollback(args) -> int:
+    from openai4s.kernel.env_generations import EnvironmentError_
+
+    store = _env_store(get_config())
+    try:
+        result = store.rollback(args.name, args.generation)
+    except EnvironmentError_ as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"  [{args.name}] now generation {result.generation.id} (pointer moved)")
+    return 0
+
+
+def cmd_env_recover(args) -> int:
+    store = _env_store(get_config())
+    names = args.names or store.environments()
+    report = {name: store.recover(name) for name in names}
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    for name, info in report.items():
+        print(f"  {name}: current={info['current'] or '-'}")
+        for item in info["abandoned"]:
+            print(f"    abandoned {item['state']}: {item['path']}")
+        if info["stale_lock"]:
+            print("    stale apply lock (a build process died holding it)")
+    return 0
+
+
 def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
     """Call the running daemon's REST API; returns (status, parsed_json)."""
 
@@ -827,6 +981,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="update existing envs without pruning user-installed packages",
     )
     pu.set_defaults(fn=cmd_setup)
+
+    pe = sub.add_parser(
+        "env",
+        help="environments as a transaction: plan, apply, roll back",
+    )
+    esub = pe.add_subparsers(dest="env_action", required=True)
+    ep = esub.add_parser("plan", help="what would change; touches nothing")
+    ep.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ep.add_argument("--json", action="store_true")
+    ep.set_defaults(fn=cmd_env_plan)
+    ea = esub.add_parser(
+        "apply", help="build a new generation and switch to it if it verifies"
+    )
+    ea.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ea.add_argument("--dry-run", action="store_true")
+    ea.set_defaults(fn=cmd_env_apply)
+    el = esub.add_parser("list", help="generations, and which one is current")
+    el.add_argument("names", nargs="*")
+    el.add_argument("--json", action="store_true")
+    el.set_defaults(fn=cmd_env_list)
+    er = esub.add_parser("rollback", help="point at a generation already on disk")
+    er.add_argument("name")
+    er.add_argument("generation")
+    er.set_defaults(fn=cmd_env_rollback)
+    ev = esub.add_parser("recover", help="what a restart should know")
+    ev.add_argument("names", nargs="*")
+    ev.add_argument("--json", action="store_true")
+    ev.set_defaults(fn=cmd_env_recover)
 
     pj = sub.add_parser(
         "jupyter",
