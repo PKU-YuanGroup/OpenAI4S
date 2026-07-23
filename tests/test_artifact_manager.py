@@ -380,6 +380,67 @@ def test_restore_backfills_legacy_latest_before_broadcast(tmp_path):
     ]
 
 
+def test_restore_carries_the_retrieval_provenance_forward(tmp_path):
+    """A restored version must keep the source row's retrieval envelope — the URL,
+    timestamp and response hash that say where the bytes came from.
+
+    `record_artifact_restore` inserted the new latest row copying only
+    `env_snapshot_id`, so a retrieval-backed version looked *unsourced* after a
+    restore in latest-version exports and evidence checks, even though the
+    historical row it was restored from was fully sourced.
+    """
+    harness = ArtifactHarness(tmp_path)
+    snap = harness.workspace / ".snap-alpha"
+    snap.write_bytes(b"ALPHA")
+    envelope = {
+        "url": "https://example.org/data.csv",
+        "retrieved_at": 1_700_000_000,
+        "sha256": hashlib.sha256(b"ALPHA").hexdigest(),
+    }
+    first = harness.store.save_artifact(
+        path=str(harness.workspace / "data.csv"),
+        filename="data.csv",
+        content_type="text/csv",
+        size_bytes=5,
+        checksum=hashlib.sha256(b"ALPHA").hexdigest(),
+        producing_cell_id="cell-1",
+        frame_id=harness.frame_id,
+        project_id="default",
+        snapshot_path=str(snap),
+        source=envelope,
+    )
+    # A newer version becomes latest, so the sourced row is a historical one.
+    second = harness.store.save_artifact(
+        path=str(harness.workspace / "data.csv"),
+        filename="data.csv",
+        content_type="text/csv",
+        size_bytes=4,
+        checksum=hashlib.sha256(b"BETA").hexdigest(),
+        producing_cell_id="cell-2",
+        frame_id=harness.frame_id,
+        project_id="default",
+        artifact_id=first["artifact_id"],
+    )
+
+    restored = harness.store.record_artifact_restore(
+        artifact_id=first["artifact_id"],
+        source_version_id=first["version_id"],
+        expected_latest_version_id=second["version_id"],
+        version_id="v-restored-provenance",
+        path=str(harness.workspace / "data.csv"),
+        snapshot_path=str(snap),
+        size_bytes=5,
+        checksum=hashlib.sha256(b"ALPHA").hexdigest(),
+        frame_id=harness.frame_id,
+    )
+
+    restored_meta = harness.store.version_meta(restored["version_id"])
+    source_meta = harness.store.version_meta(first["version_id"])
+    assert restored_meta["source"], "restored version lost its retrieval envelope"
+    assert restored_meta["source"] == source_meta["source"]
+    assert "example.org/data.csv" in restored_meta["source"]
+
+
 def test_restore_rejects_corrupt_snapshot_and_workspace_drift(tmp_path):
     harness = ArtifactHarness(tmp_path)
     path = harness.workspace / "result.txt"

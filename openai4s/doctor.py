@@ -182,11 +182,19 @@ def _runtime(cfg: Any) -> Check:
     if r_path:
         facts["rscript_path"] = str(r_path)
     if not envs:
+        # The R channel does not require a prebuilt conda env: the resolver falls
+        # back to PATH, and `r_worker.R` runs happily against a system Rscript.
+        # Reporting "R cells will not run" whenever no env is built was wrong on
+        # exactly those hosts — it named an interpreter the kernel *would* use as
+        # unavailable. Report what the same resolver actually found.
+        r_clause = (
+            f"R cells will run against {r_path}" if r_path else "R cells will not run"
+        )
         return Check(
             "runtime",
             WARN,
             "no prebuilt environment found; Python cells will run in the "
-            "daemon's own interpreter and R cells will not run",
+            f"daemon's own interpreter and {r_clause}",
             "Run `openai4s setup` (or `./setup.sh --with-kernel-envs`) to build "
             "the Python and R environments.",
             facts,
@@ -432,12 +440,23 @@ def _remote(cfg: Any) -> Check:
         confinement = _confinement_mode(raw_confinement)
     except Exception as e:  # noqa: BLE001 - an invalid mode is a hard config fault
         facts["confinement_mode"] = (raw_confinement or "").strip()
-        if providers:
+        # `ComputeManager.__init__` parses this mode unconditionally
+        # (manager.py: `self._confinement_mode = _confinement_mode()`), so an
+        # invalid value makes construction raise for *any* remote setup — not
+        # only BYOC providers. An SSH-only host used to slip through to WARN and
+        # report "fixable" while the manager would refuse to start; that is a
+        # hard fault whenever remote compute is configured at all.
+        if providers or ssh_available:
+            configured = (
+                f"{len(providers)} BYOC provider(s)"
+                if providers
+                else "the ssh remote-compute family"
+            )
             return Check(
                 "remote",
                 FAIL,
-                f"{len(providers)} BYOC provider(s) present but the confinement "
-                f"mode is invalid, so remote compute cannot start: {e}",
+                f"{configured} present but the confinement mode is invalid, so "
+                f"remote compute cannot start: {e}",
                 "Set OPENAI4S_COMPUTE_CONFINEMENT to auto, enforce, or off.",
                 facts,
             )

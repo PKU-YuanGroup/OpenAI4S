@@ -699,11 +699,22 @@ class ArtifactRepository:
 
                 filename = source["filename"] or artifact["filename"]
                 content_type = source["content_type"] or artifact["content_type"]
+                # Carry the retrieval-provenance envelope forward too. A normal
+                # version write persists `source`; the restore insert copied
+                # only `env_snapshot_id`, so a restored retrieval-backed version
+                # lost its request URL, timestamp and response hash in
+                # latest-version exports and evidence checks — the restored bytes
+                # would look unsourced even though the historical row was not.
+                source_envelope = None
+                try:
+                    source_envelope = source["source"]
+                except (IndexError, KeyError):
+                    source_envelope = None
                 self._connection.execute(
                     "INSERT INTO artifact_versions(version_id,artifact_id,"
                     "filename,content_type,size_bytes,checksum,path,"
                     "snapshot_path,producing_cell_id,frame_id,created_at,"
-                    "env_snapshot_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "env_snapshot_id,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         version_id,
                         artifact_id,
@@ -717,6 +728,7 @@ class ArtifactRepository:
                         frame_id,
                         now,
                         source["env_snapshot_id"],
+                        source_envelope,
                     ),
                 )
                 self._connection.execute(

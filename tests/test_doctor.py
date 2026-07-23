@@ -339,6 +339,42 @@ def test_no_r_anywhere_still_warns(cfg, monkeypatch):
     assert "R cells will not run" in check["detail"]
 
 
+def test_no_prebuilt_env_but_r_on_path_does_not_claim_r_is_dead(cfg, monkeypatch):
+    """The R channel does not need a conda env: the resolver falls back to PATH
+    and `r_worker.R` runs against a system Rscript. Reporting "R cells will not
+    run" whenever no env is built named an interpreter the kernel *would* use as
+    unavailable."""
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.discover_environments",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(
+        "openai4s.kernel.r_kernel.resolve_r_interpreter",
+        lambda *a, **k: "/usr/local/bin/Rscript",
+    )
+
+    check = _by_name(doctor.report(cfg))["runtime"]
+    assert check["status"] == doctor.WARN  # still no Python env built
+    assert "R cells will not run" not in check["detail"]
+    assert "/usr/local/bin/Rscript" in check["detail"]
+    assert check["facts"]["rscript_path"] == "/usr/local/bin/Rscript"
+
+
+def test_no_prebuilt_env_and_no_r_still_says_r_will_not_run(cfg, monkeypatch):
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.discover_environments",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(
+        "openai4s.kernel.r_kernel.resolve_r_interpreter",
+        lambda *a, **k: None,
+    )
+
+    check = _by_name(doctor.report(cfg))["runtime"]
+    assert check["status"] == doctor.WARN
+    assert "R cells will not run" in check["detail"]
+
+
 def test_a_backend_whose_self_test_fails_is_not_reported_active(cfg, monkeypatch):
     """The most important thing this command can get wrong before a release.
 

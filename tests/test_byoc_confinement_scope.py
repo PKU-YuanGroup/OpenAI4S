@@ -278,6 +278,48 @@ def test_doctor_still_fails_closed_when_enforce_cannot_be_satisfied(
     assert "bwrap is not on PATH" in check.detail
 
 
+def test_an_invalid_mode_fails_for_an_ssh_only_host_not_just_byoc(
+    tmp_path, monkeypatch
+):
+    """`ComputeManager.__init__` parses the confinement mode unconditionally, so
+    an invalid value makes construction raise even with no BYOC provider — an
+    ssh-only host used to slip through to a "fixable" WARN while the manager
+    would refuse to start."""
+    from openai4s import doctor as doctor_mod
+    from openai4s.compute.manager import ComputeManager
+
+    skills = tmp_path / "skills"
+    (skills / "remote-compute-ssh").mkdir(parents=True)  # a family, not a provider
+    cfg = types.SimpleNamespace(data_dir=tmp_path, skills_dir=skills, db_path=None)
+
+    monkeypatch.setenv("OPENAI4S_COMPUTE_CONFINEMENT", "enfore")  # typo, invalid
+
+    # The runtime this doctor speaks for: construction is a hard failure.
+    with pytest.raises(Exception):
+        ComputeManager(cfg)
+
+    check = doctor_mod._remote(cfg)
+    assert check.status == doctor_mod.FAIL, (
+        "doctor said an invalid confinement mode was a fixable warning while the "
+        "manager it speaks for refuses to construct"
+    )
+    assert "ssh" in check.detail.lower()
+
+
+def test_an_invalid_mode_with_no_remote_at_all_is_only_a_warning(tmp_path, monkeypatch):
+    """Nothing remote is configured, so a bad mode cannot stop any real op — it
+    is worth flagging but not a hard failure."""
+    from openai4s import doctor as doctor_mod
+
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    cfg = types.SimpleNamespace(data_dir=tmp_path, skills_dir=skills, db_path=None)
+
+    monkeypatch.setenv("OPENAI4S_COMPUTE_CONFINEMENT", "enfore")
+    check = doctor_mod._remote(cfg)
+    assert check.status == doctor_mod.WARN
+
+
 def test_the_manager_and_doctor_describe_the_same_posture(tmp_path, monkeypatch):
     from openai4s.compute.manager import ComputeManager
 
