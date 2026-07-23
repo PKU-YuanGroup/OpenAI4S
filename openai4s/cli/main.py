@@ -601,6 +601,8 @@ def cmd_env_plan(args) -> int:
 
 
 def cmd_env_apply(args) -> int:
+    from openai4s.kernel.env_generations import EnvironmentError_
+
     cfg = get_config()
     tool = _find_conda_tool()
     if not tool:
@@ -611,12 +613,16 @@ def cmd_env_apply(args) -> int:
     for name in args.names:
         spec = _env_spec(name)
         plan = store.plan(name, spec, tool=tool)
-        if not plan.changes:
-            print(f"  [{name}] up to date ({plan.reason})")
-            continue
         if args.dry_run:
-            print(f"  [{name}] would {plan.action}: {plan.reason}")
+            if plan.changes:
+                print(f"  [{name}] would {plan.action}: {plan.reason}")
+            else:
+                print(f"  [{name}] up to date ({plan.reason})")
             continue
+        # A real (non-dry-run) no-op still goes through `store.apply`, not a
+        # short-circuit here: its locked validation is what catches the pointer
+        # or spec moving between plan and apply, which a bare "up to date" would
+        # report success over.
 
         def build(prefix: Path, staged_spec: Path, _tool=tool):
             # The *staged* spec, never the live one: the manifest records the
@@ -633,8 +639,15 @@ def cmd_env_apply(args) -> int:
                 str(staged_spec),
             ]
 
-        result = store.apply(plan, spec, tool=tool, build=build, verify=_env_verify)
-        if result.ok:
+        try:
+            result = store.apply(plan, spec, tool=tool, build=build, verify=_env_verify)
+        except EnvironmentError_ as e:
+            failed += 1
+            print(f"  [{name}] FAILED: {e}", file=sys.stderr)
+            continue
+        if result.ok and not plan.changes:
+            print(f"  [{name}] up to date ({result.detail or 'no change'})")
+        elif result.ok:
             print(f"  [{name}] now generation {result.generation.id}")
         else:
             failed += 1

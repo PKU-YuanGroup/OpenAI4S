@@ -497,10 +497,22 @@ class EnvironmentStore:
             if gen_dir.exists():  # pragma: no cover - a uuid collision
                 shutil.rmtree(gen_dir, ignore_errors=True)
             gen_dir.mkdir(parents=True)
-            # Build from an immutable copy. Re-hashing closes the plan→apply
-            # window; the copy closes the apply→build one, which no hash can.
+            # Build from an immutable copy. Re-hashing before the copy closes
+            # the plan→apply window; re-hashing the *copy* closes the tiny
+            # apply-hash→copy window, where an atomic editor replace could swap
+            # the live file after we hashed it but before this read — the apply
+            # lock does not order ordinary file edits. The manifest must never
+            # record a hash the staged bytes do not have.
             staged_spec = gen_dir / f"spec{live.suffix or '.yml'}"
             shutil.copyfile(live, staged_spec)
+            staged_sha = _sha256_file(staged_spec)
+            if staged_sha != plan.spec_sha256:
+                shutil.rmtree(gen_dir, ignore_errors=True)
+                raise EnvironmentError_(
+                    f"the spec for {name!r} changed while it was being copied "
+                    f"for the build ({plan.spec_sha256[:12]} -> "
+                    f"{staged_sha[:12]}); re-plan"
+                )
             prefix = gen_dir / "prefix"
             record = {
                 "generation_id": generation_id,
@@ -891,8 +903,24 @@ class _apply_lock:
         except OSError:  # pragma: no cover
             still_stale = True
         if not still_stale:
+            # Restore the fresh lock we should not have moved — but only if the
+            # path is *empty*. `os.replace` would overwrite a lock a third
+            # racer acquired in the gap (the original owner and that third
+            # process would then both enter the critical section). `os.link`
+            # never overwrites: if the path is occupied, the rightful new owner
+            # keeps it and we simply drop the copy we lifted.
             try:
-                os.replace(aside, self._path)
+                os.link(aside, self._path)
+            except FileExistsError:
+                pass  # a third process legitimately holds it now; leave it
+            except OSError:  # pragma: no cover - cross-fs; only replace if empty
+                if not self._path.exists():
+                    try:
+                        os.replace(aside, self._path)
+                    except OSError:
+                        pass
+            try:
+                os.unlink(aside)
             except OSError:  # pragma: no cover
                 pass
             raise ConcurrentApply(

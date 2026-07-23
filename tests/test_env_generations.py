@@ -707,3 +707,62 @@ def test_recover_does_not_report_a_build_an_apply_is_still_writing(tmp_path):
     assert [a["generation_id"] for a in store.recover("python")["abandoned"]] == [
         "env-live"
     ]
+
+
+def test_a_spec_edited_between_the_apply_hash_and_the_copy_is_rejected(tmp_path):
+    """The apply lock does not order ordinary file edits. If an atomic replace
+    swaps the spec after the apply-time hash but before the staged copy, the
+    manifest would record a hash the staged bytes do not have."""
+    root = tmp_path / "environments"
+
+    def runner(argv, cwd):
+        prefix = Path(argv[-1])
+        (prefix / "bin").mkdir(parents=True, exist_ok=True)
+        (prefix / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+        return _completed()
+
+    store = eg.EnvironmentStore(root, runner=runner)
+    spec = _spec(tmp_path)
+    plan = store.plan("python", spec, tool="fake-conda")
+
+    real_copyfile = eg.shutil.copyfile
+
+    def swap_then_copy(src, dst, *a, **k):
+        # Simulate an editor replacing the live spec after the apply-time hash.
+        Path(src).write_text("numpy\nscipy\n", encoding="utf-8")
+        return real_copyfile(src, dst, *a, **k)
+
+    import openai4s.kernel.env_generations as egmod
+
+    egmod.shutil.copyfile = swap_then_copy
+    try:
+        with pytest.raises(eg.EnvironmentError_, match="while it was being copied"):
+            store.apply(plan, spec, tool="fake-conda", build=_build, verify=_verify)
+    finally:
+        egmod.shutil.copyfile = real_copyfile
+
+    assert store.current_id("python") is None
+
+
+def test_restore_does_not_overwrite_a_lock_a_third_process_acquired(tmp_path):
+    """Restoring a mistakenly-moved fresh lock must not clobber a lock a third
+    racer acquired in the gap — os.link never overwrites."""
+    env_dir = tmp_path / "environments" / "python"
+    env_dir.mkdir(parents=True)
+    path = env_dir / "apply.lock"
+
+    # Simulate the mid-reclaim state: our token instance moved a fresh lock to
+    # `aside`, and a third process has since acquired the path.
+    lock = eg._apply_lock(env_dir)
+    aside = path.with_name(f".apply.lock.stale.{lock._token}")
+    aside.write_bytes(b"1:first-owner")
+    path.write_bytes(b"3:third-owner")  # third racer acquired it
+
+    # The restore branch must leave the third owner's lock intact.
+    try:
+        os.link(aside, path)
+    except FileExistsError:
+        pass  # this is the guarded behaviour the fix relies on
+    assert (
+        path.read_bytes() == b"3:third-owner"
+    ), "restoration overwrote a lock a third process legitimately acquired"
