@@ -56,7 +56,11 @@ def store(tmp_path):
     return eg.EnvironmentStore(tmp_path / "environments", runner=runner)
 
 
-def _build(prefix: Path):
+def _build(prefix: Path, staged_spec: Path):
+    # `staged_spec` is the immutable copy taken under the apply lock, not the
+    # caller's path: the manifest's hash has to describe the bytes that were
+    # actually built from, and a live path can be edited after the hash.
+    assert staged_spec.is_file()
     return ("fake-conda", "env", "create", "--prefix", str(prefix))
 
 
@@ -218,7 +222,7 @@ def test_a_build_that_raises_before_running_still_reports(tmp_path):
     spec = _spec(tmp_path)
     plan = store.plan("python", spec, tool="fake-conda")
 
-    def exploding_build(_prefix):
+    def exploding_build(_prefix, _staged_spec):
         raise RuntimeError("the tool is not installed")
 
     result = store.apply(

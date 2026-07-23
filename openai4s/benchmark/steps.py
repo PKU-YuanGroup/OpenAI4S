@@ -325,7 +325,7 @@ def environment_transaction(ctx: Context, inputs: dict) -> dict:
 
     store = eg.EnvironmentStore(ctx.root / "environments", runner=runner)
 
-    def build(prefix):
+    def build(prefix, staged_spec):
         return ["fake-conda", "env", "create", "--prefix", str(prefix)]
 
     def verify(prefix):

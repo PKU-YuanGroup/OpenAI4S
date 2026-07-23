@@ -865,19 +865,31 @@ class ArtifactManager:
             snapshot["provenance"] = "assumed: no kernel generation on record"
 
         if runtime == "python":
-            packages = (
-                self._frozen_packages(interpreter, generation)
-                if interpreter
-                else preinstall.full_freeze()
-            )
+            if interpreter:
+                packages = self._frozen_packages(interpreter, generation)
+            elif generation:
+                # A generation *is* on record — legacy, imported, or written
+                # before the environment carried an interpreter path. Freezing
+                # the daemon here attributed this process's packages to that
+                # generation id, which is confidently wrong provenance rather
+                # than absent provenance. The daemon may only describe the case
+                # where no generation exists at all.
+                packages = None
+            else:
+                packages = preinstall.full_freeze()
             if packages is None:
-                # Naming the interpreter we could not read beats implying the
-                # daemon's packages were this kernel's.
+                # Naming what we could not read beats implying the daemon's
+                # packages were this kernel's.
                 snapshot["packages"] = []
                 snapshot["package_count"] = 0
-                snapshot[
-                    "packages_unavailable"
-                ] = f"could not read distributions from {interpreter!r}"
+                snapshot["packages_unavailable"] = (
+                    f"could not read distributions from {interpreter!r}"
+                    if interpreter
+                    else (
+                        "this kernel generation records no interpreter, and "
+                        "the daemon's packages are not this kernel's"
+                    )
+                )
             else:
                 snapshot["packages"] = packages
                 snapshot["package_count"] = len(packages)

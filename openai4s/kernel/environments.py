@@ -91,6 +91,10 @@ class Environment:
     rscript: str | None = None
     is_conda: bool = True  # base is synthetic; conda envs prepend bin to PATH
     builtin: bool = True
+    #: Set when this environment is the *current generation* of an applied
+    #: `openai4s env` transaction, so a caller can tell an environment someone
+    #: deliberately switched to from one that happened to be on disk.
+    generation_id: str | None = None
     _packages: set[str] | None = field(default=None, repr=False, compare=False)
     _pyversion: str | None = field(default=None, repr=False, compare=False)
 
@@ -298,6 +302,66 @@ def _detect_env(env_dir: Path) -> Environment | None:
     )
 
 
+def _generation_root() -> Path | None:
+    """Where ``openai4s env apply`` writes generations, or None if unknown.
+
+    An explicit override first, so a test or a relocated install does not have
+    to construct a Config just to be discoverable.
+    """
+    override = os.environ.get("OPENAI4S_ENV_GENERATIONS_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+    try:
+        from openai4s.config import get_config
+
+        return Path(get_config().data_dir) / "environments"
+    except Exception:  # noqa: BLE001 - discovery must not depend on config
+        return None
+
+
+def _generation_environments() -> list[Environment]:
+    """The environments an applied transaction actually points at.
+
+    This is the half that was missing. ``env apply`` built a generation, proved
+    it, and moved ``<root>/<name>/current`` — while discovery scanned Conda
+    roots and nothing else. Neither apply nor rollback could change the
+    interpreter a cell ran under, so a verified, immutable, atomically-swapped
+    transaction was also completely inert.
+
+    A pointer is read, never a directory listing: only the *current* generation
+    is offerable, and a superseded one is on disk precisely so a rollback can
+    return to it, not so a kernel can wander into it.
+    """
+    root = _generation_root()
+    if root is None or not root.is_dir():
+        return []
+    found: list[Environment] = []
+    for env_dir in sorted(root.iterdir()):
+        if not env_dir.is_dir() or env_dir.name.startswith("."):
+            continue
+        pointer = env_dir / "current"
+        try:
+            generation_id = pointer.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if not generation_id:
+            continue
+        prefix = env_dir / "generations" / generation_id / "prefix"
+        if not prefix.is_dir():
+            # A pointer at a generation that is not there is a fact worth not
+            # papering over, but discovery is not the place to raise: `env
+            # recover` reports it, and offering a prefix that does not exist
+            # would only move the failure into a kernel spawn.
+            continue
+        environment = _detect_env(prefix)
+        if environment is None:
+            continue
+        environment.name = env_dir.name
+        environment.generation_id = generation_id
+        found.append(environment)
+    return found
+
+
 def _base_environment() -> Environment:
     """The daemon's own interpreter as a first-class env (the preinstalled
     stack lives here). Never prepends anything to PATH."""
@@ -321,6 +385,14 @@ def discover_environments(force: bool = False) -> list[Environment]:
             return _CACHE
         hidden = _hidden_names()
         found: dict[str, Environment] = {"base": _base_environment()}
+        # Applied generations first: the pointer is an explicit act by the
+        # person running this install, and a scanned Conda directory is an
+        # inference. On a name collision the deliberate one has to win, or
+        # `env apply` would report success and change nothing observable.
+        for environment in _generation_environments():
+            if environment.name in hidden or environment.name == "base":
+                continue
+            found.setdefault(environment.name, environment)
         for root in _env_roots():
             if not root.is_dir():
                 continue
@@ -338,6 +410,19 @@ def discover_environments(force: bool = False) -> list[Environment]:
         ordered = [base] + [found[k] for k in sorted(found)]
         _CACHE = ordered
         return _CACHE
+
+
+def invalidate_cache() -> None:
+    """Forget the discovered set. Called whenever a pointer moves.
+
+    Discovery is cached module-wide, so an ``apply`` or ``rollback`` that moved
+    the current generation would otherwise keep serving the interpreter from
+    before the switch until the daemon restarted — a transaction that took
+    effect only for processes that had not looked yet.
+    """
+    global _CACHE
+    with _LOCK:
+        _CACHE = None
 
 
 def get_environment(name: str | None) -> Environment | None:

@@ -80,6 +80,85 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+#: A probe that has not answered in this long is a broken environment, not a
+#: slow one — nothing here does work, it only starts an interpreter.
+PROBE_TIMEOUT_S = 60.0
+
+
+def _run_probe(argv: Sequence[str], *, label: str) -> None:
+    """Start an interpreter and require it to exit cleanly."""
+    try:
+        completed = subprocess.run(  # noqa: S603 - argv is built here
+            list(argv), capture_output=True, timeout=PROBE_TIMEOUT_S
+        )
+    except PermissionError as e:
+        raise EnvironmentError_(f"{label} is not executable: {e}")
+    except (FileNotFoundError, OSError) as e:
+        raise EnvironmentError_(f"{label} could not start: {e}")
+    except subprocess.TimeoutExpired:
+        raise EnvironmentError_(f"{label} did not finish within {PROBE_TIMEOUT_S:.0f}s")
+    if completed.returncode != 0:
+        raise EnvironmentError_(
+            f"{label} exited {completed.returncode}: "
+            f"{_tail(completed.stderr) or 'no stderr'}"
+        )
+
+
+def probe_interpreter(prefix: Path) -> tuple[str, list[str]]:
+    """Run what the build produced. Nothing short of that proves it works.
+
+    The previous check asked whether a file *existed* at ``bin/python`` or
+    ``bin/Rscript``, and then tried to freeze the Python one — with the freeze
+    failure swallowed into an empty package list. So a prefix holding a
+    non-executable file, or an interpreter that dies on startup, passed; and an
+    R generation was never executed at all. The pointer could move onto an
+    environment that no cell could run in, with the transaction reporting that
+    it had verified it.
+
+    Returns ``(interpreter, packages)``. The package list is documentation, not
+    the gate: the probe above it is the gate, so a freeze that fails leaves the
+    list empty without pretending the environment is broken.
+    """
+    prefix = Path(prefix)
+    python = prefix / "bin" / "python"
+    if not python.is_file():
+        python = prefix / "bin" / "python3"
+    rscript = prefix / "bin" / "Rscript"
+    if not python.is_file() and not rscript.is_file():
+        raise EnvironmentError_(
+            f"the build produced no interpreter under {prefix}; refusing to "
+            f"make it current"
+        )
+
+    interpreter = ""
+    packages: list[str] = []
+    if python.is_file():
+        _run_probe(
+            [
+                str(python),
+                "-c",
+                "import sys, platform; print(platform.python_version())",
+            ],
+            label=f"python probe for {python}",
+        )
+        interpreter = str(python)
+        try:
+            from openai4s.kernel import preinstall
+
+            frozen = preinstall.freeze_for(str(python)) or []
+            packages = [f"{item['name']}=={item.get('version')}" for item in frozen]
+        except Exception:  # noqa: BLE001 - a package list is not the gate
+            packages = []
+    if rscript.is_file():
+        _run_probe(
+            [str(rscript), "--vanilla", "-e", "cat(R.version.string)"],
+            label=f"R probe for {rscript}",
+        )
+        if not interpreter:
+            interpreter = str(rscript)
+    return interpreter, packages
+
+
 def _default_runner(argv: Sequence[str], cwd: Path):
     return subprocess.run(
         [str(part) for part in argv], cwd=str(cwd), capture_output=True, timeout=3600
@@ -328,11 +407,35 @@ class EnvironmentStore:
                     f"against the new current generation"
                 )
             previous = observed
+            # The spec is re-hashed *here*, under the lock, and then copied.
+            # The manifest recorded `plan.spec_sha256` while the build read the
+            # live YAML through a path captured at plan time, so a file edited
+            # in between produced a generation whose recorded provenance did
+            # not describe its contents — which is worse than no provenance,
+            # because it is believed.
+            live = Path(spec)
+            try:
+                observed_sha = _sha256_file(live)
+            except OSError as e:
+                raise EnvironmentError_(
+                    f"the spec for {name!r} could not be read at apply time: {e}"
+                )
+            if observed_sha != plan.spec_sha256:
+                raise EnvironmentError_(
+                    f"the spec for {name!r} changed between plan and apply "
+                    f"({plan.spec_sha256[:12]} -> {observed_sha[:12]}); "
+                    f"re-plan against the file as it stands now"
+                )
+
             generation_id = "env-" + uuid.uuid4().hex[:16]
             staging = env_dir / f".staging-{generation_id}"
             if staging.exists():  # pragma: no cover - a uuid collision
                 shutil.rmtree(staging, ignore_errors=True)
             staging.mkdir(parents=True)
+            # Build from an immutable copy. Re-hashing closes the plan→apply
+            # window; the copy closes the apply→build one, which no hash can.
+            staged_spec = staging / f"spec{live.suffix or '.yml'}"
+            shutil.copyfile(live, staged_spec)
             prefix = staging / "prefix"
             record = {
                 "generation_id": generation_id,
@@ -350,15 +453,18 @@ class EnvironmentStore:
             # name — the failure handler must never be the thing that fails.
             stderr = ""
             try:
-                argv = build(prefix)
+                argv = build(prefix, staged_spec)
                 completed = self._runner(argv, env_dir)
                 stderr = _tail(getattr(completed, "stderr", b""))
                 if completed.returncode != 0:
                     raise EnvironmentError_(
                         f"{tool} exited {completed.returncode} building {name!r}"
                     )
+                # No verifier means the *default* verifier, never no check.
+                # `("", [])` let a caller that simply did not pass one move the
+                # pointer onto an unexamined prefix.
                 interpreter, packages = (
-                    verify(prefix) if verify is not None else ("", [])
+                    verify(prefix) if verify is not None else probe_interpreter(prefix)
                 )
             except Exception as e:  # noqa: BLE001
                 detail = (
@@ -508,11 +614,24 @@ class EnvironmentStore:
 
     # --- internals --------------------------------------------------------
     def _point_at(self, name: str, generation_id: str) -> None:
-        """Move the pointer atomically. A reader sees one id or the other."""
+        """Move the pointer atomically, and tell discovery it moved.
+
+        A reader sees one id or the other. The cache invalidation is here, at
+        the single place a pointer ever changes, rather than at each call site:
+        `apply` and `rollback` both reported a new current generation while
+        `kernel.environments` kept serving its module-wide cache, so the
+        transaction took effect only for processes that had not looked yet.
+        """
         pointer = self._pointer(name)
         temporary = pointer.with_name(f".current.{uuid.uuid4().hex[:8]}")
         temporary.write_text(generation_id + "\n", encoding="utf-8")
         os.replace(temporary, pointer)
+        try:
+            from openai4s.kernel import environments as envmod
+
+            envmod.invalidate_cache()
+        except Exception:  # noqa: BLE001 - a pointer move is not a discovery op
+            pass
 
     def _mark_superseded(self, name: str, generation_id: str) -> None:
         """Note that a generation is no longer current — without editing it.

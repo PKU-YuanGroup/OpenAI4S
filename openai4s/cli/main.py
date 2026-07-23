@@ -578,27 +578,13 @@ def _env_verify(prefix: Path) -> tuple[str, list[str]]:
 
     A build that exits 0 having produced nothing usable is the false success
     this step exists to catch, and it is the same rule the compute manager
-    applies to a job that exits 0 having written no outputs.
+    applies to a job that exits 0 having written no outputs. The check used to
+    stop at "a file exists at that path"; it now *starts the interpreter*, in
+    both languages, because a file is not an environment.
     """
-    for candidate in (prefix / "bin" / "python", prefix / "bin" / "Rscript"):
-        if candidate.is_file():
-            break
-    else:
-        raise RuntimeError(
-            f"the build produced no interpreter under {prefix}; refusing to "
-            f"make it current"
-        )
-    packages: list[str] = []
-    python = prefix / "bin" / "python"
-    if python.is_file():
-        try:
-            from openai4s.kernel import preinstall
+    from openai4s.kernel.env_generations import probe_interpreter
 
-            frozen = preinstall.freeze_for(str(python)) or []
-            packages = [f"{item['name']}=={item.get('version')}" for item in frozen]
-        except Exception:  # noqa: BLE001 - a package list is not the gate
-            packages = []
-    return str(candidate), packages
+    return probe_interpreter(prefix)
 
 
 def cmd_env_plan(args) -> int:
@@ -632,7 +618,10 @@ def cmd_env_apply(args) -> int:
             print(f"  [{name}] would {plan.action}: {plan.reason}")
             continue
 
-        def build(prefix: Path, _spec=spec, _tool=tool):
+        def build(prefix: Path, staged_spec: Path, _tool=tool):
+            # The *staged* spec, never the live one: the manifest records the
+            # hash taken under the apply lock, and building from a file that
+            # can still be edited would make that hash describe something else.
             return [
                 _tool,
                 "env",
@@ -641,7 +630,7 @@ def cmd_env_apply(args) -> int:
                 "--prefix",
                 str(prefix),
                 "-f",
-                str(_spec),
+                str(staged_spec),
             ]
 
         result = store.apply(plan, spec, tool=tool, build=build, verify=_env_verify)
