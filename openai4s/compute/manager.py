@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -583,11 +584,53 @@ class ComputeManager:
         # Without a workspace (the CLI) the data dir is still the right home.
         self._hpc_root = Path(workspace or cfg.data_dir) / "hpc"
         self._hpc_root.mkdir(parents=True, exist_ok=True)
+        # Resolved once, at construction, before any cell has run: the value a
+        # later harvest must still be contained by. `_hpc_root` lives inside the
+        # kernel-writable workspace, so a cell can replace it — or pre-create a
+        # per-job dir — with a symlink and redirect the harvest anywhere the
+        # daemon can write. `_safe_harvest_dest` checks against this.
+        self._hpc_root_real = os.path.realpath(self._hpc_root)
         self._rehydrate()
         self._confinement_mode = _confinement_mode()
         # See _confinement_gate: no host-side byoc boundary exists yet, so the
         # helper is never asked to assert one it cannot have.
         self._require_confinement = False
+
+    def _safe_harvest_dest(self, job_id: str) -> Path:
+        """The per-job harvest directory, proven to be under the hpc root.
+
+        The hpc root sits inside the kernel-writable workspace, so a cell can
+        turn ``hpc``, ``hpc/<job_id>``, or a child into a symlink before a
+        harvest runs — and the subsequent ``mkdir``, ``safe_extract_tar`` and
+        ``shutil.copy2`` would follow it, writing remote bytes anywhere the
+        daemon can. ``safe_extract_tar`` guards the archive's *contents*; this
+        guards the destination the contents land in.
+
+        A symlink anywhere on the path is refused, and the resolved directory
+        is re-checked for containment against the root resolved at construction
+        — before any cell had run.
+        """
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(job_id or "")).strip("._") or "job"
+        if os.path.islink(self._hpc_root):
+            raise ComputeError(
+                "the harvest root is a symlink; refusing to write through it",
+                "unsafe_archive",
+            )
+        self._hpc_root.mkdir(parents=True, exist_ok=True)
+        dest = self._hpc_root / name
+        if dest.is_symlink():
+            raise ComputeError(
+                f"the harvest directory for {name!r} is a symlink; refusing",
+                "unsafe_archive",
+            )
+        dest.mkdir(parents=True, exist_ok=True)
+        real_dest = os.path.realpath(dest)
+        if os.path.commonpath((self._hpc_root_real, real_dest)) != self._hpc_root_real:
+            raise ComputeError(
+                f"the harvest directory for {name!r} escapes the hpc root",
+                "unsafe_archive",
+            )
+        return dest
 
     # --- durability -------------------------------------------------------
     def _rehydrate(self) -> None:
@@ -1091,9 +1134,23 @@ class ComputeManager:
                     ),
                 )
                 confined = True
-            except byoc_confinement.ConfinementUnavailable:
-                # `enforce` already refused in _confinement_gate; reaching here
-                # in `auto` is the documented visible degradation.
+            except byoc_confinement.ConfinementUnavailable as exc:
+                # `_confinement_gate` only guards submit, and `available()` now
+                # runs a real self-test that can newly report unavailable at
+                # wrap() time even after that gate passed (a cleared cache, a
+                # backend that stopped working). Falling through to the plain
+                # helper here would run the credential and the provider shim
+                # unconfined despite `enforce`. Only `auto` may degrade; enforce
+                # fails closed, on every op, not just submit.
+                if self._confinement_mode == "enforce":
+                    raise ComputeError(
+                        f"provider helper for op {op!r} cannot run: "
+                        f"{_CONFINEMENT_ENV}=enforce and no OS boundary could be "
+                        f"established ({exc}); refusing to run unconfined",
+                        "confinement_unavailable",
+                        indeterminate=False,
+                    )
+                # `auto`: the documented visible degradation.
                 argv = plain_argv
         # Scrub inherited secrets from the child env; the helper's own prologue
         # also drops the provider's secret_env_prefixes.
@@ -1643,7 +1700,7 @@ class ComputeManager:
                 entries = []
                 harvest_error = str(e)
 
-        dest = self._hpc_root / job["job_id"]
+        dest = self._safe_harvest_dest(job["job_id"])
         out_files = [str(dest / item["path"]) for item in entries]
         featured, missing = manifest.reconcile(entries, job.get("outputs"))
         featured_files = [str(dest / rel) for rel in featured]
@@ -1738,8 +1795,7 @@ class ComputeManager:
         Raises UnsafeArchiveError if the archive is hostile; the caller must
         treat that as a failed harvest, never a partial success.
         """
-        dest = self._hpc_root / job_id
-        dest.mkdir(parents=True, exist_ok=True)
+        dest = self._safe_harvest_dest(job_id)
         tgz = stage / "out.tar.gz"
         if not tgz.exists():
             # No archive at all. Previously this returned an empty list with no
@@ -1806,8 +1862,7 @@ class ComputeManager:
         except ValueError:
             return self._ssh_unknown(job, f"unparseable exit code {rc_text!r}")
 
-        dest = self._hpc_root / job["job_id"]
-        dest.mkdir(parents=True, exist_ok=True)
+        dest = self._safe_harvest_dest(job["job_id"])
         stay_remote = manifest.remote_patterns(job.get("outputs"))
         harvest_error, oversized, stayed = self._harvest_ssh(
             alias, workdir, dest, stay_remote

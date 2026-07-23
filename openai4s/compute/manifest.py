@@ -123,6 +123,11 @@ def reconcile(
 
     With nothing declared, every harvested file is featured — the documented
     behaviour of omitting ``outputs``, and there is nothing to fail against.
+    But a declaration made *entirely* of hidden or stay-remote entries is not
+    the same as no declaration: its featured-and-local subset is empty on
+    purpose. Featuring every harvested file in that case surfaces exactly the
+    diagnostics the caller marked hidden, so an empty featured subset from a
+    non-empty declaration features nothing.
 
     Only *verified* entries can satisfy a pattern. A file whose bytes could not
     be read has no hash, and a path is not evidence: matching on the path alone
@@ -134,7 +139,9 @@ def reconcile(
     paths = [str(item.get("path") or "") for item in entries if item.get("sha256")]
     patterns = _patterns(declared)
     if not patterns:
-        return list(paths), []
+        # Distinguish "nothing declared" (feature everything) from "declared,
+        # but nothing featured-and-local" (feature nothing).
+        return ([], []) if _declared_items(declared) else (list(paths), [])
 
     featured: list[str] = []
     unmatched: list[str] = []
