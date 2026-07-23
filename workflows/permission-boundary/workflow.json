@@ -1,0 +1,48 @@
+{
+  "id": "permission-boundary",
+  "version": "1.0.0",
+  "title": "workspace 边界拒绝越界写",
+  "summary": "agent 选择写入路径，所以边界必须是代码而不是约定。",
+  "steps": [
+    "open_session",
+    "host_file_write"
+  ],
+  "permissions": [
+    "workspace:write"
+  ],
+  "artifacts": [],
+  "failure_conditions": [
+    "越界路径被接受",
+    "符号链接绕过边界"
+  ],
+  "cases": [
+    {
+      "id": "permission-boundary/inside",
+      "title": "workspace 内正常写入",
+      "outcome": "success",
+      "inputs": {
+        "host_file_write": {
+          "path": "notes/run.txt",
+          "content": "ok"
+        }
+      },
+      "expect": {
+        "path__contains": "notes/run.txt"
+      }
+    },
+    {
+      "id": "permission-boundary/escape",
+      "title": "越界写入必须被拒绝",
+      "outcome": "permission_denied",
+      "inputs": {
+        "host_file_write": {
+          "path": "../../etc/cron.d/evil",
+          "content": "x"
+        }
+      },
+      "expect": {
+        "error__contains": "escapes the workspace"
+      }
+    }
+  ]
+}

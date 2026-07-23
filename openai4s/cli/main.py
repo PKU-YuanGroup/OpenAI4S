@@ -712,6 +712,34 @@ def cmd_env_recover(args) -> int:
     return 0
 
 
+def cmd_benchmark(args) -> int:
+    """Run the versioned workflow benchmark against the real subsystems."""
+    from openai4s.benchmark import load_workflows, run_all
+
+    if args.list:
+        for workflow in load_workflows():
+            print(f"  {workflow.id} v{workflow.version} — {workflow.title}")
+            for case in workflow.cases:
+                print(f"    {case.id} [{case.outcome}] {case.title}")
+        return 0
+    report = run_all()
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        for item in report["results"]:
+            mark = "skip" if item["skipped"] else ("ok  " if item["passed"] else "FAIL")
+            line = f"  [{mark}] {item['case_id']} ({item['expected_outcome']})"
+            if item["detail"]:
+                line += f" — {item['detail']}"
+            print(line)
+        print(
+            f"\n{report['passed']} passed, {report['failed']} failed, "
+            f"{report['skipped']} skipped "
+            f"across {report['workflows']} workflow(s)"
+        )
+    return 1 if report["failed"] else 0
+
+
 def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
     """Call the running daemon's REST API; returns (status, parsed_json)."""
 
@@ -981,6 +1009,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="update existing envs without pruning user-installed packages",
     )
     pu.set_defaults(fn=cmd_setup)
+
+    pb = sub.add_parser(
+        "benchmark",
+        help="run the versioned workflow benchmark against the real subsystems",
+    )
+    pb.add_argument("--json", action="store_true", help="machine-readable report")
+    pb.add_argument("--list", action="store_true", help="list workflows and cases")
+    pb.set_defaults(fn=cmd_benchmark)
 
     pe = sub.add_parser(
         "env",
