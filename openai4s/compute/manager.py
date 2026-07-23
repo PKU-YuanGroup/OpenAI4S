@@ -45,6 +45,7 @@ applied to the byoc helper — see ``confinement_status``.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -657,21 +658,58 @@ class ComputeManager:
 
         The manifest was already built from ``staging`` (host-owned), so this
         move is only about making the files reachable to ``save_artifact``.
-        Replacing wholesale discards anything a cell planted under ``dest``.
+
+        Symlink-resistant. `_safe_harvest_dest` validated the path *earlier*, but
+        the `hpc` parent is in the kernel-writable workspace, so a cell can swap
+        it for a symlink afterwards — and a plain `os.replace`/`copytree` would
+        follow it, moving the trusted tree outside the sandbox. The `hpc` root is
+        opened with `O_NOFOLLOW | O_DIRECTORY` (refusing a symlinked root), the
+        per-job entry is removed via that directory fd (unlinking a link, not its
+        target), and the rename is resolved relative to the fd so the parent
+        cannot be substituted after the check.
         """
+        import stat as _stat
+
         try:
-            if dest.exists():
-                shutil.rmtree(dest)
-        except OSError:
-            pass
-        dest.parent.mkdir(parents=True, exist_ok=True)
+            root_fd = os.open(
+                self._hpc_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+        except OSError as e:
+            raise ComputeError(
+                f"the hpc root is not a real directory ({e}); refusing to "
+                f"publish the harvest through it",
+                "unsafe_archive",
+            )
         try:
-            os.replace(staging, dest)
-        except OSError:
-            # Cross-device (staging under data dir, dest under a workspace on
-            # another mount): fall back to a copy, then drop the staging tree.
-            shutil.copytree(staging, dest, dirs_exist_ok=True)
-            shutil.rmtree(staging, ignore_errors=True)
+            name = dest.name
+            try:
+                existing = os.lstat(name, dir_fd=root_fd)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
+                if _stat.S_ISLNK(existing.st_mode) or not _stat.S_ISDIR(
+                    existing.st_mode
+                ):
+                    # A symlink or a plain file at the entry: unlink the entry
+                    # itself, never whatever it points at.
+                    os.unlink(name, dir_fd=root_fd)
+                else:
+                    # A real directory (possibly cell-planted content): drop it.
+                    shutil.rmtree(self._hpc_root / name)
+            try:
+                os.rename(str(staging), name, dst_dir_fd=root_fd)
+            except OSError as move_err:
+                if getattr(move_err, "errno", None) != errno.EXDEV:
+                    raise
+                # Cross-device: the root fd was opened NOFOLLOW so the parent is
+                # proven real, and the entry was removed above, so a fresh
+                # directory is created here and copied into without following
+                # symlinks from the staging tree.
+                copied = self._hpc_root / name
+                shutil.copytree(staging, copied, symlinks=False)
+                shutil.rmtree(staging, ignore_errors=True)
+        finally:
+            os.close(root_fd)
 
     # --- durability -------------------------------------------------------
     def _rehydrate(self) -> None:

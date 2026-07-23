@@ -16,6 +16,7 @@ Two P1s from the second review, plus one P2, all in the compute manager:
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import types
 from pathlib import Path
@@ -84,6 +85,52 @@ def test_a_legitimate_harvest_dir_is_allowed_and_contained(cfg, tmp_path):
     dest = manager._safe_harvest_dest("job-abc")
     assert dest.is_dir()
     assert Path(manager._hpc_root_real) in dest.resolve().parents
+
+
+def test_publish_refuses_a_symlinked_hpc_root_swapped_after_validation(cfg, tmp_path):
+    """`_safe_harvest_dest` validated the path earlier, but a cell can swap the
+    `hpc` parent for a symlink before publication. The publish must not follow
+    it and move the trusted tree outside the workspace."""
+    ws = tmp_path / "ws"
+    manager = _manager(cfg, ws)
+    staging = manager._host_staging_dir("job-x")
+    (staging / "result.csv").write_text("ok\n", encoding="utf-8")
+
+    outside = tmp_path / "escape"
+    outside.mkdir()
+    # After validation, the cell replaces the hpc root with a symlink.
+    hpc = ws / "hpc"
+    for child in list(hpc.iterdir()):
+        child.unlink() if child.is_file() else shutil.rmtree(child)
+    hpc.rmdir()
+    hpc.symlink_to(outside)
+
+    with pytest.raises(ComputeError) as error:
+        manager._publish_harvest(staging, hpc / "job-x")
+    assert "not a real directory" in str(error.value)
+    # The trusted tree did not land in the attacker's directory.
+    assert not (outside / "job-x").exists()
+
+
+def test_publish_replaces_a_symlinked_per_job_entry_without_following_it(cfg, tmp_path):
+    ws = tmp_path / "ws"
+    manager = _manager(cfg, ws)
+    staging = manager._host_staging_dir("job-y")
+    (staging / "result.csv").write_text("ok\n", encoding="utf-8")
+
+    outside = tmp_path / "escape2"
+    outside.mkdir()
+    (outside / "sentinel").write_text("keep", encoding="utf-8")
+    # The per-job entry is a symlink to the attacker's dir.
+    (ws / "hpc" / "job-y").symlink_to(outside)
+
+    manager._publish_harvest(staging, ws / "hpc" / "job-y")
+
+    # The symlink was replaced by a real dir with the harvested file, and the
+    # attacker's directory was not written into or removed.
+    assert (ws / "hpc" / "job-y" / "result.csv").is_file()
+    assert not (ws / "hpc" / "job-y").is_symlink()
+    assert (outside / "sentinel").exists()
 
 
 def test_the_staging_dir_is_host_owned_and_outside_the_workspace(cfg, tmp_path):
