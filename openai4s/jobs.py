@@ -102,6 +102,14 @@ def _stop_process_group(
     ``pgid`` is passed in because it must be read at spawn time. Looking it up
     here fails once the leader has been reaped, which is precisely the case
     where the surviving group most needs signalling.
+
+    Stated limit: once the leader has been reaped, a pgid is a number the OS
+    may eventually reuse, so a group probe cannot be perfectly certain it is
+    asking about the same job. Nothing short of pidfd closes that window, and
+    the previous code had the same exposure through `os.getpgid`. The window is
+    the interval between reaping the leader and this call, which is short, and
+    erring toward signalling a group that may be gone is safer here than
+    reporting a cancellation that did not happen.
     """
     if pgid is None:
         try:

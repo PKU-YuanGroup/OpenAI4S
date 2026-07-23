@@ -341,8 +341,12 @@ def self_test(*, force: bool = False) -> tuple[bool, str]:
             f"{backend} did not answer its boundary self-test within "
             f"{SELF_TEST_TIMEOUT_S:.0f}s",
         )
-    except OSError as e:
-        verdict = (False, f"{backend} could not be started: {e}")
+    except Exception as e:  # noqa: BLE001
+        # Anything at all. This runs on the path of an ordinary compute
+        # operation, and a probe that blows up must degrade the *confinement*
+        # answer rather than fail the caller's work — "I could not establish a
+        # boundary" is exactly what an unrunnable probe means.
+        verdict = (False, f"{backend} could not be started: {type(e).__name__}: {e}")
 
     with _SELF_TEST_LOCK:
         _SELF_TEST[key] = verdict

@@ -63,8 +63,24 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
         "OPENAI4S_SHARE_ALLOW_INSECURE",
     ):
         monkeypatch.delenv(var, raising=False)
+    # The BYOC confinement self-test caches its verdict process-wide, keyed by
+    # the backend binary and the home directory. A test that stubs
+    # `subprocess.Popen` for its own reasons can make that probe answer
+    # something meaningless, and the answer would then stand for every test
+    # after it. Cleared on both sides so no verdict is inherited.
+    _reset_confinement_self_test()
     yield
+    _reset_confinement_self_test()
     reset_singletons()
+
+
+def _reset_confinement_self_test() -> None:
+    try:
+        from openai4s.security import byoc_confinement
+
+        byoc_confinement.reset_self_test_cache()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------
