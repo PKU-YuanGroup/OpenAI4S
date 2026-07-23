@@ -226,3 +226,22 @@ jobs:
         env:
           OPENAI4S_KERNEL_SANDBOX: enforce
         run: uv run python -m harness.smoke.macos_sandbox
+
+  connector-canary:
+    name: Science connector canary (nightly)
+    # Schedule and manual only: a public API's outage is not a reason to fail a
+    # contributor's PR, and the script exits non-zero only on real schema drift,
+    # never on an upstream being unreachable. See scripts/connector_canary.py.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install the zero-dependency runtime
+        run: uv sync --locked
+      - name: Ask UniProt, RCSB PDB and OpenAlex whether they still parse
+        env:
+          OPENAI4S_ALLOW_NETWORK: "1"
+        run: uv run python scripts/connector_canary.py
