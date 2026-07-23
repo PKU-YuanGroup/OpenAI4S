@@ -80,14 +80,21 @@ def emit(event: str, *, store: Any = None, **fields: Any) -> None:
         pass
 
 
-#: The engine owns the stop-reason vocabulary (openai4s/agent/engine.py and
-#: loop.py): completed, done, cancelled, max_turns, stopped, failed. Mapping it
-#: to the telemetry `outcome` enum is done here, as a pure function, so it can
-#: be tested against the real values rather than guessed at the call site.
+#: The engine owns the stop-reason vocabulary (openai4s/agent/engine.py,
+#: loop.py, server/agent_run.py). Mapping it to the telemetry `outcome` enum is
+#: done here, as a pure function, so it can be tested against the real values
+#: rather than guessed at the call site.
+#:
+#: `submitted` is the engine's *normal* structured completion — the most common
+#: web turn — and `plan` is a successful plan-mode exit. Both were absent, so
+#: they fell to the unknown fallback and reported `error`, inverting the
+#: success metric this exists to measure.
 _OUTCOME = {
     "completed": "ok",
     "done": "ok",
     "stopped": "ok",
+    "submitted": "ok",
+    "plan": "ok",
     "cancelled": "cancelled",
     "max_turns": "timeout",
     "failed": "error",
@@ -105,15 +112,27 @@ def turn_outcome(stop_reason: Any) -> str:
 
 
 def emit_session_start(root_frame_id: str, *, store: Any = None, **fields: Any) -> None:
-    """`session_start`, at most once per session per process."""
+    """`session_start`, at most once per session per process.
+
+    The dedup mark is set only *after* consent, because it used to be set
+    first: a session's first turn on the default-off install marked the frame
+    seen, `emit` then dropped the event for lack of consent, and if the user
+    opted in and continued the same session every later call returned early —
+    so that participation period sent `turn_complete` records with no
+    `session_start` in front of them. Checking consent here, before the mark,
+    keeps the once-per-session guarantee tied to an event that actually went.
+    """
     try:
+        target = _store_for(store)
+        if target is None or consent_mod.read(target) is None:
+            return
         with _LOCK:
             if root_frame_id in _SEEN_SESSIONS:
                 return
             _SEEN_SESSIONS.add(root_frame_id)
     except Exception:  # noqa: BLE001
         return
-    emit("session_start", store=store, **fields)
+    emit("session_start", store=target, **fields)
 
 
 def _dispatch(store: Any, install_id: str, batch: list[dict[str, Any]]) -> None:

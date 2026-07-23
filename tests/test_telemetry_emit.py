@@ -147,6 +147,27 @@ def test_session_start_fires_once_per_session(store, captured):
     assert events == ["session_start", "session_start"]  # a, then b, not a twice
 
 
+def test_a_session_is_not_marked_seen_while_telemetry_is_off(store, captured):
+    """The dedup mark must not be set for an event that never went.
+
+    A first turn at the default-off state marked the frame seen and dropped the
+    event; a later opt-in on the same session then found the frame already seen
+    and never sent `session_start`, so that whole period reported turns with no
+    session in front of them.
+    """
+    # Off: the call is a no-op and must not consume the once-per-session mark.
+    emit_session_start("frame-c", store=store, surface="web")
+    assert captured == []
+
+    # The user opts in mid-session; session_start must still fire.
+    consent_mod.grant(store)
+    emit_session_start("frame-c", store=store, surface="web")
+    events = [b[0]["event"] for _i, b in captured]
+    assert events == [
+        "session_start"
+    ], "opting in mid-session must still produce a session_start"
+
+
 # --------------------------------------------------------------------------
 # the stop-reason mapping, against the engine's real vocabulary
 # --------------------------------------------------------------------------
@@ -158,15 +179,19 @@ def test_session_start_fires_once_per_session(store, captured):
         ("completed", "ok"),
         ("done", "ok"),
         ("stopped", "ok"),
+        ("submitted", "ok"),
+        ("plan", "ok"),
         ("cancelled", "cancelled"),
         ("max_turns", "timeout"),
         ("failed", "error"),
     ],
 )
 def test_every_engine_stop_reason_maps_to_a_declared_outcome(stop_reason, expected):
-    """These six strings are what openai4s/agent/engine.py and loop.py actually
-    return. If the engine gains a seventh, this test is where it should be
-    noticed."""
+    """These strings are what openai4s/agent/engine.py, loop.py and
+    server/agent_run.py actually return — including `submitted` (the normal
+    structured completion) and `plan` (a successful plan-mode exit), which
+    were missing and so reported `error` for successful turns. If the engine
+    gains a new one, this test is where it should be noticed."""
     from openai4s.telemetry.schema import RECORD
 
     assert turn_outcome(stop_reason) == expected
