@@ -276,11 +276,27 @@ def _probe_argv(executable: str, stage: str, home: str) -> list[str]:
 
     Not "did the backend exit 0" — a bwrap that cannot unshare, or a Seatbelt
     profile that failed to compile, can still run a command. The test is the
-    filesystem invariant itself: from inside, the home directory must be empty
-    (Linux, where it is a tmpfs) or unreadable (macOS, where reads are denied).
+    filesystem invariant itself.
+
+    On Linux the invariant is *mount identity*, not emptiness. ``build_bwrap_argv``
+    binds the interpreter's own runtime paths back over the home tmpfs, and on a
+    user install those paths live under ``$HOME`` — so the tmpfs is legitimately
+    non-empty, and an emptiness check would report a working boundary as broken,
+    which makes ``enforce`` reject BYOC and ``auto`` degrade to unconfined. So it
+    compares the home's device id inside the sandbox against the host's real
+    one, exactly as the resident helper does: a different device means the tmpfs
+    is in place. On macOS the home is denied outright, so the read must fail.
     """
     if sys.platform.startswith("linux"):
-        script = f'[ -z "$(ls -A {home!r} 2>/dev/null)" ]'
+        try:
+            host_dev = str(os.stat(home).st_dev)
+        except OSError:
+            host_dev = ""
+        # A non-empty inside device that differs from the host's is the tmpfs.
+        script = (
+            f'd="$(stat -c %d {home!r} 2>/dev/null)"; '
+            f'[ -n "$d" ] && [ "$d" != {host_dev!r} ]'
+        )
         return build_bwrap_argv(
             ["/bin/sh", "-c", script], stage, executable=executable, home=home
         )

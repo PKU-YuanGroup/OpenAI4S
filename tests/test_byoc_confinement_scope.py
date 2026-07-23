@@ -292,3 +292,17 @@ def test_the_manager_and_doctor_describe_the_same_posture(tmp_path, monkeypatch)
     assert status["state"] == posture["state"]
     assert status["enforced"] == posture["enforced"]
     assert status["network_isolated"] == posture["network_isolated"]
+
+
+def test_the_linux_self_test_uses_mount_identity_not_emptiness(monkeypatch):
+    """The interpreter's runtime paths are bound back over the home tmpfs, and
+    on a user install they live under $HOME — so the tmpfs is legitimately
+    non-empty. An emptiness check would report a working boundary as broken;
+    the device-id comparison does not."""
+    monkeypatch.setattr(bc.sys, "platform", "linux")
+    argv = bc._probe_argv("/usr/bin/bwrap", "/tmp/stage", "/home/alice")
+    script = " ".join(argv)
+    assert (
+        "stat -c %d" in script
+    ), "the Linux self-test must compare mount identity, not list the home"
+    assert "ls -A" not in script, "the emptiness check misfires on a user install"
