@@ -301,16 +301,16 @@ def test_an_apply_planned_against_a_stale_current_is_refused(store, tmp_path):
         store.apply(stale_plan, spec, tool="fake-conda", build=_build, verify=_verify)
 
 
-def test_a_stale_lock_is_broken_rather_than_inherited(store, tmp_path, monkeypatch):
-    """A lock nobody holds is a permanent outage."""
+def test_a_leftover_lock_file_does_not_block_a_fresh_apply(store, tmp_path):
+    """A crashed apply may leave the lock *file* behind, but the kernel released
+    its flock the instant it died. A lock nobody holds must never be a permanent
+    outage — the next applier simply locks the leftover file."""
     env_dir = tmp_path / "environments" / "python"
     env_dir.mkdir(parents=True)
-    lock = env_dir / "apply.lock"
-    lock.write_text("99999", encoding="utf-8")
-    old = os.stat(lock).st_mtime - eg.LOCK_STALE_S - 60
-    os.utime(lock, (old, old))
+    # A leftover file from a process that is gone: it holds no flock.
+    (env_dir / "apply.lock").write_text("99999", encoding="utf-8")
 
-    assert store.recover("python")["stale_lock"] is True
+    assert store.recover("python")["apply_in_progress"] is False
     assert _apply(store, _spec(tmp_path)).ok
 
 
@@ -549,16 +549,13 @@ def test_the_cli_lists_generations_and_the_current_one(tmp_path, monkeypatch, ca
 # --------------------------------------------------------------------------
 
 
-def test_two_processes_reclaiming_one_stale_lock_do_not_both_run(tmp_path, monkeypatch):
-    """Unlink-then-create let both racers pass `_stale_lock`, both unlink, and
-    both create; the first to exit then deleted the second's new lock. Only one
-    may hold a reclaimed stale lock at a time."""
+def test_two_threads_contending_a_leftover_lock_do_not_both_run(tmp_path):
+    """A leftover lock file plus two racers: the flock serializes them so at most
+    one is ever inside the critical section, no matter the interleaving."""
     env_dir = tmp_path / "environments" / "python"
     env_dir.mkdir(parents=True)
-    lock = env_dir / "apply.lock"
-    lock.write_text("99999:dead", encoding="utf-8")
-    old = os.stat(lock).st_mtime - eg.LOCK_STALE_S - 60
-    os.utime(lock, (old, old))
+    # A leftover file from a crashed apply; it holds no live flock.
+    (env_dir / "apply.lock").write_text("99999:dead", encoding="utf-8")
 
     held: list[str] = []
     errors: list[BaseException] = []
@@ -587,32 +584,32 @@ def test_two_processes_reclaiming_one_stale_lock_do_not_both_run(tmp_path, monke
         thread.join(timeout=15)
 
     assert not errors, errors
-    # At most one reclaimer runs; the other is refused with ConcurrentApply.
-    assert len(held) <= 1, f"two applies both reclaimed the stale lock: {held}"
+    # At most one holds the lock at a time; the other is refused with
+    # ConcurrentApply (LOCK_NB) rather than joining it in the section.
+    assert len(held) <= 1, f"two applies both entered the critical section: {held}"
 
 
-def test_the_lock_owner_does_not_delete_a_later_lock_on_exit(tmp_path):
-    """A process reclaimed as stale must not, on exit, unlink a lock a fresh
-    apply legitimately created after it."""
+def test_the_lock_is_released_on_exit_and_the_file_persists(tmp_path):
+    """The flock is released when the holder exits so the next apply can take
+    it, and the lock file is deliberately left in place — unlinking it while a
+    holder lived would let a second process lock a *different* inode in
+    parallel, the classic flock/unlink race."""
     env_dir = tmp_path / "environments" / "python"
     env_dir.mkdir(parents=True)
+    lock = env_dir / "apply.lock"
 
     first = eg._apply_lock(env_dir)
     first.__enter__()
-    lock = env_dir / "apply.lock"
-    # A second, legitimate owner overwrites the lock (as a reclaim would).
-    lock.write_bytes(b"1234:fresh-owner")
-
+    # A second racer is refused while the first holds it.
+    with pytest.raises(eg.ConcurrentApply):
+        eg._apply_lock(env_dir).__enter__()
     first.__exit__(None, None, None)
 
-    assert (
-        lock.read_bytes() == b"1234:fresh-owner"
-    ), "the exiting process deleted a lock that was no longer its own"
-    # cleanup
-    try:
-        lock.unlink()
-    except OSError:
-        pass
+    assert lock.exists(), "the lock file must persist so its inode stays stable"
+    # Released: the next apply can take it now.
+    second = eg._apply_lock(env_dir)
+    second.__enter__()
+    second.__exit__(None, None, None)
 
 
 def test_a_no_op_apply_is_refused_when_the_spec_changed_since_the_plan(store, tmp_path):
@@ -653,29 +650,77 @@ def test_a_no_op_apply_is_refused_when_the_pointer_moved_since_the_plan(
 # --------------------------------------------------------------------------
 
 
-def test_reclaim_does_not_displace_a_freshly_created_lock(tmp_path, monkeypatch):
-    """Two racers both pass `_stale_lock`; the first reclaims and creates a
-    fresh lock, and the second must not then move *that* lock aside — a check
-    that the file it moved is genuinely stale is what stops it."""
+def test_a_held_lock_cannot_be_displaced_by_another_applier(tmp_path):
+    """The heart of the reclaim bug across three rounds: a second applier must
+    never be able to take the lock from a live owner. A file-based marker could
+    always be renamed out from under its owner; the kernel guarantees a flock
+    stays with its holder until it releases or dies."""
     env_dir = tmp_path / "environments" / "python"
     env_dir.mkdir(parents=True)
-    lock = env_dir / "apply.lock"
-    lock.write_text("99999:dead", encoding="utf-8")
-    old = os.stat(lock).st_mtime - eg.LOCK_STALE_S - 60
-    os.utime(lock, (old, old))
+    # A leftover file from a crash is the precondition every prior reclaim race
+    # needed — with flock it changes nothing.
+    (env_dir / "apply.lock").write_text("99999:dead", encoding="utf-8")
 
     first = eg._apply_lock(env_dir)
-    first.__enter__()  # reclaims: lock now holds first's fresh, recent payload
+    first.__enter__()
     try:
-        # A second racer that also saw the stale lock now tries to reclaim, but
-        # the file at the path is first's fresh lock — it must be refused.
         second = eg._apply_lock(env_dir)
         with pytest.raises(eg.ConcurrentApply):
             second.__enter__()
-        # first still owns the lock.
-        assert lock.read_bytes() == first._payload()
+        # The first still holds it, and recover agrees an apply is in progress.
+        assert eg._apply_in_progress(env_dir) is True
     finally:
         first.__exit__(None, None, None)
+    assert eg._apply_in_progress(env_dir) is False
+
+
+def test_three_concurrent_applies_with_a_leftover_lock_yield_exactly_one(tmp_path):
+    """The round-6 reproduction, end to end. A pre-existing (crashed) lock file
+    plus three concurrent applies: the reclaim race let two of them both enter
+    the critical section and both move the current pointer — last-writer-wins,
+    one apply silently lost while returning ok. The flock admits exactly one at a
+    time, so exactly one lands and the pointer names it."""
+
+    def slow(argv, cwd):
+        prefix = Path(argv[-1])
+        (prefix / "bin").mkdir(parents=True, exist_ok=True)
+        (prefix / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+        time.sleep(0.05)  # widen the critical section so a race would show
+        return _completed()
+
+    root = tmp_path / "environments"
+    store = eg.EnvironmentStore(root, runner=slow)
+    env_dir = root / "python"
+    env_dir.mkdir(parents=True)
+    # The precondition the race needed: a leftover lock file from a crash.
+    (env_dir / "apply.lock").write_text("99999:dead", encoding="utf-8")
+
+    spec = _spec(tmp_path)
+    plan = store.plan("python", spec, tool="fake-conda")  # all share from=None
+    outcomes: list[object] = []
+    guard = threading.Lock()
+
+    def run():
+        try:
+            result: object = store.apply(
+                plan, spec, tool="fake-conda", build=_build, verify=_verify
+            )
+        except BaseException as exc:  # noqa: BLE001
+            result = exc
+        with guard:
+            outcomes.append(result)
+
+    threads = [threading.Thread(target=run) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    landed = [o for o in outcomes if isinstance(o, eg.ApplyResult) and o.ok]
+    refused = [o for o in outcomes if isinstance(o, eg.ConcurrentApply)]
+    assert len(landed) == 1, f"exactly one apply may land, got {outcomes}"
+    assert len(refused) == 2, f"the other two must be refused, got {outcomes}"
+    assert store.current_id("python") == landed[0].generation.id
 
 
 def test_recover_does_not_report_a_build_an_apply_is_still_writing(tmp_path):
@@ -696,14 +741,16 @@ def test_recover_does_not_report_a_build_an_apply_is_still_writing(tmp_path):
         "env-live"
     ]
 
-    # A live apply holds a fresh lock: the build must not be reported abandoned.
-    (env_dir / "apply.lock").write_text(f"{os.getpid()}:live", encoding="utf-8")
-    assert store.recover("python")["abandoned"] == []
+    # A live apply actually holding the flock: the build must not be reported
+    # abandoned while conda may still be writing the prefix.
+    with eg._apply_lock(env_dir):
+        assert store.recover("python")["abandoned"] == []
+        assert store.recover("python")["apply_in_progress"] is True
 
-    # A stale lock is no protection: the build is abandoned after all.
-    lock = env_dir / "apply.lock"
-    old = os.stat(lock).st_mtime - eg.LOCK_STALE_S - 60
-    os.utime(lock, (old, old))
+    # After it releases (or its process dies, which the kernel handles for us) a
+    # leftover lock file is no protection: the build is abandoned after all.
+    assert (env_dir / "apply.lock").exists()  # the file persists...
+    assert store.recover("python")["apply_in_progress"] is False  # ...but unheld
     assert [a["generation_id"] for a in store.recover("python")["abandoned"]] == [
         "env-live"
     ]
@@ -742,27 +789,3 @@ def test_a_spec_edited_between_the_apply_hash_and_the_copy_is_rejected(tmp_path)
         egmod.shutil.copyfile = real_copyfile
 
     assert store.current_id("python") is None
-
-
-def test_restore_does_not_overwrite_a_lock_a_third_process_acquired(tmp_path):
-    """Restoring a mistakenly-moved fresh lock must not clobber a lock a third
-    racer acquired in the gap — os.link never overwrites."""
-    env_dir = tmp_path / "environments" / "python"
-    env_dir.mkdir(parents=True)
-    path = env_dir / "apply.lock"
-
-    # Simulate the mid-reclaim state: our token instance moved a fresh lock to
-    # `aside`, and a third process has since acquired the path.
-    lock = eg._apply_lock(env_dir)
-    aside = path.with_name(f".apply.lock.stale.{lock._token}")
-    aside.write_bytes(b"1:first-owner")
-    path.write_bytes(b"3:third-owner")  # third racer acquired it
-
-    # The restore branch must leave the third owner's lock intact.
-    try:
-        os.link(aside, path)
-    except FileExistsError:
-        pass  # this is the guarded behaviour the fix relies on
-    assert (
-        path.read_bytes() == b"3:third-owner"
-    ), "restoration overwrote a lock a third process legitimately acquired"

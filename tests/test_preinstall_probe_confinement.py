@@ -111,6 +111,61 @@ def test_enforce_mode_fails_closed_when_no_boundary_can_be_built(monkeypatch, tm
     assert "backend" in str(error.value) or "boundary" in str(error.value).lower()
 
 
+def test_enforce_failure_does_not_leak_the_probe_workspace(monkeypatch):
+    """When `_confined_probe` raises under enforce, the temp workspace created a
+    line earlier must still be removed. Building the probe outside the try/finally
+    leaked one `openai4s-probe-*` dir per probe on every enforce host without a
+    working backend — a common CI/hardened configuration."""
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "enforce")
+
+    from openai4s.security import sandbox as sandbox_mod
+
+    monkeypatch.setattr(
+        sandbox_mod,
+        "create_kernel_sandbox",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            sandbox_mod.SandboxUnavailableError("no backend on this host")
+        ),
+    )
+
+    created: list[str] = []
+    real_mkdtemp = preinstall.tempfile.mkdtemp
+
+    def recording_mkdtemp(*a, **k):
+        path = real_mkdtemp(*a, **k)
+        created.append(path)
+        return path
+
+    monkeypatch.setattr(preinstall.tempfile, "mkdtemp", recording_mkdtemp)
+
+    with pytest.raises(Exception):
+        preinstall.run_confined_probe([sys.executable, "-c", "pass"], timeout=10)
+
+    assert created, "the probe never created its workspace"
+    for path in created:
+        assert not os.path.exists(path), f"leaked probe workspace: {path}"
+
+
+def test_a_malformed_sandbox_config_propagates_even_under_auto(monkeypatch):
+    """A misconfiguration is not an availability failure. Under `auto`, a missing
+    backend degrades to the scrubbed env, but a bad *setting* (a typo in
+    OPENAI4S_KERNEL_ALLOW_RAW_NETWORK) must fail closed — never silently launch
+    the foreign interpreter unconfined behind the typo."""
+    monkeypatch.setenv("OPENAI4S_KERNEL_SANDBOX", "auto")
+
+    from openai4s.security import sandbox as sandbox_mod
+
+    def misconfigured(*_a, **_k):
+        raise sandbox_mod.SandboxConfigurationError(
+            "OPENAI4S_KERNEL_ALLOW_RAW_NETWORK must be one of: true, false"
+        )
+
+    monkeypatch.setattr(sandbox_mod, "create_kernel_sandbox", misconfigured)
+
+    with pytest.raises(sandbox_mod.SandboxConfigurationError):
+        preinstall.run_confined_probe([sys.executable, "-c", "pass"], timeout=10)
+
+
 def test_auto_mode_still_runs_when_no_boundary_is_available(monkeypatch):
     """The degrade path: `auto` runs the probe with the scrubbed env even when
     no OS boundary can be built."""

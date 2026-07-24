@@ -709,8 +709,8 @@ def cmd_env_recover(args) -> int:
         print(f"  {name}: current={info['current'] or '-'}")
         for item in info["abandoned"]:
             print(f"    abandoned {item['state']}: {item['path']}")
-        if info["stale_lock"]:
-            print("    stale apply lock (a build process died holding it)")
+        if info.get("apply_in_progress"):
+            print("    an apply is currently in progress (holding the lock)")
     return 0
 
 

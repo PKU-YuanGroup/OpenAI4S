@@ -44,6 +44,7 @@ visibly not a generation, cleaned up by ``recover``/``discard``.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -664,12 +665,11 @@ class EnvironmentStore:
         # shape of an abandoned one. But while `apply()` holds the lock and conda
         # is still writing the prefix, calling it abandoned invites a cleanup
         # (`discard()`) that deletes the prefix mid-write and fails the live
-        # transaction. When a *non-stale* apply lock is present, a build is
-        # potentially live, so it is not reported as abandoned. A stale lock, or
-        # no lock, means no apply owns it and it really is abandoned.
-        apply_in_progress = (env_dir / "apply.lock").exists() and not _stale_lock(
-            env_dir
-        )
+        # transaction. `_apply_in_progress` asks the kernel whether a process
+        # currently holds the flock: a live apply is protected, and a crashed
+        # one — whose lock the kernel already released — is not, so its build is
+        # correctly reported abandoned with no mtime heuristic to get wrong.
+        apply_in_progress = _apply_in_progress(env_dir)
 
         def _record_abandoned(child: Path) -> None:
             marker = child / _BUILDING
@@ -720,12 +720,14 @@ class EnvironmentStore:
                         "detail": record.get("detail", ""),
                     }
                 )
-        stale_lock = _stale_lock(env_dir)
         return {
             "environment": name,
             "current": self.current_id(name),
             "abandoned": abandoned,
-            "stale_lock": stale_lock,
+            # There are no stale apply locks under flock — a crashed apply's lock
+            # is released by the kernel — so what a restart can usefully know is
+            # whether an apply is *currently* running.
+            "apply_in_progress": apply_in_progress,
         }
 
     def discard(self, name: str, path: str) -> bool:
@@ -830,132 +832,92 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-#: A lock older than this is assumed to belong to a process that died.
-LOCK_STALE_S = 6 * 3600
+def _apply_in_progress(env_dir: Path) -> bool:
+    """Is another process *currently* applying this environment?
 
-
-def _stale_lock(env_dir: Path) -> bool:
+    Probed by trying to take the apply lock non-blockingly and releasing it at
+    once. ``flock`` is held for the whole critical section and released by the
+    kernel the instant the holder dies, so this reports a live apply and never a
+    crashed one — exactly what ``recover`` needs to tell a build in progress
+    apart from an abandoned one.
+    """
     lock = env_dir / "apply.lock"
+    if not lock.exists():
+        return False
     try:
-        age = time.time() - lock.stat().st_mtime
+        fd = os.open(lock, os.O_RDWR)
     except OSError:
         return False
-    return age > LOCK_STALE_S
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True  # someone holds it
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
 
 
 class _apply_lock:
-    """One apply per environment at a time, enforced by the filesystem.
+    """One apply per environment at a time, held as an OS advisory lock.
 
-    ``O_CREAT | O_EXCL`` is the atomic primitive here; two processes racing to
-    create the same path cannot both win. A stale lock — older than
-    ``LOCK_STALE_S``, i.e. left by a process that died — is broken rather than
-    inherited, because a lock nobody holds is a permanent outage.
+    Held with ``fcntl.flock`` on ``apply.lock`` for the whole critical section.
+    ``flock`` is the right primitive precisely because ownership lives in the
+    kernel rather than in the file's bytes: an exclusive holder blocks every
+    other ``LOCK_EX`` on the same inode — across processes *and* across threads
+    that opened it independently — and the kernel releases the lock the instant
+    the holding process dies.
+
+    That retires the entire stale-lock heuristic, and with it three rounds of
+    reclaim races. A plain ``O_CREAT|O_EXCL`` marker has no holder the kernel
+    understands, so any ``rename``/``replace`` could lift a live owner's lock
+    and leave two applies in the section at once; no amount of mtime-staleness
+    checking could make "lift only if truly dead" atomic with plain files. A
+    ``flock`` cannot be lifted by anyone but its holder or the holder's death,
+    so no third racer can win the slot from under an owner.
+
+    The lock file is created but never unlinked. It is a stable inode to lock,
+    not the lock itself — unlinking it while a holder lives would let a later
+    ``O_CREAT`` mint a *different* inode a second process could lock in
+    parallel, the classic ``flock``/``unlink`` race. A leftover file with no
+    live holder is harmless: the next applier simply locks it.
     """
 
     def __init__(self, env_dir: Path):
         self._path = env_dir / "apply.lock"
         self._fd: int | None = None
-        #: Unique per instance, written into the lock so ownership can be
-        #: re-verified — a pid alone is reused across a restart.
-        self._token = uuid.uuid4().hex
-
-    def _payload(self) -> bytes:
-        return f"{os.getpid()}:{self._token}".encode("ascii")
-
-    def _acquire_fresh(self) -> None:
-        self._fd = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.write(self._fd, self._payload())
 
     def __enter__(self):
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self._path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            self._acquire_fresh()
-            return self
-        except FileExistsError:
-            pass
-        if not _stale_lock(self._path.parent):
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
             raise ConcurrentApply(
                 f"another apply is in progress for this environment "
-                f"({self._path}); wait for it or remove the lock if the "
-                f"process that held it is gone"
-            )
-        # Reclaim a stale lock atomically. Unlink-then-create let two processes
-        # both pass `_stale_lock`, both unlink, and both create — and the first
-        # to exit then deleted the second's new lock. Moving the stale file
-        # aside with `os.replace` is the atomic primitive: of all racers, only
-        # the one that finds a file still present succeeds; the rest see it gone
-        # and must not create their own, or two applies run.
-        aside = self._path.with_name(f".apply.lock.stale.{self._token}")
+                f"({self._path}); it releases the lock when it finishes or when "
+                f"its process exits"
+            ) from exc
+        self._fd = fd
+        # Record the holder for a human reading the file; the lock is the flock,
+        # not these bytes, so this is diagnostic only and safe under the hold.
         try:
-            os.replace(self._path, aside)
-        except FileNotFoundError:
-            raise ConcurrentApply(
-                f"another apply reclaimed the stale lock for {self._path} first"
-            )
-        # But `os.replace` moves *whatever is at the path* — and between two
-        # racers both passing `_stale_lock`, the first can already have replaced
-        # the stale file with its own fresh lock, which the second would then
-        # move aside. Verify the file we moved is genuinely stale; if it is a
-        # freshly-created lock, restore it and yield rather than displace a live
-        # owner.
-        try:
-            still_stale = (time.time() - os.stat(aside).st_mtime) > LOCK_STALE_S
-        except OSError:  # pragma: no cover
-            still_stale = True
-        if not still_stale:
-            # Restore the fresh lock we should not have moved — but only if the
-            # path is *empty*. `os.replace` would overwrite a lock a third
-            # racer acquired in the gap (the original owner and that third
-            # process would then both enter the critical section). `os.link`
-            # never overwrites: if the path is occupied, the rightful new owner
-            # keeps it and we simply drop the copy we lifted.
-            try:
-                os.link(aside, self._path)
-            except FileExistsError:
-                pass  # a third process legitimately holds it now; leave it
-            except OSError:  # pragma: no cover - cross-fs; only replace if empty
-                if not self._path.exists():
-                    try:
-                        os.replace(aside, self._path)
-                    except OSError:
-                        pass
-            try:
-                os.unlink(aside)
-            except OSError:  # pragma: no cover
-                pass
-            raise ConcurrentApply(
-                f"another apply holds a fresh lock for {self._path}; not stale"
-            )
-        try:
-            os.unlink(aside)
-        except OSError:  # pragma: no cover
+            os.ftruncate(fd, 0)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        except OSError:  # pragma: no cover - diagnostics only
             pass
-        try:
-            self._acquire_fresh()
-        except FileExistsError:
-            # A fresh apply grabbed the slot in the gap after we reclaimed.
-            raise ConcurrentApply(
-                f"another apply acquired {self._path} during reclamation"
-            )
         return self
 
     def __exit__(self, *_exc):
         if self._fd is not None:
-            os.close(self._fd)
-            self._fd = None
-        # Only remove the lock if it is still *ours*. A token check stops this
-        # process from deleting a lock a later apply legitimately created after
-        # this one's was reclaimed as stale — the "first process deletes the
-        # second's lock on exit" race.
-        try:
-            holder = self._path.read_bytes()
-        except OSError:  # pragma: no cover
-            return False
-        if holder == self._payload():
             try:
-                os.unlink(self._path)
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
             except OSError:  # pragma: no cover
                 pass
+            os.close(self._fd)
+            self._fd = None
         return False
 
 

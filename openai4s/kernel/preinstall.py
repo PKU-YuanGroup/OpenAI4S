@@ -430,17 +430,27 @@ def _confined_probe(
     sandbox: Any = None
     mode = (os.environ.get("OPENAI4S_KERNEL_SANDBOX") or "auto").strip().lower()
     try:
-        from openai4s.security.sandbox import create_kernel_sandbox
+        from openai4s.security.sandbox import (
+            SandboxConfigurationError,
+            create_kernel_sandbox,
+        )
 
         sandbox = create_kernel_sandbox(workspace)
         argv = list(sandbox.wrap_command(base_argv))
         env = sandbox.apply_environment(env)
+    except SandboxConfigurationError:
+        # A *misconfiguration* (e.g. OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=treu) is
+        # never a reason to degrade to unconfined: the operator asked for a
+        # boundary and typed it wrong. Propagate in every mode, including `auto`,
+        # so the foreign interpreter does not run with host reach behind a typo.
+        raise
     except Exception:  # noqa: BLE001
         # Fail closed under enforce. Silently launching the foreign interpreter
-        # unconfined when the boundary could not be built violates the mode's
-        # contract and lets it reach daemon-readable files and the network
-        # despite the scrubbed env. `auto` still degrades to the scrubbed env
-        # alone, which is a strict improvement over the daemon's full context.
+        # unconfined when the boundary could not be *built* (no backend on this
+        # host) violates the mode's contract and lets it reach daemon-readable
+        # files and the network despite the scrubbed env. `auto` still degrades
+        # to the scrubbed env alone, a strict improvement over the daemon's full
+        # context — but only for availability failures, not configuration ones.
         if mode == "enforce":
             raise
         argv = list(base_argv)
@@ -460,8 +470,12 @@ def run_confined_probe(
     rather than degrading to an unconfined launch.
     """
     workspace = tempfile.mkdtemp(prefix="openai4s-probe-")
-    argv, env, sandbox = _confined_probe(base_argv, workspace)
+    sandbox = None
+    # `_confined_probe` is inside the try: under `enforce` with no working
+    # sandbox backend it raises (correct fail-closed), and building it before
+    # the try leaked the just-created workspace on every probe on such a host.
     try:
+        argv, env, sandbox = _confined_probe(base_argv, workspace)
         return subprocess.run(argv, capture_output=True, timeout=timeout, env=env)
     finally:
         if sandbox is not None:
