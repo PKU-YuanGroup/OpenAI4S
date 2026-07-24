@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -28,6 +29,30 @@ from typing import Any, Callable
 OK = "ok"
 WARN = "warn"
 FAIL = "fail"
+
+
+def _sanitize_endpoint(url: str) -> str:
+    """A URL safe to print in a diagnostic that gets pasted into a bug report.
+
+    A local endpoint can embed credentials — ``http://user:pass@127.0.0.1`` or
+    a token in the query — and this report is meant to be shared. Keep the
+    scheme, host, port and path (the routing detail a reader needs); drop the
+    userinfo and query entirely.
+    """
+    if not url:
+        return url
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "<unparseable endpoint>"
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    cleaned = urllib.parse.urlunsplit((parts.scheme, host, parts.path, "", ""))
+    if parts.query or parts.username or parts.password:
+        cleaned = (cleaned or url.split("?", 1)[0]) + " (credentials redacted)"
+    return cleaned or url
+
 
 #: Below this, a scientific workload is likely to fail partway — which is worse
 #: than refusing up front, because it fails after the expensive part.
@@ -140,7 +165,7 @@ def _model(cfg: Any) -> Check:
             "model",
             OK,
             f"provider {llm.provider!r}, model {model!r}, local endpoint "
-            f"{base_url} (no credential required)",
+            f"{_sanitize_endpoint(base_url)} (no credential required)",
             facts=facts,
         )
     return Check(
@@ -164,6 +189,12 @@ def _runtime(cfg: Any) -> Check:
     except Exception as e:  # noqa: BLE001
         facts["environments_error"] = str(e)
         envs = []
+    # `discover_environments()` always seeds a synthetic `base` (the daemon's own
+    # interpreter), so `envs` is never empty. "Is a prebuilt environment present?"
+    # must exclude it — otherwise a fresh install with a system Rscript reported
+    # OK with "1 environment" and never recommended `openai4s setup`.
+    prebuilt = [e for e in envs if getattr(e, "name", "") != "base"]
+    facts["prebuilt_environments"] = len(prebuilt)
 
     # The resolver the R kernel itself uses: the selected env's own Rscript, an
     # env literally named `r`, any env carrying one, then PATH. `which` alone
@@ -181,7 +212,7 @@ def _runtime(cfg: Any) -> Check:
     facts["rscript"] = bool(r_path)
     if r_path:
         facts["rscript_path"] = str(r_path)
-    if not envs:
+    if not prebuilt:
         # The R channel does not require a prebuilt conda env: the resolver falls
         # back to PATH, and `r_worker.R` runs happily against a system Rscript.
         # Reporting "R cells will not run" whenever no env is built was wrong on
@@ -199,7 +230,7 @@ def _runtime(cfg: Any) -> Check:
             "the Python and R environments.",
             facts,
         )
-    detail = f"{len(envs)} environment(s) available"
+    detail = f"{len(prebuilt)} prebuilt environment(s) available"
     if not r_path:
         return Check(
             "runtime",

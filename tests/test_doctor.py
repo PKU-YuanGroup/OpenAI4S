@@ -279,6 +279,50 @@ def test_a_dot_local_endpoint_needs_no_credential(cfg, monkeypatch):
     assert check["facts"]["endpoint_is_local"] is True
 
 
+def test_a_local_endpoint_with_embedded_credentials_is_redacted(cfg, monkeypatch):
+    """doctor output is meant to be pasted into a bug report. A local endpoint
+    can carry credentials in its userinfo or query; the diagnostic must not print
+    them."""
+    from openai4s.store import get_store
+
+    _no_ambient_key(monkeypatch)
+    cfg.llm.api_key = ""
+    store = get_store(cfg.db_path)
+    store.set_setting(
+        "llm_base_url", "http://user:sup3r-secret@127.0.0.1:11434/v1?token=abc123"
+    )
+
+    check = _by_name(doctor.report(cfg))["model"]
+    blob = json.dumps(check)
+    assert "sup3r-secret" not in blob, "an embedded password leaked into the report"
+    assert "abc123" not in blob, "a query-string token leaked into the report"
+    assert "user:" not in check["detail"]
+    # The routable part is still there so the endpoint remains identifiable.
+    assert "127.0.0.1:11434" in check["detail"]
+
+
+def test_a_fresh_install_with_only_the_base_env_recommends_setup(cfg, monkeypatch):
+    """`discover_environments()` always seeds a synthetic `base`, so a check for
+    "no prebuilt environment" that tested emptiness never fired — a fresh install
+    with a system Rscript reported OK and never told the user to run setup."""
+    import types
+
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.discover_environments",
+        lambda *a, **k: [types.SimpleNamespace(name="base", rscript=None)],
+    )
+    monkeypatch.setattr(
+        "openai4s.kernel.r_kernel.resolve_r_interpreter",
+        lambda *a, **k: "/usr/local/bin/Rscript",
+    )
+
+    check = _by_name(doctor.report(cfg))["runtime"]
+    assert check["status"] == doctor.WARN
+    assert "no prebuilt environment" in check["detail"]
+    assert check["remedy"], "a fresh install must be told to run setup"
+    assert check["facts"]["prebuilt_environments"] == 0
+
+
 def test_a_remote_endpoint_without_a_key_still_fails(cfg, monkeypatch):
     """The loopback exemption must not become a blanket one."""
     from openai4s.store import get_store
