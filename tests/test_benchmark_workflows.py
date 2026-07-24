@@ -91,6 +91,67 @@ def test_case(workflow, case):
     assert result.passed, f"{case.id} ({case.outcome}): {result.detail}"
 
 
+def _tiny_workflow(steps, cases):
+    from openai4s.benchmark.model import Case, Workflow
+
+    return Workflow(
+        id="probe",
+        version="1",
+        title="probe",
+        summary="probe",
+        steps=tuple(steps),
+        permissions=(),
+        artifacts=(),
+        failure_conditions=("x",),
+        cases=tuple(cases),
+    )
+
+
+def test_an_unimplemented_step_is_a_hard_error_not_a_scored_refusal():
+    """A manifest naming a step nothing implements is a manifest bug. Raising it
+    inside the outcome-evaluation try let an error-expecting case catch the
+    KeyError and score it green — a workflow describing work nothing does passed.
+    It must fail hard instead, regardless of the declared outcome."""
+    from openai4s.benchmark.model import Case
+
+    case = Case(
+        id="c",
+        workflow="probe",
+        title="c",
+        outcome="failure",
+        steps=("does_not_exist",),
+        expect={},
+    )
+    with pytest.raises(KeyError, match="not.*implemented|nothing does"):
+        run_case(_tiny_workflow(("does_not_exist",), [case]), case)
+
+
+def test_an_error_expecting_case_must_assert_something_about_the_error(monkeypatch):
+    """An empty `expect` on a failure/permission_denied case would pass on any
+    incidental exception — fabricated coverage in a suite that gates releases.
+    An unexpected infrastructure error must not be scored as the declared
+    refusal when the case asserts nothing about it."""
+    from openai4s.benchmark import runner as runner_mod
+    from openai4s.benchmark.model import Case
+
+    def boom(context, inputs):
+        raise RuntimeError("an incidental infrastructure failure, not a refusal")
+
+    monkeypatch.setitem(runner_mod.STEPS, "_boom", boom)
+    case = Case(
+        id="c",
+        workflow="probe",
+        title="c",
+        outcome="failure",
+        steps=("_boom",),
+        expect={},  # asserts nothing about the error
+    )
+    result = run_case(_tiny_workflow(("_boom",), [case]), case)
+    assert result.passed is False, "an incidental error was scored as the refusal"
+    assert not result.skipped
+    assert "asserts nothing" in result.detail or "empty expect" in result.detail
+
+
 # --------------------------------------------------------------------------
 # the manifests must ship, and the root parameter must be honoured
 # --------------------------------------------------------------------------

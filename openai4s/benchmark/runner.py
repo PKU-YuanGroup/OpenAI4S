@@ -73,6 +73,21 @@ def _check_expectations(observed: dict[str, Any], expect: dict[str, Any]) -> lis
 
 def run_case(workflow: Workflow, case: Case, root: Path | None = None) -> CaseResult:
     started = time.time()
+    # Resolve every step up front, before allocating anything or entering the
+    # outcome-evaluation try. A manifest that names an unimplemented step is a
+    # manifest bug that must fail hard — raising it *inside* the try let an
+    # error-expecting case (outcome `failure`/`permission_denied`) catch the
+    # KeyError and score it as the refusal it declared, so a workflow describing
+    # work nothing does passed green.
+    resolved: list[tuple[str, Any]] = []
+    for name in case.steps or workflow.steps:
+        step = STEPS.get(name)
+        if step is None:
+            raise KeyError(
+                f"workflow {workflow.id!r} names step {name!r}, which is not "
+                f"implemented; a manifest may not describe work nothing does"
+            )
+        resolved.append((name, step))
     temporary = None
     if root is None:
         temporary = tempfile.TemporaryDirectory(prefix="openai4s-benchmark-")
@@ -81,13 +96,7 @@ def run_case(workflow: Workflow, case: Case, root: Path | None = None) -> CaseRe
     observed: dict[str, Any] = {}
     failure: Exception | None = None
     try:
-        for name in case.steps or workflow.steps:
-            step = STEPS.get(name)
-            if step is None:
-                raise KeyError(
-                    f"workflow {workflow.id!r} names step {name!r}, which is not "
-                    f"implemented; a manifest may not describe work nothing does"
-                )
+        for name, step in resolved:
             merged = {**case.inputs.get("*", {}), **case.inputs.get(name, {})}
             observed.update(step(context, merged) or {})
             # Steps that produce a package hand its path on by convention.
@@ -144,6 +153,25 @@ def run_case(workflow: Workflow, case: Case, root: Path | None = None) -> CaseRe
             "error": f"{type(failure).__name__}: {failure}",
             "error_type": type(failure).__name__,
         }
+        if expects_error and not case.expect:
+            # An error-expecting case with no expectations would pass on *any*
+            # exception — an incidental OSError from the sandbox or a bug inside
+            # a step, not the refusal it means to assert. In a suite that decides
+            # whether a release is good, that is fabricated coverage. Require the
+            # case to name what it expects about the error.
+            return CaseResult(
+                case.id,
+                workflow.id,
+                case.outcome,
+                passed=False,
+                detail=(
+                    f"case declares {case.outcome!r} but asserts nothing about "
+                    f"the error; an empty expect would pass on any incidental "
+                    f"exception. Add error_type/error__contains."
+                ),
+                duration_ms=duration,
+                observed=observed,
+            )
     problems = _check_expectations(observed, case.expect)
     return CaseResult(
         case.id,
