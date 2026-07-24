@@ -375,17 +375,21 @@ def remote_job(ctx: Context, inputs: dict) -> dict:
     from openai4s.compute.manager import ComputeManager
 
     real_run = subprocess.run
+    real_popen = subprocess.Popen
     home = ctx.root / "remote-home"
     home.mkdir(parents=True, exist_ok=True)
     shell = inputs.get("shell", "bash")
 
+    def _remote_env(kw: dict) -> dict:
+        import os as _os
+
+        env = dict(kw.pop("env", None) or {})
+        env.setdefault("HOME", str(home))
+        return {**_os.environ, **env}
+
     def fake(argv, **kw):
         if argv and argv[0] == "ssh":
-            env = dict(kw.pop("env", None) or {})
-            env.setdefault("HOME", str(home))
-            import os as _os
-
-            env = {**_os.environ, **env}
+            env = _remote_env(kw)
             return real_run(
                 [shell, "-c", argv[2]],
                 start_new_session=True,
@@ -404,12 +408,26 @@ def remote_job(ctx: Context, inputs: dict) -> dict:
             return subprocess.CompletedProcess(argv, 0, b"", b"")
         return real_run(argv, **kw)
 
+    def fake_popen(argv, **kw):
+        # The capped harvest transfer streams the archive over `ssh cat`; route
+        # it through the real shell so it actually cats the staged file.
+        if argv and argv[0] == "ssh":
+            env = _remote_env(kw)
+            return real_popen(
+                [shell, "-c", argv[2]], start_new_session=True, env=env, **kw
+            )
+        return real_popen(argv, **kw)
+
     skills = ctx.root / "skills"
     (skills / "remote-compute-ssh").mkdir(parents=True, exist_ok=True)
     cfg = _ComputeCfg(ctx.root, skills, ctx.config.db_path)
     import openai4s.compute.manager as manager_module
 
     original, manager_module.subprocess.run = manager_module.subprocess.run, fake
+    original_popen, manager_module.subprocess.Popen = (
+        manager_module.subprocess.Popen,
+        fake_popen,
+    )
     try:
         manager = ComputeManager(cfg, workspace=ctx.workspace)
         submitted = manager.submit(
@@ -432,6 +450,7 @@ def remote_job(ctx: Context, inputs: dict) -> dict:
             time.sleep(0.05)
     finally:
         manager_module.subprocess.run = original
+        manager_module.subprocess.Popen = original_popen
     return {
         "status": result.get("status"),
         "exit_code": result.get("exit_code"),
