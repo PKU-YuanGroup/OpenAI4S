@@ -55,7 +55,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 # Bump when adding a numbered migration below.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (

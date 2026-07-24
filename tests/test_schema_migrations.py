@@ -80,6 +80,7 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "compute_job_pgid",
         "env_snapshot_generation",
         "env_snapshot_provenance",
+        "compute_job_owner",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
@@ -140,6 +141,50 @@ def _make_legacy_db(tmp_path) -> Path:
     conn.commit()
     conn.close()
     return db
+
+
+def test_an_upgraded_db_gains_owner_key_and_can_create_compute_jobs(tmp_path):
+    """Migration 9 must run on an *existing* install.
+
+    The offline suite otherwise only ever sees a fresh DB, whose CREATE TABLE
+    already carries owner_key — so a forgotten SCHEMA_VERSION bump left the
+    migration unreachable and every upgraded install unable to submit a compute
+    job, because the INSERT names owner_key the old table lacks. This is the
+    fresh-vs-upgraded blind spot; the test opens a real pre-owner_key database.
+    """
+    db = tmp_path / "v8.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(_schema_sql())
+    # Roll compute_jobs back to its pre-owner_key shape, as a released install has.
+    cols = [
+        r[1]
+        for r in conn.execute("PRAGMA table_info(compute_jobs)")
+        if r[1] != "owner_key"
+    ]
+    conn.execute(f"CREATE TABLE _cj AS SELECT {','.join(cols)} FROM compute_jobs")
+    conn.execute("DROP TABLE compute_jobs")
+    conn.execute("ALTER TABLE _cj RENAME TO compute_jobs")
+    conn.execute("PRAGMA user_version = 8")
+    conn.commit()
+    conn.close()
+
+    with sqlite3.connect(str(db)) as probe:
+        assert "owner_key" not in {
+            r[1] for r in probe.execute("PRAGMA table_info(compute_jobs)")
+        }
+
+    store = Store(db)
+    try:
+        after = {r[1] for r in store._conn.execute("PRAGMA table_info(compute_jobs)")}
+        assert "owner_key" in after, "migration 9 did not run on the upgraded DB"
+        assert store.schema_state()["version"] == SCHEMA_VERSION
+        # And a compute job can actually be created (the INSERT names owner_key).
+        row = store.create_compute_job(
+            job_id="j1", provider="ssh:lab", owner_key="/ws/a"
+        )
+        assert row["job_id"] == "j1"
+    finally:
+        store.close()
 
 
 def test_legacy_database_is_migrated_and_stamped(tmp_path):
