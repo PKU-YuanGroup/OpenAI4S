@@ -213,6 +213,76 @@ def test_the_real_harvest_script_excludes_a_remote_residency_output(tmp_path):
     ), f"a residency:remote output was archived anyway: {names}"
 
 
+def test_a_newline_in_a_filename_cannot_inject_a_second_tar_entry(tmp_path):
+    """`find -print` + `tar -T` is newline-delimited, so a filename containing a
+    newline split into a second `-T` entry — a path the job never produced, and
+    potentially one outside the work directory. `-print0` + `tar --null` reads
+    names verbatim between NULs, so the file is one member and nothing else is."""
+    import tarfile
+
+    work = tmp_path / "work"
+    work.mkdir()
+    weird = "data\nnote.txt"  # one file whose name embeds a newline
+    (work / weird).write_text("payload", encoding="utf-8")
+    (work / "decoy.txt").write_text("x", encoding="utf-8")
+
+    proc = _run_script(_ssh_harvest_script(str(work), 10_000_000), work)
+    assert proc.returncode == 0, proc.stderr.decode()
+
+    with tarfile.open(work / ".openai4s-harvest.tar.gz") as archive:
+        names = archive.getnames()
+    normalized = {name.lstrip("./") for name in names}
+    assert weird in normalized, f"the newline-named file was not archived: {names}"
+    assert normalized == {
+        weird,
+        "decoy.txt",
+    }, f"the newline split into a phantom entry: {names}"
+
+
+def test_a_nested_file_sharing_a_wrapper_basename_is_still_harvested(tmp_path):
+    """The control-file exclusions matched by `-name`, so a declared output like
+    `results/run.sh` was dropped at any depth — reconcile then reported it
+    missing and turned an exit-0 job into `failed`. Only the root wrapper files
+    may be excluded."""
+    import tarfile
+
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "run.sh").write_text("#!/bin/sh\n", encoding="utf-8")  # the wrapper
+    (work / "results").mkdir()
+    (work / "results" / "run.sh").write_text("real output", encoding="utf-8")
+    (work / "checkpoint").mkdir()
+    (work / "checkpoint" / ".timeout").write_text("real output", encoding="utf-8")
+
+    proc = _run_script(_ssh_harvest_script(str(work), 10_000_000), work)
+    assert proc.returncode == 0, proc.stderr.decode()
+
+    with tarfile.open(work / ".openai4s-harvest.tar.gz") as archive:
+        names = {n.lstrip("./") for n in archive.getnames()}
+    assert "results/run.sh" in names, f"a nested declared output was dropped: {names}"
+    assert "checkpoint/.timeout" in names, f"a nested output was dropped: {names}"
+    assert "run.sh" not in names, "the root wrapper file must still be excluded"
+
+
+def test_the_harvest_ack_reports_the_archive_size(tmp_path):
+    """The host refuses an oversized download before scp writes a byte, which it
+    can only do if the remote reports the compressed size with the ack."""
+    from openai4s.compute.manager import _parse_harvest_ack
+
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "a.txt").write_text("a" * 1000, encoding="utf-8")
+
+    proc = _run_script(_ssh_harvest_script(str(work), 10_000_000), work)
+    assert proc.returncode == 0, proc.stderr.decode()
+    marker, _oversized, _stayed, archive_bytes = _parse_harvest_ack(
+        proc.stdout.decode()
+    )
+    assert marker == "archive"
+    assert archive_bytes is not None and archive_bytes > 0
+    assert archive_bytes == (work / ".openai4s-harvest.tar.gz").stat().st_size
+
+
 def test_the_harvest_script_still_archives_everything_when_nothing_stays(tmp_path):
     """The exclusion must be inert when no residency was declared."""
     work = tmp_path / "work"

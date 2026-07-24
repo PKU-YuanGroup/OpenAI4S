@@ -229,6 +229,14 @@ def _sandbox_lifetime_s(spec: Any) -> int:
 # `left_on_remote_files` so it can still be chained or fetched deliberately.
 HARVEST_MAX_FILE_BYTES = 100 * 1024 * 1024
 
+# A ceiling on the *compressed* archive the remote builds, checked before it is
+# pulled. `safe_extract_tar` bounds the decompressed size and member count, but
+# scp writes the whole compressed archive to local disk first — a job that
+# emitted thousands of under-per-file-ceiling files could exhaust the daemon's
+# disk before extraction ever rejects it. The remote reports the archive size in
+# its ack; a harvest over this is refused without downloading.
+HARVEST_MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024
+
 # Staged inside the job's own work directory, so it is cleaned up with it.
 _HARVEST_ARCHIVE = ".openai4s-harvest.tar.gz"
 
@@ -297,7 +305,14 @@ def _ssh_harvest_script(
     them after the download would satisfy the manifest and violate the promise.
     """
     patterns = list(exclude_patterns or [])
-    excludes = " ".join(f"! -name {shlex.quote(name)}" for name in _HARVEST_EXCLUDES)
+    # Match the control files by their exact path at the work-directory *root*,
+    # not by basename at any depth. `-name` dropped a declared output like
+    # `results/run.sh` or `checkpoint/.timeout` anywhere in the tree, so
+    # reconcile reported it missing and turned an exit-0 job into `failed`. The
+    # wrapper files are always at the root, so an exact `-path ./name` is right.
+    excludes = " ".join(
+        f"! -path {shlex.quote('./' + name)}" for name in _HARVEST_EXCLUDES
+    )
     stay_exclusion, stay_selection = _find_stay_clause(patterns)
     # `find -size +Nc` is POSIX and counts bytes; `-size +Nk` would round.
     size_test = f"-size +{int(max_file_bytes)}c"
@@ -317,8 +332,14 @@ def _ssh_harvest_script(
         f"{stay_scan}"
         f"find . -type f {excludes} {stay_exclusion} {size_test} "
         f"-print > {skipped} 2>/dev/null; "
+        # NUL-delimited, not newline: a filename containing a newline would
+        # otherwise split into two `-T` entries, and the second — e.g.
+        # `/etc/passwd` — would pull a file from outside the workdir into the
+        # archive (tar strips the leading slash, so `safe_extract_tar` would take
+        # it as `etc/passwd`). `--null` reads names verbatim between NULs, which
+        # also stops a leading-dash filename from being read as a tar option.
         f"find . -type f {excludes} {stay_exclusion} ! {size_test} "
-        f"-print > {listing} 2>/dev/null; "
+        f"-print0 > {listing} 2>/dev/null; "
         f"if [ -s {listing} ]; then "
         # Same tar hardening the byoc wrapper applies, for the same reason: a
         # login profile is free to export TAR_OPTIONS or GZIP, and GNU tar and
@@ -327,9 +348,12 @@ def _ssh_harvest_script(
         # bsdtar (macOS) from emitting an AppleDouble `._name` sidecar beside
         # every file, which would arrive as a phantom extra "output".
         f"if env -u TAR_OPTIONS -u GZIP COPYFILE_DISABLE=1 "
-        f"tar -czf {_HARVEST_ARCHIVE}.tmp -T {listing} 2>/dev/null; then "
+        f"tar --null -czf {_HARVEST_ARCHIVE}.tmp -T {listing} 2>/dev/null; then "
         f"mv -f {_HARVEST_ARCHIVE}.tmp {_HARVEST_ARCHIVE}; "
-        f"echo '{_HARVEST_TAG} archive'; "
+        # Report the compressed archive size so the host can refuse a download
+        # that would exceed its disk cap before scp writes a single byte.
+        f'echo "{_HARVEST_TAG} archive '
+        f'$(wc -c < {_HARVEST_ARCHIVE} 2>/dev/null || echo 0)"; '
         f"else rm -f {_HARVEST_ARCHIVE}.tmp; "
         f"echo 'openai4s: tar failed' >&2; exit 4; fi; "
         f"else echo '{_HARVEST_TAG} empty'; fi; "
@@ -362,16 +386,19 @@ def _prune_local_matches(dest: Path, patterns: list[str]) -> list[str]:
     return removed
 
 
-def _parse_harvest_ack(stdout: str) -> tuple[str, list[str], list[str]]:
-    """Split the harvest reply into ``(marker, oversized, stayed)``.
+def _parse_harvest_ack(stdout: str) -> tuple[str, list[str], list[str], int | None]:
+    """Split the harvest reply into ``(marker, oversized, stayed, archive_bytes)``.
 
     The tagged forms are checked before the bare marker because both begin
     with it; an untagged line after a marker is still read as oversized, which
-    keeps a harvest staged by an older wrapper readable.
+    keeps a harvest staged by an older wrapper readable. ``archive_bytes`` is the
+    compressed archive size the ``archive`` marker now carries, or ``None`` for
+    an older wrapper that did not report it.
     """
     marker = ""
     oversized: list[str] = []
     stayed: list[str] = []
+    archive_bytes: int | None = None
     for line in stdout.splitlines():
         text = line.strip()
         if not text:
@@ -385,10 +412,12 @@ def _parse_harvest_ack(stdout: str) -> tuple[str, list[str], list[str]]:
         if text.startswith(_HARVEST_TAG):
             parts = text.split()
             marker = parts[1] if len(parts) > 1 else ""
+            if marker == "archive" and len(parts) > 2 and parts[2].isdigit():
+                archive_bytes = int(parts[2])
             continue
         if marker:
             oversized.append(text)
-    return marker, oversized, stayed
+    return marker, oversized, stayed, archive_bytes
 
 
 # The submit acknowledgement line. Tagged so a login banner, a `.bashrc` echo,
@@ -2187,25 +2216,33 @@ class ComputeManager:
         # before polling and have `build_manifest` count it as a produced
         # output, so an exit-0 job was marked succeeded with forged bytes.
         staging = self._host_staging_dir(job["job_id"])
-        stay_remote = manifest.remote_patterns(job.get("outputs"))
-        harvest_error, oversized, stayed = self._harvest_ssh(
-            alias, workdir, staging, stay_remote
-        )
-        entries = manifest.build_manifest(staging)
-        featured, missing = manifest.reconcile(entries, job.get("outputs"))
-        unverified_files = manifest.unverified(entries)
-        # The manifest is trusted (built from staging); publish it into the
-        # workspace copy `save_artifact` can reach, replacing any planted files.
-        # `result()` re-runs on every poll, including re-attaches after a job is
-        # already terminal. Only replace the published tree when the harvest
-        # *succeeded*: an empty-but-successful harvest legitimately wipes planted
-        # files, but a re-poll whose scp/tar transiently failed leaves `staging`
-        # empty, and clobbering a previously harvested, verified tree with that
-        # would destroy the outputs. Retain the prior tree unless this harvest
-        # succeeds.
-        dest = self._safe_harvest_dest(job["job_id"])
-        if not harvest_error:
-            self._publish_harvest(staging, dest)
+        try:
+            stay_remote = manifest.remote_patterns(job.get("outputs"))
+            harvest_error, oversized, stayed = self._harvest_ssh(
+                alias, workdir, staging, stay_remote
+            )
+            entries = manifest.build_manifest(staging)
+            featured, missing = manifest.reconcile(entries, job.get("outputs"))
+            unverified_files = manifest.unverified(entries)
+            # The manifest is trusted (built from staging); publish it into the
+            # workspace copy `save_artifact` can reach, replacing any planted
+            # files. `result()` re-runs on every poll, including re-attaches after
+            # a job is already terminal. Only replace the published tree when the
+            # harvest *succeeded*: an empty-but-successful harvest legitimately
+            # wipes planted files, but a re-poll whose scp/tar transiently failed
+            # leaves `staging` empty, and clobbering a previously harvested,
+            # verified tree with that would destroy the outputs. Retain the prior
+            # tree unless this harvest succeeds.
+            dest = self._safe_harvest_dest(job["job_id"])
+            if not harvest_error:
+                self._publish_harvest(staging, dest)
+        finally:
+            # Host-owned scratch: a successful publish renames it into `dest`
+            # (so this is a no-op), but a skipped or failed publish — including a
+            # transient harvest error, now that we retain the prior tree — would
+            # otherwise leak one directory under the data dir per poll/reattach,
+            # or strand the full harvested tree on a rejected/swapped dest.
+            shutil.rmtree(staging, ignore_errors=True)
 
         if timed_out:
             # The wrapper's own marker, not the exit code. `timeout` reports
@@ -2358,7 +2395,7 @@ class ComputeManager:
                 [],
                 [],
             )
-        marker, oversized, stayed = _parse_harvest_ack(
+        marker, oversized, stayed, archive_bytes = _parse_harvest_ack(
             proc.stdout.decode("utf-8", "replace")
         )
         if marker == "empty":
@@ -2371,6 +2408,18 @@ class ComputeManager:
                     f"harvest produced no acknowledgement on {alias}; "
                     f"the work directory may be gone"
                 ),
+                oversized,
+                stayed,
+            )
+        if archive_bytes is not None and archive_bytes > HARVEST_MAX_ARCHIVE_BYTES:
+            # Refuse before scp writes anything: the compressed archive alone
+            # would exceed the local disk cap, and safe_extract_tar's limits only
+            # apply after the whole thing has already landed.
+            self._cleanup_remote_archive(alias, workdir)
+            return (
+                f"harvest archive is {archive_bytes} bytes on {alias}, over the "
+                f"{HARVEST_MAX_ARCHIVE_BYTES}-byte download cap; refusing to pull "
+                f"it. Declare fewer or smaller outputs, or use residency: remote.",
                 oversized,
                 stayed,
             )

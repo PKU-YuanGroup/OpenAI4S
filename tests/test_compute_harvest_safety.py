@@ -221,6 +221,50 @@ def test_a_failed_reharvest_does_not_destroy_previously_published_outputs(
     ).read_text() == "verified\n", "a failed re-harvest destroyed prior outputs"
 
 
+def test_a_failed_harvest_does_not_leak_its_staging_directory(cfg, tmp_path):
+    """Codex P2: the host-owned staging tree is only moved away by a *successful*
+    publish. Now that a failed re-harvest deliberately retains the prior tree,
+    every transient harvest error would leave one directory per poll under the
+    data dir — and an error after extraction would strand the whole tree."""
+    ws = tmp_path / "ws"
+    manager = _manager(cfg, ws)
+    manager._jobs["job-leak"] = {
+        "job_id": "job-leak",
+        "provider": "ssh:lab",
+        "alias": "lab",
+        "workdir": str(tmp_path / "remote"),
+        "status": states.RUNNING,
+        "pid": "1",
+        "pgid": "1",
+        "outputs": [],
+    }
+    (tmp_path / "remote").mkdir()
+
+    def failing_harvest(alias, workdir, staging, exclude):
+        # Extraction got part-way, then the transfer failed.
+        (Path(staging) / "partial.bin").write_text("half", encoding="utf-8")
+        return "scp: connection reset by peer", [], []
+
+    manager._harvest_ssh = failing_harvest
+    stage_root = manager._hpc_stage_root
+    before = set(stage_root.iterdir())
+
+    def probe_says_exit_zero(argv, *a, **k):
+        return subprocess.CompletedProcess(argv, 0, b"RC 0 -\n", b"")
+
+    import openai4s.compute.manager as mod
+
+    original_run = mod.subprocess.run
+    mod.subprocess.run = probe_says_exit_zero
+    try:
+        manager._result_ssh(manager._jobs["job-leak"])
+    finally:
+        mod.subprocess.run = original_run
+
+    after = set(stage_root.iterdir())
+    assert after == before, f"a staging directory leaked: {sorted(after - before)}"
+
+
 def test_the_staging_dir_is_host_owned_and_outside_the_workspace(cfg, tmp_path):
     ws = tmp_path / "ws"
     manager = _manager(cfg, ws)
