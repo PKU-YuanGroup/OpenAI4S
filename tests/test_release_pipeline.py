@@ -98,8 +98,32 @@ def _pipeline(assets, **kw):
     return Pipeline("0.2.0", assets_dir=assets, **kw)
 
 
-def _gh_for(assets: Path, *, is_draft=True, corrupt=None, drop=None):
-    """A gh stand-in that behaves like a release the assets were uploaded to."""
+#: Local build evidence read from disk, never uploaded as release assets — so a
+#: faithful release listing must not include them.
+_LOCAL_ONLY_SIDECARS = (".codesign.json", ".components.json")
+
+
+def _gh_for(assets: Path, *, is_draft=True, corrupt=None, drop=None, extra=None):
+    """A gh stand-in that behaves like a release the assets were uploaded to.
+
+    The listing reflects what `step_upload` actually uploads (``self.assets``):
+    the distributions and the generated sbom/provenance/SHA256SUMS, but not the
+    `.codesign.json`/`.components.json` sidecars, which are local evidence read
+    from disk and never pushed to the release. `extra` injects an unexpected
+    asset a prior staging attempt might have left behind.
+    """
+
+    def _uploaded_names():
+        names = {
+            path.name
+            for path in assets.glob("*")
+            if path.is_file()
+            and path.name != drop
+            and not path.name.endswith(_LOCAL_ONLY_SIDECARS)
+        }
+        if extra:
+            names.add(extra)
+        return names
 
     def gh(argv):
         verb = argv[1]
@@ -107,9 +131,13 @@ def _gh_for(assets: Path, *, is_draft=True, corrupt=None, drop=None):
             return _completed(0, json.dumps({"isDraft": is_draft}).encode())
         if verb == "view":
             listing = [
-                {"name": path.name, "size": path.stat().st_size}
-                for path in sorted(assets.glob("*"))
-                if path.name != drop
+                {
+                    "name": name,
+                    "size": (assets / name).stat().st_size
+                    if (assets / name).is_file()
+                    else 0,
+                }
+                for name in sorted(_uploaded_names())
             ]
             return _completed(0, json.dumps({"assets": listing}).encode())
         if verb == "download":
@@ -433,7 +461,13 @@ def test_the_sbom_components_come_from_the_wheel_and_the_image(assets):
         )
     dmg = _signed_dmg(assets)
     dmg.with_name(dmg.name + ".components.json").write_text(
-        json.dumps({"packages": [{"name": "scipy", "version": "1.14.0"}]}),
+        json.dumps(
+            {
+                "packages": [{"name": "scipy", "version": "1.14.0"}],
+                # Bound to the exact image, as describe_macos_image writes it.
+                "image_sha256": sha256_file(dmg),
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -452,6 +486,41 @@ def test_an_image_with_no_component_inventory_is_named_not_omitted(assets):
     document = json.loads((assets / "sbom.cdx.json").read_text())
     properties = document["metadata"].get("properties") or []
     assert any("components-unread" in p["name"] for p in properties)
+
+
+def test_a_components_sidecar_from_a_different_image_is_not_trusted(assets):
+    """Codex P2: a `.components.json` left by an earlier rebuild with the same
+    filename carries no binding to the bytes it describes. Its package list must
+    not enter the SBOM for a different image; a stale/mismatched digest is read
+    as unread, not trusted."""
+    import zipfile
+
+    wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "openai4s-0.2.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: openai4s\nVersion: 0.2.0\n",
+        )
+    dmg = _signed_dmg(assets)
+    dmg.with_name(dmg.name + ".components.json").write_text(
+        json.dumps(
+            {
+                "packages": [{"name": "ghost-pkg", "version": "9.9.9"}],
+                # A digest for some *other* image — the binding does not match.
+                "image_sha256": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _pipeline(assets).run()
+    document = json.loads((assets / "sbom.cdx.json").read_text())
+    names = {component["name"] for component in document["components"]}
+    assert "ghost-pkg" not in names, "a mismatched-image inventory was trusted"
+    properties = document["metadata"].get("properties") or []
+    assert any(
+        "components-unread" in p["name"] for p in properties
+    ), "the mismatched sidecar should be reported unread, not silently dropped"
 
 
 def test_the_provenance_points_at_the_repository_this_source_lives_in(
@@ -589,6 +658,24 @@ def test_an_asset_whose_name_survived_but_whose_bytes_did_not_is_caught(assets):
     assert "do not match" in report["steps"][-1]["detail"]
 
 
+def test_an_unexpected_asset_left_in_the_draft_stops_before_publish(assets):
+    """Codex P1: `gh release upload --clobber` overwrites matching names but
+    leaves anything extra in place, and the old one-way name check still passed.
+    A leftover asset from an earlier staging attempt would then be published
+    without appearing in checksums, provenance, or the read-back."""
+    _signed_dmg(assets)
+    report = _pipeline(
+        assets,
+        mode="release",
+        gh=_gh_for(assets, extra="openai4s-0.1.9-py3-none-any.whl"),
+    ).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "reverify"
+    assert report["published"] is False
+    assert "did not produce" in report["steps"][-1]["detail"]
+
+
 # --------------------------------------------------------------------------
 # the cross-channel order
 # --------------------------------------------------------------------------
@@ -629,20 +716,70 @@ def test_a_complete_release_publishes_last(assets):
     assert calls[-1][-1] == "--draft=false", "publishing is the final act"
 
 
-def test_the_finalize_step_can_be_re_run_alone_after_a_failed_flip(assets):
-    """The documented compensation: PyPI has it, the draft is still a draft."""
+def _write_checksums(assets: Path) -> None:
+    """A SHA256SUMS covering the uploaded assets, as step_checksums writes it.
+
+    Excludes the local-only sidecars (they are never uploaded), so the manifest
+    matches the release listing `_gh_for` serves.
+    """
+    lines = []
+    for path in sorted(assets.glob("*")):
+        if path.name == "SHA256SUMS" or path.name.endswith(_LOCAL_ONLY_SIDECARS):
+            continue
+        lines.append(f"{sha256_file(path)}  {path.name}\n")
+    (assets / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
+
+
+def test_the_finalize_step_revalidates_the_draft_before_the_flip(assets):
+    """The documented compensation — PyPI has it, the draft is still a draft —
+    but it must not flip blind. `--only publish` runs standalone after an
+    approval delay; a draft asset deleted or replaced since staging would be made
+    public unverified. It re-hashes the draft against its own SHA256SUMS first,
+    then flips."""
+    _signed_dmg(assets)
+    _write_checksums(assets)
     calls: list[list[str]] = []
+    inner = _gh_for(assets)
 
     def gh(argv):
         calls.append(list(argv))
-        return _completed()
+        return inner(argv)
 
     report = _pipeline(assets, mode="release", only="publish", gh=gh).run()
 
-    assert report["ok"] is True
-    assert [call[1] for call in calls] == [
-        "edit"
-    ], "re-running the flip must not rebuild, re-upload or re-verify anything"
+    assert report["ok"] is True and report["published"] is True
+    verbs = [call[1] for call in calls]
+    assert "download" in verbs, "finalize published without re-hashing the draft"
+    assert verbs[-1] == "edit" and calls[-1][-1] == "--draft=false"
+
+
+def test_finalize_refuses_to_publish_a_draft_asset_replaced_since_staging(assets):
+    """Codex P1: the exact risk finalize re-validation exists for. A draft asset
+    whose bytes were replaced between attach and the flip must stop the publish,
+    not go public unverified."""
+    _signed_dmg(assets)
+    _write_checksums(assets)
+    # The wheel in the draft no longer matches its verified digest.
+    gh = _gh_for(assets, corrupt="openai4s-0.2.0-py3-none-any.whl")
+
+    report = _pipeline(assets, mode="release", only="publish", gh=gh).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "publish"
+    assert report["published"] is False
+    assert "no longer matches" in report["steps"][-1]["detail"]
+
+
+def test_finalize_refuses_a_draft_missing_its_checksum_manifest(assets):
+    """Without SHA256SUMS there is nothing to re-validate against; publishing
+    then would be a blind flip."""
+    _signed_dmg(assets)  # but no SHA256SUMS written to the draft
+
+    report = _pipeline(assets, mode="release", only="publish", gh=_gh_for(assets)).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "publish"
+    assert "SHA256SUMS" in report["steps"][-1]["detail"]
 
 
 # --------------------------------------------------------------------------

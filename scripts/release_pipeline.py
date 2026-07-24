@@ -156,6 +156,24 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def parse_checksums(text: str) -> dict[str, str]:
+    """Parse a ``SHA256SUMS`` body (``<digest>  <name>`` per line) to a map.
+
+    This is the persisted digest manifest the finalize-only publish re-validates
+    the draft against, so parsing must be strict: a malformed line is dropped
+    rather than guessed at.
+    """
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        digest, name = parts[0].strip(), parts[1].strip()
+        if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest) and name:
+            out[name] = digest
+    return out
+
+
 def _asset_version(filename: str) -> str | None:
     """The exact version encoded in a distribution filename, or None.
 
@@ -243,6 +261,15 @@ def sidecar_components(
         try:
             payload = json.loads(sidecar.read_text("utf-8"))
         except (OSError, ValueError):
+            missing.append(asset.name)
+            continue
+        # Bind the inventory to the exact image. A components sidecar left by an
+        # earlier rebuild with the same filename would otherwise contribute its
+        # package list to an SBOM describing a *different* image. Require the
+        # recorded digest to match the bytes on disk; a missing or mismatched
+        # binding is reported as unread, not trusted.
+        recorded = str(payload.get("image_sha256") or "")
+        if not recorded or recorded != sha256_file(asset):
             missing.append(asset.name)
             continue
         for item in payload.get("packages") or []:
@@ -917,6 +944,17 @@ class Pipeline:
         missing = sorted({a.name for a in self.assets} - set(listing))
         if missing:
             raise ReleaseError(f"assets did not survive the upload: {missing}")
+        # Exact set, not just a superset. `gh release upload --clobber` overwrites
+        # matching names but leaves anything extra in place, so an asset from an
+        # earlier staging attempt would ride along — published without appearing
+        # in checksums, provenance, or this read-back.
+        unexpected = sorted(set(listing) - {a.name for a in self.assets})
+        if unexpected:
+            raise ReleaseError(
+                f"the draft carries assets this release did not produce: "
+                f"{unexpected}; they would be published unverified. Remove them "
+                f"(likely a leftover from an earlier staging attempt) and re-run."
+            )
 
         mismatched: list[str] = []
         checked: dict[str, str] = {}
@@ -968,6 +1006,87 @@ class Pipeline:
             {"digests": checked},
         )
 
+    def _download_asset(self, name: str, dest_dir: Path) -> Path:
+        """Pull one named asset from the draft, or fail loudly."""
+        pulled = self._gh(
+            [
+                "release",
+                "download",
+                f"v{self.version}",
+                "--pattern",
+                name,
+                "--dir",
+                str(dest_dir),
+                "--clobber",
+            ]
+        )
+        if pulled.returncode != 0:
+            raise ReleaseError(
+                f"could not download {name} from the draft: "
+                f"{(pulled.stderr or b'').decode('utf-8', 'replace')}"
+            )
+        path = dest_dir / name
+        if not path.is_file():
+            raise ReleaseError(f"{name} did not come back from the draft")
+        return path
+
+    def _revalidate_draft_from_checksums(self) -> dict[str, str]:
+        """Re-hash the draft's current assets against its own SHA256SUMS.
+
+        ``step_publish`` runs standalone in the finalize job (``--only publish``),
+        so it cannot trust in-process state from staging. A draft asset deleted
+        or replaced between attach and the flip would otherwise be published
+        unverified. SHA256SUMS is the persisted digest manifest (itself an
+        uploaded asset): this requires the draft's asset set to match it exactly
+        and re-hashes every covered asset before the draft may go public.
+        """
+        completed = self._gh(
+            ["release", "view", f"v{self.version}", "--json", "assets"]
+        )
+        if completed.returncode != 0:
+            raise ReleaseError("could not read back the draft before publishing")
+        try:
+            remote = json.loads((completed.stdout or b"{}").decode("utf-8"))
+        except ValueError as e:
+            raise ReleaseError(f"the draft listing was not JSON: {e}") from e
+        present = {str(item.get("name")) for item in (remote.get("assets") or [])}
+        if "SHA256SUMS" not in present:
+            raise ReleaseError(
+                "the draft has no SHA256SUMS manifest; refusing to publish an "
+                "unverifiable release"
+            )
+        checked: dict[str, str] = {}
+        with tempfile.TemporaryDirectory(prefix="openai4s-publish-verify-") as temp:
+            sums = self._download_asset("SHA256SUMS", Path(temp))
+            expected = parse_checksums(sums.read_text("utf-8"))
+            if not expected:
+                raise ReleaseError("SHA256SUMS was empty; nothing to verify")
+            # Exact set: every covered asset plus the manifest itself, no more.
+            want = set(expected) | {"SHA256SUMS"}
+            missing = sorted(want - present)
+            if missing:
+                raise ReleaseError(
+                    f"the draft is missing verified assets: {missing}; refusing "
+                    f"to publish"
+                )
+            unexpected = sorted(present - want)
+            if unexpected:
+                raise ReleaseError(
+                    f"the draft carries assets not covered by SHA256SUMS: "
+                    f"{unexpected}; refusing to publish unverified bytes"
+                )
+            for name, digest in sorted(expected.items()):
+                local = self._download_asset(name, Path(temp))
+                actual = sha256_file(local)
+                checked[name] = actual
+                if actual != digest:
+                    raise ReleaseError(
+                        f"{name} in the draft no longer matches its verified "
+                        f"digest ({actual[:12]} != {digest[:12]}); refusing to "
+                        f"publish"
+                    )
+        return checked
+
     def step_publish(self) -> StepResult:
         """The last cross-channel step: flip the draft public.
 
@@ -987,6 +1106,12 @@ class Pipeline:
                 f"GitHub release public. Publish to PyPI first, then re-run "
                 f"with --only publish. The draft is untouched."
             )
+        # Re-validate the draft against its own checksum manifest immediately
+        # before the flip. `--only publish` runs standalone in the finalize job,
+        # often after an approval delay, so it cannot trust in-process state from
+        # staging: a draft asset deleted or replaced since attach would otherwise
+        # be made public unverified. SHA256SUMS is the persisted digest manifest.
+        self._revalidate_draft_from_checksums()
         completed = self._gh(["release", "edit", f"v{self.version}", "--draft=false"])
         if completed.returncode != 0:
             raise ReleaseError(

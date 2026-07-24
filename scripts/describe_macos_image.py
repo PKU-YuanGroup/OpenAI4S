@@ -155,13 +155,19 @@ def describe(dmg: Path) -> tuple[dict, dict]:
         signature = describe_signature(app)
         components = describe_components(app)
         version = _bundle_version(app)
+    image_digest = _sha256(dmg)
     signature["image"] = dmg.name
     # Bind the receipt to the exact image it describes. Without a digest a
     # stale or copied receipt could be paired with a different, unsigned DMG on
     # a staging host and pass the signing gate. The gate re-hashes the image and
     # requires this to match.
-    signature["image_sha256"] = _sha256(dmg)
+    signature["image_sha256"] = image_digest
     components["image"] = dmg.name
+    # The component inventory needs the same binding: a `.components.json` left
+    # by an earlier rebuild with the same filename must not describe a different
+    # image's packages in the SBOM. The pipeline re-hashes the image and requires
+    # this to match before consuming the list.
+    components["image_sha256"] = image_digest
     components["bundle_version"] = version
     return signature, components
 
