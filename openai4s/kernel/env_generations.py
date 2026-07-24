@@ -832,6 +832,17 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+#: `flock` has no test-only mode, so `_apply_in_progress` probes by taking the
+#: lock and releasing it — holding it exclusively for a few instructions. A real
+#: apply starting in that microsecond window would otherwise be rejected with a
+#: spurious ``ConcurrentApply``. Retry a bounded number of times so a transient
+#: probe (or any momentary contention) clears, while a genuinely-held lock — a
+#: real apply holds it for the whole build, far longer than this budget — still
+#: fails.
+_LOCK_ACQUIRE_TRIES = 4
+_LOCK_ACQUIRE_BACKOFF_S = 0.01
+
+
 def _apply_in_progress(env_dir: Path) -> bool:
     """Is another process *currently* applying this environment?
 
@@ -891,15 +902,27 @@ class _apply_lock:
     def __enter__(self):
         self._path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(self._path, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
+        # Retry briefly: a concurrent recover() probe (or any momentary
+        # contention) holds the lock for a few instructions, and failing on that
+        # would reject a legitimate apply. A real apply holds the lock for the
+        # whole build, so it still fails once the retry budget is spent.
+        last: OSError | None = None
+        for attempt in range(_LOCK_ACQUIRE_TRIES):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                last = None
+                break
+            except OSError as exc:
+                last = exc
+                if attempt + 1 < _LOCK_ACQUIRE_TRIES:
+                    time.sleep(_LOCK_ACQUIRE_BACKOFF_S)
+        if last is not None:
             os.close(fd)
             raise ConcurrentApply(
                 f"another apply is in progress for this environment "
                 f"({self._path}); it releases the lock when it finishes or when "
                 f"its process exits"
-            ) from exc
+            ) from last
         self._fd = fd
         # Record the holder for a human reading the file; the lock is the flock,
         # not these bytes, so this is diagnostic only and safe under the hold.

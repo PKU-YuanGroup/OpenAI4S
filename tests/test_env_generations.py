@@ -674,6 +674,41 @@ def test_a_held_lock_cannot_be_displaced_by_another_applier(tmp_path):
     assert eg._apply_in_progress(env_dir) is False
 
 
+def test_a_transient_lock_hold_does_not_spuriously_reject_an_apply(tmp_path):
+    """recover()'s `_apply_in_progress` probe takes the lock and releases it,
+    holding it exclusively for a few instructions. A real apply starting in that
+    window must retry past the transient hold, not be rejected with a spurious
+    ConcurrentApply when no apply is actually running."""
+    import fcntl
+
+    env_dir = tmp_path / "environments" / "python"
+    env_dir.mkdir(parents=True)
+    lock_path = env_dir / "apply.lock"
+    lock_path.touch()
+
+    holding = threading.Event()
+    released = threading.Event()
+
+    def transient_holder():
+        fd = os.open(lock_path, os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        holding.set()
+        time.sleep(0.008)  # comfortably shorter than the retry budget
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        released.set()
+
+    worker = threading.Thread(target=transient_holder)
+    worker.start()
+    assert holding.wait(5)
+    # The lock is momentarily held; the applier must retry past it and acquire,
+    # rather than raise ConcurrentApply.
+    with eg._apply_lock(env_dir):
+        pass
+    worker.join(5)
+    assert released.is_set(), "the applier did not wait out the transient hold"
+
+
 def test_three_concurrent_applies_with_a_leftover_lock_yield_exactly_one(tmp_path):
     """The round-6 reproduction, end to end. A pre-existing (crashed) lock file
     plus three concurrent applies: the reclaim race let two of them both enter
