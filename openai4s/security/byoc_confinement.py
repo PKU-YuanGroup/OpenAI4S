@@ -247,9 +247,34 @@ def build_bwrap_argv(
         # Bound back *after* the tmpfs so the interpreter can still start; a
         # read-only bind, because nothing here needs to write to them.
         wrapped.extend(["--ro-bind", path, path])
+    # Masking /run also hid the DNS resolver config: on systemd-resolved and
+    # NetworkManager hosts /etc/resolv.conf symlinks to a file under /run, and
+    # the helper's entire job is to reach a provider API. Rebind the resolved
+    # target back over the tmpfs so name resolution still works, without
+    # re-exposing the control sockets. After the /run tmpfs so it wins.
+    wrapped.extend(_runtime_dns_rebinds())
     wrapped.extend(["--bind", stage_dir, stage_dir, "--chdir", stage_dir, "--"])
     wrapped.extend(str(part) for part in argv)
     return wrapped
+
+
+def _runtime_dns_rebinds() -> list[str]:
+    """`--ro-bind-try` args that keep DNS working after `/run` is masked.
+
+    ``/etc/resolv.conf`` commonly symlinks to ``/run/systemd/resolve/…`` (or a
+    NetworkManager path under ``/run``), which the ``/run`` tmpfs hides. Rebind
+    the resolved target back; a ``-try`` bind is skipped when the path is absent,
+    so on a host whose resolv.conf is a plain file outside ``/run`` this is a
+    no-op.
+    """
+    rebinds: list[str] = []
+    try:
+        resolved = os.path.realpath("/etc/resolv.conf")
+    except OSError:  # pragma: no cover - unreadable /etc
+        resolved = ""
+    if resolved.startswith("/run/"):
+        rebinds.extend(["--ro-bind-try", resolved, resolved])
+    return rebinds
 
 
 def network_isolated() -> bool:

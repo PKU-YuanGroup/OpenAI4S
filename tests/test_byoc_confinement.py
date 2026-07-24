@@ -271,6 +271,29 @@ def test_the_linux_wrapper_masks_host_control_sockets():
     assert argv[argv.index("--tmpfs") + 1] == os.path.realpath("/home/researcher")
 
 
+def test_the_linux_wrapper_rebinds_dns_config_hidden_by_the_run_tmpfs(monkeypatch):
+    """The /run mask (which hides the control sockets) also hides the DNS
+    resolver config, since /etc/resolv.conf symlinks under /run on
+    systemd-resolved hosts — and the helper's whole job is reaching a provider
+    API. The resolved target must be rebound back over the tmpfs."""
+    resolv = "/run/systemd/resolve/stub-resolv.conf"
+    real_realpath = os.path.realpath
+
+    def fake_realpath(p, **kw):
+        # os.path.realpath is shared (pathlib.resolve calls it with strict=), so
+        # forward everything but the one path this test cares about.
+        return resolv if str(p) == "/etc/resolv.conf" else real_realpath(p, **kw)
+
+    monkeypatch.setattr(bc.os.path, "realpath", fake_realpath)
+    argv = bc.build_bwrap_argv(
+        ["python"], "/tmp/stage", executable="/usr/bin/bwrap", home="/home/r"
+    )
+    assert "--ro-bind-try" in argv
+    assert resolv in argv
+    # It is rebound *after* the /run tmpfs so it survives the mask.
+    assert argv.index("/run", argv.index("--tmpfs")) < argv.index(resolv)
+
+
 def test_the_linux_wrapper_does_not_claim_network_isolation():
     """Network isolation is a separate capability and it is not enabled.
     Adding `--unshare-net` here would cut the helper off from the API that is
