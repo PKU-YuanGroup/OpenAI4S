@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 import json
 import types
+from dataclasses import replace as dataclasses_replace
 
 import pytest
 
@@ -60,6 +61,7 @@ def test_every_probe_reports_without_a_running_daemon(cfg):
     when it is wanted."""
     result = doctor.report(cfg)
     assert set(_by_name(result)) == {
+        "data",
         "model",
         "runtime",
         "isolation",
@@ -191,6 +193,50 @@ def test_the_exit_code_is_the_verdict(monkeypatch, capsys):
         )
         assert cli.main(["doctor"]) == expected
     capsys.readouterr()
+
+
+def test_an_unusable_data_path_is_reported_rather_than_raised(
+    monkeypatch, capsys, tmp_path
+):
+    """Codex P2: the bootstrap failure doctor exists to diagnose.
+
+    `get_config()` calls `ensure_dirs()`, so an OPENAI4S_DATA_DIR naming a file
+    raised on the way in — a traceback instead of the verdict and the documented
+    exit code 2, in exactly the situation the command is for.
+    """
+    cli = importlib.import_module("openai4s.cli.main")
+    import openai4s.config as config_mod
+
+    as_file = tmp_path / "data-dir-is-a-file"
+    as_file.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(as_file))
+    monkeypatch.setattr(config_mod, "_CONFIG", None, raising=False)
+
+    assert cli.main(["doctor", "--json"]) == 2
+    parsed = json.loads(capsys.readouterr().out)
+    data = {c["name"]: c for c in parsed["checks"]}["data"]
+    assert data["status"] == doctor.FAIL
+    assert str(as_file) in data["detail"]
+    assert data["remedy"], "a failed bootstrap check must say what to do"
+    # ...and nothing was created where the file is.
+    assert as_file.read_text() == "not a directory"
+
+
+def test_an_unwritable_data_directory_is_reported_as_fail(cfg, tmp_path):
+    """The other half: the path is a directory, and nothing may write to it."""
+    locked = tmp_path / "locked"
+    locked.mkdir(mode=0o500)
+    try:
+        result = doctor.report(dataclasses_replace(cfg, data_dir=locked))
+        check = _by_name(result)["data"]
+        assert check["status"] == doctor.FAIL
+        assert "writable" in check["detail"]
+    finally:
+        locked.chmod(0o700)
+
+
+def test_a_usable_data_directory_passes(cfg):
+    assert _by_name(doctor.report(cfg))["data"]["status"] == doctor.OK
 
 
 def test_the_json_form_is_machine_readable(monkeypatch, capsys):

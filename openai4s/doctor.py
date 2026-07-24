@@ -373,6 +373,58 @@ def _isolation(cfg: Any) -> Check:
     )
 
 
+def _data_dir(cfg: Any) -> Check:
+    """Can the data directory actually be used?
+
+    The one bootstrap failure doctor is most likely to be run *for*, and the
+    one it could not report: `get_config()` calls `ensure_dirs()`, so an
+    `OPENAI4S_DATA_DIR` naming a file, or a directory nothing may write to,
+    raised on the way in and produced a traceback instead of a verdict and its
+    documented exit code. The CLI now hands doctor a config it did not have to
+    create anything for; this is the check that says what is wrong with it.
+
+    Non-mutating first, so the diagnosis does not depend on the repair
+    succeeding. Only then is the daemon's own `ensure_dirs()` attempted, which
+    is the sole way to answer "would starting work" without guessing.
+    """
+    target = Path(cfg.data_dir)
+    facts: dict[str, Any] = {"data_dir": str(target)}
+    remedy = (
+        "Point OPENAI4S_DATA_DIR at a directory this user can write to, or fix "
+        "the permissions on the one it names."
+    )
+    if target.exists() and not target.is_dir():
+        return Check(
+            "data",
+            FAIL,
+            f"{target} is not a directory, so nothing can be stored in it",
+            remedy,
+            facts,
+        )
+    probe = target if target.exists() else target.parent
+    if probe.exists() and not os.access(probe, os.W_OK | os.X_OK):
+        return Check(
+            "data",
+            FAIL,
+            f"{probe} is not writable by this user",
+            remedy,
+            facts,
+        )
+    prepare = getattr(cfg, "ensure_dirs", None)
+    if callable(prepare):
+        try:
+            prepare()
+        except Exception as e:  # noqa: BLE001 - the failure *is* the finding
+            return Check(
+                "data",
+                FAIL,
+                f"the data directory at {target} could not be prepared: {e}",
+                remedy,
+                facts,
+            )
+    return Check("data", OK, f"usable at {target}", facts=facts)
+
+
 def _disk(cfg: Any) -> Check:
     """Is there room for a scientific run's artifacts?"""
     target = Path(cfg.data_dir)
@@ -554,6 +606,7 @@ def _remote(cfg: Any) -> Check:
 #: Order matters: it is the order the report prints in, and it runs from the
 #: most fundamental ("can we reach a model") outward.
 _CHECKS: tuple[tuple[str, Callable[[Any], Check]], ...] = (
+    ("data", _data_dir),
     ("model", _model),
     ("runtime", _runtime),
     ("isolation", _isolation),

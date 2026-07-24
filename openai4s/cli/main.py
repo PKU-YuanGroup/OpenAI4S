@@ -107,6 +107,25 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def _doctor_config():
+    """A config for doctor that does not have to create anything to exist.
+
+    ``get_config()`` calls ``ensure_dirs()``, and that is exactly what fails
+    when ``OPENAI4S_DATA_DIR`` names a file, or a directory this user cannot
+    write to, or one that cannot be created — the startup failure doctor is
+    meant to diagnose. Raising here handed back a traceback instead of the
+    report and its documented exit code 2, in the one situation the command
+    exists for. The plain ``Config`` reads env and defaults and touches
+    nothing; ``doctor``'s data check then reports what is wrong with it.
+    """
+    from openai4s.config import Config
+
+    try:
+        return get_config()
+    except Exception:  # noqa: BLE001 - the bootstrap failure is the diagnosis
+        return Config()
+
+
 def cmd_doctor(args) -> int:
     """Check whether this installation can actually do the work.
 
@@ -119,7 +138,7 @@ def cmd_doctor(args) -> int:
     """
     from openai4s import doctor
 
-    result = doctor.report(get_config())
+    result = doctor.report(_doctor_config())
     if getattr(args, "json", False):
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
