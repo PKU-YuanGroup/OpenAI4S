@@ -129,11 +129,30 @@ def can_transition(current: str | None, requested: str) -> bool:
     """True when ``requested`` is reachable from ``current``.
 
     A row with no current status is being created, so any state is reachable.
-    Re-writing the state a job is already in is allowed: probes are naturally
-    repeated, and treating a no-op as a violation would make callers guess.
+    Re-writing a *live* state a job is already in is allowed: probes are
+    naturally repeated, and treating a no-op as a violation would make callers
+    guess.
+
+    Re-writing a *terminal* state is not, and the difference is not pedantry.
+    A status write carries the evidence that established it — the artifact
+    manifest, its digest, the reason and the terminal timestamp — so
+    ``succeeded -> succeeded`` is not a no-op at all. Two pollers that both
+    read ``running`` could each reach the write: the first commits its
+    manifest, and the second, arriving after the remote directory had been
+    reused, committed *its* bytes over the row that the first one's caller had
+    already been told about. The compare-and-swap could not see it, because it
+    re-reads the current status and same-state was legal.
+
+    So a terminal state is written exactly once. Every later terminal write
+    loses the compare-and-swap and gets the stored row back instead, which is
+    the answer the caller has to report.
     """
     if current is None:
         return requested in ALL_STATES
+    if is_terminal(current):
+        # Terminal evidence is immutable — including against a write of the
+        # same status. ``_TRANSITIONS`` already refuses every *other* target.
+        return False
     if current == requested:
         return True
     return requested in _TRANSITIONS.get(current, frozenset())

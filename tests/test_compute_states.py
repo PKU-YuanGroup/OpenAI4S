@@ -67,10 +67,23 @@ def test_a_terminal_job_cannot_be_reopened():
             ), f"{terminal} -> {target} must be refused"
 
 
-def test_repeating_the_current_state_is_allowed():
+def test_repeating_a_live_state_is_allowed():
     """Probes are naturally repeated; a no-op write is not a violation."""
-    for state in states.ALL_STATES:
+    for state in states.LIVE_STATES:
         assert states.can_transition(state, state)
+
+
+def test_rewriting_a_terminal_state_with_itself_is_refused():
+    """A terminal status write is not a no-op: it carries the manifest, the
+    digest, the reason and the terminal timestamp that established it. Two
+    pollers that both read `running` could each reach the write, and the
+    second — arriving after the remote directory was reused — used to commit
+    its bytes over the row the first one's caller had already been told about.
+    Same-state was legal, so the compare-and-swap could not see it."""
+    for terminal in states.TERMINAL_STATES:
+        assert not states.can_transition(
+            terminal, terminal
+        ), f"{terminal} -> {terminal} must be refused; terminal evidence is written once"
 
 
 def test_staging_is_live_everywhere_it_is_live_anywhere():
@@ -113,6 +126,37 @@ def test_the_repository_refuses_an_illegal_transition(store):
     store.update_compute_job("j2", status=states.SUCCEEDED)
     with pytest.raises(IllegalTransition):
         store.update_compute_job("j2", status=states.RUNNING)
+
+
+def test_the_repository_refuses_a_second_terminal_write_of_the_same_status(store):
+    """The stale-poller overwrite, at the write. A row that already holds its
+    terminal evidence must not have the manifest, digest, reason or terminal
+    timestamp replaced by a later poll that observed a reused remote."""
+    store.create_compute_job(job_id="j2b", provider="ssh:lab", status=states.STAGING)
+    store.update_compute_job(
+        "j2b",
+        status=states.SUCCEEDED,
+        integrity_sha256="a" * 64,
+        artifact_manifest=[{"path": "out.csv", "sha256": "a" * 64, "size": 3}],
+        reason="",
+        terminal_at=111,
+    )
+    with pytest.raises(IllegalTransition):
+        store.update_compute_job(
+            "j2b",
+            status=states.SUCCEEDED,
+            integrity_sha256="b" * 64,
+            artifact_manifest=[],
+            reason="clobbered",
+            terminal_at=222,
+        )
+    row = store.get_compute_job("j2b")
+    assert row["integrity_sha256"] == "a" * 64
+    assert row["artifact_manifest"] == [
+        {"path": "out.csv", "sha256": "a" * 64, "size": 3}
+    ]
+    assert row["reason"] == ""
+    assert row["terminal_at"] == 111
 
 
 def test_a_legal_transition_still_writes(store):
