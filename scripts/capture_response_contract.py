@@ -136,8 +136,40 @@ def main() -> int:
 
     if args.check:
         current = json.loads(ARTIFACT.read_text("utf-8")) if ARTIFACT.is_file() else {}
-        if current.get("routes") != payload["routes"]:
-            print("response contract is out of date; regenerate it", file=sys.stderr)
+        frozen_routes = current.get("routes") or {}
+        if frozen_routes != payload["routes"]:
+            # Say what moved, not merely that something did. "Regenerate it" is
+            # only actionable on the machine that captured the file; anyone
+            # reading this in CI has no way to see the difference, and a gate
+            # whose failure cannot be acted on gets regenerated blindly until it
+            # stops meaning anything. Recording *which* route and both records
+            # also makes a host-dependent capture recognisable as one.
+            observed_routes = payload["routes"]
+            print("response contract is out of date:", file=sys.stderr)
+            for route in sorted(set(frozen_routes) | set(observed_routes)):
+                was, now = frozen_routes.get(route), observed_routes.get(route)
+                if was == now:
+                    continue
+                if was is None:
+                    print(f"  + {route}: newly reachable {now}", file=sys.stderr)
+                elif now is None:
+                    print(f"  - {route}: frozen but not reached {was}", file=sys.stderr)
+                else:
+                    print(f"  ~ {route}", file=sys.stderr)
+                    print(
+                        f"      frozen:   {json.dumps(was, sort_keys=True)}",
+                        file=sys.stderr,
+                    )
+                    print(
+                        f"      observed: {json.dumps(now, sort_keys=True)}",
+                        file=sys.stderr,
+                    )
+            print(
+                "\nRegenerate with `uv run python scripts/capture_response_contract.py` "
+                "and commit — unless the difference is your machine rather than the "
+                "surface, which the records above are there to show.",
+                file=sys.stderr,
+            )
             return 1
         print(f"contract up to date: {len(covered)}/{len(known)} routes")
         return 0
