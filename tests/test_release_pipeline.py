@@ -84,11 +84,30 @@ def _signed_dmg(assets: Path, name: str = "OpenAI4S-0.2.0-arm64.dmg") -> Path:
     return dmg
 
 
+def _matching_pypi(assets: Path):
+    """PyPI digests that agree with the local wheel/sdist bytes.
+
+    The default for the ordering tests: PyPI is the finalize anchor, so a
+    success-path run needs a matching digest for every Python distribution.
+    Only wheels and sdists live on PyPI.
+    """
+
+    def digests(_project, _version):
+        return {
+            path.name: sha256_file(path)
+            for path in assets.glob("*")
+            if path.name.endswith((".whl", ".tar.gz"))
+        }
+
+    return digests
+
+
 def _pipeline(assets, **kw):
     kw.setdefault("runner", lambda argv, cwd=None: _completed())
     kw.setdefault("gh", lambda argv: _completed(0, b'{"assets": [], "isDraft": true}'))
     kw.setdefault("smoke", lambda wheel: "smoke injected")
     kw.setdefault("pypi_check", lambda project, version: True)
+    kw.setdefault("pypi_digests", _matching_pypi(assets))
     # The `assets` fixture provides already-built distributions, which is the
     # staging job's input. Default to that mode so `step_build` does not clear
     # them and then find nothing to collect (the mock runner does not rebuild).
@@ -777,15 +796,22 @@ def test_finalize_refuses_when_the_draft_diverges_from_what_pypi_published(asset
     holds the first run's bytes. PyPI is immutable per version, so it decides."""
     _signed_dmg(assets)
     _write_checksums(assets)
-    wheel = "openai4s-0.2.0-py3-none-any.whl"
+    sdist = assets / "openai4s-0.2.0.tar.gz"
+
+    # The sdist matches, but PyPI holds *different* wheel bytes — another run
+    # staged this tag.
+    def diverging(project, version):
+        return {
+            "openai4s-0.2.0-py3-none-any.whl": "f" * 64,
+            sdist.name: sha256_file(sdist),
+        }
 
     report = _pipeline(
         assets,
         mode="release",
         only="publish",
         gh=_gh_for(assets),
-        # PyPI holds different bytes for the same filename: another run staged it.
-        pypi_digests=lambda project, version: {wheel: "f" * 64},
+        pypi_digests=diverging,
     ).run()
 
     assert report["ok"] is False
@@ -798,6 +824,40 @@ def test_finalize_publishes_when_the_draft_matches_pypi(assets):
     """The same anchor must not block the normal path: matching digests publish."""
     _signed_dmg(assets)
     _write_checksums(assets)
+
+    report = _pipeline(
+        assets, mode="release", only="publish", gh=_gh_for(assets)
+    ).run()  # default pypi_digests match the local dists
+
+    assert report["ok"] is True and report["published"] is True
+
+
+def test_finalize_refuses_when_pypi_returns_no_digests(assets):
+    """Codex P1: the old `name in published` guard skipped every file when PyPI
+    returned nothing, publishing unverified. An empty response is not a match —
+    there is nothing to anchor against, so fail closed."""
+    _signed_dmg(assets)
+    _write_checksums(assets)
+
+    report = _pipeline(
+        assets,
+        mode="release",
+        only="publish",
+        gh=_gh_for(assets),
+        pypi_digests=lambda project, version: {},  # nothing to anchor against
+    ).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "publish"
+    assert report["published"] is False
+    assert "no file digests" in report["steps"][-1]["detail"]
+
+
+def test_finalize_refuses_when_pypi_is_missing_a_distribution(assets):
+    """A partial upload — the wheel landed but not the sdist — must not let the
+    missing file ride onto GitHub unverified."""
+    _signed_dmg(assets)
+    _write_checksums(assets)
     wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
 
     report = _pipeline(
@@ -805,10 +865,14 @@ def test_finalize_publishes_when_the_draft_matches_pypi(assets):
         mode="release",
         only="publish",
         gh=_gh_for(assets),
+        # only the wheel is on PyPI; the sdist is missing
         pypi_digests=lambda project, version: {wheel.name: sha256_file(wheel)},
     ).run()
 
-    assert report["ok"] is True and report["published"] is True
+    assert report["ok"] is False
+    assert report["stopped_at"] == "publish"
+    assert report["published"] is False
+    assert "missing distributions" in report["steps"][-1]["detail"]
 
 
 def test_finalize_refuses_a_draft_missing_its_checksum_manifest(assets):

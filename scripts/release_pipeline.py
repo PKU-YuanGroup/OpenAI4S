@@ -1117,14 +1117,35 @@ class Pipeline:
         # ...but that manifest comes from the same *mutable* draft, so a second
         # staging run for this tag that clobbered both the assets and SHA256SUMS
         # would still self-validate while PyPI already holds the first run's
-        # bytes. PyPI is immutable per version, so it is the anchor: any
-        # distribution whose digest disagrees means the two channels would carry
-        # different bytes for one version.
+        # bytes. PyPI is immutable per version, so it is the anchor: every Python
+        # distribution the draft would publish must be on PyPI with a matching
+        # digest. Only wheels and sdists live on PyPI — the dmg, sbom, provenance
+        # and SHA256SUMS are GitHub-only and are not expected there.
+        draft_dists = {name for name in checked if name.endswith((".whl", ".tar.gz"))}
         published = self._pypi_digests("openai4s", self.version)
+        if draft_dists and not published:
+            # Fail closed: an empty response is not "everything matches". The
+            # PyPI check above said the version exists, so no digests here means
+            # the lookup failed or PyPI is mid-propagation — either way there is
+            # nothing to anchor against, and the old `name in published` guard
+            # would have skipped every file and published unverified.
+            raise ReleaseError(
+                f"PyPI returned no file digests for {self.version}; cannot "
+                f"anchor the GitHub release to it. Refusing to publish."
+            )
+        missing_on_pypi = sorted(draft_dists - set(published))
+        if missing_on_pypi:
+            # A partial upload (e.g. the wheel landed but not the sdist) must not
+            # let the missing files ride onto GitHub unverified.
+            raise ReleaseError(
+                f"PyPI is missing distributions the draft would publish for "
+                f"{self.version}: {missing_on_pypi}. A partial upload cannot "
+                f"anchor the release; complete the PyPI upload, then re-run."
+            )
         divergent = sorted(
-            f"{name}: github {digest[:12]} != pypi {published[name][:12]}"
-            for name, digest in checked.items()
-            if name in published and digest != published[name]
+            f"{name}: github {checked[name][:12]} != pypi {published[name][:12]}"
+            for name in draft_dists
+            if checked[name] != published[name]
         )
         if divergent:
             raise ReleaseError(
