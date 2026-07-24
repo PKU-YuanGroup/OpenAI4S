@@ -344,6 +344,43 @@ def test_a_foreign_interpreter_is_frozen_once_per_generation(env, monkeypatch):
     assert first["package_count"] == 1
 
 
+def test_an_install_invalidates_the_freeze_cache_within_a_generation(env, monkeypatch):
+    """Codex P2: the cache is keyed by generation on the premise that an
+    environment cannot change within one — which `/kernel/install` breaks.
+    Installing with `restart: false` (or installing then failing to restart)
+    mutates the same generation's interpreter, so a stale entry would stamp the
+    pre-install package list onto artifacts the new packages actually produced:
+    provenance that is wrong rather than absent."""
+    manager, store, root = env
+    _generation(
+        store, root, "python", interpreter="/opt/other/bin/python", env_name="other"
+    )
+    installed: list[str] = []
+
+    def freeze(interpreter, *, timeout=20.0):
+        # After the install, the same interpreter reports one more package.
+        packages = [{"name": "numpy", "version": "1.26.0"}]
+        if installed:
+            packages.append({"name": "scipy", "version": "1.14.0"})
+        return packages
+
+    monkeypatch.setattr("openai4s.kernel.preinstall.freeze_for", freeze, raising=True)
+
+    before = _snapshot(manager, store, root, "python")
+    assert before["package_count"] == 1
+
+    # An install lands into the *same* generation, and the installer invalidates.
+    installed.append("scipy")
+    manager.invalidate_freeze_cache()
+
+    after = _snapshot(manager, store, root, "python")
+    assert after["package_count"] == 2, (
+        "the pre-install package list was reused for an artifact the newly "
+        "installed package produced"
+    )
+    assert after["snapshot_id"] != before["snapshot_id"]
+
+
 def test_a_failed_probe_is_not_retried_within_the_generation(env, monkeypatch):
     """An interpreter that could not be read will not become readable inside
     the same generation, and re-paying the timeout to rediscover that is the

@@ -3485,6 +3485,14 @@ class SessionRunner:
 
         res = preinstall.install(packages)
         res["restarted"] = False
+        if res.get("ok"):
+            # The freeze cache is keyed by kernel generation on the premise that
+            # an environment cannot change within one. An install breaks that:
+            # with `restart: false` — or when the restart below fails — the same
+            # generation's interpreter now has packages the cached list does not
+            # mention, and later artifacts would be stamped with the pre-install
+            # environment. That is provenance that is wrong, not missing.
+            self.artifacts.invalidate_freeze_cache()
         if res.get("ok") and restart and root_frame_id:
             try:
                 self.restart_kernel(root_frame_id, project_id or "default")

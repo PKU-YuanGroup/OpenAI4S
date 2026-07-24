@@ -923,6 +923,20 @@ class ArtifactManager:
             ] = f"{runtime} kernel: Python distribution metadata does not apply"
         return snapshot
 
+    def invalidate_freeze_cache(self) -> None:
+        """Forget every cached package list.
+
+        The cache is keyed by kernel generation on the premise that an
+        environment cannot change within one — which `/kernel/install` breaks:
+        installing with ``restart: false`` (or installing successfully and then
+        failing to restart) mutates the *same* generation's interpreter. A stale
+        entry would then attribute the pre-install package list to artifacts the
+        new packages actually produced, which is provenance that is wrong rather
+        than absent. The installer calls this so the next capture re-probes.
+        """
+        with self._freeze_lock:
+            self._freeze_cache.clear()
+
     def _frozen_packages(
         self, interpreter: Any, generation: dict[str, Any] | None
     ) -> list[dict[str, Any]] | None:
