@@ -138,6 +138,29 @@ def test_a_hung_command_raises_timeoutexpired_rather_than_hanging():
     assert time.monotonic() - started < 10, "the deadline did not actually fire"
 
 
+def test_a_grandchild_holding_the_pipes_does_not_multiply_the_deadline():
+    """The overshoot has to be bounded by something other than luck.
+
+    When the process exits its pipes are at EOF and the drain threads are
+    already done — unless a *grandchild* inherited them and outlived the kill.
+    `sleep 30 & wait` is deliberately that shape on every shell, where
+    `sh -c "sleep 30"` is not: a shell that `exec`s its only command has no
+    grandchild to leave behind, which is why this was invisible on macOS and
+    turned a 0.5s deadline into a 10s return on Linux CI.
+
+    The drain join is one shared budget rather than one per stream, so the
+    overshoot is `_DRAIN_JOIN_S` regardless of how many pipes are held open.
+    """
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        mod._run_capped(_sh("sleep 30 & wait"), timeout=0.5)
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5 + mod._DRAIN_JOIN_S + 2.0, (
+        f"returned after {elapsed:.1f}s; a held-open pipe must not multiply "
+        f"the caller's deadline by the number of streams"
+    )
+
+
 def test_a_command_that_cannot_start_raises_oserror():
     with pytest.raises(OSError):
         mod._run_capped(["/nonexistent/openai4s-not-a-binary"], timeout=5)

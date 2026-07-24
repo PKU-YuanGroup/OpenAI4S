@@ -439,7 +439,12 @@ def self_test(*, force: bool = False) -> tuple[bool, str]:
     executable = shutil.which(_BWRAP if sys.platform.startswith("linux") else _SEATBELT)
     if not executable:
         binary = _BWRAP if sys.platform.startswith("linux") else _SEATBELT
-        return False, f"{binary} is not on PATH"
+        return (
+            False,
+            f"{binary} is not on PATH, so no OS boundary can be built for the "
+            f"provider helper on this host; install it, or accept the "
+            f"degradation that OPENAI4S_COMPUTE_CONFINEMENT=auto reports",
+        )
     key = _self_test_key(executable)
     if not force:
         with _SELF_TEST_LOCK:

@@ -446,7 +446,7 @@ def test_the_helper_probe_reads_that_anchor(monkeypatch, tmp_path):
         pytest.skip("the anchor path is the Linux branch of the probe")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("OPENAI4S_HOST_HOME_DEV", str(os.stat(tmp_path).st_dev))
-    probe = resident.Resident.__dict__["_probe_confined"]
+    probe = resident.ByocResident.__dict__["_probe_confined"]
     assert probe(object()) is False, "same device: not confined"
 
     monkeypatch.setenv("OPENAI4S_HOST_HOME_DEV", "999999")

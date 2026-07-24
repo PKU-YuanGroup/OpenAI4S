@@ -258,6 +258,12 @@ _STDERR_TAIL_BYTES = 64 * 1024
 # the answer arrives at the beginning.
 _REMOTE_STDOUT_CAP = 16 * 1024 * 1024
 
+# How long `_run_capped` waits for its drain threads once the process is gone.
+# A shared budget rather than one per thread: a grandchild holding the pipes
+# open is the only case where they are not already at EOF, and the caller's
+# deadline should not be multiplied by however many streams there are.
+_DRAIN_JOIN_S = 2.0
+
 # What `call_command` hands back. It is an introspection surface, not a
 # transport — the documented answer for a large result is to write it to a file
 # on the host and harvest that — so the reply has always been sliced. What is
@@ -709,8 +715,19 @@ def _run_capped(
         returncode = proc.wait()
     finally:
         watchdog.cancel()
+        # One budget across all the drainers, not five seconds each.
+        #
+        # Normally they are already finished: the process exited, so its pipes
+        # are at EOF. They are not when a *grandchild* inherited them and
+        # outlived the kill — `sh -c "sleep 30"` on a shell that forks rather
+        # than execs is exactly that — and then each drainer blocks until the
+        # grandchild exits. Per-thread joins turned a 0.5s deadline into a 10s
+        # return; a shared budget bounds the overshoot to `_DRAIN_JOIN_S`
+        # whatever is holding the far end. Nothing is lost by not waiting: the
+        # sinks are read under their own lock, and the threads are daemons.
+        deadline = time.monotonic() + _DRAIN_JOIN_S
         for worker in workers:
-            worker.join(timeout=5)
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
     if timed_out["v"]:
         raise subprocess.TimeoutExpired(
             argv, timeout, output=out.value(), stderr=err.value(annotate=True)

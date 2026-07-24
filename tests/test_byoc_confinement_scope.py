@@ -189,20 +189,25 @@ def test_a_self_test_verdict_is_cached_but_not_across_a_change(monkeypatch):
         runs.append(1)
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
+    # `st_dev` as well as `st_mtime_ns`: the cache key reads the mtime, but on
+    # Linux the probe itself reads the home directory's device id to compare
+    # against the one inside the sandbox. A stub carrying only the mtime made
+    # `_probe_argv` raise `AttributeError`, `self_test` turn that into a failed
+    # verdict, and this test fail for a reason that has nothing to do with
+    # caching — on Linux only, which is why it was invisible on a Mac.
+    def fake_stat(mtime):
+        return lambda *_a, **_k: types.SimpleNamespace(st_mtime_ns=mtime, st_dev=4242)
+
     monkeypatch.setattr(bc.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(bc.subprocess, "run", probe)
-    monkeypatch.setattr(
-        bc.os, "stat", lambda *_a, **_k: types.SimpleNamespace(st_mtime_ns=1)
-    )
+    monkeypatch.setattr(bc.os, "stat", fake_stat(1))
 
     assert bc.available()[0] is True
     assert bc.available()[0] is True
     assert len(runs) == 1, "the self-test is meant to be cached"
 
     # The backend binary changed underneath us: the verdict must not survive it.
-    monkeypatch.setattr(
-        bc.os, "stat", lambda *_a, **_k: types.SimpleNamespace(st_mtime_ns=2)
-    )
+    monkeypatch.setattr(bc.os, "stat", fake_stat(2))
     assert bc.available()[0] is True
     assert len(runs) == 2, "a changed backend must invalidate the cached verdict"
 
