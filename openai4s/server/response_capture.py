@@ -41,7 +41,16 @@ SCHEMA_VERSION = 1
 #: Add to this only for a subtree whose type varies with the host. It is not a
 #: place to park a route whose shape is merely inconvenient -- that is what the
 #: coverage number is for.
-_MACHINE_STATE_KEYS = frozenset({"sandbox"})
+#: Property names whose *shape* describes the machine rather than the API.
+#:
+#: `sandbox` was the first: its field types differ between a host that can
+#: enforce a sandbox and one that cannot. `default_host` is the same thing one
+#: level down — the registry documents it as ``"<alias>" | null``, so which of
+#: the two you observe depends on whether this machine has an ssh alias
+#: configured, not on the contract. Freezing it as `string` pinned the
+#: developer's ssh config and told CI, which has none, that the API had made a
+#: breaking change.
+_MACHINE_STATE_KEYS = frozenset({"sandbox", "default_host"})
 
 #: How many incompatibilities to name per route before summarising the rest.
 #: One structural change can break dozens of nested fields, and a wall of them

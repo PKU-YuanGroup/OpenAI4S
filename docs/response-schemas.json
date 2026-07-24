@@ -3356,7 +3356,8 @@
             "type": "boolean"
           },
           "default_host": {
-            "type": "string"
+            "machine_state": true,
+            "type": "object"
           },
           "hosts": {
             "items": {

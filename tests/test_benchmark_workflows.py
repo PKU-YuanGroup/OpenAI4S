@@ -160,16 +160,30 @@ def test_an_error_expecting_case_must_assert_something_about_the_error(monkeypat
 def test_the_workflows_are_shipped_as_package_data():
     """An installed wheel that did not ship the manifests would make
     `openai4s benchmark` report a green run over zero workflows."""
-    import tomllib
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    pyproject = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
-    include = pyproject["tool"]["setuptools"]["packages"]["find"]["include"]
-    assert "workflows*" in include, (
-        "the benchmark manifests are not packaged; an installed benchmark "
-        "would find nothing and pass silently"
-    )
+    text = (root / "pyproject.toml").read_text("utf-8")
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        # `tomllib` is stdlib from 3.11, and this project supports 3.10 — where
+        # an unconditional import made the whole test error out rather than
+        # check anything. The core is zero-dependency, so there is no parser to
+        # fall back to; the same claim is asserted as text, which is what the
+        # two checks below already do.
+        assert '"workflows*"' in text, (
+            "the benchmark manifests are not packaged; an installed benchmark "
+            "would find nothing and pass silently"
+        )
+    else:
+        include = tomllib.loads(text)["tool"]["setuptools"]["packages"]["find"][
+            "include"
+        ]
+        assert "workflows*" in include, (
+            "the benchmark manifests are not packaged; an installed benchmark "
+            "would find nothing and pass silently"
+        )
     manifest = (root / "MANIFEST.in").read_text("utf-8")
     assert "recursive-include workflows" in manifest
     build = (root / "scripts" / "build_macos_dmg.sh").read_text("utf-8")
