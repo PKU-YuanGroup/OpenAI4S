@@ -506,6 +506,7 @@ class Pipeline:
         stop_after: str | None = None,
         only: str | None = None,
         pypi_check: Callable[[str, str], bool] | None = None,
+        pypi_digests: Callable[[str, str], dict[str, str]] | None = None,
         smoke: Callable[[Path], str] | None = None,
     ) -> None:
         self.version = version
@@ -520,6 +521,7 @@ class Pipeline:
         self._run = runner or _run
         self._gh = gh or (lambda argv: _run(["gh", *argv]))
         self._pypi_check = pypi_check or _pypi_has_version
+        self._pypi_digests = pypi_digests or _pypi_file_digests
         #: Injected only so the ordering tests do not have to build a venv per
         #: case. The real implementation is what every non-test run uses, and
         #: it is exercised by `--mode local`.
@@ -1111,7 +1113,26 @@ class Pipeline:
         # often after an approval delay, so it cannot trust in-process state from
         # staging: a draft asset deleted or replaced since attach would otherwise
         # be made public unverified. SHA256SUMS is the persisted digest manifest.
-        self._revalidate_draft_from_checksums()
+        checked = self._revalidate_draft_from_checksums()
+        # ...but that manifest comes from the same *mutable* draft, so a second
+        # staging run for this tag that clobbered both the assets and SHA256SUMS
+        # would still self-validate while PyPI already holds the first run's
+        # bytes. PyPI is immutable per version, so it is the anchor: any
+        # distribution whose digest disagrees means the two channels would carry
+        # different bytes for one version.
+        published = self._pypi_digests("openai4s", self.version)
+        divergent = sorted(
+            f"{name}: github {digest[:12]} != pypi {published[name][:12]}"
+            for name, digest in checked.items()
+            if name in published and digest != published[name]
+        )
+        if divergent:
+            raise ReleaseError(
+                f"the draft's bytes disagree with what PyPI already published "
+                f"for {self.version}: {divergent}. Refusing to publish two "
+                f"channels with different bytes for one version — this tag was "
+                f"most likely staged twice."
+            )
         completed = self._gh(["release", "edit", f"v{self.version}", "--draft=false"])
         if completed.returncode != 0:
             raise ReleaseError(
@@ -1193,6 +1214,33 @@ def _pypi_has_version(project: str, version: str) -> bool:
         return False
     except Exception:  # noqa: BLE001 - unreachable index is not a yes
         return False
+
+
+def _pypi_file_digests(project: str, version: str) -> dict[str, str]:
+    """``{filename: sha256}`` for every file PyPI holds for this exact version.
+
+    PyPI is immutable per version, which makes these digests the one anchor the
+    finalize step can trust: the SHA256SUMS it re-hashes the draft against comes
+    from that same *mutable* draft, so a second staging run that clobbered both
+    the assets and the manifest would still self-validate. What PyPI already
+    published cannot be rewritten, so it decides.
+    """
+    import json as _json
+    import urllib.request
+
+    url = f"https://pypi.org/pypi/{project}/{version}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            payload = _json.loads(response.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - unreachable index adds no constraint
+        return {}
+    out: dict[str, str] = {}
+    for item in payload.get("urls") or []:
+        name = str(item.get("filename") or "")
+        digest = str((item.get("digests") or {}).get("sha256") or "")
+        if name and digest:
+            out[name] = digest
+    return out
 
 
 def main() -> int:

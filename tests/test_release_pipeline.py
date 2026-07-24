@@ -770,6 +770,47 @@ def test_finalize_refuses_to_publish_a_draft_asset_replaced_since_staging(assets
     assert "no longer matches" in report["steps"][-1]["detail"]
 
 
+def test_finalize_refuses_when_the_draft_diverges_from_what_pypi_published(assets):
+    """Codex P1: the SHA256SUMS the finalizer re-hashes against comes from the
+    same *mutable* draft, so a second staging run for this tag that clobbered
+    both the assets and the manifest would self-validate — while PyPI already
+    holds the first run's bytes. PyPI is immutable per version, so it decides."""
+    _signed_dmg(assets)
+    _write_checksums(assets)
+    wheel = "openai4s-0.2.0-py3-none-any.whl"
+
+    report = _pipeline(
+        assets,
+        mode="release",
+        only="publish",
+        gh=_gh_for(assets),
+        # PyPI holds different bytes for the same filename: another run staged it.
+        pypi_digests=lambda project, version: {wheel: "f" * 64},
+    ).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "publish"
+    assert report["published"] is False
+    assert "disagree with what PyPI" in report["steps"][-1]["detail"]
+
+
+def test_finalize_publishes_when_the_draft_matches_pypi(assets):
+    """The same anchor must not block the normal path: matching digests publish."""
+    _signed_dmg(assets)
+    _write_checksums(assets)
+    wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
+
+    report = _pipeline(
+        assets,
+        mode="release",
+        only="publish",
+        gh=_gh_for(assets),
+        pypi_digests=lambda project, version: {wheel.name: sha256_file(wheel)},
+    ).run()
+
+    assert report["ok"] is True and report["published"] is True
+
+
 def test_finalize_refuses_a_draft_missing_its_checksum_manifest(assets):
     """Without SHA256SUMS there is nothing to re-validate against; publishing
     then would be a blind flip."""
