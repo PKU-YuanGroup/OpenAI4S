@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+import openai4s.compute.manager as manager_mod
 from openai4s.compute.manager import ComputeError, ComputeManager
 from openai4s.compute.safe_archive import UnsafeArchiveError, safe_extract_tar
 
@@ -173,7 +174,14 @@ def test_ssh_unparseable_rc_is_unknown(mgr, monkeypatch):
 
 def test_ssh_log_harvest_failure_does_not_claim_clean_success(mgr, monkeypatch):
     """rc==0 is the job's own verdict and stays trustworthy, but a partial
-    transfer must not be dressed up as a complete result."""
+    transfer must not be dressed up as a complete result.
+
+    It must not be dressed up as a *terminal failure* either. A broken transfer
+    says nothing about the job, and writing `failed` with an empty manifest made
+    the stored-terminal shortcut return that row forever — so a poll after the
+    network came back never retried, though the archive was still on the host.
+    The verdict only lands once the retry budget is spent.
+    """
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -186,12 +194,66 @@ def test_ssh_log_harvest_failure_does_not_claim_clean_success(mgr, monkeypatch):
         _fake_transfer(1, b"", b"cat: transfer broke"),
         raising=True,
     )
-    out = mgr._result_ssh(_ssh_job(mgr))
-    assert out["status"] == "failed"
+    job = _ssh_job(mgr)
+    out = mgr._result_ssh(job)
+    assert out["status"] == "unknown"
+    assert out["error_kind"] == "harvest_pending"
     # The distinction `incomplete` used to carry: rc was 0, so this is not
     # an ordinary non-zero failure — the outputs simply cannot be trusted.
     assert out["exit_code"] == 0
+    assert "transfer" in out["reason"]
+    assert job["status"] == "running", "nothing terminal may be recorded yet"
+
+    # Budget spent: now it is a verdict, and it still carries the job's own rc.
+    monkeypatch.setattr(manager_mod, "HARVEST_RETRY_MIN_ATTEMPTS", 1, raising=True)
+    monkeypatch.setattr(manager_mod, "HARVEST_RETRY_WINDOW_S", 0, raising=True)
+    out = mgr._result_ssh(job)
+    assert out["status"] == "failed"
+    assert out["exit_code"] == 0
     assert "transfer" in out["harvest_error"]
+
+
+def test_ssh_a_recovered_network_still_harvests_the_outputs(mgr, monkeypatch, tmp_path):
+    """The reported defect, end to end.
+
+    Poll one hits a reset mid-transfer. Poll two, after the network came back,
+    must actually harvest — which it cannot do if poll one wrote a terminal
+    `failed` with an empty manifest, because the stored-terminal shortcut then
+    answers every later poll from that row and never re-probes at all.
+    """
+    payload = io.BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+        body = b"verified\n"
+        info = tarfile.TarInfo("result.csv")
+        info.size = len(body)
+        tar.addfile(info, io.BytesIO(body))
+    archive = payload.getvalue()
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _ssh_replies(b"0\n", harvest=b"OPENAI4S_HARVEST archive 10\n"),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _fake_transfer(1, b"", b"cat: connection reset"),
+        raising=True,
+    )
+    job = _ssh_job(mgr, "job-recover")
+    first = mgr._result_ssh(job)
+    assert first["status"] == "unknown"
+    assert first["error_kind"] == "harvest_pending"
+
+    # The network comes back; the archive was never removed from the remote.
+    monkeypatch.setattr(subprocess, "Popen", _fake_transfer(0, archive), raising=True)
+    second = mgr._result_ssh(job)
+    assert second["status"] == "succeeded", second
+    assert second["exit_code"] == 0
+    assert [item["path"] for item in second["artifact_manifest"]] == ["result.csv"]
+    dest = mgr._safe_harvest_dest("job-recover")
+    assert (dest / "result.csv").read_text() == "verified\n"
 
 
 def test_ssh_failed_job_with_bad_harvest_stays_failed(mgr, monkeypatch):
@@ -207,6 +269,8 @@ def test_ssh_failed_job_with_bad_harvest_stays_failed(mgr, monkeypatch):
         _fake_transfer(1, b"", b"cat: transfer broke"),
         raising=True,
     )
+    monkeypatch.setattr(manager_mod, "HARVEST_RETRY_MIN_ATTEMPTS", 1, raising=True)
+    monkeypatch.setattr(manager_mod, "HARVEST_RETRY_WINDOW_S", 0, raising=True)
     out = mgr._result_ssh(_ssh_job(mgr))
     assert out["status"] == "failed"
     assert out["exit_code"] == 3

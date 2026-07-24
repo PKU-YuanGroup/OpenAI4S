@@ -237,6 +237,20 @@ HARVEST_MAX_FILE_BYTES = 100 * 1024 * 1024
 # its ack; a harvest over this is refused without downloading.
 HARVEST_MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024
 
+# How long a *transport* failure keeps a decided job's harvest retryable. The
+# job's exit code is known by then; only our copy of its files is missing, and
+# the archive is still on the remote. Both conditions must be met before the
+# harvest is written off as failed — see `_harvest_pending` for why neither
+# alone is the right unit.
+HARVEST_RETRY_MIN_ATTEMPTS = 3
+HARVEST_RETRY_WINDOW_S = 900
+
+# How much of a remote command's stderr is ever kept. Only a tail is reported,
+# and the transfer runs for as long as its timeout allows, so a remote that
+# writes stderr continuously would otherwise grow the daemon's heap without
+# bound while every byte-cap on the payload reports the transfer as fine.
+_STDERR_TAIL_BYTES = 64 * 1024
+
 # Staged inside the job's own work directory, so it is cleaned up with it.
 _HARVEST_ARCHIVE = ".openai4s-harvest.tar.gz"
 
@@ -2004,6 +2018,15 @@ class ComputeManager:
         return self._result_byoc(job)
 
     def _result_byoc(self, job: dict) -> dict:
+        # Before the provider is dispatched at all, exactly as the ssh path
+        # does. A byoc sandbox is *warm and reused*: submitting job B wipes
+        # /work, so re-polling job A after B ran would harvest B's phase and
+        # archive, publish those bytes under A's job id, and replace A's durable
+        # manifest, digest and terminal timestamp with them. `wait` is also not
+        # free — it blocks on the provider for a job that already ended.
+        cached = self._stored_terminal_result(job, left_on_remote=False)
+        if cached is not None:
+            return cached
         prov = self._byoc(job["provider"].split(":", 1)[1])
         creds = self._provider_creds(prov)
         with tempfile.TemporaryDirectory(prefix="openai4s-byoc-stage-") as td:
@@ -2061,9 +2084,20 @@ class ComputeManager:
         # `entries` was built from the host-owned staging dir, so reconcile is
         # immune to a planted file. Only now is the verified tree published into
         # the workspace copy that `save_artifact` can reach.
-        dest = self._safe_harvest_dest(job["job_id"])
-        if harvested is not None:
-            self._publish_harvest(harvested, dest)
+        #
+        # The `finally` is the ssh path's discipline applied here. A successful
+        # publish renames the staging tree into `dest`, so the removal is a
+        # no-op; a `_safe_harvest_dest` rejection or a publish failure would
+        # otherwise strand the whole harvested tree under the data dir, one per
+        # poll. (`_harvest` cleans up its own allocation when it raises before
+        # returning, which is the other half of the same leak.)
+        try:
+            dest = self._safe_harvest_dest(job["job_id"])
+            if harvested is not None:
+                self._publish_harvest(harvested, dest)
+        finally:
+            if harvested is not None:
+                shutil.rmtree(harvested, ignore_errors=True)
         out_files = [str(dest / item["path"]) for item in entries]
         featured, missing = manifest.reconcile(entries, job.get("outputs"))
         featured_files = [str(dest / rel) for rel in featured]
@@ -2159,7 +2193,11 @@ class ComputeManager:
         The caller publishes ``harvested`` into the workspace afterwards.
 
         Raises UnsafeArchiveError if the archive is hostile; the caller must
-        treat that as a failed harvest, never a partial success.
+        treat that as a failed harvest, never a partial success — and gets no
+        path back, which is why the allocation is cleaned up *here*. For a
+        hostile archive (``../escape``) ``safe_extract_tar`` raises after the
+        directory exists, and every poll would otherwise leave another
+        ``<data>/hpc-staging/job-*`` behind with nothing able to name it.
         """
         tgz = stage / "out.tar.gz"
         if not tgz.exists():
@@ -2167,11 +2205,17 @@ class ComputeManager:
             # error and the caller went on to call the job succeeded.
             return [], None
         harvested = self._host_staging_dir(job_id)
-        safe_extract_tar(tgz, harvested)
-        return manifest.build_manifest(harvested), harvested
+        try:
+            safe_extract_tar(tgz, harvested)
+            return manifest.build_manifest(harvested), harvested
+        except BaseException:
+            shutil.rmtree(harvested, ignore_errors=True)
+            raise
 
-    def _stored_terminal_result(self, job: dict) -> dict | None:
-        """Reconstruct a terminal SSH job's result from its recorded evidence.
+    def _stored_terminal_result(
+        self, job: dict, *, left_on_remote: bool = True
+    ) -> dict | None:
+        """Reconstruct a terminal job's result from its recorded evidence.
 
         A job that has already ended must not be re-harvested: `result()` re-runs
         on every poll, and a re-poll after the remote workdir changed would
@@ -2179,12 +2223,24 @@ class ComputeManager:
         reason / ``terminal_at`` with whatever the later poll happened to see.
         The stored row describes the bytes that established the outcome, so a
         re-poll returns it unchanged rather than recomputing it.
+
+        The gate is the *ledger*, never ``job["status"]``. In-memory status is a
+        cache of the row, and reading the cache first is what let the byoc path
+        re-poll a job the ledger had already closed. ``left_on_remote`` is the
+        one transport difference: the ssh workdir survives a harvest, the byoc
+        sandbox's ``/work`` does not.
         """
         if self._store is None:
             return None
         row = self._store.get_compute_job(job["job_id"])
         if row is None or not states.is_terminal(row.get("status")):
             return None
+        # Memory can lag the ledger — a restart, or another handle's cancel —
+        # and every caller of this reports the row, so re-sync it here rather
+        # than leaving `_live_count` counting a job that has ended.
+        job["status"] = row["status"]
+        if row.get("exit_code") is not None:
+            job["exit_code"] = row["exit_code"]
         entries = row.get("artifact_manifest") or []
         dest = self._safe_harvest_dest(job["job_id"])
         featured, _missing = manifest.reconcile(entries, row.get("outputs"))
@@ -2195,21 +2251,23 @@ class ComputeManager:
             "featured_files": [str(dest / rel) for rel in featured],
             "artifact_manifest": entries,
             "integrity_sha256": row.get("integrity_sha256"),
-            "remote_workdir": row.get("workdir") or job.get("workdir"),
-            "left_on_remote": True,
+            "left_on_remote": left_on_remote,
             "cached": True,
         }
+        if left_on_remote:
+            result["remote_workdir"] = row.get("workdir") or job.get("workdir")
         if row.get("reason"):
             result["reason"] = row["reason"]
         return result
 
     def _result_ssh(self, job: dict) -> dict:
         # Already terminal: return the recorded evidence rather than re-harvest
-        # and overwrite it. The recorded outcome is authoritative.
-        if states.is_terminal(job.get("status")):
-            cached = self._stored_terminal_result(job)
-            if cached is not None:
-                return cached
+        # and overwrite it. The recorded outcome is authoritative. Asked of the
+        # ledger unconditionally, not gated on the in-memory status, because the
+        # in-memory copy is the thing that can be stale.
+        cached = self._stored_terminal_result(job)
+        if cached is not None:
+            return cached
         alias, workdir = job["alias"], job["workdir"]
         pid = job.get("pid") or ""
         # Probe ordering matters. `kill -0` is asked first because the wrapper
@@ -2274,7 +2332,7 @@ class ComputeManager:
         staging = self._host_staging_dir(job["job_id"])
         try:
             stay_remote = manifest.remote_patterns(job.get("outputs"))
-            harvest_error, oversized, stayed = self._harvest_ssh(
+            harvest_error, oversized, stayed, harvest_transient = self._harvest_ssh(
                 alias, workdir, staging, stay_remote
             )
             entries = manifest.build_manifest(staging)
@@ -2311,6 +2369,22 @@ class ComputeManager:
             status = states.SUCCEEDED
         else:
             status = states.FAILED
+
+        if harvest_error and harvest_transient:
+            # The probe read a real exit code, so the *job* is decided — but the
+            # transfer is not, and committing a terminal state now would freeze
+            # an empty manifest that the stored-terminal shortcut then returns
+            # forever, with the archive and the workdir still on the remote. So
+            # nothing terminal is written and the row stays live: the next poll
+            # re-probes and re-harvests. The budget below is what stops a
+            # permanently broken harvest from staying live indefinitely.
+            pending = self._harvest_pending(job, exit_code, harvest_error, workdir)
+            if pending is not None:
+                return pending
+        # Either the harvest succeeded or it failed definitively (or its retry
+        # budget is spent), so the retry state has served its purpose.
+        job.pop("harvest_retry_since", None)
+        job.pop("harvest_retry_attempts", None)
         if harvest_error:
             # The job's own verdict is known and trustworthy; only our copy of
             # its files is incomplete. Keep the verdict, but never claim a
@@ -2386,6 +2460,71 @@ class ComputeManager:
             result["unverified_files"] = unverified_files
         return result
 
+    def _harvest_pending(
+        self, job: dict, exit_code: int, reason: str, workdir: str
+    ) -> dict | None:
+        """Hold a decided job open while its harvest is still retryable.
+
+        Returns the non-terminal answer to give the caller, or ``None`` once the
+        budget is spent and the caller should record ``failed`` after all.
+
+        The budget is two conditions, both of which must be met before giving
+        up: a minimum number of attempts *and* a minimum elapsed wall-clock.
+        Attempts alone are the wrong unit — a caller polling every five seconds
+        would burn three of them inside a fifteen-second network blip — and
+        elapsed time alone lets a single unlucky poll decide. Together they mean
+        "we kept asking, for long enough, and it never came back".
+
+        The counters live in memory only. A restart hands the job a fresh budget,
+        which errs towards retrying a harvest whose bytes are still on the
+        remote; the row stays live either way, so ``reconcile`` keeps surfacing
+        it rather than it being silently forgotten.
+        """
+        now = _now_ms()
+        since = int(job.setdefault("harvest_retry_since", now))
+        attempts = int(job.get("harvest_retry_attempts", 0)) + 1
+        job["harvest_retry_attempts"] = attempts
+        elapsed_s = max(0, now - since) / 1000.0
+        if (
+            attempts >= HARVEST_RETRY_MIN_ATTEMPTS
+            and elapsed_s >= HARVEST_RETRY_WINDOW_S
+        ):
+            self._event(
+                job["job_id"],
+                "harvest_retry_exhausted",
+                {"attempts": attempts, "elapsed_s": round(elapsed_s, 1)},
+            )
+            return None
+        # Bookkeeping, not a state change: `_persist` never writes a status, so
+        # the row keeps whichever live state it holds and only gains a reason
+        # that `reconcile` and the job history can show.
+        self._persist(job["job_id"], reason=f"harvest pending: {reason}")
+        self._event(
+            job["job_id"],
+            "harvest_retry",
+            {"attempt": attempts, "exit_code": exit_code, "reason": reason},
+        )
+        return {
+            "status": "unknown",
+            "job_id": job["job_id"],
+            "exit_code": exit_code,
+            "error_kind": "harvest_pending",
+            "reason": reason,
+            "remote_workdir": workdir,
+            "left_on_remote": True,
+            "harvest_retry": {
+                "attempts": attempts,
+                "elapsed_s": round(elapsed_s, 1),
+                "gives_up_after_s": HARVEST_RETRY_WINDOW_S,
+            },
+            "hint": (
+                f"the remote job finished (exit {exit_code}) but its outputs "
+                f"could not be transferred: {reason}. The archive and "
+                f"{workdir} are still on the host — poll again; this is not a "
+                f"verdict on the job and nothing terminal has been recorded"
+            ),
+        }
+
     def _ssh_unknown(self, job: dict, reason: str) -> dict:
         """Terminal-shaped answer for a job whose real state we cannot observe.
 
@@ -2415,12 +2554,22 @@ class ComputeManager:
         workdir: str,
         dest: Path,
         exclude_patterns: list[str] | None = None,
-    ) -> tuple[str | None, list[str], list[str]]:
+    ) -> tuple[str | None, list[str], list[str], bool]:
         """Pull the job's whole work directory back.
 
-        Returns ``(error, oversized, stayed)``: an error string or None, the
-        relative paths left behind for being over the per-file ceiling, and the
-        ones left behind because the caller declared ``residency: remote``.
+        Returns ``(error, oversized, stayed, transient)``: an error string or
+        None, the relative paths left behind for being over the per-file
+        ceiling, the ones left behind because the caller declared
+        ``residency: remote``, and whether the error was a *transport* failure
+        rather than a verdict about the archive.
+
+        That last flag is not cosmetic. The job's own outcome and our ability to
+        copy its files back are separate facts, and collapsing them wrote a
+        terminal ``failed`` with an empty manifest whenever a transfer timed out
+        or a connection reset — after which the terminal-evidence shortcut
+        returned that row forever, though the archive and the work directory
+        were still sitting on the remote. A transient error therefore reports
+        itself as one, and the caller retries instead of recording a verdict.
 
         This used to copy ``stdout.log`` and ``stderr.log`` and nothing else,
         while ``submit_job`` accepted an ``outputs`` declaration and the
@@ -2441,8 +2590,12 @@ class ComputeManager:
                 ["ssh", alias, script], capture_output=True, timeout=300
             )
         except (subprocess.TimeoutExpired, OSError) as e:
-            return f"harvest failed to run on {alias}: {e}", [], []
+            return f"harvest failed to run on {alias}: {e}", [], [], True
         if proc.returncode != 0:
+            # 255 is ssh's own "I never reached the host"; every other code came
+            # back *from* the staging script, which means the remote answered
+            # and gave its verdict (3 is its "the work directory is gone"). Only
+            # the former is worth retrying.
             return (
                 (
                     f"harvest staging exited {proc.returncode} on {alias}: "
@@ -2450,6 +2603,7 @@ class ComputeManager:
                 ),
                 [],
                 [],
+                proc.returncode == 255,
             )
         marker, oversized, stayed, archive_bytes = _parse_harvest_ack(
             proc.stdout.decode("utf-8", "replace")
@@ -2457,8 +2611,10 @@ class ComputeManager:
         if marker == "empty":
             # The job wrote nothing at all. That is a fact about the job, not a
             # transport failure; `reconcile` decides whether it is acceptable.
-            return None, oversized, stayed
+            return None, oversized, stayed, False
         if marker != "archive":
+            # The script exited 0, so it *did* run — it simply did not
+            # acknowledge an archive. Repeating it produces the same answer.
             return (
                 (
                     f"harvest produced no acknowledgement on {alias}; "
@@ -2466,18 +2622,22 @@ class ComputeManager:
                 ),
                 oversized,
                 stayed,
+                False,
             )
         if archive_bytes is not None and archive_bytes > HARVEST_MAX_ARCHIVE_BYTES:
             # Refuse before scp writes anything: the compressed archive alone
             # would exceed the local disk cap, and safe_extract_tar's limits only
             # apply after the whole thing has already landed.
             self._cleanup_remote_archive(alias, workdir)
+            # Definitive: the same archive is what the next poll would find, so
+            # retrying only repeats the refusal.
             return (
                 f"harvest archive is {archive_bytes} bytes on {alias}, over the "
                 f"{HARVEST_MAX_ARCHIVE_BYTES}-byte download cap; refusing to pull "
                 f"it. Declare fewer or smaller outputs, or use residency: remote.",
                 oversized,
                 stayed,
+                False,
             )
         with tempfile.TemporaryDirectory(prefix="openai4s-ssh-harvest-") as td:
             local = Path(td) / "harvest.tar.gz"
@@ -2486,13 +2646,21 @@ class ComputeManager:
                     alias, workdir, local, HARVEST_MAX_ARCHIVE_BYTES
                 )
             except ComputeError as e:
-                return str(e), oversized, stayed
+                # A stalled or reset transfer is `transient`; blowing the cap
+                # mid-transfer is `unsafe_archive` and is a verdict, not a blip.
+                return str(e), oversized, stayed, e.error_kind == "transient"
             if not local.is_file():
-                return f"harvest archive never arrived from {alias}", oversized, stayed
+                return (
+                    f"harvest archive never arrived from {alias}",
+                    oversized,
+                    stayed,
+                    True,
+                )
             try:
                 safe_extract_tar(local, dest)
             except UnsafeArchiveError as e:
-                return f"harvest archive rejected: {e}", oversized, stayed
+                # A hostile archive is a fact about the archive.
+                return f"harvest archive rejected: {e}", oversized, stayed, False
         self._cleanup_remote_archive(alias, workdir)
         if patterns:
             # The remote `find` is the exclusion that matters, and it is the
@@ -2501,7 +2669,7 @@ class ComputeManager:
             # fnmatch's on every host, and a stay-remote file that slipped
             # through must not survive on local disk to be listed as an output.
             stayed.extend(_prune_local_matches(dest, patterns))
-        return None, oversized, sorted(set(stayed))
+        return None, oversized, sorted(set(stayed)), False
 
     def _fetch_archive_capped(
         self,
@@ -2532,13 +2700,27 @@ class ComputeManager:
         # would not. A watchdog kills the process at the deadline, which unblocks
         # the read with EOF. stderr is drained on its own thread so a chatty
         # remote cannot fill that pipe and back-pressure stdout into a deadlock.
-        stderr_chunks: list[bytes] = []
+        #
+        # Draining is not the same as *keeping*. A forced command or a login
+        # profile on the remote can write stderr continuously while `cat` stays
+        # under the stdout cap, and retaining every chunk for the whole transfer
+        # timeout — then doubling it in `b"".join` — exhausts the daemon's memory
+        # while the archive limit reports everything is fine. Only the tail is
+        # ever shown, so only the tail is held; the rest is read and dropped.
+        stderr_tail = bytearray()
+        tail_lock = threading.Lock()
+        dropped = [0]
 
         def _drain_stderr() -> None:
             try:
                 if proc.stderr is not None:
                     for part in iter(lambda: proc.stderr.read(65536), b""):
-                        stderr_chunks.append(part)
+                        with tail_lock:
+                            stderr_tail.extend(part)
+                            excess = len(stderr_tail) - _STDERR_TAIL_BYTES
+                            if excess > 0:
+                                del stderr_tail[:excess]
+                                dropped[0] += excess
             except Exception:  # noqa: BLE001 - draining is best-effort
                 pass
 
@@ -2582,7 +2764,15 @@ class ComputeManager:
                 proc.kill()
                 rc = -1
             drainer.join(timeout=5)
-            stderr = b"".join(stderr_chunks)
+            # The join can time out with the drainer still writing, so the tail
+            # is copied under the same lock it is appended under.
+            with tail_lock:
+                stderr = bytes(stderr_tail)
+                elided = dropped[0]
+            if elided:
+                stderr = (
+                    f"...({elided} earlier stderr bytes discarded)\n".encode() + stderr
+                )
         if over:
             raise ComputeError(
                 f"harvest exceeded the {cap}-byte download cap mid-transfer from "

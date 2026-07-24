@@ -20,6 +20,7 @@ import io
 import os
 import shutil
 import subprocess
+import threading
 import types
 from pathlib import Path
 
@@ -200,7 +201,7 @@ def test_a_failed_reharvest_does_not_destroy_previously_published_outputs(
         # First poll: a successful harvest publishes a verified output.
         def good_harvest(alias, workdir, staging, exclude):
             (Path(staging) / "result.csv").write_text("verified\n", encoding="utf-8")
-            return None, [], []  # no error
+            return None, [], [], False  # no error
 
         manager._harvest_ssh = good_harvest
         manager._result_ssh(manager._jobs["job-z"])
@@ -209,7 +210,7 @@ def test_a_failed_reharvest_does_not_destroy_previously_published_outputs(
 
         # Second poll (re-attach): the harvest transiently fails, staging empty.
         def failed_harvest(alias, workdir, staging, exclude):
-            return "scp: connection reset", [], []  # harvest_error set
+            return "scp: connection reset", [], [], True  # transient
 
         manager._harvest_ssh = failed_harvest
         manager._result_ssh(manager._jobs["job-z"])
@@ -244,7 +245,7 @@ def test_a_failed_harvest_does_not_leak_its_staging_directory(cfg, tmp_path):
     def failing_harvest(alias, workdir, staging, exclude):
         # Extraction got part-way, then the transfer failed.
         (Path(staging) / "partial.bin").write_text("half", encoding="utf-8")
-        return "scp: connection reset by peer", [], []
+        return "scp: connection reset by peer", [], [], True
 
     manager._harvest_ssh = failing_harvest
     stage_root = manager._hpc_stage_root
@@ -304,7 +305,7 @@ def test_a_terminal_job_repolled_returns_stored_evidence_not_a_reharvest(cfg, tm
 
         def good_harvest(alias, workdir, staging, exclude):
             (Path(staging) / "result.csv").write_text("original\n", encoding="utf-8")
-            return None, [], []
+            return None, [], [], False
 
         manager._harvest_ssh = good_harvest
         first = manager._result_ssh(manager._jobs["job-t"])
@@ -317,7 +318,7 @@ def test_a_terminal_job_repolled_returns_stored_evidence_not_a_reharvest(cfg, tm
         # A re-poll after the workdir "changed": a completely different harvest.
         def tampered_harvest(alias, workdir, staging, exclude):
             (Path(staging) / "result.csv").write_text("TAMPERED\n", encoding="utf-8")
-            return None, [], []
+            return None, [], [], False
 
         manager._harvest_ssh = tampered_harvest
         second = manager._result_ssh(manager._jobs["job-t"])
@@ -436,6 +437,176 @@ def test_the_capped_transfer_delivers_a_within_cap_archive(cfg, tmp_path, monkey
     assert local.read_bytes() == payload
 
 
+# --------------------------------------------------------------------------
+# byoc: a warm sandbox is reused, so a re-poll must never re-harvest
+# --------------------------------------------------------------------------
+
+
+def _byoc_manager(cfg, workspace, job_id="job-byoc"):
+    manager = _manager(cfg, workspace)
+    manager._byoc = lambda pid: {"id": "acme", "dir": str(cfg.skills_dir)}
+    manager._provider_creds = lambda prov: {}
+    manager._store.create_compute_job(
+        job_id=job_id, provider="byoc:acme", status=states.RUNNING
+    )
+    manager._jobs[job_id] = {
+        "job_id": job_id,
+        "provider": "byoc:acme",
+        "sandbox_id": "sbx-1",
+        "status": states.RUNNING,
+        "outputs": None,
+    }
+    return manager
+
+
+def _tgz_with(files: dict[str, bytes]) -> bytes:
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, body in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    return buf.getvalue()
+
+
+def test_a_terminal_byoc_job_repolled_returns_stored_evidence(cfg, tmp_path):
+    """Codex P1: a byoc sandbox is warm and reused. Once job A is harvested,
+    submitting job B wipes /work — and re-polling A used to reach the provider
+    anyway, harvest B's archive, publish those bytes under A's job id, and
+    replace A's durable manifest, digest and terminal timestamp with them."""
+    manager = _byoc_manager(cfg, tmp_path / "ws", "job-warm")
+
+    def helper(prov, verb, payload, creds, stage, *a, **k):
+        (Path(stage) / "out.tar.gz").write_bytes(_tgz_with(archive[0]))
+        return {"ready": True, "job_exit_code": 0}
+
+    archive = [{"a.csv": b"job-A bytes\n"}]
+    manager._run_helper = helper
+    first = manager._result_byoc(manager._jobs["job-warm"])
+    assert first["status"] == states.SUCCEEDED
+    row1 = manager._store.get_compute_job("job-warm")
+
+    # Job B ran in the same sandbox; /work now holds entirely different bytes.
+    archive[0] = {"b.csv": b"job-B bytes\n"}
+    calls = []
+
+    def counting_helper(prov, verb, payload, creds, stage, *a, **k):
+        calls.append(verb)
+        return helper(prov, verb, payload, creds, stage)
+
+    manager._run_helper = counting_helper
+    second = manager._result_byoc(manager._jobs["job-warm"])
+
+    assert calls == [], "the provider must not be dispatched for a terminal job"
+    assert second.get("cached") is True
+    assert second["integrity_sha256"] == row1["integrity_sha256"]
+    assert [i["path"] for i in second["artifact_manifest"]] == ["a.csv"]
+    assert second["left_on_remote"] is False, "a byoc sandbox keeps nothing"
+    row2 = manager._store.get_compute_job("job-warm")
+    assert row2["artifact_manifest"] == row1["artifact_manifest"]
+    assert row2["integrity_sha256"] == row1["integrity_sha256"]
+    assert row2["terminal_at"] == row1["terminal_at"]
+
+
+def test_a_hostile_byoc_archive_leaves_no_staging_directory(cfg, tmp_path):
+    """Codex P2: `_harvest` allocates `<data>/hpc-staging/job-*` and only then
+    extracts. A hostile archive makes `safe_extract_tar` raise *before* the path
+    is returned, so the caller had nothing to delete — one stranded directory
+    per poll."""
+    import tarfile
+
+    manager = _byoc_manager(cfg, tmp_path / "ws", "job-hostile")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("../escape")
+        info.size = 3
+        tar.addfile(info, io.BytesIO(b"bad"))
+    hostile = buf.getvalue()
+
+    def helper(prov, verb, payload, creds, stage, *a, **k):
+        (Path(stage) / "out.tar.gz").write_bytes(hostile)
+        return {"ready": True, "job_exit_code": 0}
+
+    manager._run_helper = helper
+    before = set(manager._hpc_stage_root.iterdir())
+    out = manager._result_byoc(manager._jobs["job-hostile"])
+    assert out["status"] == states.FAILED
+    assert out["error_kind"] == "unsafe_archive"
+    assert (
+        set(manager._hpc_stage_root.iterdir()) == before
+    ), "a rejected archive stranded its staging directory; every poll leaks one"
+
+
+class _ChattyCatStub:
+    """A remote whose payload stays under the cap while its stderr never stops.
+
+    A forced command or a login profile can do exactly this. `cat` sends a few
+    bytes and exits; stderr carries megabytes. Backed by real pipes so the
+    drain thread reads it the way it reads a live remote's.
+    """
+
+    def __init__(self, payload: bytes, noise: bytes):
+        self.returncode = 0
+        self.stdout = io.BytesIO(payload)
+        err_r, err_w = os.pipe()
+        self.stderr = os.fdopen(err_r, "rb")
+        writer = os.fdopen(err_w, "wb")
+
+        def _spew():
+            try:
+                writer.write(noise)
+                writer.flush()
+            except OSError:
+                pass
+            finally:
+                writer.close()
+
+        self._thread = threading.Thread(target=_spew, daemon=True)
+        self._thread.start()
+
+    def wait(self, timeout=None):
+        self._thread.join(timeout=10)
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+
+def test_the_capped_transfer_bounds_the_stderr_it_retains(cfg, tmp_path, monkeypatch):
+    """Codex P1: the archive cap binds stdout only. A remote that writes stderr
+    continuously — while `cat` stays under the cap — used to have every 64 KiB
+    chunk retained for the whole transfer timeout and then duplicated by
+    `b"".join`, so a chatty or hostile host exhausted the daemon's memory with
+    the payload limit reporting everything as fine. Only the tail is ever
+    shown, so only the tail may be held."""
+    import openai4s.compute.manager as mod
+
+    manager = _manager(cfg, tmp_path / "ws")
+    noise = b"N" * (4 * 1024 * 1024)  # far past the tail budget
+    stub = _ChattyCatStub(b"tiny-archive", noise)
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **k: stub, raising=True)
+
+    local = tmp_path / "out.tar.gz"
+    manager._fetch_archive_capped("lab", "/remote/work", local, cap=1024 * 1024)
+    assert local.read_bytes() == b"tiny-archive"
+
+    # ...and the same on the path that actually reports stderr: a non-zero exit
+    # raises with the message built from what was retained.
+    stub2 = _ChattyCatStub(b"tiny", noise)
+    stub2.returncode = 1
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **k: stub2, raising=True)
+    with pytest.raises(ComputeError) as error:
+        manager._fetch_archive_capped("lab", "/remote/work", local, cap=1024 * 1024)
+    message = str(error.value)
+    assert len(message.encode()) < 4 * mod._STDERR_TAIL_BYTES, (
+        f"retained {len(message.encode())} bytes of a "
+        f"{len(noise)}-byte stderr stream; the tail must be bounded"
+    )
+    assert "discarded" in message, "the elision must be stated, not silent"
+
+
 def test_the_staging_dir_is_host_owned_and_outside_the_workspace(cfg, tmp_path):
     ws = tmp_path / "ws"
     manager = _manager(cfg, ws)
@@ -472,7 +643,7 @@ def test_a_planted_output_is_not_counted_as_produced(cfg, tmp_path):
 
     # The remote produced nothing: the harvest is empty.
     def fake_harvest_ssh(alias, workdir, staging, exclude):
-        return None, [], []  # no error, nothing oversized, nothing stayed
+        return None, [], [], False  # no error, nothing oversized, nothing stayed
 
     manager._harvest_ssh = fake_harvest_ssh
 
