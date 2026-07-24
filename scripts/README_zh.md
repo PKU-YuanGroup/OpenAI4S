@@ -25,6 +25,8 @@
 | `describe_macos_image.py` | 挂载构建好的 `.dmg`，在旁边写两份佐证：从 `codesign` 读出的签名 authority 链，以及镜像里真正内嵌的运行时的包清单。发布暂存作业跑在 Linux 上、两样都拿不到，所以这份证据必须在构建镜像的那台机器上产生并随镜像一起走——没有它，发布闸门只能退回去读「签名身份变量是否非空」，而 ad-hoc 签名的镜像同样满足这一条。 |
 | `verify_release_artifacts.py` | 只用标准库检查构建好的 wheel 与 sdist。先看必需文件是否齐全、有没有夹带不该带的东西（symlink、字节码、缓存、`.env`），再读 wheel metadata：MIT 许可、四个 Project-URL、`openai4s` 控制台入口点、平台无关的 `py3-none-any` tag，以及 wheel 里没有测试套件、核心没有非 extra 依赖。 |
 | `verify_release_tag.py` | `vMAJOR.MINOR.PATCH` 形式的 release tag 必须与两处字面版本声明一致：`pyproject.toml` 里的 `[project] version` 和 `openai4s.__version__`；对不上就失败即拒绝。 |
+| `release_pipeline.py` | 发布流程本身，写成脚本而不是 workflow YAML。嵌在事件触发里的步骤只能靠真发一次版来演练——被它本该保护的那件事反过来测试它——所以这份东西能在笔记本上跑、能 `--dry-run`、也能被 pytest 跑。所有不可逆的都排在最后：GitHub 翻牌发生在 PyPI 已经拿到该版本之后，并且在草稿与 PyPI 分发件不完全一致时拒绝执行。 |
+| `capture_response_contract.py` | 通过驱动离线测试套件、记录每个 route 实际返回什么，来重新生成 [`docs/response-contract.json`](../docs/response-contract.json) 的抓取侧。手写的契约是由人签字的那一侧；这一侧回答的是服务端是否还与它一致。 |
 
 ## 在架构中的位置
 
