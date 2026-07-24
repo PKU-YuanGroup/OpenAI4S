@@ -2526,17 +2526,41 @@ class ComputeManager:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        # A blocking `read(n)` gives no wall-clock bound on its own — it waits for
+        # n bytes or EOF, so a mid-transfer stall (a half-open connection to a
+        # dead remote) would hang forever, and the prior scp path's `timeout=`
+        # would not. A watchdog kills the process at the deadline, which unblocks
+        # the read with EOF. stderr is drained on its own thread so a chatty
+        # remote cannot fill that pipe and back-pressure stdout into a deadlock.
+        stderr_chunks: list[bytes] = []
+
+        def _drain_stderr() -> None:
+            try:
+                if proc.stderr is not None:
+                    for part in iter(lambda: proc.stderr.read(65536), b""):
+                        stderr_chunks.append(part)
+            except Exception:  # noqa: BLE001 - draining is best-effort
+                pass
+
+        drainer = threading.Thread(target=_drain_stderr, daemon=True)
+        drainer.start()
+        timed_out = {"v": False}
+
+        def _watchdog() -> None:
+            timed_out["v"] = True
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
+        watchdog = threading.Timer(timeout, _watchdog)
+        watchdog.start()
         written = 0
         over = False
-        timed_out = False
-        deadline = time.monotonic() + timeout
         try:
             assert proc.stdout is not None
             with open(local, "wb") as fh:
                 while True:
-                    if time.monotonic() > deadline:
-                        timed_out = True
-                        break
                     chunk = proc.stdout.read(256 * 1024)
                     if not chunk:
                         break
@@ -2546,19 +2570,19 @@ class ComputeManager:
                         break
                     fh.write(chunk)
         finally:
-            if over or timed_out:
-                proc.kill()
+            watchdog.cancel()
+            if over:
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 rc = proc.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 rc = -1
-            stderr = b""
-            if proc.stderr is not None:
-                try:
-                    stderr = proc.stderr.read() or b""
-                except Exception:  # noqa: BLE001
-                    stderr = b""
+            drainer.join(timeout=5)
+            stderr = b"".join(stderr_chunks)
         if over:
             raise ComputeError(
                 f"harvest exceeded the {cap}-byte download cap mid-transfer from "
@@ -2566,7 +2590,7 @@ class ComputeManager:
                 f"fewer or smaller outputs, or use residency: remote.",
                 "unsafe_archive",
             )
-        if timed_out:
+        if timed_out["v"]:
             raise ComputeError(
                 f"harvest transfer from {alias} exceeded {int(timeout)}s; aborted",
                 "transient",

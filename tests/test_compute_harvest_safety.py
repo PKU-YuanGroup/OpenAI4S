@@ -350,6 +350,54 @@ class _CatStub:
         self.returncode = -9
 
 
+class _StallCatStub:
+    """An `ssh cat` that delivers a little, then stalls with the stream open — a
+    half-open connection to a dead remote. Backed by a real pipe whose write end
+    stays open, so `read(256K)` genuinely blocks (BytesIO would return EOF)."""
+
+    def __init__(self, prefix: bytes = b"partial-then-stall"):
+        self.returncode = 0
+        out_r, self._out_w = os.pipe()
+        err_r, err_w = os.pipe()
+        self.stdout = os.fdopen(out_r, "rb")
+        self.stderr = os.fdopen(err_r, "rb")
+        os.close(err_w)  # stderr EOFs at once
+        os.write(self._out_w, prefix)  # a little data, then the write end stays open
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        try:
+            os.close(self._out_w)  # closing the write end unblocks the reader
+        except OSError:
+            pass
+
+
+def test_the_capped_transfer_times_out_on_a_stalled_stream(cfg, tmp_path, monkeypatch):
+    """Independent P2: a mid-transfer stall must abort at the deadline, not hang.
+    A blocking read(n) waits for n bytes or EOF, so the deadline has to be
+    enforced by a watchdog that kills the process, not merely checked between
+    reads (which never run while read blocks)."""
+    import time as _time
+
+    import openai4s.compute.manager as mod
+
+    manager = _manager(cfg, tmp_path / "ws")
+    stub = _StallCatStub()
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **k: stub, raising=True)
+
+    local = tmp_path / "out.tar.gz"
+    started = _time.monotonic()
+    with pytest.raises(ComputeError) as error:
+        manager._fetch_archive_capped(
+            "lab", "/remote/work", local, cap=10 * 1024 * 1024, timeout=0.5
+        )
+    elapsed = _time.monotonic() - started
+    assert "exceeded" in str(error.value)
+    assert elapsed < 5, "the transfer hung well past its deadline"
+
+
 def test_the_capped_transfer_aborts_on_the_actual_bytes_not_the_ack(
     cfg, tmp_path, monkeypatch
 ):
