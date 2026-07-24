@@ -517,21 +517,33 @@ class WSHub:
     ) -> bool:
         """Can this process honour the cursor the client presented?
 
-        Two independent signals, because one of them has to work for clients
-        that predate the other:
+        A cursor is only placeable if it numbers *this* daemon's stream, and
+        the epoch is the only thing that says so. Three cases:
 
-        * a different ``epoch`` means the cursor numbers a stream some earlier
+        * ``since_seq`` of zero asks for everything and places trivially;
+        * a *different* epoch means the cursor numbers a stream some earlier
           daemon produced;
-        * our own counter sitting *below* the cursor is proof of the same
-          thing without the client having to tell us -- we cannot have emitted
-          a sequence number we have not reached.
+        * **no epoch at all cannot be placed either way**, so it is a gap.
 
-        The second is what catches a restart for a client that sends no epoch
-        at all, so the detection does not depend on the client being updated.
+        That last one used to be treated as placeable, and then checked
+        numerically: our own counter sitting below the cursor proves we never
+        emitted it. But the converse does not hold. An old tab reconnecting
+        after a restart with ``since_seq=2`` meets a new daemon that has since
+        emitted two events of its own, so the counter is *not* below the
+        cursor, the cursor was declared fresh, and replay filtered the new
+        daemon's events 1 and 2 out as already seen. The client was then
+        silently missing the beginning of the stream it believed it was caught
+        up on -- which is exactly the failure the numeric check was added to
+        catch, surviving in the one case it cannot see.
+
+        A legacy client cannot prove its cursor belongs to this stream, so it
+        refetches. That costs one extra fetch on reconnect and is the only
+        answer that cannot be wrong; every current client sends the epoch,
+        which the empty replay envelope hands it even on an idle subscribe.
         """
         if not since_seq:
             return False
-        if epoch and epoch != self._epoch:
+        if not epoch or epoch != self._epoch:
             return True
         return self._seq.get(root_frame_id, 0) < int(since_seq)
 

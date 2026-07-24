@@ -101,7 +101,7 @@ def test_a_cursor_replays_only_what_was_missed(hub_with_turn):
     hub, _ = hub_with_turn
     back = _Conn()
     hub.add(back)
-    hub.subscribe("f1", back, since_seq=2)
+    hub.subscribe("f1", back, since_seq=2, epoch=hub.epoch)
     assert _chunks(back) == ["B", "C"]
 
 
@@ -119,7 +119,7 @@ def test_a_cursor_at_the_head_replays_nothing(hub_with_turn):
     hub, _ = hub_with_turn
     caught_up = _Conn()
     hub.add(caught_up)
-    hub.subscribe("f1", caught_up, since_seq=4)
+    hub.subscribe("f1", caught_up, since_seq=4, epoch=hub.epoch)
     assert _chunks(caught_up) == []
 
 
@@ -128,7 +128,7 @@ def test_a_cursor_beyond_the_head_replays_nothing(hub_with_turn):
     hub, _ = hub_with_turn
     ahead = _Conn()
     hub.add(ahead)
-    hub.subscribe("f1", ahead, since_seq=9999)
+    hub.subscribe("f1", ahead, since_seq=9999, epoch=hub.epoch)
     assert _chunks(ahead) == []
 
 
@@ -136,7 +136,7 @@ def test_replay_bounds_are_reported(hub_with_turn):
     hub, _ = hub_with_turn
     back = _Conn()
     hub.add(back)
-    hub.subscribe("f1", back, since_seq=2)
+    hub.subscribe("f1", back, since_seq=2, epoch=hub.epoch)
     begin = back.sent[0]
     assert begin["type"] == "replay_begin"
     assert begin["from_seq"] == 3
@@ -166,7 +166,7 @@ def test_a_gap_is_reported_rather_than_hidden():
 
     back = _Conn()
     hub.add(back)
-    hub.subscribe("f1", back, since_seq=1)
+    hub.subscribe("f1", back, since_seq=1, epoch=hub.epoch)
     assert back.sent[0]["gap"] is True
 
 
@@ -174,7 +174,7 @@ def test_no_gap_is_reported_for_a_contiguous_resume(hub_with_turn):
     hub, _ = hub_with_turn
     back = _Conn()
     hub.add(back)
-    hub.subscribe("f1", back, since_seq=2)
+    hub.subscribe("f1", back, since_seq=2, epoch=hub.epoch)
     assert back.sent[0]["gap"] is False
 
 
@@ -198,7 +198,7 @@ def test_live_events_continue_the_same_sequence_after_a_resume(hub_with_turn):
     hub, _ = hub_with_turn
     back = _Conn()
     hub.add(back)
-    hub.subscribe("f1", back, since_seq=2)
+    hub.subscribe("f1", back, since_seq=2, epoch=hub.epoch)
     hub.broadcast("f1", {"type": "text_chunk", "d": "D"})
     assert _seqs(back) == [3, 4, 5]
 
@@ -272,3 +272,50 @@ def test_a_cursor_from_a_previous_daemon_is_rejected_even_when_numerically_place
     assert (
         begin["gap"] is True
     ), "a cursor from a previous daemon must be declared a gap, not accepted"
+
+
+def test_a_nonzero_cursor_without_an_epoch_is_a_gap():
+    """Codex P1: the case the numeric check cannot see.
+
+    An old tab, or a client that predates the epoch handshake, reconnects
+    after a restart with `since_seq=2` and no epoch. The new daemon has by
+    then emitted at least two events of its own, so its counter is *not* below
+    the cursor — the numeric check declared the cursor fresh, and replay
+    filtered the new daemon's events 1 and 2 out as already seen. The client
+    was left believing it was caught up on a stream whose beginning it never
+    received.
+
+    An epoch-less cursor cannot be placed in either direction, so it is a gap.
+    """
+    hub = WSHub()
+    watcher = _Conn()
+    hub.add(watcher)
+    hub.subscribe("f1", watcher, since_seq=0, epoch=hub.epoch)
+    for event in (
+        {"type": "text_reset"},
+        {"type": "text_chunk", "d": "X"},
+        {"type": "text_chunk", "d": "Y"},
+    ):
+        hub.broadcast("f1", dict(event))
+    assert hub._seq["f1"] >= 2, "the premise: our counter is not below the cursor"
+
+    legacy = _Conn()
+    hub.add(legacy)
+    hub.subscribe("f1", legacy, since_seq=2)  # no epoch — a legacy client
+    begin = next(e for e in legacy.sent if e.get("type") == "replay_begin")
+    assert begin["gap"] is True, (
+        "an epoch-less cursor cannot be proven to belong to this stream; "
+        "accepting it silently skips this daemon's early events"
+    )
+    assert _chunks(legacy) == [], "a declared gap replays nothing; the client refetches"
+
+
+def test_a_zero_cursor_without_an_epoch_is_still_not_a_gap():
+    """`since_seq=0` claims nothing, so there is nothing to misplace — a first
+    subscribe must not be turned into a refetch."""
+    hub = WSHub()
+    conn = _Conn()
+    hub.add(conn)
+    hub.subscribe("f1", conn, since_seq=0)
+    begin = next(e for e in conn.sent if e.get("type") == "replay_begin")
+    assert begin["gap"] is False

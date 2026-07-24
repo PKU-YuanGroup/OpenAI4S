@@ -2640,12 +2640,34 @@ def test_a_cursor_from_a_previous_daemon_run_is_reported_as_a_gap():
 
 
 def test_a_restart_is_detected_even_without_a_client_epoch():
-    """Detection must not depend on the client having been updated: a counter
-    sitting below the cursor is proof on its own that we never emitted it."""
+    """Detection must not depend on the client having been updated.
+
+    The counter sitting below the cursor was the original proof, and it only
+    covers cursors this daemon has not reached. A cursor it *has* reached is
+    indistinguishable from one of its own, so an epoch-less cursor is a gap
+    whatever the counter says — see the paired test below."""
     restarted = gateway_mod.WSHub()
     conn = _Recorder()
     restarted.add(conn)
     restarted.subscribe("root-old-client", conn, 500)  # no epoch sent
+
+    begin = conn.replay_begin()
+    assert begin is not None
+    assert begin["gap"] is True
+
+
+def test_an_epochless_cursor_the_counter_has_reached_is_still_a_gap():
+    """Codex P1. The numeric check cannot see this one: once the new daemon has
+    emitted at least as many events as the cursor names, the cursor looks
+    placeable, and replay silently filters the new stream's early events out as
+    already seen."""
+    restarted = gateway_mod.WSHub()
+    root = "root-old-tab"
+    _live_turn(restarted, root, count=4)
+
+    conn = _Recorder()
+    restarted.add(conn)
+    restarted.subscribe(root, conn, 2)  # no epoch, and 2 <= our own counter
 
     begin = conn.replay_begin()
     assert begin is not None
