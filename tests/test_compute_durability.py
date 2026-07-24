@@ -366,6 +366,36 @@ def test_a_dropped_submit_receipt_degrades_to_reconcilable_not_clean_running(
     assert recovered[job_id]["receipt"] == "31337"
 
 
+def test_a_receipt_write_to_a_missing_row_degrades_not_clean_running(cfg, monkeypatch):
+    """The gap in the receipt fix that Codex caught: when `_claim` degraded to
+    in-memory on a *transient* DB error, no row exists, so the RUNNING receipt
+    UPDATE matches nothing and returns None. Treating a None (no-row) update as a
+    landed write let submit report a clean 'running' over a job with no durable
+    row at all. A missing-row write is a failed write: degrade to indeterminate.
+    """
+    import sqlite3
+
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _Proc(0, _ack("31337")), raising=True
+    )
+    manager = ComputeManager(cfg)
+
+    # `_claim` degrades to in-memory on a transient create failure: no row.
+    def transient_create(**_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(manager._store, "create_compute_job", transient_create)
+
+    out = manager.submit({"provider": "ssh:lab", "command": "sleep 600"})
+    assert (
+        out["status"] == "unknown"
+    ), "submit reported a clean 'running' though no durable row was ever written"
+    # No orphaned durable row claims a clean running state.
+    assert get_store(cfg.db_path).get_compute_job(out["job_id"]) is None
+    # ...but it stays nameable in-process so this session can still reach it.
+    assert manager._live_count() == 1
+
+
 def test_a_rejected_submit_is_recorded_as_failed(cfg, monkeypatch):
     monkeypatch.setattr(
         subprocess,

@@ -52,6 +52,7 @@ import re
 import shlex
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tarfile
@@ -535,6 +536,64 @@ def _discover_providers(skills_dir: Path) -> dict[str, dict]:
     return out
 
 
+def _rmtree_at(parent_fd: int, name: str) -> None:
+    """Recursively remove ``name`` under ``parent_fd`` using only ``*at``
+    syscalls.
+
+    ``shutil.rmtree`` takes a pathname and re-resolves it, so a cell that swaps
+    the ``hpc`` parent for a symlink between the ``O_NOFOLLOW`` open of the root
+    and the removal could redirect it outside the workspace. Anchoring every
+    step to a directory fd removes that pathname re-resolution entirely.
+    """
+    try:
+        st = os.lstat(name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(st.st_mode):
+        fd = os.open(
+            name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd
+        )
+        try:
+            for entry in os.listdir(fd):
+                _rmtree_at(fd, entry)
+        finally:
+            os.close(fd)
+        os.rmdir(name, dir_fd=parent_fd)
+    else:
+        # A symlink or plain file: unlink the entry itself, never its target.
+        os.unlink(name, dir_fd=parent_fd)
+
+
+def _copytree_at(src: Path, parent_fd: int, name: str) -> None:
+    """Copy ``src`` into a fresh directory ``name`` created under ``parent_fd``.
+
+    The destination side uses ``*at`` syscalls so a swapped parent pathname
+    cannot redirect the write outside the opened root (the cross-device fallback
+    from :meth:`_publish_harvest`). Symlinks in ``src`` are skipped: the staging
+    tree is host-built from the verified manifest, so a link has no place in a
+    harvested result, and following one could leave the workspace.
+    """
+    os.mkdir(name, 0o700, dir_fd=parent_fd)
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        for entry in sorted(os.scandir(src), key=lambda e: e.name):
+            if entry.is_symlink():
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                _copytree_at(Path(entry.path), fd, entry.name)
+            elif entry.is_file(follow_symlinks=False):
+                dst_fd = os.open(
+                    entry.name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=fd,
+                )
+                with open(entry.path, "rb") as source, os.fdopen(dst_fd, "wb") as dest:
+                    shutil.copyfileobj(source, dest)
+    finally:
+        os.close(fd)
+
+
 class ComputeManager:
     """One per session/kernel. Owns provider discovery and durable job
     bookkeeping. Thread-safe for the handful of ops the dispatcher drives.
@@ -664,13 +723,12 @@ class ComputeManager:
         the `hpc` parent is in the kernel-writable workspace, so a cell can swap
         it for a symlink afterwards — and a plain `os.replace`/`copytree` would
         follow it, moving the trusted tree outside the sandbox. The `hpc` root is
-        opened with `O_NOFOLLOW | O_DIRECTORY` (refusing a symlinked root), the
-        per-job entry is removed via that directory fd (unlinking a link, not its
-        target), and the rename is resolved relative to the fd so the parent
-        cannot be substituted after the check.
+        opened once with `O_NOFOLLOW | O_DIRECTORY` (refusing a symlinked root),
+        and *every* subsequent step — the removal of a stale entry, the rename,
+        and the cross-device copy — is anchored to that directory fd. Nothing
+        re-resolves the `hpc` pathname, so the parent cannot be substituted after
+        the check to redirect a removal or write outside the opened directory.
         """
-        import stat as _stat
-
         try:
             root_fd = os.open(
                 self._hpc_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -688,26 +746,25 @@ class ComputeManager:
             except FileNotFoundError:
                 existing = None
             if existing is not None:
-                if _stat.S_ISLNK(existing.st_mode) or not _stat.S_ISDIR(
-                    existing.st_mode
-                ):
+                if stat.S_ISLNK(existing.st_mode) or not stat.S_ISDIR(existing.st_mode):
                     # A symlink or a plain file at the entry: unlink the entry
                     # itself, never whatever it points at.
                     os.unlink(name, dir_fd=root_fd)
                 else:
-                    # A real directory (possibly cell-planted content): drop it.
-                    shutil.rmtree(self._hpc_root / name)
+                    # A real directory (possibly cell-planted content): drop it
+                    # fd-relatively so a swapped `hpc` pathname cannot redirect
+                    # the recursive removal outside the opened root.
+                    _rmtree_at(root_fd, name)
             try:
                 os.rename(str(staging), name, dst_dir_fd=root_fd)
             except OSError as move_err:
                 if getattr(move_err, "errno", None) != errno.EXDEV:
                     raise
-                # Cross-device: the root fd was opened NOFOLLOW so the parent is
-                # proven real, and the entry was removed above, so a fresh
-                # directory is created here and copied into without following
-                # symlinks from the staging tree.
-                copied = self._hpc_root / name
-                shutil.copytree(staging, copied, symlinks=False)
+                # Cross-device: the entry was removed above, so create a fresh
+                # directory *under the fd* and copy into it — again anchored to
+                # the fd, never the `hpc` pathname, and never following a symlink
+                # from the staging tree.
+                _copytree_at(Path(staging), root_fd, name)
                 shutil.rmtree(staging, ignore_errors=True)
         finally:
             os.close(root_fd)
@@ -767,12 +824,18 @@ class ComputeManager:
         if self._store is None:
             return True
         try:
-            self._store.update_compute_job(job_id, **fields)
-            return True
+            updated = self._store.update_compute_job(job_id, **fields)
         except states.IllegalTransition:
             return True
         except Exception:  # noqa: BLE001 - a swallowed durable write is the bug
             return False
+        # A ``None`` return means no row matched: ``_claim`` degraded to
+        # in-memory on a transient DB error and never created the row, so there
+        # is nothing to update. The receipt did *not* land — reporting it as
+        # landed let submit return a clean ``running`` over a job with no durable
+        # row, unrecoverable after a restart. Treat it as a failed write so the
+        # submit paths fall back to the indeterminate, reconcilable state.
+        return updated is not None
 
     def _persist_terminal(self, job_id: str, **fields: Any) -> bool:
         """Write a terminal state for a job that has no in-memory row yet.
@@ -2133,8 +2196,16 @@ class ComputeManager:
         unverified_files = manifest.unverified(entries)
         # The manifest is trusted (built from staging); publish it into the
         # workspace copy `save_artifact` can reach, replacing any planted files.
+        # `result()` re-runs on every poll, including re-attaches after a job is
+        # already terminal. Only replace the published tree when the harvest
+        # *succeeded*: an empty-but-successful harvest legitimately wipes planted
+        # files, but a re-poll whose scp/tar transiently failed leaves `staging`
+        # empty, and clobbering a previously harvested, verified tree with that
+        # would destroy the outputs. Retain the prior tree unless this harvest
+        # succeeds.
         dest = self._safe_harvest_dest(job["job_id"])
-        self._publish_harvest(staging, dest)
+        if not harvest_error:
+            self._publish_harvest(staging, dest)
 
         if timed_out:
             # The wrapper's own marker, not the exit code. `timeout` reports

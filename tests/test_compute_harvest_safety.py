@@ -16,6 +16,7 @@ Two P1s from the second review, plus one P2, all in the compute manager:
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import types
@@ -24,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from openai4s.compute import manifest, states
-from openai4s.compute.manager import ComputeError, ComputeManager
+from openai4s.compute.manager import ComputeError, ComputeManager, _rmtree_at
 from openai4s.config import Config
 
 
@@ -131,6 +132,93 @@ def test_publish_replaces_a_symlinked_per_job_entry_without_following_it(cfg, tm
     assert (ws / "hpc" / "job-y" / "result.csv").is_file()
     assert not (ws / "hpc" / "job-y").is_symlink()
     assert (outside / "sentinel").exists()
+
+
+def test_rmtree_at_is_anchored_to_the_fd_not_the_pathname(tmp_path):
+    """Codex P1: `_publish_harvest` removed a stale real entry with
+    `shutil.rmtree(self._hpc_root / name)`, re-resolving the `hpc` pathname. A
+    cell that swaps that parent for a symlink between the O_NOFOLLOW open of the
+    root and the removal could redirect a recursive delete outside the workspace.
+    The fd-anchored removal must follow the opened inode, never the pathname."""
+    real = tmp_path / "real"
+    (real / "victim" / "deep").mkdir(parents=True)
+    (real / "victim" / "deep" / "f.txt").write_text("x", encoding="utf-8")
+
+    outside = tmp_path / "outside"
+    (outside / "victim").mkdir(parents=True)
+    (outside / "victim" / "keepme").write_text("host data", encoding="utf-8")
+
+    fd = os.open(real, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        # Swap the *pathname* `real` to point at `outside` after opening the fd.
+        # A pathname-based rmtree would now delete outside/victim; the fd-anchored
+        # one still removes real/victim through the fd's inode.
+        real.rename(tmp_path / "moved")
+        (tmp_path / "real").symlink_to(outside)
+        _rmtree_at(fd, "victim")
+    finally:
+        os.close(fd)
+
+    assert not (tmp_path / "moved" / "victim").exists(), "the real entry survived"
+    assert (
+        outside / "victim" / "keepme"
+    ).exists(), "the removal followed the swapped pathname outside the fd"
+
+
+def test_a_failed_reharvest_does_not_destroy_previously_published_outputs(
+    cfg, tmp_path
+):
+    """Codex P1: result() re-runs harvest+publish on every poll, including
+    re-attaches after a job is already terminal. A re-poll whose scp/tar
+    transiently fails leaves an empty staging; publishing it wholesale would
+    delete the previously harvested, verified tree. Driven end-to-end through
+    `_result_ssh` twice: the second harvest errors, and the prior output must
+    survive."""
+    ws = tmp_path / "ws"
+    manager = _manager(cfg, ws)
+    manager._jobs["job-z"] = {
+        "job_id": "job-z",
+        "provider": "ssh:lab",
+        "alias": "lab",
+        "workdir": str(tmp_path / "remote"),
+        "status": states.RUNNING,
+        "pid": "1",
+        "pgid": "1",
+        "outputs": [],
+    }
+    (tmp_path / "remote").mkdir()
+
+    def probe_says_exit_zero(argv, *a, **k):
+        return subprocess.CompletedProcess(argv, 0, b"RC 0 -\n", b"")
+
+    import openai4s.compute.manager as mod
+
+    original_run = mod.subprocess.run
+    mod.subprocess.run = probe_says_exit_zero
+    try:
+        # First poll: a successful harvest publishes a verified output.
+        def good_harvest(alias, workdir, staging, exclude):
+            (Path(staging) / "result.csv").write_text("verified\n", encoding="utf-8")
+            return None, [], []  # no error
+
+        manager._harvest_ssh = good_harvest
+        manager._result_ssh(manager._jobs["job-z"])
+        dest = manager._safe_harvest_dest("job-z")
+        assert (dest / "result.csv").read_text() == "verified\n"
+
+        # Second poll (re-attach): the harvest transiently fails, staging empty.
+        def failed_harvest(alias, workdir, staging, exclude):
+            return "scp: connection reset", [], []  # harvest_error set
+
+        manager._harvest_ssh = failed_harvest
+        manager._result_ssh(manager._jobs["job-z"])
+    finally:
+        mod.subprocess.run = original_run
+
+    # The previously harvested, verified output survives the failed re-poll.
+    assert (
+        dest / "result.csv"
+    ).read_text() == "verified\n", "a failed re-harvest destroyed prior outputs"
 
 
 def test_the_staging_dir_is_host_owned_and_outside_the_workspace(cfg, tmp_path):
