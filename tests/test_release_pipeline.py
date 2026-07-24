@@ -872,7 +872,68 @@ def test_finalize_refuses_when_pypi_is_missing_a_distribution(assets):
     assert report["ok"] is False
     assert report["stopped_at"] == "publish"
     assert report["published"] is False
-    assert "missing distributions" in report["steps"][-1]["detail"]
+    assert "do not carry the same" in report["steps"][-1]["detail"]
+    assert "PyPI is missing" in report["steps"][-1]["detail"]
+
+
+def test_finalize_refuses_a_draft_rewritten_to_drop_its_distributions(assets):
+    """Codex P1: the one-way difference, and the direction it misses.
+
+    The draft is mutable. Rewrite it after the PyPI upload to remove the wheel
+    *and* the sdist — rewriting SHA256SUMS to match, which anyone able to
+    replace the assets can also do — and `_revalidate_draft_from_checksums()`
+    happily self-validates the reduced set. `draft_dists - published` is then
+    empty, so with a valid immutable PyPI version the finalizer published a
+    GitHub release whose distributions are simply absent, while PyPI says
+    exactly what should have been there.
+    """
+    _signed_dmg(assets)
+    wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
+    sdist = assets / "openai4s-0.2.0.tar.gz"
+    # PyPI is immutable and still holds both.
+    immutable = {wheel.name: sha256_file(wheel), sdist.name: sha256_file(sdist)}
+    wheel.unlink()
+    sdist.unlink()
+    _write_checksums(assets)  # the manifest is rewritten to cover the rest
+
+    report = _pipeline(
+        assets,
+        mode="release",
+        only="publish",
+        gh=_gh_for(assets),
+        pypi_digests=lambda project, version: immutable,
+    ).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "publish"
+    assert report["published"] is False
+    detail = report["steps"][-1]["detail"]
+    assert "do not carry the same" in detail
+    assert "the draft is missing" in detail
+    assert wheel.name in detail and sdist.name in detail
+
+
+def test_finalize_refuses_a_draft_that_dropped_only_the_wheel(assets):
+    """The partial form of the same rewrite: one distribution removed, the
+    other still matching. A subset must not read as agreement."""
+    _signed_dmg(assets)
+    wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
+    sdist = assets / "openai4s-0.2.0.tar.gz"
+    immutable = {wheel.name: sha256_file(wheel), sdist.name: sha256_file(sdist)}
+    wheel.unlink()
+    _write_checksums(assets)
+
+    report = _pipeline(
+        assets,
+        mode="release",
+        only="publish",
+        gh=_gh_for(assets),
+        pypi_digests=lambda project, version: immutable,
+    ).run()
+
+    assert report["ok"] is False
+    assert report["published"] is False
+    assert wheel.name in report["steps"][-1]["detail"]
 
 
 def test_finalize_refuses_a_draft_missing_its_checksum_manifest(assets):

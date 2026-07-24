@@ -1123,24 +1123,48 @@ class Pipeline:
         # and SHA256SUMS are GitHub-only and are not expected there.
         draft_dists = {name for name in checked if name.endswith((".whl", ".tar.gz"))}
         published = self._pypi_digests("openai4s", self.version)
-        if draft_dists and not published:
+        if not published:
             # Fail closed: an empty response is not "everything matches". The
             # PyPI check above said the version exists, so no digests here means
             # the lookup failed or PyPI is mid-propagation — either way there is
             # nothing to anchor against, and the old `name in published` guard
             # would have skipped every file and published unverified.
+            #
+            # Unconditional, not `if draft_dists and not published`. A draft
+            # rewritten to carry *no* distributions has an empty `draft_dists`,
+            # and gating the anchor on it meant the one shape that most needs
+            # anchoring was the one that skipped it.
             raise ReleaseError(
                 f"PyPI returned no file digests for {self.version}; cannot "
                 f"anchor the GitHub release to it. Refusing to publish."
             )
+        # Exact filename equality, in *both* directions.
+        #
+        # `draft_dists - published` alone is a one-way check, and the direction
+        # it misses is the dangerous one: if the mutable draft and its
+        # SHA256SUMS are rewritten after upload to drop the wheel and/or the
+        # sdist, `_revalidate_draft_from_checksums()` self-validates the
+        # reduced set, this difference is empty, and the finalizer publishes a
+        # GitHub release for a version whose distributions are simply absent —
+        # while the immutable PyPI version says exactly what should have been
+        # there. PyPI is the anchor precisely because it cannot be rewritten,
+        # so the draft has to match it, not merely be a subset of it.
         missing_on_pypi = sorted(draft_dists - set(published))
-        if missing_on_pypi:
-            # A partial upload (e.g. the wheel landed but not the sdist) must not
-            # let the missing files ride onto GitHub unverified.
+        absent_from_draft = sorted(set(published) - draft_dists)
+        if missing_on_pypi or absent_from_draft:
+            parts = []
+            if missing_on_pypi:
+                # A partial upload (e.g. the wheel landed but not the sdist)
+                # must not let the missing files ride onto GitHub unverified.
+                parts.append(f"PyPI is missing {missing_on_pypi}")
+            if absent_from_draft:
+                parts.append(f"the draft is missing {absent_from_draft}")
             raise ReleaseError(
-                f"PyPI is missing distributions the draft would publish for "
-                f"{self.version}: {missing_on_pypi}. A partial upload cannot "
-                f"anchor the release; complete the PyPI upload, then re-run."
+                f"the GitHub draft and PyPI do not carry the same "
+                f"distributions for {self.version}: {'; '.join(parts)}. PyPI is "
+                f"immutable and is the anchor, so the draft must hold exactly "
+                f"what it holds — complete the upload or re-stage the draft, "
+                f"then re-run `--only publish`."
             )
         divergent = sorted(
             f"{name}: github {checked[name][:12]} != pypi {published[name][:12]}"
