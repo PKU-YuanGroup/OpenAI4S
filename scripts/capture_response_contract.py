@@ -23,7 +23,9 @@ as a missing entry rather than as an entry full of nothing.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -53,8 +55,38 @@ class _Hub:
         return None
 
 
+@contextlib.contextmanager
+def _deterministic_secret_store():
+    """Capture against a store that exists on every machine.
+
+    `/search/config` reads a credential, so it went through the secret broker —
+    and `auto` resolves that to whatever the *capturing machine* has. A
+    developer laptop has a keychain, so the route answered and was frozen into
+    the contract; a CI runner has neither a keychain nor a session bus, where
+    `auto` is documented to fail closed, so the read raised, the driver skipped
+    the route, and the artifact looked out of date on every machine but the one
+    that wrote it.
+
+    `plaintext` for the same two reasons `tests/conftest.py` pins it: the
+    capture is then reproducible anywhere, and a routine script stops reaching
+    into the developer's real keychain. The data directory is a temp dir that
+    is deleted on the way out, so nothing is stored in the clear beyond it.
+    """
+    previous = os.environ.get("OPENAI4S_SECRET_STORE")
+    os.environ["OPENAI4S_SECRET_STORE"] = "plaintext"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("OPENAI4S_SECRET_STORE", None)
+        else:
+            os.environ["OPENAI4S_SECRET_STORE"] = previous
+
+
 def drive() -> dict[str, dict]:
-    with tempfile.TemporaryDirectory(prefix="openai4s-contract-") as temp:
+    with tempfile.TemporaryDirectory(
+        prefix="openai4s-contract-"
+    ) as temp, _deterministic_secret_store():
         config = Config(
             data_dir=Path(temp),
             llm=LLMConfig(provider="deepseek", api_key="capture-only"),
