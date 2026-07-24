@@ -14,6 +14,18 @@ a boundary the confined process verifies from the inside is evidence. On macOS
 it probes `listdir($HOME)` and expects `PermissionError`. That is the invariant
 this module has to produce.
 
+## Why an unreadable home is not enough on macOS
+
+The credential this boundary exists to protect is not, in general, a file. The
+secret broker stores it in the login keychain, and `security
+find-generic-password -w` does not read `~/Library/Keychains` — it asks
+*securityd* to, in a process the profile does not cover. `allow default` left
+every Mach service that reaches securityd open, so the file denial the helper
+verifies from inside was satisfied while the secret was still one command away,
+on a helper that has the network by design. The profile therefore denies the
+keychain services explicitly, and the self-test probes that separately from the
+filesystem invariant, because neither implies the other.
+
 ## Why the profile is shaped the way it is
 
 The helper is not a kernel cell, and the kernel's profile is wrong for it in
@@ -177,6 +189,38 @@ def build_profile(
         # exactly the invariant the helper probes for. Metadata is what the
         # loader needs; contents are what a credential is.
         f"(deny file-read-data (subpath {_quote(home_dir)}))",
+        # The keychain is not a file the home denial covers, and this is the
+        # hole that denial looked like it closed.
+        #
+        # `~/Library/Keychains/login.keychain-db` is under $HOME, so a direct
+        # read is refused — but nothing reads it directly. `security
+        # find-generic-password -a llm/llm_api_key -s openai4s -w` asks
+        # *securityd* to read it, and `allow default` left the Mach services
+        # that reach securityd wide open. The item is there because
+        # `KeychainBackend` put it there through the same `/usr/bin/security`,
+        # and the helper deliberately has the network to send it out over.
+        # Verified by execution on macOS 26.5: with only the home denial the
+        # confined command printed the credential; with these denials it exits
+        # 44 and `security list-keychains` fails, while TLS and
+        # `ssl.create_default_context()` are unaffected — the trust services
+        # (trustd, ocspd) are deliberately not on this list.
+        "(deny mach-lookup",
+        '    (global-name "com.apple.SecurityServer")',
+        '    (global-name "com.apple.securityd")',
+        '    (global-name "com.apple.securityd.xpc")',
+        '    (global-name "com.apple.security.agent")',
+        '    (global-name "com.apple.security.authhost")',
+        '    (global-name "com.apple.security.XPCKeychainSandboxCheck")',
+        '    (global-name "com.apple.CoreAuthentication.agent")',
+        '    (global-name "com.apple.CoreAuthentication.daemon")',
+        '    (global-name "com.apple.ctkd.token-client"))',
+        # The keychain stores that do *not* live under $HOME, so the home
+        # denial says nothing about them. Not `/System/Library/Keychains`,
+        # which holds the system root certificates rather than secrets.
+        "(deny file-read* file-write*",
+        '    (subpath "/Library/Keychains")',
+        '    (subpath "/Network/Library/Keychains")',
+        '    (subpath "/private/var/db/SystemKey"))',
     ]
     allowed = list(read_paths) or runtime_read_paths()
     if allowed:
@@ -291,6 +335,24 @@ def network_isolated() -> bool:
 #: directory; anything slower is a host problem, not a slow probe.
 SELF_TEST_TIMEOUT_S = 30.0
 
+#: The macOS probe's verdicts, so a failure names which invariant broke rather
+#: than reporting a bare exit code as "no filesystem boundary". Deliberately
+#: not 1 or 2: `sandbox-exec` failing to compile or apply the profile exits
+#: with small codes of its own, and a verdict must not be confused with the
+#: backend never having run.
+_PROBE_HOME_READABLE = 81
+_PROBE_KEYCHAIN_REACHABLE = 82
+_PROBE_FAILURES = {
+    _PROBE_HOME_READABLE: (
+        "the user's home directory is still readable from inside it"
+    ),
+    _PROBE_KEYCHAIN_REACHABLE: (
+        "the user's keychain is still reachable from inside it (securityd "
+        "answered), so a provider shim could read stored credentials and send "
+        "them out over the network the helper is allowed"
+    ),
+}
+
 #: Cached self-test verdicts, keyed by everything that could change the answer.
 _SELF_TEST: dict[tuple, tuple[bool, str]] = {}
 _SELF_TEST_LOCK = threading.Lock()
@@ -316,7 +378,9 @@ def _probe_argv(executable: str, stage: str, home: str) -> list[str]:
 
     Not "did the backend exit 0" — a bwrap that cannot unshare, or a Seatbelt
     profile that failed to compile, can still run a command. The test is the
-    filesystem invariant itself.
+    filesystem invariant itself, plus — on macOS — the keychain one, which the
+    filesystem invariant does not imply: the secret is read *by securityd*, so
+    an unreadable keychain file proves nothing on its own.
 
     On Linux the invariant is *mount identity*, not emptiness. ``build_bwrap_argv``
     binds the interpreter's own runtime paths back over the home tmpfs, and on a
@@ -340,7 +404,21 @@ def _probe_argv(executable: str, stage: str, home: str) -> list[str]:
         return build_bwrap_argv(
             ["/bin/sh", "-c", script], stage, executable=executable, home=home
         )
-    script = f"ls {home!r} >/dev/null 2>&1 && exit 1; exit 0"
+    # Two invariants on macOS, because the home denial only covers one of them.
+    # `security list-keychains` succeeding means securityd is reachable, and a
+    # reachable securityd will read the login keychain on the helper's behalf
+    # however unreadable the file itself is. The check is one-directional on
+    # purpose: only *success* fails the probe, so a host where `security` is
+    # missing or unrunnable is not reported as unconfined for that reason.
+    #
+    # Distinct exit codes, because "the boundary did not hold" is not a useful
+    # thing to tell someone who then has to work out which half of it.
+    script = (
+        f"ls {home!r} >/dev/null 2>&1 && exit {_PROBE_HOME_READABLE}; "
+        f"/usr/bin/security list-keychains >/dev/null 2>&1 && "
+        f"exit {_PROBE_KEYCHAIN_REACHABLE}; "
+        "exit 0"
+    )
     return [executable, "-p", build_profile(stage, home=home), "/bin/sh", "-c", script]
 
 
@@ -382,15 +460,29 @@ def self_test(*, force: bool = False) -> tuple[bool, str]:
         if completed.returncode == 0:
             verdict = (True, backend)
         else:
-            detail = (
-                completed.stderr.decode("utf-8", "replace").strip()
-                or f"exit {completed.returncode}"
+            # Only the macOS probe assigns meaning to its exit codes; the Linux
+            # one is a plain `[ … ]` test whose 1 means nothing more than false.
+            named = (
+                None
+                if sys.platform.startswith("linux")
+                else _PROBE_FAILURES.get(completed.returncode)
             )
-            verdict = (
-                False,
-                f"{backend} is installed but did not establish a filesystem "
-                f"boundary here: {detail}",
-            )
+            if named:
+                verdict = (
+                    False,
+                    f"{backend} ran, but the boundary it established does not "
+                    f"hold here: {named}",
+                )
+            else:
+                detail = (
+                    completed.stderr.decode("utf-8", "replace").strip()
+                    or f"exit {completed.returncode}"
+                )
+                verdict = (
+                    False,
+                    f"{backend} is installed but did not establish a filesystem "
+                    f"boundary here: {detail}",
+                )
     except subprocess.TimeoutExpired:
         verdict = (
             False,

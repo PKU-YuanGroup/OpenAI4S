@@ -135,6 +135,113 @@ def test_the_stage_path_is_canonicalised():
 
 
 # --------------------------------------------------------------------------
+# the keychain, which the filesystem invariant does not cover
+# --------------------------------------------------------------------------
+
+
+def test_the_profile_denies_the_keychain_services():
+    """Codex P1, stated in the profile itself so it is reviewable off-macOS.
+
+    `~/Library/Keychains/login.keychain-db` is under the denied home, but
+    nothing reads it directly: `security find-generic-password` asks securityd,
+    and `allow default` left every Mach service that reaches securityd open.
+    """
+    profile = bc.build_profile("/tmp/stage-x", home="/tmp/home-x")
+    assert "(deny mach-lookup" in profile
+    for service in (
+        "com.apple.SecurityServer",
+        "com.apple.securityd",
+        "com.apple.securityd.xpc",
+        "com.apple.security.agent",
+    ):
+        assert f'(global-name "{service}")' in profile, service
+    # The stores outside $HOME the home denial says nothing about...
+    assert '(subpath "/Library/Keychains")' in profile
+    # ...but not the system roots, which TLS trust validation reads.
+    assert '(subpath "/System/Library/Keychains")' not in profile
+    # The denial must come after `allow default`, or it never matches.
+    assert profile.index("(allow default)") < profile.index("(deny mach-lookup")
+
+
+@macos_only
+def test_the_keychain_cannot_be_read_from_inside(tmp_path):
+    """The exfiltration, tried for real against a scratch keychain.
+
+    Unconfined, `security find-generic-password -w` prints the secret — which
+    is exactly how `KeychainBackend` stores and retrieves the LLM API key. The
+    helper has the network by design, so a provider shim that could still reach
+    securityd could read the key and send it out. Never the user's own login
+    keychain: this creates, reads and deletes its own file.
+    """
+    keychain = str(tmp_path / "probe.keychain-db")
+    canary = "CANARY-not-a-real-key"
+
+    def security(*args, wrapped: bool = False):
+        argv = ["/usr/bin/security", *args]
+        if wrapped:
+            with tempfile.TemporaryDirectory() as stage:
+                argv = bc.wrap(argv, stage)
+                return subprocess.run(argv, capture_output=True, text=True, timeout=90)
+        return subprocess.run(argv, capture_output=True, text=True, timeout=90)
+
+    assert security("create-keychain", "-p", "probe-pw", keychain).returncode == 0
+    try:
+        assert security("unlock-keychain", "-p", "probe-pw", keychain).returncode == 0
+        assert (
+            security(
+                "add-generic-password",
+                "-a",
+                "llm/llm_api_key",
+                "-s",
+                "openai4s",
+                "-w",
+                canary,
+                keychain,
+            ).returncode
+            == 0
+        )
+        find = (
+            "find-generic-password",
+            "-a",
+            "llm/llm_api_key",
+            "-s",
+            "openai4s",
+            "-w",
+            keychain,
+        )
+
+        # The control: without the boundary the secret comes straight back.
+        plain = security(*find)
+        assert plain.returncode == 0 and canary in plain.stdout
+
+        confined = security(*find, wrapped=True)
+        assert confined.returncode != 0, "the confined helper read the credential"
+        assert canary not in confined.stdout
+        assert canary not in confined.stderr
+    finally:
+        security("delete-keychain", keychain)
+
+
+@macos_only
+def test_the_self_test_probes_the_keychain_too():
+    """A boundary the self-test does not check is one that can regress in
+    silence — and `available()` is what `enforce` gates on."""
+    argv = bc._probe_argv("sandbox-exec", "/tmp/stage-x", "/tmp/home-x")
+    script = argv[-1]
+    assert "list-keychains" in script
+    # One-directional: only a *successful* keychain read fails the probe, so a
+    # host without `security` is not misreported as unconfined.
+    assert f"&& exit {bc._PROBE_KEYCHAIN_REACHABLE}" in script
+    # ...and the verdict codes must not collide with the small exit codes
+    # `sandbox-exec` uses when it fails to apply the profile at all, or "the
+    # backend never ran" would be reported as "the boundary does not hold".
+    assert bc._PROBE_KEYCHAIN_REACHABLE > 2 and bc._PROBE_HOME_READABLE > 2
+    assert "keychain" in bc._PROBE_FAILURES[bc._PROBE_KEYCHAIN_REACHABLE]
+    ok, reason = bc.self_test(force=True)
+    assert ok, f"the hardened profile no longer self-tests: {reason}"
+
+
+# --------------------------------------------------------------------------
 # what the host says about it
 # --------------------------------------------------------------------------
 
