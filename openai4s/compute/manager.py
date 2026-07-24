@@ -251,6 +251,19 @@ HARVEST_RETRY_WINDOW_S = 900
 # bound while every byte-cap on the payload reports the transfer as fine.
 _STDERR_TAIL_BYTES = 64 * 1024
 
+# The same ceiling for a remote command's *stdout*. Every caller here either
+# parses a short protocol line out of it or truncates it before returning, so
+# nothing legitimate comes close; what this bounds is a remote that never stops
+# talking. Head rather than tail, because stdout is the thing being parsed and
+# the answer arrives at the beginning.
+_REMOTE_STDOUT_CAP = 16 * 1024 * 1024
+
+# What `call_command` hands back. It is an introspection surface, not a
+# transport — the documented answer for a large result is to write it to a file
+# on the host and harvest that — so the reply has always been sliced. What is
+# new is that the slice says so.
+_CALL_COMMAND_CAP = 65536
+
 # Staged inside the job's own work directory, so it is cleaned up with it.
 _HARVEST_ARCHIVE = ".openai4s-harvest.tar.gz"
 
@@ -523,6 +536,192 @@ def _ssh_cancel_script(pgid: str, pid: str = "") -> str:
         f"sig KILL; sleep 1; "
         f"if alive; then "
         f"echo 'process group survived SIGKILL' >&2; exit 1; fi; exit 0"
+    )
+
+
+class _BoundedSink:
+    """Read everything a stream produces; keep at most ``cap`` bytes of it.
+
+    Draining and *retaining* are two different requirements, and conflating
+    them is the whole bug this exists for. The pipe has to be drained or the
+    remote blocks on write and the command never finishes; nothing says the
+    bytes have to be kept. So the excess is read and dropped, and how much was
+    dropped is remembered — a truncation nobody mentions reads as "that was all
+    the output there was".
+
+    ``keep="head"`` for stdout, which is parsed and whose answer arrives first;
+    ``keep="tail"`` for stderr, whose last words are the ones that explain a
+    failure.
+    """
+
+    def __init__(self, cap: int, *, keep: str) -> None:
+        self._cap = max(0, int(cap))
+        self._keep = keep
+        self._buf = bytearray()
+        self._dropped = 0
+        self._lock = threading.Lock()
+
+    def feed(self, chunk: bytes) -> None:
+        with self._lock:
+            if self._keep == "head":
+                room = max(0, self._cap - len(self._buf))
+                if room:
+                    self._buf.extend(chunk[:room])
+                self._dropped += len(chunk) - min(room, len(chunk))
+            else:
+                self._buf.extend(chunk)
+                excess = len(self._buf) - self._cap
+                if excess > 0:
+                    del self._buf[:excess]
+                    self._dropped += excess
+
+    @property
+    def truncated(self) -> bool:
+        with self._lock:
+            return self._dropped > 0
+
+    def value(self, *, annotate: bool = False) -> bytes:
+        """The retained bytes. ``annotate`` states the elision in-band.
+
+        Only ever set for stderr: stdout is compared and parsed, so a note
+        appended to it would turn a `RUNNING` probe answer into something no
+        branch matches.
+        """
+        with self._lock:
+            body = bytes(self._buf)
+            dropped = self._dropped
+        if not (annotate and dropped):
+            return body
+        return f"...({dropped} earlier stderr bytes discarded)\n".encode() + body
+
+
+def _drain(stream: Any, sink: _BoundedSink) -> None:
+    try:
+        if stream is not None:
+            for chunk in iter(lambda: stream.read(65536), b""):
+                sink.feed(chunk)
+    except Exception:  # noqa: BLE001 - draining is best-effort
+        pass
+
+
+class CappedProcess(subprocess.CompletedProcess):
+    """A ``CompletedProcess`` that says whether its output was cut short."""
+
+    def __init__(
+        self,
+        args: Any,
+        returncode: int,
+        stdout: bytes,
+        stderr: bytes,
+        *,
+        stdout_truncated: bool = False,
+        stderr_truncated: bool = False,
+    ) -> None:
+        super().__init__(args, returncode, stdout, stderr)
+        self.stdout_truncated = stdout_truncated
+        self.stderr_truncated = stderr_truncated
+
+
+def _run_capped(
+    argv: list[str],
+    *,
+    timeout: float,
+    input: bytes | None = None,
+    stdout_cap: int | None = None,
+    stderr_cap: int | None = None,
+) -> CappedProcess:
+    """``subprocess.run(capture_output=True)`` with the memory actually bounded.
+
+    Every command this module runs against an ssh alias talks to a machine we
+    do not control, and `capture_output=True` accumulates whatever that machine
+    says in the daemon's heap until the timeout expires. A forced command or a
+    chatty login profile — deliberate or merely misconfigured — therefore has a
+    window measured in minutes to write as fast as the link allows, and the
+    per-command timeout is the only thing bounding it. `ssh()` even truncates
+    its result to 64 KiB *after* the fact, which bounds what the caller sees and
+    not what the daemon allocated.
+
+    The contract is deliberately `subprocess.run`'s: the same
+    ``TimeoutExpired``/``OSError`` come out, so every existing handler still
+    applies, and callers read ``.returncode``/``.stdout``/``.stderr`` unchanged.
+    What differs is that the pipes are drained by their own threads into
+    :class:`_BoundedSink`, so a stalled read cannot deadlock the other stream
+    and the retained bytes have a ceiling.
+
+    Over-cap output is dropped, not fatal: the process is left to finish
+    normally, because killing it would turn "the remote was noisy" into a
+    corrupted protocol answer. The kill is reserved for the deadline.
+
+    The ceilings are read here rather than bound as default argument values, so
+    the module constants stay a knob at runtime instead of being frozen into
+    this signature at import.
+    """
+    stdout_cap = _REMOTE_STDOUT_CAP if stdout_cap is None else stdout_cap
+    stderr_cap = _STDERR_TAIL_BYTES if stderr_cap is None else stderr_cap
+    popen_kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+    if input is not None:
+        popen_kwargs["stdin"] = subprocess.PIPE
+    proc = subprocess.Popen(argv, **popen_kwargs)
+
+    out = _BoundedSink(stdout_cap, keep="head")
+    err = _BoundedSink(stderr_cap, keep="tail")
+    workers = [
+        threading.Thread(target=_drain, args=(proc.stdout, out), daemon=True),
+        threading.Thread(target=_drain, args=(proc.stderr, err), daemon=True),
+    ]
+
+    def _feed_stdin() -> None:
+        # Its own thread: a script larger than the pipe buffer would otherwise
+        # block here while the child is blocked writing output nobody is
+        # reading yet.
+        try:
+            if proc.stdin is not None:
+                proc.stdin.write(input or b"")
+        except Exception:  # noqa: BLE001 - a closed stdin is the child's answer
+            pass
+        finally:
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if input is not None:
+        workers.append(threading.Thread(target=_feed_stdin, daemon=True))
+    for worker in workers:
+        worker.start()
+
+    timed_out = {"v": False}
+
+    def _watchdog() -> None:
+        timed_out["v"] = True
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+    watchdog = threading.Timer(timeout, _watchdog)
+    watchdog.start()
+    try:
+        returncode = proc.wait()
+    finally:
+        watchdog.cancel()
+        for worker in workers:
+            worker.join(timeout=5)
+    if timed_out["v"]:
+        raise subprocess.TimeoutExpired(
+            argv, timeout, output=out.value(), stderr=err.value(annotate=True)
+        )
+    return CappedProcess(
+        argv,
+        returncode,
+        out.value(),
+        err.value(annotate=True),
+        stdout_truncated=out.truncated,
+        stderr_truncated=err.truncated,
     )
 
 
@@ -1887,10 +2086,9 @@ class ComputeManager:
             f"{{ {launch}; }}"
         )
         try:
-            proc = subprocess.run(
+            proc = _run_capped(
                 ["ssh", alias, remote],
                 input=script.encode("utf-8"),
-                capture_output=True,
                 timeout=60,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -2286,9 +2484,7 @@ class ComputeManager:
             f"else echo NORC; fi"
         )
         try:
-            check = subprocess.run(
-                ["ssh", alias, probe], capture_output=True, timeout=30
-            )
+            check = _run_capped(["ssh", alias, probe], timeout=30)
         except (subprocess.TimeoutExpired, OSError) as e:
             return self._ssh_unknown(job, f"status probe failed to run: {e}")
         if check.returncode != 0:
@@ -2586,9 +2782,7 @@ class ComputeManager:
         patterns = list(exclude_patterns or [])
         script = _ssh_harvest_script(workdir, HARVEST_MAX_FILE_BYTES, patterns)
         try:
-            proc = subprocess.run(
-                ["ssh", alias, script], capture_output=True, timeout=300
-            )
+            proc = _run_capped(["ssh", alias, script], timeout=300)
         except (subprocess.TimeoutExpired, OSError) as e:
             return f"harvest failed to run on {alias}: {e}", [], [], True
         if proc.returncode != 0:
@@ -2615,6 +2809,24 @@ class ComputeManager:
         if marker != "archive":
             # The script exited 0, so it *did* run — it simply did not
             # acknowledge an archive. Repeating it produces the same answer.
+            #
+            # ...unless the ack was there and we stopped reading before it: a
+            # remote noisy enough to blow the stdout cap is a different fact
+            # from a work directory that vanished, and reporting the second for
+            # the first sends someone to look for a directory that is fine.
+            if proc.stdout_truncated:
+                return (
+                    (
+                        f"harvest acknowledgement was not found within the first "
+                        f"{_REMOTE_STDOUT_CAP} bytes of stdout from {alias}; the "
+                        f"remote wrote more than that (a login profile or forced "
+                        f"command, most likely) and the rest was discarded "
+                        f"unread. Quieten the remote's non-interactive shell"
+                    ),
+                    oversized,
+                    stayed,
+                    False,
+                )
             return (
                 (
                     f"harvest produced no acknowledgement on {alias}; "
@@ -2796,9 +3008,8 @@ class ComputeManager:
     def _cleanup_remote_archive(alias: str, workdir: str) -> None:
         """Best effort: the staged tarball doubles the job's remote footprint."""
         try:
-            subprocess.run(
+            _run_capped(
                 ["ssh", alias, f"rm -f {workdir}/{_HARVEST_ARCHIVE}"],
-                capture_output=True,
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -2821,9 +3032,8 @@ class ComputeManager:
                 indeterminate=True,
             )
         try:
-            proc = subprocess.run(
+            proc = _run_capped(
                 ["ssh", job["alias"], _ssh_cancel_script(pgid, pid)],
-                capture_output=True,
                 timeout=self._CANCEL_TIMEOUT_S,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -3112,12 +3322,34 @@ class ComputeManager:
             # Audited before it runs, not after: a command that hangs or kills
             # the daemon must still leave a record that it was attempted.
             self._audit("compute_ssh_command", alias=rest, command=cmd[:2000])
-            proc = subprocess.run(shell, capture_output=True, timeout=timeout_s)
-            return {
-                "stdout": proc.stdout.decode("utf-8", "replace")[:65536],
-                "stderr": proc.stderr.decode("utf-8", "replace")[:65536],
+            # The 64 KiB slices below bound what the *caller* sees; they did
+            # nothing about what the daemon allocated to produce them, which on
+            # a chatty or hostile alias is everything the link can deliver
+            # inside `timeout_s`. The cap is applied while reading now.
+            proc = _run_capped(shell, timeout=timeout_s)
+            stdout, stderr = proc.stdout, proc.stderr
+            out = {
+                "stdout": stdout.decode("utf-8", "replace")[:_CALL_COMMAND_CAP],
+                "stderr": stderr.decode("utf-8", "replace")[:_CALL_COMMAND_CAP],
                 "exit_code": proc.returncode,
             }
+            # Said, not silently swallowed: a command whose output was cut is
+            # not a command that produced that much and no more. *Both* cuts
+            # count — the read ceiling above and this slice — because reporting
+            # only the first would let `stdout_truncated: False` mean "you have
+            # all of it" for every reply between 64 KiB and 16 MiB.
+            if proc.stdout_truncated or len(stdout) > _CALL_COMMAND_CAP:
+                out["stdout_truncated"] = True
+            if proc.stderr_truncated or len(stderr) > _CALL_COMMAND_CAP:
+                out["stderr_truncated"] = True
+            if out.get("stdout_truncated") or out.get("stderr_truncated"):
+                out["hint"] = (
+                    f"this alias produced more output than call_command keeps "
+                    f"({_CALL_COMMAND_CAP} bytes; anything past "
+                    f"{_REMOTE_STDOUT_CAP} was not even read). Redirect it to a "
+                    f"file on the host and harvest that instead"
+                )
+            return out
         raise ComputeError(
             "call_command on a byoc provider requires a live sandbox; "
             "submit a job instead",
@@ -3219,7 +3451,7 @@ class ComputeManager:
         look like a delivered file to the caller.
         """
         try:
-            proc = subprocess.run(argv, capture_output=True, timeout=300)
+            proc = _run_capped(argv, timeout=300)
         except subprocess.TimeoutExpired:
             raise ComputeError(f"{what} timed out after 300s", "transient")
         except OSError as e:

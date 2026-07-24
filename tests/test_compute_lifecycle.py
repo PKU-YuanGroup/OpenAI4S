@@ -20,6 +20,7 @@ without anything to back it:
 The last one is proved against a real shell in
 ``test_compute_trust_boundary.py``, where the harness lives.
 """
+import io
 import sqlite3
 import threading
 import types
@@ -56,10 +57,25 @@ def byoc(cfg, tmp_path):
 
 
 class _Proc:
+    """A stand-in for the ssh process `manager._run_capped` starts.
+
+    The ssh calls no longer go through `subprocess.run(capture_output=True)`,
+    which kept everything the remote said in the daemon's heap until the
+    timeout; `_run_capped` drains the pipes into bounded sinks. These stubs
+    describe the remote's reply and that draining runs on top of them.
+    """
+
     def __init__(self, returncode=0, stdout=b"", stderr=b""):
         self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self.stdin = io.BytesIO()
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
 
 
 # --------------------------------------------------------------------------
@@ -230,7 +246,7 @@ def test_reconcile_flags_an_indeterminate_submit_as_an_orphan_risk(
 @pytest.fixture
 def ssh_job(cfg, monkeypatch):
     monkeypatch.setattr(
-        "openai4s.compute.manager.subprocess.run",
+        "openai4s.compute.manager.subprocess.Popen",
         lambda *a, **k: _Proc(0, b"OPENAI4S_JOB 4242 4200\n"),
         raising=True,
     )
@@ -251,7 +267,7 @@ def test_close_signals_the_ssh_job_it_claims_to_have_cancelled(
         seen["script"] = argv[2]
         return _Proc(0)
 
-    monkeypatch.setattr("openai4s.compute.manager.subprocess.run", fake_run)
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", fake_run)
     out = manager.close({"provider": "ssh:lab", "job_ids": [job_id]})
 
     assert out["released"] == [job_id]
@@ -266,7 +282,7 @@ def test_close_does_not_claim_a_cancel_it_could_not_deliver(ssh_job, monkeypatch
     it from everything that would ever have found it again."""
     manager, job_id = ssh_job
     monkeypatch.setattr(
-        "openai4s.compute.manager.subprocess.run",
+        "openai4s.compute.manager.subprocess.Popen",
         lambda *a, **k: _Proc(1, b"", b"process group survived SIGKILL"),
     )
     out = manager.close({"provider": "ssh:lab", "job_ids": [job_id]})
@@ -290,7 +306,7 @@ def test_close_is_honest_when_the_host_is_unreachable(ssh_job, monkeypatch, cfg)
     def boom(*a, **k):
         raise _subprocess.TimeoutExpired(cmd="ssh", timeout=45)
 
-    monkeypatch.setattr("openai4s.compute.manager.subprocess.run", boom)
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", boom)
     out = manager.close({"provider": "ssh:lab", "job_ids": [job_id]})
     assert out["unreleased"][0]["job_id"] == job_id
     assert get_store(cfg.db_path).get_compute_job(job_id)["status"] == states.RUNNING
@@ -347,7 +363,7 @@ def test_a_restart_does_not_hand_one_sessions_jobs_to_another(
     harvested outputs into this session's workspace. Recovery must be scoped to
     the owning session."""
     monkeypatch.setattr(
-        "openai4s.compute.manager.subprocess.run",
+        "openai4s.compute.manager.subprocess.Popen",
         lambda *a, **k: _Proc(0, b"OPENAI4S_JOB 4242 4200\n"),
         raising=True,
     )

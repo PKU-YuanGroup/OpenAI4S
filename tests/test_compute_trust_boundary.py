@@ -54,10 +54,27 @@ def _ssh_job(mgr, job_id="job-abc"):
 
 
 class _Proc:
+    """A stand-in for the process `manager._run_capped` starts.
+
+    Every ssh/scp call in the manager went through
+    `subprocess.run(capture_output=True)`, which accumulates whatever the
+    remote says in the daemon's heap until the timeout expires. `_run_capped`
+    drains the pipes into bounded sinks instead, so these stubs now describe
+    what the remote *says* and the real draining and capping code runs on top
+    of them rather than being bypassed.
+    """
+
     def __init__(self, returncode=0, stdout=b"", stderr=b""):
         self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self.stdin = io.BytesIO()
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
 
 
 # --------------------------------------------------------------------------
@@ -65,22 +82,36 @@ class _Proc:
 # --------------------------------------------------------------------------
 
 
-def _ssh_replies(probe: bytes, *, harvest: bytes = b"OPENAI4S_HARVEST empty\n", scp=0):
-    """Route the two ssh round trips a poll makes to their own answers.
+def _ssh_replies(
+    probe: bytes,
+    *,
+    harvest: bytes = b"OPENAI4S_HARVEST empty\n",
+    scp=0,
+    transfer=None,
+):
+    """Route each ssh round trip a poll makes to its own answer.
 
-    `_result_ssh` asks the host two separate questions now: what the exit code
-    is, and what files the job left behind. A single stub answering both with
-    the same bytes would silently feed the exit code to the harvest parser.
+    `_result_ssh` asks the host three separate questions: what the exit code
+    is, what files the job left behind, and — over `ssh cat` — the archive
+    itself. A single stub answering all of them with the same bytes would
+    silently feed the exit code to the harvest parser.
+
+    All three are one `subprocess.Popen` stub now that the probe and the
+    staging call are capped the same way the transfer already was; `transfer`
+    supplies the `ssh cat` process when a test wants to fail or complete the
+    download.
     """
 
-    def fake_run(argv, **kw):
+    def fake_popen(argv, **kw):
         if argv[0] == "scp":
             return _Proc(scp, b"", b"" if scp == 0 else b"scp broke")
         if argv[0] != "ssh":
             return _Proc(0)
+        if transfer is not None and argv[2].startswith("cat --"):
+            return transfer(argv, **kw)
         return _Proc(0, harvest if "OPENAI4S_HARVEST" in argv[2] else probe)
 
-    return fake_run
+    return fake_popen
 
 
 class _FakeCatProc:
@@ -107,11 +138,45 @@ def _fake_transfer(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
     return popen
 
 
+class _PrefixedStream:
+    """A readable that hands back a prefix before the real stream's bytes."""
+
+    def __init__(self, prefix: bytes, stream):
+        self._prefix = prefix
+        self._stream = stream
+
+    def read(self, size=-1):
+        if self._prefix:
+            chunk, self._prefix = self._prefix, b""
+            return chunk
+        return self._stream.read(size) if self._stream is not None else b""
+
+
+class _BannerProc:
+    """A real process wearing a login banner in front of its stdout."""
+
+    def __init__(self, proc, banner: bytes):
+        self._proc = proc
+        self.stdin = proc.stdin
+        self.stderr = proc.stderr
+        self.stdout = _PrefixedStream(banner, proc.stdout)
+
+    @property
+    def returncode(self):
+        return self._proc.returncode
+
+    def wait(self, timeout=None):
+        return self._proc.wait(timeout)
+
+    def kill(self):
+        self._proc.kill()
+
+
 def test_ssh_missing_rc_is_unknown_not_done(mgr, monkeypatch):
     """The headline regression: a remote process that vanished without writing
     an exit code used to report done/exit_code 0."""
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"NORC\n"), raising=True
+        subprocess, "Popen", lambda *a, **k: _Proc(0, b"NORC\n"), raising=True
     )
     out = mgr._result_ssh(_ssh_job(mgr))
     assert out["status"] == "unknown"
@@ -121,14 +186,14 @@ def test_ssh_missing_rc_is_unknown_not_done(mgr, monkeypatch):
 
 
 def test_ssh_nonzero_rc_is_failed(mgr, monkeypatch):
-    monkeypatch.setattr(subprocess, "run", _ssh_replies(b"1\n"), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", _ssh_replies(b"1\n"), raising=True)
     out = mgr._result_ssh(_ssh_job(mgr))
     assert out["status"] == "failed"
     assert out["exit_code"] == 1
 
 
 def test_ssh_zero_rc_succeeds(mgr, monkeypatch):
-    monkeypatch.setattr(subprocess, "run", _ssh_replies(b"0\n"), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", _ssh_replies(b"0\n"), raising=True)
     out = mgr._result_ssh(_ssh_job(mgr))
     assert out["status"] == "succeeded"
     assert out["exit_code"] == 0
@@ -136,7 +201,7 @@ def test_ssh_zero_rc_succeeds(mgr, monkeypatch):
 
 def test_ssh_running_pid_reports_running(mgr, monkeypatch):
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"RUNNING\n"), raising=True
+        subprocess, "Popen", lambda *a, **k: _Proc(0, b"RUNNING\n"), raising=True
     )
     assert mgr._result_ssh(_ssh_job(mgr))["status"] == "running"
 
@@ -146,7 +211,7 @@ def test_ssh_probe_transport_failure_is_unknown(mgr, monkeypatch):
     nothing about the job, so it must not be resolved either way."""
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *a, **k: _Proc(255, b"", b"ssh: connect to host lab port 22: No route"),
         raising=True,
     )
@@ -159,13 +224,13 @@ def test_ssh_probe_timeout_is_unknown(mgr, monkeypatch):
     def boom(*a, **k):
         raise subprocess.TimeoutExpired(cmd="ssh", timeout=30)
 
-    monkeypatch.setattr(subprocess, "run", boom, raising=True)
+    monkeypatch.setattr(subprocess, "Popen", boom, raising=True)
     assert mgr._result_ssh(_ssh_job(mgr))["status"] == "unknown"
 
 
 def test_ssh_unparseable_rc_is_unknown(mgr, monkeypatch):
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"not-a-number\n"), raising=True
+        subprocess, "Popen", lambda *a, **k: _Proc(0, b"not-a-number\n"), raising=True
     )
     out = mgr._result_ssh(_ssh_job(mgr))
     assert out["status"] == "unknown"
@@ -184,14 +249,12 @@ def test_ssh_log_harvest_failure_does_not_claim_clean_success(mgr, monkeypatch):
     """
     monkeypatch.setattr(
         subprocess,
-        "run",
-        _ssh_replies(b"0\n", harvest=b"OPENAI4S_HARVEST archive 10\n"),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        subprocess,
         "Popen",
-        _fake_transfer(1, b"", b"cat: transfer broke"),
+        _ssh_replies(
+            b"0\n",
+            harvest=b"OPENAI4S_HARVEST archive 10\n",
+            transfer=_fake_transfer(1, b"", b"cat: transfer broke"),
+        ),
         raising=True,
     )
     job = _ssh_job(mgr)
@@ -231,14 +294,12 @@ def test_ssh_a_recovered_network_still_harvests_the_outputs(mgr, monkeypatch, tm
 
     monkeypatch.setattr(
         subprocess,
-        "run",
-        _ssh_replies(b"0\n", harvest=b"OPENAI4S_HARVEST archive 10\n"),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        subprocess,
         "Popen",
-        _fake_transfer(1, b"", b"cat: connection reset"),
+        _ssh_replies(
+            b"0\n",
+            harvest=b"OPENAI4S_HARVEST archive 10\n",
+            transfer=_fake_transfer(1, b"", b"cat: connection reset"),
+        ),
         raising=True,
     )
     job = _ssh_job(mgr, "job-recover")
@@ -247,7 +308,16 @@ def test_ssh_a_recovered_network_still_harvests_the_outputs(mgr, monkeypatch, tm
     assert first["error_kind"] == "harvest_pending"
 
     # The network comes back; the archive was never removed from the remote.
-    monkeypatch.setattr(subprocess, "Popen", _fake_transfer(0, archive), raising=True)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _ssh_replies(
+            b"0\n",
+            harvest=b"OPENAI4S_HARVEST archive 10\n",
+            transfer=_fake_transfer(0, archive),
+        ),
+        raising=True,
+    )
     second = mgr._result_ssh(job)
     assert second["status"] == "succeeded", second
     assert second["exit_code"] == 0
@@ -259,14 +329,12 @@ def test_ssh_a_recovered_network_still_harvests_the_outputs(mgr, monkeypatch, tm
 def test_ssh_failed_job_with_bad_harvest_stays_failed(mgr, monkeypatch):
     monkeypatch.setattr(
         subprocess,
-        "run",
-        _ssh_replies(b"3\n", harvest=b"OPENAI4S_HARVEST archive 10\n"),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        subprocess,
         "Popen",
-        _fake_transfer(1, b"", b"cat: transfer broke"),
+        _ssh_replies(
+            b"3\n",
+            harvest=b"OPENAI4S_HARVEST archive 10\n",
+            transfer=_fake_transfer(1, b"", b"cat: transfer broke"),
+        ),
         raising=True,
     )
     monkeypatch.setattr(manager_mod, "HARVEST_RETRY_MIN_ATTEMPTS", 1, raising=True)
@@ -286,7 +354,7 @@ def test_ssh_a_vanished_workdir_is_a_harvest_failure(mgr, monkeypatch):
             return _Proc(3, b"", b"openai4s: work directory is gone")
         return _Proc(0, b"0\n")
 
-    monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(subprocess, "Popen", fake_run, raising=True)
     out = mgr._result_ssh(_ssh_job(mgr))
     assert out["status"] == "failed"
     assert "work directory is gone" in out["harvest_error"]
@@ -296,11 +364,11 @@ def test_ssh_unknown_is_not_cached_onto_the_job(mgr, monkeypatch):
     """`unknown` is unresolved, not terminal — a later poll must be free to
     resolve it once the host comes back."""
     job = _ssh_job(mgr)
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(255), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(255), raising=True)
     assert mgr._result_ssh(job)["status"] == "unknown"
     assert job["status"] == "running"
 
-    monkeypatch.setattr(subprocess, "run", _ssh_replies(b"0\n"), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", _ssh_replies(b"0\n"), raising=True)
     assert mgr._result_ssh(job)["status"] == "succeeded"
 
 
@@ -316,7 +384,7 @@ def test_ssh_submit_records_exit_code_atomically(mgr, monkeypatch):
         seen["remote"] = argv[2]
         return _Proc(0, b"OPENAI4S_JOB 9911 9911\n")
 
-    monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(subprocess, "Popen", fake_run, raising=True)
     out = mgr.submit({"provider": "ssh:lab", "command": "echo hi"})
     assert out["status"] == "running"
     remote = seen["remote"]
@@ -370,20 +438,18 @@ class TestAgainstRealBash:
 
     @pytest.fixture
     def local_ssh(self, mgr, monkeypatch, tmp_path):
-        real_run = subprocess.run
         real_popen = subprocess.Popen
         shell = shutil.which(self.SHELL)
         if shell is None:
             pytest.skip(f"{self.SHELL} is not on this host")
 
+        # One seam now: every ssh and scp the manager runs — the submit, the
+        # probe, the harvest staging, the capped `ssh cat` transfer — goes
+        # through `_run_capped`, which starts the process with `Popen` so the
+        # output is drained into a bounded sink instead of accumulating in the
+        # daemon. Routing all of them here means this class exercises that
+        # draining against a real shell rather than around it.
         def fake_popen(argv, **kw):
-            # The capped harvest transfer streams the archive over `ssh cat`;
-            # route it through the real shell so it actually cats the file.
-            if argv[0] == "ssh":
-                return real_popen([shell, "-c", argv[2]], start_new_session=True, **kw)
-            return real_popen(argv, **kw)
-
-        def fake_run(argv, **kw):
             if argv[0] == "ssh":
                 # start_new_session mirrors sshd: OpenSSH's do_child() calls
                 # setsid() before exec'ing the remote command, so the job is a
@@ -392,11 +458,7 @@ class TestAgainstRealBash:
                 # correctly signals the job's group takes the test runner with
                 # it — which is exactly the blast radius this whole mechanism
                 # is about, observed on the wrong process.
-                return real_run(
-                    [shell, "-c", argv[2]],
-                    start_new_session=True,
-                    **{k: v for k, v in kw.items() if k != "timeout"},
-                )
+                return real_popen([shell, "-c", argv[2]], start_new_session=True, **kw)
             if argv[0] == "scp":
                 # A copy that copies. Stubbing scp to a bare success meant the
                 # harvest was never exercised at all — the archive the remote
@@ -409,9 +471,8 @@ class TestAgainstRealBash:
                     return _Proc(1, b"", b"scp: no such file")
                 shutil.copy2(remote, destination)
                 return _Proc(0)
-            return real_run(argv, **kw)
+            return real_popen(argv, **kw)
 
-        monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
         monkeypatch.setattr(subprocess, "Popen", fake_popen, raising=True)
         monkeypatch.setenv("HOME", str(tmp_path))
         return mgr
@@ -806,20 +867,19 @@ class TestAgainstRealBash:
         banner claims to be pid 1 — signalling init's group is the worst
         available outcome of believing it.
         """
-        chatty = subprocess.run
+        chatty = subprocess.Popen
 
         def noisy(argv, **kw):
             proc = chatty(argv, **kw)
-            stdout = getattr(proc, "stdout", b"") or b""
-            if argv[0] == "ssh":
-                return _Proc(
-                    proc.returncode,
-                    b"Welcome to lab01\n1 1\n" + stdout,
-                    getattr(proc, "stderr", b""),
-                )
-            return proc
+            if argv[0] != "ssh":
+                return proc
+            # Prepended lazily rather than by draining the process here: the
+            # submit writes `run.sh` to the remote's stdin *after* the process
+            # starts, so reading stdout to completion first would deadlock
+            # against a `cat` still waiting for its input.
+            return _BannerProc(proc, b"Welcome to lab01\n1 1\n")
 
-        monkeypatch.setattr(subprocess, "run", noisy, raising=True)
+        monkeypatch.setattr(subprocess, "Popen", noisy, raising=True)
         out = local_ssh.submit({"provider": "ssh:lab", "command": "sleep 30"})
         job = local_ssh._jobs[out["job_id"]]
         assert int(job["pid"]) > 1, "a banner line is not a job id"
@@ -854,7 +914,7 @@ class TestAgainstRealDash(TestAgainstRealBash):
 def test_ssh_submit_propagates_failure(mgr, monkeypatch):
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *a, **k: _Proc(255, b"", b"host key changed"),
         raising=True,
     )
@@ -870,7 +930,10 @@ def test_ssh_submit_propagates_failure(mgr, monkeypatch):
 
 def test_scp_download_failure_raises_instead_of_claiming_a_file(mgr, monkeypatch):
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(1, b"", b"No such file"), raising=True
+        subprocess,
+        "Popen",
+        lambda *a, **k: _Proc(1, b"", b"No such file"),
+        raising=True,
     )
     with pytest.raises(ComputeError) as e:
         mgr.scp({"provider": "ssh:lab", "direction": "down", "remote": "/x/y.dat"})
@@ -881,7 +944,7 @@ def test_scp_upload_failure_raises(mgr, monkeypatch, tmp_path):
     (tmp_path / "ws" / "a.dat").write_text("payload")
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *a, **k: _Proc(1, b"", b"Permission denied"),
         raising=True,
     )
@@ -898,7 +961,7 @@ def test_scp_upload_failure_raises(mgr, monkeypatch, tmp_path):
 
 
 def test_scp_success_returns_path(mgr, monkeypatch, tmp_path):
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     out = mgr.scp({"provider": "ssh:lab", "direction": "down", "remote": "/x/y.dat"})
     # A resolved path, not the bare name: the caller should not have to guess
     # which directory the file landed in.
@@ -913,7 +976,7 @@ def test_scp_success_returns_path(mgr, monkeypatch, tmp_path):
 def test_a_download_cannot_escape_the_workspace(mgr, monkeypatch):
     """The agent picks the destination — that is the whole risk. Without this,
     `local="/etc/cron.d/x"` writes wherever the daemon can."""
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     for escape in ("/etc/passwd", "../../outside.txt"):
         with pytest.raises(ComputeError) as e:
             mgr.scp(
@@ -933,7 +996,7 @@ def test_a_symlink_cannot_redirect_the_write(mgr, monkeypatch, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (tmp_path / "ws" / "link").symlink_to(outside)
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     with pytest.raises(ComputeError, match="workspace"):
         mgr.scp(
             {
@@ -949,7 +1012,7 @@ def test_a_symlink_cannot_redirect_the_write(mgr, monkeypatch, tmp_path):
 def test_a_hostile_remote_path_is_rejected(mgr, monkeypatch, bad):
     """scp accepts `../../etc/passwd` happily; quoting stops word-splitting,
     not traversal."""
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     with pytest.raises(ComputeError):
         mgr.scp({"provider": "ssh:lab", "direction": "down", "remote": bad})
 
@@ -962,7 +1025,7 @@ def test_an_oversized_upload_is_refused(mgr, monkeypatch, tmp_path):
     source = tmp_path / "ws" / "big.bin"
     source.write_bytes(b"x" * 2048)
     monkeypatch.setattr(manager_mod, "MAX_TRANSFER_BYTES", 1024)
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     with pytest.raises(ComputeError, match="cap"):
         mgr.scp(
             {
@@ -975,7 +1038,7 @@ def test_an_oversized_upload_is_refused(mgr, monkeypatch, tmp_path):
 
 
 def test_an_upload_of_a_missing_file_is_refused(mgr, monkeypatch):
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     with pytest.raises(ComputeError, match="not a file"):
         mgr.scp(
             {
@@ -997,7 +1060,7 @@ def test_direct_surface_calls_are_audited(mgr, monkeypatch):
         obs, "log_event", lambda event, **f: seen.append((event, f)), raising=True
     )
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"ok"), raising=True
+        subprocess, "Popen", lambda *a, **k: _Proc(0, b"ok"), raising=True
     )
     mgr.ssh({"provider": "ssh:lab", "command": "hostname"})
     assert any(e == "compute_ssh_command" for e, _ in seen)
@@ -1007,7 +1070,7 @@ def test_cancel_that_never_landed_is_not_a_cancellation(mgr, monkeypatch):
     job = _ssh_job(mgr)
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *a, **k: _Proc(255, b"", b"connection refused"),
         raising=True,
     )

@@ -444,6 +444,7 @@ def test_idempotency_key_reaches_the_host(tmp_path, monkeypatch):
 def test_the_key_the_sdk_sends_actually_deduplicates(tmp_path, monkeypatch):
     """End to end rather than at the seam: the SDK's key must be the one the
     manager claims against, or forwarding it proves nothing."""
+    import io
     import subprocess
     import types
 
@@ -458,11 +459,22 @@ def test_the_key_the_sdk_sends_actually_deduplicates(tmp_path, monkeypatch):
     )
 
     class _Proc:
-        returncode = 0
-        stdout = b"OPENAI4S_JOB 4242 4200\n"
-        stderr = b""
+        """The ssh process `manager._run_capped` starts — Popen-shaped, because
+        the submit no longer buffers the remote's whole output in the daemon."""
 
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(), raising=True)
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = io.BytesIO(b"OPENAI4S_JOB 4242 4200\n")
+            self.stderr = io.BytesIO(b"")
+            self.stdin = io.BytesIO()
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(), raising=True)
     manager = ComputeManager(cfg)
 
     def host_call(op, args):

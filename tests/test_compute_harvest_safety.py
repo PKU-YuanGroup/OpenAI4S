@@ -46,6 +46,28 @@ def _manager(cfg, workspace):
     return ComputeManager(cfg, workspace=workspace)
 
 
+class _ProbeProc:
+    """The status probe's process, Popen-shaped.
+
+    `_result_ssh` no longer runs its probe through
+    `subprocess.run(capture_output=True)` — that held whatever the remote said
+    in the daemon's heap for the whole timeout — so the stub describes the
+    reply and `_run_capped`'s bounded draining runs on top of it.
+    """
+
+    def __init__(self, returncode=0, stdout=b"", stderr=b""):
+        self.returncode = returncode
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self.stdin = io.BytesIO()
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+
 # --------------------------------------------------------------------------
 # the harvest destination cannot be redirected by a symlink
 # --------------------------------------------------------------------------
@@ -191,12 +213,12 @@ def test_a_failed_reharvest_does_not_destroy_previously_published_outputs(
     (tmp_path / "remote").mkdir()
 
     def probe_says_exit_zero(argv, *a, **k):
-        return subprocess.CompletedProcess(argv, 0, b"RC 0 -\n", b"")
+        return _ProbeProc(0, b"RC 0 -\n")
 
     import openai4s.compute.manager as mod
 
-    original_run = mod.subprocess.run
-    mod.subprocess.run = probe_says_exit_zero
+    original_run = mod.subprocess.Popen
+    mod.subprocess.Popen = probe_says_exit_zero
     try:
         # First poll: a successful harvest publishes a verified output.
         def good_harvest(alias, workdir, staging, exclude):
@@ -215,7 +237,7 @@ def test_a_failed_reharvest_does_not_destroy_previously_published_outputs(
         manager._harvest_ssh = failed_harvest
         manager._result_ssh(manager._jobs["job-z"])
     finally:
-        mod.subprocess.run = original_run
+        mod.subprocess.Popen = original_run
 
     # The previously harvested, verified output survives the failed re-poll.
     assert (
@@ -252,16 +274,16 @@ def test_a_failed_harvest_does_not_leak_its_staging_directory(cfg, tmp_path):
     before = set(stage_root.iterdir())
 
     def probe_says_exit_zero(argv, *a, **k):
-        return subprocess.CompletedProcess(argv, 0, b"RC 0 -\n", b"")
+        return _ProbeProc(0, b"RC 0 -\n")
 
     import openai4s.compute.manager as mod
 
-    original_run = mod.subprocess.run
-    mod.subprocess.run = probe_says_exit_zero
+    original_run = mod.subprocess.Popen
+    mod.subprocess.Popen = probe_says_exit_zero
     try:
         manager._result_ssh(manager._jobs["job-leak"])
     finally:
-        mod.subprocess.run = original_run
+        mod.subprocess.Popen = original_run
 
     after = set(stage_root.iterdir())
     assert after == before, f"a staging directory leaked: {sorted(after - before)}"
@@ -295,12 +317,12 @@ def test_a_terminal_job_repolled_returns_stored_evidence_not_a_reharvest(cfg, tm
     (tmp_path / "remote").mkdir()
 
     def probe_says_exit_zero(argv, *a, **k):
-        return subprocess.CompletedProcess(argv, 0, b"RC 0 -\n", b"")
+        return _ProbeProc(0, b"RC 0 -\n")
 
     import openai4s.compute.manager as mod
 
-    original_run = mod.subprocess.run
-    mod.subprocess.run = probe_says_exit_zero
+    original_run = mod.subprocess.Popen
+    mod.subprocess.Popen = probe_says_exit_zero
     try:
 
         def good_harvest(alias, workdir, staging, exclude):
@@ -323,7 +345,7 @@ def test_a_terminal_job_repolled_returns_stored_evidence_not_a_reharvest(cfg, tm
         manager._harvest_ssh = tampered_harvest
         second = manager._result_ssh(manager._jobs["job-t"])
     finally:
-        mod.subprocess.run = original_run
+        mod.subprocess.Popen = original_run
 
     # The re-poll returned the original evidence, and the durable row is intact.
     assert second.get("cached") is True
@@ -648,16 +670,16 @@ def test_a_planted_output_is_not_counted_as_produced(cfg, tmp_path):
     manager._harvest_ssh = fake_harvest_ssh
 
     def probe_says_exit_zero(argv, *a, **k):
-        return subprocess.CompletedProcess(argv, 0, b"RC 0 -\n", b"")
+        return _ProbeProc(0, b"RC 0 -\n")
 
     import openai4s.compute.manager as mod
 
-    original_run = mod.subprocess.run
-    mod.subprocess.run = probe_says_exit_zero
+    original_run = mod.subprocess.Popen
+    mod.subprocess.Popen = probe_says_exit_zero
     try:
         result = manager._result_ssh(manager._jobs["job-plant"])
     finally:
-        mod.subprocess.run = original_run
+        mod.subprocess.Popen = original_run
 
     # The planted file must not be counted as a produced output, and the job
     # must not be marked succeeded off forged bytes.

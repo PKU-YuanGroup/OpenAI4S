@@ -360,7 +360,9 @@ class _ComputeInstance:
         """One synchronous command on the host (60s, 64KB cap). Approval-gated.
         For introspection — not job dispatch (use .submit_job()). Set
         login_shell=True when you need module/conda on PATH.
-        Returns {stdout, stderr, exit_code}."""
+        Returns {stdout, stderr, exit_code}, plus stdout_truncated=True and a
+        hint when the host produced more output than the reader keeps — the
+        output is cut, not the command; write it to a file and harvest it."""
         return self._compute_call(
             "ssh",
             {
