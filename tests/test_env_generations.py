@@ -824,3 +824,115 @@ def test_a_spec_edited_between_the_apply_hash_and_the_copy_is_rejected(tmp_path)
         egmod.shutil.copyfile = real_copyfile
 
     assert store.current_id("python") is None
+
+
+# --------------------------------------------------------------------------
+# a generation id is confined to the environment it was asked for
+# --------------------------------------------------------------------------
+
+
+def _foreign_generation(root: Path, env: str, gid: str) -> Path:
+    """A ready generation of another environment, on disk beside this one."""
+    directory = root / env / "generations" / gid
+    (directory / "prefix" / "bin").mkdir(parents=True)
+    (directory / "manifest.json").write_text(
+        json.dumps(
+            {
+                "generation_id": gid,
+                "environment": env,
+                "state": eg.READY,
+                "prefix": str(directory / "prefix"),
+                "created_at": 1,
+                "tool": "conda",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return directory
+
+
+def test_a_rollback_id_cannot_traverse_into_another_environment(store, tmp_path):
+    """Codex P2: `openai4s env rollback python ../../r/generations/env-R`.
+
+    The id was joined straight onto a path, so it resolved into the R tree. With
+    a READY manifest and an existing prefix, rollback wrote the traversal string
+    into `python/current` — after which Python discovery selected an R prefix
+    and labelled every artifact built in it as Python. Provenance that is wrong
+    is worse than provenance that is missing, because it is believed.
+    """
+    spec = _spec(tmp_path)
+    applied = _apply(store, spec)
+    _foreign_generation(store.root, "r", "env-R")
+
+    traversal = "../../r/generations/env-R"
+    with pytest.raises(eg.EnvironmentError_, match="not a path"):
+        store.rollback("python", traversal)
+
+    assert store.get("python", traversal) is None
+    assert store.current_id("python") == applied.generation.id
+    # And the legitimate rollback still works, or the guard has eaten the feature.
+    assert store.rollback("python", applied.generation.id).ok
+
+
+def test_a_manifest_that_names_another_environment_is_not_this_environment(
+    store, tmp_path
+):
+    """Binding the *record*, not just the path. A directory placed under
+    `python/generations/` whose manifest says it is an R generation is not a
+    legacy record with a field missing — it is a record from somewhere else."""
+    _apply(store, _spec(tmp_path))
+    smuggled = _foreign_generation(store.root, "python", "env-smuggled")
+    record = json.loads((smuggled / "manifest.json").read_text("utf-8"))
+    record["environment"] = "r"
+    (smuggled / "manifest.json").write_text(json.dumps(record), encoding="utf-8")
+
+    assert store.get("python", "env-smuggled") is None
+    with pytest.raises(eg.EnvironmentError_):
+        store.rollback("python", "env-smuggled")
+
+
+def test_a_manifest_whose_prefix_escapes_its_generation_is_refused(store, tmp_path):
+    """The pointer is only worth anything if the bytes it names are the ones in
+    that directory. A manifest is a file; a prefix pointing outside it is how a
+    rollback ends up activating something nobody built here."""
+    _apply(store, _spec(tmp_path))
+    elsewhere = _foreign_generation(store.root, "r", "env-R")
+    borrowed = store.root / "python" / "generations" / "env-borrowed"
+    borrowed.mkdir(parents=True)
+    (borrowed / "manifest.json").write_text(
+        json.dumps(
+            {
+                "generation_id": "env-borrowed",
+                "environment": "python",
+                "state": eg.READY,
+                "prefix": str(elsewhere / "prefix"),
+                "created_at": 1,
+                "tool": "conda",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert store.get("python", "env-borrowed") is None
+    with pytest.raises(eg.EnvironmentError_):
+        store.rollback("python", "env-borrowed")
+
+
+def test_the_pointer_is_never_written_with_anything_but_a_bare_id(store, tmp_path):
+    """The last gate: whatever a caller believed it had validated, the file
+    discovery joins onto a path only ever holds one path component."""
+    _apply(store, _spec(tmp_path))
+    for bad in ("../../r/generations/env-R", "a/b", "..", ".", "", ".hidden"):
+        with pytest.raises(eg.EnvironmentError_):
+            store._point_at("python", bad)
+
+
+def test_a_pointer_holding_a_traversal_does_not_resolve(store, tmp_path):
+    """Defence for a pointer written before this guard existed, or by hand."""
+    _apply(store, _spec(tmp_path))
+    _foreign_generation(store.root, "r", "env-R")
+    (store.root / "python" / "current").write_text(
+        "../../r/generations/env-R\n", encoding="utf-8"
+    )
+    assert store.current_id("python") is None
+    assert store.current("python") is None

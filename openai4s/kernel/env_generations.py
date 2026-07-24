@@ -47,6 +47,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -54,6 +55,23 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
+
+#: What a generation id may look like. One path component: the ids this module
+#: mints are ``env-<16 hex>``, and the charset stays a little wider than that so
+#: a directory made by hand still resolves — but never wide enough to contain a
+#: separator, to be ``.``/``..``, or to start with a dot.
+_GENERATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _is_within(path: str | os.PathLike[str], parent: Path) -> bool:
+    """Whether ``path`` resolves inside ``parent``. Symlink-resistant."""
+    try:
+        resolved = Path(os.path.realpath(str(path)))
+        root = Path(os.path.realpath(str(parent)))
+    except OSError:  # pragma: no cover - unreadable path
+        return False
+    return resolved == root or root in resolved.parents
+
 
 #: Generation states. Only ``ready`` may ever be pointed at.
 STAGING = "staging"
@@ -291,30 +309,88 @@ class EnvironmentStore:
     def _pointer(self, name: str) -> Path:
         return self._env_dir(name) / "current"
 
+    @staticmethod
+    def _valid_generation_id(generation_id: Any) -> str | None:
+        """A bare directory name, or None.
+
+        `generation_id` reaches this from the CLI (`openai4s env rollback
+        python <id>`) and from the pointer file, and it was joined straight
+        onto a path. `../../r/generations/env-R` therefore resolved into the
+        *R* tree: if that manifest was READY and its prefix existed, rollback
+        wrote the traversal string into `python/current`, Python discovery
+        selected an R prefix, and every artifact built in it recorded Python
+        provenance. Wrong provenance that is believed is worse than none.
+
+        So: one path component, no separators, no dot-only names, no leading
+        dot (a build-in-flight is not addressable either).
+        """
+        text = str(generation_id or "").strip()
+        if not text or not _GENERATION_ID_RE.match(text):
+            return None
+        return text
+
+    def _generation_dir(self, name: str, generation_id: str) -> Path | None:
+        """The directory for a generation id, proven to be a child of this
+        environment's own `generations/`. Returns None when it is not.
+
+        The regex already excludes traversal; this also refuses a symlinked
+        child, which no amount of name checking can catch.
+        """
+        ident = self._valid_generation_id(generation_id)
+        if ident is None:
+            return None
+        root = self._generations_dir(name)
+        candidate = root / ident
+        if candidate.is_symlink():
+            return None
+        try:
+            if candidate.resolve().parent != root.resolve():
+                return None
+        except OSError:  # pragma: no cover - unreadable parent
+            return None
+        return candidate
+
     # --- reads ------------------------------------------------------------
     def current_id(self, name: str) -> str | None:
         try:
             text = self._pointer(name).read_text("utf-8").strip()
         except OSError:
             return None
-        return text or None
+        # Validated on the way *out* as well as on the way in: a pointer written
+        # by an older build, or edited by hand, must not become a path join.
+        return self._valid_generation_id(text)
 
     def current(self, name: str) -> Generation | None:
         generation_id = self.current_id(name)
         return self.get(name, generation_id) if generation_id else None
 
     def get(self, name: str, generation_id: str) -> Generation | None:
-        manifest = self._generations_dir(name) / generation_id / "manifest.json"
+        ident = self._valid_generation_id(generation_id)
+        directory = self._generation_dir(name, generation_id)
+        if ident is None or directory is None:
+            return None
         try:
-            record = json.loads(manifest.read_text("utf-8"))
+            record = json.loads((directory / "manifest.json").read_text("utf-8"))
         except (OSError, ValueError):
             return None
+        # The manifest has to agree that it *is* this generation of this
+        # environment. A record naming another environment is not a legacy
+        # record with a field missing — it is a record from somewhere else, and
+        # borrowing it is how one environment comes to be labelled as another.
+        declared_id = str(record.get("generation_id") or ident)
+        declared_env = str(record.get("environment") or name)
+        if declared_id != ident or declared_env != name:
+            return None
+        prefix = str(record.get("prefix") or "")
+        # ...and the bytes it points at must be the ones in this directory.
+        if prefix and not _is_within(prefix, directory):
+            return None
         return Generation(
-            id=str(record.get("generation_id") or generation_id),
-            name=str(record.get("environment") or name),
+            id=declared_id,
+            name=declared_env,
             state=str(record.get("state") or STAGING),
             spec_sha256=str(record.get("spec_sha256") or ""),
-            prefix=str(record.get("prefix") or ""),
+            prefix=prefix,
             created_at=int(record.get("created_at") or 0),
             tool=str(record.get("tool") or ""),
             packages=tuple(record.get("packages") or ()),
@@ -610,11 +686,35 @@ class EnvironmentStore:
 
         Nothing is rebuilt, which is the whole value of keeping them: the
         environment that worked an hour ago is still byte-for-byte there.
+
+        The id is confined to ``<name>``'s own generations first. This is the
+        one entry point that takes an id straight from the operator
+        (``openai4s env rollback python <id>``) and turns it into a pointer
+        every later kernel spawn reads, so a `../../r/generations/env-R` here
+        selects an R prefix for Python and stamps its provenance as Python.
         """
-        target = self.get(name, generation_id)
-        if target is None:
+        ident = self._valid_generation_id(generation_id)
+        if ident is None:
             raise EnvironmentError_(
-                f"no generation {generation_id!r} for environment {name!r}"
+                f"invalid generation id {generation_id!r}; expected the bare id "
+                f"of a generation of {name!r}, not a path"
+            )
+        target = self.get(name, ident)
+        if target is None:
+            raise EnvironmentError_(f"no generation {ident!r} for environment {name!r}")
+        # `get` already bound the manifest's id, environment and prefix to this
+        # directory; asserting it again here is cheap and keeps the guarantee
+        # attached to the write rather than to a read someone might change.
+        directory = self._generation_dir(name, ident)
+        if (
+            directory is None
+            or target.id != ident
+            or target.name != name
+            or not _is_within(target.prefix, directory)
+        ):
+            raise EnvironmentError_(
+                f"generation {generation_id!r} does not belong to environment "
+                f"{name!r}; refusing to point {name!r} at it"
             )
         if target.state not in (READY, SUPERSEDED):
             raise EnvironmentError_(
@@ -634,11 +734,11 @@ class EnvironmentStore:
         # record consistent with what actually happened.
         with _apply_lock(self._env_dir(name)):
             previous = self.current_id(name)
-            self._point_at(name, generation_id)
+            self._point_at(name, ident)
             self._log(
                 name,
                 "rolled_back",
-                {"generation_id": generation_id, "previous": previous},
+                {"generation_id": ident, "previous": previous},
             )
         return ApplyResult(name, True, target, previous, "pointer moved")
 
@@ -767,10 +867,20 @@ class EnvironmentStore:
         `apply` and `rollback` both reported a new current generation while
         `kernel.environments` kept serving its module-wide cache, so the
         transaction took effect only for processes that had not looked yet.
+
+        The last gate before a string becomes the thing discovery joins onto a
+        path. Nothing that is not a bare id is ever written here, whatever the
+        caller believed it had validated.
         """
+        ident = self._valid_generation_id(generation_id)
+        if ident is None:
+            raise EnvironmentError_(
+                f"refusing to write {generation_id!r} as the current generation "
+                f"of {name!r}: it is not a bare generation id"
+            )
         pointer = self._pointer(name)
         temporary = pointer.with_name(f".current.{uuid.uuid4().hex[:8]}")
-        temporary.write_text(generation_id + "\n", encoding="utf-8")
+        temporary.write_text(ident + "\n", encoding="utf-8")
         os.replace(temporary, pointer)
         try:
             from openai4s.kernel import environments as envmod
@@ -785,7 +895,10 @@ class EnvironmentStore:
         The manifest of an applied generation is never rewritten, so this lives
         beside it. `superseded` is still restorable; that is the point.
         """
-        marker = self._generations_dir(name) / generation_id / "superseded_at"
+        directory = self._generation_dir(name, generation_id)
+        if directory is None:
+            return
+        marker = directory / "superseded_at"
         try:
             marker.write_text(str(_now_ms()), encoding="utf-8")
         except OSError:  # pragma: no cover
