@@ -19,3 +19,7 @@ node_modules/
 dist/
 .build/
 *.isorted
+
+# Internal review-fix ledger. Kept local: it is a running record of defects and
+# their reproductions, which is working material rather than product documentation.
+docs/nextgen-progress.md
