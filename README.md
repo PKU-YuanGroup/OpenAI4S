@@ -235,17 +235,6 @@ Released under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ---
 
-## ✨ Star history
-
-<a href="https://www.star-history.com/?repos=PKU-YuanGroup%2FOpenAI4S&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=PKU-YuanGroup/OpenAI4S&type=date&theme=dark&legend=top-left&sealed_token=tXwdGRCr3f-z1z8jgUOb1LUaPHwq9008wrTkaLBHVH4lQQDeSr_uyDT_1NcLONdaOxKx9l0uvSHEToe73WVGac02UiFVnXE-W_0z8C1AFwJfPJ0S87FJYQ" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=PKU-YuanGroup/OpenAI4S&type=date&legend=top-left&sealed_token=tXwdGRCr3f-z1z8jgUOb1LUaPHwq9008wrTkaLBHVH4lQQDeSr_uyDT_1NcLONdaOxKx9l0uvSHEToe73WVGac02UiFVnXE-W_0z8C1AFwJfPJ0S87FJYQ" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=PKU-YuanGroup/OpenAI4S&type=date&legend=top-left&sealed_token=tXwdGRCr3f-z1z8jgUOb1LUaPHwq9008wrTkaLBHVH4lQQDeSr_uyDT_1NcLONdaOxKx9l0uvSHEToe73WVGac02UiFVnXE-W_0z8C1AFwJfPJ0S87FJYQ" />
- </picture>
-</a>
-
----
 
 ## ✏️ Citing
 
@@ -263,12 +252,18 @@ Released under the **MIT License** — see [`LICENSE`](LICENSE).
 
 <!-- CONTRIBUTORS:START -->
 <a href="https://github.com/Nobody-Zhang" title="Nobody-Zhang"><img src=".github/contributors/Nobody-Zhang.png" width="64" height="64" alt="Nobody-Zhang" /></a>
-<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
+<a href="https://github.com/HowardLi1984" title="HowardLi1984"><img src=".github/contributors/HowardLi1984.png" width="64" height="64" alt="HowardLi1984" /></a>
+<a href="https://github.com/YuyangSunshine" title="YuyangSunshine"><img src=".github/contributors/YuyangSunshine.png" width="64" height="64" alt="YuyangSunshine" /></a>
 <a href="https://github.com/wangyu-sd" title="wangyu-sd"><img src=".github/contributors/wangyu-sd.png" width="64" height="64" alt="wangyu-sd" /></a>
+<a href="https://github.com/Lyu6PosHao" title="Lyu6PosHao"><img src=".github/contributors/Lyu6PosHao.png" width="64" height="64" alt="Lyu6PosHao" /></a>
+<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
+<a href="https://github.com/Linmj-Judy" title="Linmj-Judy"><img src=".github/contributors/Linmj-Judy.png" width="64" height="64" alt="Linmj-Judy" /></a>
 <a href="https://github.com/yusowa0716" title="yusowa0716"><img src=".github/contributors/yusowa0716.png" width="64" height="64" alt="yusowa0716" /></a>
+<a href="https://github.com/riiiiiiin" title="riiiiiiin"><img src=".github/contributors/riiiiiiin.png" width="64" height="64" alt="riiiiiiin" /></a>
+<a href="https://github.com/jiangzx25" title="jiangzx25"><img src=".github/contributors/jiangzx25.png" width="64" height="64" alt="jiangzx25" /></a>
 <!-- CONTRIBUTORS:END -->
 
-<sub>Auto-generated from the GitHub <a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">contributors graph</a> by <code>scripts/update_contributors.py</code> (Contributors workflow).</sub>
+<sub>Auto-generated daily from the GitHub <a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">contributors graph</a> by <code>scripts/update_contributors.py</code>.</sub>
 
 ---
 
