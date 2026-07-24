@@ -1010,3 +1010,92 @@ def test_failed_fresh_recovery_keeps_exact_current_generation(monkeypatch, tmp_p
         assert runner.session_domain.recovery_status(frame_id)["state"] == "failed"
     finally:
         runner.close()
+
+
+# --------------------------------------------------------------------------
+# every advertised recovery action must be one a client can actually invoke
+# --------------------------------------------------------------------------
+
+
+def _advertised_recovery_action_ids(tmp_path) -> set[str]:
+    runner, handler, frame_id = _setup(tmp_path)
+    try:
+        code, projection = _call(handler, "GET", f"/frames/{frame_id}/recovery/actions")
+        assert code == 200
+        return {str(item["id"]) for item in projection["actions"]}
+    finally:
+        runner.close()
+
+
+def _routable_recovery_action_ids() -> set[str]:
+    """The ids the POST route will accept, read out of the route itself."""
+    import re as _re
+    from pathlib import Path
+
+    source = Path(gateway_mod.__file__).resolve().with_suffix(".py").read_text("utf-8")
+    match = _re.search(
+        r'r"/frames/\(\[\^/\]\+\)/recovery/actions/"\s*r"\(([^)]+)\)"', source
+    )
+    assert match, "could not locate the recovery action route in gateway.py"
+    return set(match.group(1).split("|"))
+
+
+def _client_recovery_action_ids() -> set[str]:
+    """The allowlist the browser applies before it will send anything."""
+    import re as _re
+    from pathlib import Path
+
+    app_js = (
+        Path(gateway_mod.__file__).resolve().parent / "webui" / "app.js"
+    ).read_text("utf-8")
+    match = _re.search(r"const RECOVERY_ACTION_IDS = \[([^\]]*)\]", app_js)
+    assert match, "could not locate RECOVERY_ACTION_IDS in app.js"
+    return set(_re.findall(r'"([^"]+)"', match.group(1)))
+
+
+def test_every_advertised_recovery_action_is_invocable(tmp_path):
+    """The projection is a menu of mutations, so an entry nobody can invoke is
+    a promise the API does not keep.
+
+    `inspect_log` and `continue_view_only` were advertised as always-available
+    while no route accepted them, the client's sanitiser dropped them, and
+    `prepare_action` refused both as read-only. Nothing surfaced the
+    contradiction because each layer silently ignored what it did not know.
+    """
+    advertised = _advertised_recovery_action_ids(tmp_path)
+    routable = _routable_recovery_action_ids()
+    client = _client_recovery_action_ids()
+
+    assert advertised, "the projection must offer something"
+    assert (
+        advertised <= routable
+    ), f"advertised but unroutable: {sorted(advertised - routable)}"
+    assert advertised <= client, (
+        f"advertised but the browser will never send them: "
+        f"{sorted(advertised - client)}"
+    )
+
+
+def test_the_route_accepts_nothing_it_is_not_advertising(tmp_path):
+    """The other direction: a routable action the projection never mentions is
+    an undiscoverable one, and it would bypass the enable/reason policy the
+    projection exists to express."""
+    assert _routable_recovery_action_ids() <= _advertised_recovery_action_ids(tmp_path)
+
+
+def test_an_unknown_recovery_action_is_rejected(tmp_path):
+    runner, handler, frame_id = _setup(tmp_path)
+    try:
+        try:
+            code, _payload = _call(
+                handler,
+                "POST",
+                f"/frames/{frame_id}/recovery/actions/inspect_log",
+                body={},
+            )
+        except gateway_mod.GatewayError as error:
+            assert error.code == 404
+        else:
+            assert code == 404, f"an unroutable action must 404, got {code}"
+    finally:
+        runner.close()

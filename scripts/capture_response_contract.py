@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Regenerate `docs/response-contract.json` by driving every known route.
+
+    uv run python scripts/capture_response_contract.py
+    uv run python scripts/capture_response_contract.py --check   # CI form
+
+The companion to `capture_response_schemas.py`. That one freezes the *shape* of
+JSON bodies observed while the suite runs; this one freezes what *kind* of
+answer each route gives at all — json, stream, redirect, binary or empty — and
+with which status codes.
+
+Both are captured, neither is written by hand, and the distinction matters for
+the same reason in both cases: a description derived from what the code does
+cannot describe something the code does not do. A hand-maintained list of
+"these routes stream" is correct on the day it is written and silently wrong
+afterwards.
+
+Routes are driven against a real handler and a real Store with no parameters,
+so most answer 4xx. That is deliberate and it is not a way to tick a box: an
+error response is a promise too, and a route that cannot answer at all shows up
+as a missing entry rather than as an entry full of nothing.
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from openai4s.config import Config, LLMConfig  # noqa: E402
+from openai4s.server import contract  # noqa: E402
+from openai4s.server import response_capture  # noqa: E402
+from openai4s.server import gateway as gateway_mod  # noqa: E402
+
+ARTIFACT = ROOT / "docs" / "response-contract.json"
+
+
+class _Hub:
+    def emitter(self, root_frame_id):
+        return lambda event: None
+
+    def broadcast(self, root_frame_id, event):
+        return None
+
+    def has_subscriber(self, root_frame_id):
+        return False
+
+    def drop_frame(self, root_frame_id):
+        return None
+
+
+@contextlib.contextmanager
+def _deterministic_secret_store():
+    """Capture against a store that exists on every machine.
+
+    `/search/config` reads a credential, so it went through the secret broker —
+    and `auto` resolves that to whatever the *capturing machine* has. A
+    developer laptop has a keychain, so the route answered and was frozen into
+    the contract; a CI runner has neither a keychain nor a session bus, where
+    `auto` is documented to fail closed, so the read raised, the driver skipped
+    the route, and the artifact looked out of date on every machine but the one
+    that wrote it.
+
+    `plaintext` for the same two reasons `tests/conftest.py` pins it: the
+    capture is then reproducible anywhere, and a routine script stops reaching
+    into the developer's real keychain. The data directory is a temp dir that
+    is deleted on the way out, so nothing is stored in the clear beyond it.
+    """
+    previous = os.environ.get("OPENAI4S_SECRET_STORE")
+    os.environ["OPENAI4S_SECRET_STORE"] = "plaintext"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("OPENAI4S_SECRET_STORE", None)
+        else:
+            os.environ["OPENAI4S_SECRET_STORE"] = previous
+
+
+def drive() -> dict[str, dict]:
+    with tempfile.TemporaryDirectory(
+        prefix="openai4s-contract-"
+    ) as temp, _deterministic_secret_store():
+        config = Config(
+            data_dir=Path(temp),
+            llm=LLMConfig(provider="deepseek", api_key="capture-only"),
+        )
+        runner = gateway_mod.SessionRunner(config, _Hub(), start_idle_sweeper=False)
+        recorder = response_capture.Recorder()
+        original = response_capture.install(gateway_mod, recorder)
+        try:
+            response_capture.drive_all_routes(
+                recorder, gateway_mod.make_handler, config, runner
+            )
+        finally:
+            gateway_mod.make_handler = original
+    # Collapse "METHOD route" into "route": the kind of answer a route gives
+    # does not vary by verb on this surface, and keying by verb would publish
+    # five entries per route of which four say "that method is not allowed".
+    merged: dict[str, dict] = {}
+    for key, record in recorder.contracts().items():
+        route = key.split(" ", 1)[1]
+        target = merged.setdefault(
+            route, {"kinds": set(), "statuses": set(), "content_types": set()}
+        )
+        target["kinds"] |= set(record["kinds"])
+        target["statuses"] |= set(record["statuses"])
+        target["content_types"] |= set(record["content_types"])
+    return {
+        route: {
+            "kinds": sorted(value["kinds"]),
+            "statuses": sorted(value["statuses"]),
+            "content_types": sorted(value["content_types"]),
+        }
+        for route, value in sorted(merged.items())
+    }
+
+
+def document(routes: dict[str, dict]) -> dict:
+    return {
+        "schema_version": 1,
+        "note": (
+            "Captured by driving every known route against a real handler, not "
+            "written by hand. Regenerate with "
+            "scripts/capture_response_contract.py. `kinds` is derived from the "
+            "status and content type the handler actually sent; a route absent "
+            "here is one nothing could drive, which is a gap in the tests."
+        ),
+        "routes": routes,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail if the artifact is out of date instead of rewriting it",
+    )
+    args = parser.parse_args()
+
+    routes = drive()
+    known = contract.http_routes()
+    # An entry whose own concretisation does not match it drives nothing: the
+    # request lands on no handler, and the 404 that comes back describes the
+    # probe rather than the surface. Counting that as covered is how a
+    # truncated pattern assembled from adjacent string literals came to be one
+    # of the 144.
+    unreachable = sorted(route for route in known if response_capture.unroutable(route))
+    covered = sorted((set(routes) & known) - set(unreachable))
+    missing = sorted(known - set(routes)) + unreachable
+    payload = document(routes)
+
+    if unreachable:
+        print(
+            f"  {len(unreachable)} inventory entr(y/ies) cannot be driven and "
+            f"are NOT counted as covered:",
+            file=sys.stderr,
+        )
+        for route in unreachable:
+            print(f"    {route}", file=sys.stderr)
+
+    if args.check:
+        current = json.loads(ARTIFACT.read_text("utf-8")) if ARTIFACT.is_file() else {}
+        frozen_routes = current.get("routes") or {}
+        if frozen_routes != payload["routes"]:
+            # Say what moved, not merely that something did. "Regenerate it" is
+            # only actionable on the machine that captured the file; anyone
+            # reading this in CI has no way to see the difference, and a gate
+            # whose failure cannot be acted on gets regenerated blindly until it
+            # stops meaning anything. Recording *which* route and both records
+            # also makes a host-dependent capture recognisable as one.
+            observed_routes = payload["routes"]
+            print("response contract is out of date:", file=sys.stderr)
+            for route in sorted(set(frozen_routes) | set(observed_routes)):
+                was, now = frozen_routes.get(route), observed_routes.get(route)
+                if was == now:
+                    continue
+                if was is None:
+                    print(f"  + {route}: newly reachable {now}", file=sys.stderr)
+                elif now is None:
+                    print(f"  - {route}: frozen but not reached {was}", file=sys.stderr)
+                else:
+                    print(f"  ~ {route}", file=sys.stderr)
+                    print(
+                        f"      frozen:   {json.dumps(was, sort_keys=True)}",
+                        file=sys.stderr,
+                    )
+                    print(
+                        f"      observed: {json.dumps(now, sort_keys=True)}",
+                        file=sys.stderr,
+                    )
+            print(
+                "\nRegenerate with `uv run python scripts/capture_response_contract.py` "
+                "and commit — unless the difference is your machine rather than the "
+                "surface, which the records above are there to show.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"contract up to date: {len(covered)}/{len(known)} routes")
+        return 0
+
+    ARTIFACT.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(f"wrote {ARTIFACT.relative_to(ROOT)}")
+    print(f"  covered: {len(covered)}/{len(known)} routes")
+    if missing:
+        print(f"  NOT reached ({len(missing)}):")
+        for route in missing:
+            print(f"    {route}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

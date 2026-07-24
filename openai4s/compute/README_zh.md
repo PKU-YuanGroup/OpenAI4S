@@ -16,6 +16,8 @@ Python 的 [`host.compute` SDK](../sdk/compute.py) 把每次调用变成一个 `
 | --- | --- |
 | [`__init__.py`](__init__.py) | 对外只导出 Host 后端要用的两个名字：`ComputeManager` 和结构化的 `ComputeError`。 |
 | [`manager.py`](manager.py) | 两条传输路径都在这里。它发现 BYOC 的 provider Skill，路由 `byoc:*` 与 `ssh:*`，并在 session 内存中的并发上限达到时拒绝新的提交，暂存输入与 job 模板，并跟踪在跑的 job 和预热的沙箱，负责轮询、取消、关闭与产物回收。credential 是按 provider 自己声明的那几个环境变量名挑出来的，而且走 helper 的 stdin 递进去，不进它的环境变量。helper 的环境其余部分就是 daemon 自己那一份，只摘掉了以 `NGC_`、`NVIDIA_`、`HF_` 开头的名字。 |
+| [`states.py`](states.py) | 任务状态词表及其转换表，在写入状态时强制执行。终态不会被迟到的探测重新打开；`unknown` 有意归为**存活**态：远端操作可能落地也可能没有，所以它会被重新装载并参与调和，而不是被遗忘。 |
+| [`manifest.py`](manifest.py) | 一次回收究竟拿到了什么：逐个文件的 `{path, size, sha256}` 加上整份记录的一个摘要，以及把这份记录与任务在 `outputs` 里声明的 glob 对账。声明了却匹配不到任何文件，正是一个退出码为 0 的任务仍然会是 `failed` 的原因——而大小与哈希这一对，是唯一能看出「rc 为 0 但传输被截断」的东西。 |
 | [`registry.py`](registry.py) | 记住有哪些 SSH 主机 alias、默认用哪一台、每台上开通了 `fold`/`score_mutations` 这类 capability 元数据，原子写入 `<data_dir>/remote_compute.json`。native 注册会先探测主机，通过之后才写下验证时间；用旧环境变量 seed 出来的主机则可能一直没验证过。它不存 SSH private key，也不存 provider token。 |
 
 ## 子目录
@@ -33,7 +35,8 @@ Python 的 [`host.compute` SDK](../sdk/compute.py) 把每次调用变成一个 `
 
 ## 持久化、审批与成熟度边界
 
-- **Prototype 状态：** `ComputeManager` 的 job 记录、并发上限和预热沙箱的 handle 全都只在内存里。daemon 或 manager 一重启，本实现就再也接不回这些记录，哪怕远端的任务和回收下来的文件都还在。[`registry.py`](registry.py) 持久化的只有那份专用的 SSH capability 目录。
+- **job 记录是持久的，预热沙箱 handle 不是。** job 行在提交*之前*就写入，并带上 provider receipt，所以重启后的 manager 会把每个可能仍在占用远端资源的 job 重新装载回来，计入并发计数，并且仍然可以轮询或取消它。`reconcile()` 只上报这些 job，有意不重新提交——一个在途的 job 可能在跑也可能没跑，猜错的代价要么是重复计费，要么是丢结果。仍然只在内存里的是：每个 provider 的预热 byoc 沙箱 handle，所以重启后接不回一个已经预热的容器（但那个容器里正在跑的 job 仍可通过 receipt 恢复）。[`registry.py`](registry.py) 持久化那份专用的 SSH capability 目录。
+- **没有后台轮询器。** 真正去探测远端并回收产物的是 `result()`；没人轮询的 job 永远不会被回收。
 - native 的 `compute_submit` 需要审批。对已经授权过的那个确切 job，回收结果、取消和关闭有意不再问第二次。更丰富的直接调用 `compute_ssh`/`compute_scp` 比这道有界的 native tool 审批门宽，不能拿后者的批准当它们的批准。
 - BYOC 的隔离由 provider 运行时和 provider 自身共同实现，只能实测，不能假定。credential 是按声明的环境变量名挑出来的，通过 helper 的 auth 输入传过去；如果 secret 藏在没人声明的变量名里，基于名称的清理就拦不住它。
 - 当前的 SSH job 路径有意做得很基础：记账只在本地内存，远程目录用完不删，声明的 output pattern 没有完整回收，报出来的终止退出码也不是持久的、调度器级别的契约。

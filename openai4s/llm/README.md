@@ -23,6 +23,7 @@ Capability metadata records what the OpenAI4S adapter supports today. It says no
 | [`registry.py`](./registry.py) | Which providers exist in this process, and what each one is: wire, base URL, API-key environment variable, default model, capability bindings. Registration is validated (an absolute http(s) `base_url`, no credentials embedded in it) and a built-in provider can be neither replaced nor removed. |
 | [`tooling.py`](./tooling.py) | The native-tool contract, kept here so no wire adapter has to import the tool registry. Declarations are canonicalized to one name/description/schema form, then rendered into each wire's tool schema and tool choice. Calls coming back are normalized to a shared shape; arguments that fail to decode are carried as a `parse_error` on the call rather than discarded. |
 | [`transport.py`](./transport.py) | The only place in the package that opens a socket: JSON POST and SSE decoding over `urllib`, no provider SDK. HTTP and connection failures surface as `LLMError`. A non-empty stream event that is not valid JSON is raised rather than skipped, because a dropped event could have been a tool call; the offending chunk is truncated in the error text. |
+| [`resolve.py`](./resolve.py) | One answer to "which model, which key, which endpoint", used by the request path and by `openai4s doctor` alike. Process config is layered with the Customize -> Models settings held in the store, so a diagnostic cannot report a setup as broken that a real turn resolves fine — the daemon boots with no key on purpose. |
 
 ## Subdirectories
 

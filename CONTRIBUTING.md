@@ -5,6 +5,9 @@ defines the minimal governance rules for multi-person contribution: branch
 naming, the PR checklist, review policy, release policy, and the offline-test
 policy. The technical conventions live in [`CLAUDE.md`](CLAUDE.md) /
 [`AGENTS.md`](AGENTS.md) and are binding for all contributors, human or agent.
+Community participation is also governed by
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md); suspected vulnerabilities follow
+the private process in [`SECURITY.md`](SECURITY.md).
 
 ## Ground rules
 
@@ -90,7 +93,8 @@ Run locally and make sure everything is green:
 
 ```bash
 uv run pytest                       # full offline suite — no network, no keys
-uv run pre-commit run --all-files   # black · isort --profile black · ruff
+uv run mypy                         # strict agent core + typed Host dispatcher
+uv run pre-commit run --all-files   # black · isort · ruff · mypy · hygiene
 ```
 
 The default test suite is **offline by design**: `tests/conftest.py` redirects
@@ -146,6 +150,30 @@ for each of these):
 - Keep PRs small and single-purpose. Large mechanical diffs (formatting,
   vendored assets) must be separated from behavior changes.
 
+### Reviewer pathway
+
+Review is a first-class contribution and does not require repository write
+access. We especially welcome recurring reviewers in four areas:
+
+- agent engine, Python/R protocol, and recovery semantics;
+- security boundaries, permissions, secret handling, and release provenance;
+- scientific connectors, analysis Skills, and result-validity checks;
+- Web session services, REST/WebSocket contracts, and browser smoke tests.
+
+Start by reproducing the reported behavior and leaving one evidence-backed,
+read-only review on a small PR. State the invariant you checked, the command or
+browser flow you ran, and any path you did not assess. After several substantive
+reviews in one area, ask a maintainer to list you as a recurring reviewer in the
+relevant issue/PR templates. CODEOWNERS membership is a later trust decision:
+it requires sustained review activity, familiarity with the path's threat and
+compatibility boundaries, and repository write access. It is never granted only
+to make a branch-protection check pass.
+
+Maintainers should route review rather than defaulting every change to the lead:
+request the narrowest relevant area reviewer first, keep security ownership
+separate for sensitive paths, and record an unowned area as a contributor need
+instead of silently weakening the review rule.
+
 ## Release policy
 
 - Releases are cut from `main` only, as annotated tags `vMAJOR.MINOR.PATCH`.
@@ -153,6 +181,10 @@ for each of these):
   `uv run pre-commit run --all-files`, green source/artifact/install gates
   described in [`docs/release-validation.md`](docs/release-validation.md), and
   docs that match behavior.
+- PyPI publication is performed only by `.github/workflows/release.yml` from a
+  non-prerelease GitHub Release. The protected `pypi` environment and PyPI
+  Trusted Publisher must match that workflow; long-lived upload tokens are not
+  accepted.
 - Tags are immutable. A bad release is followed by a new patch release, never
   a force-pushed tag.
 - Compatibility promises (e.g. `openai4s_compute_provider` import paths during

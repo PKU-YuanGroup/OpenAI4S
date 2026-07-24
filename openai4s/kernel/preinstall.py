@@ -34,11 +34,17 @@ capable of stepping on a system interpreter.
 """
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from importlib import util as _importutil
+from pathlib import Path
+from typing import Any
 
 # (pip name, import name) — the always-available baseline. Only packages that
 # wheel reliably on modern CPythons (incl. 3.13/3.14) live here; heavy GPU /
@@ -316,16 +322,19 @@ def _version(import_name: str) -> str | None:
 
 
 def full_freeze() -> list[dict]:
-    """Complete environment freeze: every installed distribution as
+    """Complete freeze of **this process**: every installed distribution as
     ``{"name", "version"}``, de-duplicated and sorted case-insensitively.
 
-    This is the ``pip freeze`` / ``conda list`` equivalent of the interpreter the
-    session kernel runs in — the worker is spawned with ``sys.executable`` and
-    shares this process's site-packages (kernel/manager.py), so a daemon-side
-    freeze reflects exactly what agent cells (and therefore a figure's code) could
-    import. It backs the artifact-provenance "Environment" view, so a figure
-    records the full package set that produced it — not just the curated
-    ``installed_report()`` subset.
+    Read the name literally. This describes the interpreter it runs in, which
+    is the daemon's. It used to be documented as describing "the interpreter
+    the session kernel runs in", on the reasoning that a worker is spawned with
+    ``sys.executable`` and shares this process's site-packages — true when the
+    daemon interpreter was the only kernel there was, and no longer true now
+    that a cell may run in a selected conda environment or in R at all.
+    Attributing this list to such a kernel is how an R artifact came to carry a
+    Python package list.
+
+    Use :func:`freeze_for` when the interpreter is not this one.
     """
     try:
         from importlib.metadata import distributions
@@ -350,6 +359,194 @@ def full_freeze() -> list[dict]:
             ver = None
         seen[key] = {"name": name, "version": ver}
     return sorted(seen.values(), key=lambda d: d["name"].lower())
+
+
+def _interpreter_prefix(interpreter: str) -> str:
+    """`<prefix>` for an interpreter at `<prefix>/bin/python`, resolved.
+
+    A virtualenv's ``bin/python`` is a symlink to the base python, so comparing
+    the *resolved executable* treats two different environments as one. The
+    prefix — the directory holding ``bin/`` (and ``pyvenv.cfg``) — is what
+    actually selects site-packages, and it is not resolved through the symlink.
+    """
+    path = Path(interpreter)
+    parent = path.parent
+    if parent.name in ("bin", "Scripts"):
+        return str(parent.parent)
+    return str(parent)
+
+
+def _is_this_interpreter(interpreter: str) -> bool:
+    """Whether `interpreter` is this process's *environment*, not just its
+    resolved base executable. A venv shares the base python but not the prefix.
+    """
+    try:
+        same_exe = os.path.realpath(str(interpreter)) == os.path.realpath(
+            sys.executable
+        )
+    except OSError:
+        return False
+    if not same_exe:
+        return False
+    return os.path.realpath(_interpreter_prefix(str(interpreter))) == os.path.realpath(
+        sys.prefix
+    )
+
+
+def _confined_probe(
+    base_argv: list[str], workspace: str
+) -> tuple[list[str], dict[str, str], Any]:
+    """Wrap the freeze probe in the kernel's child env and OS boundary.
+
+    Returns ``(argv, env, sandbox)``. The environment is always the scrubbed
+    kernel child env — that alone removes the credential vector. The OS sandbox
+    is applied when one can be built; when it cannot (``auto`` on a host with no
+    backend) the scrubbed env still stands, which is a strict improvement over
+    the daemon's full context. ``sandbox`` is returned so the caller can close
+    it; it may be ``None``. ``workspace`` is the caller-owned temp cwd.
+    """
+    interpreter = base_argv[0]
+    # `<prefix>/bin/python` → `<prefix>`. The freeze does not need the env's
+    # tools on PATH, but binding it keeps the child consistent with a kernel.
+    env_root: str | None = None
+    try:
+        parent = Path(interpreter).resolve().parent
+        if parent.name in ("bin", "Scripts"):
+            env_root = str(parent.parent)
+    except OSError:
+        env_root = None
+
+    try:
+        from openai4s.kernel.environment import build_kernel_environment
+
+        env = build_kernel_environment(mode="probe", cwd=workspace, env_root=env_root)
+    except Exception:  # noqa: BLE001 - a scrub failure must not run unconfined
+        env = {
+            "PATH": os.environ.get("PATH", os.defpath),
+            "HOME": workspace,
+            "TMPDIR": workspace,
+        }
+
+    sandbox: Any = None
+    mode = (os.environ.get("OPENAI4S_KERNEL_SANDBOX") or "auto").strip().lower()
+    try:
+        from openai4s.security.sandbox import (
+            SandboxConfigurationError,
+            create_kernel_sandbox,
+        )
+
+        sandbox = create_kernel_sandbox(workspace)
+        argv = list(sandbox.wrap_command(base_argv))
+        env = sandbox.apply_environment(env)
+    except SandboxConfigurationError:
+        # A *misconfiguration* (e.g. OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=treu) is
+        # never a reason to degrade to unconfined: the operator asked for a
+        # boundary and typed it wrong. Propagate in every mode, including `auto`,
+        # so the foreign interpreter does not run with host reach behind a typo.
+        raise
+    except Exception:  # noqa: BLE001
+        # Fail closed under enforce. Silently launching the foreign interpreter
+        # unconfined when the boundary could not be *built* (no backend on this
+        # host) violates the mode's contract and lets it reach daemon-readable
+        # files and the network despite the scrubbed env. `auto` still degrades
+        # to the scrubbed env alone, a strict improvement over the daemon's full
+        # context — but only for availability failures, not configuration ones.
+        if mode == "enforce":
+            raise
+        argv = list(base_argv)
+    return argv, env, sandbox
+
+
+def run_confined_probe(
+    base_argv: list[str], *, timeout: float
+) -> "subprocess.CompletedProcess":
+    """Run a short probe against a foreign interpreter, confined.
+
+    Shared by the freeze probe and the environment-verification probes: both
+    execute a *foreign* interpreter (its executable, `.pth` files and
+    sitecustomize run before the supplied code), so both need the scrubbed
+    child environment and the OS boundary a kernel cell gets. Raises under
+    ``OPENAI4S_KERNEL_SANDBOX=enforce`` when the boundary cannot be built,
+    rather than degrading to an unconfined launch.
+    """
+    workspace = tempfile.mkdtemp(prefix="openai4s-probe-")
+    sandbox = None
+    # `_confined_probe` is inside the try: under `enforce` with no working
+    # sandbox backend it raises (correct fail-closed), and building it before
+    # the try leaked the just-created workspace on every probe on such a host.
+    try:
+        argv, env, sandbox = _confined_probe(base_argv, workspace)
+        return subprocess.run(argv, capture_output=True, timeout=timeout, env=env)
+    finally:
+        if sandbox is not None:
+            try:
+                sandbox.close()
+            except Exception:  # noqa: BLE001
+                pass
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def freeze_for(interpreter: str | None, *, timeout: float = 20.0) -> list[dict] | None:
+    """Freeze an arbitrary interpreter, or None when it cannot be asked.
+
+    Returns None rather than falling back to this process's own packages: a
+    freeze attributed to the wrong interpreter is worse than an absent one,
+    because it is believed. The caller records the absence and why.
+
+    Runs the target interpreter once. Callers cache per kernel generation --
+    an environment does not change within one -- so this is not on the
+    per-artifact path.
+    """
+    if not interpreter:
+        return None
+    if _is_this_interpreter(interpreter):
+        # Same interpreter *and* same environment: the in-process read is exact
+        # and free. A realpath match alone is not enough — a virtualenv is a
+        # symlink to the same base python but selects a different prefix and
+        # site-packages, so freezing this process would record the wrong set.
+        return full_freeze()
+    probe = (
+        "import json,sys\n"
+        "try:\n"
+        "    from importlib.metadata import distributions\n"
+        "except Exception:\n"
+        "    print('[]'); sys.exit(0)\n"
+        "seen={}\n"
+        "for d in distributions():\n"
+        "    try:\n"
+        "        m=d.metadata; n=(m['Name'] if m else None) or None\n"
+        "    except Exception:\n"
+        "        n=None\n"
+        "    if not n: continue\n"
+        "    n=n.strip(); k=n.lower()\n"
+        "    if k in seen: continue\n"
+        "    try: v=d.version\n"
+        "    except Exception: v=None\n"
+        "    seen[k]={'name':n,'version':v}\n"
+        "print(json.dumps(sorted(seen.values(), key=lambda x: x['name'].lower())))\n"
+    )
+    # Confine the probe. This launches a *foreign* interpreter — for an
+    # artifact from a selected environment, one a sandboxed kernel produced —
+    # and `-I` only isolates Python's own path/env handling. It does nothing to
+    # stop the executable, native startup, or a `.pth`/sitecustomize hook from
+    # reading the daemon's credentials, touching daemon files, or reaching the
+    # network. It runs through the shared confined path, which fails closed
+    # under enforce.
+    try:
+        proc = run_confined_probe(
+            [str(interpreter), "-I", "-c", probe], timeout=timeout
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    except Exception:  # noqa: BLE001 - enforce with no boundary → absent, not wrong
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        parsed = json.loads(proc.stdout.decode("utf-8", "replace") or "null")
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, list) else None
 
 
 def status() -> dict:

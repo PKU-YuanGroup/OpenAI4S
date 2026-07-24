@@ -18,6 +18,36 @@ One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_u
 
 Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
 
+### Extending the provider catalog
+
+Provider identity, model presets, capabilities, and wire transport are separate.
+A deployment or plugin can register another provider over one of the four
+shipped wires without editing the chat router:
+
+```python
+from openai4s.llm import register_model_preset, register_provider
+
+register_provider(
+    "lab_openai",
+    wire="openai",
+    base_url="http://127.0.0.1:11434/v1",
+    model="science-model",
+    tool_calling=False,
+    context_window_tokens=16_384,
+)
+register_model_preset(
+    "lab_openai",
+    "science-model",
+    "Local science model",
+)
+```
+
+Registration is validated, process-local, and limited to the shipped
+`openai`, `responses`, `anthropic`, and `gemini` adapters; it cannot load
+arbitrary transport code. Use a startup plugin or deployment composition layer
+to repeat registrations after restart. `provider_specs()`, `model_presets()`,
+and `get_model_capabilities()` expose detached or immutable catalog views.
+
 ## Kernel environments (conda)
 
 The core engine stays stdlib-only, and the control `.venv` carries just the optional `science` extra (numpy / pandas / matplotlib). A baseline scientific stack (scipy / seaborn / scikit-learn / biopython / httpx / …, see `CORE_PACKAGES` in [`openai4s/kernel/preinstall.py`](../openai4s/kernel/preinstall.py)) is available on top of that, but **`serve` does not install it**.
@@ -69,6 +99,7 @@ Host-RPC limitations.
 ## CLI
 
 ```bash
+openai4s init      # guided first-run model configuration (headless-friendly)
 openai4s serve     # daemon + web UI (foreground)
 openai4s status    # is it up?
 openai4s stop      # stop the daemon
@@ -80,3 +111,17 @@ openai4s jupyter describe               # inspect optional bridge availability
 openai4s jupyter export ./kernel-specs  # pure-stdlib KernelSpec export
 openai4s jupyter install                # install user KernelSpecs
 ```
+
+`openai4s init` stores the selected provider/model/base URL in the normal
+OpenAI4S settings database. Interactive API-key input is hidden; automation may
+pipe one line to `openai4s init --api-key-stdin --non-interactive`. An API key
+is never accepted as a command-line value or returned by `--json`, keeping it
+out of shell history and structured command output.
+
+## Platform support
+
+The native runtime is supported on Linux and macOS. Windows users should run
+the Linux package under WSL2. The current persistent-kernel transport, resource
+accounting, process interruption, and OS sandbox adapters depend on Unix
+primitives; installing the wheel with native Windows Python does not imply that
+scientific Cell execution is supported there.

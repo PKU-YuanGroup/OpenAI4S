@@ -33,7 +33,6 @@ class ArtifactHarness:
             store=self.store,
             workspace_for=lambda frame_id: self.workspace,
             broadcast=lambda frame_id, event: self.broadcasts.append((frame_id, event)),
-            environment_snapshot=self.environment_snapshot,
             guess_content_type=lambda name: "text/csv"
             if name.endswith(".csv")
             else "application/octet-stream",
@@ -45,16 +44,20 @@ class ArtifactHarness:
             workspace=self.workspace,
         )
 
-    def environment_snapshot(self) -> dict:
-        self.environment_calls += 1
-        return {
-            "kind": "python",
-            "python_version": "3.14.0",
-            "implementation": "CPython",
-            "platform": "test",
-            "packages": [{"name": "numpy", "version": "2.0"}],
-            "package_count": 1,
-        }
+    def count_environment_captures(self) -> None:
+        """Freezing once per capture is the invariant, not once per file.
+
+        Previously counted through an injected `environment_snapshot` port;
+        the snapshot now comes from the kernel generation, so the counter
+        wraps the method that must stay called exactly once.
+        """
+        original = self.manager.capture_environment
+
+        def counting(*args, **kwargs):
+            self.environment_calls += 1
+            return original(*args, **kwargs)
+
+        self.manager.capture_environment = counting
 
 
 def test_register_freezes_version_before_emitting_event(tmp_path):
@@ -377,6 +380,67 @@ def test_restore_backfills_legacy_latest_before_broadcast(tmp_path):
     ]
 
 
+def test_restore_carries_the_retrieval_provenance_forward(tmp_path):
+    """A restored version must keep the source row's retrieval envelope — the URL,
+    timestamp and response hash that say where the bytes came from.
+
+    `record_artifact_restore` inserted the new latest row copying only
+    `env_snapshot_id`, so a retrieval-backed version looked *unsourced* after a
+    restore in latest-version exports and evidence checks, even though the
+    historical row it was restored from was fully sourced.
+    """
+    harness = ArtifactHarness(tmp_path)
+    snap = harness.workspace / ".snap-alpha"
+    snap.write_bytes(b"ALPHA")
+    envelope = {
+        "url": "https://example.org/data.csv",
+        "retrieved_at": 1_700_000_000,
+        "sha256": hashlib.sha256(b"ALPHA").hexdigest(),
+    }
+    first = harness.store.save_artifact(
+        path=str(harness.workspace / "data.csv"),
+        filename="data.csv",
+        content_type="text/csv",
+        size_bytes=5,
+        checksum=hashlib.sha256(b"ALPHA").hexdigest(),
+        producing_cell_id="cell-1",
+        frame_id=harness.frame_id,
+        project_id="default",
+        snapshot_path=str(snap),
+        source=envelope,
+    )
+    # A newer version becomes latest, so the sourced row is a historical one.
+    second = harness.store.save_artifact(
+        path=str(harness.workspace / "data.csv"),
+        filename="data.csv",
+        content_type="text/csv",
+        size_bytes=4,
+        checksum=hashlib.sha256(b"BETA").hexdigest(),
+        producing_cell_id="cell-2",
+        frame_id=harness.frame_id,
+        project_id="default",
+        artifact_id=first["artifact_id"],
+    )
+
+    restored = harness.store.record_artifact_restore(
+        artifact_id=first["artifact_id"],
+        source_version_id=first["version_id"],
+        expected_latest_version_id=second["version_id"],
+        version_id="v-restored-provenance",
+        path=str(harness.workspace / "data.csv"),
+        snapshot_path=str(snap),
+        size_bytes=5,
+        checksum=hashlib.sha256(b"ALPHA").hexdigest(),
+        frame_id=harness.frame_id,
+    )
+
+    restored_meta = harness.store.version_meta(restored["version_id"])
+    source_meta = harness.store.version_meta(first["version_id"])
+    assert restored_meta["source"], "restored version lost its retrieval envelope"
+    assert restored_meta["source"] == source_meta["source"]
+    assert "example.org/data.csv" in restored_meta["source"]
+
+
 def test_restore_rejects_corrupt_snapshot_and_workspace_drift(tmp_path):
     harness = ArtifactHarness(tmp_path)
     path = harness.workspace / "result.txt"
@@ -492,6 +556,7 @@ def test_python_capture_uses_one_environment_and_orders_figure_first(tmp_path):
         assert Path(version["snapshot_path"]).is_file()
         events.append(event)
 
+    harness.count_environment_captures()
     captured = harness.manager.capture(
         harness.session,
         1,

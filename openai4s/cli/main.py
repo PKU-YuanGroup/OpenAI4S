@@ -107,6 +107,45 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def _doctor_config():
+    """A config for doctor that does not have to create anything to exist.
+
+    ``get_config()`` calls ``ensure_dirs()``, and that is exactly what fails
+    when ``OPENAI4S_DATA_DIR`` names a file, or a directory this user cannot
+    write to, or one that cannot be created — the startup failure doctor is
+    meant to diagnose. Raising here handed back a traceback instead of the
+    report and its documented exit code 2, in the one situation the command
+    exists for. The plain ``Config`` reads env and defaults and touches
+    nothing; ``doctor``'s data check then reports what is wrong with it.
+    """
+    from openai4s.config import Config
+
+    try:
+        return get_config()
+    except Exception:  # noqa: BLE001 - the bootstrap failure is the diagnosis
+        return Config()
+
+
+def cmd_doctor(args) -> int:
+    """Check whether this installation can actually do the work.
+
+    Deliberately needs no daemon: the situation that motivates running it is
+    usually one where the daemon will not start.
+
+    Exit code is the verdict — 0 for ok, 1 for degraded-but-usable, 2 when a
+    check failed outright — so a setup script can branch on it rather than
+    grepping prose.
+    """
+    from openai4s import doctor
+
+    result = doctor.report(_doctor_config())
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(doctor.render(result))
+    return {doctor.OK: 0, doctor.WARN: 1, doctor.FAIL: 2}[result["status"]]
+
+
 def cmd_verify_package(args) -> int:
     """Verify an exported session/evidence package in a clean environment."""
     from openai4s.evidence import EvidenceError, verify_package
@@ -538,6 +577,201 @@ def cmd_setup(args) -> int:
     return 1 if failed else 0
 
 
+# --------------------------------------------------------------------------
+# environments as a transaction: plan / apply / rollback
+# --------------------------------------------------------------------------
+
+
+def _env_store(cfg, runner=None):
+    from openai4s.kernel.env_generations import EnvironmentStore
+
+    return EnvironmentStore(Path(cfg.data_dir) / "environments", runner=runner)
+
+
+def _env_spec(name: str) -> Path:
+    return _envs_dir() / f"{name}.yml"
+
+
+def _env_verify(prefix: Path) -> tuple[str, list[str]]:
+    """Prove the generation runs before anything points at it.
+
+    A build that exits 0 having produced nothing usable is the false success
+    this step exists to catch, and it is the same rule the compute manager
+    applies to a job that exits 0 having written no outputs. The check used to
+    stop at "a file exists at that path"; it now *starts the interpreter*, in
+    both languages, because a file is not an environment.
+    """
+    from openai4s.kernel.env_generations import probe_interpreter
+
+    return probe_interpreter(prefix)
+
+
+def cmd_env_plan(args) -> int:
+    cfg = get_config()
+    tool = _find_conda_tool() or "conda"
+    store = _env_store(cfg)
+    plans = [store.plan(name, _env_spec(name), tool=tool) for name in args.names]
+    if args.json:
+        print(json.dumps([p.public() for p in plans], indent=2, sort_keys=True))
+    else:
+        for plan in plans:
+            print(f"  [{plan.name}] {plan.action}: {plan.reason}")
+    return 0
+
+
+def cmd_env_apply(args) -> int:
+    from openai4s.kernel.env_generations import EnvironmentError_
+
+    cfg = get_config()
+    tool = _find_conda_tool()
+    if not tool:
+        print("error: no conda/mamba/micromamba found on PATH.", file=sys.stderr)
+        return 1
+    store = _env_store(cfg)
+    failed = 0
+    for name in args.names:
+        spec = _env_spec(name)
+        plan = store.plan(name, spec, tool=tool)
+        if args.dry_run:
+            if plan.changes:
+                print(f"  [{name}] would {plan.action}: {plan.reason}")
+            else:
+                print(f"  [{name}] up to date ({plan.reason})")
+            continue
+        # A real (non-dry-run) no-op still goes through `store.apply`, not a
+        # short-circuit here: its locked validation is what catches the pointer
+        # or spec moving between plan and apply, which a bare "up to date" would
+        # report success over.
+
+        def build(prefix: Path, staged_spec: Path, _tool=tool):
+            # The *staged* spec, never the live one: the manifest records the
+            # hash taken under the apply lock, and building from a file that
+            # can still be edited would make that hash describe something else.
+            return [
+                _tool,
+                "env",
+                "create",
+                "--yes",
+                "--prefix",
+                str(prefix),
+                "-f",
+                str(staged_spec),
+            ]
+
+        try:
+            result = store.apply(plan, spec, tool=tool, build=build, verify=_env_verify)
+        except EnvironmentError_ as e:
+            failed += 1
+            print(f"  [{name}] FAILED: {e}", file=sys.stderr)
+            continue
+        if result.ok and not plan.changes:
+            print(f"  [{name}] up to date ({result.detail or 'no change'})")
+        elif result.ok:
+            print(f"  [{name}] now generation {result.generation.id}")
+        else:
+            failed += 1
+            print(f"  [{name}] FAILED: {result.detail}", file=sys.stderr)
+            print(
+                f"  [{name}] the current environment is unchanged "
+                f"({result.previous or 'none'})",
+                file=sys.stderr,
+            )
+    return 1 if failed else 0
+
+
+def cmd_env_list(args) -> int:
+    store = _env_store(get_config())
+    names = args.names or store.environments()
+    payload = {
+        name: {
+            "current": store.current_id(name),
+            "generations": [g.public() for g in store.list(name)],
+        }
+        for name in names
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for name, info in payload.items():
+            print(f"  {name}: current={info['current'] or '-'}")
+            for generation in info["generations"]:
+                mark = "*" if generation["generation_id"] == info["current"] else " "
+                print(
+                    f"   {mark} {generation['generation_id']} "
+                    f"{generation['state']} "
+                    f"({generation['package_count']} packages)"
+                )
+    return 0
+
+
+def cmd_env_rollback(args) -> int:
+    from openai4s.kernel.env_generations import EnvironmentError_
+
+    store = _env_store(get_config())
+    try:
+        result = store.rollback(args.name, args.generation)
+    except EnvironmentError_ as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"  [{args.name}] now generation {result.generation.id} (pointer moved)")
+    return 0
+
+
+def cmd_env_recover(args) -> int:
+    store = _env_store(get_config())
+    names = args.names or store.environments()
+    report = {name: store.recover(name) for name in names}
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    for name, info in report.items():
+        print(f"  {name}: current={info['current'] or '-'}")
+        for item in info["abandoned"]:
+            print(f"    abandoned {item['state']}: {item['path']}")
+        if info.get("apply_in_progress"):
+            print("    an apply is currently in progress (holding the lock)")
+    return 0
+
+
+def cmd_benchmark(args) -> int:
+    """Run the versioned workflow benchmark against the real subsystems."""
+    from openai4s.benchmark import load_workflows, run_all
+
+    if args.list:
+        for workflow in load_workflows():
+            print(f"  {workflow.id} v{workflow.version} — {workflow.title}")
+            for case in workflow.cases:
+                print(f"    {case.id} [{case.outcome}] {case.title}")
+        return 0
+    report = run_all()
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        for item in report["results"]:
+            mark = "skip" if item["skipped"] else ("ok  " if item["passed"] else "FAIL")
+            line = f"  [{mark}] {item['case_id']} ({item['expected_outcome']})"
+            if item["detail"]:
+                line += f" — {item['detail']}"
+            print(line)
+        print(
+            f"\n{report['passed']} passed, {report['failed']} failed, "
+            f"{report['skipped']} skipped "
+            f"across {report['workflows']} workflow(s)"
+        )
+    # Zero workflows is a failure, not a pass. An installed wheel that did not
+    # ship the manifests would otherwise report "0 failed" and exit 0 — a
+    # silent green on the suite that is supposed to decide whether a release is
+    # good. There is always at least one workflow in a correct install.
+    if report["workflows"] == 0:
+        print(
+            "error: no benchmark workflows were found; the manifests are "
+            "missing from this installation",
+            file=sys.stderr,
+        )
+        return 1
+    return 1 if report["failed"] else 0
+
+
 def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
     """Call the running daemon's REST API; returns (status, parsed_json)."""
 
@@ -732,6 +966,13 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--no-open", action="store_true", help="don't open a browser")
     ps.set_defaults(fn=cmd_serve)
     sub.add_parser("status", help="check daemon status").set_defaults(fn=cmd_status)
+    pdoc = sub.add_parser(
+        "doctor",
+        help="check model, runtime, isolation, disk, connectors and remote "
+        "compute (no daemon needed)",
+    )
+    pdoc.add_argument("--json", action="store_true", help="machine-readable report")
+    pdoc.set_defaults(fn=cmd_doctor)
     pv = sub.add_parser(
         "verify-package",
         help="verify an exported session/evidence package (no daemon needed)",
@@ -800,6 +1041,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="update existing envs without pruning user-installed packages",
     )
     pu.set_defaults(fn=cmd_setup)
+
+    pb = sub.add_parser(
+        "benchmark",
+        help="run the versioned workflow benchmark against the real subsystems",
+    )
+    pb.add_argument("--json", action="store_true", help="machine-readable report")
+    pb.add_argument("--list", action="store_true", help="list workflows and cases")
+    pb.set_defaults(fn=cmd_benchmark)
+
+    pe = sub.add_parser(
+        "env",
+        help="environments as a transaction: plan, apply, roll back",
+    )
+    esub = pe.add_subparsers(dest="env_action", required=True)
+    ep = esub.add_parser("plan", help="what would change; touches nothing")
+    ep.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ep.add_argument("--json", action="store_true")
+    ep.set_defaults(fn=cmd_env_plan)
+    ea = esub.add_parser(
+        "apply", help="build a new generation and switch to it if it verifies"
+    )
+    ea.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ea.add_argument("--dry-run", action="store_true")
+    ea.set_defaults(fn=cmd_env_apply)
+    el = esub.add_parser("list", help="generations, and which one is current")
+    el.add_argument("names", nargs="*")
+    el.add_argument("--json", action="store_true")
+    el.set_defaults(fn=cmd_env_list)
+    er = esub.add_parser("rollback", help="point at a generation already on disk")
+    er.add_argument("name")
+    er.add_argument("generation")
+    er.set_defaults(fn=cmd_env_rollback)
+    ev = esub.add_parser("recover", help="what a restart should know")
+    ev.add_argument("names", nargs="*")
+    ev.add_argument("--json", action="store_true")
+    ev.set_defaults(fn=cmd_env_recover)
 
     pj = sub.add_parser(
         "jupyter",

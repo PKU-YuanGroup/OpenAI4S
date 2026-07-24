@@ -383,7 +383,7 @@ def test_job_result_cache_warning_egress_hint_and_cancel(capsys):
                 "egress_hint": "network fence blocked the request",
             },
             {
-                "status": "completed",
+                "status": "succeeded",
                 "exit_code": 0,
                 "output_files": ["result.csv"],
                 "featured_files": ["result.csv"],
@@ -408,8 +408,8 @@ def test_job_result_cache_warning_egress_hint_and_cancel(capsys):
     assert capsys.readouterr().out == "network fence blocked the request\n"
 
     completed = job.result()
-    assert completed["status"] == "completed"
-    assert job.status == "completed"
+    assert completed["status"] == "succeeded"
+    assert job.status == "succeeded"
     assert job.exit_code == 0
     assert job.output_files == ["result.csv"]
     assert job.featured_files == ["result.csv"]
@@ -417,7 +417,7 @@ def test_job_result_cache_warning_egress_hint_and_cancel(capsys):
     assert capsys.readouterr().out == ""
     assert job.result() is completed
     assert len(recorder.calls) == 2
-    assert "state=completed" in repr(job)
+    assert "state=succeeded" in repr(job)
     assert "egress='blocked (no outbound network)'" in repr(job)
 
     assert job.cancel() == {"cancelled": True}
@@ -425,3 +425,67 @@ def test_job_result_cache_warning_egress_hint_and_cancel(capsys):
         "compute_cancel",
         [{"job_id": "job-1", "provider": "byoc:nvidia"}],
     )
+
+
+def test_idempotency_key_reaches_the_host(tmp_path, monkeypatch):
+    """`docs/compute.md` has told users to pass this for a while; the SDK
+    never forwarded it, so a retry became a second remote job — the exact
+    duplicate charge the host's dedup guard exists to prevent."""
+    monkeypatch.chdir(tmp_path)
+    recorder = _Recorder([{"job_id": "job-1"}])
+    instance = _ComputeInstance(recorder, "ssh:lab")
+
+    instance.submit_job(command="run", intent="test", idempotency_key="run-42")
+
+    _, args = recorder.calls[0]
+    assert args[0]["idempotency_key"] == "run-42"
+
+
+def test_the_key_the_sdk_sends_actually_deduplicates(tmp_path, monkeypatch):
+    """End to end rather than at the seam: the SDK's key must be the one the
+    manager claims against, or forwarding it proves nothing."""
+    import io
+    import subprocess
+    import types
+
+    from openai4s.compute.manager import ComputeError, ComputeManager
+    from openai4s.config import Config
+
+    (tmp_path / "skills").mkdir()
+    cfg = types.SimpleNamespace(
+        data_dir=tmp_path,
+        skills_dir=tmp_path / "skills",
+        db_path=Config(data_dir=tmp_path).db_path,
+    )
+
+    class _Proc:
+        """The ssh process `manager._run_capped` starts — Popen-shaped, because
+        the submit no longer buffers the remote's whole output in the daemon."""
+
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = io.BytesIO(b"OPENAI4S_JOB 4242 4200\n")
+            self.stderr = io.BytesIO(b"")
+            self.stdin = io.BytesIO()
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(), raising=True)
+    manager = ComputeManager(cfg)
+
+    def host_call(op, args):
+        assert op == "compute_submit"
+        return manager.submit({k: v for k, v in args[0].items() if v is not None})
+
+    instance = _ComputeInstance(host_call, "ssh:lab")
+    first = instance.submit_job(command="run", intent="t", idempotency_key="k-1")
+    assert first.job_id
+
+    with pytest.raises(RuntimeError) as e:
+        instance.submit_job(command="run", intent="t", idempotency_key="k-1")
+    assert isinstance(e.value, (ComputeError, RuntimeError))
+    assert "duplicate" in str(e.value).lower() or "already" in str(e.value).lower()

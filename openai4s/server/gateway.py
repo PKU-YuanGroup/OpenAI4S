@@ -70,7 +70,7 @@ from openai4s.observability import (
     set_correlation_id,
 )
 from openai4s.review import review_evidence
-from openai4s.server import ws_frames
+from openai4s.server import kernel_routes, ws_frames
 from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.server.agent_run import EventCancellation
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
@@ -82,6 +82,12 @@ from openai4s.server.artifacts import (
 )
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.server.completions import completion_message, response_language
+from openai4s.server.errors import (
+    ERROR_CODES,
+    GatewayError,
+    error_code_for,
+    gateway_error_payload,
+)
 from openai4s.server.execution_coordinator import (
     ExecutionCancelled,
     WebExecutionCoordinator,
@@ -196,29 +202,12 @@ _WATCHDOG_INTERRUPT_GRACE_S = 10.0
 _WATCHDOG_KILL_GRACE_S = 10.0
 
 
-# Stable, machine-readable error codes. A client that has to match on English
-# prose is coupled to wording nobody thinks of as an interface, so it breaks the
-# first time a message is improved. Status alone is too coarse: several distinct
-# failures share 400, and a client retrying "invalid cursor" the way it retries
-# "rate limited" is a bug the contract should prevent.
-_ERROR_CODES = {
-    400: "bad_request",
-    401: "unauthorized",
-    403: "forbidden",
-    404: "not_found",
-    405: "method_not_allowed",
-    409: "conflict",
-    413: "payload_too_large",
-    422: "unprocessable",
-    423: "locked",
-    429: "rate_limited",
-    500: "internal_error",
-    503: "unavailable",
-}
-
-
-def _error_code_for(status: int) -> str:
-    return _ERROR_CODES.get(int(status), "error" if status < 500 else "internal_error")
+# Re-exported from openai4s.server.errors, which owns them so that route
+# modules can raise GatewayError without importing this file (that import is a
+# cycle: GatewayError sat ~5,800 lines below gateway's own imports, so a sibling
+# importing it failed the daemon at boot).
+_ERROR_CODES = ERROR_CODES
+_error_code_for = error_code_for
 
 
 def _encode_frame_cursor(created_at: int, frame_id: str) -> str:
@@ -449,6 +438,14 @@ class WSHub:
         # over once, so numbering them would make two clients' cursors disagree
         # about the same stream.
         self._seq: dict[str, int] = {}
+        # Identifies this daemon process to resuming clients. The counter above
+        # is in-process, so a restart puts it back to zero while a client is
+        # still holding a cursor from the previous run -- exactly the "silently
+        # look like you already have everything" case the comment above warns
+        # about, which the counter alone cannot detect once it has been reset.
+        # A client echoes the epoch it last saw; a mismatch means its cursor
+        # describes a stream this process never produced.
+        self._epoch = uuid.uuid4().hex[:16]
 
     def _next_seq_locked(self, root_frame_id: str) -> int:
         nxt = self._seq.get(root_frame_id, 0) + 1
@@ -463,8 +460,17 @@ class WSHub:
         with self._lock:
             self._conns.discard(c)
 
+    @property
+    def epoch(self) -> str:
+        """This process's stream identity. Cursors are only valid within it."""
+        return self._epoch
+
     def subscribe(
-        self, root_frame_id: str, conn: "WSConnection", since_seq: int = 0
+        self,
+        root_frame_id: str,
+        conn: "WSConnection",
+        since_seq: int = 0,
+        epoch: str | None = None,
     ) -> None:
         """Subscribe and enqueue any live replay as one ordered transaction.
 
@@ -477,10 +483,69 @@ class WSHub:
         with self._lock:
             conn.subs.add(root_frame_id)
             buf = self._live.get(root_frame_id)
-            if buf and buf.get("running") and buf.get("events"):
+            stale = self._cursor_is_stale_locked(root_frame_id, since_seq, epoch)
+            if stale:
+                # Declare the gap and replay nothing. The client refetches the
+                # session on `gap`, so anything sent here is rendered and then
+                # immediately discarded -- and replaying the buffer from the
+                # start to serve a cursor we cannot place is exactly the
+                # wrap-around a fabricated cursor must never cause.
+                #
+                # Saying nothing at all, which is what happened before, left
+                # the client believing it was caught up on a stream it had
+                # entirely missed.
+                self._enqueue_replay_locked(
+                    root_frame_id, conn, [], since_seq, forced_gap=True
+                )
+            elif buf and buf.get("running") and buf.get("events"):
                 self._enqueue_replay_locked(
                     root_frame_id, conn, buf["events"], since_seq
                 )
+            else:
+                # Idle, and the cursor (if any) is placeable. Still send the
+                # epoch handshake — an empty replay envelope carries it — so the
+                # client records its next cursor stamped with *this* daemon's
+                # epoch. Without it, a subscription that hit neither branch left
+                # the client with a null epoch, and after a restart the numeric
+                # stale check would accept that epoch-less cursor and skip the
+                # new daemon's early events. The envelope is two frames with no
+                # payload; the epoch is the point.
+                self._enqueue_replay_locked(root_frame_id, conn, [], since_seq)
+
+    def _cursor_is_stale_locked(
+        self, root_frame_id: str, since_seq: int, epoch: str | None
+    ) -> bool:
+        """Can this process honour the cursor the client presented?
+
+        A cursor is only placeable if it numbers *this* daemon's stream, and
+        the epoch is the only thing that says so. Three cases:
+
+        * ``since_seq`` of zero asks for everything and places trivially;
+        * a *different* epoch means the cursor numbers a stream some earlier
+          daemon produced;
+        * **no epoch at all cannot be placed either way**, so it is a gap.
+
+        That last one used to be treated as placeable, and then checked
+        numerically: our own counter sitting below the cursor proves we never
+        emitted it. But the converse does not hold. An old tab reconnecting
+        after a restart with ``since_seq=2`` meets a new daemon that has since
+        emitted two events of its own, so the counter is *not* below the
+        cursor, the cursor was declared fresh, and replay filtered the new
+        daemon's events 1 and 2 out as already seen. The client was then
+        silently missing the beginning of the stream it believed it was caught
+        up on -- which is exactly the failure the numeric check was added to
+        catch, surviving in the one case it cannot see.
+
+        A legacy client cannot prove its cursor belongs to this stream, so it
+        refetches. That costs one extra fetch on reconnect and is the only
+        answer that cannot be wrong; every current client sends the epoch,
+        which the empty replay envelope hands it even on an idle subscribe.
+        """
+        if not since_seq:
+            return False
+        if not epoch or epoch != self._epoch:
+            return True
+        return self._seq.get(root_frame_id, 0) < int(since_seq)
 
     def unsubscribe(self, root_frame_id: str, conn: "WSConnection") -> None:
         with self._lock:
@@ -973,19 +1038,22 @@ class WSHub:
             if events:
                 self._enqueue_replay_locked(root_frame_id, conn, events)
 
-    @staticmethod
     def _enqueue_replay_locked(
+        self,
         root_frame_id: str,
         conn: "WSConnection",
         events: list[dict],
         since_seq: int = 0,
+        *,
+        forced_gap: bool = False,
     ) -> None:
         """Replay buffered events, optionally only those after ``since_seq``.
 
-        ``replay_begin`` carries ``from_seq``/``to_seq`` and whether the window
-        was complete. A client that was away longer than the buffer retains
-        cannot be served by a cursor, and telling it so (``gap: true``) lets it
-        refetch state instead of resuming from a hole it cannot see.
+        ``replay_begin`` carries ``from_seq``/``to_seq``, this process's
+        ``epoch``, and whether the window was complete. A client that was away
+        longer than the buffer retains cannot be served by a cursor, and
+        telling it so (``gap: true``) lets it refetch state instead of
+        resuming from a hole it cannot see.
         """
         selected = [e for e in events if int(e.get("seq") or 0) > since_seq]
         first = int(selected[0].get("seq") or 0) if selected else since_seq
@@ -996,9 +1064,14 @@ class WSHub:
                 "root_frame_id": root_frame_id,
                 "from_seq": first,
                 "to_seq": last,
+                # Echoed so the client can tell one daemon's stream from
+                # another's and drop a cursor that belongs to neither.
+                "epoch": self._epoch,
                 # The buffer is capped, so the oldest event it still holds may
                 # be newer than the cursor+1 the client asked for.
-                "gap": bool(since_seq and selected and first > since_seq + 1),
+                "gap": bool(
+                    forced_gap or (since_seq and selected and first > since_seq + 1)
+                ),
             }
         )
         for event in selected:
@@ -1609,7 +1682,6 @@ class SessionRunner:
                 "broadcast",
                 lambda root_frame_id, event: self.hub.emitter(root_frame_id)(event),
             ),
-            environment_snapshot=_environment_snapshot,
             guess_content_type=_guess_ctype,
             checksum=_sha256,
         )
@@ -3425,6 +3497,14 @@ class SessionRunner:
 
         res = preinstall.install(packages)
         res["restarted"] = False
+        if res.get("ok"):
+            # The freeze cache is keyed by kernel generation on the premise that
+            # an environment cannot change within one. An install breaks that:
+            # with `restart: false` — or when the restart below fails — the same
+            # generation's interpreter now has packages the cached list does not
+            # mention, and later artifacts would be stamped with the pre-install
+            # environment. That is provenance that is wrong, not missing.
+            self.artifacts.invalidate_freeze_cache()
         if res.get("ok") and restart and root_frame_id:
             try:
                 self.restart_kernel(root_frame_id, project_id or "default")
@@ -4111,45 +4191,18 @@ class SessionRunner:
         the wrong endpoint; leaving them empty lets LLMConfig.__post_init__
         re-resolve the new provider's defaults.
         """
-        import dataclasses
+        # The resolution itself lives in openai4s.llm.resolve, shared with
+        # `doctor`. It had a second implementation there that read cfg.llm
+        # alone, so an install configured entirely through the UI — the
+        # documented path, since the daemon boots with no key — was diagnosed
+        # `model FAIL` while working perfectly.
+        from openai4s.llm.resolve import resolve_llm_config
 
-        base = self.cfg.llm
-        try:
-            s = {
-                k: self.store.get_setting(k)
-                for k in ("llm_model", "llm_base_url", "llm_provider")
-            }
-            # Through the broker, not get_setting: after migration the row
-            # holds a reference, and handing that to the provider as an API key
-            # would fail auth in a way that looks like a bad key.
-            s["llm_api_key"] = self.store.get_secret_setting("llm_api_key")
-        except Exception:  # noqa: BLE001
-            s = {}
-        model_ov = st.model if (st is not None and st.model) else s.get("llm_model")
-        over: dict = {}
-        api_key = _clean_api_key(s.get("llm_api_key"))
-        if api_key:
-            over["api_key"] = api_key
-        if s.get("llm_base_url"):
-            over["base_url"] = s["llm_base_url"]
-        if model_ov:
-            over["model"] = model_ov
-        prov = s.get("llm_provider")
-        if prov and prov != base.provider:
-            over["provider"] = prov
-            # Re-resolve the new provider's key too unless a real runtime key
-            # setting was supplied; otherwise dataclasses.replace would carry
-            # the previous provider's resolved key into the new provider.
-            over.setdefault("api_key", "")
-            # force re-resolution of the NEW provider's defaults unless explicitly set
-            over.setdefault("base_url", "")
-            over.setdefault("model", "")
-        if not over:
-            return base
-        try:
-            return dataclasses.replace(base, **over)
-        except Exception:  # noqa: BLE001
-            return base
+        return resolve_llm_config(
+            self.cfg.llm,
+            self.store,
+            model_override=(st.model if (st is not None and st.model) else None),
+        )
 
     @staticmethod
     def _friendly_error(exc: Exception) -> str:
@@ -4842,6 +4895,9 @@ class SessionRunner:
                 chat,
                 tools=model_tools,
                 stream=True,
+                # Same signal the engine gets below, so Stop also interrupts a
+                # retry backoff rather than only the gap between turns.
+                cancellation=EventCancellation(st.cancel),
             ),
             WebActionExecutor(
                 dispatcher=lambda: st.dispatcher,
@@ -4894,7 +4950,31 @@ class SessionRunner:
         result = engine.run(state)
         st.last_engine_completion = result.completion
         st.last_model_prose = events.model_prose
+        self._telemetry_turn(st, result)
         return result.stop_reason
+
+    def _telemetry_turn(self, st: SessionState, result: Any) -> None:
+        """Opt-in lifecycle telemetry for a completed turn. A no-op unless the
+        user recorded consent; it cannot raise and does not block the turn.
+
+        `session_start` is deduplicated to the first turn of each session in
+        this process, so it marks "a session did some work" rather than "a page
+        was opened", which is the more honest and the less identifying signal.
+        """
+        try:
+            from openai4s.telemetry.emit import emit, emit_session_start, turn_outcome
+
+            store = self.store
+            emit_session_start(st.root_frame_id, store=store, surface="web")
+            emit(
+                "turn_complete",
+                store=store,
+                surface="web",
+                outcome=turn_outcome(getattr(result, "stop_reason", "")),
+                count=1,
+            )
+        except Exception:  # noqa: BLE001 - telemetry must never break a turn
+            pass
 
     def _execute_with_watchdog(
         self,
@@ -5771,13 +5851,19 @@ def _host_info() -> dict:
 
 
 def _environment_snapshot() -> dict:
-    """Full snapshot of the kernel's compute environment for artifact provenance:
-    interpreter kind + version + platform + the COMPLETE package→version freeze.
+    """This **daemon process's** interpreter, version, platform and package set.
 
-    The session kernel is spawned with ``sys.executable`` and shares this
-    interpreter's site-packages, so a daemon-side freeze reflects exactly what a
-    figure's code could import. This is the data behind the Provenance →
-    Environment tab (the reference daemon's per-artifact package manifest)."""
+    Read the scope literally. It used to be documented as "the kernel's compute
+    environment" and used as artifact provenance, on the reasoning that a
+    kernel is spawned with ``sys.executable`` and shares this interpreter's
+    site-packages. That stopped being true once a cell could run in a selected
+    conda environment or in R, and the result was artifacts stamped with a
+    Python package list that had never been theirs.
+
+    Artifact provenance now comes from the kernel generation instead -- see
+    ``ArtifactManager.capture_environment``. What remains here serves the two
+    REST reads that genuinely ask about the daemon: the environment probe and
+    the workbench's runtime panel."""
     import platform as _pf
 
     from openai4s.kernel import preinstall
@@ -5796,19 +5882,6 @@ def _environment_snapshot() -> dict:
 # --------------------------------------------------------------------------- #
 #  HTTP + WS request handler
 # --------------------------------------------------------------------------- #
-class GatewayError(Exception):
-    """An HTTP failure with a status, a human message, and an optional stable
-    machine code. ``error_code`` overrides the status-derived default when a
-    single status covers genuinely different failures a client must tell
-    apart."""
-
-    def __init__(self, code: int, message: str, error_code: str | None = None):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.error_code = error_code
-
-
 def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     store = get_store(cfg.db_path)
     model_discovery = LocalModelDiscoveryService()
@@ -6017,7 +6090,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         def _prepare_request_body(self, path: str, method: str) -> None:
             is_session_import = (
-                path == _API_ROOT + "/sessions/import" and method == "POST"
+                path in (_API_ROOT + "/sessions/import", _API_ROOT + "/sessions/verify")
+                and method == "POST"
             )
             self._read_request_body(
                 limit=MAX_ARCHIVE_BYTES if is_session_import else _MAX_JSON_BODY_BYTES,
@@ -6318,10 +6392,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json({"error": "not found"}, 404)
             except GatewayError as ge:
                 try:
-                    payload = {"error": ge.message}
-                    if ge.error_code:
-                        payload["code"] = ge.error_code
-                    self._json(payload, ge.code)
+                    self._json(gateway_error_payload(ge), ge.code)
                 except (BrokenPipeError, ConnectionResetError):
                     self.close_connection = True
             except (BrokenPipeError, ConnectionResetError):
@@ -6487,6 +6558,28 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         # ---- REST API ---------------------------------------------------
         def _api(self, method: str, sub: str) -> None:
             q = self._query()
+            if sub == "/sessions/verify" and method == "POST":
+                # Verification before import, so a recipient can check what
+                # they were handed without first admitting it to their
+                # database. `verify_package` reads only the archive -- no
+                # daemon state, no network -- which is what makes the answer
+                # trustworthy to someone who does not yet trust this host.
+                from openai4s.evidence import EvidenceError, verify_package
+
+                payload = self._body_bytes(limit=MAX_ARCHIVE_BYTES)
+                with tempfile.NamedTemporaryFile(
+                    suffix=".openai4s-session.zip", delete=False
+                ) as handle:
+                    handle.write(payload)
+                    staged = Path(handle.name)
+                try:
+                    report = verify_package(staged)
+                except EvidenceError as error:
+                    raise GatewayError(400, str(error)) from error
+                finally:
+                    staged.unlink(missing_ok=True)
+                self._json(report)
+                return
             if sub == "/sessions/import" and method == "POST":
                 payload = self._body_bytes(limit=MAX_ARCHIVE_BYTES)
                 try:
@@ -7745,225 +7838,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     },
                 )
                 return
-            m = re.fullmatch(r"/frames/([^/]+)/execution", sub)
-            if m and method == "GET":
-                self._json(runner.executions.snapshot(m.group(1)))
-                return
-            m = re.fullmatch(r"/frames/([^/]+)/kernel/execute", sub)
-            if m and method == "POST":
-                if not runner.cfg.notebook_repl:
-                    self._json(
-                        {
-                            "error": "notebook REPL is disabled; send a message to resume the agent"
-                        },
-                        403,
-                    )
-                    return
-                fid = m.group(1)
-                f = store.get_frame(fid) or {}
-                pid = f.get("project_id") or "default"
-                body = self._body()
-                code = body.get("code") or ""
-                language = str(body.get("language") or "python").lower()
-                if language not in {"python", "r"}:
-                    self._json({"error": "language must be python or r"}, 400)
-                    return
-                requested_execution_id = body.get("execution_id")
-                if requested_execution_id and not re.fullmatch(
-                    r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}",
-                    str(requested_execution_id),
-                ):
-                    self._json({"error": "invalid execution_id"}, 400)
-                    return
-                job = runner.submit_repl(
-                    fid,
-                    pid,
-                    code,
-                    language=language,
-                    execution_id=(
-                        str(requested_execution_id) if requested_execution_id else None
-                    ),
-                )
-                if body.get("wait") is True:
-                    self._json(job.wait_result())
-                    return
-                snapshot = runner.executions.snapshot(fid)
-                queued = next(
-                    (
-                        item
-                        for item in snapshot.get("queue", [])
-                        if item.get("execution_id") == job.execution_id
-                    ),
-                    snapshot.get("owner")
-                    if (snapshot.get("owner") or {}).get("execution_id")
-                    == job.execution_id
-                    else None,
-                )
-                self._json(
-                    {
-                        "status": "accepted",
-                        "frame_id": fid,
-                        "job_id": job.job_id,
-                        "execution_id": job.execution_id,
-                        "owner": job.execution_owner,
-                        "queue_position": (queued or {}).get("queue_position"),
-                    },
-                    202,
-                )
-                return
-            m = re.fullmatch(r"/frames/([^/]+)/kernel/restart", sub)
-            if m and method == "POST":
-                if not runner.cfg.notebook_repl:
-                    self._json(
-                        {
-                            "error": "notebook REPL is disabled; send a message to resume the agent"
-                        },
-                        403,
-                    )
-                    return
-                fid = m.group(1)
-                f = store.get_frame(fid) or {}
-                pid = f.get("project_id") or "default"
-                self._json(runner.restart_kernel(fid, pid))
-                return
-            m = re.fullmatch(r"/frames/([^/]+)/kernel/stop", sub)
-            if m and method == "POST":
-                if not runner.cfg.notebook_repl:
-                    self._json(
-                        {
-                            "error": "notebook REPL is disabled; send a message to resume the agent"
-                        },
-                        403,
-                    )
-                    return
-                fid = m.group(1)
-                f = store.get_frame(fid) or {}
-                self._json(runner.stop_kernel(fid, f.get("project_id") or "default"))
-                return
-            m = re.fullmatch(r"/frames/([^/]+)/kernel/interrupt", sub)
-            if m and method == "POST":
-                if not runner.cfg.notebook_repl:
-                    self._json(
-                        {
-                            "error": "notebook REPL is disabled; send a message to resume the agent"
-                        },
-                        403,
-                    )
-                    return
-                body = self._body()
-                owner = body.get("owner") or body.get("owner_kind")
-                owner_kind = owner.get("kind") if isinstance(owner, dict) else owner
-                owner_id = (
-                    owner.get("id") if isinstance(owner, dict) else body.get("owner_id")
-                )
-                if not body.get("execution_id") or not owner_kind or not owner_id:
-                    self._json(
-                        {
-                            "ok": False,
-                            "frame_id": m.group(1),
-                            "error": (
-                                "execution_id, owner.kind, and owner.id are required"
-                            ),
-                            "reason": (
-                                "execution_id, owner.kind, and owner.id are required"
-                            ),
-                        },
-                        400,
-                    )
-                    return
-                kwargs = {
-                    "execution_id": body.get("execution_id"),
-                    "owner": owner,
-                    "owner_id": str(owner_id),
-                }
-                self._json(runner.interrupt_kernel(m.group(1), **kwargs))
-                return
-            m = re.fullmatch(r"/frames/([^/]+)/kernel/start", sub)
-            if m and method == "POST":
-                if not runner.cfg.notebook_repl:
-                    self._json(
-                        {
-                            "error": "notebook REPL is disabled; send a message to resume the agent"
-                        },
-                        403,
-                    )
-                    return
-                fid = m.group(1)
-                f = store.get_frame(fid) or {}
-                self._json(runner.start_kernel(fid, f.get("project_id") or "default"))
-                return
-            m = re.fullmatch(r"/frames/([^/]+)/kernel/variables", sub)
-            if m and method == "GET":
-                fid = m.group(1)
-                frame = store.get_frame(fid)
-                if frame is None:
-                    raise GatewayError(404, "session not found")
-                if (frame.get("root_frame_id") or fid) != fid:
-                    raise GatewayError(
-                        409,
-                        "variable inspection requires the current root session",
-                    )
-                language = str((q.get("language") or ["python"])[0]).lower()
-                if language not in {"python", "r"}:
-                    self._json({"error": "language must be python or r"}, 400)
-                    return
-                self._json(runner.variables.inspect(fid, language))
-                return
-            m = re.fullmatch(r"/frames/([^/]+)/kernel", sub)
-            if m and method == "GET":
-                self._json(runner.kernel_status(m.group(1)))
-                return
-            m = re.fullmatch(r"/frames/([^/]+)/status", sub)
-            if m and method == "GET":
-                fid = m.group(1)
-                self._json(
-                    {
-                        "frame_id": fid,
-                        "running": runner.is_running(fid),
-                        "kernel": runner.kernel_status(fid),
-                    }
-                )
-                return
-            m = re.fullmatch(r"/frames/([^/]+)/kernel/install", sub)
-            if m and method == "POST":
-                # NOT gated by notebook_repl: prebuilt-env package install is a
-                # separate Customize → Compute affordance, not the code REPL, and
-                # the global /kernel/install route is ungated too.
-                fid = m.group(1)
-                f = store.get_frame(fid) or {}
-                pid = f.get("project_id") or "default"
-                b = self._body()
-                pkgs = b.get("packages") or ([b["package"]] if b.get("package") else [])
-                self._json(
-                    runner.install_packages(
-                        pkgs,
-                        root_frame_id=fid,
-                        project_id=pid,
-                        restart=b.get("restart", True),
-                    )
-                )
-                return
-            # prebuilt-environment selection for this session's kernel
-            m = re.fullmatch(r"/frames/([^/]+)/environments", sub)
-            if m and method == "GET":
-                self._json(runner.list_environments(m.group(1)))
-                return
-            m = re.fullmatch(r"/frames/([^/]+)/kernel/env", sub)
-            if m and method == "POST":
-                if not runner.cfg.notebook_repl:
-                    self._json(
-                        {
-                            "error": "notebook REPL is disabled; send a message to resume the agent"
-                        },
-                        403,
-                    )
-                    return
-                fid = m.group(1)
-                f = store.get_frame(fid) or {}
-                pid = f.get("project_id") or "default"
-                b = self._body()
-                name = b.get("env") or b.get("name") or ""
-                self._json(runner.set_env(fid, name, pid))
+            # ---- kernel (extracted; see openai4s/server/kernel_routes.py) ----
+            # Must stay here: after the frame_mutation guard above, which is the
+            # only write-protection on the seven mutating routes in that module,
+            # and after the workbench guard, which is what makes
+            # GET /frames/{id}/execution 404 for an unknown session.
+            if kernel_routes.handle(self, method, sub, q, runner, store):
                 return
 
             # ---- artifacts ----
@@ -8482,6 +8362,56 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     }
                 )
                 return
+            if sub == "/telemetry/consent":
+                from openai4s.telemetry import consent as _consent
+
+                if method == "GET":
+                    active = _consent.read(store)
+                    self._json(
+                        {
+                            "enabled": active is not None,
+                            # The environment can veto; say so, so the UI does
+                            # not present a toggle that silently does nothing.
+                            "env_locked": _consent.env_forbids(),
+                        }
+                    )
+                    return
+                if method in ("PUT", "PATCH", "POST"):
+                    # Changing the recorded consent is a deliberate act by a
+                    # person using this install; granting mints the anonymous
+                    # id, revoking destroys it. Neither ever sends.
+                    #
+                    # The JSON type has to be Boolean, not merely truthy.
+                    # `bool()` maps the string "false", `{}` with any key, and
+                    # `[]` with any element onto True — so a form serialiser
+                    # that sends `"false"`, or any client that does not read
+                    # this contract closely, would *grant* telemetry consent
+                    # while asking to revoke it. A privacy boundary must fail
+                    # with a 400 rather than resolve an ambiguous request in
+                    # the permissive direction.
+                    want = self._body().get("enabled")
+                    if not isinstance(want, bool):
+                        self._json(
+                            {
+                                "error": "telemetry consent requires "
+                                "'enabled' to be a JSON boolean",
+                                "received_type": type(want).__name__,
+                            },
+                            400,
+                        )
+                        return
+                    if want:
+                        granted = _consent.grant(store)
+                        self._json(
+                            {
+                                "enabled": granted is not None,
+                                "env_locked": _consent.env_forbids(),
+                            }
+                        )
+                    else:
+                        _consent.revoke(store)
+                        self._json({"enabled": False, "env_locked": False})
+                    return
             if sub == "/memory" and method == "POST":
                 b = self._body()
                 self._json(
@@ -8814,7 +8744,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 since_seq = int(msg.get("since_seq") or 0)
                             except (TypeError, ValueError):
                                 since_seq = 0
-                            hub.subscribe(rid, conn, max(0, since_seq))
+                            # The epoch the client last saw. A cursor is only
+                            # meaningful within the daemon run that issued it.
+                            client_epoch = msg.get("epoch")
+                            hub.subscribe(
+                                rid,
+                                conn,
+                                max(0, since_seq),
+                                str(client_epoch) if client_epoch else None,
+                            )
                             # re-surface any tool-call approval prompt that is
                             # still pending, so a mid-pause reconnect can answer.
                             try:
@@ -9179,6 +9117,14 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         threading.Thread(
             target=_seed_demo_bg, name="openai4s-demo-seed", daemon=True
         ).start()
+
+    # Opt-in, off by default: a no-op that reads one settings row unless the
+    # user has recorded consent. It cannot raise (emit swallows everything) and
+    # cannot block (it sends on a daemon thread), so it is safe on the path that
+    # has to bind the port.
+    from openai4s.telemetry.emit import emit as _telemetry_emit
+
+    _telemetry_emit("daemon_start", store=get_store(cfg.db_path), surface="web")
     return httpd
 
 

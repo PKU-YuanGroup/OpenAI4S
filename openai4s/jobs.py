@@ -11,6 +11,7 @@ registry (bounded), live output capture.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -20,6 +21,134 @@ from pathlib import Path
 
 _MAX_OUTPUT = 200_000  # per-job captured output cap (bytes)
 _MAX_JOBS = 200  # registry cap (oldest finished pruned)
+_TERM_GRACE_S = 5.0  # how long a job may take to honour SIGTERM
+
+
+def _group_alive(pgid: int | None) -> bool:
+    """Is anything at all still in the job's process group?
+
+    ``killpg(pgid, 0)`` raises ESRCH only when the group holds no process, so
+    this answers for the whole tree rather than for the one pid we happen to
+    hold a handle to. A group we are not permitted to signal counts as alive:
+    the honest reading of "I cannot tell" is not "it is gone".
+    """
+    if pgid is None:
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _signal_group(proc: subprocess.Popen, pgid: int | None, sig: int) -> None:
+    """Deliver one signal to the whole group, or to the leader if there is none.
+
+    A named indirection rather than an inline call so a test can simulate a
+    signal that is accepted and goes nowhere — the "no permission to signal"
+    case — without reaching into the `os` module the rest of the process
+    shares.
+    """
+    if pgid is not None:
+        os.killpg(pgid, sig)
+    else:  # no process group (Windows, or the child already reaped)
+        proc.send_signal(sig)
+
+
+def _await_group_exit(proc: subprocess.Popen, pgid: int | None, timeout: float) -> bool:
+    """Wait for the *group* to empty, not for the leader to be reaped.
+
+    ``proc.wait()`` answers about one process. A shell that honours SIGTERM
+    while the work it started ignores it satisfies ``wait()`` immediately and
+    leaves the job running, which is exactly the reproduction: the leader
+    exited on SIGTERM, the child had SIG_IGN installed, and cancel reported
+    success. The wait here is also what reaps the leader, so a zombie does not
+    keep the group looking populated.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            proc.wait(timeout=0)
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:  # noqa: BLE001 - another waiter got there first
+            pass
+        if pgid is None:
+            if proc.poll() is not None:
+                return True
+        elif not _group_alive(pgid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _stop_process_group(
+    proc: subprocess.Popen, pgid: int | None = None
+) -> tuple[bool, str]:
+    """TERM the job's process group, escalate to KILL, then confirm.
+
+    Returns ``(stopped, detail)``. The confirmation is the point: a cancel
+    that reports success without checking is indistinguishable from one that
+    worked, and the job carries on holding whatever it holds.
+
+    The group, not the process — the job is a shell, and the work is its
+    child. Signalling only the shell leaves the work running, and so does
+    *believing* the shell: both `proc.poll()` and `proc.wait()` answer about
+    the leader alone.
+
+    ``pgid`` is passed in because it must be read at spawn time. Looking it up
+    here fails once the leader has been reaped, which is precisely the case
+    where the surviving group most needs signalling.
+
+    Stated limit: once the leader has been reaped, a pgid is a number the OS
+    may eventually reuse, so a group probe cannot be perfectly certain it is
+    asking about the same job. Nothing short of pidfd closes that window, and
+    the previous code had the same exposure through `os.getpgid`. The window is
+    the interval between reaping the leader and this call, which is short, and
+    erring toward signalling a group that may be gone is safer here than
+    reporting a cancellation that did not happen.
+    """
+    if pgid is None:
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (OSError, AttributeError):
+            pgid = None
+
+    if proc.poll() is not None and not _group_alive(pgid):
+        # Leader gone *and* group empty. Checking the group as well is what
+        # stops `work & exit 0` from being reported as an exited job: the
+        # shell finished immediately, and the work it left behind held the
+        # job's stdout pipe open while nothing ever signalled it.
+        return True, "already exited"
+
+    def _signal(sig: int) -> None:
+        _signal_group(proc, pgid, sig)
+
+    try:
+        _signal(signal.SIGTERM)
+    except ProcessLookupError:
+        return True, "already exited"
+    except OSError as e:
+        return False, f"could not signal the job ({e})"
+
+    if _await_group_exit(proc, pgid, _TERM_GRACE_S):
+        return True, "exited on SIGTERM"
+
+    try:
+        _signal(signal.SIGKILL)
+    except ProcessLookupError:
+        return True, "already exited"
+    except OSError as e:
+        return False, f"ignored SIGTERM and could not be killed ({e})"
+
+    if _await_group_exit(proc, pgid, _TERM_GRACE_S):
+        return True, "killed"
+    # Unkillable means uninterruptible sleep, almost always blocked I/O.
+    # Saying so is far more useful than reporting a cancellation.
+    return False, "did not die after SIGKILL (likely blocked in the kernel)"
 
 
 class Job:
@@ -35,7 +164,16 @@ class Job:
         self.exit_code: int | None = None
         self._out: list[str] = []
         self._proc: subprocess.Popen | None = None
+        # Read at spawn and kept: once the leader is reaped, `os.getpgid` on
+        # its pid raises, and the surviving group becomes unreachable exactly
+        # when it most needs signalling.
+        self._pgid: int | None = None
         self._lock = threading.Lock()
+        # The worker thread running `_run`. `cancel` joins it briefly when the
+        # process turns out to have already exited, so it can report the real
+        # terminal result `_run` is about to publish rather than a transient
+        # `running` or a mislabelled `cancelled`.
+        self._thread: threading.Thread | None = None
 
     def append(self, text: str) -> None:
         with self._lock:
@@ -75,6 +213,12 @@ class Job:
 
 
 class JobManager:
+    #: How long `cancel` waits for `_run` to publish the true terminal result of
+    #: a job that turned out to have already exited. The process is reaped, so
+    #: `_run` only has to finish draining a now-closed stdout pipe; this is a
+    #: generous cap on that, not an expected wait.
+    _TERMINAL_JOIN_S = 5.0
+
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -103,28 +247,57 @@ class JobManager:
             self._jobs[job.id] = job
             self._order.append(job.id)
             self._prune_locked()
-        threading.Thread(
+        thread = threading.Thread(
             target=self._run, args=(job,), daemon=True, name=f"os-job-{job.id}"
-        ).start()
+        )
+        job._thread = thread
+        thread.start()
         return job.to_dict()
 
     def _run(self, job: Job) -> None:
-        job.status = "running"
-        job.started_at = time.time()
         if job.kind == "python":
             argv = [sys.executable, "-u", "-c", job.command]
         else:
             argv = ["bash", "-lc", job.command]
         try:
-            proc = subprocess.Popen(
-                argv,
-                cwd=job.cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            job._proc = proc
+            with job._lock:
+                # Cancelling in the window between submit() and this spawn used
+                # to mark the job cancelled and then start the process anyway:
+                # the work ran to completion under a `cancelled` label. Claim
+                # the transition to `running` and the spawn under one lock so
+                # cancel either arrives first and wins outright, or arrives
+                # after and has a process to signal.
+                if job.status == "cancelled":
+                    return
+                job.status = "running"
+                job.started_at = time.time()
+                job._proc = proc = subprocess.Popen(
+                    argv,
+                    cwd=job.cwd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    # Its own process group, so cancel can signal the whole
+                    # tree. Without this, `bash -lc "python train.py"` gave
+                    # terminate() only the shell: bash died, python kept
+                    # running and kept the GPU, and the job was reported
+                    # cancelled.
+                    start_new_session=True,
+                )
+                try:
+                    job._pgid = os.getpgid(proc.pid)
+                except (OSError, AttributeError):
+                    job._pgid = None
+            # Belt and braces for the pre-spawn race: `cancel` claims the
+            # cancellation under the same lock this spawn was claimed under, so
+            # it cannot land in between — but if it ever does, stop what we
+            # started instead of running it under a `cancelled` label.
+            with job._lock:
+                already_cancelled = job.status == "cancelled"
+            if already_cancelled:
+                _stop_process_group(proc, job._pgid)
+                return
             assert proc.stdout is not None
             for line in proc.stdout:
                 job.append(line)
@@ -144,19 +317,74 @@ class JobManager:
             job.finished_at = time.time()
 
     def cancel(self, job_id: str) -> dict:
+        """Stop a job, and report whether it actually stopped.
+
+        This used to write ``cancelled`` first, then attempt ``terminate()``
+        and swallow whatever happened — so a process that ignored the signal,
+        or one we had no permission to signal, was reported cancelled while it
+        carried on running. The status is now written only once the process is
+        confirmed gone.
+
+        The pre-spawn case is claimed under a *single* lock hold. Observing
+        "nothing to signal", releasing, and reacquiring to write the status let
+        `_run` slip between the two: it saw a still-`queued` job, spawned the
+        process, and the write that followed labelled a running process
+        `cancelled` without ever signalling it.
+        """
         job = self._jobs.get(job_id)
         if not job:
             return {"error": "job not found"}
-        with job._lock:  # atomic with _run's terminal-status write
+        with job._lock:  # atomic with _run's spawn claim and terminal write
             if job.status in ("done", "failed", "cancelled"):
                 return {"ok": True, "status": job.status}
-            job.status = "cancelled"
-        if job._proc:
-            try:
-                job._proc.terminate()
-            except Exception:  # noqa: BLE001
-                pass
-        return {"ok": True, "status": "cancelled"}
+            proc = job._proc
+            pgid = job._pgid
+            if proc is None:
+                # Not spawned yet, and `_run` claims its transition to
+                # `running` under this same lock — so it will see this and
+                # start nothing.
+                job.status = "cancelled"
+        if proc is None:
+            late = job._proc
+            if late is not None:  # a spawn we did not expect: stop it anyway
+                _stop_process_group(late, job._pgid)
+            return {"ok": True, "status": "cancelled"}
+
+        stopped, detail = _stop_process_group(proc, pgid)
+        # "already exited" means the process was gone before we signalled — it
+        # finished on its own, not because we stopped it. Any other success
+        # detail ("exited on SIGTERM", "killed") means our signal ended it.
+        finished_on_its_own = detail == "already exited"
+        if stopped and finished_on_its_own:
+            # The process was reaped before our signal did anything, so `_run`
+            # is about to publish (or already published) its real terminal exit
+            # code. Gating on `job.status` already being terminal was a race:
+            # `_run` records asynchronously *after* the process is reaped, so a
+            # cancel landing in that window found status still `running`, took
+            # the else branch, and stamped `cancelled` over a job that actually
+            # succeeded (rc 0). Never write `cancelled` when we did not stop it;
+            # join `_run` briefly so we report the true outcome, not a transient
+            # `running`.
+            worker = job._thread
+            if worker is not None and worker is not threading.current_thread():
+                worker.join(timeout=self._TERMINAL_JOIN_S)
+            with job._lock:
+                status = job.status
+        else:
+            with job._lock:
+                if stopped:
+                    # We ended it (or it is not terminal yet), which overrides
+                    # the `failed` `_run` derives from the signal-killed exit.
+                    job.status = "cancelled"
+                status = job.status
+        if not stopped:
+            job.append(f"\n[job] cancel failed: {detail}\n")
+            return {
+                "ok": False,
+                "status": status,
+                "error": f"the job is still running: {detail}",
+            }
+        return {"ok": True, "status": status}
 
     def list(self) -> list[dict]:
         with self._lock:

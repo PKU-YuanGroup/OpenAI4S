@@ -151,7 +151,7 @@ Neighbours: {neighbours}
   Fix and re-save until both pass — do not ship a panel that fails either check.
 - Design rules {rules_ref} apply in full.
 
-`save_artifacts(['panel_{letter}.png'], language='python')`; return `figure_filename` and `labels_used`."""
+`host.save_artifact('panel_{letter}.png')`; return `figure_filename` and `labels_used`."""
 
 
 def compose_crops(outline, dpi=300, gutter_mm=4, pad_px=4):

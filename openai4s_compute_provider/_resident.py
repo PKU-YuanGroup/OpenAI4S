@@ -188,10 +188,29 @@ class ByocResident:
                 return True
             except Exception:
                 return False
-        # Linux: confined <=> a network-namespace unshare put us in a fresh
-        # netns. Compare against the host's netns inode (passed via env at
-        # spawn); comparing against PID 1's fails under a pid-namespace
-        # unshare, and iface enumeration is brittle.
+        # Linux: the invariant is the *filesystem* one, matching macOS. A
+        # network-namespace check was the original design, and a helper whose
+        # whole job is calling a provider's REST API cannot live in an empty
+        # netns without a host egress proxy in front of it — so it could never
+        # pass, and Linux stayed unconfined waiting for a decision. Network
+        # isolation is now a separate capability that the host reports on
+        # explicitly; this asks only whether the user's home has been replaced.
+        #
+        # `$HOME` under bwrap's `--tmpfs` is readable and *empty*, not EPERM, so
+        # emptiness cannot be the test — an empty home is a legitimate home.
+        # The host passes the device id of the real home and a differing one in
+        # here means the tmpfs is mounted. Same shape as the netns-inode anchor
+        # this replaces: the value has to come from outside, because a confined
+        # process cannot obtain it.
+        home = os.path.expanduser("~")
+        host_dev = os.environ.get("OPENAI4S_HOST_HOME_DEV")
+        if host_dev:
+            try:
+                return os.stat(home).st_dev != int(host_dev)
+            except (OSError, ValueError):
+                return False
+        # No anchor supplied: fall back to the netns comparison a host a
+        # release behind may still be establishing.
         try:
             mine = os.stat("/proc/self/ns/net").st_ino
         except OSError:
@@ -309,23 +328,40 @@ class ByocResident:
         try:
             owner = self._p.read_owner(sid)
         except Exception:
-            self._best_effort_terminate(sid)
+            self._best_effort_terminate(sid, stage=self._stage(req))
             raise
         if owner != req["install_id"]:
-            self._best_effort_terminate(sid)
+            gone = self._best_effort_terminate(sid, stage=self._stage(req))
             raise ByocError(
                 "ownership_mismatch",
                 f"created sandbox {sid} but its owner tag read back as "
                 f"{owner!r}, not this openai4s install — refusing to "
-                f"proceed (sandbox has been best-effort terminated).",
+                f"proceed (sandbox has been "
+                + ("terminated" if gone else "left running — terminate it by hand")
+                + ").",
             )
         return {"ok": True, "sandbox_id": sid}
 
-    def _best_effort_terminate(self, sid: str) -> None:
+    def _best_effort_terminate(self, sid: str, stage: str | None = None) -> bool:
+        """Terminate, and report whether it was *confirmed*.
+
+        The host reads ``stage/sandbox_id`` to learn about a sandbox a dying
+        helper never got to mention. Clearing that file on a confirmed
+        terminate is what keeps the signal honest in both directions: present
+        means "may still exist and may still bill", absent means "nothing was
+        left behind". Swallowing the terminate failure and clearing anyway
+        would recreate the orphan the file exists to prevent.
+        """
         try:
             self._p.terminate(sid)
         except Exception:
-            pass
+            return False
+        if stage:
+            try:
+                os.unlink(os.path.join(stage, "sandbox_id"))
+            except OSError:
+                pass
+        return True
 
     @staticmethod
     def _drain_wait(r) -> int:

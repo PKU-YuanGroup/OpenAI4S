@@ -1,0 +1,1075 @@
+"""Environments as a transaction: plan, apply into a new generation, or roll back.
+
+`openai4s setup` installed *in place*. `conda env create` into an existing name
+either refuses or, with `--update`, mutates the environment the running kernels
+are using — so an interrupted or failed update left a half-changed environment
+that nothing could describe, and there was no previous state to return to. An
+artifact's environment provenance can name a generation only if generations
+exist.
+
+The model, decided by the owner:
+
+* **plan** produces a change plan and touches nothing;
+* **apply** builds a *new* generation, verifies it, and only then moves the
+  current pointer;
+* a failed apply leaves the current environment exactly as it was;
+* **rollback** is a pointer move back to a generation that is still on disk;
+* an applied generation is immutable — nothing is ever rewritten in place.
+
+## Why the pointer is a file and the swap is a rename
+
+``os.replace`` is atomic on POSIX and on Windows, so a reader either sees the
+whole old pointer or the whole new one — never a truncated file, and never a
+directory mid-rebuild. The alternative, mutating a well-known prefix, has no
+instant at which the change is complete: a kernel spawning during the write
+gets an environment that is neither.
+
+## Layout
+
+    <data_dir>/environments/<name>/
+        current                       # one line: the active generation id
+        generations/<id>/
+            manifest.json             # spec hash, tool, state, packages, times
+            prefix/                   # the environment itself
+        history.jsonl                 # append-only, what happened and when
+
+The environment is built **at its final prefix**, not in a staging directory
+that is renamed — Conda bakes the absolute prefix into scripts, activation
+hooks and package metadata, so a relocated environment is broken. What is made
+atomic is instead the generation's *visibility*: ``manifest.json`` is written
+last, and the ``current`` pointer is flipped last. While a build is in flight
+the directory holds a ``building.json`` and no manifest, so ``get``/``list``
+ignore it and discovery never serves it; a crash therefore leaves something
+visibly not a generation, cleaned up by ``recover``/``discard``.
+"""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import re
+import shutil
+import subprocess
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Sequence
+
+#: What a generation id may look like. One path component: the ids this module
+#: mints are ``env-<16 hex>``, and the charset stays a little wider than that so
+#: a directory made by hand still resolves — but never wide enough to contain a
+#: separator, to be ``.``/``..``, or to start with a dot.
+_GENERATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _is_within(path: str | os.PathLike[str], parent: Path) -> bool:
+    """Whether ``path`` resolves inside ``parent``. Symlink-resistant."""
+    try:
+        resolved = Path(os.path.realpath(str(path)))
+        root = Path(os.path.realpath(str(parent)))
+    except OSError:  # pragma: no cover - unreadable path
+        return False
+    return resolved == root or root in resolved.parents
+
+
+#: Generation states. Only ``ready`` may ever be pointed at.
+STAGING = "staging"
+READY = "ready"
+FAILED = "failed"
+SUPERSEDED = "superseded"
+
+#: Plan actions.
+CREATE = "create"
+REPLACE = "replace"
+NOOP = "noop"
+
+#: Written while a generation is being built at its final location, and removed
+#: (or replaced by ``manifest.json``) when it finishes. Its presence — with no
+#: manifest — is what marks a directory as an abandoned build rather than a
+#: generation, now that the bytes are no longer built in a separate staging dir
+#: and renamed.
+_BUILDING = "building.json"
+
+Runner = Callable[[Sequence[str], Path], "subprocess.CompletedProcess[bytes]"]
+
+
+class EnvironmentError_(RuntimeError):
+    """A transaction that could not be carried out. The current env is intact."""
+
+
+class ConcurrentApply(EnvironmentError_):
+    """Another apply holds this environment's lock."""
+
+
+class ImmutableGeneration(EnvironmentError_):
+    """An applied generation may not be modified."""
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+#: A probe that has not answered in this long is a broken environment, not a
+#: slow one — nothing here does work, it only starts an interpreter.
+PROBE_TIMEOUT_S = 60.0
+
+
+def _run_probe(argv: Sequence[str], *, label: str) -> None:
+    """Start a freshly-built interpreter and require it to exit cleanly.
+
+    Confined, because the interpreter being verified is *foreign*: a hostile
+    Python `.pth`/sitecustomize or a substituted executable runs before the
+    probe's own code, so a bare launch would inherit the CLI's full
+    environment — including keys loaded from `.env` — and touch daemon files
+    and the network. The shared confined path scrubs the environment and, where
+    a boundary can be built, applies the OS sandbox; under
+    ``OPENAI4S_KERNEL_SANDBOX=enforce`` it fails closed rather than degrade.
+    """
+    from openai4s.kernel import preinstall
+
+    try:
+        completed = preinstall.run_confined_probe(
+            [str(part) for part in argv], timeout=PROBE_TIMEOUT_S
+        )
+    except PermissionError as e:
+        raise EnvironmentError_(f"{label} is not executable: {e}")
+    except (FileNotFoundError, OSError) as e:
+        raise EnvironmentError_(f"{label} could not start: {e}")
+    except subprocess.TimeoutExpired:
+        raise EnvironmentError_(f"{label} did not finish within {PROBE_TIMEOUT_S:.0f}s")
+    except Exception as e:  # noqa: BLE001 - enforce with no boundary is a refusal
+        raise EnvironmentError_(
+            f"{label} could not be verified under the required OS boundary: {e}"
+        )
+    if completed.returncode != 0:
+        raise EnvironmentError_(
+            f"{label} exited {completed.returncode}: "
+            f"{_tail(completed.stderr) or 'no stderr'}"
+        )
+
+
+def probe_interpreter(prefix: Path) -> tuple[str, list[str]]:
+    """Run what the build produced. Nothing short of that proves it works.
+
+    The previous check asked whether a file *existed* at ``bin/python`` or
+    ``bin/Rscript``, and then tried to freeze the Python one — with the freeze
+    failure swallowed into an empty package list. So a prefix holding a
+    non-executable file, or an interpreter that dies on startup, passed; and an
+    R generation was never executed at all. The pointer could move onto an
+    environment that no cell could run in, with the transaction reporting that
+    it had verified it.
+
+    Returns ``(interpreter, packages)``. The package list is documentation, not
+    the gate: the probe above it is the gate, so a freeze that fails leaves the
+    list empty without pretending the environment is broken.
+    """
+    prefix = Path(prefix)
+    python = prefix / "bin" / "python"
+    if not python.is_file():
+        python = prefix / "bin" / "python3"
+    rscript = prefix / "bin" / "Rscript"
+    if not python.is_file() and not rscript.is_file():
+        raise EnvironmentError_(
+            f"the build produced no interpreter under {prefix}; refusing to "
+            f"make it current"
+        )
+
+    interpreter = ""
+    packages: list[str] = []
+    if python.is_file():
+        _run_probe(
+            [
+                str(python),
+                "-c",
+                "import sys, platform; print(platform.python_version())",
+            ],
+            label=f"python probe for {python}",
+        )
+        interpreter = str(python)
+        try:
+            from openai4s.kernel import preinstall
+
+            frozen = preinstall.freeze_for(str(python)) or []
+            packages = [f"{item['name']}=={item.get('version')}" for item in frozen]
+        except Exception:  # noqa: BLE001 - a package list is not the gate
+            packages = []
+    if rscript.is_file():
+        _run_probe(
+            [str(rscript), "--vanilla", "-e", "cat(R.version.string)"],
+            label=f"R probe for {rscript}",
+        )
+        if not interpreter:
+            interpreter = str(rscript)
+    return interpreter, packages
+
+
+def _default_runner(argv: Sequence[str], cwd: Path):
+    return subprocess.run(
+        [str(part) for part in argv], cwd=str(cwd), capture_output=True, timeout=3600
+    )
+
+
+@dataclass(frozen=True)
+class Generation:
+    """One immutable build of one environment."""
+
+    id: str
+    name: str
+    state: str
+    spec_sha256: str
+    prefix: str
+    created_at: int
+    tool: str = ""
+    packages: tuple[str, ...] = ()
+    interpreter: str = ""
+    detail: str = ""
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "generation_id": self.id,
+            "environment": self.name,
+            "state": self.state,
+            "spec_sha256": self.spec_sha256,
+            "prefix": self.prefix,
+            "created_at": self.created_at,
+            "tool": self.tool,
+            "package_count": len(self.packages),
+            "interpreter": self.interpreter,
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
+class Plan:
+    """What an apply would do. Produced without touching anything."""
+
+    name: str
+    action: str
+    spec_sha256: str
+    reason: str
+    from_generation: str | None = None
+    commands: tuple[tuple[str, ...], ...] = ()
+
+    @property
+    def changes(self) -> bool:
+        return self.action != NOOP
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "environment": self.name,
+            "action": self.action,
+            "spec_sha256": self.spec_sha256,
+            "reason": self.reason,
+            "from_generation": self.from_generation,
+            "commands": [list(c) for c in self.commands],
+            "changes": self.changes,
+        }
+
+
+@dataclass
+class ApplyResult:
+    """The outcome of one apply, whichever way it went."""
+
+    name: str
+    ok: bool
+    generation: Generation | None
+    previous: str | None
+    detail: str = ""
+    stderr_tail: str = ""
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "environment": self.name,
+            "ok": self.ok,
+            "generation": self.generation.public() if self.generation else None,
+            "previous_generation": self.previous,
+            "detail": self.detail,
+            "stderr_tail": self.stderr_tail,
+        }
+
+
+class EnvironmentStore:
+    """The on-disk transaction. One instance per data directory."""
+
+    def __init__(self, root: str | os.PathLike[str], *, runner: Runner | None = None):
+        self.root = Path(root)
+        self._runner = runner or _default_runner
+
+    # --- layout -----------------------------------------------------------
+    def _env_dir(self, name: str) -> Path:
+        safe = str(name or "").strip()
+        if not safe or "/" in safe or safe in (".", ".."):
+            raise EnvironmentError_(f"invalid environment name {name!r}")
+        return self.root / safe
+
+    def _generations_dir(self, name: str) -> Path:
+        return self._env_dir(name) / "generations"
+
+    def _pointer(self, name: str) -> Path:
+        return self._env_dir(name) / "current"
+
+    @staticmethod
+    def _valid_generation_id(generation_id: Any) -> str | None:
+        """A bare directory name, or None.
+
+        `generation_id` reaches this from the CLI (`openai4s env rollback
+        python <id>`) and from the pointer file, and it was joined straight
+        onto a path. `../../r/generations/env-R` therefore resolved into the
+        *R* tree: if that manifest was READY and its prefix existed, rollback
+        wrote the traversal string into `python/current`, Python discovery
+        selected an R prefix, and every artifact built in it recorded Python
+        provenance. Wrong provenance that is believed is worse than none.
+
+        So: one path component, no separators, no dot-only names, no leading
+        dot (a build-in-flight is not addressable either).
+        """
+        text = str(generation_id or "").strip()
+        if not text or not _GENERATION_ID_RE.match(text):
+            return None
+        return text
+
+    def _generation_dir(self, name: str, generation_id: str) -> Path | None:
+        """The directory for a generation id, proven to be a child of this
+        environment's own `generations/`. Returns None when it is not.
+
+        The regex already excludes traversal; this also refuses a symlinked
+        child, which no amount of name checking can catch.
+        """
+        ident = self._valid_generation_id(generation_id)
+        if ident is None:
+            return None
+        root = self._generations_dir(name)
+        candidate = root / ident
+        if candidate.is_symlink():
+            return None
+        try:
+            if candidate.resolve().parent != root.resolve():
+                return None
+        except OSError:  # pragma: no cover - unreadable parent
+            return None
+        return candidate
+
+    # --- reads ------------------------------------------------------------
+    def current_id(self, name: str) -> str | None:
+        try:
+            text = self._pointer(name).read_text("utf-8").strip()
+        except OSError:
+            return None
+        # Validated on the way *out* as well as on the way in: a pointer written
+        # by an older build, or edited by hand, must not become a path join.
+        return self._valid_generation_id(text)
+
+    def current(self, name: str) -> Generation | None:
+        generation_id = self.current_id(name)
+        return self.get(name, generation_id) if generation_id else None
+
+    def get(self, name: str, generation_id: str) -> Generation | None:
+        ident = self._valid_generation_id(generation_id)
+        directory = self._generation_dir(name, generation_id)
+        if ident is None or directory is None:
+            return None
+        try:
+            record = json.loads((directory / "manifest.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            return None
+        # The manifest has to agree that it *is* this generation of this
+        # environment. A record naming another environment is not a legacy
+        # record with a field missing — it is a record from somewhere else, and
+        # borrowing it is how one environment comes to be labelled as another.
+        declared_id = str(record.get("generation_id") or ident)
+        declared_env = str(record.get("environment") or name)
+        if declared_id != ident or declared_env != name:
+            return None
+        prefix = str(record.get("prefix") or "")
+        # ...and the bytes it points at must be the ones in this directory.
+        if prefix and not _is_within(prefix, directory):
+            return None
+        return Generation(
+            id=declared_id,
+            name=declared_env,
+            state=str(record.get("state") or STAGING),
+            spec_sha256=str(record.get("spec_sha256") or ""),
+            prefix=prefix,
+            created_at=int(record.get("created_at") or 0),
+            tool=str(record.get("tool") or ""),
+            packages=tuple(record.get("packages") or ()),
+            interpreter=str(record.get("interpreter") or ""),
+            detail=str(record.get("detail") or ""),
+        )
+
+    def list(self, name: str) -> list[Generation]:
+        directory = self._generations_dir(name)
+        if not directory.is_dir():
+            return []
+        # `get` keys on `manifest.json`, which a half-built or failed directory
+        # does not have (it has `building.json`) — so an abandoned build is not
+        # in the list, exactly as it was not when builds lived under `.staging-`.
+        found = [self.get(name, child.name) for child in sorted(directory.iterdir())]
+        return [g for g in found if g is not None]
+
+    def environments(self) -> list[str]:
+        if not self.root.is_dir():
+            return []
+        return sorted(
+            child.name
+            for child in self.root.iterdir()
+            if child.is_dir() and not child.name.startswith(".")
+        )
+
+    def history(self, name: str, limit: int = 200) -> list[dict[str, Any]]:
+        path = self._env_dir(name) / "history.jsonl"
+        try:
+            lines = path.read_text("utf-8").splitlines()
+        except OSError:
+            return []
+        out = []
+        for line in lines[-limit:]:
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+        return out
+
+    # --- plan -------------------------------------------------------------
+    def plan(self, name: str, spec: str | os.PathLike[str], *, tool: str) -> Plan:
+        """What would change. Reads only."""
+        spec_path = Path(spec)
+        try:
+            digest = _sha256_file(spec_path)
+        except OSError as e:
+            raise EnvironmentError_(f"cannot read the spec for {name!r}: {e}") from e
+        active = self.current(name)
+        if active is None:
+            return Plan(
+                name=name,
+                action=CREATE,
+                spec_sha256=digest,
+                reason="no generation is current for this environment",
+                commands=(("<create>", tool, str(spec_path)),),
+            )
+        if active.spec_sha256 == digest:
+            return Plan(
+                name=name,
+                action=NOOP,
+                spec_sha256=digest,
+                reason=(
+                    f"generation {active.id} already matches this spec; "
+                    f"nothing to do"
+                ),
+                from_generation=active.id,
+            )
+        return Plan(
+            name=name,
+            action=REPLACE,
+            spec_sha256=digest,
+            reason=(
+                f"the spec changed since generation {active.id} "
+                f"({active.spec_sha256[:12]} -> {digest[:12]})"
+            ),
+            from_generation=active.id,
+            commands=(("<create>", tool, str(spec_path)),),
+        )
+
+    # --- apply ------------------------------------------------------------
+    def apply(
+        self,
+        plan: Plan,
+        spec: str | os.PathLike[str],
+        *,
+        tool: str,
+        build: Callable[[Path], Sequence[str]],
+        verify: Callable[[Path], tuple[str, list[str]]] | None = None,
+    ) -> ApplyResult:
+        """Build a new generation and, only if it verifies, make it current.
+
+        ``build(prefix) -> argv`` is the command that installs into a prefix
+        that does not exist yet; ``verify(prefix) -> (interpreter, packages)``
+        is what proves it works. Both are injected so the transaction can be
+        tested without a package manager, and so a caller can supply conda,
+        mamba or micromamba without this module knowing about any of them.
+        """
+        name = plan.name
+        previous = self.current_id(name)
+
+        env_dir = self._env_dir(name)
+        env_dir.mkdir(parents=True, exist_ok=True)
+        self._generations_dir(name).mkdir(parents=True, exist_ok=True)
+
+        with _apply_lock(env_dir):
+            # Compared against the generation the *plan* was made against, not
+            # against a value re-read a line earlier — that would always agree
+            # with itself and check nothing. Another apply landing between the
+            # plan and here means the plan describes a world that no longer
+            # exists, and building on it is how two applies both "succeed"
+            # while one silently loses.
+            observed = self.current_id(name)
+            if observed != plan.from_generation:
+                raise ConcurrentApply(
+                    f"environment {name!r} moved from {plan.from_generation!r} "
+                    f"to {observed!r} while this apply was planning; re-plan "
+                    f"against the new current generation"
+                )
+            previous = observed
+
+            # A no-op is a claim too: "nothing changed since the plan". Validate
+            # it under the *same* lock and the same checks, because a spec edited
+            # or a pointer moved between plan and apply means that claim is now
+            # false — and returning success without checking reported an env
+            # that no longer matched the plan.
+            if not plan.changes:
+                live_spec = Path(spec)
+                try:
+                    current_sha = _sha256_file(live_spec)
+                except OSError as e:
+                    raise EnvironmentError_(
+                        f"the spec for {name!r} could not be read at apply "
+                        f"time: {e}"
+                    )
+                if current_sha != plan.spec_sha256:
+                    raise EnvironmentError_(
+                        f"the spec for {name!r} changed since the no-op plan "
+                        f"was made ({plan.spec_sha256[:12]} -> "
+                        f"{current_sha[:12]}); re-plan"
+                    )
+                return ApplyResult(
+                    name, True, self.current(name), previous, plan.reason
+                )
+            # The spec is re-hashed *here*, under the lock, and then copied.
+            # The manifest recorded `plan.spec_sha256` while the build read the
+            # live YAML through a path captured at plan time, so a file edited
+            # in between produced a generation whose recorded provenance did
+            # not describe its contents — which is worse than no provenance,
+            # because it is believed.
+            live = Path(spec)
+            try:
+                observed_sha = _sha256_file(live)
+            except OSError as e:
+                raise EnvironmentError_(
+                    f"the spec for {name!r} could not be read at apply time: {e}"
+                )
+            if observed_sha != plan.spec_sha256:
+                raise EnvironmentError_(
+                    f"the spec for {name!r} changed between plan and apply "
+                    f"({plan.spec_sha256[:12]} -> {observed_sha[:12]}); "
+                    f"re-plan against the file as it stands now"
+                )
+
+            generation_id = "env-" + uuid.uuid4().hex[:16]
+            # Build *at the final prefix*, not in a staging directory that is
+            # later renamed. Conda bakes the environment's absolute prefix into
+            # scripts, activation hooks, and package metadata, so renaming
+            # `.staging-<id>/prefix` to `generations/<id>/prefix` produced a
+            # generally unusable environment — and the recorded interpreter
+            # still named the vanished staging path. What must be atomic is the
+            # *visibility* of the generation, not the location of its bytes.
+            #
+            # Visibility comes from two things, both flipped last: the `ready`
+            # marker (so `get`/`list` ignore a half-built directory) and the
+            # `current` pointer (so discovery never serves one). A crash mid-
+            # build therefore leaves a `generations/<id>` with a `building.json`
+            # and no `manifest.json` — visibly not a generation, and cleaned up
+            # by `recover`/`discard` exactly as the old `.staging-` dir was.
+            gen_dir = self._generations_dir(name) / generation_id
+            if gen_dir.exists():  # pragma: no cover - a uuid collision
+                shutil.rmtree(gen_dir, ignore_errors=True)
+            gen_dir.mkdir(parents=True)
+            # Build from an immutable copy. Re-hashing before the copy closes
+            # the plan→apply window; re-hashing the *copy* closes the tiny
+            # apply-hash→copy window, where an atomic editor replace could swap
+            # the live file after we hashed it but before this read — the apply
+            # lock does not order ordinary file edits. The manifest must never
+            # record a hash the staged bytes do not have.
+            staged_spec = gen_dir / f"spec{live.suffix or '.yml'}"
+            shutil.copyfile(live, staged_spec)
+            staged_sha = _sha256_file(staged_spec)
+            if staged_sha != plan.spec_sha256:
+                shutil.rmtree(gen_dir, ignore_errors=True)
+                raise EnvironmentError_(
+                    f"the spec for {name!r} changed while it was being copied "
+                    f"for the build ({plan.spec_sha256[:12]} -> "
+                    f"{staged_sha[:12]}); re-plan"
+                )
+            prefix = gen_dir / "prefix"
+            record = {
+                "generation_id": generation_id,
+                "environment": name,
+                "state": STAGING,
+                "spec_sha256": plan.spec_sha256,
+                "prefix": str(prefix),
+                "created_at": _now_ms(),
+                "tool": tool,
+            }
+            # `building.json`, not `manifest.json`: until the build succeeds this
+            # directory is not a generation, and `get`/`list` key on the
+            # manifest's presence.
+            _write_json(gen_dir / _BUILDING, record)
+
+            # `stderr` is bound before the try so a build() that raises before
+            # the runner ever ran cannot reach the failure path with an unbound
+            # name — the failure handler must never be the thing that fails.
+            stderr = ""
+            try:
+                argv = build(prefix, staged_spec)
+                completed = self._runner(argv, env_dir)
+                stderr = _tail(getattr(completed, "stderr", b""))
+                if completed.returncode != 0:
+                    raise EnvironmentError_(
+                        f"{tool} exited {completed.returncode} building {name!r}"
+                    )
+                # No verifier means the *default* verifier, never no check.
+                # `("", [])` let a caller that simply did not pass one move the
+                # pointer onto an unexamined prefix.
+                interpreter, packages = (
+                    verify(prefix) if verify is not None else probe_interpreter(prefix)
+                )
+            except Exception as e:  # noqa: BLE001
+                detail = (
+                    str(e)
+                    if isinstance(e, EnvironmentError_)
+                    else f"{type(e).__name__}: {e}"
+                )
+                return self._fail(name, gen_dir, record, detail, stderr)
+
+            record.update(
+                {
+                    "state": READY,
+                    "interpreter": interpreter,
+                    "packages": list(packages),
+                }
+            )
+            # The manifest is written last and atomically: a reader sees either
+            # no manifest (not a generation) or a complete READY one. Only then
+            # is the building marker removed.
+            _write_json(gen_dir / "manifest.json", record)
+            (gen_dir / _BUILDING).unlink(missing_ok=True)
+            self._point_at(name, generation_id)
+            self._log(
+                name,
+                "applied",
+                {
+                    "generation_id": generation_id,
+                    "previous": previous,
+                    "spec_sha256": plan.spec_sha256,
+                },
+            )
+            if previous:
+                self._mark_superseded(name, previous)
+        return ApplyResult(name, True, self.get(name, generation_id), previous)
+
+    def _fail(
+        self, name: str, gen_dir: Path, record: dict, detail: str, stderr: str
+    ) -> ApplyResult:
+        """Record the failure without touching the current environment."""
+        record.update({"state": FAILED, "detail": detail})
+        try:
+            # The failure marker, not a manifest: a directory with a
+            # `building.json` and no `manifest.json` is evidence of an abandoned
+            # build, which `get`/`list` ignore and `recover`/`discard` clean up.
+            # Nothing points at it and it can never become current.
+            _write_json(gen_dir / _BUILDING, record)
+        except OSError:  # pragma: no cover
+            pass
+        self._log(name, "apply_failed", {"detail": detail})
+        return ApplyResult(
+            name,
+            False,
+            None,
+            self.current_id(name),
+            detail=detail,
+            stderr_tail=stderr,
+        )
+
+    # --- rollback ---------------------------------------------------------
+    def rollback(self, name: str, generation_id: str) -> ApplyResult:
+        """Point at a generation that is already on disk.
+
+        Nothing is rebuilt, which is the whole value of keeping them: the
+        environment that worked an hour ago is still byte-for-byte there.
+
+        The id is confined to ``<name>``'s own generations first. This is the
+        one entry point that takes an id straight from the operator
+        (``openai4s env rollback python <id>``) and turns it into a pointer
+        every later kernel spawn reads, so a `../../r/generations/env-R` here
+        selects an R prefix for Python and stamps its provenance as Python.
+        """
+        ident = self._valid_generation_id(generation_id)
+        if ident is None:
+            raise EnvironmentError_(
+                f"invalid generation id {generation_id!r}; expected the bare id "
+                f"of a generation of {name!r}, not a path"
+            )
+        target = self.get(name, ident)
+        if target is None:
+            raise EnvironmentError_(f"no generation {ident!r} for environment {name!r}")
+        # `get` already bound the manifest's id, environment and prefix to this
+        # directory; asserting it again here is cheap and keeps the guarantee
+        # attached to the write rather than to a read someone might change.
+        directory = self._generation_dir(name, ident)
+        if (
+            directory is None
+            or target.id != ident
+            or target.name != name
+            or not _is_within(target.prefix, directory)
+        ):
+            raise EnvironmentError_(
+                f"generation {generation_id!r} does not belong to environment "
+                f"{name!r}; refusing to point {name!r} at it"
+            )
+        if target.state not in (READY, SUPERSEDED):
+            raise EnvironmentError_(
+                f"generation {generation_id!r} is {target.state!r}; only a "
+                f"generation that finished building can be made current"
+            )
+        if not Path(target.prefix).exists():
+            raise EnvironmentError_(
+                f"generation {generation_id!r} no longer has its prefix on "
+                f"disk ({target.prefix}); it cannot be restored by pointer"
+            )
+        # `previous`, the pointer move, and the history append happen under one
+        # lock. Reading `previous` before the lock let an apply that ran while
+        # this rollback waited move the pointer X->Y, so the rollback recorded
+        # and returned X though it displaced Y; appending history after the lock
+        # let another operation be logged in between. All three inside keeps the
+        # record consistent with what actually happened.
+        with _apply_lock(self._env_dir(name)):
+            previous = self.current_id(name)
+            self._point_at(name, ident)
+            self._log(
+                name,
+                "rolled_back",
+                {"generation_id": ident, "previous": previous},
+            )
+        return ApplyResult(name, True, target, previous, "pointer moved")
+
+    # --- immutability -----------------------------------------------------
+    def assert_mutable(self, name: str, generation_id: str) -> None:
+        """Refuse to modify a generation that has finished building."""
+        generation = self.get(name, generation_id)
+        if generation is not None and generation.state != STAGING:
+            raise ImmutableGeneration(
+                f"generation {generation_id!r} of {name!r} is {generation.state!r} "
+                f"and may not be modified; apply a new generation instead"
+            )
+
+    # --- recovery ---------------------------------------------------------
+    def recover(self, name: str) -> dict[str, Any]:
+        """What a restart should know about this environment.
+
+        The pointer only ever moves to a verified generation, so `current` is
+        always usable — the interesting part is what was abandoned mid-build.
+        """
+        env_dir = self._env_dir(name)
+        abandoned = []
+        # A build in flight has a `building.json` and no manifest — exactly the
+        # shape of an abandoned one. But while `apply()` holds the lock and conda
+        # is still writing the prefix, calling it abandoned invites a cleanup
+        # (`discard()`) that deletes the prefix mid-write and fails the live
+        # transaction. `_apply_in_progress` asks the kernel whether a process
+        # currently holds the flock: a live apply is protected, and a crashed
+        # one — whose lock the kernel already released — is not, so its build is
+        # correctly reported abandoned with no mtime heuristic to get wrong.
+        apply_in_progress = _apply_in_progress(env_dir)
+
+        def _record_abandoned(child: Path) -> None:
+            marker = child / _BUILDING
+            try:
+                record = json.loads(marker.read_text("utf-8"))
+            except (OSError, ValueError):
+                record = {"state": "unknown"}
+            abandoned.append(
+                {
+                    "path": str(child),
+                    "generation_id": record.get("generation_id") or child.name,
+                    "state": record.get("state", "unknown"),
+                    "detail": record.get("detail", ""),
+                }
+            )
+
+        generations = self._generations_dir(name)
+        if generations.is_dir():
+            for child in sorted(generations.iterdir()):
+                if not child.is_dir():
+                    continue
+                # A directory built at its final location is a generation once
+                # it has a manifest; anything without one — a `building.json`
+                # from a crashed or failed build, or a half-removed dir — is an
+                # abandoned build, unless an apply is actively holding the lock,
+                # in which case it may be the build in progress.
+                if (child / "manifest.json").is_file():
+                    continue
+                if apply_in_progress:
+                    continue
+                _record_abandoned(child)
+        # Legacy layout: builds that used to live under `.staging-` before the
+        # move to final-prefix builds. Still cleaned up so an upgrade does not
+        # strand them.
+        if env_dir.is_dir():
+            for child in sorted(env_dir.iterdir()):
+                if not child.name.startswith(".staging-"):
+                    continue
+                try:
+                    record = json.loads((child / "manifest.json").read_text("utf-8"))
+                except (OSError, ValueError):
+                    record = {"state": "unknown"}
+                abandoned.append(
+                    {
+                        "path": str(child),
+                        "generation_id": record.get("generation_id"),
+                        "state": record.get("state", "unknown"),
+                        "detail": record.get("detail", ""),
+                    }
+                )
+        return {
+            "environment": name,
+            "current": self.current_id(name),
+            "abandoned": abandoned,
+            # There are no stale apply locks under flock — a crashed apply's lock
+            # is released by the kernel — so what a restart can usefully know is
+            # whether an apply is *currently* running.
+            "apply_in_progress": apply_in_progress,
+        }
+
+    def discard(self, name: str, path: str) -> bool:
+        """Remove one abandoned build. Refuses anything that is a generation."""
+        candidate = Path(path)
+        env_dir = self._env_dir(name).resolve()
+        try:
+            candidate.resolve().relative_to(env_dir)
+        except ValueError:
+            raise EnvironmentError_(f"{path!r} is not inside {env_dir}")
+        legacy = candidate.name.startswith(".staging-")
+        # A generation is a directory under `generations/` with a manifest.
+        # A build that never got one — `building.json` present, or nothing —
+        # is discardable; a real generation is immutable and never current.
+        in_generations = (
+            candidate.parent.resolve() == self._generations_dir(name).resolve()
+        )
+        is_generation = in_generations and (candidate / "manifest.json").is_file()
+        if is_generation or (not legacy and not in_generations):
+            raise ImmutableGeneration(
+                f"{path!r} is not an abandoned build; applied generations are "
+                f"immutable and are removed by pruning, not by discard"
+            )
+        if in_generations and candidate.name == self.current_id(name):
+            raise ImmutableGeneration(
+                f"{path!r} is the current generation and cannot be discarded"
+            )
+        shutil.rmtree(candidate, ignore_errors=True)
+        return not candidate.exists()
+
+    # --- internals --------------------------------------------------------
+    def _point_at(self, name: str, generation_id: str) -> None:
+        """Move the pointer atomically, and tell discovery it moved.
+
+        A reader sees one id or the other. The cache invalidation is here, at
+        the single place a pointer ever changes, rather than at each call site:
+        `apply` and `rollback` both reported a new current generation while
+        `kernel.environments` kept serving its module-wide cache, so the
+        transaction took effect only for processes that had not looked yet.
+
+        The last gate before a string becomes the thing discovery joins onto a
+        path. Nothing that is not a bare id is ever written here, whatever the
+        caller believed it had validated.
+        """
+        ident = self._valid_generation_id(generation_id)
+        if ident is None:
+            raise EnvironmentError_(
+                f"refusing to write {generation_id!r} as the current generation "
+                f"of {name!r}: it is not a bare generation id"
+            )
+        pointer = self._pointer(name)
+        temporary = pointer.with_name(f".current.{uuid.uuid4().hex[:8]}")
+        temporary.write_text(ident + "\n", encoding="utf-8")
+        os.replace(temporary, pointer)
+        try:
+            from openai4s.kernel import environments as envmod
+
+            envmod.invalidate_cache()
+        except Exception:  # noqa: BLE001 - a pointer move is not a discovery op
+            pass
+
+    def _mark_superseded(self, name: str, generation_id: str) -> None:
+        """Note that a generation is no longer current — without editing it.
+
+        The manifest of an applied generation is never rewritten, so this lives
+        beside it. `superseded` is still restorable; that is the point.
+        """
+        directory = self._generation_dir(name, generation_id)
+        if directory is None:
+            return
+        marker = directory / "superseded_at"
+        try:
+            marker.write_text(str(_now_ms()), encoding="utf-8")
+        except OSError:  # pragma: no cover
+            pass
+
+    def _log(self, name: str, kind: str, payload: dict[str, Any]) -> None:
+        path = self._env_dir(name) / "history.jsonl"
+        line = json.dumps({"at": _now_ms(), "kind": kind, **payload}, sort_keys=True)
+        try:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError:  # pragma: no cover
+            pass
+
+
+# --- helpers --------------------------------------------------------------
+
+
+def _tail(data: Any, limit: int = 4000) -> str:
+    """The end of a build's stderr — the part that says what went wrong."""
+    if isinstance(data, bytes):
+        text = data.decode("utf-8", "replace")
+    else:
+        text = str(data or "")
+    return text[-limit:]
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write atomically: a half-written manifest is an unreadable generation."""
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    os.replace(temporary, path)
+
+
+#: `flock` has no test-only mode, so `_apply_in_progress` probes by taking the
+#: lock and releasing it — holding it exclusively for a few instructions. A real
+#: apply starting in that microsecond window would otherwise be rejected with a
+#: spurious ``ConcurrentApply``. Retry a bounded number of times so a transient
+#: probe (or any momentary contention) clears, while a genuinely-held lock — a
+#: real apply holds it for the whole build, far longer than this budget — still
+#: fails.
+_LOCK_ACQUIRE_TRIES = 4
+_LOCK_ACQUIRE_BACKOFF_S = 0.01
+
+
+def _apply_in_progress(env_dir: Path) -> bool:
+    """Is another process *currently* applying this environment?
+
+    Probed by trying to take the apply lock non-blockingly and releasing it at
+    once. ``flock`` is held for the whole critical section and released by the
+    kernel the instant the holder dies, so this reports a live apply and never a
+    crashed one — exactly what ``recover`` needs to tell a build in progress
+    apart from an abandoned one.
+    """
+    lock = env_dir / "apply.lock"
+    if not lock.exists():
+        return False
+    try:
+        fd = os.open(lock, os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True  # someone holds it
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+class _apply_lock:
+    """One apply per environment at a time, held as an OS advisory lock.
+
+    Held with ``fcntl.flock`` on ``apply.lock`` for the whole critical section.
+    ``flock`` is the right primitive precisely because ownership lives in the
+    kernel rather than in the file's bytes: an exclusive holder blocks every
+    other ``LOCK_EX`` on the same inode — across processes *and* across threads
+    that opened it independently — and the kernel releases the lock the instant
+    the holding process dies.
+
+    That retires the entire stale-lock heuristic, and with it three rounds of
+    reclaim races. A plain ``O_CREAT|O_EXCL`` marker has no holder the kernel
+    understands, so any ``rename``/``replace`` could lift a live owner's lock
+    and leave two applies in the section at once; no amount of mtime-staleness
+    checking could make "lift only if truly dead" atomic with plain files. A
+    ``flock`` cannot be lifted by anyone but its holder or the holder's death,
+    so no third racer can win the slot from under an owner.
+
+    The lock file is created but never unlinked. It is a stable inode to lock,
+    not the lock itself — unlinking it while a holder lives would let a later
+    ``O_CREAT`` mint a *different* inode a second process could lock in
+    parallel, the classic ``flock``/``unlink`` race. A leftover file with no
+    live holder is harmless: the next applier simply locks it.
+    """
+
+    def __init__(self, env_dir: Path):
+        self._path = env_dir / "apply.lock"
+        self._fd: int | None = None
+
+    def __enter__(self):
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self._path, os.O_CREAT | os.O_RDWR, 0o600)
+        # Retry briefly: a concurrent recover() probe (or any momentary
+        # contention) holds the lock for a few instructions, and failing on that
+        # would reject a legitimate apply. A real apply holds the lock for the
+        # whole build, so it still fails once the retry budget is spent.
+        last: OSError | None = None
+        for attempt in range(_LOCK_ACQUIRE_TRIES):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                last = None
+                break
+            except OSError as exc:
+                last = exc
+                if attempt + 1 < _LOCK_ACQUIRE_TRIES:
+                    time.sleep(_LOCK_ACQUIRE_BACKOFF_S)
+        if last is not None:
+            os.close(fd)
+            raise ConcurrentApply(
+                f"another apply is in progress for this environment "
+                f"({self._path}); it releases the lock when it finishes or when "
+                f"its process exits"
+            ) from last
+        self._fd = fd
+        # Record the holder for a human reading the file; the lock is the flock,
+        # not these bytes, so this is diagnostic only and safe under the hold.
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        except OSError:  # pragma: no cover - diagnostics only
+            pass
+        return self
+
+    def __exit__(self, *_exc):
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            except OSError:  # pragma: no cover
+                pass
+            os.close(self._fd)
+            self._fd = None
+        return False
+
+
+__all__ = [
+    "ApplyResult",
+    "CREATE",
+    "ConcurrentApply",
+    "EnvironmentStore",
+    "EnvironmentError_",
+    "FAILED",
+    "Generation",
+    "ImmutableGeneration",
+    "NOOP",
+    "Plan",
+    "READY",
+    "REPLACE",
+    "STAGING",
+    "SUPERSEDED",
+]

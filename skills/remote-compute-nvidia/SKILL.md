@@ -1,6 +1,6 @@
 ---
 name: remote-compute-nvidia
-description: Run GPU jobs on NVIDIA NIM microservices via host.compute.create('byoc:nvidia', ...). Covers both forms — self_hosted (an nvcr.io NIM container on a local GPU with --gpus all) and hosted (the fully-managed integrate.api.nvidia.com gateway, no local GPU) — sharing one submit→wait_for_notification→harvest flow. Load once you've decided to dispatch to NVIDIA NIM.
+description: Run GPU jobs on NVIDIA NIM microservices via host.compute.create('byoc:nvidia', ...). Covers both forms — self_hosted (an nvcr.io NIM container on a local GPU with --gpus all) and hosted (the fully-managed integrate.api.nvidia.com gateway, no local GPU) — sharing one submit→poll .result()→harvest flow. Load once you've decided to dispatch to NVIDIA NIM.
 license: Apache-2.0
 origin: openai4s
 ---
@@ -51,16 +51,18 @@ approval modal and talks to Docker from the orchestrator's own process, which
 must happen outside the sandboxed data workspace. The two kernels share your
 workspace directory but not memory, so the rhythm is: prepare inputs in a
 `python` cell, run `create → submit_job` in a `repl` cell and let the cell
-return (the kernel never blocks on compute), park on the `wait_for_notification`
-brain-tool until the `compute_done` notification arrives, then read the
-harvested `hpc/<jobId>/` files back in the `python` tool.
+return (the kernel never blocks on compute), then poll `.result()` from a
+later `repl` cell until the status is terminal, and read the harvested
+`hpc/<jobId>/` files back in the `python` tool.
 
 `host.compute.create('byoc:nvidia', provider_params={'nvidia': {...}})` is a
 stateless constructor — the tier card and the actual container creation both
 happen on the first `submit_job()`. `submit_job`/`result`/`attach_job`/`close`
-then work exactly as for SSH: `.result()` is **non-blocking** — the daemon's
-poller probes the container, harvests `out.tar.gz` into `hpc/<jobId>/`, and
-emits a `compute_done` notification when done.
+then work exactly as for SSH: `.result()` is **non-blocking** and is what
+drives the job forward — each call probes the container and, once the work is
+terminal, harvests `out.tar.gz` into `hpc/<jobId>/`. Nothing runs in the
+background: there is no daemon poller and no notification, so a job you never
+poll is never harvested.
 
 ### Hosted form — call the managed API
 
@@ -135,16 +137,21 @@ curl -sS -X POST "$OPENAI4S_NIM_URL/v1/biology/nvidia/esmfold2/predict" \
 `/v1/health/ready` path. Writing your job against these two variables means the
 same script runs unchanged on both forms.
 
-Then exit the cell and call the `wait_for_notification` brain-tool. The
-`compute_done` payload carries `{job_id, status, exit_code, featured_files,
-output_file_count, ...}`; publish with `save_artifacts(payload['featured_files'])`.
-For the full dict (`stdout_tail`, all `output_files`), re-enter a `repl` cell:
+Then exit the cell and poll from a later one. `.result()` returns
+`{job_id, status, exit_code, featured_files, output_files, stdout_tail,
+stderr_tail, ...}` once the job is terminal; while it's still running you get
+`{'status': 'running', ...}` — end the cell and call it again later rather
+than waiting inside the cell.
 
 ```python
-# repl tool — cell ② after the compute_done notification
-r = c.attach_job('<JOB_ID>').result()  # non-blocking — poller already harvested
-save_artifacts(r['featured_files'])
-c.close()
+# repl tool — cell ② polls; re-run this cell until the status is terminal
+r = c.attach_job('<JOB_ID>').result()  # one probe — harvests when terminal
+print(r['status'])
+if r['status'] == 'succeeded':
+    for path in r['featured_files']:
+        host.save_artifact(path)
+    c.close()
+# `unknown` is not a finished job — poll again rather than closing over it.
 ```
 
 ## `submit_job` details
@@ -167,6 +174,14 @@ is the most common cause of `syntax error near unexpected token`.
 partial outputs staged, and it lands as `status: 'timed_out'` (not a generic
 failure). Keep `./out/` checkpoints small — the harvest stream runs in a
 bounded window, so a multi-GB `out/` risks `harvest_failed`.
+
+The container has its own, separate clock: `provider_params={'nvidia':
+{'timeout': N}}` on `create` sets how long the sandbox itself lives. When you
+set it, the job is stopped with a harvest margin to spare rather than the
+container being reclaimed mid-run and taking the outputs with it — and because
+the first `submit_job` creates the container and later ones reuse it warm, a
+second job inherits the time already spent. Size the container lifetime for
+the whole sequence you intend to run through it, not for one job.
 
 ## When the user gives you a budget
 
@@ -216,9 +231,9 @@ a warmed container rather than a fetch inside every job.
 ## Warm reuse and `close()`
 
 One handle = one container. The first `submit_job()` creates it; subsequent
-calls reuse it warm (weights stay hot in the NIM server). The poller's harvest
+calls reuse it warm (weights stay hot in the NIM server). A `.result()` harvest
 does **not** terminate the container — it runs until `c.close()`. Every handle
 ends with `c.close()` after its last job, which is what tears the container
 down (`docker rm -f`). **Sequential only**: each submit wipes `/work`, so call
-job N+1's `submit_job()` after job N's `compute_done` arrives; for parallel jobs
-use separate handles.
+job N+1's `submit_job()` only after `.result()` has reported job N terminal;
+for parallel jobs use separate handles.

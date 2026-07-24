@@ -39,9 +39,52 @@ from typing import Any
 
 MANIFEST_NAME = "manifest.json"
 
+# Untrusted-archive limits, kept in step with the importer's
+# (server/session_package.py). `verify_package` reads the manifest and every
+# listed member, so it must apply these *before* any read: a small, high-ratio
+# ZIP would otherwise allocate gigabytes and terminate the process before it
+# could reject anything — precisely the file a verifier is asked to inspect
+# because they do not trust it.
+MAX_UNCOMPRESSED_BYTES = 256 << 20
+MAX_ENTRY_BYTES = 64 << 20
+MAX_ENTRIES = 4096
+MAX_COMPRESSION_RATIO = 200
+
 
 class EvidenceError(RuntimeError):
     """The package is missing, unreadable, or not a package at all."""
+
+
+def _reject_zip_bomb(archive: "zipfile.ZipFile") -> None:
+    """Refuse a decompression bomb from the central directory, before reading.
+
+    The checks read declared sizes only — no member is decompressed — so the
+    daemon cannot be made to expand an archive it is about to reject.
+    """
+    try:
+        infos = archive.infolist()
+    except (OSError, RuntimeError, zipfile.BadZipFile) as e:
+        raise EvidenceError(f"the archive directory is unreadable: {e}") from e
+    if len(infos) > MAX_ENTRIES:
+        raise EvidenceError(
+            f"archive has {len(infos)} entries; the limit is {MAX_ENTRIES}"
+        )
+    total = 0
+    for info in infos:
+        if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+            raise EvidenceError(f"{info.filename}: unsupported ZIP compression method")
+        if info.file_size < 0 or info.file_size > MAX_ENTRY_BYTES:
+            raise EvidenceError(f"{info.filename}: entry is too large to verify")
+        if info.file_size > 0 and (
+            info.compress_size <= 0
+            or info.file_size / max(1, info.compress_size) > MAX_COMPRESSION_RATIO
+        ):
+            raise EvidenceError(
+                f"{info.filename}: compression ratio is unsafe (possible bomb)"
+            )
+        total += int(info.file_size)
+        if total > MAX_UNCOMPRESSED_BYTES:
+            raise EvidenceError("the archive expands beyond the verifiable limit")
 
 
 def _sha256(data: bytes) -> str:
@@ -80,6 +123,9 @@ def verify_package(path: Path | str) -> dict:
         raise EvidenceError(f"not a readable zip archive: {e}") from e
 
     with archive:
+        # Before any read: a verifier is handed this file precisely because
+        # they do not trust it, so it must not be able to exhaust memory here.
+        _reject_zip_bomb(archive)
         names = set(archive.namelist())
         if MANIFEST_NAME not in names:
             raise EvidenceError(

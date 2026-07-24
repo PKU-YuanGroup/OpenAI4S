@@ -1,0 +1,77 @@
+{
+  "id": "artifact-lineage",
+  "version": "1.0.0",
+  "title": "派生产物携带 lineage",
+  "summary": "B 由 A 派生时，Store 必须记录这条边；否则证据链在第二步就断了。",
+  "steps": [
+    "open_session",
+    "save_raw",
+    "save_derived",
+    "assert_lineage"
+  ],
+  "permissions": [
+    "workspace:write"
+  ],
+  "artifacts": [
+    "raw.csv",
+    "derived.csv"
+  ],
+  "failure_conditions": [
+    "lineage 边缺失",
+    "派生产物指向错误的输入版本"
+  ],
+  "cases": [
+    {
+      "id": "artifact-lineage/derived",
+      "title": "派生产物记录输入版本",
+      "outcome": "provenance",
+      "inputs": {
+        "assert_lineage": {
+          "input": "raw",
+          "output": "derived"
+        },
+        "*": {},
+        "save_raw": {
+          "filename": "raw.csv",
+          "content": "sample,value\na,1\n",
+          "as": "raw"
+        },
+        "save_derived": {
+          "filename": "derived.csv",
+          "content": "mean\n0.93\n",
+          "as": "derived",
+          "derived_from": [
+            "raw"
+          ]
+        }
+      },
+      "expect": {
+        "edges__truthy": true
+      }
+    },
+    {
+      "id": "artifact-lineage/missing-input",
+      "title": "声明的输入不存在时不得伪造边",
+      "outcome": "failure",
+      "inputs": {
+        "assert_lineage": {
+          "input": "never_saved",
+          "output": "derived"
+        },
+        "save_raw": {
+          "filename": "raw.csv",
+          "content": "sample,value\na,1\n",
+          "as": "raw"
+        },
+        "save_derived": {
+          "filename": "derived.csv",
+          "content": "x\n",
+          "as": "derived"
+        }
+      },
+      "expect": {
+        "error_type": "KeyError"
+      }
+    }
+  ]
+}

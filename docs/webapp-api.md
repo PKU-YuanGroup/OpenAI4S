@@ -48,11 +48,24 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
   needs from the success side is a documented, stable shape per route, which the
   route/event inventory test enforces.
 - **WebSocket events carry a monotonic `seq` per root frame.** A client resumes
-  with `{"type":"view_session","root_frame_id":…,"since_seq":N}` and receives
-  only events after `N`; `replay_begin` reports `from_seq`/`to_seq` and
+  with `{"type":"view_session","root_frame_id":…,"since_seq":N,"epoch":E}` and
+  receives only events after `N`; `replay_begin` reports `from_seq`/`to_seq`,
+  this daemon run's `epoch`, and
   `gap: true` when the capped buffer no longer reaches back to `N+1`, so a
   client that was away too long can refetch state instead of resuming into a
   hole it cannot detect. `since_seq` absent or `0` replays the whole buffer.
+- A cursor is only meaningful inside the daemon run that issued it. The
+  sequence counter lives in the process, so a restart puts it back to zero
+  while the client still holds a cursor from the previous run — which used to
+  produce no replay frames at all and left the client believing it was caught
+  up on a stream it had entirely missed. The server now declares `gap: true`
+  in that case, detecting it either from a mismatched `epoch` or, for a client
+  that sends none, from its own counter sitting below the presented cursor.
+  The client stores the `epoch`, drops every cursor when it changes, and
+  refetches the session on `gap: true`. A cursor the server cannot place
+  replays *nothing* — the client is about to refetch, so replaying the buffer
+  from the start would render events that are immediately discarded, and a
+  fabricated cursor must never wrap around into a full replay.
   The counter does not reset between turns — a per-turn counter would make a
   stale cursor look already-satisfied and skip the new turn's first events.
   Only `broadcast` events are sequenced; point-to-point snapshots delivered on
@@ -65,9 +78,10 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
 - All JSON responses are `application/json; charset=utf-8` with
   `Cache-Control: no-cache` and an explicit `Content-Length`.
 - Request bodies are JSON except the explicitly documented Session-package
-  import route, which consumes raw ZIP bytes. `Handler._body()` accepts an empty body but rejects an unparsable
-  body by returning `{}` — a malformed JSON body is **silently treated as
-  empty**, not rejected with 400.
+  import route, which consumes raw ZIP bytes. `Handler._body()` accepts an
+  empty body, but an unparsable one is rejected with `400 malformed_json`, and
+  a body that parses to something other than an object with
+  `400 invalid_body_type`. Neither is silently coerced to `{}`.
 - Query strings are parsed with `parse_qs` (every value is a list;
   handlers read `q.get("x", [default])[0]`).
 
@@ -197,6 +211,7 @@ success response body. Serializer shapes are in §4.
 | `POST /frames/{fid}/feedback` | Body `{key,rating}` → `{"ok":true}`. |
 | `GET /frames/{fid}/feedback` | `{"feedback":[…]}`. |
 | `GET /frames/{fid}/session/export` | Raw deterministic Session-package ZIP with `X-Content-SHA256` and `X-OpenAI4S-Session-Schema`. It contains branch-owned messages, complete sanitized provider groups/wire state, Notebook and Artifact/lineage records, Revert cursors, evidence reviews and checkpoint plan/review/memory snapshots; secret material is rejected. |
+| `POST /sessions/verify` | Raw Session ZIP body (same limit as import) → HTTP 200 with the `verify_package` report: `{ok, format, schema_version, archive_sha256, files_verified, problems, verifies}`. Reads only the archive — no daemon state, no network, nothing admitted to the database — so a recipient can check what they were handed before deciding to import it. The frontend calls this *before* `/sessions/import` and refuses the import when it fails. `verifies` states plainly what the check does not establish: internal consistency is not authorship, which would need a signature. |
 | `POST /sessions/import` | Raw Session ZIP body (not JSON, maximum archive 128 MiB) → HTTP 201 with new `{project_id,root_frame_id,active_branch_id,kernel_state:"ended",view_only:true,trust_state:"quarantined",explicit_recovery_required:true,…}`. The entire archive is preflighted as untrusted input, all identities are remapped, permissions are downgraded, review automation is disabled, and no Kernel/hook/package code starts. The quarantine is durable: frame-scoped mutations return HTTP 423 until the user calls `POST /frames/{fid}/recovery/actions/restart_fresh` with `{"confirm":true}`; read/export/delete remain available. |
 
 ### Plan mode
@@ -400,6 +415,8 @@ the route index so the surface is discoverable from one place.
 | `GET|PUT|PATCH|POST /network/status` | Write toggles `OPENAI4S_ALLOW_NETWORK` (process env + setting); always returns `{"enabled":bool}`. |
 | `GET /preferences/builtin-allowlist` | `{"enabled","egress_mode","granted":[domains],"groups"}`. |
 | `GET|PUT|PATCH|POST /search/config` | Tavily key config; write accepts `{api_key}` or `{clear_api_key}`; always returns `{"endpoint":"https://api.tavily.com/search","api_key_configured":bool}` — the key itself is never echoed. |
+| `GET /telemetry/consent` | `{"enabled":bool,"env_locked":bool}`. Opt-in anonymous telemetry, off by default; `env_locked` is true when `OPENAI4S_TELEMETRY` vetoes it, so the UI can disable a toggle that would otherwise do nothing. |
+| `PUT|PATCH|POST /telemetry/consent` | Body `{enabled}`. Granting records consent and mints the anonymous install id; revoking deletes both. Neither ever transmits — see `openai4s/telemetry/`. Returns the same shape as the GET. |
 
 ## 3. WebSocket contract (`/api/v1/ws`)
 
@@ -430,7 +447,13 @@ m.frame_id`.
 
 | Event `type` | Fields (beyond `root_frame_id`) | Meaning |
 | --- | --- | --- |
-| `replay_begin` / `replay_end` | — | Bracket the buffered-event replay after `view_session` mid-turn. |
+| `notebook_cell_draft` | `frame_id`, `draft_id`, `revision`, `source`, `status`, `reason` | A Notebook cell the agent is composing, before it runs. Superseded revisions are collapsed in the resume buffer so a reconnect renders only the newest. Emitted by `server/agent_run.py`. |
+| `recovery_state` | `branch_id`, `recovery_id`, `state`, `status`, `message` | A kernel-recovery attempt changing state. Emitted by `server/recovery_execution.py`. |
+| `recovery_log` | `branch_id`, `recovery_id`, plus the journal entry's own fields | One line of a recovery's journal, as it happens. Emitted by `server/recovery_control.py`. |
+| `branch_activated` | `branch_id`, `checkpoint_id`, `ok` | A branch became the session's active one, and its runtime state was reconstructed. Emitted by `server/session_domain.py`. |
+| `cursor_checkpoint_failed` | `branch_id`, `source_kind`, `source_id`, `reason`, `ok: false` | A cell or message completed but its cursor checkpoint could not be captured — so forking from that point will 409 rather than reconstruct state it does not have. Emitted by `server/session_domain.py`. |
+| `delegation_child_event` | `event`, `at`, `child` (a snapshot), plus per-event extras | A sub-agent started, progressed, or finished. Carries no `frame_id` of its own; the hub's emitter attaches `root_frame_id`. Emitted by `agent/delegation.py`. |
+| `replay_begin` / `replay_end` | — | Bracket the buffered-event replay after `view_session` mid-turn. `replay_begin` carries `from_seq`, `to_seq`, the daemon run's `epoch`, and `gap`. |
 | `text_reset` | `frame_id` | Start of a fresh streamed assistant message (clears the live bubble). |
 | `text_chunk` | `frame_id`, `block_type` (`"text"` for prose, `"tool"` for code-cell echo/stdout/errors), `chunk`; a code-cell start also carries `cell_index`, canonical `kernel_id`, and `language` | Incremental stream. The frontend uses the start metadata directly so live Notebook grouping matches the persisted execution log without a status-cache race. |
 | `notebook_cell_start` | `frame_id`, `producing_cell_id`, `cell_index`, `state_revision`, `generation_id`, `kernel_id`, `language`, `origin`, `source`, `status` | Starts/upserts one immutable Cell identity using the exact attempt-bound runtime generation. |
@@ -526,7 +549,7 @@ compatibility; keep both when touching these serializers.
   `{error}`, others return `{}` (frame/project GET), `{"ok":true}`
   (idempotent deletes), a nulls-filled 200 (`/artifacts/{aid}/lineage`), or a
   200 body containing `{error}` (`/connectors/{id}/call`).
-- Malformed JSON request bodies are treated as `{}`, not rejected.
+- Malformed JSON request bodies are rejected with `400 malformed_json`.
 - Raw-bytes artifact routes return JSON bodies on 404.
 - Skill enable-disable state is durable; the legacy built-in-agent roster
   toggle is still process-local. Specialist runtime policy has separate

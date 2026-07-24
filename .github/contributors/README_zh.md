@@ -11,7 +11,13 @@
 | 文件 | 职责 |
 | --- | --- |
 | `Grace-xyx.png` | 贡献者 `Grace-xyx` 的可直接渲染头像。 |
+| `HowardLi1984.png` | 贡献者 `HowardLi1984` 的可直接渲染头像。 |
+| `Linmj-Judy.png` | 贡献者 `Linmj-Judy` 的可直接渲染头像。 |
+| `Lyu6PosHao.png` | 贡献者 `Lyu6PosHao` 的可直接渲染头像。 |
 | `Nobody-Zhang.png` | 贡献者 `Nobody-Zhang` 的可直接渲染头像。 |
+| `YuyangSunshine.png` | 贡献者 `YuyangSunshine` 的可直接渲染头像。 |
+| `jiangzx25.png` | 贡献者 `jiangzx25` 的可直接渲染头像。 |
+| `riiiiiiin.png` | 贡献者 `riiiiiiin` 的可直接渲染头像。 |
 | `wangyu-sd.png` | 贡献者 `wangyu-sd` 的可直接渲染头像。 |
 | `yusowa0716.png` | 贡献者 `yusowa0716` 的可直接渲染头像。 |
 

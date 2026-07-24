@@ -1,0 +1,46 @@
+{
+  "id": "telemetry-identity",
+  "version": "1.0.0",
+  "title": "遥测身份随撤销一同销毁",
+  "summary": "撤销销毁权限与身份；重新授权铸造新身份，两段参与期不可关联。",
+  "steps": [
+    "telemetry_identity_cycle"
+  ],
+  "permissions": [
+    "telemetry:consent"
+  ],
+  "artifacts": [],
+  "failure_conditions": [
+    "撤销后旧身份仍被发送",
+    "重新授权复用旧身份"
+  ],
+  "cases": [
+    {
+      "id": "telemetry-identity/revoked",
+      "title": "撤销后旧 payload 不得发送",
+      "outcome": "success",
+      "inputs": {
+        "telemetry_identity_cycle": {
+          "revoke": true
+        }
+      },
+      "expect": {
+        "sent": false,
+        "ids_differ": true
+      }
+    },
+    {
+      "id": "telemetry-identity/current",
+      "title": "当前身份的 payload 不被本检查阻断",
+      "outcome": "success",
+      "inputs": {
+        "telemetry_identity_cycle": {
+          "revoke": false
+        }
+      },
+      "expect": {
+        "identity": "current"
+      }
+    }
+  ]
+}

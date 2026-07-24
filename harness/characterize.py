@@ -248,7 +248,7 @@ def _partial_sse_hard_failure() -> Mapping[str, Any]:
     )
     deltas: list[str] = []
 
-    def fail_after_delta(url, payload, headers, timeout, on_event) -> None:
+    def fail_after_delta(url, payload, headers, timeout, on_event, **_context) -> None:
         on_event({"choices": [{"delta": {"content": "committed-delta"}}]})
         raise llm.LLMError("stream disconnected after committed delta")
 
@@ -300,7 +300,12 @@ def _compaction_provider_hoist(data_dir: Path) -> Mapping[str, Any]:
 
     payloads: dict[str, dict[str, Any]] = {}
 
-    def capture_post(url, payload, headers, timeout):
+    # ``**_context`` absorbs the provider/cancellation the dispatch seam now
+    # binds onto the transport. This probe characterizes how each wire hoists
+    # the system message, which that context does not touch — but a stub whose
+    # signature is narrower than the real transport fails the call outright and
+    # would record a probe error instead of the behaviour under study.
+    def capture_post(url, payload, headers, timeout, **_context):
         if "/v1/messages" in url:
             payloads["anthropic"] = copy.deepcopy(payload)
             return {

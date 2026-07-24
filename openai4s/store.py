@@ -205,23 +205,53 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
     snapshot_path TEXT,
     producing_cell_id TEXT,
     frame_id      TEXT,
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    -- Where the data came from, when a version was derived from retrieved
+    -- data rather than computed from nothing. JSON: the retrieval provenance
+    -- envelope (database, source, retrieved_at, request_url, query,
+    -- normalization_version, per-response hashes). This is a property of the
+    -- VERSION, not the artifact: rerunning the same analysis a month later
+    -- produces the same file from a different retrieval.
+    source        TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_ver_artifact ON artifact_versions(artifact_id);
 
 -- De-duplicated environment snapshots (one row per distinct kernel env). An
 -- artifact_version references one via env_snapshot_id so a figure records the
--- package set that PRODUCED it (see gateway._environment_snapshot).
+-- environment that PRODUCED it -- taken from that cell's kernel generation,
+-- not from the daemon (see ArtifactManager.capture_environment).
 CREATE TABLE IF NOT EXISTS env_snapshots (
     snapshot_id    TEXT PRIMARY KEY,
     created_at     INTEGER NOT NULL,
-    kind           TEXT,
-    python_version TEXT,
+    kind           TEXT,              -- the RUNTIME: "python" | "r"
+    python_version TEXT,              -- NULL unless the kernel was this interpreter
     implementation TEXT,
     platform       TEXT,
     package_count  INTEGER,
     packages_json  TEXT,
-    remote_json    TEXT               -- JSON list of remote-GPU job provenance
+    remote_json    TEXT,              -- JSON list of remote-GPU job provenance
+    -- Which kernel this actually describes. Without these two, an R kernel and
+    -- a Python one in a conda env are indistinguishable rows, and the identity
+    -- of the environment is exactly what provenance is for.
+    interpreter    TEXT,
+    environment_name TEXT,
+    -- The generation that produced the artifact, and why a package list may be
+    -- absent (an R kernel has no Python distributions; a foreign interpreter
+    -- may refuse to be read). Absence with a reason beats a borrowed list.
+    generation_id  TEXT,
+    -- How far the generation above can be trusted. `verified` means the row's
+    -- own address includes it, so it cannot have been shared by a second
+    -- kernel; `legacy_unverified` means it was written before that was true --
+    -- the named generation did produce this environment, but it may not be the
+    -- only one that did. Kept and labelled rather than cleared: a missing
+    -- attribution is not more honest than a qualified one, it is just emptier.
+    generation_confidence TEXT,
+    packages_unavailable TEXT,
+    -- Whether this row was measured from a kernel generation or assumed from
+    -- the daemon. The fallback path has always set this and it was dropped at
+    -- the INSERT, so the one marker separating a measured environment from a
+    -- guessed one never reached the record a reader actually sees.
+    provenance     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS compaction_archives (
@@ -395,17 +425,36 @@ CREATE TABLE IF NOT EXISTS compute_jobs (
     -- accepted" and "we recorded it" cannot become a double-charge.
     idempotency_key TEXT,
     provider        TEXT NOT NULL,     -- "ssh:<alias>" | "byoc:<id>"
-    status          TEXT NOT NULL,     -- see compute/manager.py's state machine
+    status          TEXT NOT NULL,     -- see compute/states.py; enforced on write
     alias           TEXT,              -- ssh
     workdir         TEXT,              -- ssh
     pid             TEXT,              -- ssh
+    -- The remote process GROUP, read back from the host at submit rather than
+    -- assumed from `$!`. Cancellation signals this; a NULL means we never
+    -- confirmed one and must not guess (see migration 6).
+    pgid            TEXT,              -- ssh
     sandbox_id      TEXT,              -- byoc
     -- The provider's own acknowledgement of the submit. Evidence the job
     -- exists remotely, independent of anything we chose to believe.
     receipt         TEXT,
     outputs         TEXT,              -- JSON: declared output globs
+    -- Which session/workspace submitted this job. `_rehydrate` filters on it so
+    -- a restart does not hand one session's live jobs — and their harvested
+    -- outputs — to whichever session happens to build a manager first. NULL is
+    -- the CLI / global context (see migration 9).
+    owner_key       TEXT,
     exit_code       INTEGER,
-    reason          TEXT,              -- why a terminal state was reached
+    reason          TEXT,              -- free-text detail, provider-supplied
+    -- Coded cause, from compute/states.py. `failed` because outputs could not
+    -- be verified is a different fact from `failed` because the command
+    -- exited non-zero, and the status alone cannot carry that.
+    termination_reason TEXT,
+    -- What the harvest actually produced: JSON [{path,size,sha256}] and one
+    -- digest over the whole record. A job that declared `outputs` and
+    -- produced none of them used to report success; these are what make that
+    -- checkable, and the only way to see a transfer truncated at rc==0.
+    artifact_manifest TEXT,
+    integrity_sha256  TEXT,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     submitted_at    INTEGER,
@@ -867,10 +916,320 @@ class Store:
             report = run_migrations(
                 self._conn,
                 self.db_path,
-                {1: ("legacy_baseline", self._apply_legacy_baseline)},
+                {
+                    1: ("legacy_baseline", self._apply_legacy_baseline),
+                    2: ("compute_job_states", self._apply_compute_job_states),
+                    3: ("compute_job_manifest", self._apply_compute_job_manifest),
+                    4: ("artifact_env_identity", self._apply_artifact_env_identity),
+                    5: ("artifact_source", self._apply_artifact_source),
+                    6: ("compute_job_pgid", self._apply_compute_job_pgid),
+                    7: (
+                        "env_snapshot_generation",
+                        self._apply_env_snapshot_generation,
+                    ),
+                    8: (
+                        "env_snapshot_provenance",
+                        self._apply_env_snapshot_provenance,
+                    ),
+                    9: ("compute_job_owner", self._apply_compute_job_owner),
+                },
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+
+    def _apply_compute_job_states(self, conn: sqlite3.Connection) -> None:
+        """Version 2: one enforced compute-job state vocabulary.
+
+        Adds ``termination_reason`` and folds the two historical states that
+        the new vocabulary does not have onto states that it does, preserving
+        what each of them meant:
+
+          * ``done`` -> ``succeeded`` (a rename, nothing else)
+          * ``incomplete`` -> ``failed`` + ``outputs_unverified``. It meant the
+            job exited 0 but its outputs could not be verified, which is not a
+            success and must not keep a name that reads like one.
+          * ``closed`` -> ``cancelled`` + ``handle_closed``. The user released
+            the handle while the job was live.
+
+        Idempotent: the ALTER is guarded, and every UPDATE selects only rows
+        still carrying a legacy value, so a re-run after a partial apply
+        converges rather than double-writing. Runs inside the transaction owned
+        by ``run_migrations``; it must not commit.
+        """
+        from openai4s.compute.states import LEGACY_STATUS_MAP
+
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(compute_jobs)").fetchall()
+        }
+        if "termination_reason" not in have:
+            try:
+                conn.execute(
+                    "ALTER TABLE compute_jobs ADD COLUMN termination_reason TEXT"
+                )
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"compute_jobs.termination_reason could not be added: {e}"
+                    ) from e
+        for legacy, (status, reason) in LEGACY_STATUS_MAP.items():
+            conn.execute(
+                "UPDATE compute_jobs SET status=?, termination_reason=? "
+                "WHERE status=?",
+                (status, reason, legacy),
+            )
+
+    def _apply_artifact_source(self, conn: sqlite3.Connection) -> None:
+        """Version 5: where a version's data came from.
+
+        The Evidence scorecard asks every release-grade artifact to carry a
+        source. There was no column at all, so the clause was structurally
+        unmeetable rather than sparsely met.
+
+        Historical rows keep NULL. A version written before retrieval was
+        recorded has no recoverable source, and inventing one would be the same
+        mistake as backfilling an environment: an unattributed record turned
+        into a confidently wrong one.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(artifact_versions)").fetchall()
+        }
+        if "source" in have:
+            return
+        try:
+            conn.execute("ALTER TABLE artifact_versions ADD COLUMN source TEXT")
+        except sqlite3.OperationalError as e:
+            if not _is_duplicate_column(e):
+                raise MigrationError(
+                    f"artifact_versions.source could not be added: {e}"
+                ) from e
+
+    def _apply_artifact_env_identity(self, conn: sqlite3.Connection) -> None:
+        """Version 4: say WHICH kernel an artifact's environment describes.
+
+        Historical rows keep NULL. They were written by a snapshot that could
+        only ever describe the daemon, so backfilling them with the daemon's
+        identity would turn an unattributed record into a confidently wrong
+        one -- the very failure this migration exists to stop.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(env_snapshots)").fetchall()
+        }
+        for column in (
+            "interpreter",
+            "environment_name",
+            "generation_id",
+            "packages_unavailable",
+        ):
+            if column in have:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE env_snapshots ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"env_snapshots.{column} could not be added: {e}"
+                    ) from e
+
+    def _apply_compute_job_pgid(self, conn: sqlite3.Connection) -> None:
+        """Version 6: the remote process group, recorded rather than guessed.
+
+        Cancellation signalled ``-$!``. In an interactive shell that is the
+        pgid; in the non-interactive login shell an ``ssh host cmd`` actually
+        gets — dash, ash, or bash without job control — ``set -m`` does not
+        enable job control, so ``$!`` is the child's pid and its group is the
+        login shell's. ``kill -- -<pid>`` then found no such group, exited 0
+        anyway on some hosts, and the caller was told the allocation was freed
+        while the whole command tree kept running.
+
+        Historical rows keep NULL: the group a finished submit landed in is not
+        recoverable after the fact, and ``cancel`` treats a missing pgid as
+        "cannot signal safely" rather than guessing one.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(compute_jobs)").fetchall()
+        }
+        if "pgid" in have:
+            return
+        try:
+            conn.execute("ALTER TABLE compute_jobs ADD COLUMN pgid TEXT")
+        except sqlite3.OperationalError as e:
+            if not _is_duplicate_column(e):
+                raise MigrationError(
+                    f"compute_jobs.pgid could not be added: {e}"
+                ) from e
+
+    def _apply_compute_job_owner(self, conn: sqlite3.Connection) -> None:
+        """Version 9: record which session/workspace owns each compute job.
+
+        Without it, ``_rehydrate`` loaded every installation-wide live row into
+        whichever session built a manager first, so a restart could hand one
+        session's job — and publish its harvested outputs — into a *different*
+        session's workspace. The column lets recovery filter to the owning
+        session.
+
+        Historical rows keep NULL, which is the CLI / global context: only a
+        NULL-owner (CLI) manager rehydrates them, never a Web session, so no
+        session inherits another's pre-upgrade jobs. Runs inside the transaction
+        owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(compute_jobs)").fetchall()
+        }
+        if "owner_key" in have:
+            return
+        try:
+            conn.execute("ALTER TABLE compute_jobs ADD COLUMN owner_key TEXT")
+        except sqlite3.OperationalError as e:
+            if not _is_duplicate_column(e):
+                raise MigrationError(
+                    f"compute_jobs.owner_key could not be added: {e}"
+                ) from e
+
+    def _apply_env_snapshot_generation(self, conn: sqlite3.Connection) -> None:
+        """Version 7: qualify generation attributions instead of destroying them.
+
+        ``env_snapshots`` rows are content-addressed, and until now the address
+        did not include ``generation_id`` while ``upsert_env_snapshot`` never
+        updated an existing row. A kernel restarted into an unchanged
+        environment therefore resolved to the row already on disk — which kept
+        naming the *first* generation. Every artifact produced by the second
+        generation pointed at a snapshot recorded as the first, and no other
+        column on the artifact carries a generation, so nothing could catch it.
+
+        Which historical rows were actually shared is not recoverable: sharing
+        leaves no trace. The first version of this migration answered that by
+        clearing ``generation_id`` on every row written before the fix — which
+        trades one wrong answer for a *missing* one and silently discards
+        provenance that is right far more often than not.
+
+        So the value is kept and **labelled**. ``generation_confidence`` says
+        which reading applies:
+
+          * ``verified`` — the row's address includes its generation, so it
+            cannot have been shared;
+          * ``legacy_unverified`` — written before the fix. The named
+            generation produced this environment; it may not be the only one
+            that did.
+
+        A reader that needs certainty filters on the label. Nothing is lost,
+        and nothing claims more than it can support.
+
+        Idempotent: the label is derived from the row's own address, so a
+        re-run recomputes the same answer.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        from openai4s.storage.artifacts import env_snapshot_id
+
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(env_snapshots)").fetchall()
+        }
+        if "generation_confidence" not in have:
+            try:
+                conn.execute(
+                    "ALTER TABLE env_snapshots ADD COLUMN generation_confidence TEXT"
+                )
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"env_snapshots.generation_confidence could not be "
+                        f"added: {e}"
+                    ) from e
+        rows = conn.execute(
+            "SELECT snapshot_id,kind,python_version,implementation,platform,"
+            "interpreter,environment_name,generation_id,packages_json,remote_json "
+            "FROM env_snapshots WHERE generation_id IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            expected = env_snapshot_id(
+                kind=row["kind"],
+                python_version=row["python_version"],
+                implementation=row["implementation"],
+                platform=row["platform"],
+                interpreter=row["interpreter"],
+                environment_name=row["environment_name"],
+                generation_id=row["generation_id"],
+                # NULL is how an empty remote list is stored; the basis has
+                # always used "[]" for it.
+                packages_json=row["packages_json"] or "[]",
+                remote_json=row["remote_json"] or "[]",
+            )
+            conn.execute(
+                "UPDATE env_snapshots SET generation_confidence=? "
+                "WHERE snapshot_id=?",
+                (
+                    "verified"
+                    if expected == row["snapshot_id"]
+                    else "legacy_unverified",
+                    row["snapshot_id"],
+                ),
+            )
+
+    def _apply_env_snapshot_provenance(self, conn: sqlite3.Connection) -> None:
+        """Version 8: room for the assumed-vs-measured marker.
+
+        ``_snapshot_for`` has always stamped ``provenance: "assumed: no kernel
+        generation on record"`` on the fallback path, and the INSERT never had
+        a column for it — so the single field that tells a reader whether an
+        environment was *observed* or *guessed from the daemon* was computed
+        and thrown away on every write.
+
+        Historical rows keep NULL. Whether a given old row was measured is not
+        recoverable, and asserting either answer would be the same mistake the
+        marker exists to prevent.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(env_snapshots)").fetchall()
+        }
+        if "provenance" in have:
+            return
+        try:
+            conn.execute("ALTER TABLE env_snapshots ADD COLUMN provenance TEXT")
+        except sqlite3.OperationalError as e:
+            if not _is_duplicate_column(e):
+                raise MigrationError(
+                    f"env_snapshots.provenance could not be added: {e}"
+                ) from e
+
+    def _apply_compute_job_manifest(self, conn: sqlite3.Connection) -> None:
+        """Version 3: room to record what a job actually produced.
+
+        Historical rows keep NULL — we cannot reconstruct a manifest for a
+        harvest that happened before anything hashed it, and inventing one
+        would be worse than admitting it is unknown. Only jobs harvested from
+        here on carry the record.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(compute_jobs)").fetchall()
+        }
+        for column in ("artifact_manifest", "integrity_sha256"):
+            if column in have:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE compute_jobs ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"compute_jobs.{column} could not be added: {e}"
+                    ) from e
 
     def _apply_legacy_baseline(self, conn: sqlite3.Connection) -> None:
         """Version 1: the historical catch-up pass, run once and then stamped.
@@ -1994,8 +2353,10 @@ class Store:
         priority: int = 0,
         env_snapshot_id: str | None = None,
         snapshot_path: str | None = None,
+        source: Any = None,
     ) -> dict:
         return self._artifacts.save_artifact(
+            source=source,
             path=path,
             filename=filename,
             content_type=content_type,
@@ -2026,6 +2387,7 @@ class Store:
         project_id: str | None = None,
         env_snapshot_id: str | None = None,
         snapshot_path: str | None = None,
+        source: Any = None,
         input_version_ids: list[str] | tuple[str, ...] | None = None,
         preserve_filename: bool = False,
         preserve_content_type: bool = False,
@@ -2043,6 +2405,7 @@ class Store:
             project_id=project_id,
             env_snapshot_id=env_snapshot_id,
             snapshot_path=snapshot_path,
+            source=source,
             input_version_ids=input_version_ids,
             preserve_filename=preserve_filename,
             preserve_content_type=preserve_content_type,
@@ -2756,8 +3119,10 @@ class Store:
     def compute_job_by_idempotency_key(self, key: str) -> dict | None:
         return self._compute_jobs.by_idempotency_key(key)
 
-    def live_compute_jobs(self) -> list[dict]:
-        return self._compute_jobs.live()
+    def live_compute_jobs(
+        self, owner_key: str | None = None, scoped: bool = False
+    ) -> list[dict]:
+        return self._compute_jobs.live(owner_key=owner_key, scoped=scoped)
 
     def list_compute_jobs(self, limit: int = 200) -> list[dict]:
         return self._compute_jobs.list(limit)

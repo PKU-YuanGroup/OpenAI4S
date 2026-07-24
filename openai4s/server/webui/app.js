@@ -433,6 +433,10 @@ Object.assign(I18N.zh, {
   "cust.network.disabledDesc": "已禁用 — 智能体仅用本地知识与已有文件",
   "cust.network.enabledDesc": "已启用 — 智能体可实时检索文献、抓取数据库、下载数据包",
   "cust.network.title": "网络",
+  "cust.telemetry.name": "匿名用量统计",
+  "cust.telemetry.off": "已关闭 — 没有任何数据离开这台机器",
+  "cust.telemetry.on": "已开启 — 仅发送匿名计数（版本、系统、成功/失败），绝不含提示词、文件名或数据",
+  "cust.telemetry.envlock": "已被环境变量 OPENAI4S_TELEMETRY 关闭",
   "cust.perm.decision.ask": "询问",
   "cust.perm.desc": "控制哪些工具需要你的批准。优先级：越具体越优先；同等具体时 本对话 > 本项目 > 全局。默认安全优先：读取放行，写入 / 命令 / 联网 / 装包 需批准，.env 读取被拒。",
   "cust.perm.noRules": "（无规则）",
@@ -838,6 +842,8 @@ Object.assign(I18N.zh, {
   "sessionPackage.export": "导出会话包",
   "sessionPackage.imported": "会话包已安全导入；Kernel 保持结束状态，需显式恢复",
   "sessionPackage.tooLarge": "会话包超过客户端 128 MiB 限制",
+  "sessionPackage.verified": "校验通过：{0} 个文件与包内清单一致，正在导入",
+  "sessionPackage.verifyFailed": "校验未通过，已拒绝导入：{0}",
   "projModal.create": "创建",
   "projModal.editTitle": "项目设置",
   "projModal.ctx.label": "智能体上下文",
@@ -979,6 +985,9 @@ Object.assign(I18N.zh, {
   "toast.models.updated": "已更新：{0}",
   "toast.network.disabled": "联网已禁用",
   "toast.network.enabled": "联网已启用",
+  "toast.telemetry.on": "匿名统计已开启",
+  "toast.telemetry.off": "匿名统计已关闭，身份一并删除",
+  "toast.telemetry.failed": "统计开关未能保存，已恢复原状态：{0}",
   "toast.perm.enterTool": "请填写工具名",
   "toast.perm.resetDone": "已恢复默认规则",
   "toast.perm.ruleUpdated": "已更新规则",
@@ -1265,6 +1274,10 @@ Object.assign(I18N.en, {
   "cust.network.disabledDesc": "Disabled — the agent uses only local knowledge and existing files",
   "cust.network.enabledDesc": "Enabled — the agent can search literature in real time, scrape databases, and download data packages",
   "cust.network.title": "Network",
+  "cust.telemetry.name": "Anonymous usage statistics",
+  "cust.telemetry.off": "Off — nothing leaves this machine",
+  "cust.telemetry.on": "On — anonymous counts only (version, OS, success/failure); never prompts, file names, or data",
+  "cust.telemetry.envlock": "Disabled by the OPENAI4S_TELEMETRY environment variable",
   "cust.perm.decision.ask": "Ask",
   "cust.perm.desc": "Control which tools need your approval. Priority: the more specific, the higher; at equal specificity, This conversation > This project > Global. Safe by default: reads are allowed, writes / commands / network / package installs need approval, .env reads are denied.",
   "cust.perm.noRules": "(no rules)",
@@ -1670,6 +1683,8 @@ Object.assign(I18N.en, {
   "sessionPackage.export": "Export session package",
   "sessionPackage.imported": "Session imported safely; its Kernel remains Ended until explicit recovery",
   "sessionPackage.tooLarge": "Session package exceeds the 128 MiB client limit",
+  "sessionPackage.verified": "Verified: {0} file(s) match the package's own manifest — importing",
+  "sessionPackage.verifyFailed": "Verification failed, import refused: {0}",
   "projModal.create": "Create",
   "projModal.editTitle": "Project settings",
   "projModal.ctx.label": "Agent Context",
@@ -1811,6 +1826,9 @@ Object.assign(I18N.en, {
   "toast.models.updated": "Updated: {0}",
   "toast.network.disabled": "Network access disabled",
   "toast.network.enabled": "Network access enabled",
+  "toast.telemetry.on": "Anonymous statistics on",
+  "toast.telemetry.off": "Anonymous statistics off; the identity was deleted too",
+  "toast.telemetry.failed": "Could not save the statistics setting; restored the previous state: {0}",
   "toast.perm.enterTool": "Please enter a tool name",
   "toast.perm.resetDone": "Default rules restored",
   "toast.perm.ruleUpdated": "Rule updated",
@@ -2841,13 +2859,35 @@ function connectWS() {
 // the server replays only what was missed instead of the whole turn — the
 // client would otherwise have to de-duplicate a stream it cannot tell apart.
 S._seqSeen = S._seqSeen || {};
-const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f, since_seq: S._seqSeen[f] || 0 })); } catch {} };
+// The daemon run that issued our cursors. A cursor only means anything within
+// the process that produced it, so it travels with the epoch and the server
+// tells us (gap) when it cannot honour it.
+S._streamEpoch = S._streamEpoch || null;
+const sub = (f) => { try { S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ type: "view_session", root_frame_id: f, since_seq: S._seqSeen[f] || 0, epoch: S._streamEpoch || undefined })); } catch {} };
 const unsub = (f) => { try { S.ws && S.ws.readyState === 1 && f && S.ws.send(JSON.stringify({ type: "unview_session", root_frame_id: f })); } catch {} };
 const conn = (on) => { const d = $("#conn-dot"); if (d) d.className = "dot " + (on ? "on" : "off"); };
 function onEvent(m) {
   const fid = m.root_frame_id || m.frame_id;
-  if (m.type === "replay_begin") { if (mine(fid)) { if (S.stream && S.stream.wrap) S.stream.wrap.remove(); S.stream = null; S.liveCells = []; S._liveCell = null; } }
-  else if (m.type === "replay_end") { if (mine(fid)) down(); }
+  if (m.type === "replay_begin") {
+    // A restarted daemon issues a new epoch; every cursor we hold describes a
+    // stream it never produced, so drop them all rather than resuming from a
+    // position it cannot interpret.
+    if (m.epoch && m.epoch !== S._streamEpoch) { S._streamEpoch = m.epoch; S._seqSeen = {}; }
+    if (mine(fid)) {
+      if (S.stream && S.stream.wrap) S.stream.wrap.remove();
+      S.stream = null; S.liveCells = []; S._liveCell = null;
+      // `gap` means the server could not serve our cursor — the buffer had
+      // aged past it, or it belonged to a previous run. Replaying from a hole
+      // we cannot see would leave the transcript quietly wrong, so reload it.
+      if (m.gap) { S._seqSeen[fid] = 0; S._replayGap = fid; }
+    }
+  }
+  else if (m.type === "replay_end") {
+    if (mine(fid)) {
+      if (S._replayGap === fid) { S._replayGap = null; openConversation(fid, S.project); }
+      down();
+    }
+  }
   else if (m.type === "text_reset") { if (mine(fid)) startStream(); }
   else if (m.type === "notebook_cell_draft") { if (mine(fid)) nbCellDraft(m); }
   else if (m.type === "notebook_cell_start") { if (mine(fid)) nbCellStart(m); }
@@ -4378,6 +4418,22 @@ async function importSessionPackage(file) {
   if (!file) return;
   if (file.size > 128 * 1024 * 1024) { hint(t("sessionPackage.tooLarge"), true); return; }
   try {
+    // Verify before importing, not as an optional extra afterwards. The
+    // package arrived from somewhere else; checking it against its own
+    // manifest costs one request and is the whole point of shipping hashes.
+    // A tampered archive must never reach the database.
+    const checked = await fetch(API + "/sessions/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
+      body: file,
+    });
+    const verdict = await checked.json().catch(() => ({}));
+    if (!checked.ok || !verdict.ok) {
+      const first = (verdict.problems || [])[0] || verdict.error || "";
+      hint(t("sessionPackage.verifyFailed", publicText(first, 160)), true);
+      return;
+    }
+    hint(t("sessionPackage.verified", (verdict.files_verified || []).length));
     const response = await fetch(API + "/sessions/import", {
       method: "POST",
       headers: { "Content-Type": "application/vnd.openai4s.session+zip" },
@@ -6439,10 +6495,20 @@ async function renderProvEnvironment(body, a) {
   const pkgs = env.packages || [];
   const chips = el("div", "env-chips");
   chips.appendChild(chip("Environment", env.kind || "python"));
-  chips.appendChild(chip(env.implementation || "Python", env.python_version || "?"));
+  // Only claim a Python version when the record has one. An R kernel's
+  // snapshot leaves it null, and "Python ?" would put back exactly the
+  // misattribution the snapshot was fixed to stop telling.
+  if (env.python_version) chips.appendChild(chip(env.implementation || "Python", env.python_version));
+  if (env.environment_name) chips.appendChild(chip("Env", publicText(env.environment_name, 48)));
   chips.appendChild(chip("Packages", String(env.package_count != null ? env.package_count : pkgs.length)));
   body.appendChild(chips);
+  if (env.interpreter) body.appendChild(el("div", "env-plat", publicText(env.interpreter, 160)));
   if (env.platform) body.appendChild(el("div", "env-plat", env.platform));
+  // Why a package list is empty matters: "none installed" and "this runtime
+  // has no Python distributions" look identical without it.
+  if (env.packages_unavailable) {
+    body.appendChild(el("div", "env-src warn", publicText(env.packages_unavailable, 200)));
+  }
   // provenance honesty: say whether this is the recorded production env or a live fallback
   const captured = env.source !== "live";
   const note = el("div", "env-src" + (captured ? " ok" : " warn"));
@@ -7050,7 +7116,68 @@ async function searchKeyRow(c) {
   const sub = el("div", "job-submit"); sub.appendChild(kin); sub.appendChild(sv); info.appendChild(sub);
   row.appendChild(info); c.appendChild(row);
 }
-async function custNetwork(c) { try { const d = await api("/preferences/builtin-allowlist"); c.innerHTML = ""; c.appendChild(hdr(t("cust.network.title"), t("cust.network.desc"))); const master = el("div", "cust-row"); const mi = el("div", "info"); mi.appendChild(el("div", "nm", t("cust.network.allowName"))); mi.appendChild(el("div", "ds", d.enabled ? t("cust.network.enabledDesc") : t("cust.network.disabledDesc"))); master.appendChild(mi); const tg = el("button", "toggle" + (d.enabled ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { const r = await api("/network/status", { method: "PUT", body: JSON.stringify({ enabled: on }) }); hint(r.enabled ? t("toast.network.enabled") : t("toast.network.disabled")); } catch {} }; master.appendChild(tg); c.appendChild(master); await searchKeyRow(c); ((d && d.groups) || []).forEach(g => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, g.name || g.label)); info.appendChild(nm); const box = el("div", "ds"); (g.domains || []).slice(0, 12).forEach(dm => box.appendChild(el("span", "pill", dm))); info.appendChild(box); row.appendChild(info); c.appendChild(row); }); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
+async function custNetwork(c) { try { const d = await api("/preferences/builtin-allowlist"); c.innerHTML = ""; c.appendChild(hdr(t("cust.network.title"), t("cust.network.desc"))); const master = el("div", "cust-row"); const mi = el("div", "info"); mi.appendChild(el("div", "nm", t("cust.network.allowName"))); mi.appendChild(el("div", "ds", d.enabled ? t("cust.network.enabledDesc") : t("cust.network.disabledDesc"))); master.appendChild(mi); const tg = el("button", "toggle" + (d.enabled ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { const r = await api("/network/status", { method: "PUT", body: JSON.stringify({ enabled: on }) }); hint(r.enabled ? t("toast.network.enabled") : t("toast.network.disabled")); } catch {} }; master.appendChild(tg); c.appendChild(master); await searchKeyRow(c); ((d && d.groups) || []).forEach(g => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, g.name || g.label)); info.appendChild(nm); const box = el("div", "ds"); (g.domains || []).slice(0, 12).forEach(dm => box.appendChild(el("span", "pill", dm))); info.appendChild(box); row.appendChild(info); c.appendChild(row); }); await telemetryRow(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
+
+async function telemetryRow(c) {
+  let d; try { d = await api("/telemetry/consent"); } catch { return; }
+  const row = el("div", "cust-row"); const info = el("div", "info");
+  info.appendChild(el("div", "nm", t("cust.telemetry.name")));
+  info.appendChild(el("div", "ds", d.env_locked ? t("cust.telemetry.envlock") : (d.enabled ? t("cust.telemetry.on") : t("cust.telemetry.off"))));
+  row.appendChild(info);
+  const tg = el("button", "toggle" + (d.enabled ? " on" : "") + (d.env_locked ? " off" : ""));
+  if (d.env_locked) { tg.disabled = true; }
+  // A privacy toggle must never end up showing a state the server does not
+  // hold. The old handler flipped optimistically, swallowed failures without
+  // restoring, and stayed clickable while a PUT was in flight — so two rapid
+  // clicks raced and whichever response arrived *last* won, regardless of
+  // which click the user made last.
+  //
+  // Two variables instead of reading the DOM: `desired` is what the user has
+  // asked for, `confirmed` is what the server last told us it holds. Clicks
+  // only move `desired`; one drain loop reconciles the difference, never with
+  // two requests in flight. Extra clicks during a round trip are therefore
+  // coalesced rather than dropped — the last one the user made is the one that
+  // ends up applied — and the button stays live instead of going dead mid-
+  // request.
+  else {
+    let running = false;
+    let desired = !!d.enabled;
+    let confirmed = !!d.enabled;
+    const paint = (on) => {
+      tg.classList.toggle("on", !!on);
+      info.lastChild.textContent = on ? t("cust.telemetry.on") : t("cust.telemetry.off");
+    };
+    const drain = async () => {
+      if (running) return;
+      running = true;
+      try {
+        while (desired !== confirmed) {
+          const want = desired;
+          try {
+            const r = await api("/telemetry/consent", { method: "PUT", body: JSON.stringify({ enabled: want }) });
+            confirmed = !!r.enabled;
+            // The server is authoritative: a grant vetoed by the environment
+            // comes back disabled, and retrying it forever would be a spin.
+            // Only overwrite the ask if the user has not since changed it.
+            if (confirmed !== want && desired === want) desired = confirmed;
+            hint(confirmed ? t("toast.telemetry.on") : t("toast.telemetry.off"));
+          } catch (e) {
+            // The server still holds `confirmed`; abandon the ask rather than
+            // leave the control showing a state that was never applied.
+            desired = confirmed;
+            hint(t("toast.telemetry.failed", (e && e.message) || ""));
+          }
+          // Only repaint once the ask and the truth agree. Painting every
+          // round trip would flash the now-stale server state at a user who
+          // has already clicked again, mid-drain.
+          if (desired === confirmed) paint(confirmed);
+        }
+      } finally { running = false; }
+    };
+    tg.onclick = () => { desired = !desired; paint(desired); drain(); };
+  }
+  row.appendChild(tg); c.appendChild(row);
+}
 async function custMemory(c) { try {
   const m = await api("/memory/enabled");
   const mem = await api("/memory?project_id=all").catch(() => ({ memories: [] }));

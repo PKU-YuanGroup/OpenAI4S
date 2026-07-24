@@ -131,6 +131,14 @@ def safe_extract_tar(
         if staging.exists():
             shutil.rmtree(staging)
         staging.mkdir(parents=True)
+        # Resolved once, and compared against resolved targets below.
+        # `_validate_name` returns a *resolved* path, so on a destination under
+        # a symlinked ancestor — macOS puts temp dirs under /var, a symlink to
+        # /private/var — the unresolved staging path is not a prefix of it and
+        # the move loop dies with "is not in the subpath of". Nothing hostile
+        # is required to hit that; an ordinary harvest into a temp workspace
+        # does it.
+        staging = staging.resolve()
         try:
             written_total = 0
             extracted: list[Path] = []

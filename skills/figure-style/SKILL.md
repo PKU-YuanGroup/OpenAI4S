@@ -293,7 +293,7 @@ These are correctness failures, not style preferences:
 
 ## 9. Render-then-verify
 
-After `fig.savefig(...)`, before `save_artifacts`:
+After `fig.savefig(...)`, before `host.save_artifact(...)`:
 
 **9.1 Geometric (bbox) check.**
 ```python

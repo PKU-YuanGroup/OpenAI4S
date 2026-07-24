@@ -1,0 +1,47 @@
+{
+  "id": "r-analysis",
+  "version": "1.0.0",
+  "title": "R 通道独立执行",
+  "summary": "R 是独立的分析通道，不是 Python 的包装。这个 workflow 证明 R 单元格真的在 R 里跑。",
+  "steps": [
+    "open_session",
+    "run_r_cell"
+  ],
+  "permissions": [
+    "kernel:r"
+  ],
+  "artifacts": [],
+  "failure_conditions": [
+    "解析不到 Rscript",
+    "R 单元格报错",
+    "输出来自 Python 而不是 R"
+  ],
+  "cases": [
+    {
+      "id": "r-analysis/happy",
+      "title": "R 单元格返回 R 自己的版本串",
+      "outcome": "success",
+      "inputs": {
+        "run_r_cell": {
+          "code": "cat(R.version$language)"
+        }
+      },
+      "expect": {
+        "stdout__contains": "R"
+      }
+    },
+    {
+      "id": "r-analysis/error",
+      "title": "R 报错必须作为失败上报",
+      "outcome": "failure",
+      "inputs": {
+        "run_r_cell": {
+          "code": "stop('missing covariate')"
+        }
+      },
+      "expect": {
+        "error__contains": "missing covariate"
+      }
+    }
+  ]
+}

@@ -9,8 +9,10 @@ persistent Python kernel.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -111,15 +113,27 @@ _FILTERS = frozenset({"organism_id", "species", "year_from", "year_to", "work_ty
 _SPECIES = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _MAX_RESPONSE_CHARS = 5_000_000
 
+#: Bumped whenever the shape a record is normalized into changes. Two results
+#: with the same upstream bytes but different normalization versions are not
+#: the same evidence, and without this a reader has no way to tell.
+NORMALIZATION_VERSION = 1
+
 
 class ScienceConnectorService:
     """Query fixed public APIs and return one stable cross-database envelope."""
 
     def __init__(
         self,
-        fetch: Callable[[str, str, float, int], str] | None = None,
+        # A fetch may answer with the content alone, or with a mapping that
+        # also describes the raw response bytes. See _retrieve.
+        fetch: (
+            Callable[[str, str, float, int], str | Mapping[str, Any]] | None
+        ) = None,
     ) -> None:
         self._fetch = fetch or self._default_fetch
+        # Upstream responses observed during the call in flight. Reset per
+        # search so one query never inherits another's provenance.
+        self._responses: list[dict[str, Any]] = []
 
     def list_databases(self, domain: str = "all") -> dict[str, Any]:
         selected = str(domain or "all").strip().lower()
@@ -190,6 +204,8 @@ class ScienceConnectorService:
             )
 
         adapter = getattr(self, f"_search_{database_id}")
+        self._responses = []
+        retrieved_at = int(time.time() * 1000)
         try:
             results, next_cursor, request_url = adapter(
                 normalized_query,
@@ -204,6 +220,8 @@ class ScienceConnectorService:
             raise ScienceConnectorError(
                 f"{metadata.label} request failed: {type(exc).__name__}: {exc}"
             ) from exc
+        responses = list(self._responses)
+        self._responses = []
         return {
             "database": database_id,
             "source": metadata.label,
@@ -212,6 +230,20 @@ class ScienceConnectorService:
             "results": results[:requested_limit],
             "next_cursor": next_cursor or None,
             "request_url": request_url,
+            # The provenance envelope. Without it a retrieved record cannot
+            # answer the two questions that decide whether it is evidence:
+            # when was this true, and was it the same bytes I am looking at?
+            "provenance": {
+                "database": database_id,
+                "source": metadata.label,
+                "retrieved_at": retrieved_at,
+                "request_url": request_url,
+                "query": normalized_query,
+                "filters": dict(active_filters),
+                "normalization_version": NORMALIZATION_VERSION,
+                "responses": responses,
+                "response_sha256": _combined_digest(responses),
+            },
         }
 
     @staticmethod
@@ -236,7 +268,9 @@ class ScienceConnectorService:
         return values
 
     @staticmethod
-    def _default_fetch(url: str, fmt: str, timeout: float, max_chars: int) -> str:
+    def _default_fetch(
+        url: str, fmt: str, timeout: float, max_chars: int
+    ) -> dict[str, Any]:
         from openai4s import webtools
 
         response = webtools.web_fetch(
@@ -247,10 +281,30 @@ class ScienceConnectorService:
         )
         if response.get("truncated"):
             raise ScienceConnectorError("scientific database response exceeded 5 MB")
-        return str(response.get("content") or "")
+        return {
+            "content": str(response.get("content") or ""),
+            "raw_sha256": response.get("raw_sha256"),
+            "raw_bytes": response.get("raw_bytes"),
+        }
+
+    def _retrieve(
+        self, url: str, fmt: str, timeout: float, max_chars: int
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Fetch, keeping whatever the transport can say about the raw bytes.
+
+        The injectable ``fetch`` may still return a bare string — a caller
+        supplying pre-fetched content has no wire bytes to describe — so both
+        shapes are accepted and the difference is recorded rather than papered
+        over.
+        """
+        payload = self._fetch(url, fmt, timeout, max_chars)
+        if isinstance(payload, Mapping):
+            return str(payload.get("content") or ""), dict(payload)
+        return str(payload or ""), None
 
     def _json(self, url: str, timeout: float, *, allow_empty: bool = False) -> Any:
-        raw = self._fetch(url, "json", timeout, _MAX_RESPONSE_CHARS)
+        raw, observed = self._retrieve(url, "json", timeout, _MAX_RESPONSE_CHARS)
+        self._observe(url, raw, observed)
         if allow_empty and not raw.strip():
             return None
         try:
@@ -261,7 +315,55 @@ class ScienceConnectorService:
             ) from exc
 
     def _text(self, url: str, timeout: float) -> str:
-        return self._fetch(url, "text", timeout, _MAX_RESPONSE_CHARS)
+        raw, observed = self._retrieve(url, "text", timeout, _MAX_RESPONSE_CHARS)
+        self._observe(url, raw, observed)
+        return raw
+
+    def _observe(
+        self, url: str, raw: str, observed: Mapping[str, Any] | None = None
+    ) -> None:
+        """Note what came back, before anything interprets it.
+
+        Every adapter reaches upstream through `_json`/`_text`, so hashing here
+        covers all seven sources without one of them having to remember to.
+
+        The hash is of the **response body as received**, which is not what the
+        string reaching this function contains. `web_fetch` decodes with
+        ``errors="replace"`` — every invalid byte sequence collapses onto the
+        same U+FFFD — and for JSON re-serialises through a load/dump round trip
+        that discards the original whitespace entirely. Hashing the string
+        therefore answered "do these normalise the same", not "are these the
+        same bytes we received", and the recorded length was the normalised
+        length rather than what arrived. Evidence provenance promises the
+        latter.
+
+        When the transport cannot describe the raw bytes — an injected fetch
+        that returns a string — the record says so via ``hashed`` instead of
+        quietly presenting a content hash as a response hash.
+
+        A search may make several requests (a query then a detail fetch). All
+        of them are kept, in order, because a result assembled from two
+        responses is only reproducible if both are named.
+        """
+        payload = raw if isinstance(raw, str) else ""
+        digest = str((observed or {}).get("raw_sha256") or "")
+        size = (observed or {}).get("raw_bytes")
+        if digest and isinstance(size, int):
+            entry = {
+                "url": _string(url, 4000),
+                "sha256": digest,
+                "bytes": int(size),
+                "hashed": "response_bytes",
+            }
+        else:
+            encoded = payload.encode("utf-8")
+            entry = {
+                "url": _string(url, 4000),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+                "bytes": len(encoded),
+                "hashed": "decoded_content",
+            }
+        self._responses.append(entry)
 
     def _search_uniprot(self, query, limit, cursor, filters, timeout):
         del cursor
@@ -600,6 +702,21 @@ class ScienceConnectorService:
         meta = payload.get("meta") or {}
         next_cursor = _string(meta.get("next_cursor"), 2000)
         return results, next_cursor, url
+
+
+def _combined_digest(responses: list[dict[str, Any]]) -> str | None:
+    """One hash over every upstream response a search consumed.
+
+    A single value the caller can carry on a derived artifact, in the order the
+    requests were made -- reordering them would be a different retrieval and
+    must not hash the same.
+    """
+    if not responses:
+        return None
+    if len(responses) == 1:
+        return str(responses[0].get("sha256") or "") or None
+    joined = "|".join(str(item.get("sha256") or "") for item in responses)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
 def _record(

@@ -97,21 +97,22 @@ job = c.submit_job(
 print(job.job_id)   # cell ends here — kernel never blocks on compute
 ```
 
-Then call the `wait_for_notification` brain-tool. When the
-`compute_done` notification arrives, act on its payload:
-
-```python
-save_artifacts(payload["featured_files"])   # paths under hpc/<job_id>/
-```
-
-For the full result dict (`output_files`, `remote_workdir`, …), re-enter the
-kernel and bind the compute handle separately — `.close()` lives on the
-handle, not on the job object:
+Then poll from a later cell. `.result()` is one non-blocking probe of the
+remote and is what harvests the outputs once the job is terminal — nothing
+runs in the background, so a job you never poll is never harvested. While the
+job is still running it returns `{"status": "running", …}`; end the cell and
+call it again later. Bind the compute handle separately when you poll from a
+fresh kernel — `.close()` lives on the handle, not on the job object:
 
 ```python
 h = host.compute.create(provider)
-res = h.attach_job(job_id).result()
-h.close()
+res = h.attach_job(job_id).result()   # {status, exit_code, output_files,
+                                      #  featured_files, remote_workdir, …}
+if res["status"] == "succeeded":
+    for path in res["featured_files"]:      # paths under hpc/<job_id>/
+        host.save_artifact(path)
+    h.close()
+# `unknown` is not a finished job — poll again rather than closing over it.
 ```
 
 See the `remote-compute-ssh` / `remote-compute-nvidia` skill for the
