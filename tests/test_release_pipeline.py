@@ -570,6 +570,47 @@ def test_the_canonical_uri_prefers_the_running_repository(monkeypatch):
     assert canonical_source_uri() == "git+https://github.com/PKU-YuanGroup/OpenAI4S"
 
 
+def test_the_pyproject_fallback_matches_the_host_and_not_a_substring(
+    monkeypatch, tmp_path
+):
+    """CodeQL `py/incomplete-url-substring-sanitization`, and it is right.
+
+    The fallback selected a line by `"github.com" in line`, which also accepts
+    `github.com.example.net` and `evil-github.com` — and the value it selects is
+    written into a *signed* provenance statement as the place a consumer should
+    go to find this source. That is the one field in the document whose whole
+    job is to be trustworthy, so it is matched on hostname.
+    """
+    import scripts.release_pipeline as pipeline_mod
+
+    monkeypatch.delenv("GITHUB_SERVER_URL", raising=False)
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+
+    def no_origin(*_a, **_kw):
+        return _completed(1)
+
+    fake_root = tmp_path / "repo"
+    fake_root.mkdir()
+    (fake_root / "pyproject.toml").write_text(
+        'Homepage = "https://github.com.evil.example/PKU-YuanGroup/OpenAI4S"\n'
+        'Source = "https://evil-github.com/PKU-YuanGroup/OpenAI4S"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline_mod, "ROOT", fake_root)
+
+    with pytest.raises(ReleaseError, match="could not be determined"):
+        canonical_source_uri(runner=no_origin)
+
+    # ...and the genuine host still resolves, or the guard ate the feature.
+    (fake_root / "pyproject.toml").write_text(
+        'Source = "https://github.com/PKU-YuanGroup/OpenAI4S"\n', encoding="utf-8"
+    )
+    assert (
+        canonical_source_uri(runner=no_origin)
+        == "git+https://github.com/PKU-YuanGroup/OpenAI4S"
+    )
+
+
 def test_the_provenance_binds_the_digests_and_claims_no_author(assets):
     _pipeline(assets).run()
     document = json.loads((assets / "provenance.intoto.json").read_text())

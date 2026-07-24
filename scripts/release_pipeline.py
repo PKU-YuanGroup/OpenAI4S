@@ -69,6 +69,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,6 +118,11 @@ SIGNATURE_RECEIPT_SUFFIX = ".codesign.json"
 COMPONENTS_SIDECAR_SUFFIX = ".components.json"
 
 DISTRIBUTION_SUFFIXES = (".whl", ".gz", ".dmg", ".zip")
+
+#: Hosts the pyproject fallback will accept as the canonical source. Named
+#: rather than pattern-matched: this value goes into a signed provenance
+#: statement, so "looks like GitHub" is not a good enough test.
+_SOURCE_HOSTS = frozenset({"github.com", "www.github.com"})
 
 
 class ReleaseError(RuntimeError):
@@ -306,10 +312,20 @@ def canonical_source_uri(runner: Callable[..., Any] = _run) -> str:
                 origin = origin[:-4]
             return f"git+{origin}"
     for line in (ROOT / "pyproject.toml").read_text("utf-8").splitlines():
-        if "github.com" in line and "=" in line:
-            candidate = line.split("=", 1)[1].strip().strip('"').strip("'")
-            if candidate.startswith("http"):
-                return f"git+{candidate.rstrip('/')}"
+        if "=" not in line:
+            continue
+        candidate = line.split("=", 1)[1].strip().strip('"').strip("'")
+        # Host equality, not `"github.com" in line`. A substring test also
+        # accepts `github.com.example.net` and `evil-github.com`, and the value
+        # it selects is written into a *signed* provenance statement as the
+        # place a consumer should go to find this source — the one field in the
+        # document whose whole job is to be trustworthy.
+        try:
+            parts = urllib.parse.urlsplit(candidate)
+        except ValueError:
+            continue
+        if parts.scheme in ("http", "https") and parts.hostname in _SOURCE_HOSTS:
+            return f"git+{candidate.rstrip('/')}"
     raise ReleaseError(
         "the canonical source repository could not be determined; refusing to "
         "sign a provenance statement pointing at a guess"
