@@ -438,6 +438,11 @@ CREATE TABLE IF NOT EXISTS compute_jobs (
     -- exists remotely, independent of anything we chose to believe.
     receipt         TEXT,
     outputs         TEXT,              -- JSON: declared output globs
+    -- Which session/workspace submitted this job. `_rehydrate` filters on it so
+    -- a restart does not hand one session's live jobs — and their harvested
+    -- outputs — to whichever session happens to build a manager first. NULL is
+    -- the CLI / global context (see migration 9).
+    owner_key       TEXT,
     exit_code       INTEGER,
     reason          TEXT,              -- free-text detail, provider-supplied
     -- Coded cause, from compute/states.py. `failed` because outputs could not
@@ -926,6 +931,7 @@ class Store:
                         "env_snapshot_provenance",
                         self._apply_env_snapshot_provenance,
                     ),
+                    9: ("compute_job_owner", self._apply_compute_job_owner),
                 },
             )
             if report["migrated"]:
@@ -1060,6 +1066,34 @@ class Store:
             if not _is_duplicate_column(e):
                 raise MigrationError(
                     f"compute_jobs.pgid could not be added: {e}"
+                ) from e
+
+    def _apply_compute_job_owner(self, conn: sqlite3.Connection) -> None:
+        """Version 9: record which session/workspace owns each compute job.
+
+        Without it, ``_rehydrate`` loaded every installation-wide live row into
+        whichever session built a manager first, so a restart could hand one
+        session's job — and publish its harvested outputs — into a *different*
+        session's workspace. The column lets recovery filter to the owning
+        session.
+
+        Historical rows keep NULL, which is the CLI / global context: only a
+        NULL-owner (CLI) manager rehydrates them, never a Web session, so no
+        session inherits another's pre-upgrade jobs. Runs inside the transaction
+        owned by ``run_migrations``.
+        """
+        have = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(compute_jobs)").fetchall()
+        }
+        if "owner_key" in have:
+            return
+        try:
+            conn.execute("ALTER TABLE compute_jobs ADD COLUMN owner_key TEXT")
+        except sqlite3.OperationalError as e:
+            if not _is_duplicate_column(e):
+                raise MigrationError(
+                    f"compute_jobs.owner_key could not be added: {e}"
                 ) from e
 
     def _apply_env_snapshot_generation(self, conn: sqlite3.Connection) -> None:
@@ -3085,8 +3119,10 @@ class Store:
     def compute_job_by_idempotency_key(self, key: str) -> dict | None:
         return self._compute_jobs.by_idempotency_key(key)
 
-    def live_compute_jobs(self) -> list[dict]:
-        return self._compute_jobs.live()
+    def live_compute_jobs(
+        self, owner_key: str | None = None, scoped: bool = False
+    ) -> list[dict]:
+        return self._compute_jobs.live(owner_key=owner_key, scoped=scoped)
 
     def list_compute_jobs(self, limit: int = 200) -> list[dict]:
         return self._compute_jobs.list(limit)

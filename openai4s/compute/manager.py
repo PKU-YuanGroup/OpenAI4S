@@ -647,6 +647,11 @@ class ComputeManager:
         # the process cwd, which is right for the CLI and wrong for nothing —
         # the Web path supplies the session workspace explicitly.
         self._workspace = workspace
+        # Which session owns the jobs this manager creates. The workspace path is
+        # a stable per-session identity (it survives a restart), so a recovered
+        # job — and the destination its harvest is published to — is filtered to
+        # the session that submitted it. None is the CLI / global context.
+        self._owner_key = str(workspace) if workspace else None
         self._providers = _discover_providers(Path(cfg.skills_dir))
         self._install_id = self._resolve_install_id()
         self._store = store if store is not None else _open_store(cfg)
@@ -800,21 +805,32 @@ class ComputeManager:
 
     # --- durability -------------------------------------------------------
     def _rehydrate(self) -> None:
-        """Load jobs that may still be live remotely.
+        """Load *this session's* jobs that may still be live remotely.
 
         Without this a restart stranded every in-flight job: the ssh process
         kept running under nohup and the byoc sandbox kept billing, while
         `result()` answered "no such job" and `_live_count()` reset to zero —
         so the session would happily oversubscribe a provider that was still
         busy with work it had forgotten.
+
+        Scoped to ``owner_key``: an unscoped load handed every installation-wide
+        live row to whichever session built a manager first, so a poll would
+        then publish another session's harvested outputs into *this* session's
+        workspace. Recovery must only adopt the jobs this session submitted.
         """
         if self._store is None:
             return
         try:
-            for record in self._store.live_compute_jobs():
-                self._jobs[record["job_id"]] = self._from_record(record)
+            recovered = self._store.live_compute_jobs(
+                owner_key=self._owner_key, scoped=True
+            )
         except Exception:  # noqa: BLE001 - a broken record must not stop startup
-            pass
+            return
+        for record in recovered:
+            try:
+                self._jobs[record["job_id"]] = self._from_record(record)
+            except Exception:  # noqa: BLE001 - one bad row must not stop the rest
+                continue
 
     @staticmethod
     def _from_record(record: dict) -> dict:
@@ -1171,6 +1187,7 @@ class ComputeManager:
                 status=states.STAGING,
                 idempotency_key=idempotency_key,
                 outputs=outputs,
+                owner_key=self._owner_key,
             )
         except sqlite3.IntegrityError as exc:
             # The serial pre-check above cannot see a same-key row a concurrent

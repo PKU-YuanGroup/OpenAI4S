@@ -44,6 +44,9 @@ _FIELDS = (
     "sandbox_id",
     "receipt",
     "outputs",
+    # Which session/workspace owns this job. `_rehydrate` filters on it so a
+    # restart does not hand one session's live jobs to another. NULL = CLI.
+    "owner_key",
     "exit_code",
     "reason",
     # Why a job reached its terminal state, when the status alone would lose
@@ -95,6 +98,7 @@ class ComputeJobRepository:
         status: str = "queued",
         idempotency_key: str | None = None,
         outputs: Any = None,
+        owner_key: str | None = None,
     ) -> dict:
         """Record a job before it is submitted.
 
@@ -107,13 +111,15 @@ class ComputeJobRepository:
             try:
                 self._connection.execute(
                     "INSERT INTO compute_jobs(job_id,idempotency_key,provider,"
-                    "status,outputs,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                    "status,outputs,owner_key,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
                     (
                         job_id,
                         idempotency_key,
                         provider,
                         status,
                         json.dumps(outputs) if outputs is not None else None,
+                        owner_key,
                         now,
                         now,
                     ),
@@ -212,15 +218,30 @@ class ComputeJobRepository:
             ).fetchone()
         return self._decode(row)
 
-    def live(self) -> list[dict]:
-        """Jobs that may still be consuming a remote resource."""
+    def live(self, owner_key: str | None = None, scoped: bool = False) -> list[dict]:
+        """Jobs that may still be consuming a remote resource.
+
+        With ``scoped=True`` the result is restricted to one owner: rows whose
+        ``owner_key`` equals ``owner_key`` (``NULL`` when it is None). This is how
+        ``_rehydrate`` keeps a restart from handing one session's live jobs — and
+        their harvested outputs — to another. ``scoped=False`` (the default) is
+        the installation-wide view reconcile and status use.
+        """
         placeholders = ",".join("?" for _ in LIVE_STATES)
+        sql = (
+            f"SELECT {','.join(_FIELDS)} FROM compute_jobs "
+            f"WHERE status IN ({placeholders})"
+        )
+        params: list[Any] = list(LIVE_STATES)
+        if scoped:
+            if owner_key is None:
+                sql += " AND owner_key IS NULL"
+            else:
+                sql += " AND owner_key=?"
+                params.append(owner_key)
+        sql += " ORDER BY created_at"
         with self._lock:
-            rows = self._connection.execute(
-                f"SELECT {','.join(_FIELDS)} FROM compute_jobs "
-                f"WHERE status IN ({placeholders}) ORDER BY created_at",
-                LIVE_STATES,
-            ).fetchall()
+            rows = self._connection.execute(sql, params).fetchall()
         return [self._decode(row) for row in rows if row is not None]
 
     def list(self, limit: int = 200) -> list[dict]:

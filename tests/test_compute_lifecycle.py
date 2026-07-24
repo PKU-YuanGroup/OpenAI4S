@@ -212,7 +212,9 @@ def test_reconcile_flags_an_indeterminate_submit_as_an_orphan_risk(
     with pytest.raises(ComputeError):
         byoc.submit({"provider": "byoc:fake", "command": "train.py"})
 
-    report = ComputeManager(cfg).reconcile()
+    # The same session restarting: same workspace, so its owner-scoped recovery
+    # adopts the job it submitted.
+    report = ComputeManager(cfg, workspace=byoc._workspace).reconcile()
     assert report["orphan_risk_count"] == 1
     entry = report["recovered"][0]
     assert entry["orphan_risk"] is True
@@ -315,7 +317,7 @@ def test_close_terminates_a_sandbox_it_only_knows_from_the_job_row(
     out = byoc.submit({"provider": "byoc:fake", "command": "train.py"})
     job_id = out["job_id"]
 
-    restarted = ComputeManager(cfg)
+    restarted = ComputeManager(cfg, workspace=byoc._workspace)  # same session
     assert restarted._sandboxes == {}, "the warm map does not survive a restart"
 
     terminated = []
@@ -335,6 +337,39 @@ def test_close_terminates_a_sandbox_it_only_knows_from_the_job_row(
     assert terminated == ["sbx-9"]
     assert result["released"] == [job_id]
     assert get_store(cfg.db_path).get_compute_job(job_id)["status"] == states.CANCELLED
+
+
+def test_a_restart_does_not_hand_one_sessions_jobs_to_another(
+    cfg, tmp_path, monkeypatch
+):
+    """Codex P1: `_rehydrate` loaded installation-wide live rows into whichever
+    session built a manager first, so a poll would publish another session's
+    harvested outputs into this session's workspace. Recovery must be scoped to
+    the owning session."""
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.run",
+        lambda *a, **k: _Proc(0, b"OPENAI4S_JOB 4242 4200\n"),
+        raising=True,
+    )
+    ws_a = tmp_path / "session-a"
+    ws_b = tmp_path / "session-b"
+    ws_a.mkdir()
+    ws_b.mkdir()
+
+    session_a = ComputeManager(cfg, workspace=ws_a)
+    job_id = session_a.submit({"provider": "ssh:lab", "command": "sleep 600"})["job_id"]
+
+    # A different session restarts first. It must NOT adopt session A's job.
+    session_b = ComputeManager(cfg, workspace=ws_b)
+    assert job_id not in session_b._jobs, "session B recovered session A's job"
+    assert session_b._live_count() == 0
+    with pytest.raises(ComputeError):
+        session_b.result({"job_id": job_id})  # not its job to poll
+
+    # Session A restarting adopts its own job.
+    session_a_restarted = ComputeManager(cfg, workspace=ws_a)
+    assert job_id in session_a_restarted._jobs
+    assert session_a_restarted._live_count() == 1
 
 
 def test_close_transitions_every_live_job_on_the_sandbox_it_terminated(
