@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -185,6 +186,64 @@ def test_auto_mode_still_runs_when_no_boundary_is_available(monkeypatch):
     )
     assert proc.returncode == 0
     assert b"ok" in proc.stdout
+
+
+def test_listing_a_foreign_env_probes_its_version_confined(monkeypatch):
+    """Codex P1: `Environment.python_version()` started a *foreign* interpreter
+    with an unsandboxed subprocess, so a generation's malicious `.pth` or
+    sitecustomize ran on merely listing environments. A foreign interpreter must
+    go through the confined probe; our own is read in-process."""
+    from openai4s.kernel.environments import Environment
+
+    calls: list[list[str]] = []
+
+    def fake_probe(argv, *, timeout):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, b"3.11.7\n", b"")
+
+    monkeypatch.setattr("openai4s.kernel.preinstall.run_confined_probe", fake_probe)
+    # A raw subprocess.run of a foreign interpreter would be the bug.
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.subprocess.run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("a foreign interpreter was run unconfined")
+        ),
+    )
+
+    foreign = Environment(
+        name="gen",
+        language="python",
+        root=Path("/opt/generations/env-x/prefix"),
+        python="/opt/generations/env-x/prefix/bin/python",
+        rscript=None,
+    )
+    assert foreign.python_version() == "3.11.7"
+    assert calls, "the foreign interpreter was not probed through the confined path"
+    assert calls[0][0] == "/opt/generations/env-x/prefix/bin/python"
+
+
+def test_listing_our_own_env_reads_the_version_in_process(monkeypatch):
+    """The daemon's own interpreter is trusted and read without any subprocess —
+    neither a raw run nor a confined probe."""
+    from openai4s.kernel.environments import Environment
+
+    monkeypatch.setattr(
+        "openai4s.kernel.preinstall.run_confined_probe",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("our own interpreter should not be probed")
+        ),
+    )
+    ours = Environment(
+        name="base",
+        language="python",
+        root=Path(sys.prefix),
+        python=sys.executable,
+        rscript=None,
+        is_conda=False,
+    )
+    import platform
+
+    assert ours.python_version() == platform.python_version()
 
 
 def test_a_virtualenv_is_not_this_interpreter(tmp_path):

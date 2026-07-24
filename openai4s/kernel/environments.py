@@ -143,25 +143,46 @@ class Environment:
         return f"{self.language} 环境（{len(self.package_set())} 个包）"
 
     def python_version(self) -> str | None:
-        """Interpreter version string, probed once and cached (empty for R-only)."""
+        """Interpreter version string, probed once and cached (empty for R-only).
+
+        A *foreign* interpreter runs its site startup — ``.pth`` files and
+        ``sitecustomize`` — before the ``-c`` code, so a malicious generation
+        could execute code merely by being *listed* (``env_list`` and
+        session-status paths call this). Probing our own interpreter is done
+        in-process; any other one goes through the same confined probe a kernel
+        cell gets, so its startup runs inside the OS boundary, not with the
+        daemon's reach.
+        """
         if self.python is None:
             return None
         if self._pyversion is None:
-            try:
-                out = subprocess.run(
-                    [
-                        self.python,
-                        "-c",
-                        "import platform;print(platform.python_version())",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=8,
-                )
-                self._pyversion = (out.stdout or "").strip() or "?"
-            except Exception:  # noqa: BLE001
-                self._pyversion = "?"
+            if self.python == sys.executable:
+                # Our own interpreter — read it in-process, no subprocess at all.
+                import platform
+
+                self._pyversion = platform.python_version()
+            else:
+                self._pyversion = self._probe_python_version_confined()
         return self._pyversion
+
+    def _probe_python_version_confined(self) -> str:
+        try:
+            from openai4s.kernel import preinstall
+
+            out = preinstall.run_confined_probe(
+                [
+                    self.python,
+                    "-c",
+                    "import platform;print(platform.python_version())",
+                ],
+                timeout=8,
+            )
+            stdout = out.stdout
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", "replace")
+            return (stdout or "").strip() or "?"
+        except Exception:  # noqa: BLE001 - unreadable, or confinement refused it
+            return "?"
 
     def to_dict(self, with_packages: bool = False) -> dict:
         d = {
