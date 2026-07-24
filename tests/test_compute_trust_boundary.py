@@ -82,6 +82,30 @@ def _ssh_replies(probe: bytes, *, harvest: bytes = b"OPENAI4S_HARVEST empty\n", 
     return fake_run
 
 
+class _FakeCatProc:
+    """Stand in for the `ssh cat` process `_fetch_archive_capped` streams from."""
+
+    def __init__(self, returncode: int, stdout: bytes = b"", stderr: bytes = b""):
+        self.returncode = returncode
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        return None
+
+
+def _fake_transfer(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
+    """Patch `subprocess.Popen` for the capped archive transfer (ssh cat)."""
+
+    def popen(argv, **kw):
+        return _FakeCatProc(returncode, stdout, stderr)
+
+    return popen
+
+
 def test_ssh_missing_rc_is_unknown_not_done(mgr, monkeypatch):
     """The headline regression: a remote process that vanished without writing
     an exit code used to report done/exit_code 0."""
@@ -153,7 +177,13 @@ def test_ssh_log_harvest_failure_does_not_claim_clean_success(mgr, monkeypatch):
     monkeypatch.setattr(
         subprocess,
         "run",
-        _ssh_replies(b"0\n", harvest=b"OPENAI4S_HARVEST archive\n", scp=1),
+        _ssh_replies(b"0\n", harvest=b"OPENAI4S_HARVEST archive 10\n"),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _fake_transfer(1, b"", b"cat: transfer broke"),
         raising=True,
     )
     out = mgr._result_ssh(_ssh_job(mgr))
@@ -161,14 +191,20 @@ def test_ssh_log_harvest_failure_does_not_claim_clean_success(mgr, monkeypatch):
     # The distinction `incomplete` used to carry: rc was 0, so this is not
     # an ordinary non-zero failure — the outputs simply cannot be trusted.
     assert out["exit_code"] == 0
-    assert "scp broke" in out["harvest_error"]
+    assert "transfer" in out["harvest_error"]
 
 
 def test_ssh_failed_job_with_bad_harvest_stays_failed(mgr, monkeypatch):
     monkeypatch.setattr(
         subprocess,
         "run",
-        _ssh_replies(b"3\n", harvest=b"OPENAI4S_HARVEST archive\n", scp=1),
+        _ssh_replies(b"3\n", harvest=b"OPENAI4S_HARVEST archive 10\n"),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _fake_transfer(1, b"", b"cat: transfer broke"),
         raising=True,
     )
     out = mgr._result_ssh(_ssh_job(mgr))
@@ -271,9 +307,17 @@ class TestAgainstRealBash:
     @pytest.fixture
     def local_ssh(self, mgr, monkeypatch, tmp_path):
         real_run = subprocess.run
+        real_popen = subprocess.Popen
         shell = shutil.which(self.SHELL)
         if shell is None:
             pytest.skip(f"{self.SHELL} is not on this host")
+
+        def fake_popen(argv, **kw):
+            # The capped harvest transfer streams the archive over `ssh cat`;
+            # route it through the real shell so it actually cats the file.
+            if argv[0] == "ssh":
+                return real_popen([shell, "-c", argv[2]], start_new_session=True, **kw)
+            return real_popen(argv, **kw)
 
         def fake_run(argv, **kw):
             if argv[0] == "ssh":
@@ -304,6 +348,7 @@ class TestAgainstRealBash:
             return real_run(argv, **kw)
 
         monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
+        monkeypatch.setattr(subprocess, "Popen", fake_popen, raising=True)
         monkeypatch.setenv("HOME", str(tmp_path))
         return mgr
 

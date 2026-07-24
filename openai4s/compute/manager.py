@@ -2170,7 +2170,46 @@ class ComputeManager:
         safe_extract_tar(tgz, harvested)
         return manifest.build_manifest(harvested), harvested
 
+    def _stored_terminal_result(self, job: dict) -> dict | None:
+        """Reconstruct a terminal SSH job's result from its recorded evidence.
+
+        A job that has already ended must not be re-harvested: `result()` re-runs
+        on every poll, and a re-poll after the remote workdir changed would
+        overwrite the original ``artifact_manifest`` / ``integrity_sha256`` /
+        reason / ``terminal_at`` with whatever the later poll happened to see.
+        The stored row describes the bytes that established the outcome, so a
+        re-poll returns it unchanged rather than recomputing it.
+        """
+        if self._store is None:
+            return None
+        row = self._store.get_compute_job(job["job_id"])
+        if row is None or not states.is_terminal(row.get("status")):
+            return None
+        entries = row.get("artifact_manifest") or []
+        dest = self._safe_harvest_dest(job["job_id"])
+        featured, _missing = manifest.reconcile(entries, row.get("outputs"))
+        result = {
+            "status": row["status"],
+            "exit_code": row.get("exit_code"),
+            "output_files": [str(dest / item["path"]) for item in entries],
+            "featured_files": [str(dest / rel) for rel in featured],
+            "artifact_manifest": entries,
+            "integrity_sha256": row.get("integrity_sha256"),
+            "remote_workdir": row.get("workdir") or job.get("workdir"),
+            "left_on_remote": True,
+            "cached": True,
+        }
+        if row.get("reason"):
+            result["reason"] = row["reason"]
+        return result
+
     def _result_ssh(self, job: dict) -> dict:
+        # Already terminal: return the recorded evidence rather than re-harvest
+        # and overwrite it. The recorded outcome is authoritative.
+        if states.is_terminal(job.get("status")):
+            cached = self._stored_terminal_result(job)
+            if cached is not None:
+                return cached
         alias, workdir = job["alias"], job["workdir"]
         pid = job.get("pid") or ""
         # Probe ordering matters. `kill -0` is asked first because the wrapper
@@ -2443,15 +2482,8 @@ class ComputeManager:
         with tempfile.TemporaryDirectory(prefix="openai4s-ssh-harvest-") as td:
             local = Path(td) / "harvest.tar.gz"
             try:
-                self._run_scp(
-                    [
-                        "scp",
-                        "-O",
-                        "-q",
-                        f"{alias}:{workdir}/{_HARVEST_ARCHIVE}",
-                        str(local),
-                    ],
-                    f"harvest from {alias}:{workdir}",
+                self._fetch_archive_capped(
+                    alias, workdir, local, HARVEST_MAX_ARCHIVE_BYTES
                 )
             except ComputeError as e:
                 return str(e), oversized, stayed
@@ -2470,6 +2502,81 @@ class ComputeManager:
             # through must not survive on local disk to be listed as an output.
             stayed.extend(_prune_local_matches(dest, patterns))
         return None, oversized, sorted(set(stayed))
+
+    def _fetch_archive_capped(
+        self,
+        alias: str,
+        workdir: str,
+        local: Path,
+        cap: int,
+        timeout: float = 300.0,
+    ) -> None:
+        """Stream the harvest archive with a hard cap on the *transferred* bytes.
+
+        The ack-reported size is a TOCTOU: a detached remote process can enlarge
+        or replace the archive after the acknowledgement but before a separate
+        scp, so the pre-check would apply to different bytes than the transfer,
+        and the download could still exhaust local disk. Reading the archive over
+        ``ssh cat`` and stopping the moment the bytes exceed ``cap`` binds the
+        limit to exactly what lands on local disk.
+        """
+        remote = f"{workdir}/{_HARVEST_ARCHIVE}"
+        proc = subprocess.Popen(
+            ["ssh", alias, f"cat -- {remote}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        written = 0
+        over = False
+        timed_out = False
+        deadline = time.monotonic() + timeout
+        try:
+            assert proc.stdout is not None
+            with open(local, "wb") as fh:
+                while True:
+                    if time.monotonic() > deadline:
+                        timed_out = True
+                        break
+                    chunk = proc.stdout.read(256 * 1024)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > cap:
+                        over = True
+                        break
+                    fh.write(chunk)
+        finally:
+            if over or timed_out:
+                proc.kill()
+            try:
+                rc = proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                rc = -1
+            stderr = b""
+            if proc.stderr is not None:
+                try:
+                    stderr = proc.stderr.read() or b""
+                except Exception:  # noqa: BLE001
+                    stderr = b""
+        if over:
+            raise ComputeError(
+                f"harvest exceeded the {cap}-byte download cap mid-transfer from "
+                f"{alias}; aborted before it could exhaust local disk. Declare "
+                f"fewer or smaller outputs, or use residency: remote.",
+                "unsafe_archive",
+            )
+        if timed_out:
+            raise ComputeError(
+                f"harvest transfer from {alias} exceeded {int(timeout)}s; aborted",
+                "transient",
+            )
+        if rc != 0:
+            raise ComputeError(
+                f"harvest transfer from {alias} failed: "
+                f"{stderr.decode('utf-8', 'replace').strip() or 'no stderr'}",
+                "transient",
+            )
 
     @staticmethod
     def _cleanup_remote_archive(alias: str, workdir: str) -> None:

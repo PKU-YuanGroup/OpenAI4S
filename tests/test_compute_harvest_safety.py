@@ -16,6 +16,7 @@ Two P1s from the second review, plus one P2, all in the compute manager:
 """
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
@@ -263,6 +264,128 @@ def test_a_failed_harvest_does_not_leak_its_staging_directory(cfg, tmp_path):
 
     after = set(stage_root.iterdir())
     assert after == before, f"a staging directory leaked: {sorted(after - before)}"
+
+
+def test_a_terminal_job_repolled_returns_stored_evidence_not_a_reharvest(cfg, tmp_path):
+    """Codex P2: result() re-runs on every poll. A terminal job re-polled after
+    its remote workdir changed would re-harvest and overwrite the original
+    artifact_manifest / integrity_sha256 / terminal_at with whatever the later
+    poll saw. The recorded evidence describes the bytes that established the
+    outcome and must survive a re-poll unchanged."""
+    ws = tmp_path / "ws"
+    manager = _manager(cfg, ws)
+    manager._store.create_compute_job(
+        job_id="job-t",
+        provider="ssh:lab",
+        status=states.RUNNING,
+        outputs=["result.csv"],
+        owner_key=str(ws),
+    )
+    manager._jobs["job-t"] = {
+        "job_id": "job-t",
+        "provider": "ssh:lab",
+        "alias": "lab",
+        "workdir": str(tmp_path / "remote"),
+        "status": states.RUNNING,
+        "pid": "1",
+        "pgid": "1",
+        "outputs": ["result.csv"],
+    }
+    (tmp_path / "remote").mkdir()
+
+    def probe_says_exit_zero(argv, *a, **k):
+        return subprocess.CompletedProcess(argv, 0, b"RC 0 -\n", b"")
+
+    import openai4s.compute.manager as mod
+
+    original_run = mod.subprocess.run
+    mod.subprocess.run = probe_says_exit_zero
+    try:
+
+        def good_harvest(alias, workdir, staging, exclude):
+            (Path(staging) / "result.csv").write_text("original\n", encoding="utf-8")
+            return None, [], []
+
+        manager._harvest_ssh = good_harvest
+        first = manager._result_ssh(manager._jobs["job-t"])
+        assert first["status"] == states.SUCCEEDED
+        row1 = manager._store.get_compute_job("job-t")
+        manifest1 = row1["artifact_manifest"]
+        digest1 = row1["integrity_sha256"]
+        terminal_at1 = row1["terminal_at"]
+
+        # A re-poll after the workdir "changed": a completely different harvest.
+        def tampered_harvest(alias, workdir, staging, exclude):
+            (Path(staging) / "result.csv").write_text("TAMPERED\n", encoding="utf-8")
+            return None, [], []
+
+        manager._harvest_ssh = tampered_harvest
+        second = manager._result_ssh(manager._jobs["job-t"])
+    finally:
+        mod.subprocess.run = original_run
+
+    # The re-poll returned the original evidence, and the durable row is intact.
+    assert second.get("cached") is True
+    assert second["integrity_sha256"] == digest1
+    row2 = manager._store.get_compute_job("job-t")
+    assert (
+        row2["artifact_manifest"] == manifest1
+    ), "the recorded manifest was overwritten"
+    assert row2["integrity_sha256"] == digest1
+    assert row2["terminal_at"] == terminal_at1
+
+
+class _CatStub:
+    """Stand in for the `ssh cat` process the capped transfer streams from."""
+
+    def __init__(self, payload: bytes):
+        self.returncode = 0
+        self.stdout = io.BytesIO(payload)
+        self.stderr = io.BytesIO(b"")
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+
+def test_the_capped_transfer_aborts_on_the_actual_bytes_not_the_ack(
+    cfg, tmp_path, monkeypatch
+):
+    """Codex P1: the ack-reported size is a TOCTOU — a detached remote process
+    can enlarge or replace the archive after the acknowledgement but before the
+    transfer. The cap must bind to the *transferred* bytes and abort mid-stream
+    before it can exhaust local disk."""
+    import openai4s.compute.manager as mod
+
+    manager = _manager(cfg, tmp_path / "ws")
+    huge = b"x" * (2 * 1024 * 1024)  # far more than the cap streams down
+    monkeypatch.setattr(
+        mod.subprocess, "Popen", lambda *a, **k: _CatStub(huge), raising=True
+    )
+
+    local = tmp_path / "out.tar.gz"
+    with pytest.raises(ComputeError) as error:
+        manager._fetch_archive_capped("lab", "/remote/work", local, cap=64 * 1024)
+    assert "cap" in str(error.value).lower()
+    # Nothing over the cap was allowed to land on disk.
+    assert not local.exists() or local.stat().st_size <= 64 * 1024
+
+
+def test_the_capped_transfer_delivers_a_within_cap_archive(cfg, tmp_path, monkeypatch):
+    """The cap must not break the normal case: a within-cap archive lands whole."""
+    import openai4s.compute.manager as mod
+
+    manager = _manager(cfg, tmp_path / "ws")
+    payload = b"a-legitimate-within-cap-archive"
+    monkeypatch.setattr(
+        mod.subprocess, "Popen", lambda *a, **k: _CatStub(payload), raising=True
+    )
+
+    local = tmp_path / "out.tar.gz"
+    manager._fetch_archive_capped("lab", "/remote/work", local, cap=1024)
+    assert local.read_bytes() == payload
 
 
 def test_the_staging_dir_is_host_owned_and_outside_the_workspace(cfg, tmp_path):
