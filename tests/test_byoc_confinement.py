@@ -237,6 +237,40 @@ def test_the_linux_wrapper_makes_only_the_stage_writable():
     assert binds == [os.path.realpath("/tmp/stage")]
 
 
+def test_the_linux_wrapper_isolates_the_pid_namespace():
+    """Codex P1: `--proc /proc` without a private PID namespace shows the host's
+    namespace, so the shim could traverse /proc/<daemon-pid>/root to reach the
+    daemon's files behind the $HOME tmpfs."""
+    argv = bc.build_bwrap_argv(
+        ["python"], "/tmp/stage", executable="/usr/bin/bwrap", home="/home/r"
+    )
+    assert "--unshare-pid" in argv, "the helper shares the host PID namespace"
+    # It must precede the --proc mount so that /proc reflects the new namespace.
+    assert argv.index("--unshare-pid") < argv.index("--proc")
+
+
+def test_the_linux_wrapper_masks_host_control_sockets():
+    """Codex P1: the whole-root ro-bind exposes Docker/Podman/credential sockets
+    under /run, and a read-only mount does not stop connect(2). An empty tmpfs
+    over /run hides them — placed after the root bind so it wins, and after the
+    $HOME tmpfs so the home mask stays first."""
+    argv = bc.build_bwrap_argv(
+        ["python"],
+        "/tmp/stage",
+        executable="/usr/bin/bwrap",
+        home="/home/researcher",
+        read_paths=("/opt/py",),
+    )
+    tmpfs_targets = [argv[i + 1] for i, part in enumerate(argv) if part == "--tmpfs"]
+    assert "/run" in tmpfs_targets, "host runtime sockets under /run are exposed"
+    # The /run tmpfs overlays the whole-root bind that would otherwise expose it.
+    run_at = argv.index("/run", argv.index("--tmpfs"))
+    assert argv.index("/", argv.index("--ro-bind")) < run_at
+    # ...and the home mask is still the first tmpfs (a contract other tests rely
+    # on), so masking /run did not displace it.
+    assert argv[argv.index("--tmpfs") + 1] == os.path.realpath("/home/researcher")
+
+
 def test_the_linux_wrapper_does_not_claim_network_isolation():
     """Network isolation is a separate capability and it is not enabled.
     Adding `--unshare-net` here would cut the helper off from the API that is

@@ -215,6 +215,12 @@ def build_bwrap_argv(
         str(executable),
         "--die-with-parent",
         "--new-session",
+        # A private PID namespace. Without it, `--proc /proc` shows the *host*
+        # PID namespace, so the shim could traverse `/proc/<daemon-pid>/root` to
+        # reach the daemon's files behind the $HOME tmpfs, or read process
+        # metadata, and exfiltrate over its allowed network. In its own namespace
+        # /proc shows only the sandbox.
+        "--unshare-pid",
         "--unshare-ipc",
         "--unshare-uts",
         "--ro-bind",
@@ -227,6 +233,15 @@ def build_bwrap_argv(
         # The invariant: the user's home is not the user's home in here.
         "--tmpfs",
         home_dir,
+        # The whole-root read-only bind exposes host control sockets — Docker,
+        # Podman (rootful and rootless), the credential/runtime services — under
+        # /run, and a read-only mount does not stop `connect(2)`. The shim could
+        # otherwise ask a container service to mount the host home and bypass the
+        # tmpfs. An empty tmpfs over /run hides every one of them; a compute
+        # helper needs nothing under /run (DNS and CA certs live under /etc).
+        # Kept after the $HOME tmpfs so the first `--tmpfs` stays the home mask.
+        "--tmpfs",
+        "/run",
     ]
     for path in list(read_paths) or runtime_read_paths():
         # Bound back *after* the tmpfs so the interpreter can still start; a
