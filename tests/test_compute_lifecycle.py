@@ -337,6 +337,51 @@ def test_close_terminates_a_sandbox_it_only_knows_from_the_job_row(
     assert get_store(cfg.db_path).get_compute_job(job_id)["status"] == states.CANCELLED
 
 
+def test_close_transitions_every_live_job_on_the_sandbox_it_terminated(
+    byoc, monkeypatch, cfg
+):
+    """Codex P1: byoc jobs share one sandbox per provider, and close releases
+    every sandbox the manager can name — including one carrying live jobs the
+    caller never listed (a restart, or a second handle, leaves such rows).
+    Transitioning only the named targets left the omitted job live in memory and
+    in the ledger: it kept a concurrency slot and later polls addressed a sandbox
+    that no longer exists."""
+
+    def submit_ok(op, stage):
+        if op == "create":
+            _reply(stage, {"ok": True, "sandbox_id": "sbx-shared"})
+        else:
+            _reply(stage, {"ok": True})
+        return 0
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen", _fake_popen(submit_ok)
+    )
+    first = byoc.submit({"provider": "byoc:fake", "command": "a.py"})["job_id"]
+    second = byoc.submit({"provider": "byoc:fake", "command": "b.py"})["job_id"]
+    # Both ride the same warm sandbox.
+    assert byoc._jobs[first]["sandbox_id"] == byoc._jobs[second]["sandbox_id"]
+    assert byoc._live_count() == 2
+
+    def terminate_ok(op, stage):
+        _reply(stage, {"ok": True})
+        return 0
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen", _fake_popen(terminate_ok)
+    )
+    # Close naming ONLY the first job — but the shared sandbox is destroyed.
+    result = byoc.close({"provider": "byoc:fake", "job_ids": [first]})
+
+    store = get_store(cfg.db_path)
+    assert store.get_compute_job(first)["status"] == states.CANCELLED
+    assert (
+        store.get_compute_job(second)["status"] == states.CANCELLED
+    ), "a live job riding the terminated sandbox was left live in the ledger"
+    assert second in result["released"]
+    assert byoc._live_count() == 0, "the omitted job kept its concurrency slot"
+
+
 def test_cancel_refuses_a_byoc_job_with_no_sandbox_to_terminate(byoc, cfg):
     """Nothing to signal is not the same as nothing running."""
     store = get_store(cfg.db_path)

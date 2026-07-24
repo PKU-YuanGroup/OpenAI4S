@@ -2668,6 +2668,7 @@ class ComputeManager:
         # which is why those are consulted too.
         terminated = True
         if fam == "byoc":
+            handled = {job["job_id"] for job in targets}
             for sandbox_id in self._sandbox_ids_for(rest):
                 if _release_sandbox(sandbox_id) is not None:
                     # Drop the id only once the provider has confirmed the
@@ -2675,6 +2676,30 @@ class ComputeManager:
                     # how a sandbox bills forever with nothing left in this
                     # process able to name it.
                     terminated = False
+                    continue
+                # byoc jobs share one sandbox per provider, and this loop
+                # releases every sandbox the manager can name — including ones
+                # carrying live jobs this handle never listed (a restart, or a
+                # second handle, leaves exactly such rows). Transitioning only
+                # the named targets left those jobs live in memory and in the
+                # ledger: they kept a concurrency slot and later polls addressed
+                # a sandbox that no longer exists. The sandbox is confirmed gone,
+                # so every live job riding it is over too.
+                for job in self._live_jobs_on_sandbox(sandbox_id, handled):
+                    conflict = self._commit_terminal(
+                        job,
+                        states.CANCELLED,
+                        event="closed",
+                        event_payload={
+                            "provider": provider,
+                            "sandbox_id": sandbox_id,
+                        },
+                        terminal_at=_now_ms(),
+                        termination_reason=states.REASON_HANDLE_CLOSED,
+                    )
+                    handled.add(job["job_id"])
+                    if conflict is None:
+                        released.append(job["job_id"])
             if terminated:
                 self._sandboxes.pop(rest, None)
                 self._sandbox_deadlines.pop(rest, None)
@@ -2696,6 +2721,22 @@ class ComputeManager:
                 "tracked as live; they may still be running and billing"
             )
         return result
+
+    def _live_jobs_on_sandbox(self, sandbox_id: str, exclude: set[str]) -> list[dict]:
+        """Every live job this manager still tracks riding the given sandbox.
+
+        Used when a close terminates a sandbox: the jobs on it are over whether
+        or not the caller named them, so the ledger has to say so.
+        """
+        with self._lock:
+            jobs = list(self._jobs.values())
+        return [
+            job
+            for job in jobs
+            if str(job.get("sandbox_id") or "") == sandbox_id
+            and job["job_id"] not in exclude
+            and states.is_live(job.get("status"))
+        ]
 
     def _sandbox_ids_for(self, provider_id: str) -> list[str]:
         """Every sandbox this manager can still name for one byoc provider.
