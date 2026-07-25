@@ -8159,16 +8159,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if method in ("PUT", "PATCH"):
                     b = self._body()
-                    self._json(
-                        store.upsert_agent(
-                            name=nm,
-                            description=b.get("description") or "",
-                            system_prompt=b.get("system_prompt") or "",
-                            skill_names=b.get("skills"),
-                            connectors=b.get("connectors"),
-                            unrestricted=b.get("unrestricted", True),
-                        )
-                    )
+                    # Partial: only what the body actually carries. This used
+                    # to call `upsert_agent`, which writes every column, while
+                    # the editor sends three of them -- so each edit wrote NULL
+                    # over `skills` and `connectors` and reset `unrestricted`
+                    # to True. A resource restriction silently became no
+                    # restriction, which is the direction that matters.
+                    fields: dict[str, Any] = {}
+                    for key, column in (
+                        ("description", "description"),
+                        ("system_prompt", "system_prompt"),
+                        ("skills", "skill_names"),
+                        ("connectors", "connectors"),
+                        ("unrestricted", "unrestricted"),
+                    ):
+                        if key in b:
+                            fields[column] = b[key]
+                    updated = store.update_agent(nm, **fields)
+                    if updated is None:
+                        raise GatewayError(404, "specialist not found")
+                    self._json(updated)
                     return
                 if method == "DELETE":
                     store.delete_agent(nm)

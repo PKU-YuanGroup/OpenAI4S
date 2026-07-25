@@ -51,6 +51,48 @@ class AgentProfileRepository:
                 return agent
         return None
 
+    def update(self, name: str, **fields: Any) -> dict | None:
+        """Change only the columns supplied, leaving the rest as stored.
+
+        `upsert` writes every column unconditionally, and the specialist
+        editor sends three of them. Routing an edit through `upsert` therefore
+        wrote NULL over `skill_names` and `connectors` and reset
+        `unrestricted` to 1 -- a resource restriction silently became no
+        restriction at all, which is the failure direction that matters.
+
+        `None` cannot be the "not supplied" marker here: a NULL allowlist is a
+        real, distinct state meaning "inherit from the parent", so absent and
+        null have to stay tellable apart. Only keys actually present are
+        written.
+        """
+        if self.get(name) is None:
+            return None
+        columns: list[str] = []
+        params: list[Any] = []
+        for key in ("description", "system_prompt"):
+            if key in fields:
+                columns.append(f"{key}=?")
+                params.append(fields[key] or "")
+        for key, column in (
+            ("skill_names", "skill_names"),
+            ("connectors", "connectors"),
+        ):
+            if key in fields:
+                value = fields[key]
+                columns.append(f"{column}=?")
+                params.append(json.dumps(value) if value is not None else None)
+        if "unrestricted" in fields:
+            columns.append("unrestricted=?")
+            params.append(1 if fields["unrestricted"] else 0)
+        if columns:
+            columns.append("updated_at=?")
+            params.append(self._clock_ms())
+            params.append(name)
+            self._execute(
+                f"UPDATE agents SET {','.join(columns)} WHERE name=?", tuple(params)
+            )
+        return self.get(name)
+
     def upsert(
         self,
         *,

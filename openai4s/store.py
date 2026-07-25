@@ -3068,6 +3068,11 @@ class Store:
             unrestricted=unrestricted,
         )
 
+    def update_agent(self, name: str, **fields: Any) -> dict | None:
+        """Partial update: only the supplied columns change. Returns None if
+        the specialist does not exist."""
+        return self._agents.update(name, **fields)
+
     def delete_agent(self, name: str) -> None:
         self._agents.delete(name)
 

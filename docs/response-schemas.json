@@ -14824,11 +14824,39 @@
         "type": "object"
       }
     },
+    "PATCH /specialists/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /specialists/([^/]+) [ok]": {
       "schema": {
         "properties": {
           "connectors": {
-            "type": "null"
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "created_at": {
             "type": "integer"
@@ -14840,7 +14868,10 @@
             "type": "string"
           },
           "skill_names": {
-            "type": "null"
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "system_prompt": {
             "type": "string"
@@ -26649,11 +26680,39 @@
         "type": "object"
       }
     },
+    "PUT /specialists/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /specialists/([^/]+) [ok]": {
       "schema": {
         "properties": {
           "connectors": {
-            "type": "null"
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "created_at": {
             "type": "integer"
@@ -26665,7 +26724,10 @@
             "type": "string"
           },
           "skill_names": {
-            "type": "null"
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "system_prompt": {
             "type": "string"
