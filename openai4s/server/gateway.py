@@ -515,7 +515,13 @@ class WSHub:
     def _cursor_is_stale_locked(
         self, root_frame_id: str, since_seq: int, epoch: str | None
     ) -> bool:
-        """Can this process honour the cursor the client presented?
+        """Is the client's cursor stale — unplaceable in *this* daemon's
+        stream, so the subscription must declare a gap?
+
+        The name is the contract, and the return follows it: ``True`` means
+        "cannot be placed, refetch"; ``False`` means placeable, which includes
+        the trivial "asks for everything" case. An earlier header asked the
+        mirror-image "can we honour it?", which read as if ``True`` were yes.
 
         A cursor is only placeable if it numbers *this* daemon's stream, and
         the epoch is the only thing that says so. Three cases:

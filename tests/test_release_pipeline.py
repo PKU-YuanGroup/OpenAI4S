@@ -611,6 +611,108 @@ def test_the_pyproject_fallback_matches_the_host_and_not_a_substring(
     )
 
 
+def test_the_pyproject_fallback_skips_a_line_it_cannot_parse(monkeypatch, tmp_path):
+    """A malformed URL is fail-closed, never a traceback out of a signing step.
+
+    `urlsplit` raises on a malformed IPv6 authority, and `.hostname` normalises
+    the netloc and can raise too. A line the parser chokes on must be skipped
+    exactly as a substring miss is — the function's whole job is to refuse to
+    sign a guess, so a crash on the way to that refusal is a regression. A
+    genuine host on a later line still has to resolve, or the guard ate the
+    feature it protects.
+    """
+    import scripts.release_pipeline as pipeline_mod
+
+    monkeypatch.delenv("GITHUB_SERVER_URL", raising=False)
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+
+    def no_origin(*_a, **_kw):
+        return _completed(1)
+
+    fake_root = tmp_path / "repo"
+    fake_root.mkdir()
+    # The first line makes `urlsplit` raise (Invalid IPv6 URL); the second is
+    # the real one and must still be reached.
+    (fake_root / "pyproject.toml").write_text(
+        'Homepage = "https://[oops/PKU-YuanGroup/OpenAI4S"\n'
+        'Source = "https://github.com/PKU-YuanGroup/OpenAI4S"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline_mod, "ROOT", fake_root)
+    assert (
+        canonical_source_uri(runner=no_origin)
+        == "git+https://github.com/PKU-YuanGroup/OpenAI4S"
+    )
+
+    # ...and a malformed line on its own reaches the documented refusal rather
+    # than propagating the parser's ValueError.
+    (fake_root / "pyproject.toml").write_text(
+        'Homepage = "https://[oops/PKU-YuanGroup/OpenAI4S"\n', encoding="utf-8"
+    )
+    with pytest.raises(ReleaseError, match="could not be determined"):
+        canonical_source_uri(runner=no_origin)
+
+
+def test_the_pyproject_fallback_survives_a_hostname_that_raises(monkeypatch, tmp_path):
+    """The guard covers the authority normalisation, not only the split.
+
+    `urlsplit` is not the only place a ValueError can come from on the way to a
+    host decision — `.hostname` normalises the netloc and can raise too. The fix
+    put the whole parse-and-match inside the one `try`, so this forces the
+    `.hostname` half to raise (which a plain input cannot reliably do across
+    Python versions) and asserts the line is skipped, exactly as an `urlsplit`
+    failure is. Without the broadened guard this ValueError would propagate out
+    of a signing step; the earlier test cannot catch that, because its input
+    fails at `urlsplit` and never reaches `.hostname`.
+    """
+    import scripts.release_pipeline as pipeline_mod
+
+    monkeypatch.delenv("GITHUB_SERVER_URL", raising=False)
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+
+    def no_origin(*_a, **_kw):
+        return _completed(1)
+
+    real_urlsplit = pipeline_mod.urllib.parse.urlsplit
+
+    class _HostnameRaises:
+        scheme = "https"
+
+        @property
+        def hostname(self):
+            raise ValueError("simulated authority-normalisation failure")
+
+    def fake_urlsplit(value):
+        # Only the sentinel line reaches `.hostname` and blows up there; the
+        # genuine line splits for real so the feature still has to resolve it.
+        if "raise-on-hostname" in value:
+            return _HostnameRaises()
+        return real_urlsplit(value)
+
+    monkeypatch.setattr(pipeline_mod.urllib.parse, "urlsplit", fake_urlsplit)
+
+    fake_root = tmp_path / "repo"
+    fake_root.mkdir()
+    (fake_root / "pyproject.toml").write_text(
+        'Homepage = "https://raise-on-hostname/PKU-YuanGroup/OpenAI4S"\n'
+        'Source = "https://github.com/PKU-YuanGroup/OpenAI4S"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline_mod, "ROOT", fake_root)
+    assert (
+        canonical_source_uri(runner=no_origin)
+        == "git+https://github.com/PKU-YuanGroup/OpenAI4S"
+    )
+
+    # ...and on its own it reaches the refusal, not the raised ValueError.
+    (fake_root / "pyproject.toml").write_text(
+        'Homepage = "https://raise-on-hostname/PKU-YuanGroup/OpenAI4S"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ReleaseError, match="could not be determined"):
+        canonical_source_uri(runner=no_origin)
+
+
 def test_the_provenance_binds_the_digests_and_claims_no_author(assets):
     _pipeline(assets).run()
     document = json.loads((assets / "provenance.intoto.json").read_text())

@@ -320,11 +320,19 @@ def canonical_source_uri(runner: Callable[..., Any] = _run) -> str:
         # it selects is written into a *signed* provenance statement as the
         # place a consumer should go to find this source — the one field in the
         # document whose whole job is to be trustworthy.
+        #
+        # Both the split and the authority normalisation are guarded: `urlsplit`
+        # raises on a malformed IPv6 authority, and `.hostname` normalises the
+        # netloc and can itself raise. A line we cannot parse is skipped, never
+        # signed on a guess — the same fail-closed answer as the substring miss.
         try:
             parts = urllib.parse.urlsplit(candidate)
+            host_matches = (
+                parts.scheme in ("http", "https") and parts.hostname in _SOURCE_HOSTS
+            )
         except ValueError:
             continue
-        if parts.scheme in ("http", "https") and parts.hostname in _SOURCE_HOSTS:
+        if host_matches:
             return f"git+{candidate.rstrip('/')}"
     raise ReleaseError(
         "the canonical source repository could not be determined; refusing to "
