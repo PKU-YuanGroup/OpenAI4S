@@ -2836,7 +2836,12 @@ class SessionRunner:
         # long-term memory: inject saved memory blocks when the feature is on
         try:
             if self.store.get_setting("memory_enabled", "0") == "1":
-                mems = self.store.list_memories(project_id=st.project_id or "all")
+                # This session's project, never every project. `or "all"` here
+                # meant a session with a falsy project_id seeded its system
+                # prompt with the whole installation's remembered context.
+                # "default" matches where an unscoped write lands and what
+                # `resolve_frame_scope` falls back to, so the two agree.
+                mems = self.store.list_memories(project_id=st.project_id or "default")
                 if mems:
                     ctx += (
                         "\n\nRemembered context (persisted across sessions; "
@@ -8375,7 +8380,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json({"enabled": val})
                     return
             if sub.split("?")[0] == "/memory" and method == "GET":
-                pid = (q.get("project_id") or ["all"])[0]
+                # Explicit or scoped: the cross-project view is a real
+                # feature (Customize -> Memory asks for it by name), but
+                # it must never be what a caller gets for saying nothing.
+                pid = (q.get("project_id") or ["default"])[0]
                 self._json(
                     {
                         "enabled": _memory_enabled(store),
@@ -8444,7 +8452,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 return
             if sub in ("/memory/categories", "/memory/context") and method == "GET":
-                pid = (q.get("project_id") or ["all"])[0]
+                # Explicit or scoped: the cross-project view is a real
+                # feature (Customize -> Memory asks for it by name), but
+                # it must never be what a caller gets for saying nothing.
+                pid = (q.get("project_id") or ["default"])[0]
                 if sub.endswith("categories"):
                     self._json({"categories": store.memory_blocks(project_id=pid)})
                 else:
