@@ -19,7 +19,7 @@ gateway.py
          `-- HostDispatcher -> 权限、工具、Artifact、数据与委派
 ```
 
-- **Gateway 组合。** [`gateway.py`](gateway.py) 建起标准库的 `ThreadingHTTPServer`，把其余部分都装配进去：路由、REST handler、WebSocket frame 的编解码与续传、会话 runner、各个 service、存储和静态资源。[`daemon.py`](daemon.py) 是另一回事：它是遗留的最小兼容服务，只暴露 `/`、`/health` 和 `/run`，不属于 Gateway 的组合。新增算法通常应该放进职责收敛的模块，而不是塞进门面。
+- **Gateway 组合。** [`gateway.py`](gateway.py) 建起标准库的 `ThreadingHTTPServer`，把其余部分都装配进去：路由、REST handler、WebSocket frame 的编解码与续传、会话 runner、各个 service、存储和静态资源。新增算法通常应该放进职责收敛的模块，而不是塞进门面。
 - **REST 与 WebSocket。** REST 负责有界的请求/响应操作，并提供会话领域的读模型。WebSocket 通道承载实时流：Agent 文本、Action 与 Cell 生命周期、审批、Notebook 更新和终止事件，并做缓冲，让重连的浏览器可以续传。
 - **会话服务与投影。** mutation service 管理计划、审阅、Artifact、分支、恢复、会话包、Skill 与删除。projection service 把规范 Ledger、执行、血缘、Context 和 Security 状态转成经脱敏、可以安全交给浏览器的 DTO。投影只是一个视图，它永远不是底层的终止信号或事务信号。
 - **内核所有权。** 每个 Web 会话通过 `SessionRunner` 拥有一个 Python slot 和一个 R slot，两者相互独立、惰性启动。[`execution_coordinator.py`](execution_coordinator.py) 发放 FIFO ticket，让 Agent、用户 REPL、恢复和生命周期这几类写入方不会互相压到一起；中断只会打到持有那把 lease 的确切 owner。Tool-only 路由不会启动前台的会话 slot，不过个别工具可以自己管理一个专用 worker。
@@ -41,7 +41,6 @@ gateway.py
 | [`artifacts.py`](artifacts.py) | Agent 写出的工作区文件在这里变成带版本的 Artifact。UI 上的编辑、重命名、上传、恢复和提升也走同一个 service，版本每动一次，快照、溯源和广播都跟着对齐。 |
 | [`cell_run.py`](cell_run.py) | 按固定顺序跑完一个 Python/R Cell：执行准入、安全检查、内核执行、实时输出、Artifact 捕获、执行日志、终止投影。这个事务跑完只是一条 observation，它不会判定 Agent 的任务已经完成。 |
 | [`completions.py`](completions.py) | 生成用户看到的那段叙述。进度和结果文字都做了本地化；结构化的 completion 是照着真实的 Artifact 版本增量渲染的，而不是照着一句声称。隐藏推理不会进到这里。 |
-| [`daemon.py`](daemon.py) | 遗留的最小线程 HTTP 服务，为兼容而保留 `/`、`/health` 和 `/run`。它不是 Gateway，也不拥有 Gateway 的 WebSocket、Origin/认证检查或单例生命周期。 |
 | [`execution_coordinator.py`](execution_coordinator.py) | 会话级 FIFO 执行所有权的 Web 适配层。ticket 状态会被投影成 WebSocket 事件；已准入的 ticket 会绑定到它的取消事件和当时那把内核 lease 上；中断只会打到由那个执行 id 精确持有的那把 lease。 |
 | [`execution_views.py`](execution_views.py) | 读不可变的 Cell 历史，回答 Notebook 想问的问题：这个 Cell 跑在哪个运行时 generation 上、依赖了什么、之后是否已经失效、重试过几次、数据从哪来。 |
 | [`gateway.py`](gateway.py) | HTTP/WebSocket 的主组合门面。协议 frame 的编解码、hub 与续传缓冲、`SessionState` 与 `SessionRunner`、REST 路由、静态资源和安全检查都落在这里，本表所列全部 service 的装配也在这里。 |

@@ -9,8 +9,10 @@ workbench-state, and permission services). If you change that public surface,
 update this document.
 
 Scope note: this covers the **gateway** started by `openai4s serve` /
-`./start.sh`. The minimal `openai4s/server/daemon.py` single-page UI and its
-`/run` endpoint are a separate, smaller surface and are not documented here.
+`./start.sh`, which is the only HTTP surface the package serves. A second,
+minimal server (`openai4s/server/daemon.py`, `POST /run`) was removed rather
+than documented: nothing imported it and it had none of the gateway's Host,
+Origin, token or header defences.
 
 ## 1. Transport and general behavior
 

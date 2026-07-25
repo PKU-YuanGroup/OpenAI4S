@@ -52,10 +52,9 @@ _EGRESS_MODULES = frozenset(
 
 #: The frozen surface: module -> why it is allowed to reach the network.
 #:
-#: Note what is NOT here. `openai4s/share/relay.py` and `server/daemon.py` bind
-#: listening sockets and are out of scope (see the module docstring), and
-#: `server/gateway.py` mentions `import requests` only inside a prompt string
-#: shown to the model.
+#: Note what is NOT here. `openai4s/share/relay.py` binds a listening socket
+#: and is out of scope (see the module docstring), and `server/gateway.py`
+#: mentions `import requests` only inside a prompt string shown to the model.
 _DECLARED: dict[str, str] = {
     "openai4s/webtools.py": (
         "the agent's web fetch. Follows redirects manually so the SSRF guard "
@@ -167,9 +166,14 @@ def test_the_scan_finds_a_planted_call():
 
 
 def test_listening_sockets_are_deliberately_out_of_scope():
-    """The daemon and the relay bind sockets. That is a different risk with a
-    different answer (bind address), and folding it in here would make this
-    test about two things and good at neither."""
+    """The relay binds a socket. That is a different risk with a different
+    answer (bind address), and folding it in here would make this test about
+    two things and good at neither.
+
+    `openai4s/server/daemon.py` used to be named here too. It was deleted: an
+    unauthenticated `POST /run` onto `Agent.run` that nothing imported. An
+    assertion that a nonexistent file is absent passes for the wrong reason,
+    so it went with it.
+    """
     sites = _egress_sites()
     assert "openai4s/share/relay.py" not in sites
-    assert "openai4s/server/daemon.py" not in sites
