@@ -560,8 +560,45 @@ def host_file_write(ctx: Context, inputs: dict) -> dict:
     return {"path": str(target)}
 
 
+class _RecordingTransport:
+    """Stands in for the socket, and for nothing above it.
+
+    Handed to `telemetry.sender.send` through its transport seam, so the
+    consent row, the sealed-payload type, the install-id comparison and the
+    endpoint validation are all the real code — which is the whole point of the
+    case — while the bytes go into this list instead of onto a wire.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[Any] = []
+
+    def __call__(self, request: Any) -> int:
+        self.requests.append(request)
+        return 200
+
+
 def telemetry_identity_cycle(ctx: Context, inputs: dict) -> dict:
-    """Grant, seal, revoke, re-grant — and try to send the stale payload."""
+    """Grant, seal, revoke, re-grant — and try to send the stale payload.
+
+    The transport is recorded rather than opened, for the same reason
+    `science_query`'s upstream body is recorded rather than fetched: a benchmark
+    must not depend on the network. Here it is not merely a dependency. `send`
+    is the only function in the tree that transmits, and the identity check this
+    case exists to exercise sits *above* the socket — so `send`'s transport seam
+    runs every refusal for real (consent row, sealed type, install-id equality,
+    endpoint validation) while nothing leaves the machine.
+
+    Without it the `revoke: false` case granted consent on the operator's own
+    behalf, sealed a payload under that just-minted identity, and really POSTed
+    it to the built-in endpoint — from every developer machine and CI runner
+    that ran `uv run pytest`, whose user had consented to nothing. The case
+    asserted only `identity`, so the send was an unobserved side effect and the
+    suite stayed green over it.
+
+    `transport_reached` is what the `revoke: false` case is actually about: not
+    that a packet went out, but that the identity gate let the payload through
+    to the transport instead of refusing it.
+    """
     from openai4s.telemetry import consent as consent_mod
     from openai4s.telemetry import sender as sender_mod
     from openai4s.telemetry import wire
@@ -570,16 +607,27 @@ def telemetry_identity_cycle(ctx: Context, inputs: dict) -> dict:
     if first is None:
         raise RuntimeError("consent could not be granted")
     stale = wire.seal(first.install_id, [{"event": "daemon_start", "outcome": "ok"}])
+
+    transport = _RecordingTransport()
     if not inputs.get("revoke", True):
-        return {"sent": sender_mod.send(ctx.store, stale), "identity": "current"}
+        sent = sender_mod.send(ctx.store, stale, transport=transport)
+        return {
+            "sent": sent,
+            "identity": "current",
+            "transport_reached": bool(transport.requests),
+        }
     consent_mod.revoke(ctx.store)
     second = consent_mod.grant(ctx.store)
     if second is None or second.install_id == first.install_id:
         raise RuntimeError("re-granting did not mint a fresh identity")
+    sent = sender_mod.send(ctx.store, stale, transport=transport)
     return {
-        "sent": sender_mod.send(ctx.store, stale),
+        "sent": sent,
         "identity": "revoked",
         "ids_differ": True,
+        # The refusal is what this case proves, so it must be visible that the
+        # payload never reached the transport at all.
+        "transport_reached": bool(transport.requests),
     }
 
 

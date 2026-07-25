@@ -351,6 +351,102 @@ def test_the_same_route_on_a_host_without_a_sandbox_is_not_a_breaking_change():
     assert check(documents[1], documents[0]) == []
 
 
+def _gpu_body(*, present):
+    """`GET /compute/gpu`'s two real answers, from the real prober.
+
+    Driven through `_detect_gpu` rather than hand-written, so this pins what the
+    route actually returns instead of what this test assumes it returns.
+    """
+    import subprocess
+
+    import openai4s.server.gateway as gateway_mod
+
+    detect = gateway_mod._detect_gpu
+    if not present:
+        # No nvidia-smi is the CPU-only branch, which is every CI runner here.
+        with _patched(gateway_mod, "shutil", _FakeShutil(found=None)):
+            return detect()
+    completed = subprocess.CompletedProcess(
+        ["nvidia-smi"], 0, "NVIDIA A100, 81920 MiB, 550.54.15\n", ""
+    )
+    with _patched(gateway_mod, "shutil", _FakeShutil(found="/usr/bin/nvidia-smi")):
+        with _patched(gateway_mod, "subprocess", _FakeSubprocess(completed)):
+            return detect()
+
+
+class _FakeShutil:
+    def __init__(self, found):
+        self._found = found
+
+    def which(self, _name):
+        return self._found
+
+
+class _FakeSubprocess:
+    def __init__(self, completed):
+        self._completed = completed
+
+    def run(self, *_a, **_kw):
+        return self._completed
+
+
+class _patched:
+    """`_detect_gpu` imports its helpers inside the function body, so the swap
+    has to be on the module the import resolves against."""
+
+    def __init__(self, module, name, value):
+        self._module, self._name, self._value = module, name, value
+        self._had = False
+        self._old = None
+
+    def __enter__(self):
+        import sys
+
+        self._sys_old = sys.modules.get(self._name)
+        sys.modules[self._name] = self._value
+        return self
+
+    def __exit__(self, *_exc):
+        import sys
+
+        if self._sys_old is None:
+            sys.modules.pop(self._name, None)
+        else:
+            sys.modules[self._name] = self._sys_old
+        return False
+
+
+def test_the_gpu_probe_is_the_same_shape_on_a_gpu_host_and_a_cpu_one():
+    """The third instance of the machine-state failure, caught before it shipped.
+
+    `/compute/gpu` was frozen from a CPU-only capture: `gpu_name` and
+    `cuda_version` typed null, and `note` *required* — a key the nvidia-smi
+    branch did not return at all. Any host with a GPU then failed the gate with
+    four breaking changes that had nothing to do with the API, and regenerating
+    there would simply invert the failure onto CI.
+
+    So the key set is constant (the fix in `_detect_gpu`) and the two genuinely
+    host-valued fields are machine state. Both halves are needed: eliding a
+    value cannot rescue a shape whose `required` list moves.
+    """
+    documents = []
+    for present in (True, False):
+        recorder = Recorder()
+        recorder.observe("GET", "/compute/gpu", 200, _gpu_body(present=present))
+        documents.append(recorder.document())
+
+    assert check(documents[1], documents[0]) == []
+    assert check(documents[0], documents[1]) == []
+
+    schema = next(iter(documents[0]["routes"].values()))["schema"]
+    for field in ("gpu_name", "cuda_version"):
+        assert schema["properties"][field] == {"type": "object", "machine_state": True}
+    # `note` is shared with /environments/status and /kernel/packages, and
+    # elision is by name at any depth, so it must stay a real string here.
+    assert schema["properties"]["note"] == {"type": "string"}
+    assert "note" in schema["required"]
+
+
 def test_eliding_leaves_the_rest_of_the_response_frozen():
     """The reason this is surgical rather than a route-level exemption: the
     route's real contract -- the checkpoint id, the cursors -- is still pinned."""

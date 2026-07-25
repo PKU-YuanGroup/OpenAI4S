@@ -21,6 +21,25 @@ os.environ["OPENAI4S_ALLOW_PRIVATE_FETCH"] = "0"
 # self-test would round-trip through it on top. Tests that mean to exercise a
 # keychain backend construct it explicitly.
 os.environ["OPENAI4S_SECRET_STORE"] = "plaintext"
+# Nothing in the offline suite may reach the real telemetry endpoint, for the
+# same reason the share relay is cleared below — and this one is not
+# hypothetical. A benchmark case granted consent to itself, sealed a payload
+# under that just-minted identity and called `sender.send`, so every refusal in
+# `_send_locked` passed and `uv run pytest` really POSTed a fresh install id to
+# log.openai4s.org from every developer machine and CI runner.
+#
+# Belt to the braces: the two live-send paths are fixed at their source (the
+# benchmark step takes a recording transport, and the overflow test stubs its
+# opener like every sibling), so this is what catches the *next* one rather
+# than what rescues those.
+#
+# Loopback rather than an unroutable name: `endpoint()` must still return a
+# *valid* https URL so its own validation keeps running normally and the
+# transmission tests still exercise a send, and 127.0.0.1 means no DNS query
+# either — the sender's docstring counts a lookup of the real host as egress in
+# itself. Port 1 needs root to bind, so nothing can be listening. A test that
+# means to assert the built-in default clears this var explicitly.
+os.environ["OPENAI4S_TELEMETRY_ENDPOINT"] = "https://127.0.0.1:1/v1/events"
 
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
@@ -54,6 +73,10 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI4S_ALLOW_PRIVATE_FETCH", "0")
     # Never the developer's real keychain — see the module-level default.
     monkeypatch.setenv("OPENAI4S_SECRET_STORE", "plaintext")
+    # Re-applied per test: a test that overrode the endpoint for its own reasons
+    # must not leave the next one pointed at the real host. See the module-level
+    # default for why this is set at all.
+    monkeypatch.setenv("OPENAI4S_TELEMETRY_ENDPOINT", "https://127.0.0.1:1/v1/events")
     # A developer's git-ignored .env (loaded at import) may configure web sharing;
     # the offline suite must never inherit it (it would try a real relay).
     for var in (

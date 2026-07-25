@@ -50,7 +50,20 @@ SCHEMA_VERSION = 1
 #: configured, not on the contract. Freezing it as `string` pinned the
 #: developer's ssh config and told CI, which has none, that the API had made a
 #: breaking change.
-_MACHINE_STATE_KEYS = frozenset({"sandbox", "default_host"})
+#: `gpu_name` and `cuda_version` are the third instance of the same thing, and
+#: the local GPU probe is as host-dependent as a field gets: on a machine with
+#: nvidia-smi they are strings, and on one without — every CI runner here —
+#: they are null. Freezing either answer calls the other machine a breaking
+#: change. `_detect_gpu` was made to return a constant *key* set for the same
+#: reason (see gateway.py), because eliding a value cannot rescue a shape whose
+#: required list moves; these two are the part that genuinely varies.
+#:
+#: Both names are unique to `GET /compute/gpu` in the frozen document, which is
+#: what makes eliding them by name safe. `note`, which also appears there, is
+#: deliberately *not* here: it is shared with `/environments/status` and
+#: `/kernel/packages`, and eliding by name is depth-blind, so listing it would
+#: quietly drop two unrelated routes' contracts as well.
+_MACHINE_STATE_KEYS = frozenset({"sandbox", "default_host", "gpu_name", "cuda_version"})
 
 #: How many incompatibilities to name per route before summarising the rest.
 #: One structural change can break dozens of nested fields, and a wall of them
@@ -161,6 +174,14 @@ class Recorder:
         self.kinds: dict[str, dict[str, set]] = {}
         self.counts: dict[str, int] = {}
         self.unmatched: set[str] = set()
+        #: ``METHOD route`` -> the exception that stopped it, for verbs that
+        #: raised something the dispatcher would not have raised. Kept because
+        #: swallowing them silently is how a route came to be published as
+        #: something it is not: the crashing verb records nothing, its
+        #: *unimplemented* siblings still record the dispatcher's 404, and the
+        #: route then looks both covered and JSON-shaped. Not part of
+        #: ``document()`` — it describes this run, not the API.
+        self.drive_failures: dict[str, str] = {}
         #: Set while a test drives routes against stubbed services. Their
         #: responses are fabrications, and this file's entire claim is that it
         #: was captured from real ones -- a made-up shape published as a promise
@@ -507,6 +528,33 @@ def drive_all_routes(recorder: "Recorder", make_handler, config, runner) -> None
                     )
                 )
             )
+
+            # The third writer, and the one whose absence published a lie.
+            # `_stream_file` builds its own headers straight on the
+            # BaseHTTPRequestHandler instead of going through `_json`/`_send`,
+            # so on the synthetic handler built here it raised inside
+            # `send_response` (no `requestline`) and the `except Exception`
+            # below swallowed it. The route was not left blank, though: the four
+            # *unimplemented* verbs still produced the dispatcher's 404, so both
+            # `artifacts.zip` routes were published as `kinds: ["json"],
+            # statuses: [404]` — a download endpoint documented as a JSON error,
+            # with the coverage gate reporting it as covered. It is also why no
+            # route ever recorded STREAM or BINARY despite the module deriving
+            # both kinds.
+            #
+            # Mirrors the real method exactly, including its own 404: a file it
+            # cannot open is a JSON error there too, not a stream.
+            def _stub_stream(
+                file_path, ctype, extra=None, _m=method, _p=path, _r=route
+            ):
+                try:
+                    size = file_path.stat().st_size
+                except OSError:
+                    recorder.observe(_m, _p, 404, {"error": "not found"}, route=_r)
+                    return
+                recorder.observe_raw(_m, _p, 200, ctype, size, route=_r)
+
+            handler._stream_file = _stub_stream
             try:
                 handler._api(method, path)
             except GatewayError as error:
@@ -517,8 +565,17 @@ def drive_all_routes(recorder: "Recorder", make_handler, config, runner) -> None
                 recorder.observe(
                     method, path, error.code, gateway_error_payload(error), route=route
                 )
-            except Exception:  # noqa: BLE001 - a route that cannot answer has
-                # no contract to record; the coverage gate is what reports it.
+            except Exception as error:  # noqa: BLE001
+                # Recorded rather than merely skipped. The old comment here said
+                # a route that cannot answer has no contract to record — but it
+                # does get one, from whichever *other* verbs answered. That is
+                # how both `artifacts.zip` routes came to be published as
+                # `kinds: ["json"], statuses: [404]`: GET raised, and the four
+                # unimplemented verbs' dispatcher 404s became the contract for a
+                # zip download, with the coverage gate calling it covered.
+                recorder.drive_failures[
+                    f"{method} {route}"
+                ] = f"{type(error).__name__}: {error}"
                 continue
 
 

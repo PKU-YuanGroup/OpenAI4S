@@ -3034,6 +3034,19 @@
         "type": "object"
       }
     },
+    "GET /artifacts/([^/]+)/renderer [error]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
     "GET /artifacts/([^/]+)/renderer [ok]": {
       "schema": {
         "properties": {
@@ -3205,13 +3218,15 @@
             "type": "boolean"
           },
           "cuda_version": {
-            "type": "null"
+            "machine_state": true,
+            "type": "object"
           },
           "gpu_count": {
             "type": "integer"
           },
           "gpu_name": {
-            "type": "null"
+            "machine_state": true,
+            "type": "object"
           },
           "note": {
             "type": "string"

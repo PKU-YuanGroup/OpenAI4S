@@ -129,6 +129,42 @@ def test_every_route_has_a_recorded_contract():
     )
 
 
+def test_no_verb_crashes_while_its_siblings_publish_the_route_s_contract(driven):
+    """A route whose implemented verb raises is not an uncovered route.
+
+    It is a *mis*covered one, which is worse. The crashing verb records
+    nothing, the four unimplemented verbs still record the dispatcher's 404,
+    and the route is then published as `kinds: ["json"], statuses: [404]` with
+    the coverage gate calling it covered. That is exactly how both
+    `artifacts.zip` routes — real `application/zip` downloads — came to be
+    documented as JSON error endpoints, and why no route in a 144-route
+    contract had ever recorded STREAM or BINARY.
+
+    The driver now records what it swallowed, so this is checkable at all.
+    """
+    assert driven.drive_failures == {}, (
+        "these verbs raised while being driven, so whatever the route publishes "
+        "was assembled from its other verbs rather than from this one: "
+        f"{driven.drive_failures}"
+    )
+
+
+def test_a_download_route_is_recorded_as_the_download_it_is(driven):
+    """The instance that proved the rule, pinned so it cannot regress."""
+    for route in (
+        r"/frames/([^/]+)/artifacts\.zip",
+        r"/projects/([^/]+)/artifacts\.zip",
+    ):
+        observed = driven.kinds.get(f"GET {route}")
+        assert observed, f"GET {route} recorded nothing at all"
+        assert observed["kinds"] == {response_capture.BINARY}, (
+            f"GET {route} is an application/zip download; it recorded "
+            f"{observed['kinds']}"
+        )
+        assert observed["content_types"] == {"application/zip"}
+        assert observed["statuses"] == {200}
+
+
 def test_the_contract_does_not_describe_routes_that_no_longer_exist():
     """A stale entry is worse than a missing one: it reads as coverage."""
     frozen = _load_contract()

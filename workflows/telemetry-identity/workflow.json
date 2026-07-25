@@ -26,7 +26,8 @@
       },
       "expect": {
         "sent": false,
-        "ids_differ": true
+        "ids_differ": true,
+        "transport_reached": false
       }
     },
     {
@@ -39,7 +40,9 @@
         }
       },
       "expect": {
-        "identity": "current"
+        "identity": "current",
+        "sent": true,
+        "transport_reached": true
       }
     }
   ]

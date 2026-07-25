@@ -205,6 +205,14 @@ def test_overflow_drops_the_newest_and_keeps_the_queue_at_its_bound(store, monke
     """The declared overflow behaviour, stated as a test rather than a hope."""
     granted = consent_mod.grant(store)
     payload = wire.seal(granted.install_id, [{"event": "daemon_start"}])
+    # Every other test in this file stubs the opener; this one resumed the
+    # worker without one, and the payloads it had just queued were sealed under
+    # *live* consent — so the worker drained them through the real transport
+    # before the teardown could discard them. With no endpoint override in the
+    # environment that is a genuine POST to the built-in host, from the test
+    # that exists to prove the queue is bounded.
+    opener = _RecordingOpener()
+    monkeypatch.setattr(sender_mod.urllib.request, "build_opener", lambda *a: opener)
 
     gate_mod.pause_worker()
     accepted = [

@@ -555,12 +555,15 @@
     },
     "/frames/([^/]+)/artifacts\\.zip": {
       "content_types": [
-        "application/json"
+        "application/json",
+        "application/zip"
       ],
       "kinds": [
+        "binary",
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -1359,12 +1362,15 @@
     },
     "/projects/([^/]+)/artifacts\\.zip": {
       "content_types": [
-        "application/json"
+        "application/json",
+        "application/zip"
       ],
       "kinds": [
+        "binary",
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },

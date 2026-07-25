@@ -5722,6 +5722,15 @@ def _detect_gpu() -> dict:
                     "gpu_name": first[0].strip(),
                     "gpu_count": len(out.stdout.strip().splitlines()),
                     "cuda_version": (first[2].strip() if len(first) > 2 else None),
+                    # Present in both branches on purpose. A response whose *key
+                    # set* depends on the host is not a contract: with `note`
+                    # only on CPU-only hosts, the frozen shape said "guarantees
+                    # note" on the machine that captured it and every GPU host
+                    # then failed the gate with four breaking changes that had
+                    # nothing to do with the API. The two host-valued fields
+                    # (`gpu_name`, `cuda_version`) are recorded as machine state
+                    # instead; this one stays a plain string in both.
+                    "note": "GPU detected via nvidia-smi.",
                 }
         except Exception:  # noqa: BLE001
             pass
@@ -7858,13 +7867,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/renderer", sub)
             if m and method == "GET":
-                self._json(
-                    runner.session_domain.artifact_renderer(
-                        m.group(1),
-                        version_id=(q.get("version") or [None])[0],
-                        root_frame_id=(q.get("root_frame_id") or [None])[0],
+                # The domain layer signals these two the Python way; every
+                # sibling route here turns them into a status. Without the
+                # translation an unknown id left `KeyError` to reach the
+                # catch-all and answered 500 — a client asking for an artifact
+                # that is merely gone got a server error — and the route's
+                # published contract was assembled from its *other* verbs'
+                # dispatcher 404s, because the capture driver never saw this
+                # verb answer at all.
+                try:
+                    self._json(
+                        runner.session_domain.artifact_renderer(
+                            m.group(1),
+                            version_id=(q.get("version") or [None])[0],
+                            root_frame_id=(q.get("root_frame_id") or [None])[0],
+                        )
                     )
-                )
+                except KeyError:
+                    self._json({"error": "artifact not found"}, 404)
+                except PermissionError:
+                    self._json({"error": "artifact belongs to another session"}, 403)
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/lineage", sub)
             if m and method == "GET":

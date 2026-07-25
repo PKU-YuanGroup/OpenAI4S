@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 from openai4s.telemetry import consent as consent_mod
 from openai4s.telemetry import gate
@@ -59,12 +59,38 @@ def endpoint() -> str | None:
     return raw
 
 
-def send(store: Any, payload: SealedPayload) -> bool:
+def _default_transport(request: urllib.request.Request) -> int:
+    """Open the socket. The only place in the tree that does, for telemetry."""
+    opener = urllib.request.build_opener(_NoRedirects)
+    with opener.open(request, timeout=_TIMEOUT_S) as response:
+        return int(getattr(response, "status", 0))
+
+
+def send(
+    store: Any,
+    payload: SealedPayload,
+    *,
+    transport: Callable[[urllib.request.Request], int] | None = None,
+) -> bool:
     """Transmit one sealed payload. Returns whether it went.
 
     Every refusal here is silent and returns False. Telemetry that reports its
     own failures loudly trains people to make it work, and making it work is
     not a goal worth a single user-visible error.
+
+    ``transport`` replaces the socket, and nothing above it: the consent row,
+    the sealed-payload type, the install-id comparison and the endpoint
+    validation all still run exactly as they do in production, which is the
+    only reason the seam is worth having. It exists because the benchmark has
+    to drive the identity gate — the thing this module is *for* — and the only
+    honest way to observe that gate is to run the real refusals against a
+    transport that goes nowhere. The alternative was for the caller to reach in
+    and swap ``urllib.request.build_opener``, which is what it used to do, and
+    which put an outbound primitive in a module that has no business naming one
+    (see ``tests/test_egress_surface.py``).
+
+    It grants no reach: ``endpoint()`` still decides the destination, and a
+    caller able to pass this is already inside the process.
     """
     if not isinstance(payload, SealedPayload):
         # Not a defensive nicety: this is the check that makes the sealed type
@@ -80,10 +106,14 @@ def send(store: Any, payload: SealedPayload) -> bool:
     # interleave: either this send begins before the revoke, or it re-reads a
     # row that is gone and refuses.
     with gate.transmitting():
-        return _send_locked(store, payload)
+        return _send_locked(store, payload, transport)
 
 
-def _send_locked(store: Any, payload: SealedPayload) -> bool:
+def _send_locked(
+    store: Any,
+    payload: SealedPayload,
+    transport: Callable[[urllib.request.Request], int] | None = None,
+) -> bool:
     current = consent_mod.read(store)
     if current is None:
         return False
@@ -113,10 +143,13 @@ def _send_locked(store: Any, payload: SealedPayload) -> bool:
             "User-Agent": "openai4s-telemetry",
         },
     )
-    opener = urllib.request.build_opener(_NoRedirects)
     try:
-        with opener.open(request, timeout=_TIMEOUT_S) as response:
-            return 200 <= getattr(response, "status", 0) < 300
+        # The comparison stays *inside* the try, which is where it was before
+        # the seam existed. Moved out, a transport returning something that is
+        # not an int raised TypeError out of `send` — and this module's promise
+        # is that every refusal here is silent. A failure to report is never
+        # worth an exception in the caller's path.
+        return 200 <= (transport or _default_transport)(request) < 300
     except Exception:  # noqa: BLE001 - a failed report is not the user's problem
         return False
 
