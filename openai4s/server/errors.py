@@ -62,9 +62,39 @@ def gateway_error_payload(error: GatewayError) -> dict:
     return payload
 
 
+def public_failure(payload: object, status: int, request_id: str | None) -> object:
+    """The body an error response actually carries.
+
+    Enrichment is deliberately ADDITIVE: ``error`` keeps the human message it
+    always had, so a consumer reading ``j.error`` -- including this repo's own
+    ``app.js`` -- is unaffected. Success bodies are returned untouched, and so
+    is a 2xx body that merely happens to contain an ``error`` key: a job result
+    describing a prior failure is data, not an error envelope.
+
+    This lives here rather than inline in ``Handler._json`` because the shape
+    had grown a second definition, which is precisely what
+    ``gateway_error_payload`` above warns about -- arriving by a different
+    route than a copied literal. ``response_capture`` observes the body
+    *before* the dispatcher enriches it, so the frozen artifacts recorded a
+    body the server does not send: ``request_id`` appears nowhere in either
+    ``docs/response-schemas.json`` or ``docs/response-contract.json``. One
+    callable both the dispatcher and the capture can reach is what lets those
+    two stop disagreeing.
+    """
+    if status < 400 or not isinstance(payload, dict) or "error" not in payload:
+        return payload
+    return {
+        **payload,
+        "code": payload.get("code") or error_code_for(status),
+        "status": status,
+        "request_id": request_id or None,
+    }
+
+
 __all__ = [
     "ERROR_CODES",
     "GatewayError",
     "error_code_for",
     "gateway_error_payload",
+    "public_failure",
 ]

@@ -87,6 +87,7 @@ from openai4s.server.errors import (
     GatewayError,
     error_code_for,
     gateway_error_payload,
+    public_failure,
 )
 from openai4s.server.execution_coordinator import (
     ExecutionCancelled,
@@ -208,6 +209,7 @@ _WATCHDOG_KILL_GRACE_S = 10.0
 # importing it failed the daemon at boot).
 _ERROR_CODES = ERROR_CODES
 _error_code_for = error_code_for
+_public_failure = public_failure
 
 
 def _encode_frame_cursor(created_at: int, frame_id: str) -> str:
@@ -6022,21 +6024,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         def _json(self, obj, code: int = 200) -> None:
             # Every error response carries a stable `code` and the request's
-            # correlation id, enriched here rather than at ~29 call sites so a
-            # new route cannot forget. Deliberately ADDITIVE: `error` keeps the
-            # human message it always had, so existing clients (including this
-            # repo's own app.js, which reads `j.error`) are unaffected. Wrapping
-            # SUCCESS bodies in a `{data: …}` envelope was considered and not
-            # done — it would churn every route and every consumer to relocate
-            # information that is already unambiguous, and the failure mode of
-            # getting it half-done is a silently broken screen.
-            if code >= 400 and isinstance(obj, dict) and "error" in obj:
-                obj = {
-                    **obj,
-                    "code": obj.get("code") or _error_code_for(code),
-                    "status": code,
-                    "request_id": getattr(self, "_correlation_id", "") or None,
-                }
+            # correlation id, enriched at this one chokepoint rather than at
+            # ~29 call sites so a new route cannot forget. The rule itself
+            # lives in errors.py so the contract capture can apply the same
+            # one: enriching only here is what let the frozen artifacts record
+            # a body the server does not send.
+            obj = _public_failure(obj, code, getattr(self, "_correlation_id", ""))
             self._send(
                 code,
                 json.dumps(obj, ensure_ascii=False).encode("utf-8"),
