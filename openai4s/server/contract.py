@@ -73,13 +73,41 @@ _WS_OUTBOUND = re.compile(r'"type"\s*:\s*"([a-z_]+)"')
 #:
 #: Same reasoning that already widened WS-event scanning to the whole package
 #: above; HTTP routes were simply never widened with it.
-_ROUTE_MODULES = ("kernel_routes.py",)
+#:
+#: The membership is *derived*, not listed. A hand-maintained tuple has the
+#: same defect as a hand-maintained inventory: it is wrong the first time
+#: somebody extracts a route group in a hurry, and its being wrong is
+#: invisible, because the extractor then reports full coverage of an incomplete
+#: inventory. Neither `--check` script catches that -- the routes are missing
+#: from both sides of the comparison. So the convention is the naming, and
+#: `test_contract_inventory` fails the build when a module carries routing
+#: idioms without following it.
+_ROUTE_MODULE_GLOB = "*_routes.py"
+
+#: Modules that use the same routing idioms but are **not** reachable through
+#: `Handler._route`, so their paths are a different surface. `ShareRouter` is
+#: constructed for the outbound tunnel client and dispatched to directly; its
+#: `/api/artifacts/([^/]+)` never passes through the gateway chain. Counting it
+#: here would add a path the contract driver cannot drive, and an undrivable
+#: route is indistinguishable from an uncovered one.
+_NON_GATEWAY_ROUTE_MODULES = frozenset({"share_router.py"})
+
+
+def _route_modules() -> tuple[str, ...]:
+    """Every module that owns route branches extracted from `Handler._api`."""
+    return tuple(
+        sorted(
+            path.name
+            for path in _SERVER_PKG.glob(_ROUTE_MODULE_GLOB)
+            if path.name not in _NON_GATEWAY_ROUTE_MODULES
+        )
+    )
 
 
 def _route_sources() -> list[str]:
     """gateway.py plus every module that owns extracted route branches."""
     texts = [_GATEWAY.read_text("utf-8")]
-    for name in _ROUTE_MODULES:
+    for name in _route_modules():
         path = _SERVER_PKG / name
         if path.is_file():
             texts.append(path.read_text("utf-8"))

@@ -30,8 +30,9 @@ import pytest
 
 from openai4s.server import contract
 from openai4s.server.contract import (
-    _ROUTE_MODULES,
+    _NON_GATEWAY_ROUTE_MODULES,
     _SERVER_PKG,
+    _route_modules,
     http_routes,
     inventory,
     route_families,
@@ -197,14 +198,52 @@ def test_a_route_defined_in_a_route_module_is_still_inventory(tmp_path):
     assert "/made-up/([^/]+)/probe" in http_routes(source)
 
 
-def test_every_declared_route_module_is_scanned_or_absent(tmp_path):
-    """A name in the list that does not exist is tolerated (the modules land
-    one at a time), but a module that exists must be readable -- a typo that
-    silently scans nothing is exactly the failure mode this guards."""
-    for name in _ROUTE_MODULES:
+def test_every_discovered_route_module_is_scanned_or_absent(tmp_path):
+    """A discovered module must be readable -- a name that silently scans
+    nothing is exactly the failure mode this guards."""
+    for name in _route_modules():
         path = _SERVER_PKG / name
         if path.exists():
-            assert path.read_text("utf-8"), f"{name} is declared but empty"
+            assert path.read_text("utf-8"), f"{name} is discovered but empty"
+
+
+def test_a_module_carrying_routes_must_follow_the_naming_convention():
+    """The inventory's membership is derived from `*_routes.py`, so a module
+    that owns route branches under any other name is invisible to it.
+
+    That failure is silent in the worst possible way: the routes are missing
+    from the inventory *and* from the captured contract, so both
+    `capture_response_contract.py --check` and
+    `capture_response_schemas.py --check` compare two sides that agree with
+    each other and disagree with reality -- full coverage of an incomplete
+    inventory, which is the exact false confidence this module exists to
+    prevent. A naming convention nobody can forget is one the build checks.
+
+    If a module legitimately uses the routing idioms without being reachable
+    through `Handler._route` (as `share_router.py` does, serving the outbound
+    tunnel), name it in `_NON_GATEWAY_ROUTE_MODULES` with a reason rather than
+    widening this test.
+    """
+    baseline = set(http_routes())
+    discovered = set(_route_modules())
+    offenders: dict[str, list[str]] = {}
+
+    for path in sorted(_SERVER_PKG.glob("*.py")):
+        name = path.name
+        if name in {"gateway.py", "contract.py", "__init__.py"}:
+            continue
+        if name in discovered or name in _NON_GATEWAY_ROUTE_MODULES:
+            continue
+        # What would the extractor find if this module were scanned?
+        found = set(http_routes(path.read_text("utf-8")))
+        extra = sorted(found - baseline)
+        if extra:
+            offenders[name] = extra
+
+    assert not offenders, (
+        "these modules carry gateway routing idioms but are neither named "
+        f"'{contract._ROUTE_MODULE_GLOB}' nor declared non-gateway: {offenders}"
+    )
 
 
 def test_widening_the_scan_did_not_change_the_surface_it_reports():
