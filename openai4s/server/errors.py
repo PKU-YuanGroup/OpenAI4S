@@ -86,7 +86,16 @@ def public_failure(payload: object, status: int, request_id: str | None) -> obje
     return {
         **payload,
         "code": payload.get("code") or error_code_for(status),
-        "status": status,
+        # Never clobber a value the route deliberately set. `code` has always
+        # deferred this way; `status` did not, and the difference was invisible
+        # because the contract capture observed bodies *before* enrichment.
+        # `POST /frames/<id>/recovery/actions/restart_fresh` returns its whole
+        # domain result with HTTP 409 when the action fails, and that result
+        # carries its own `status` ("failed", "partial", ...) -- which the
+        # envelope silently replaced with the integer 409. The HTTP status is
+        # never lost by deferring: it is on the status line, and `code` names
+        # it. A destroyed domain field has no such second copy.
+        "status": payload.get("status", status),
         "request_id": request_id or None,
     }
 

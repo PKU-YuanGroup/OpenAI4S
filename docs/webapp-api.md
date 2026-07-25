@@ -35,6 +35,13 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
   `code` is the machine-readable contract; `error` remains the human message and
   is unchanged, so the enrichment is additive. Match on `code`, never on prose —
   the message wording is not an interface and will be improved.
+  The enrichment never overwrites a field the route itself set, so on the few
+  routes that return a domain result under an error code — `POST
+  /frames/<id>/recovery/actions/<id>` answers a failed action with its whole
+  result and `409` — `status` stays that route's own value. Read the HTTP
+  status line, or `code`, when you need the transport status specifically;
+  those are always present, whereas a clobbered domain field has no second
+  copy.
   Status is too coarse to branch on alone: four distinct 400s
   (`malformed_json`, `invalid_body_type`, `invalid_cursor`, `invalid_limit`)
   need telling apart, and a client retrying `invalid_cursor` the way it retries
@@ -101,10 +108,15 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
 
 ### Error envelope
 
-- The backend error shape is always **`{"error": "<message>"}`** with an HTTP
-  status code: raised `GatewayError(code, message)` → `{"error": message}`
-  with that code; any unhandled exception → `500 {"error": str(e)}`; the
-  `_api` catch-all → `404 {"error": "not found", "path": sub, "method": …}`.
+- The backend error shape is the enriched envelope described in §2 —
+  `{"error", "code", "status", "request_id"}` plus route-specific diagnostic
+  fields. The unenriched `{"error": "<message>"}` shape this section used to
+  describe has not been the wire format since the envelope landed; the two
+  sections contradicted each other, and the frozen artifacts agreed with the
+  wrong one because the contract capture observed bodies before enrichment ran.
+  The sources are unchanged: raised `GatewayError(code, message)`; any
+  unhandled exception → `500`; the `_api` catch-all → `404` carrying `path`
+  and `method`.
 - The frontend `api()` helper reads `j.error || j.detail`, so the Gateway's
   error text is shown. `detail` remains accepted for compatibility with
   external adapters.

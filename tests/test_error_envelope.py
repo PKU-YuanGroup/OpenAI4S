@@ -199,6 +199,27 @@ def test_the_four_distinct_400s_have_distinct_codes():
         assert f'"{code}"' in source, code
 
 
+def test_the_envelope_never_destroys_a_field_the_route_set(recorder):
+    """`POST /frames/<id>/recovery/actions/restart_fresh` answers a failed
+    action with its whole domain result and HTTP 409, and that result carries
+    its own `status` ("failed", "partial", ...). The envelope used to overwrite
+    it with the integer 409, destroying the only copy.
+
+    The HTTP status survives deferral -- it is on the status line and `code`
+    names it. The domain value has no second copy, so the envelope defers, the
+    way it has always deferred to a route-supplied `code`.
+    """
+    out = recorder.json({"error": "recovery failed", "status": "partial"}, 409)
+    assert out["status"] == "partial"
+    assert out["code"] == "conflict"
+    assert out["error"] == "recovery failed"
+
+
+def test_a_route_that_sets_no_status_still_gets_the_http_one(recorder):
+    out = recorder.json({"error": "nope"}, 503)
+    assert out["status"] == 503
+
+
 def test_the_envelope_is_json_serialisable(recorder):
     out = recorder.json({"error": "x"}, 500)
     assert json.loads(json.dumps(out))["code"] == "internal_error"
