@@ -1,0 +1,51 @@
+{
+  "id": "science-retrieval",
+  "version": "1.0.0",
+  "title": "科学数据检索与来源证据",
+  "summary": "检索到的记录必须能回答两个问题：什么时候为真、是不是同一批字节。",
+  "steps": [
+    "science_query",
+    "connector_drift_check"
+  ],
+  "permissions": [
+    "network:science"
+  ],
+  "artifacts": [],
+  "failure_conditions": [
+    "哈希不是上游原始字节",
+    "记录的长度不是到达长度"
+  ],
+  "cases": [
+    {
+      "id": "science-retrieval/provenance",
+      "title": "哈希等于上游原始 body",
+      "outcome": "provenance",
+      "inputs": {
+        "science_query": {
+          "database": "uniprot",
+          "query": "insulin"
+        }
+      },
+      "expect": {
+        "count": 1,
+        "hashed": "response_bytes"
+      }
+    },
+    {
+      "id": "science-retrieval/drift",
+      "title": "required 字段被置 null 视为 drift",
+      "outcome": "success",
+      "inputs": {
+        "connector_drift_check": {
+          "drop_required": true
+        },
+        "science_query": {
+          "drop_required": true
+        }
+      },
+      "expect": {
+        "missing_required__len": 1
+      }
+    }
+  ]
+}

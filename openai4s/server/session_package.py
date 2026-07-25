@@ -127,6 +127,174 @@ def _canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _rows(value: Any, key: str) -> list[Any]:
+    """A projection's rows, whether it arrives bare or wrapped.
+
+    The exporter wraps most projections (``{"artifacts": [...]}``); a caller
+    holding just the list is equally valid. Accepting both is what keeps a
+    reader of this function from having to know which is which.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, Mapping):
+        inner = value.get(key)
+        if isinstance(inner, list):
+            return inner
+    return []
+
+
+def _environment_lines(snapshots: list[Any]) -> list[str]:
+    """One bullet per distinct environment that produced an artifact.
+
+    Distinct, not "the first": a session that ran a Python cell and an R cell
+    has two, and collapsing them onto one line is how an R artifact came to be
+    described by a Python freeze in the first place.
+    """
+    # Key on the environment's *identity*, not just its runtime shape. Two
+    # distinct conda environments — or kernel generations — with the same
+    # runtime, Python version and platform used to collapse into one bullet,
+    # and two R environments collapse even more readily because their Python
+    # version is empty. The file then claimed one environment and kept only the
+    # larger package count, despite promising one bullet per distinct
+    # environment.
+    seen: dict[tuple, dict[str, Any]] = {}
+    for row in snapshots:
+        if not isinstance(row, Mapping):
+            continue
+        kind = str(row.get("kind") or "unknown")
+        version = str(row.get("python_version") or "")
+        platform_name = str(row.get("platform") or "unknown")
+        environment_name = str(row.get("environment_name") or "")
+        generation_id = str(row.get("generation_id") or "")
+        key = (kind, version, platform_name, environment_name, generation_id)
+        count = row.get("package_count")
+        if not isinstance(count, int):
+            packages = row.get("packages")
+            count = len(packages) if isinstance(packages, list) else 0
+        entry = seen.get(key)
+        if entry is None:
+            seen[key] = {
+                "kind": kind,
+                "version": version,
+                "platform": platform_name,
+                "environment_name": environment_name,
+                "count": count,
+            }
+        else:
+            entry["count"] = max(entry["count"], count)
+    lines = []
+    for _key, entry in sorted(seen.items()):
+        label = f"{entry['kind']} {entry['version']}".strip()
+        if entry["environment_name"]:
+            label += f" ({entry['environment_name']})"
+        lines.append(
+            f"- runtime: {label} on {entry['platform']} — "
+            f"{entry['count']} package(s)"
+        )
+    return lines
+
+
+def _reproduce_notes(
+    *,
+    root_frame_id: str,
+    project_name: str,
+    environment: Any,
+    artifacts: Any,
+    lineage_edges: Any,
+) -> bytes:
+    """The page a recipient reads first.
+
+    A package with per-file hashes is checkable, but only by someone who
+    already knows the command. The proposal asks for reproduction notes
+    alongside the manifest, and this is the difference between an archive
+    somebody can verify and one they actually do.
+
+    Deterministic by construction: everything below is derived from the
+    package's own contents, so exporting the same session twice produces the
+    same bytes and the file's own hash stays meaningful.
+
+    The projections are read in the shape the exporter actually builds them.
+    They were read as a bare artifact list and a single environment dict, but
+    the exporter passes ``{"artifacts": [...]}`` and ``{"generations": [...],
+    "artifact_environment_snapshots": [...]}`` — so every field below resolved
+    to its fallback and a package with complete provenance still printed
+    "runtime python unknown", "packages recorded: 0" and "0 artifact(s)". The
+    one page a recipient reads first was describing an empty archive.
+    """
+    artifact_rows = _rows(artifacts, "artifacts")
+    edges = _rows(lineage_edges, "edges")
+    env = environment if isinstance(environment, dict) else {}
+    snapshots = _rows(env.get("artifact_environment_snapshots"), "snapshots")
+    generations = _rows(env.get("generations"), "generations")
+
+    lines = [
+        f"# Reproducing {project_name or 'this session'}",
+        "",
+        "This archive is a self-contained record of one research session: the",
+        "conversation, every executed cell, the artifacts produced, and the",
+        "lineage connecting them.",
+        "",
+        "## Check it before you trust it",
+        "",
+        "```",
+        "openai4s verify-package <this-file>.openai4s-session.zip",
+        "```",
+        "",
+        "That command reads only the archive. It needs no daemon, no network,",
+        "and no configuration, so a recipient can run it before deciding",
+        "whether to trust the sender's installation at all.",
+        "",
+        "It confirms three things: every file listed in `manifest.json` matches",
+        "its recorded SHA-256, the manifest matches its own digest, and the",
+        "archive contains no file the manifest does not list.",
+        "",
+        "**It does not establish who produced the package.** Anyone able to",
+        "rewrite a payload can recompute the hashes that describe it; only a",
+        "signature would answer authorship, and this format carries none.",
+        "",
+        "## What produced it",
+        "",
+    ]
+    if snapshots:
+        for line in _environment_lines(snapshots):
+            lines.append(line)
+    else:
+        lines.append("- runtime: not recorded for any artifact in this package")
+    if generations:
+        lines.append(f"- kernel generation(s) recorded: {len(generations)}")
+    lines += [
+        f"- source session: `{root_frame_id}`",
+        "",
+        "`environment.json` carries the full package freeze per artifact",
+        "environment, plus every kernel generation this session ran.",
+        "Recreating that environment is what makes a rerun comparable;",
+        "without it, a difference in results has no attributable cause.",
+        "",
+        "## What is inside",
+        "",
+        f"- `{len(artifact_rows)}` artifact(s), with content hashes, in",
+        "  `artifacts.json`",
+        f"- `{len(edges)}` lineage edge(s) in `lineage.json`, each linking an",
+        "  input version to the output derived from it",
+        "- `notebook.json` — every cell that ran, in order",
+        "- `ledger.json` — the action ledger, including attempts that failed",
+        "- `manifest.json` — the hash of every file above",
+        "",
+        "## Rerunning it",
+        "",
+        "1. Verify the archive with the command above.",
+        "2. Recreate the environment from `environment.json`.",
+        "3. Import the package into an OpenAI4S installation, or read",
+        "   `notebook.json` directly — the cells are plain source in order.",
+        "",
+        "An imported session is quarantined read-only until you explicitly",
+        "activate it, so opening someone else's package cannot execute",
+        "anything on your machine.",
+        "",
+    ]
+    return ("\n".join(lines)).encode("utf-8")
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -621,6 +789,13 @@ class SessionPackageService:
             **workspace_files,
             **artifact_files,
         }
+        files["REPRODUCE.md"] = _reproduce_notes(
+            root_frame_id=root_frame_id,
+            project_name=_safe_text(project.get("name") or ""),
+            environment=environment,
+            artifacts=artifact_projection,
+            lineage_edges=lineage_edges,
+        )
         for name, payload in files.items():
             if self._contains_secret_bytes(payload):
                 raise SessionPackageError(
@@ -863,6 +1038,11 @@ class SessionPackageService:
                         "frame_id",
                         "created_at",
                         "env_snapshot_id",
+                        # Where the data came from. A package whose artifacts
+                        # cannot say that is missing the half of provenance a
+                        # recipient most needs -- the environment answers "how
+                        # was this made", the source answers "from what".
+                        "source",
                     )
                 }
                 record["filename"] = filename
@@ -2313,6 +2493,11 @@ class SessionPackageService:
                     env_snapshot_id=env_map.get(
                         str(version.get("env_snapshot_id") or "")
                     ),
+                    # Carried across verbatim. Unlike ids, a retrieval envelope
+                    # is not remapped on import: it describes an event on
+                    # someone else's machine, and rewriting it would be a claim
+                    # about a retrieval this installation never made.
+                    source=version.get("source"),
                 )
                 new_artifact = str(record["artifact_id"])
                 if source_artifact:

@@ -174,10 +174,34 @@ def test_save_artifact_copies_snapshot_and_preserves_record_shape(tmp_path):
         "frame_id": "frame-1",
         "snapshot_path": str(snapshot),
         "input_version_ids": ["v-input"],
+        # Absent from this call, and forwarded as None rather than dropped:
+        # the store distinguishes "no retrieval" from "not passed on".
+        "source": None,
         "reuse_policy": "provisional",
     }
     assert ("set_priority", "a-1", 3) in store.calls
     assert result["artifact_id"] == "a-1"
+
+
+def test_save_artifact_forwards_the_retrieval_envelope(tmp_path):
+    """`source` is what lets a saved file say what it is evidence of. A hop
+    that quietly dropped it would leave the artifact looking computed from
+    nothing."""
+    service, store, workspace, _config = _service(tmp_path)
+    source = workspace / "data.txt"
+    source.write_text("science", encoding="utf-8")
+    envelope = {
+        "database": "uniprot",
+        "retrieved_at": 1,
+        "response_sha256": "a" * 64,
+    }
+
+    service.save_artifact(
+        {"path": source.name, "filename": "data.txt", "source": envelope}
+    )
+
+    record = next(call for call in store.calls if call[0] == "record_cell_artifact")
+    assert record[1]["source"] == envelope
 
 
 def test_frames_modes_validate_before_store_access(tmp_path):

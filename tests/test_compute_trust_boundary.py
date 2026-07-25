@@ -14,6 +14,7 @@ cancel that never lands. Each must resolve to `failed`, `incomplete`, or
 """
 import io
 import os
+import shutil
 import subprocess
 import tarfile
 import time
@@ -22,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+import openai4s.compute.manager as manager_mod
 from openai4s.compute.manager import ComputeError, ComputeManager
 from openai4s.compute.safe_archive import UnsafeArchiveError, safe_extract_tar
 
@@ -52,10 +54,27 @@ def _ssh_job(mgr, job_id="job-abc"):
 
 
 class _Proc:
+    """A stand-in for the process `manager._run_capped` starts.
+
+    Every ssh/scp call in the manager went through
+    `subprocess.run(capture_output=True)`, which accumulates whatever the
+    remote says in the daemon's heap until the timeout expires. `_run_capped`
+    drains the pipes into bounded sinks instead, so these stubs now describe
+    what the remote *says* and the real draining and capping code runs on top
+    of them rather than being bypassed.
+    """
+
     def __init__(self, returncode=0, stdout=b"", stderr=b""):
         self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self.stdin = io.BytesIO()
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
 
 
 # --------------------------------------------------------------------------
@@ -63,11 +82,101 @@ class _Proc:
 # --------------------------------------------------------------------------
 
 
+def _ssh_replies(
+    probe: bytes,
+    *,
+    harvest: bytes = b"OPENAI4S_HARVEST empty\n",
+    scp=0,
+    transfer=None,
+):
+    """Route each ssh round trip a poll makes to its own answer.
+
+    `_result_ssh` asks the host three separate questions: what the exit code
+    is, what files the job left behind, and — over `ssh cat` — the archive
+    itself. A single stub answering all of them with the same bytes would
+    silently feed the exit code to the harvest parser.
+
+    All three are one `subprocess.Popen` stub now that the probe and the
+    staging call are capped the same way the transfer already was; `transfer`
+    supplies the `ssh cat` process when a test wants to fail or complete the
+    download.
+    """
+
+    def fake_popen(argv, **kw):
+        if argv[0] == "scp":
+            return _Proc(scp, b"", b"" if scp == 0 else b"scp broke")
+        if argv[0] != "ssh":
+            return _Proc(0)
+        if transfer is not None and argv[2].startswith("cat --"):
+            return transfer(argv, **kw)
+        return _Proc(0, harvest if "OPENAI4S_HARVEST" in argv[2] else probe)
+
+    return fake_popen
+
+
+class _FakeCatProc:
+    """Stand in for the `ssh cat` process `_fetch_archive_capped` streams from."""
+
+    def __init__(self, returncode: int, stdout: bytes = b"", stderr: bytes = b""):
+        self.returncode = returncode
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        return None
+
+
+def _fake_transfer(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
+    """Patch `subprocess.Popen` for the capped archive transfer (ssh cat)."""
+
+    def popen(argv, **kw):
+        return _FakeCatProc(returncode, stdout, stderr)
+
+    return popen
+
+
+class _PrefixedStream:
+    """A readable that hands back a prefix before the real stream's bytes."""
+
+    def __init__(self, prefix: bytes, stream):
+        self._prefix = prefix
+        self._stream = stream
+
+    def read(self, size=-1):
+        if self._prefix:
+            chunk, self._prefix = self._prefix, b""
+            return chunk
+        return self._stream.read(size) if self._stream is not None else b""
+
+
+class _BannerProc:
+    """A real process wearing a login banner in front of its stdout."""
+
+    def __init__(self, proc, banner: bytes):
+        self._proc = proc
+        self.stdin = proc.stdin
+        self.stderr = proc.stderr
+        self.stdout = _PrefixedStream(banner, proc.stdout)
+
+    @property
+    def returncode(self):
+        return self._proc.returncode
+
+    def wait(self, timeout=None):
+        return self._proc.wait(timeout)
+
+    def kill(self):
+        self._proc.kill()
+
+
 def test_ssh_missing_rc_is_unknown_not_done(mgr, monkeypatch):
     """The headline regression: a remote process that vanished without writing
     an exit code used to report done/exit_code 0."""
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"NORC\n"), raising=True
+        subprocess, "Popen", lambda *a, **k: _Proc(0, b"NORC\n"), raising=True
     )
     out = mgr._result_ssh(_ssh_job(mgr))
     assert out["status"] == "unknown"
@@ -77,31 +186,22 @@ def test_ssh_missing_rc_is_unknown_not_done(mgr, monkeypatch):
 
 
 def test_ssh_nonzero_rc_is_failed(mgr, monkeypatch):
-    calls = []
-
-    def fake_run(argv, **kw):
-        calls.append(argv[0])
-        return _Proc(0, b"1\n") if argv[0] == "ssh" else _Proc(0)
-
-    monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(subprocess, "Popen", _ssh_replies(b"1\n"), raising=True)
     out = mgr._result_ssh(_ssh_job(mgr))
     assert out["status"] == "failed"
     assert out["exit_code"] == 1
 
 
-def test_ssh_zero_rc_is_done(mgr, monkeypatch):
-    def fake_run(argv, **kw):
-        return _Proc(0, b"0\n") if argv[0] == "ssh" else _Proc(0)
-
-    monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
+def test_ssh_zero_rc_succeeds(mgr, monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _ssh_replies(b"0\n"), raising=True)
     out = mgr._result_ssh(_ssh_job(mgr))
-    assert out["status"] == "done"
+    assert out["status"] == "succeeded"
     assert out["exit_code"] == 0
 
 
 def test_ssh_running_pid_reports_running(mgr, monkeypatch):
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"RUNNING\n"), raising=True
+        subprocess, "Popen", lambda *a, **k: _Proc(0, b"RUNNING\n"), raising=True
     )
     assert mgr._result_ssh(_ssh_job(mgr))["status"] == "running"
 
@@ -111,7 +211,7 @@ def test_ssh_probe_transport_failure_is_unknown(mgr, monkeypatch):
     nothing about the job, so it must not be resolved either way."""
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *a, **k: _Proc(255, b"", b"ssh: connect to host lab port 22: No route"),
         raising=True,
     )
@@ -124,13 +224,13 @@ def test_ssh_probe_timeout_is_unknown(mgr, monkeypatch):
     def boom(*a, **k):
         raise subprocess.TimeoutExpired(cmd="ssh", timeout=30)
 
-    monkeypatch.setattr(subprocess, "run", boom, raising=True)
+    monkeypatch.setattr(subprocess, "Popen", boom, raising=True)
     assert mgr._result_ssh(_ssh_job(mgr))["status"] == "unknown"
 
 
 def test_ssh_unparseable_rc_is_unknown(mgr, monkeypatch):
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"not-a-number\n"), raising=True
+        subprocess, "Popen", lambda *a, **k: _Proc(0, b"not-a-number\n"), raising=True
     )
     out = mgr._result_ssh(_ssh_job(mgr))
     assert out["status"] == "unknown"
@@ -139,43 +239,137 @@ def test_ssh_unparseable_rc_is_unknown(mgr, monkeypatch):
 
 def test_ssh_log_harvest_failure_does_not_claim_clean_success(mgr, monkeypatch):
     """rc==0 is the job's own verdict and stays trustworthy, but a partial
-    transfer must not be dressed up as a complete result."""
+    transfer must not be dressed up as a complete result.
 
-    def fake_run(argv, **kw):
-        if argv[0] == "ssh":
-            return _Proc(0, b"0\n")
-        return _Proc(1, b"", b"scp: stdout.log: No such file")
-
-    monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
-    out = mgr._result_ssh(_ssh_job(mgr))
-    assert out["status"] == "incomplete"
+    It must not be dressed up as a *terminal failure* either. A broken transfer
+    says nothing about the job, and writing `failed` with an empty manifest made
+    the stored-terminal shortcut return that row forever — so a poll after the
+    network came back never retried, though the archive was still on the host.
+    The verdict only lands once the retry budget is spent.
+    """
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _ssh_replies(
+            b"0\n",
+            harvest=b"OPENAI4S_HARVEST archive 10\n",
+            transfer=_fake_transfer(1, b"", b"cat: transfer broke"),
+        ),
+        raising=True,
+    )
+    job = _ssh_job(mgr)
+    out = mgr._result_ssh(job)
+    assert out["status"] == "unknown"
+    assert out["error_kind"] == "harvest_pending"
+    # The distinction `incomplete` used to carry: rc was 0, so this is not
+    # an ordinary non-zero failure — the outputs simply cannot be trusted.
     assert out["exit_code"] == 0
-    assert "No such file" in out["harvest_error"]
+    assert "transfer" in out["reason"]
+    assert job["status"] == "running", "nothing terminal may be recorded yet"
+
+    # Budget spent: now it is a verdict, and it still carries the job's own rc.
+    monkeypatch.setattr(manager_mod, "HARVEST_RETRY_MIN_ATTEMPTS", 1, raising=True)
+    monkeypatch.setattr(manager_mod, "HARVEST_RETRY_WINDOW_S", 0, raising=True)
+    out = mgr._result_ssh(job)
+    assert out["status"] == "failed"
+    assert out["exit_code"] == 0
+    assert "transfer" in out["harvest_error"]
+
+
+def test_ssh_a_recovered_network_still_harvests_the_outputs(mgr, monkeypatch, tmp_path):
+    """The reported defect, end to end.
+
+    Poll one hits a reset mid-transfer. Poll two, after the network came back,
+    must actually harvest — which it cannot do if poll one wrote a terminal
+    `failed` with an empty manifest, because the stored-terminal shortcut then
+    answers every later poll from that row and never re-probes at all.
+    """
+    payload = io.BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+        body = b"verified\n"
+        info = tarfile.TarInfo("result.csv")
+        info.size = len(body)
+        tar.addfile(info, io.BytesIO(body))
+    archive = payload.getvalue()
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _ssh_replies(
+            b"0\n",
+            harvest=b"OPENAI4S_HARVEST archive 10\n",
+            transfer=_fake_transfer(1, b"", b"cat: connection reset"),
+        ),
+        raising=True,
+    )
+    job = _ssh_job(mgr, "job-recover")
+    first = mgr._result_ssh(job)
+    assert first["status"] == "unknown"
+    assert first["error_kind"] == "harvest_pending"
+
+    # The network comes back; the archive was never removed from the remote.
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _ssh_replies(
+            b"0\n",
+            harvest=b"OPENAI4S_HARVEST archive 10\n",
+            transfer=_fake_transfer(0, archive),
+        ),
+        raising=True,
+    )
+    second = mgr._result_ssh(job)
+    assert second["status"] == "succeeded", second
+    assert second["exit_code"] == 0
+    assert [item["path"] for item in second["artifact_manifest"]] == ["result.csv"]
+    dest = mgr._safe_harvest_dest("job-recover")
+    assert (dest / "result.csv").read_text() == "verified\n"
 
 
 def test_ssh_failed_job_with_bad_harvest_stays_failed(mgr, monkeypatch):
-    def fake_run(argv, **kw):
-        return _Proc(0, b"3\n") if argv[0] == "ssh" else _Proc(1, b"", b"scp broke")
-
-    monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _ssh_replies(
+            b"3\n",
+            harvest=b"OPENAI4S_HARVEST archive 10\n",
+            transfer=_fake_transfer(1, b"", b"cat: transfer broke"),
+        ),
+        raising=True,
+    )
+    monkeypatch.setattr(manager_mod, "HARVEST_RETRY_MIN_ATTEMPTS", 1, raising=True)
+    monkeypatch.setattr(manager_mod, "HARVEST_RETRY_WINDOW_S", 0, raising=True)
     out = mgr._result_ssh(_ssh_job(mgr))
     assert out["status"] == "failed"
     assert out["exit_code"] == 3
+
+
+def test_ssh_a_vanished_workdir_is_a_harvest_failure(mgr, monkeypatch):
+    """The staging step exits 3 when the work directory is gone. Reporting
+    success over a harvest that could not even start is the same false success
+    as reporting it over an empty one."""
+
+    def fake_run(argv, **kw):
+        if argv[0] == "ssh" and "OPENAI4S_HARVEST" in argv[2]:
+            return _Proc(3, b"", b"openai4s: work directory is gone")
+        return _Proc(0, b"0\n")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_run, raising=True)
+    out = mgr._result_ssh(_ssh_job(mgr))
+    assert out["status"] == "failed"
+    assert "work directory is gone" in out["harvest_error"]
 
 
 def test_ssh_unknown_is_not_cached_onto_the_job(mgr, monkeypatch):
     """`unknown` is unresolved, not terminal — a later poll must be free to
     resolve it once the host comes back."""
     job = _ssh_job(mgr)
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(255), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(255), raising=True)
     assert mgr._result_ssh(job)["status"] == "unknown"
     assert job["status"] == "running"
 
-    def fake_run(argv, **kw):
-        return _Proc(0, b"0\n") if argv[0] == "ssh" else _Proc(0)
-
-    monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
-    assert mgr._result_ssh(job)["status"] == "done"
+    monkeypatch.setattr(subprocess, "Popen", _ssh_replies(b"0\n"), raising=True)
+    assert mgr._result_ssh(job)["status"] == "succeeded"
 
 
 # --------------------------------------------------------------------------
@@ -188,9 +382,9 @@ def test_ssh_submit_records_exit_code_atomically(mgr, monkeypatch):
 
     def fake_run(argv, **kw):
         seen["remote"] = argv[2]
-        return _Proc(0, b"9911\n")
+        return _Proc(0, b"OPENAI4S_JOB 9911 9911\n")
 
-    monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(subprocess, "Popen", fake_run, raising=True)
     out = mgr.submit({"provider": "ssh:lab", "command": "echo hi"})
     assert out["status"] == "running"
     remote = seen["remote"]
@@ -201,6 +395,16 @@ def test_ssh_submit_records_exit_code_atomically(mgr, monkeypatch):
     assert "mv -f .rc.tmp .rc" in remote
     # A reused workdir must not leave a stale code behind.
     assert "rm -f .rc .rc.tmp" in remote
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 class TestAgainstRealBash:
@@ -223,21 +427,53 @@ class TestAgainstRealBash:
     remote command.
     """
 
+    #: The shell sshd actually hands a non-interactive command. `bash` is the
+    #: friendly case and the one the original harness used; it is also the one
+    #: where `set -m` happens to work, which is precisely why the process-group
+    #: defect survived a real-shell test. `sh` is dash on Debian/Ubuntu and ash
+    #: on Alpine — the login shells of most clusters and every slim container —
+    #: and there `set -m` is a no-op, so `$!` is a pid and emphatically not a
+    #: process group id.
+    SHELL = "bash"
+
     @pytest.fixture
     def local_ssh(self, mgr, monkeypatch, tmp_path):
-        real_run = subprocess.run
+        real_popen = subprocess.Popen
+        shell = shutil.which(self.SHELL)
+        if shell is None:
+            pytest.skip(f"{self.SHELL} is not on this host")
 
-        def fake_run(argv, **kw):
+        # One seam now: every ssh and scp the manager runs — the submit, the
+        # probe, the harvest staging, the capped `ssh cat` transfer — goes
+        # through `_run_capped`, which starts the process with `Popen` so the
+        # output is drained into a bounded sink instead of accumulating in the
+        # daemon. Routing all of them here means this class exercises that
+        # draining against a real shell rather than around it.
+        def fake_popen(argv, **kw):
             if argv[0] == "ssh":
-                return real_run(
-                    ["bash", "-c", argv[2]],
-                    **{k: v for k, v in kw.items() if k != "timeout"},
-                )
+                # start_new_session mirrors sshd: OpenSSH's do_child() calls
+                # setsid() before exec'ing the remote command, so the job is a
+                # session leader with a process group of its own. Without it
+                # the job inherits *pytest's* group, and a cancel that
+                # correctly signals the job's group takes the test runner with
+                # it — which is exactly the blast radius this whole mechanism
+                # is about, observed on the wrong process.
+                return real_popen([shell, "-c", argv[2]], start_new_session=True, **kw)
             if argv[0] == "scp":
+                # A copy that copies. Stubbing scp to a bare success meant the
+                # harvest was never exercised at all — the archive the remote
+                # staged never reached the extractor, so nothing downstream of
+                # the transfer had a test.
+                source, destination = argv[-2], argv[-1]
+                _alias, _, remote = source.partition(":")
+                remote = remote.replace("~", str(tmp_path), 1)
+                if not Path(remote).is_file():
+                    return _Proc(1, b"", b"scp: no such file")
+                shutil.copy2(remote, destination)
                 return _Proc(0)
-            return real_run(argv, **kw)
+            return real_popen(argv, **kw)
 
-        monkeypatch.setattr(subprocess, "run", fake_run, raising=True)
+        monkeypatch.setattr(subprocess, "Popen", fake_popen, raising=True)
         monkeypatch.setenv("HOME", str(tmp_path))
         return mgr
 
@@ -258,7 +494,7 @@ class TestAgainstRealBash:
         workdir = Path(job["workdir"].replace("~", str(tmp_path)))
         assert (workdir / "run.sh").read_text() == "echo hello-from-the-job"
         assert (workdir / "stdout.log").read_text().strip() == "hello-from-the-job"
-        assert res["status"] == "done"
+        assert res["status"] == "succeeded"
         assert res["exit_code"] == 0
 
     def test_command_not_found_is_failed_not_done(self, local_ssh):
@@ -266,6 +502,119 @@ class TestAgainstRealBash:
         res, _ = self._run_to_completion(local_ssh, "definitely-not-a-real-binary")
         assert res["status"] == "failed"
         assert res["exit_code"] == 127
+
+    def test_the_recorded_pgid_is_the_job_s_real_process_group(
+        self, local_ssh, tmp_path
+    ):
+        """The group we will signal must be the group the job is actually in.
+
+        This used to be asserted as `os.getpgid(pid) == pid` — true under bash
+        with job control, and false in the shell most hosts hand an `ssh host
+        cmd`: `set -m` does nothing there, so `$!` is a pid whose group is the
+        login shell's. `kill -- -$!` then addressed a group that did not exist,
+        and on several shells still exited 0, so a cancel reported a freed
+        allocation over a command tree that kept running.
+
+        Executed for real, and compared against the kernel's own answer:
+        whether a background job lands in a group of its own is a property of
+        the shell, and a mocked `subprocess.run` can only assert the string we
+        hoped to send.
+        """
+        out = local_ssh.submit(
+            {"provider": "ssh:lab", "command": "sleep 60 & echo $! > child.pid; wait"}
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        pid = int(job["pid"])
+
+        assert job["pgid"], "a job with no recorded group cannot be cancelled"
+        assert int(job["pgid"]) == os.getpgid(pid)
+        assert int(job["pgid"]) > 1, "0 and 1 are never a job's group"
+        # And the child inherits it, which is the whole point: the group is
+        # what reaches processes `run.sh` started.
+        marker = Path(job["workdir"].replace("~", str(tmp_path))) / "child.pid"
+        for _ in range(100):
+            if marker.exists() and marker.read_text().strip():
+                break
+            time.sleep(0.05)
+        assert os.getpgid(int(marker.read_text().strip())) == int(job["pgid"])
+
+    def test_the_recorded_pgid_is_not_the_test_runner_s(self, local_ssh):
+        """A group id read off the wrong process is worse than none at all.
+
+        sshd gives the remote command its own session; if that ever stops being
+        true, the group recorded here would be the caller's, and `cancel` would
+        take down the process that issued it.
+        """
+        out = local_ssh.submit({"provider": "ssh:lab", "command": "sleep 30"})
+        job = local_ssh._jobs[out["job_id"]]
+        assert int(job["pgid"]) != os.getpgid(0)
+        local_ssh.cancel({"job_id": out["job_id"]})
+
+    def test_cancel_kills_the_whole_remote_tree(self, local_ssh, tmp_path):
+        out = local_ssh.submit(
+            {"provider": "ssh:lab", "command": "sleep 60 & echo $! > child.pid; wait"}
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        workdir = Path(job["workdir"].replace("~", str(tmp_path)))
+
+        marker = workdir / "child.pid"
+        for _ in range(100):
+            if marker.exists() and marker.read_text().strip():
+                break
+            time.sleep(0.05)
+        child = int(marker.read_text().strip())
+        assert _alive(child), "the child should be running before we cancel"
+
+        local_ssh.cancel({"job_id": out["job_id"]})
+
+        for _ in range(100):
+            if not _alive(child):
+                break
+            time.sleep(0.05)
+        assert not _alive(child), "cancel must reach run.sh's children too"
+
+    @pytest.mark.skipif(
+        not (shutil.which("timeout") or shutil.which("gtimeout")),
+        reason="the deadline is enforced by timeout(1), which this host lacks",
+    )
+    def test_a_deadline_is_actually_applied(self, local_ssh):
+        """`timeout_seconds` was accepted and never read, so an ssh job ran
+        until the host reclaimed it."""
+        out = local_ssh.submit(
+            {"provider": "ssh:lab", "command": "sleep 30", "timeout_seconds": 1}
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        for _ in range(200):
+            res = local_ssh._result_ssh(job)
+            if res["status"] != "running":
+                break
+            time.sleep(0.05)
+        assert (
+            res["status"] == "timed_out"
+        ), "a job killed by its deadline is not an ordinary failure"
+        assert res["exit_code"] == 124
+
+    @pytest.mark.skipif(
+        bool(shutil.which("timeout") or shutil.which("gtimeout")),
+        reason="this host has timeout(1), so the refusal path cannot be reached",
+    )
+    def test_a_host_without_timeout_refuses_the_submit(self, local_ssh):
+        """Silently dropping the deadline would be the worse failure: the
+        caller believes a limit is in force and the job runs unbounded."""
+        with pytest.raises(ComputeError) as error:
+            local_ssh.submit(
+                {"provider": "ssh:lab", "command": "sleep 5", "timeout_seconds": 1}
+            )
+        assert "timeout" in str(error.value)
+
+    def test_no_deadline_leaves_the_job_unwrapped(self, local_ssh, tmp_path):
+        """Only wrap when a deadline was asked for — `timeout` is not present
+        on every host, and requiring it unconditionally would break hosts that
+        work today."""
+        res, job = self._run_to_completion(local_ssh, "echo fine")
+        assert res["status"] == "succeeded"
+        workdir = Path(job["workdir"].replace("~", str(tmp_path)))
+        assert (workdir / "stdout.log").read_text().strip() == "fine"
 
     def test_explicit_nonzero_exit_is_preserved(self, local_ssh):
         res, _ = self._run_to_completion(local_ssh, "echo out; exit 42")
@@ -288,11 +637,284 @@ class TestAgainstRealBash:
         assert res["status"] == "unknown"
         assert res["exit_code"] is None
 
+    def test_declared_outputs_are_actually_harvested(self, local_ssh, tmp_path):
+        """The documented main path, which could not succeed at all.
+
+        `submit_job` accepts an `outputs` declaration and the bundled skill's
+        worked example declares one — but this transport copied back
+        `stdout.log` and `stderr.log` and nothing else. Every declared pattern
+        therefore matched nothing, `reconcile` reported it missing, and the
+        manager forced a job that had exited 0 having written exactly what it
+        promised to `failed`.
+        """
+        out = local_ssh.submit(
+            {
+                "provider": "ssh:lab",
+                "command": "printf 'a,b\\n1,2\\n' > scores.csv; echo done",
+                "outputs": ["*.csv"],
+            }
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        for _ in range(200):
+            res = local_ssh._result_ssh(job)
+            if res["status"] != "running":
+                break
+            time.sleep(0.05)
+
+        assert res["status"] == "succeeded", res.get("reason") or res
+        assert [Path(p).name for p in res["featured_files"]] == ["scores.csv"]
+        harvested = Path(res["featured_files"][0])
+        assert harvested.read_text() == "a,b\n1,2\n", "the bytes must arrive too"
+        entry = next(e for e in res["artifact_manifest"] if e["path"] == "scores.csv")
+        assert len(entry["sha256"]) == 64 and entry["size"] == 8
+
+    def test_a_declared_output_the_job_never_wrote_is_still_missing(self, local_ssh):
+        """Harvesting for real must not turn the promise check into a rubber
+        stamp: a job that declared `model.pt` and wrote nothing is not a
+        success just because the transport now works."""
+        out = local_ssh.submit(
+            {
+                "provider": "ssh:lab",
+                "command": "echo nothing-written",
+                "outputs": ["model.pt"],
+            }
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        for _ in range(200):
+            res = local_ssh._result_ssh(job)
+            if res["status"] != "running":
+                break
+            time.sleep(0.05)
+        assert res["status"] == "failed"
+        assert res["exit_code"] == 0
+        assert res["unharvested_outputs"] == ["model.pt"]
+
+    def test_an_output_declared_remote_is_not_owed(self, local_ssh):
+        """`residency: 'remote'` means "leave it on the cluster". Failing the
+        job for honouring that would punish the caller for saying so."""
+        out = local_ssh.submit(
+            {
+                "provider": "ssh:lab",
+                "command": "echo ok",
+                "outputs": [{"glob": "huge.bin", "residency": "remote"}],
+            }
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        for _ in range(200):
+            res = local_ssh._result_ssh(job)
+            if res["status"] != "running":
+                break
+            time.sleep(0.05)
+        assert res["status"] == "succeeded"
+
+    def test_an_output_declared_remote_is_never_moved(self, local_ssh):
+        """The other half of the same declaration, and the one that was missing.
+
+        `residency: remote` was honoured only by the *reconciler*: the job was
+        no longer blamed for the file staying put, while the harvest tarred it,
+        downloaded it, and listed it in `output_files` regardless. The
+        declaration's entire purpose is that the bytes do not move.
+        """
+        out = local_ssh.submit(
+            {
+                "provider": "ssh:lab",
+                "command": (
+                    "mkdir -p ckpt; printf 'weights' > ckpt/model.pt; "
+                    "printf 'done' > report.txt"
+                ),
+                "outputs": [
+                    "report.txt",
+                    {"glob": "ckpt/*.pt", "residency": "remote"},
+                ],
+            }
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        for _ in range(200):
+            res = local_ssh._result_ssh(job)
+            if res["status"] != "running":
+                break
+            time.sleep(0.05)
+
+        assert res["status"] == "succeeded"
+        harvested = {Path(p).name for p in res["output_files"]}
+        assert "report.txt" in harvested
+        assert (
+            "model.pt" not in harvested
+        ), f"a residency:remote output was downloaded and listed: {harvested}"
+        local_copy = Path(res["output_files"][0]).parent / "ckpt" / "model.pt"
+        assert not local_copy.exists(), "it must not be on local disk at all"
+        # The workdir carries a literal `~`; the remote shell expands it, and
+        # the fixture points HOME at the temp tree standing in for the cluster.
+        remote_workdir = Path(job["workdir"].replace("~", os.environ["HOME"], 1))
+        assert (
+            remote_workdir / "ckpt" / "model.pt"
+        ).is_file(), "and it must still be on the cluster, where it was asked to stay"
+        left = {item["path"]: item for item in res["left_on_remote_files"]}
+        assert "ckpt/model.pt" in left
+        assert left["ckpt/model.pt"]["reason"] == "residency"
+        assert left["ckpt/model.pt"]["uri"].startswith("lab:")
+
+    def test_an_oversized_output_stays_on_the_host_and_says_so(
+        self, local_ssh, monkeypatch
+    ):
+        """Bounded by construction, and never silently: a file left behind
+        comes back named, with a URI the next job can chain from."""
+        monkeypatch.setattr(
+            "openai4s.compute.manager.HARVEST_MAX_FILE_BYTES", 64, raising=True
+        )
+        out = local_ssh.submit(
+            {
+                "provider": "ssh:lab",
+                "command": (
+                    "head -c 4096 /dev/zero > big.bin; printf 'small' > small.txt"
+                ),
+            }
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        for _ in range(200):
+            res = local_ssh._result_ssh(job)
+            if res["status"] != "running":
+                break
+            time.sleep(0.05)
+
+        harvested = {Path(p).name for p in res["output_files"]}
+        assert "small.txt" in harvested
+        assert "big.bin" not in harvested
+        left = {item["path"]: item for item in res["left_on_remote_files"]}
+        assert "big.bin" in left
+        assert left["big.bin"]["reason"] == "threshold"
+        assert left["big.bin"]["uri"].startswith("lab:")
+
+    def test_the_harvest_lands_where_save_artifact_will_accept_it(
+        self, local_ssh, tmp_path
+    ):
+        """The other half of the same broken main path.
+
+        The harvest went to `<data_dir>/hpc/<job>` and came back as an absolute
+        path, but `host.save_artifact` resolves through the Host file service,
+        which only accepts paths inside the *session workspace*. So every
+        normal job with a featured output raised "path escapes the workspace"
+        at exactly the step the skill tells the agent to take next.
+        """
+        from openai4s.host.files import WorkspaceFileService
+
+        out = local_ssh.submit(
+            {
+                "provider": "ssh:lab",
+                "command": "printf 'result' > answer.txt",
+                "outputs": ["answer.txt"],
+            }
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        for _ in range(200):
+            res = local_ssh._result_ssh(job)
+            if res["status"] != "running":
+                break
+            time.sleep(0.05)
+
+        workspace = tmp_path / "ws"
+        files = WorkspaceFileService(
+            data_dir=tmp_path / "data",
+            frame_id=lambda: "frame-1",
+            workspace=lambda: workspace,
+        )
+        featured = res["featured_files"][0]
+        # The gate itself, not a re-implementation of it.
+        assert files.resolve(featured, must_exist=True).read_text() == "result"
+        assert files.relative(Path(featured)) == f"hpc/{out['job_id']}/answer.txt"
+
+    def test_an_ordinary_exit_124_is_not_a_deadline(self, local_ssh):
+        """124 is GNU `timeout`'s expiry code and also just a number.
+
+        With no `timeout_seconds` asked for, nothing armed a deadline — so
+        reporting `timed_out` sent the caller looking for a walltime that was
+        never set, and hid a real non-zero failure behind an infrastructure
+        excuse. The deadline now writes its own marker and the host reads that
+        instead of sniffing the code.
+        """
+        res, job = self._run_to_completion(local_ssh, "exit 124")
+        assert res["status"] == "failed"
+        assert res["exit_code"] == 124
+        workdir = Path(job["workdir"].replace("~", str(Path.home())))
+        assert not (workdir / ".timeout").exists()
+
+    @pytest.mark.skipif(
+        not (shutil.which("timeout") or shutil.which("gtimeout")),
+        reason="the deadline is enforced by timeout(1), which this host lacks",
+    )
+    def test_a_fired_deadline_leaves_its_own_marker(self, local_ssh, tmp_path):
+        """The marker is the evidence; the exit code alone never was."""
+        out = local_ssh.submit(
+            {"provider": "ssh:lab", "command": "sleep 30", "timeout_seconds": 1}
+        )
+        job = local_ssh._jobs[out["job_id"]]
+        for _ in range(200):
+            res = local_ssh._result_ssh(job)
+            if res["status"] != "running":
+                break
+            time.sleep(0.05)
+        assert res["status"] == "timed_out"
+        workdir = Path(job["workdir"].replace("~", str(tmp_path)))
+        assert (workdir / ".timeout").exists()
+
+    def test_a_chatty_login_shell_cannot_impersonate_the_job(
+        self, local_ssh, monkeypatch
+    ):
+        """`echo $!` was the whole acknowledgement, so the first line a login
+        shell printed became the "pid" the host recorded and later signalled.
+
+        A motd, a `.bashrc` echo, or an `ssh` warning is enough. Here the
+        banner claims to be pid 1 — signalling init's group is the worst
+        available outcome of believing it.
+        """
+        chatty = subprocess.Popen
+
+        def noisy(argv, **kw):
+            proc = chatty(argv, **kw)
+            if argv[0] != "ssh":
+                return proc
+            # Prepended lazily rather than by draining the process here: the
+            # submit writes `run.sh` to the remote's stdin *after* the process
+            # starts, so reading stdout to completion first would deadlock
+            # against a `cat` still waiting for its input.
+            return _BannerProc(proc, b"Welcome to lab01\n1 1\n")
+
+        monkeypatch.setattr(subprocess, "Popen", noisy, raising=True)
+        out = local_ssh.submit({"provider": "ssh:lab", "command": "sleep 30"})
+        job = local_ssh._jobs[out["job_id"]]
+        assert int(job["pid"]) > 1, "a banner line is not a job id"
+        assert int(job["pgid"]) > 1
+        local_ssh.cancel({"job_id": out["job_id"]})
+
+
+class TestAgainstRealPosixSh(TestAgainstRealBash):
+    """The same contract under `sh` — the shell most hosts actually give us.
+
+    `bash` above is the friendly case, and it is friendly in exactly the way
+    that hid the defect: `set -m` enables job control there, so the background
+    job really did become its own group leader and `$!` really was a pgid.
+    Under a POSIX `sh` — dash on Debian/Ubuntu, ash on Alpine, the login shell
+    of most clusters and every slim container — `set -m` is a no-op, `$!` is a
+    pid whose group is the login shell's, and `kill -- -$!` addressed a group
+    that did not exist while still exiting 0.
+
+    Subclassing rather than parametrising so every assertion above runs under
+    both shells, including the ones about staging, stdin and the deadline.
+    """
+
+    SHELL = "sh"
+
+
+class TestAgainstRealDash(TestAgainstRealBash):
+    """Explicitly dash where it is installed, since macOS `sh` is bash."""
+
+    SHELL = "dash"
+
 
 def test_ssh_submit_propagates_failure(mgr, monkeypatch):
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *a, **k: _Proc(255, b"", b"host key changed"),
         raising=True,
     )
@@ -308,7 +930,10 @@ def test_ssh_submit_propagates_failure(mgr, monkeypatch):
 
 def test_scp_download_failure_raises_instead_of_claiming_a_file(mgr, monkeypatch):
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(1, b"", b"No such file"), raising=True
+        subprocess,
+        "Popen",
+        lambda *a, **k: _Proc(1, b"", b"No such file"),
+        raising=True,
     )
     with pytest.raises(ComputeError) as e:
         mgr.scp({"provider": "ssh:lab", "direction": "down", "remote": "/x/y.dat"})
@@ -319,7 +944,7 @@ def test_scp_upload_failure_raises(mgr, monkeypatch, tmp_path):
     (tmp_path / "ws" / "a.dat").write_text("payload")
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *a, **k: _Proc(1, b"", b"Permission denied"),
         raising=True,
     )
@@ -336,7 +961,7 @@ def test_scp_upload_failure_raises(mgr, monkeypatch, tmp_path):
 
 
 def test_scp_success_returns_path(mgr, monkeypatch, tmp_path):
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     out = mgr.scp({"provider": "ssh:lab", "direction": "down", "remote": "/x/y.dat"})
     # A resolved path, not the bare name: the caller should not have to guess
     # which directory the file landed in.
@@ -351,7 +976,7 @@ def test_scp_success_returns_path(mgr, monkeypatch, tmp_path):
 def test_a_download_cannot_escape_the_workspace(mgr, monkeypatch):
     """The agent picks the destination — that is the whole risk. Without this,
     `local="/etc/cron.d/x"` writes wherever the daemon can."""
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     for escape in ("/etc/passwd", "../../outside.txt"):
         with pytest.raises(ComputeError) as e:
             mgr.scp(
@@ -371,7 +996,7 @@ def test_a_symlink_cannot_redirect_the_write(mgr, monkeypatch, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (tmp_path / "ws" / "link").symlink_to(outside)
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     with pytest.raises(ComputeError, match="workspace"):
         mgr.scp(
             {
@@ -387,7 +1012,7 @@ def test_a_symlink_cannot_redirect_the_write(mgr, monkeypatch, tmp_path):
 def test_a_hostile_remote_path_is_rejected(mgr, monkeypatch, bad):
     """scp accepts `../../etc/passwd` happily; quoting stops word-splitting,
     not traversal."""
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     with pytest.raises(ComputeError):
         mgr.scp({"provider": "ssh:lab", "direction": "down", "remote": bad})
 
@@ -400,7 +1025,7 @@ def test_an_oversized_upload_is_refused(mgr, monkeypatch, tmp_path):
     source = tmp_path / "ws" / "big.bin"
     source.write_bytes(b"x" * 2048)
     monkeypatch.setattr(manager_mod, "MAX_TRANSFER_BYTES", 1024)
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     with pytest.raises(ComputeError, match="cap"):
         mgr.scp(
             {
@@ -413,7 +1038,7 @@ def test_an_oversized_upload_is_refused(mgr, monkeypatch, tmp_path):
 
 
 def test_an_upload_of_a_missing_file_is_refused(mgr, monkeypatch):
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0), raising=True)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(0), raising=True)
     with pytest.raises(ComputeError, match="not a file"):
         mgr.scp(
             {
@@ -435,7 +1060,7 @@ def test_direct_surface_calls_are_audited(mgr, monkeypatch):
         obs, "log_event", lambda event, **f: seen.append((event, f)), raising=True
     )
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _Proc(0, b"ok"), raising=True
+        subprocess, "Popen", lambda *a, **k: _Proc(0, b"ok"), raising=True
     )
     mgr.ssh({"provider": "ssh:lab", "command": "hostname"})
     assert any(e == "compute_ssh_command" for e, _ in seen)
@@ -445,7 +1070,7 @@ def test_cancel_that_never_landed_is_not_a_cancellation(mgr, monkeypatch):
     job = _ssh_job(mgr)
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *a, **k: _Proc(255, b"", b"connection refused"),
         raising=True,
     )
@@ -516,9 +1141,9 @@ def test_byoc_unparseable_phase_surfaces_helper_diagnostic(mgr):
     assert "garbage" in out["reason"]
 
 
-def test_byoc_zero_exit_is_done(mgr):
+def test_byoc_zero_exit_succeeds(mgr):
     job = _byoc_mgr(mgr, {"ready": True, "job_exit_code": 0})
-    assert mgr._result_byoc(job)["status"] == "done"
+    assert mgr._result_byoc(job)["status"] == "succeeded"
 
 
 def test_byoc_nonzero_exit_is_failed(mgr):
@@ -544,7 +1169,7 @@ def test_byoc_job_timeout_sentinel_is_timed_out(mgr):
     assert mgr._result_byoc(job)["status"] == "timed_out"
 
 
-def test_byoc_harvest_failed_phase_is_not_a_clean_done(mgr):
+def test_byoc_harvest_failed_phase_is_not_a_clean_success(mgr):
     """`harvest_failed:0` means the wrapper's tar/mv lost the outputs. rc==0,
     but there is nothing verified to show for it."""
     job = _byoc_mgr(
@@ -556,7 +1181,10 @@ def test_byoc_harvest_failed_phase_is_not_a_clean_done(mgr):
         },
     )
     out = mgr._result_byoc(job)
-    assert out["status"] == "incomplete"
+    assert out["status"] == "failed"
+    # The distinction `incomplete` used to carry: rc was 0, so this is not
+    # an ordinary non-zero failure — the outputs simply cannot be trusted.
+    assert out["exit_code"] == 0
     assert "disk-full" in out["phase_read_error"]
 
 
@@ -595,10 +1223,13 @@ def test_helper_wedge_is_killed_and_reported_unknown(mgr, monkeypatch, tmp_path)
     assert killed.get("yes"), "a helper past its deadline must actually be killed"
 
 
-def test_confinement_enforce_fails_closed(mgr, monkeypatch):
-    """No host-side boundary exists for the byoc helper, so `enforce` refuses
-    the op rather than pretending. Passing expect_confined=1 here would only
-    make the helper exit 71."""
+def test_confinement_enforce_fails_closed_where_no_boundary_exists(mgr, monkeypatch):
+    """`enforce` refuses rather than pretending. Passing expect_confined=1 into
+    an unconfined helper would only make it exit 71 while proving nothing."""
+    monkeypatch.setattr(
+        "openai4s.security.byoc_confinement.available",
+        lambda: (False, "no backend on this host"),
+    )
     monkeypatch.setenv("OPENAI4S_COMPUTE_CONFINEMENT", "enforce")
     mgr._confinement_mode = "enforce"
     mgr._providers["fake"] = {
@@ -610,12 +1241,26 @@ def test_confinement_enforce_fails_closed(mgr, monkeypatch):
     with pytest.raises(ComputeError) as e:
         mgr.submit({"provider": "byoc:fake", "command": "run"})
     assert e.value.error_kind == "confinement_unavailable"
+    assert "no backend on this host" in str(e.value)
 
 
-def test_confinement_status_never_claims_an_unverified_boundary(mgr):
+def test_confinement_status_matches_what_can_actually_be_applied(mgr, monkeypatch):
+    """The posture must track the boundary, in both directions: silence about a
+    degradation and a claim about an unbuilt boundary are the same defect."""
+    monkeypatch.setattr(
+        "openai4s.security.byoc_confinement.available",
+        lambda: (False, "no backend on this host"),
+    )
     st = mgr.confinement_status()
-    assert st["enforced"] is False
-    assert st["state"] == "unavailable"
+    assert st["enforced"] is False and st["state"] == "unavailable"
+    assert "no backend on this host" in st["detail"]
+
+    monkeypatch.setattr(
+        "openai4s.security.byoc_confinement.available",
+        lambda: (True, "macOS Seatbelt"),
+    )
+    st = mgr.confinement_status()
+    assert st["enforced"] is True and st["state"] == "active"
 
 
 def test_confinement_mode_rejects_garbage(mgr, monkeypatch):
@@ -791,6 +1436,9 @@ def test_harvest_of_hostile_archive_is_not_a_success(mgr, tmp_path):
     real_harvest = mgr._harvest
     mgr._harvest = lambda job_id, _stage: real_harvest(job_id, stage)
     out = mgr._result_byoc(job)
-    assert out["status"] == "incomplete"
+    assert out["status"] == "failed"
+    # The distinction `incomplete` used to carry: rc was 0, so this is not
+    # an ordinary non-zero failure — the outputs simply cannot be trusted.
+    assert out["exit_code"] == 0
     assert out["error_kind"] == "unsafe_archive"
     assert out["output_files"] == []

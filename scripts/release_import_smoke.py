@@ -66,6 +66,17 @@ def main() -> int:
         for name in ("python", "phylo", "r", "struct"):
             _require(env_dir / f"{name}.yml", f"{name} environment spec")
 
+        # The benchmark manifests must ship, or an installed `openai4s
+        # benchmark` finds nothing and reports a green run over zero workflows.
+        from openai4s.benchmark import load_workflows
+
+        workflows = load_workflows()
+        if len(workflows) < 10:
+            raise RuntimeError(
+                f"installed benchmark manifests are incomplete: "
+                f"{len(workflows)} workflow(s) found"
+            )
+
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)
         completed = subprocess.run(

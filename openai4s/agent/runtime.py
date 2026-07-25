@@ -75,6 +75,7 @@ class ChatModel:
     chat_fn: Callable[..., Mapping[str, Any]]
     tools: Sequence[Any] | Callable[..., Sequence[Any]] = ()
     stream: bool = False
+    cancellation: Any = None
 
     def complete(
         self,
@@ -94,6 +95,11 @@ class ChatModel:
         kwargs: dict[str, Any] = {"tools": tuple(source)}
         if self.stream:
             kwargs["on_delta"] = on_delta
+        if self.cancellation is not None:
+            # The engine checks cancellation between turns, which does nothing
+            # while a rate-limited provider holds this call through a full
+            # retry budget. The transport polls this during backoff.
+            kwargs["should_cancel"] = self.cancellation.cancelled
         return self.chat_fn([dict(message) for message in messages], self.cfg, **kwargs)
 
 

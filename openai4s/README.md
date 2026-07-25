@@ -51,7 +51,10 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 | [`server/`](./server/) | The stdlib HTTP/WebSocket workbench: session services, projections, recovery, and the static UI. Several specialized UI and recovery workflows remain Partial. |
 | [`share/`](./share/) | Web sharing transport: the tunnel wire protocol, a stdlib WSS client, the daemon's outbound `TunnelClient`, the stateless public relay, and the SSRF-hardened bundle fetch. The snapshot itself is built server-side in `server/share_projection.py`. |
 | [`skills_loader/`](./skills_loader/) | Finds Skills and discloses them progressively: name and summary first, the body only on load. It also validates sidecars, installs versions, and rolls them back. |
+| [`telemetry/`](./telemetry/) | Opt-in anonymous telemetry, off by default. Counts and enumerations only, zero free text — and the enforcement is over **values**: `{"error_type": "ValueError"}` and `{"error_type": "FileNotFoundError: /home/y/unpublished/cohort.csv"}` pass the same key check. There is deliberately no domain that can hold free text, so adding such a field requires adding a domain class. |
+| [`platform_support.py`](./platform_support.py) | Which platforms a kernel may start on, declared once. Windows is **refused** at the spawn path rather than warned about at onboarding — a program that warns and proceeds has made a different promise from one that refuses, and a half-working kernel is the worse outcome for a product whose claim is trustworthy results. |
 | [`storage/`](./storage/) | Focused SQLite repositories used through `Store`. |
+| [`benchmark/`](./benchmark/) | The runner for the versioned science-workflow benchmark whose manifests live in [`workflows/`](../workflows/README.md). Every step drives production code — the real Store, kernel manager, host dispatcher and compute manager — and only what cannot run offline is injected: the model, the network, and a package manager. A declared outcome is part of the contract, so a case expecting `failure` fails on a clean run. |
 | [`tools/`](./tools/) | Class-based provider-native control tools. Each one carries its own schema. Around them sit the registry, the dynamic-tool lifecycle, and compatibility support for fenced calls. |
 
 ## Change rules
@@ -64,5 +67,6 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 ## Trust Foundation modules
 
 - [`observability.py`](observability.py) — correlation IDs and structured, shape-redacted logs.
+- [`doctor.py`](doctor.py) — one command answering whether this installation can do the work: model, runtime, isolation, disk, connectors, remote compute. Runs without the daemon, because the situation that motivates it is usually one where the daemon will not start.
 - [`diagnostics.py`](diagnostics.py) — the redacted support bundle and bounded log retention.
 - [`evidence.py`](evidence.py) — stdlib-only verification of an exported package, for a recipient who does not trust this host yet.

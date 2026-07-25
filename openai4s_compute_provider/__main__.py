@@ -20,9 +20,38 @@ import os
 import sys
 
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(_here))
 
-from openai4s_compute_provider import ByocResident, scrub_secret_env  # noqa: E402
+
+def _load_own_package():
+    """Import this package by file location, without its parent on sys.path.
+
+    ``sys.path.insert(0, dirname(_here))`` used to be how the package below was
+    imported — and a package import *lists* the directory it searches, so the
+    parent had to be readable from inside the confinement. In a source or
+    editable install that parent is the repository root, so the boundary had to
+    hand back an untracked ``.env``, ``.git``, and every unrelated file beside
+    them, to a process that by design also has the network.
+
+    Loading from ``_here`` with ``submodule_search_locations`` set gives the
+    package a ``__path__`` of its own directory, so its relative imports resolve
+    exactly as before while nothing above it needs to be readable at all.
+    """
+    name = os.path.basename(_here)
+    spec = importlib.util.spec_from_file_location(
+        name,
+        os.path.join(_here, "__init__.py"),
+        submodule_search_locations=[_here],
+    )
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec so the package's own relative imports resolve.
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_pkg = _load_own_package()
+ByocResident = _pkg.ByocResident
+scrub_secret_env = _pkg.scrub_secret_env
 
 mode, provider_py, *rest = sys.argv[1:]
 

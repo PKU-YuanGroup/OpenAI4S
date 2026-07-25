@@ -91,14 +91,27 @@ __all__ = [
 ]
 
 
-def _post_json(url: str, payload: dict, headers: dict, timeout: float) -> dict:
-    """Compatibility hook forwarding to the package transport."""
-    return transport.post_json(url, payload, headers, timeout)
+def _post_json(url: str, payload: dict, headers: dict, timeout: float, **kw) -> dict:
+    """Compatibility hook forwarding to the package transport.
+
+    ``**kw`` carries the call context the transport needs to be honest about a
+    failure — which provider it was talking to, and whether the user has since
+    pressed stop. Without it every ``TransportError`` came back with
+    ``provider=None`` and a retry backoff could not be interrupted.
+    """
+    # Resolved through the module attribute on every call, because tests
+    # inject at this depth too and the injected callable is often a plain
+    # four-argument one that cannot accept the context.
+    forward = transport.bind_call_context(transport.post_json, **kw)
+    return forward(url, payload, headers, timeout)
 
 
-def _post_sse(url: str, payload: dict, headers: dict, timeout: float, on_event) -> None:
+def _post_sse(
+    url: str, payload: dict, headers: dict, timeout: float, on_event, **kw
+) -> None:
     """Compatibility hook forwarding to the package transport."""
-    return transport.post_sse(url, payload, headers, timeout, on_event)
+    forward = transport.bind_call_context(transport.post_sse, **kw)
+    return forward(url, payload, headers, timeout, on_event)
 
 
 def chat(
@@ -112,12 +125,17 @@ def chat(
     tools: list[Any] | tuple[Any, ...] | None = None,
     tool_choice: Any = None,
     parallel_tool_calls: bool | None = None,
+    should_cancel=None,
 ) -> dict[str, Any]:
     """One blocking chat-completion call against the configured provider.
 
     ``_post_json`` and ``_post_sse`` deliberately remain facade globals so the
     existing offline transport injection contract continues to work after the
     module-to-package split.
+
+    ``should_cancel`` is polled between retry attempts and during backoff. A
+    rate-limited provider can hold a call for the full retry budget, and until
+    this was threaded through, pressing stop did nothing for that whole window.
     """
     return _client_chat(
         messages,
@@ -129,6 +147,7 @@ def chat(
         tools=tools,
         tool_choice=tool_choice,
         parallel_tool_calls=parallel_tool_calls,
+        should_cancel=should_cancel,
         post_json=_post_json,
         post_sse=_post_sse,
     )

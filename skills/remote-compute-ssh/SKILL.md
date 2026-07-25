@@ -1,6 +1,6 @@
 ---
 name: remote-compute-ssh
-description: Submit→wait_for_notification→harvest workflow for the user's SSH/SLURM hosts. Load once you've decided to dispatch remote.
+description: Submit→poll .result()→harvest workflow for the user's SSH/SLURM hosts. Load once you've decided to dispatch remote.
 license: Apache-2.0
 origin: openai4s
 ---
@@ -26,9 +26,9 @@ process; that has to happen outside the sandboxed data workspace, so
 directory but not memory, so the rhythm is: prepare inputs in a `python`
 cell (write `./in.dat`, pickle what the job needs), run
 `create → submit_job` in a `repl` cell and let the cell return — the
-kernel never blocks on compute. Then call the `wait_for_notification`
-brain-tool to park until the daemon's poller emits the `compute_done`
-notification, and return to the `python` tool to read the harvested
+kernel never blocks on compute. Then poll `.result()` from a later `repl`
+cell until the status is terminal — that call is what probes the remote and
+harvests — and return to the `python` tool to read the harvested
 `hpc/<jobId>/` files. The `repl` tool is stdlib-only (`python -I -S`) —
 keep pandas/numpy work in the `python` tool and pass data through files.
 
@@ -54,24 +54,40 @@ Whichever route produced an activation, run the entrypoint once via
 Then `job = c.submit_job(...)` (see below). `inputs=[{src:'file', dst_filename:
 ...}]` stages the file for you — there's no `c.upload` step, and once
 submitted there's nothing to verify with `c.call_command('cat...')`; the job
-reads `./<dst_filename>` from its own workdir. End the cell — `submit_job`
-returns immediately and the daemon's background poller polls the remote,
-harvests everything the job wrote into your workspace under `hpc/<jobId>/`,
-and emits a `compute_done` notification when done.
+reads `./<dst_filename>` from its own workdir. Print the job — its repr is
+the recovery handle — and end the cell: `submit_job` returns immediately, and
+nothing happens in the background afterwards. `.result()` is what probes the
+remote and harvests everything the job wrote into your workspace under
+`hpc/<jobId>/`, so a job you never poll is never harvested.
 
-Park on the `wait_for_notification` brain-tool until that notification
-arrives. Its payload carries `{job_id, status, exit_code, featured_files,
-output_file_count,...}` — `featured_files` is the subset matching your
-featured `outputs:` globs (omitting `outputs:` features everything). Publish
-what you want with `save_artifacts(payload['featured_files'])` — that step is
-what gives them provenance and surfaces them in the artifact panel. If you
-need the full result dict (all `output_files`, `left_on_remote`, etc.),
-re-enter a `repl` cell and call `r = c.attach_job(job_id).result` — a
-non-blocking read of what the poller already harvested.
+Poll it from a later `repl` cell — `r = c.attach_job(job_id).result()`, or
+`job.result()` while that binding is still live. Each call is one probe:
+while the job is still running it returns `{'status': 'running',...}`, and
+the right response is to end the cell and call it again later, not to wait
+inside the cell. Once the status is terminal the dict carries
+`{status, exit_code, output_files, featured_files, artifact_manifest,
+left_on_remote, left_on_remote_files?, remote_workdir, stdout_tail,...}` —
+`featured_files` is the
+subset matching your featured `outputs:` globs (omitting `outputs:` features
+everything), and `artifact_manifest` records `{path, size, sha256}` for
+everything harvested.
+A failed job is a returned `status`, not an exception, so read `exit_code`
+rather than expecting `.result()` to raise. A declared `outputs:` pattern is a
+promise the status is checked against: the harvest pulls the whole job workdir
+back, and a pattern that matched nothing yields `failed` with
+`unharvested_outputs` naming what the job promised and did not write. Files
+over ~100 MB stay on the cluster and come back in `left_on_remote_files` with
+`reason:'threshold'` and a `uri` you can chain from or `c.download`; declare
+`{glob, residency:'remote'}` to choose that deliberately, in which case the
+file staying put is the requested outcome and does not fail the job. A file
+that arrived but could not be read carries no hash, so it is never counted as
+delivered — it comes back in `unverified_files`. Publish what you want with
+`host.save_artifact(path)` per file — that step is what gives them
+provenance and surfaces them in the artifact panel.
 `open(r['output_files'][i])` reads any harvested file directly. Chain a
 remote-resident output via
-`inputs:[{remote_path: r['left_on_remote'][i]['uri']}]`. Between the
-notification and `close` you can still
+`inputs:[{remote_path: r['left_on_remote_files'][i]['uri']}]`. Between the harvest
+and `close` you can still
 `c.download(f"{job.workdir}/<file>")` for anything the harvest missed.
 `c.download('/any/absolute/host/path')` works for **any readable file on
 the host**, not just job outputs — paths outside scratch/data_roots raise an
@@ -80,7 +96,7 @@ fetch a host file, call `c.download` with the path they gave; the approval
 card is the authorization gate, so don't refuse on their behalf and don't
 `cp` into scratch first to dodge it. Dotfiles / paths under a dot-directory
 (`~/.ssh/*`, `.gitconfig`, `.env`, …) get a hardened per-file confirmation.
-`c.close` once you've confirmed — it cleans up the job workdirs on the
+`c.close()` once you've confirmed — it cleans up the job workdirs on the
 host. Hand back the result verbatim.
 
 ## What to record
@@ -171,16 +187,15 @@ scratch) they're symlinked, no transfer. Anything over ~100 MB that already
 lives on the host should be a `{remote_path}`, not a `{src}` — staging is
 link-rate and copies into the job workdir. `outputs` — bare string is a featured
 deliverable; `{glob, visibility:'hidden'}` is diagnostic;
-`{glob, residency:'remote'}` stays on the cluster and comes back as
-`left_on_remote`. `harvest:{exclude:['work/**'], max_file_mb, max_total_mb}`
-caps what the poller pulls. Harvest likewise caps at ~100 MB per file: larger
-outputs stay on the cluster by
-default and come back in `left_on_remote` with `reason:'threshold'` — set
-`residency:'remote'` to choose that, or `max_file_mb`/`max_total_mb` to tighten
-it. A `left_on_remote` URI is for chaining (`inputs:[{remote_path: uri}]`) or
-peeking (`c.call_command(f'head -c 4096 {uri_path}', intent=...)`);
+`{glob, residency:'remote'}` stays on the cluster, is not owed to the harvest,
+and comes back in `left_on_remote_files`. The harvest caps at ~100 MB per file:
+larger outputs stay on the cluster too and come back the same way with
+`reason:'threshold'`. A `left_on_remote_files` URI is for chaining
+(`inputs:[{remote_path: uri}]`) or peeking
+(`c.call_command(f'head -c 4096 {uri_path}', intent=...)`);
 `c.download` it only when you or the user actually need the bytes locally —
 it's link-rate-slow and the file is already where the next job needs it.
+The caps are fixed for now; there is no per-job `harvest:{...}` override.
 
 ```python
 # repl tool — host.compute isn't attached in the `python` tool
@@ -209,26 +224,27 @@ ls -lh ./*.result ./*.json''',
 print(job.job_id)  # cell ends here — kernel never blocks on compute
 ```
 
-Then call the `wait_for_notification` brain-tool. The `compute_done`
-notification payload carries `{job_id, status, exit_code, featured_files,
-output_file_count,...}`; act on it directly:
+Then poll from a later cell — one probe per call, re-run until the status is
+terminal:
 
 ```python
-# after wait_for_notification returns the compute_done payload —
-# featured_files paths are workspace-relative under hpc/<jobId>/
-save_artifacts(payload['featured_files'])  # publish with provenance
+# repl tool — one non-blocking probe; harvests once the job is terminal
+r = c.attach_job(job_id).result()
+# r → {status, exit_code, output_files, featured_files, left_on_remote_files,
+#      remote_workdir, stdout_tail,...}, or {'status':'running',...} while
+#      it's still going — end the cell and re-run this one later
+print(r['status'], r.get('exit_code'))
 ```
 
-If you need the fuller result dict (`output_files`, `left_on_remote`,
-`remote_workdir`, `stdout_tail`):
+Once it's terminal, act on what it harvested — `featured_files` paths are
+workspace-relative under `hpc/<jobId>/`:
 
 ```python
-# repl tool — non-blocking read of what the poller already harvested
-r = c.attach_job(job_id).result
-# r → {status, exit_code, output_files, featured_files, left_on_remote,
-#      remote_workdir,...}
-c.close
+for path in r['featured_files']:
+    host.save_artifact(path)  # publish with provenance
 ```
+
+then `c.close()` in a `repl` cell once you've confirmed the harvest.
 
 `output_files` is the complete list (uncapped), ordered featured-first;
 the same files are on disk at `hpc/<job_id>/`.
@@ -268,11 +284,10 @@ the host cap and you'd rather queue than fail.
 ## Submitting several jobs
 
 Submitting a batch and harvesting them as each finishes uses the same
-`wait_for_notification` mechanism, just called repeatedly. The poller
-tracks every job you submitted, harvests each independently when the
-remote reports it terminal, and posts one `compute_done` per job; each
-`wait_for_notification` call returns whatever's queued (one or more) and
-then blocks for the next.
+`.result()` poll, just called once per job. Each job is probed and
+harvested independently the first time you poll it after the remote
+reports it terminal, and a terminal `.result()` is cached — so re-polling
+the whole list costs a probe only for the jobs still live.
 
 ```python
 # repl tool — submit, print ids, end the cell
@@ -289,29 +304,27 @@ jobs = [
 print({j.job_id: j.status for j in jobs})
 ```
 
-Then loop the brain tool. Each call's `notifications` list may contain
-more than one entry if two jobs finished while you were processing the
-previous batch, so iterate it; the loop ends when the call returns
-`{status:'error'}` because no compute jobs remain.
+Then poll the batch from a later cell. More than one may have gone
+terminal since your last pass, so iterate the whole list each time; you're
+done when nothing is left pending.
 
-```text
-wait_for_notification(timeout_seconds=1800)
-→ {status:'received', notifications:[
-    {notification_type:'compute_done',
-     payload:{job_id:'…', intent:'AlphaFold seed 3', status:'success',
-              exit_code:0, featured_files:['hpc/…/ranked.pdb']}}]}
-# act on each payload (save_artifacts, or attach_job(jid).result
-# for stdout_tail / full output_files), then:
-wait_for_notification(timeout_seconds=1800)
-→ {status:'received', notifications:[ …seed 0…, …seed 4… ]}  # two arrived
-# act on both, then:
-wait_for_notification(timeout_seconds=1800)
-→ … repeat until …
-→ {status:'error',
-   error:'No running children, no pending notifications, no running compute jobs.'}
+```python
+# repl tool — one poll pass; end the cell and re-run it until none are left
+TERMINAL = {'succeeded', 'failed', 'timed_out', 'cancelled'}
+for j in jobs:
+    r = j.result()   # probes only the jobs still live; terminal ones are cached
+    print(j.job_id, r['status'], r.get('exit_code'), r.get('featured_files'))
+print('still running:', [j.job_id for j in jobs if j.status not in TERMINAL])
+# `unknown` is NOT terminal: it means the submit may or may not have landed.
+# Re-poll it — do not treat it as finished, and do not resubmit it.
+print('unresolved:', [j.job_id for j in jobs if j.status == 'unknown'])
 ```
 
-When everything you care about is harvested, call `c.close` once to
+Act on each job the pass reported terminal — `host.save_artifact` on each
+of its `featured_files`, or read `stdout_tail` / the full `output_files` off
+the same dict — then end the cell and re-run it for whatever is still running.
+
+When everything you care about is harvested, call `c.close()` once to
 clean up the remote workdirs. Don't put the `create` in a `with`
 block — `__exit__` calls `close`, which would cancel the still-running
 jobs the moment the submit cell ends.

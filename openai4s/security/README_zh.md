@@ -19,6 +19,7 @@
 | [`__init__.py`](__init__.py) | 说明这套分层模型，并重新导出代码分类、注入扫描和生物安全判定的 API。 |
 | [`audit_hook.py`](audit_hook.py) | 在 worker 内安装 CPython 审计钩子：从可写的工作区、临时目录或 Artifact 根目录 `ctypes.dlopen` 一个动态库会被拒绝，而解释器与包安装前缀下的加载照常放行。它把依赖的函数捕获成定义期的关键字默认值，并在安装完成后删掉指向钩子自身的所有 Python 句柄，因此 Cell 内对模块命名空间的 monkeypatch 无法直接解除这道检查。这是抵抗，不是免疫：目标是让它在 Cell 内难以被绕过，而不是绝无可能。 |
 | [`biosecurity.py`](biosecurity.py) | 存放校准问责式的 prompt 片段和轨迹筛查器。先由一个低成本的相关性触发器判断这次筛查值不值得花一次模型调用；真正的筛查是一次独立调用，返回 ALLOW、ESCALATE 或 BLOCK，解析时对格式松散的回复也留了余地。 |
+| [`byoc_confinement.py`](byoc_confinement.py) | BYOC provider helper 外面的那层 OS 边界，形状与内核那层刻意不同：helper **必须**能上网——调 provider 的 REST API 就是它的全部工作——并且**不得**读用户的家目录，而 Cell 反倒是可以读的。macOS 上是一份 Seatbelt profile；Linux 上是 bubblewrap 的 `--tmpfs $HOME` 再把解释器自己的路径绑回来。它同时拒绝 keychain 服务，因为凭据不是一个文件：`security find-generic-password` 是去问 securityd，那个进程不受文件系统规则约束。网络隔离是另一项能力，而且**没有**启用——`confinement_status()` 会把这一点明说出来，而不是留给人去假设。 |
 | [`classifier.py`](classifier.py) | 分三层对一个 Cell 做分类：不含任何风险 token 的代码走快速通道；命中高置信度静态攻击特征的直接判定；剩下的在 `llm` 模式里交给模型复核。它返回结构化的 SAFE/UNSAFE 证据，自身不抛异常。 |
 | [`injection.py`](injection.py) | 用静态特征、以及可选的一次 LLM 调用，扫描工具返回的不可信文本。疑似内容会被加上一段警告前缀，原文一个字都不删。 |
 | [`sandbox.py`](sandbox.py) | 用 Seatbelt（macOS）或 bubblewrap（Linux）包装 worker 命令。它构造工作区、私有临时目录、secret 读取屏蔽和网络策略，用一次真实的 allow/deny 自测来验证策略确实生效，并回报一份状态，其中的 `state` 是 `enabled`、`disabled` 或 `unavailable`。 |

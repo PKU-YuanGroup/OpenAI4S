@@ -13,14 +13,25 @@ but appeared nowhere in `docs/webapp-api.md`. That is the drift this test
 exists to stop.
 
 Scope, stated plainly: this answers "which paths and events exist", not "what
-shape do they return". Response schemas are the next layer of §4.6 and are not
-inferable from a routing chain.
+shape do they return". Response shapes are the next layer and live in
+`docs/response-schemas.json`, captured from real responses.
+
+The inventory now scans the route modules being carved out of `Handler._api`
+as well as gateway.py. Reading gateway.py alone made the decomposition
+self-defeating: moving the kernel group dropped 12 routes out of the inventory
+and orphaned 11 frozen response shapes, and the obvious repair -- regenerate
+the artifact until it is green -- re-files those shapes under the catch-all
+`/frames/([^/]+)(?:/.*)?` and destroys the per-route contract.
 """
+import re
 from pathlib import Path
 
 import pytest
 
+from openai4s.server import contract
 from openai4s.server.contract import (
+    _ROUTE_MODULES,
+    _SERVER_PKG,
     http_routes,
     inventory,
     route_families,
@@ -112,3 +123,196 @@ def test_inventory_is_serialisable():
     inv = inventory()
     assert set(inv) == {"http_routes", "ws_inbound", "ws_outbound"}
     assert inv["http_routes"] == sorted(inv["http_routes"])
+
+
+# --------------------------------------------------------------------------
+# the inventory has to see the whole surface, and only the surface
+# --------------------------------------------------------------------------
+
+
+def test_events_emitted_outside_the_gateway_are_in_the_inventory():
+    """The extractor read `gateway.py` alone while events are emitted from the
+    focused services too, so fifteen live event types were invisible to it —
+    and therefore exempt from the documentation gate above."""
+    outbound = websocket_outbound()
+    for event in (
+        "notebook_cell_start",  # server/cell_run.py
+        "notebook_cell_draft",  # server/agent_run.py
+        "recovery_state",  # server/recovery_execution.py
+        "recovery_log",  # server/recovery_control.py
+        "branch_activated",  # server/session_domain.py
+        "checkpoint_created",  # server/session_branching.py
+        "execution_state",  # server/execution_coordinator.py
+        "plan_ready",  # server/plans.py
+        "delegation_child_event",  # agent/delegation.py
+    ):
+        assert event in outbound, f"{event} is emitted but not inventoried"
+
+
+def test_the_inventory_does_not_invent_events():
+    """As wrong as omitting one. `{"type": ...}` is a common shape — JSON
+    schema fragments, ledger states, result payloads — and listing those as
+    protocol would make the contract document a description of nothing."""
+    outbound = websocket_outbound()
+    for not_an_event in ("string", "number", "object", "array", "proposed"):
+        assert not_an_event not in outbound, (
+            f"{not_an_event!r} is a value in some other vocabulary, not a "
+            f"WebSocket event"
+        )
+    # A sidecar warning rides inside a result payload, never over the socket.
+    assert "skill_sidecar_recovery_capture_failed" not in outbound
+
+
+def test_inbound_membership_dispatch_is_inventoried():
+    """`t in {"cancel_execution", "cancel"}` is as much a dispatch as
+    `t == "view_session"`; matching only equality hid two real client
+    messages."""
+    inbound = websocket_inbound()
+    assert {"view_session", "unview_session", "ping"} <= inbound
+    assert {"cancel_execution", "cancel"} <= inbound
+
+
+def test_inbound_scanning_stops_at_the_handler():
+    """Bounded at both ends: an unrelated truthiness check far below the
+    socket handler reuses the same loop variable name, and scanning to
+    end-of-file put its values in the inventory as client messages."""
+    inbound = websocket_inbound()
+    for stray in ("false", "no", "off", "0"):
+        assert stray not in inbound
+
+
+# --------------------------------------------------------------------------
+# the inventory has to follow routes out of gateway.py
+# --------------------------------------------------------------------------
+
+
+def test_a_route_defined_in_a_route_module_is_still_inventory(tmp_path):
+    """The property the decomposition depends on. Without it, every extraction
+    silently shrinks the documented surface."""
+    source = """
+            m = re.fullmatch(r"/made-up/([^/]+)/probe", sub)
+            if m and method == "GET":
+                pass
+    """
+    assert "/made-up/([^/]+)/probe" in http_routes(source)
+
+
+def test_every_declared_route_module_is_scanned_or_absent(tmp_path):
+    """A name in the list that does not exist is tolerated (the modules land
+    one at a time), but a module that exists must be readable -- a typo that
+    silently scans nothing is exactly the failure mode this guards."""
+    for name in _ROUTE_MODULES:
+        path = _SERVER_PKG / name
+        if path.exists():
+            assert path.read_text("utf-8"), f"{name} is declared but empty"
+
+
+def test_widening_the_scan_did_not_change_the_surface_it_reports():
+    """Landed on an unchanged tree, so the count must be exactly what the
+    gateway-only scan reported. A widening that also *adds* routes is scanning
+    something that is not surface -- a validator pattern, or a test fixture."""
+    assert len(http_routes()) == 144
+
+
+# --------------------------------------------------------------------------
+# the inventory is the contract, so it has to see the whole surface
+# --------------------------------------------------------------------------
+
+
+def test_the_inventory_covers_every_route_the_router_can_match():
+    """The regression.
+
+    `_route_sources` was widened to read the modules route branches were
+    extracted into, and `inventory()` then handed `http_routes` the gateway
+    text alone — defeating the widening at the one call site that produces the
+    machine-readable artifact. `http_routes()` reported 144 routes while the
+    inventory reported 132, and the 12 endpoints in kernel_routes.py were
+    absent from the thing that is supposed to *be* the contract.
+    """
+    from openai4s.server.contract import http_routes, inventory
+
+    assert set(inventory()["http_routes"]) == set(http_routes())
+
+
+def test_an_extracted_route_module_is_in_the_inventory():
+    """Named concretely so the next extraction cannot quietly shrink it."""
+    from pathlib import Path
+
+    from openai4s.server.contract import inventory
+
+    module = Path("openai4s/server/kernel_routes.py")
+    if not module.is_file():
+        import pytest
+
+        pytest.skip("kernel_routes.py has been renamed; update this test with it")
+    listed = set(inventory()["http_routes"])
+    # Any exact route string the extracted module owns must be present.
+    text = module.read_text("utf-8")
+    owned = {r for r in listed if f'"{r}"' in text}
+    assert owned, "no route from the extracted module appears in the inventory"
+
+
+# --------------------------------------------------------------------------
+# an entry that cannot match anything is not a route
+# --------------------------------------------------------------------------
+
+
+def test_no_inventory_entry_is_an_incomplete_matcher():
+    """The reproduction: a `re.fullmatch` assembled from adjacent raw literals.
+
+    A regex scan takes the first literal it sees, so the gateway's multi-line
+    pattern entered the inventory as `/frames/([^/]+)/(?:` — a fragment that
+    cannot match anything. The contract driver then concretised it, recorded
+    the 404 that a non-route naturally earns, and counted that toward the
+    published coverage.
+    """
+    for route in contract.http_routes():
+        assert contract.is_complete_matcher(route), (
+            f"{route!r} cannot form a complete matcher, so it describes no "
+            f"surface and must not be counted as one"
+        )
+        assert route.count("(") == route.count(")"), route
+
+
+def test_a_pattern_split_across_string_literals_is_read_whole():
+    source = (
+        "def _api(self, sub):\n"
+        "    if re.fullmatch(\n"
+        '        r"/frames/([^/]+)/(?:"\n'
+        '        r"alpha|beta"\n'
+        '        r")", sub):\n'
+        "        return 1\n"
+    )
+    routes = contract.http_routes(source)
+    assert routes == {"/frames/([^/]+)/(?:alpha|beta)"}
+
+
+def test_a_non_constant_pattern_is_left_out_rather_than_half_read():
+    source = (
+        "def _api(self, sub):\n"
+        "    if re.fullmatch(build_pattern(), sub):\n"
+        "        return 1\n"
+    )
+    assert contract.http_routes(source) == set()
+
+
+def test_every_route_concretises_to_a_path_that_reaches_it():
+    """A route whose own probe does not match it drives nothing, so its 404 is
+    a fact about the probe rather than about the surface."""
+    from openai4s.server import response_capture
+
+    unroutable = sorted(
+        route for route in contract.http_routes() if response_capture.unroutable(route)
+    )
+    assert unroutable == [], (
+        f"these entries cannot be driven and must not count as covered: "
+        f"{unroutable}"
+    )
+
+
+def test_an_alternation_is_sampled_rather_than_stripped():
+    from openai4s.server.response_capture import concrete_path
+
+    route = "/frames/([^/]+)/(?:action-timeline|context|recovery(?:/actions)?)"
+    assert concrete_path(route) == "/frames/probe-id/action-timeline"
+    assert re.fullmatch(route, concrete_path(route))

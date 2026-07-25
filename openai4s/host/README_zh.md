@@ -28,6 +28,7 @@ service 可以返回单键的 `{"error": message}` 表示软失败。Python work
 | [`progress.py`](progress.py) | 待办清单留在这里的内存中；plan 的步骤和评审进度则落在 Store 里。勾掉一个步骤并不以“已批准”为前提：没有显式传 `plan_id` 时，被更新的就是 Store 为该 frame 返回的那个 plan，也就是最新的、未被 discard 的那一个。 |
 | [`remote_capabilities.py`](remote_capabilities.py) | 注册要拿证据换。窄范围的结构化 probe spec 会被规范成一条安全的远程命令并真的跑一遍，确认远程 capability 确实存在；验证通过之后，service 元数据才进入 remote-compute 注册表。 |
 | [`remote_science.py`](remote_science.py) | 通过 SSH 运行已注册的 folding 与 mutation-scoring wrapper，解析它们显式的结果标记，并为产出该结果的 cell 缓存远程溯源。服务缺失或作业失败时返回错误。它不伪造科学结果。 |
+| [`connector_manifest.py`](connector_manifest.py) | 每个科学 connector 依赖上游 API 的哪些字段，声明化。分两级：**required**（数组容器与记录 id，缺了 connector 就返回不了东西）与 **expected**（parser 会读、但缺了能降级的字段）。它不是解析逻辑的第二份拷贝——离线测试证明每条 required 路径都在该 connector 自己的 fixture 里存在且承重（删掉它 adapter 就返回不了记录），因此 manifest 无法虚标。它支撑夜间 canary。 |
 | [`science.py`](science.py) | 七个公共数据库，同一个信封：UniProt、PDB、Ensembl、ChEMBL、PubChem、arXiv 和 OpenAlex。请求按允许名单构造，走共享的 fetch 路径发出，每一份响应都规范成同一种记录结构。 |
 | [`session.py`](session.py) | 把控制操作钉死在 dispatcher 当前的 root session 上，任何调用都伸不进另一个会话。checkpoint 和待处理的权限申请始终从 Store 读。branch 与 recovery 状态则来自已挂接的 Web session-domain service，这也是 Web 运行时的常规路径；没有挂接 domain 时，状态投影退回到从 Store 读一份只读的 branch 列表，并把 recovery 报成不可用。涉及文件系统的 checkpoint、fork、revert、recovery 操作，同样委托给这个 domain service。 |
 | [`skills.py`](skills.py) | Skill 的完整生命周期：搜索、读取、编辑、发布、版本化、回滚、删除。作用域决定磁盘上哪个目录拥有这个 Skill；内置 Skill 始终优先于用户 Skill，写入也被限制在 Skill 目录内。 |

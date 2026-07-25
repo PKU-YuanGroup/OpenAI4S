@@ -1,0 +1,53 @@
+{
+  "id": "environment-transaction",
+  "version": "1.0.0",
+  "title": "环境 plan → apply → rollback",
+  "summary": "环境变更是事务：失败不得破坏当前环境，回滚只移动指针。",
+  "steps": [
+    "environment_transaction"
+  ],
+  "permissions": [
+    "environment:apply"
+  ],
+  "artifacts": [],
+  "failure_conditions": [
+    "失败的构建改动了 current 指针",
+    "回滚需要重建"
+  ],
+  "cases": [
+    {
+      "id": "environment-transaction/rollback",
+      "title": "两代之后回滚到第一代",
+      "outcome": "recovered",
+      "inputs": {
+        "environment_transaction": {
+          "revisions": [
+            "numpy\n",
+            "numpy\npandas\n"
+          ],
+          "rollback_to_index": 0
+        }
+      },
+      "expect": {
+        "applied": 2
+      }
+    },
+    {
+      "id": "environment-transaction/failed-apply",
+      "title": "构建失败后 current 必须不变",
+      "outcome": "success",
+      "inputs": {
+        "environment_transaction": {
+          "revisions": [
+            "numpy\n",
+            "numpy\nbroken\n"
+          ],
+          "fail_on_build": 2
+        }
+      },
+      "expect": {
+        "applied": 1
+      }
+    }
+  ]
+}

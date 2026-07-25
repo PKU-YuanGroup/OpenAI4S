@@ -14,6 +14,7 @@ filesystem fallback for unpacked source archives.
 
 ```bash
 python scripts/source_secret_scan.py
+python scripts/verify_release_tag.py v0.1.0
 uv build --no-sources --out-dir dist --clear
 python scripts/verify_release_artifacts.py dist
 ```
@@ -104,11 +105,78 @@ The normal CI browser smoke and nightly macOS Seatbelt smoke remain separate
 because they exercise runtime/browser and operating-system boundaries rather
 than archive integrity.
 
+## Trusted publication
+
+Publishing is isolated in `.github/workflows/release.yml`. A non-prerelease
+GitHub Release whose tag starts with `v` builds from that immutable tag. The
+build job requires an exact `vMAJOR.MINOR.PATCH` match in both `pyproject.toml`
+and `openai4s.__version__`, scans the sources, builds and verifies the wheel and
+sdist, then uploads those exact files as a short-lived Actions artifact. A
+separate `publish` job can only download that artifact and invoke PyPA's
+publisher. Only this final job receives `id-token: write`.
+
+Before the first publication, a repository administrator must:
+
+1. create the protected GitHub environment `pypi` and require a maintainer
+   review;
+2. configure a PyPI pending/trusted publisher for repository
+   `PKU-YuanGroup/OpenAI4S`, workflow `release.yml`, environment `pypi`;
+3. protect `v*` tags and the release workflow through repository rules;
+4. create an annotated tag from a green `main` commit, then publish the GitHub
+   Release for that tag.
+
+The workflow uses GitHub/PyPI OIDC and does not accept a long-lived PyPI token.
+Its publish job also creates PyPI's default provenance attestations through the
+official PyPA action.
+
 ## Deliberate remaining external gates
 
-This repository does not claim that offline CI performs package publication,
-release signing/notarization, vulnerability-database lookup, or live-provider,
-GPU, SSH, and laboratory validation. Those operations require an explicit
-release identity, network service, credential, or hardware and must stay out
-of secret-free pull-request execution. A maintainer must perform them in a
-separately authorized release workflow before public distribution.
+Pull-request CI does not publish packages, sign/notarize native executables, or
+perform live-provider, GPU, SSH, and laboratory validation. Publication needs
+an approved GitHub Release and the separately protected OIDC environment above;
+the other operations require an explicit identity, network service, or
+hardware and remain outside the secret-free default gate.
+
+
+## Draft-first (from v0.2)
+
+The pipeline no longer starts after the release is public. `release.yml`
+triggers on `created`, which fires for a **draft**, and every step runs while
+nothing is visible:
+
+    build → test → assets → SBOM → provenance → verify → draft → upload →
+    re-verify → publish
+
+`publish` is last because it is the only step that cannot be undone. `verify`
+runs before the release is staged so a bad asset is caught while nothing is
+public; `re-verify` reads the assets back *after* upload, because a local
+checksum cannot see a transfer that dropped bytes.
+
+All of it lives in [`scripts/release_pipeline.py`](../scripts/release_pipeline.py),
+not in the workflow YAML, so it can be exercised without cutting a release:
+
+```bash
+uv run python scripts/release_pipeline.py --version 0.2.0 --dry-run
+uv run python scripts/release_pipeline.py --version 0.2.0 --mode local
+```
+
+`--dry-run` performs no external call and is how the *ordering* is tested.
+`--mode local` really builds, hashes, and writes `sbom.cdx.json` (CycloneDX
+1.5) and `provenance.intoto.json` (in-toto/SLSA), and stops before anything is
+published.
+
+### What is and is not claimed about signing
+
+* `--mode release` **fails closed** when `OPENAI4S_MACOS_SIGNING_IDENTITY` is
+  unset and the release contains a `.dmg`. "The certificate was not
+  configured" is not a reason to publish unsigned.
+* `--mode local` builds the unsigned image and reports
+  `signing_identity_configured: false`. It does not pretend.
+* **Notarization is never reported as verified.** It requires Apple's notary
+  service and a paid identity, so the pipeline reports `notarized: null` with
+  the reason. A pipeline that printed `notarized: ok` without one would be
+  precisely the confident wrong answer this project spends its effort removing.
+
+The provenance statement is **unsigned** and says so: it binds the listed
+digests to the build's parameters, and it does not establish who produced them.
+That needs a signature this format does not yet carry.

@@ -459,9 +459,21 @@ try {
   if (!Array.isArray(contextState.layers) || !securityState.sandbox || !securityState.permission) {
     throw new Error("workbench context/security projections are incomplete");
   }
+  // The projection is a menu of mutations, so it must advertise exactly what
+  // a client can invoke. It used to also offer `inspect_log` and
+  // `continue_view_only`, which no route accepted and the client's sanitiser
+  // dropped; asserting all five here locked that contradiction in as a
+  // contract. The set equality is the point — an extra id is as wrong as a
+  // missing one.
   const recoveryIds = new Set((recoveryState.actions || []).map((action) => action.id));
-  for (const actionId of ["restore", "retry", "inspect_log", "continue_view_only", "restart_fresh"]) {
+  const expectedRecoveryIds = ["restore", "retry", "restart_fresh"];
+  for (const actionId of expectedRecoveryIds) {
     if (!recoveryIds.has(actionId)) throw new Error(`missing recovery action: ${actionId}`);
+  }
+  for (const actionId of recoveryIds) {
+    if (!expectedRecoveryIds.includes(actionId)) {
+      throw new Error(`recovery action advertised but not invocable: ${actionId}`);
+    }
   }
 
   await ensureDockOpen();
@@ -471,9 +483,16 @@ try {
   await timelineTab.click();
   await page.locator(".branch-panel").waitFor({ state: "visible" });
   await page.locator(".recovery-action-list").waitFor({ state: "visible" });
+  // One button per advertised action, enabled or not — `disabledWorkbenchButton`
+  // always emits a <button> and only toggles `disabled`. This matched the three
+  // above even while the API offered five, because the client's sanitiser
+  // projects onto its own allowlist; the count agreeing was luck, not
+  // agreement. Now both ends name the same three.
   const recoveryButtons = await page.locator(".recovery-action-list button").count();
-  if (recoveryButtons !== 3) {
-    throw new Error(`expected three Recovery actions, found ${recoveryButtons}`);
+  if (recoveryButtons !== expectedRecoveryIds.length) {
+    throw new Error(
+      `expected ${expectedRecoveryIds.length} Recovery actions, found ${recoveryButtons}`,
+    );
   }
 
   // Fork is a real mutation with a browser prompt. The new branch remains

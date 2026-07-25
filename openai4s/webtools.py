@@ -13,6 +13,7 @@ the daemon's Customize → Network panel flips this.
 from __future__ import annotations
 
 import base64
+import hashlib
 import html as _html
 import ipaddress
 import json
@@ -278,6 +279,16 @@ def web_fetch(
         "content_type": ctype,
         "truncated": truncated,
         "content": content[:max_chars],
+        # The response exactly as it came off the wire, before decoding and
+        # before any reformatting. `content` above has been through
+        # `decode(errors="replace")` — which maps every invalid byte sequence
+        # onto the same U+FFFD — and, for JSON, through a load/dump round trip
+        # that discards the original whitespace entirely. Two materially
+        # different responses can produce identical `content`, so a hash taken
+        # over `content` cannot answer "are these the same bytes we received".
+        # These describe the complete body even when `content` is truncated.
+        "raw_sha256": hashlib.sha256(body).hexdigest(),
+        "raw_bytes": len(body),
     }
 
 

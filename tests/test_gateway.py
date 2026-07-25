@@ -2588,3 +2588,159 @@ def test_kernel_install_route_is_not_gated_by_notebook_repl(tmp_path):
     handler._api("POST", f"/frames/{fid}/kernel/install")
     assert replies[-1][0] == 200  # not 403
     assert hits and hits[0][0] == ["seaborn"]
+
+
+# --------------------------------------------------------------------------
+# a resume cursor is only meaningful inside the daemon run that issued it
+# --------------------------------------------------------------------------
+
+
+class _Recorder:
+    """Collects everything the hub sends to one client."""
+
+    def __init__(self):
+        self.alive = True
+        self.subs = set()
+        self.events = []
+
+    def send_json(self, event):
+        self.events.append(dict(event))
+
+    def replay_begin(self):
+        return next((e for e in self.events if e.get("type") == "replay_begin"), None)
+
+
+def _live_turn(hub, root, count=3):
+    hub.broadcast(root, {"type": "text_reset", "frame_id": root})
+    for i in range(count):
+        hub.broadcast(root, {"type": "text_chunk", "frame_id": root, "chunk": str(i)})
+    return max(int(e.get("seq") or 0) for e in hub._live[root]["events"])
+
+
+def test_a_cursor_from_a_previous_daemon_run_is_reported_as_a_gap():
+    """The silent failure this exists for. `_seq` is in-process, so a restart
+    puts it back to zero while the client still holds a cursor from the
+    previous run. Nothing was replayed and no gap was declared, so the client
+    sat there believing it was caught up on a stream it had entirely missed.
+    """
+    before = gateway_mod.WSHub()
+    root = "root-restart"
+    last_seq = _live_turn(before, root)
+    assert last_seq > 0
+
+    restarted = gateway_mod.WSHub()  # a fresh process: empty buffer, seq at 0
+    conn = _Recorder()
+    restarted.add(conn)
+    restarted.subscribe(root, conn, last_seq, before.epoch)
+
+    begin = conn.replay_begin()
+    assert begin is not None, "silence let the client believe it was caught up"
+    assert begin["gap"] is True
+    assert begin["epoch"] == restarted.epoch != before.epoch
+
+
+def test_a_restart_is_detected_even_without_a_client_epoch():
+    """Detection must not depend on the client having been updated.
+
+    The counter sitting below the cursor was the original proof, and it only
+    covers cursors this daemon has not reached. A cursor it *has* reached is
+    indistinguishable from one of its own, so an epoch-less cursor is a gap
+    whatever the counter says — see the paired test below."""
+    restarted = gateway_mod.WSHub()
+    conn = _Recorder()
+    restarted.add(conn)
+    restarted.subscribe("root-old-client", conn, 500)  # no epoch sent
+
+    begin = conn.replay_begin()
+    assert begin is not None
+    assert begin["gap"] is True
+
+
+def test_an_epochless_cursor_the_counter_has_reached_is_still_a_gap():
+    """Codex P1. The numeric check cannot see this one: once the new daemon has
+    emitted at least as many events as the cursor names, the cursor looks
+    placeable, and replay silently filters the new stream's early events out as
+    already seen."""
+    restarted = gateway_mod.WSHub()
+    root = "root-old-tab"
+    _live_turn(restarted, root, count=4)
+
+    conn = _Recorder()
+    restarted.add(conn)
+    restarted.subscribe(root, conn, 2)  # no epoch, and 2 <= our own counter
+
+    begin = conn.replay_begin()
+    assert begin is not None
+    assert begin["gap"] is True
+
+
+def test_a_cursor_within_the_same_run_replays_only_what_was_missed():
+    """The ordinary case must keep working: no gap, and only the tail."""
+    hub = gateway_mod.WSHub()
+    root = "root-same-run"
+    _live_turn(hub, root, count=4)
+    events = hub._live[root]["events"]
+    cursor = int(events[1]["seq"])
+
+    conn = _Recorder()
+    hub.add(conn)
+    hub.subscribe(root, conn, cursor, hub.epoch)
+
+    begin = conn.replay_begin()
+    assert begin["gap"] is False
+    replayed = [e for e in conn.events if e.get("type") == "text_chunk"]
+    assert replayed, "the missed tail must still arrive"
+    assert all(int(e["seq"]) > cursor for e in replayed)
+
+
+def test_a_fresh_subscriber_with_no_cursor_is_not_a_gap():
+    hub = gateway_mod.WSHub()
+    root = "root-fresh"
+    _live_turn(hub, root)
+
+    conn = _Recorder()
+    hub.add(conn)
+    hub.subscribe(root, conn, 0)
+
+    begin = conn.replay_begin()
+    assert begin["gap"] is False
+
+
+def test_a_cursor_older_than_the_retained_window_is_a_gap():
+    """The pre-existing case: the buffer aged past the cursor."""
+    hub = gateway_mod.WSHub()
+    root = "root-aged"
+    _live_turn(hub, root, count=3)
+    # Pretend the client's cursor predates everything still retained.
+    hub._live[root]["events"] = hub._live[root]["events"][-1:]
+
+    conn = _Recorder()
+    hub.add(conn)
+    hub.subscribe(root, conn, 1, hub.epoch)
+
+    assert conn.replay_begin()["gap"] is True
+
+
+def test_every_hub_instance_has_its_own_epoch():
+    assert gateway_mod.WSHub().epoch != gateway_mod.WSHub().epoch
+
+
+def test_a_stale_cursor_declares_the_gap_without_replaying_anything():
+    """Where two invariants meet. The client must learn it is out of sync, and
+    a cursor we cannot place must not wrap around into a full replay — the
+    client refetches on `gap`, so anything sent here is rendered and then
+    immediately discarded."""
+    before = gateway_mod.WSHub()
+    root = "root-stale-no-replay"
+    last = _live_turn(before, root, count=3)
+
+    restarted = gateway_mod.WSHub()
+    _live_turn(restarted, root, count=3)  # a new turn, new numbering
+    conn = _Recorder()
+    restarted.add(conn)
+    restarted.subscribe(root, conn, last + 500, before.epoch)
+
+    assert conn.replay_begin()["gap"] is True
+    assert not [
+        e for e in conn.events if e.get("type") == "text_chunk"
+    ], "a cursor this process cannot place must not trigger a full replay"

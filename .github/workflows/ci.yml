@@ -156,10 +156,32 @@ jobs:
         run: uv run pytest
       - name: Run deterministic harness contracts
         run: uv run python -m harness.cli run --tier pr --offline
+      # Reruns the suite with the response capture installed and compares what
+      # the routes returned against docs/response-schemas.json. One matrix entry
+      # is enough: the shapes are the server's, not the interpreter's.
+      - name: Check the frozen response shapes still match reality
+        if: matrix.python-version == '3.12'
+        run: uv run python scripts/capture_response_schemas.py --check
+      # The companion gate: every route the router can match must have a
+      # recorded response *kind* and status, not only the ones that return
+      # JSON. Cheap — it drives the surface directly rather than rerunning the
+      # suite — so it is not restricted to one matrix entry.
+      - name: Check every route still has a response contract
+        run: uv run python scripts/capture_response_contract.py --check
 
   browser-smoke:
-    name: Browser workbench E2E (Chromium)
+    name: Browser workbench E2E (${{ matrix.engine }})
     runs-on: ubuntu-latest
+    # Chromium is the engine the app is developed against, so it is the one
+    # least likely to surprise anyone. The defects a matrix catches are the
+    # ones a single engine cannot: a WebSocket close code Firefox reports
+    # differently, a fetch abort WebKit surfaces as another error, a DOM API
+    # one engine has and another does not. `fail-fast: false` so one engine's
+    # failure still leaves the other two's results visible.
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -172,7 +194,7 @@ jobs:
         run: |
           uv sync --locked
           npm install --no-save --ignore-scripts playwright@1.54.1
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps ${{ matrix.engine }}
       - name: Start the daemon and open the real workbench
         env:
           OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-browser-smoke
@@ -200,7 +222,14 @@ jobs:
             fi
             sleep 0.25
           done
-          node tests/browser_smoke.mjs
+          # The full workbench walk stays Chromium-only: it is long, and its
+          # value is depth rather than engine coverage. The matrix file is the
+          # breadth pass — session, artifact, consent, cancel, recovery — and
+          # it runs in every engine.
+          if [ "${{ matrix.engine }}" = "chromium" ]; then
+            node tests/browser_smoke.mjs
+          fi
+          node tests/browser_matrix.mjs --browser=${{ matrix.engine }}
       - name: Show daemon log after a failure
         if: failure()
         run: cat "${RUNNER_TEMP}/openai4s-browser.log" || true
@@ -220,3 +249,43 @@ jobs:
         env:
           OPENAI4S_KERNEL_SANDBOX: enforce
         run: uv run python -m harness.smoke.macos_sandbox
+
+  linux-sandbox-smoke:
+    name: Linux bubblewrap enforcement (nightly)
+    # The frozen platform matrix puts Linux at beta "after enforced bubblewrap
+    # E2E", gated on a real enforced sandbox rather than a probe that degrades.
+    # macOS had this proof; Linux did not, so its tier rested on nothing.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Install the zero-dependency runtime
+        run: uv sync --locked
+      - name: Require real bubblewrap isolation and child-env scrubbing
+        env:
+          OPENAI4S_KERNEL_SANDBOX: enforce
+        run: uv run python -m harness.smoke.linux_sandbox
+
+  connector-canary:
+    name: Science connector canary (nightly)
+    # Schedule and manual only: a public API's outage is not a reason to fail a
+    # contributor's PR, and the script exits non-zero only on real schema drift,
+    # never on an upstream being unreachable. See scripts/connector_canary.py.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install the zero-dependency runtime
+        run: uv sync --locked
+      - name: Ask UniProt, RCSB PDB and OpenAlex whether they still parse
+        env:
+          OPENAI4S_ALLOW_NETWORK: "1"
+        run: uv run python scripts/connector_canary.py

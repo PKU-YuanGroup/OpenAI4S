@@ -1,0 +1,57 @@
+{
+  "id": "remote-compute",
+  "version": "1.0.0",
+  "title": "远程任务 submit → poll → harvest",
+  "summary": "把重活送出去，并把结果与证据带回来。远端脚本在真实 shell 中执行。",
+  "steps": [
+    "open_session",
+    "remote_job"
+  ],
+  "permissions": [
+    "compute:ssh"
+  ],
+  "artifacts": [
+    "scores.csv"
+  ],
+  "failure_conditions": [
+    "声明的产物未被回收",
+    "任务被取消却报告成功",
+    "退出码丢失"
+  ],
+  "cases": [
+    {
+      "id": "remote-compute/harvest",
+      "title": "声明的产物真的被回收回来",
+      "outcome": "success",
+      "inputs": {
+        "remote_job": {
+          "command": "printf 'a,1\\n' > scores.csv; echo ok",
+          "outputs": [
+            "*.csv"
+          ]
+        }
+      },
+      "expect": {
+        "status": "succeeded",
+        "featured__contains": "scores.csv"
+      }
+    },
+    {
+      "id": "remote-compute/unwritten-output",
+      "title": "承诺了却没产出必须判失败",
+      "outcome": "success",
+      "inputs": {
+        "remote_job": {
+          "command": "echo nothing",
+          "outputs": [
+            "model.pt"
+          ]
+        }
+      },
+      "expect": {
+        "status": "failed",
+        "unharvested__contains": "model.pt"
+      }
+    }
+  ]
+}

@@ -229,3 +229,53 @@ def test_the_verifier_needs_no_daemon_or_store(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "true"
+
+
+# --------------------------------------------------------------------------
+# a decompression bomb is refused before it can expand
+# --------------------------------------------------------------------------
+
+
+def test_a_high_ratio_zip_is_refused_before_reading(tmp_path):
+    """verify_package reads the manifest and every member. A verifier is handed
+    this file precisely because they do not trust it, so a small, high-ratio
+    ZIP must be refused from the central directory, not expanded into memory
+    and then rejected."""
+    from openai4s.evidence import MAX_ENTRY_BYTES
+
+    bomb = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        # Just under the per-entry cap, but a ratio far past the limit — so the
+        # ratio guard, not the size guard, is what must catch it.
+        payload = b"0" * (MAX_ENTRY_BYTES - 1024)
+        archive.writestr("manifest.json", payload)
+
+    with pytest.raises(EvidenceError) as error:
+        verify_package(bomb)
+    assert "ratio" in str(error.value).lower() or "bomb" in str(error.value).lower()
+
+
+def test_an_archive_with_too_many_entries_is_refused(tmp_path):
+    from openai4s.evidence import MAX_ENTRIES
+
+    many = tmp_path / "many.zip"
+    with zipfile.ZipFile(many, "w") as archive:
+        for i in range(MAX_ENTRIES + 5):
+            archive.writestr(f"f{i}.txt", b"x")
+
+    with pytest.raises(EvidenceError) as error:
+        verify_package(many)
+    assert "entries" in str(error.value).lower()
+
+
+def test_a_single_oversized_member_is_refused(tmp_path):
+    from openai4s.evidence import MAX_ENTRY_BYTES
+
+    big = tmp_path / "big.zip"
+    with zipfile.ZipFile(big, "w", compression=zipfile.ZIP_STORED) as archive:
+        # Stored (ratio 1), so only the per-entry size cap catches it.
+        archive.writestr("manifest.json", b"a" * (MAX_ENTRY_BYTES + 1))
+
+    with pytest.raises(EvidenceError) as error:
+        verify_package(big)
+    assert "too large" in str(error.value).lower()

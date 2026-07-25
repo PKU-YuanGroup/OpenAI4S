@@ -191,14 +191,17 @@ def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
 
     for contract in (
-        "types: [published]",
+        # The entry point is an explicit dispatch against an existing draft.
+        "workflow_dispatch:",
+        "inputs.publish",
+        "inputs.tag",
+        "scripts/release_pipeline.py",
         "scripts/verify_release_tag.py",
         "git cat-file -t",
         "git merge-base --is-ancestor HEAD origin/main",
         "scripts/source_secret_scan.py",
         "scripts/verify_release_artifacts.py",
         "python-package-distributions",
-        "needs: build",
         "environment:",
         "name: pypi",
         "id-token: write",
@@ -209,7 +212,126 @@ def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
     ):
         assert contract in workflow
 
-    assert workflow.index("id-token: write") > workflow.index("publish:")
+    assert workflow.index("id-token: write") > workflow.index("pypi:")
+
+
+def test_the_workflow_has_no_trigger_that_cannot_fire_for_a_draft():
+    """The hole review found: `release: [created]` is not emitted for a draft.
+
+    The whole draft-first design hung off that trigger, so the intended entry
+    point could never run; a *non-draft* creation does emit it, and the draft
+    conditions on the jobs then skipped attachment and publication. A pipeline
+    that cannot be reached is not a pipeline.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    trigger = workflow[workflow.index("\non:") : workflow.index("permissions:")]
+    assert "release:" not in trigger, (
+        "GitHub does not emit release events for draft releases; a draft-first "
+        "pipeline cannot be triggered by one"
+    )
+    assert "workflow_dispatch:" in trigger
+
+
+def test_publishing_requires_an_existing_draft_before_anything_runs():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    guard = workflow[workflow.index("  guard:") : workflow.index("  build:")]
+    assert "gh release view" in guard
+    assert "isDraft" in guard
+    assert "already public" in guard
+    # ...and every outward-facing job waits for that proof.
+    for job in ("  attach:", "  pypi:"):
+        block = workflow[workflow.index(job) : workflow.index(job) + 900]
+        assert "guard" in block, f"{job.strip()} may run without the draft check"
+
+
+def test_the_staging_job_consumes_artifacts_and_never_publishes():
+    """Running the whole pipeline in the attach job re-ran `build` and
+    `pytest` — which the job installs neither of — and, if they happened to
+    exist, rebuilt into the very directory holding the verified downloads."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    attach = workflow[workflow.index("  attach:") : workflow.index("  pypi:")]
+    assert "--from-artifacts" in attach
+    assert "--stop-after reverify" in attach
+    assert "--draft=false" not in attach
+    assert "--only publish" not in attach
+
+
+def test_the_github_flip_is_the_last_cross_channel_step():
+    """It used to happen inside `attach`, with PyPI running afterwards — so an
+    OIDC failure, a denied environment approval or a rejected upload left a
+    public release with no matching package version."""
+    import re
+
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    finalize = workflow[workflow.index("  finalize:") :]
+    assert "--only publish" in finalize
+    needs = re.search(r"^    needs: (.+)$", finalize, re.MULTILINE)
+    assert needs, "finalize must declare what it waits for"
+    for required in ("attach", "pypi"):
+        assert required in needs.group(
+            1
+        ), f"the GitHub flip must not run before {required!r}"
+    assert workflow.index("  finalize:") > workflow.index("  pypi:")
+
+
+def test_the_irreversible_pypi_upload_waits_for_every_other_required_job():
+    """A PyPI version number, once taken, is taken forever.
+
+    With `needs: build` alone, a macOS image that failed to build or failed
+    `verify_macos_bundle.py` only skipped the staging job — the upload went
+    ahead, and the result was a version live on PyPI whose GitHub Release
+    carried no assets. Yanking is not the same as never having published.
+    """
+    import re
+
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    publish = workflow[workflow.index("  pypi:") : workflow.index("  finalize:")]
+    needs = re.search(r"^    needs: (.+)$", publish, re.MULTILINE)
+    assert needs, "the PyPI job must declare what it waits for"
+    for required in ("guard", "build", "macos-app", "attach"):
+        assert required in needs.group(1), (
+            f"the PyPI upload must not run before {required!r}; it is the "
+            f"irreversible step on that channel"
+        )
+
+
+def test_the_recovery_path_for_a_failed_flip_is_written_down():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    pipeline = (ROOT / "scripts" / "release_pipeline.py").read_text("utf-8")
+    for text in (workflow, pipeline):
+        assert "--only publish" in text
+        assert "do not rebuild" in text.lower()
+
+
+def test_the_signing_identity_reaches_the_build_that_can_use_it():
+    """Passing it only to the staging job meant configuring the secret changed
+    nothing about the image and everything about what the gate believed."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    macos = workflow[workflow.index("  macos-app:") : workflow.index("  attach:")]
+    assert "OPENAI4S_MACOS_SIGNING_IDENTITY" in macos
+    assert "scripts/build_macos_dmg.sh" in macos
+    assert "describe_macos_image.py" in macos
+
+    build = (ROOT / "scripts" / "build_macos_dmg.sh").read_text("utf-8")
+    assert '--sign "$SIGNING_IDENTITY"' in build
+
+    # A signing *identity name* is not a signing *identity*: codesign looks it
+    # up in a keychain a fresh runner does not have, so release mode could
+    # never succeed without importing the certificate first.
+    assert "security create-keychain" in macos
+    assert "security import" in macos
+    assert "MACOS_SIGNING_CERTIFICATE" in macos
+    # `secrets` is not available in a step-level `if`; the certificate's
+    # presence is surfaced at job level and the import conditions on that env
+    # value, or the step is silently unreachable in a real signed run.
+    assert "HAS_SIGNING_CERT" in macos
+    assert "if: ${{ env.HAS_SIGNING_CERT == 'true' }}" in macos
+
+    attach = workflow[workflow.index("  attach:") : workflow.index("  pypi:")]
+    assert "OPENAI4S_MACOS_SIGNING_IDENTITY" not in attach, (
+        "the staging job cannot sign anything, so an identity there can only "
+        "be used to infer a signature it never inspected"
+    )
 
 
 def test_distribution_manifest_keeps_release_and_runtime_resources():

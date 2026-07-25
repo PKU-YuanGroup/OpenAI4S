@@ -36,6 +36,37 @@ Business behaviour belongs in a tool or service class. `Store` remains the
 compatible public facade and connection/migration owner; SQL behaviour belongs
 in domain repositories sharing that connection and lock.
 
+## Add an LLM provider or model
+
+First classify the change as a provider identity, model preset, or wire
+transport. Most OpenAI-compatible/self-hosted additions need no transport code:
+
+```python
+from openai4s.llm import register_model_preset, register_provider
+
+register_provider(
+    "lab_openai",
+    wire="openai",
+    base_url="http://127.0.0.1:11434/v1",
+    model="science-model",
+    tool_calling=False,
+)
+register_model_preset("lab_openai", "science-model", "Local science model")
+```
+
+`register_provider` accepts only the four shipped wires and validates identity,
+URL, credentials-in-URL, default model, and capability metadata before making
+the provider visible. Registration is process-local; a deployment/plugin owns
+re-registration at startup. Model-profile seeding consumes the independent
+preset catalog through `server/model_profiles.py`, so do not add provider/model
+conditionals to `gateway.py`.
+
+Only an upstream protocol that cannot be expressed as `openai`, `responses`,
+`anthropic`, or `gemini` warrants a module under `llm/providers/`. In that case,
+add one normalized adapter, extend the dispatch and supported-wire sets together,
+and add request/response/tool-call fixtures. Provider-native response shapes
+must not escape into `AgentEngine` or persisted public projections.
+
 ## Add a native control tool
 
 Create one module under `openai4s/tools/`. The class must contain its schema,

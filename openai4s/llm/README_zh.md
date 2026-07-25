@@ -23,6 +23,7 @@
 | [`registry.py`](./registry.py) | 当前进程里有哪些 provider，以及每个 provider 是什么：wire、base URL、API key 的环境变量名、默认模型、能力绑定。注册要过校验（`base_url` 必须是绝对的 http(s) 地址，且不能把凭据写在里面），内置 provider 既不能被替换，也不能被删除。 |
 | [`tooling.py`](./tooling.py) | 原生工具的契约集中在这里，好让任何 wire adapter 都不必去 import 工具 registry。声明先被规范成统一的 name/description/schema 形式，再渲染成各 wire 的工具 schema 和 tool choice。回传的调用会被标准化成共用形状；参数解不出来时，会以 `parse_error` 挂在这次调用上，而不是被丢掉。 |
 | [`transport.py`](./transport.py) | 包里唯一开 socket 的地方：用 `urllib` 做 JSON POST 和 SSE 解码，不依赖任何 provider SDK。HTTP 错误和连接错误都以 `LLMError` 抛出。流里非空却不是合法 JSON 的事件会直接抛错，而不是跳过——因为被丢掉的那个事件可能正是一次工具调用；错误文本里的原始片段会被截断。 |
+| [`resolve.py`](./resolve.py) | 「用哪个模型、哪个 key、哪个端点」的唯一答案，请求路径与 `openai4s doctor` 用的是同一份。进程配置与 store 里 Customize → Models 的设置分层叠加，因此诊断不会把一个真实 turn 能正常解析的配置报成坏的——daemon 是刻意不带 key 启动的。 |
 
 ## 子目录
 

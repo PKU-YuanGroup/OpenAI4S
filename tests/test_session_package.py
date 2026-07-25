@@ -1087,3 +1087,328 @@ def test_session_package_gateway_routes_use_binary_export_and_raw_import(tmp_pat
         assert not import_staging.exists()
     finally:
         runner.close()
+
+
+def test_a_real_export_carries_reproduction_notes_and_still_verifies(tmp_path):
+    """The package had per-file hashes and a verifier, but nothing telling the
+    recipient the command exists — and reproduction notes are what the
+    proposal asks for alongside the manifest.
+
+    Driven through the real exporter rather than a synthetic archive, because
+    the risk this pins is an ordering one: `REPRODUCE.md` has to join the file
+    set *before* the manifest is computed, or the verifier rejects it as a file
+    the manifest does not list.
+    """
+    import hashlib as _hashlib
+    import hashlib as _hashlib_top
+    import zipfile as _zipfile
+
+    from openai4s.evidence import verify_package
+
+    config = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    runner = gateway_mod.SessionRunner(config, _Hub(), start_idle_sweeper=False)
+    project = runner.store.create_project(name="Reproduction source")
+    root = runner.store.new_frame(
+        project_id=project["project_id"], kind="turn", status="done"
+    )
+    artifact_path = runner.active_workspace_for(root) / "result.csv"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text("score\n0.93\n", encoding="utf-8")
+    runner.store.save_artifact(
+        path=str(artifact_path),
+        filename=artifact_path.name,
+        content_type="text/csv",
+        size_bytes=artifact_path.stat().st_size,
+        checksum=_hashlib_top.sha256(artifact_path.read_bytes()).hexdigest(),
+        frame_id=root,
+        root_frame_id=root,
+        project_id=project["project_id"],
+    )
+    handler_class = gateway_mod.make_handler(config, runner.hub, runner)
+    handler = object.__new__(handler_class)
+    replies = []
+    handler._query = lambda: {}
+    handler._send = lambda code, data, content_type, extra=None: replies.append(
+        (code, data, content_type, extra or {})
+    )
+    handler._json = lambda value, code=200: replies.append((code, value))
+    try:
+        handler._api("GET", f"/frames/{root}/session/export")
+        code, data, _content_type, _headers = replies.pop()
+        assert code == 200
+
+        package = tmp_path / "exported.openai4s-session.zip"
+        package.write_bytes(data)
+
+        with _zipfile.ZipFile(package) as archive:
+            names = set(archive.namelist())
+            notes = archive.read("REPRODUCE.md").decode("utf-8")
+            manifest = json.loads(archive.read("manifest.json"))
+
+        assert "REPRODUCE.md" in names
+        listed = {entry["path"]: entry for entry in manifest["files"]}
+        assert (
+            "REPRODUCE.md" in listed
+        ), "an unlisted member makes the whole package fail verification"
+        assert (
+            listed["REPRODUCE.md"]["sha256"]
+            == _hashlib.sha256(notes.encode("utf-8")).hexdigest()
+        )
+
+        report = verify_package(package)
+        assert report["ok"], report["problems"]
+
+        # The notes have to carry the command and the honest limit of what
+        # verification proves, or they are decoration.
+        assert "openai4s verify-package" in notes
+        assert "does not establish who produced" in notes
+        assert "environment.json" in notes
+    finally:
+        runner.close()
+
+
+def test_the_verify_route_answers_without_importing(tmp_path):
+    """Verification has to be reachable before import, not only after: the
+    recipient's question is whether to admit this archive to their database at
+    all, and answering it afterwards is too late.
+
+    It was CLI-only, so anyone working in the browser had no way to check what
+    they had been handed.
+    """
+    import zipfile as _zipfile
+
+    config = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    runner = gateway_mod.SessionRunner(config, _Hub(), start_idle_sweeper=False)
+    project = runner.store.create_project(name="Verify source")
+    root = runner.store.new_frame(
+        project_id=project["project_id"], kind="turn", status="done"
+    )
+    handler_class = gateway_mod.make_handler(config, runner.hub, runner)
+    handler = object.__new__(handler_class)
+    replies = []
+    handler._query = lambda: {}
+    handler._send = lambda code, data, content_type, extra=None: replies.append(
+        (code, data, content_type, extra or {})
+    )
+    handler._json = lambda value, code=200: replies.append((code, value))
+    try:
+        handler._api("GET", f"/frames/{root}/session/export")
+        _code, data, _ct, _h = replies.pop()
+
+        handler._body_bytes = lambda **_kwargs: data
+        handler._api("POST", "/sessions/verify")
+        code, report = replies.pop()
+        assert code == 200
+        assert report["ok"] is True
+        assert report["files_verified"]
+        # The route must be honest about the limit of what it proves.
+        assert "does not establish" in report["verifies"]
+
+        # Nothing was admitted: verification is a read, not an import.
+        assert len(runner.store.list_projects()) == 1
+
+        tampered_path = tmp_path / "tampered.zip"
+        with _zipfile.ZipFile(tmp_path / "src.zip", "w") as _seed:
+            pass
+        with _zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = {n: archive.read(n) for n in archive.namelist()}
+        members["notebook.json"] = members["notebook.json"] + b" "
+        with _zipfile.ZipFile(tampered_path, "w") as archive:
+            for name, payload in members.items():
+                archive.writestr(name, payload)
+
+        handler._body_bytes = lambda **_kwargs: tampered_path.read_bytes()
+        handler._api("POST", "/sessions/verify")
+        code, bad = replies.pop()
+        assert code == 200
+        assert bad["ok"] is False
+        assert any("notebook.json" in p for p in bad["problems"])
+    finally:
+        runner.close()
+
+
+# --------------------------------------------------------------------------
+# the notes have to describe the package that was actually built
+# --------------------------------------------------------------------------
+
+
+def test_reproduce_notes_read_the_projections_the_exporter_builds():
+    """The regression, at the function's own boundary.
+
+    `_reproduce_notes` read its inputs as a bare artifact list and a single
+    environment dict. The exporter passes `{"artifacts": [...]}` and
+    `{"generations": [...], "artifact_environment_snapshots": [...]}`, so every
+    field resolved to its fallback: a package with complete provenance still
+    printed "runtime python unknown", "packages recorded: 0" and "0
+    artifact(s)". The one page a recipient reads first described an empty
+    archive.
+    """
+    from openai4s.server.session_package import _reproduce_notes
+
+    notes = _reproduce_notes(
+        root_frame_id="frame-1",
+        project_name="Hemoglobin",
+        environment={
+            "generations": [{"generation_id": "gen-1", "language": "python"}],
+            "artifact_environment_snapshots": [
+                {
+                    "kind": "python",
+                    "python_version": "3.12.0",
+                    "platform": "macOS-15",
+                    "package_count": 42,
+                },
+            ],
+        },
+        artifacts={"artifacts": [{"artifact_id": "a-1"}, {"artifact_id": "a-2"}]},
+        lineage_edges=[{"from": "v-1", "to": "v-2"}],
+    ).decode("utf-8")
+
+    assert "python 3.12.0 on macOS-15" in notes
+    assert "42 package(s)" in notes
+    assert "kernel generation(s) recorded: 1" in notes
+    assert "`2` artifact(s)" in notes
+    assert "`1` lineage edge(s)" in notes
+    assert "unknown" not in notes
+
+
+def test_reproduce_notes_name_every_runtime_that_produced_an_artifact():
+    """A session that ran Python and R has two environments. Collapsing them
+    onto one line is how an R artifact came to be described by a Python freeze
+    in the first place."""
+    from openai4s.server.session_package import _reproduce_notes
+
+    notes = _reproduce_notes(
+        root_frame_id="frame-1",
+        project_name="Mixed",
+        environment={
+            "generations": [],
+            "artifact_environment_snapshots": [
+                {"kind": "python", "python_version": "3.12.0", "platform": "linux"},
+                {"kind": "r", "python_version": None, "platform": "linux"},
+            ],
+        },
+        artifacts={"artifacts": []},
+        lineage_edges=[],
+    ).decode("utf-8")
+
+    assert "runtime: python 3.12.0 on linux" in notes
+    assert "runtime: r on linux" in notes
+
+
+def test_reproduce_notes_do_not_collapse_two_distinct_environments():
+    """Same runtime, version and platform but different environments — two
+    conda envs, two kernel generations — must stay two bullets, or the file
+    claims one environment and keeps only the larger package count."""
+    from openai4s.server.session_package import _reproduce_notes
+
+    notes = _reproduce_notes(
+        root_frame_id="frame-1",
+        project_name="TwoEnvs",
+        environment={
+            "generations": [],
+            "artifact_environment_snapshots": [
+                {
+                    "kind": "python",
+                    "python_version": "3.12.0",
+                    "platform": "linux",
+                    "environment_name": "phylo",
+                    "generation_id": "gen-a",
+                    "package_count": 40,
+                },
+                {
+                    "kind": "python",
+                    "python_version": "3.12.0",
+                    "platform": "linux",
+                    "environment_name": "struct",
+                    "generation_id": "gen-b",
+                    "package_count": 12,
+                },
+            ],
+        },
+        artifacts={"artifacts": []},
+        lineage_edges=[],
+    ).decode("utf-8")
+
+    assert "(phylo)" in notes and "40 package(s)" in notes
+    assert "(struct)" in notes and "12 package(s)" in notes
+    assert notes.count("- runtime:") == 2, "two distinct environments, two bullets"
+
+
+def test_reproduce_notes_separate_two_r_environments_with_no_python_version():
+    """R environments have an empty Python version, so they collapse even more
+    readily — the generation id is what keeps them apart."""
+    from openai4s.server.session_package import _reproduce_notes
+
+    notes = _reproduce_notes(
+        root_frame_id="frame-1",
+        project_name="TwoR",
+        environment={
+            "generations": [],
+            "artifact_environment_snapshots": [
+                {
+                    "kind": "r",
+                    "python_version": None,
+                    "platform": "linux",
+                    "environment_name": "r-4.3",
+                    "generation_id": "gen-r1",
+                    "package_count": 5,
+                },
+                {
+                    "kind": "r",
+                    "python_version": None,
+                    "platform": "linux",
+                    "environment_name": "r-4.4",
+                    "generation_id": "gen-r2",
+                    "package_count": 9,
+                },
+            ],
+        },
+        artifacts={"artifacts": []},
+        lineage_edges=[],
+    ).decode("utf-8")
+
+    assert notes.count("- runtime:") == 2
+    assert "(r-4.3)" in notes and "(r-4.4)" in notes
+
+
+def test_reproduce_notes_say_so_when_nothing_was_recorded():
+    """Silence beats a fabricated default: an export with no environment
+    snapshot must not print a runtime it never observed."""
+    from openai4s.server.session_package import _reproduce_notes
+
+    notes = _reproduce_notes(
+        root_frame_id="frame-1",
+        project_name="Empty",
+        environment={"generations": [], "artifact_environment_snapshots": []},
+        artifacts={"artifacts": []},
+        lineage_edges=[],
+    ).decode("utf-8")
+
+    assert "not recorded for any artifact" in notes
+
+
+def test_reproduce_notes_are_deterministic():
+    """The file's own hash is in the manifest, so the same session must export
+    to the same bytes."""
+    from openai4s.server.session_package import _reproduce_notes
+
+    payload = dict(
+        root_frame_id="frame-1",
+        project_name="Determinism",
+        environment={
+            "generations": [{"generation_id": "gen-1"}],
+            "artifact_environment_snapshots": [
+                {"kind": "r", "platform": "linux", "package_count": 0},
+                {"kind": "python", "platform": "linux", "package_count": 3},
+            ],
+        },
+        artifacts={"artifacts": [{"artifact_id": "a-1"}]},
+        lineage_edges=[],
+    )
+    assert _reproduce_notes(**payload) == _reproduce_notes(**payload)

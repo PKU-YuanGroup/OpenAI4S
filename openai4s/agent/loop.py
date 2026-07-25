@@ -403,6 +403,10 @@ class Agent:
                     tools=lambda messages: with_finalize_response(
                         tool_catalog.specs_for(messages)
                     ),
+                    # Complements the wrapper below: that one stops a late
+                    # reply from acting, this one lets the transport abandon a
+                    # retry backoff it is merely sleeping through.
+                    cancellation=self.cancellation,
                 )
                 if self.cancellation is not None:
                     model = _CancellationAwareModel(

@@ -118,7 +118,7 @@ Agent 4 also ran `uv run pytest tests/test_skills.py tests/test_methodology_skil
   compute manager, and skills loader.
 - `openai4s_compute_provider/` is a resident remote worker runtime/protocol,
   despite the provider name.
-- `skills/` contains 24 bundled skills.
+- `skills/` contained 24 bundled skills when this audit was recorded.
 - `tests/` is an offline pytest suite with tmp data-dir isolation and fake LLM
   configuration.
 - Hotspot files: `gateway.py`, `app.js`, `host_dispatch.py`, `store.py`,

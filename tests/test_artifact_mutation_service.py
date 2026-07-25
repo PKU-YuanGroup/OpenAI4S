@@ -31,7 +31,6 @@ class MutationHarness:
             store=self.store,
             workspace_for=lambda frame_id: self.workspace,
             broadcast=lambda frame_id, event: self.events.append((frame_id, event)),
-            environment_snapshot=lambda: {},
             guess_content_type=lambda name: (
                 "text/plain; charset=utf-8"
                 if name.endswith(".txt")

@@ -35,20 +35,44 @@ _FIELDS = (
     "alias",
     "workdir",
     "pid",
+    # The remote *process group* the job actually landed in, read back from the
+    # host rather than assumed. `$!` is a pid; in a non-interactive login shell
+    # (dash/ash, and bash without job control) it is emphatically not the pgid,
+    # so a cancel that signalled `-$!` found no group and reported success over
+    # a job that was still running. See ComputeManager._submit_ssh.
+    "pgid",
     "sandbox_id",
     "receipt",
     "outputs",
+    # Which session/workspace owns this job. `_rehydrate` filters on it so a
+    # restart does not hand one session's live jobs to another. NULL = CLI.
+    "owner_key",
     "exit_code",
     "reason",
+    # Why a job reached its terminal state, when the status alone would lose
+    # something worth keeping — `failed` because outputs could not be verified
+    # is a different fact from `failed` because the command exited non-zero.
+    "termination_reason",
+    # What the harvest actually produced: [{path, size, sha256}], plus one
+    # digest over the whole record. Without these a job that declared outputs
+    # and produced none of them still reported success.
+    "artifact_manifest",
+    "integrity_sha256",
     "created_at",
     "updated_at",
     "submitted_at",
     "terminal_at",
 )
 
-# A job in one of these is still consuming a remote resource, so it still
-# occupies a concurrency slot and still needs reconciling after a restart.
-LIVE_STATES = ("queued", "staging", "submitted", "running")
+# Re-exported from the state machine so the SQL that rehydrates jobs and the
+# runtime that counts them cannot drift apart again — they used to disagree
+# about `staging`, which is how a crashed claim stayed reportable forever
+# while holding no slot.
+from openai4s.compute.states import (  # noqa: E402
+    LIVE_STATES,
+    IllegalTransition,
+    check_transition,
+)
 
 
 class ComputeJobRepository:
@@ -74,6 +98,7 @@ class ComputeJobRepository:
         status: str = "queued",
         idempotency_key: str | None = None,
         outputs: Any = None,
+        owner_key: str | None = None,
     ) -> dict:
         """Record a job before it is submitted.
 
@@ -83,40 +108,96 @@ class ComputeJobRepository:
         """
         now = self._clock_ms()
         with self._lock:
-            self._connection.execute(
-                "INSERT INTO compute_jobs(job_id,idempotency_key,provider,status,"
-                "outputs,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                (
-                    job_id,
-                    idempotency_key,
-                    provider,
-                    status,
-                    json.dumps(outputs) if outputs is not None else None,
-                    now,
-                    now,
-                ),
-            )
+            try:
+                self._connection.execute(
+                    "INSERT INTO compute_jobs(job_id,idempotency_key,provider,"
+                    "status,outputs,owner_key,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        job_id,
+                        idempotency_key,
+                        provider,
+                        status,
+                        json.dumps(outputs) if outputs is not None else None,
+                        owner_key,
+                        now,
+                        now,
+                    ),
+                )
+            except Exception:
+                # A UNIQUE violation on the idempotency index (a concurrent
+                # same-key submit) leaves the deferred transaction open on this
+                # shared connection; roll it back so the caller's follow-up read
+                # of the winning row is not stranded inside a poisoned txn. The
+                # error propagates — the caller decides refuse-vs-degrade.
+                self._connection.rollback()
+                raise
             self._connection.commit()
         self.append_event(job_id, "created", {"provider": provider})
         return self.get(job_id) or {}
 
     def update(self, job_id: str, **fields: Any) -> dict | None:
+        """Apply one status/field write, atomically with respect to the check.
+
+        The read that validates the transition and the write that performs it
+        are one critical section, guarded twice:
+
+          * the store lock spans both, so two threads in this process cannot
+            interleave read-check-write;
+          * the UPDATE itself is conditional on the status that was read
+            (``WHERE status IS ?``), so a writer that somehow got in anyway —
+            another connection to the same file — loses instead of silently
+            clobbering.
+
+        Without this, a result thread and a cancel thread could both read
+        ``running``, both pass ``check_transition``, and then overwrite each
+        other's terminal state: ``cancelled`` landing on top of ``succeeded``
+        (or the reverse) leaves the ledger claiming an outcome that never
+        happened, and drives resource disposal off the losing one.
+        """
         allowed = {k: v for k, v in fields.items() if k in _FIELDS and k != "job_id"}
         if not allowed:
             return self.get(job_id)
-        if "outputs" in allowed and not isinstance(
-            allowed["outputs"], (str, type(None))
-        ):
-            allowed["outputs"] = json.dumps(allowed["outputs"])
-        allowed["updated_at"] = self._clock_ms()
-        assignments = ",".join(f"{k}=?" for k in allowed)
+        for column in ("outputs", "artifact_manifest"):
+            if column in allowed and not isinstance(allowed[column], (str, type(None))):
+                allowed[column] = json.dumps(allowed[column])
+        requested = str(allowed["status"]) if "status" in allowed else None
         with self._lock:
-            self._connection.execute(
-                f"UPDATE compute_jobs SET {assignments} WHERE job_id=?",
-                (*allowed.values(), job_id),
-            )
+            row = self._connection.execute(
+                "SELECT status FROM compute_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            current = row[0]
+            if requested is not None:
+                # The column used to accept any string, so a typo became a
+                # state and a terminal job could be quietly re-opened by a
+                # late probe.
+                check_transition(job_id, current, requested)
+            allowed["updated_at"] = self._clock_ms()
+            assignments = ",".join(f"{k}=?" for k in allowed)
+            if requested is None:
+                cursor = self._connection.execute(
+                    f"UPDATE compute_jobs SET {assignments} WHERE job_id=?",
+                    (*allowed.values(), job_id),
+                )
+            else:
+                cursor = self._connection.execute(
+                    f"UPDATE compute_jobs SET {assignments} "
+                    f"WHERE job_id=? AND status IS ?",
+                    (*allowed.values(), job_id, current),
+                )
             self._connection.commit()
-        return self.get(job_id)
+            if requested is not None and cursor.rowcount == 0:
+                observed = self._connection.execute(
+                    "SELECT status FROM compute_jobs WHERE job_id=?", (job_id,)
+                ).fetchone()
+                raise IllegalTransition(
+                    job_id,
+                    (observed[0] if observed else None) or "<deleted>",
+                    requested,
+                )
+            return self.get(job_id)
 
     def get(self, job_id: str) -> dict | None:
         with self._lock:
@@ -137,15 +218,30 @@ class ComputeJobRepository:
             ).fetchone()
         return self._decode(row)
 
-    def live(self) -> list[dict]:
-        """Jobs that may still be consuming a remote resource."""
+    def live(self, owner_key: str | None = None, scoped: bool = False) -> list[dict]:
+        """Jobs that may still be consuming a remote resource.
+
+        With ``scoped=True`` the result is restricted to one owner: rows whose
+        ``owner_key`` equals ``owner_key`` (``NULL`` when it is None). This is how
+        ``_rehydrate`` keeps a restart from handing one session's live jobs — and
+        their harvested outputs — to another. ``scoped=False`` (the default) is
+        the installation-wide view reconcile and status use.
+        """
         placeholders = ",".join("?" for _ in LIVE_STATES)
+        sql = (
+            f"SELECT {','.join(_FIELDS)} FROM compute_jobs "
+            f"WHERE status IN ({placeholders})"
+        )
+        params: list[Any] = list(LIVE_STATES)
+        if scoped:
+            if owner_key is None:
+                sql += " AND owner_key IS NULL"
+            else:
+                sql += " AND owner_key=?"
+                params.append(owner_key)
+        sql += " ORDER BY created_at"
         with self._lock:
-            rows = self._connection.execute(
-                f"SELECT {','.join(_FIELDS)} FROM compute_jobs "
-                f"WHERE status IN ({placeholders}) ORDER BY created_at",
-                LIVE_STATES,
-            ).fetchall()
+            rows = self._connection.execute(sql, params).fetchall()
         return [self._decode(row) for row in rows if row is not None]
 
     def list(self, limit: int = 200) -> list[dict]:
@@ -217,11 +313,12 @@ class ComputeJobRepository:
         if row is None:
             return None
         job = dict(zip(_FIELDS, row))
-        if job.get("outputs"):
-            try:
-                job["outputs"] = json.loads(job["outputs"])
-            except (ValueError, TypeError):
-                pass
+        for column in ("outputs", "artifact_manifest"):
+            if job.get(column):
+                try:
+                    job[column] = json.loads(job[column])
+                except (ValueError, TypeError):
+                    pass
         return job
 
 

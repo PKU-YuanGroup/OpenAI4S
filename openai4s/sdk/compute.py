@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+# Imported rather than restated: a second copy of the vocabulary is how the
+# host and this namespace came to disagree about which states are final.
+# ``states`` is pure constants with no dependencies, so it is safe to reach
+# for from inside the kernel worker.
+from openai4s.compute.states import TERMINAL_STATES as _TERMINAL_STATUSES
+
 
 class SessionConcurrencyFull(RuntimeError):
     """Raised by submit_job(on_full="raise") when this session's
@@ -73,7 +79,7 @@ class _ComputeJob:
 
                 print(
                     "[host.compute] .exit_code is None until the job is "
-                    "terminal — call .result() after wait_for_notification",
+                    "terminal — call .result() again from a later cell",
                     file=sys.stderr,
                 )
         return exit_code
@@ -90,27 +96,27 @@ class _ComputeJob:
         return self._workdir
 
     def result(self) -> dict:
-        """Non-blocking read of the job's result dict for all provider
-        families (``ssh:*`` and ``byoc:*``). Returns the persisted result if
-        the daemon's poller has already harvested it; otherwise
-        ``{'status': 'running', ...}`` with guidance to use the
-        ``wait_for_notification`` brain-tool.
+        """Poll the job once, for all provider families (``ssh:*``, ``byoc:*``).
 
-        The daemon's background poller polls the remote, harvests into
-        ``hpc/<job_id>/``, and emits a ``compute_done`` notification when done
-        — exit this cell and use ``wait_for_notification``; the payload
-        includes ``featured_files`` so you can ``save_artifacts(...)`` without
-        re-entering the kernel. Returns ``{status, exit_code, output_files,
-        featured_files, left_on_remote, remote_workdir, stdout_tail?,
-        stderr_tail?, job_wall_s?, ...}`` once terminal. Does NOT raise on
+        **This call is what drives the job forward.** It probes the remote and,
+        once the work is terminal, harvests the outputs into ``hpc/<job_id>/``.
+        Nothing happens in the background: there is no daemon poller and no
+        notification. To wait for a long job, call ``.result()`` again from a
+        later cell until ``status`` is terminal.
+
+        While the job is still running this returns ``{'status': 'running',
+        ...}``. Once terminal it returns ``{status, exit_code, output_files,
+        featured_files, left_on_remote, left_on_remote_files?, remote_workdir,
+        stdout_tail?,
+        stderr_tail?, job_wall_s?, ...}``. Does NOT raise on
         ``status='failed'`` or ``status='timed_out'`` — read ``exit_code`` /
         ``error_kind``.
         """
-        if self.result_dict and self.result_dict.get("status") not in (
-            "running",
-            "timeout",
-            "harvesting",
-        ):
+        # Cache only a genuinely terminal result. This used to test against
+        # "running", "timeout" and "harvesting" — two of which the host has
+        # never produced, so the check was narrower than it looked and any
+        # unrecognised live state was cached as final.
+        if self.result_dict and self.result_dict.get("status") in _TERMINAL_STATUSES:
             return self.result_dict
         result = self._compute_call(
             "result", {"job_id": self._job_id, "provider": self._provider}
@@ -132,9 +138,10 @@ class _ComputeJob:
         """Terminate the running job (scheduler cancel / process-group
         SIGTERM / sandbox terminate). This is the ONLY thing that kills a job
         — the user's Stop button, a kernel crash, or exiting the ``repl`` cell
-        never auto-cancel; the daemon's poller keeps tracking and will harvest
-        the job when it finishes. Call this (or ``c.close()``) when you
-        actually want to stop the remote work and free the allocation."""
+        never auto-cancel; the remote work keeps running and keeps billing
+        until you poll it terminal or cancel it. Call this (or ``c.close()``)
+        when you actually want to stop the remote work and free the
+        allocation."""
         return self._compute_call(
             "cancel", {"job_id": self._job_id, "provider": self._provider}
         )
@@ -200,6 +207,7 @@ class _ComputeInstance:
         timeout=None,
         timeout_s=None,
         env=None,
+        idempotency_key=None,
     ):
         """Stage inputs, write the job script, dispatch. Approval-gated.
         Returns immediately after dispatch. When a session
@@ -209,14 +217,16 @@ class _ComputeInstance:
         jittered exponential backoff until a slot opens; ``"raise"`` raises
         ``SessionConcurrencyFull(live, limit)`` immediately.
 
-        Print the returned Job (its repr is the recovery handle), end the
-        cell, and use the ``wait_for_notification`` brain-tool to park until
-        the daemon's poller emits the ``compute_done`` notification. Call
-        ``.result()`` for a non-blocking read of the harvested result dict.
+        Print the returned Job — its repr is the recovery handle — then end
+        the cell. From a later cell, call ``.result()`` to poll; that call is
+        what probes the remote and harvests the outputs. Nothing runs in the
+        background on the host's behalf, so a job you never poll is never
+        harvested.
+
         For byoc providers, the FIRST submit_job() on a handle creates the
         container; subsequent calls reuse it (weights/caches stay warm).
-        Sequential only — submit job N+1 AFTER job N's ``compute_done``
-        notification arrives, since each submit wipes /work.
+        Sequential only — submit job N+1 only after ``.result()`` reports job
+        N terminal, since each submit wipes /work.
 
           intent — REQUIRED one-line approval-modal headline; name tool,
             target, scale, e.g. ``intent='run boltz2 on 3 seqs (A100, ~8min)'``.
@@ -240,6 +250,12 @@ class _ComputeInstance:
             forward from the host's credential store into the remote job's
             env. Host-resolved; the agent never sees the values. byoc only.
           on_full — "wait" (default) | "raise".
+          idempotency_key — a caller-chosen id for this logical piece of work.
+            A second submit under the same key is refused with
+            ``error_kind="duplicate_request"`` naming the original job,
+            including after a daemon restart. Pass one whenever a retry is
+            possible: without it there is no basis to tell a retry from a
+            genuinely new job, and the retry becomes a second remote run.
         """
         import itertools as _itertools
         import random as _random
@@ -278,6 +294,7 @@ class _ComputeInstance:
                         "credentials": credentials,
                         "provider_params": self._provider_params,
                         "reuse_job_id": self._reuse_via,
+                        "idempotency_key": idempotency_key,
                     },
                 )
                 break
@@ -343,7 +360,9 @@ class _ComputeInstance:
         """One synchronous command on the host (60s, 64KB cap). Approval-gated.
         For introspection — not job dispatch (use .submit_job()). Set
         login_shell=True when you need module/conda on PATH.
-        Returns {stdout, stderr, exit_code}."""
+        Returns {stdout, stderr, exit_code}, plus stdout_truncated=True and a
+        hint when the host produced more output than the reader keeps — the
+        output is cut, not the command; write it to a file and harvest it."""
         return self._compute_call(
             "ssh",
             {
@@ -390,8 +409,9 @@ class _ComputeInstance:
         still-running jobs, then remove their workdirs (ssh). Every handle
         ends with close() — after its last job. For byoc the container bills
         until close(), ~30 min of idle, or the container timeout — whichever
-        comes first. Close once compute_done has arrived, the harvest is
-        confirmed, and you've saved anything the globs missed."""
+        comes first. Close once ``.result()`` has reported the job terminal,
+        the harvest is confirmed, and you've saved anything the globs
+        missed."""
         self._reuse_via = None
         return self._compute_call(
             "close",
@@ -417,9 +437,9 @@ class _Compute:
     switch to the ``repl`` tool -> c = host.compute.create("<provider>")
     (e.g. "ssh:myhost", "byoc:nvidia") -> c.submit_job(command=..., intent=...,
     inputs=[{src, dst_filename}, ...]) or c.call_command(cmd, intent=...).
-    submit_job is keyword-only and ``command`` is required. Jobs run remotely;
-    the cell returns immediately and the daemon posts a ``compute_done``
-    notification when outputs are harvested into your workspace."""
+    submit_job is keyword-only and ``command`` is required. Jobs run remotely
+    and the cell returns immediately; poll ``.result()`` from a later cell to
+    harvest the outputs into your workspace. Nothing harvests on its own."""
 
     def __init__(self, host_call: Callable[[str, list], Any]):
         self._call = host_call

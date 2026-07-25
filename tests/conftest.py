@@ -21,6 +21,25 @@ os.environ["OPENAI4S_ALLOW_PRIVATE_FETCH"] = "0"
 # self-test would round-trip through it on top. Tests that mean to exercise a
 # keychain backend construct it explicitly.
 os.environ["OPENAI4S_SECRET_STORE"] = "plaintext"
+# Nothing in the offline suite may reach the real telemetry endpoint, for the
+# same reason the share relay is cleared below — and this one is not
+# hypothetical. A benchmark case granted consent to itself, sealed a payload
+# under that just-minted identity and called `sender.send`, so every refusal in
+# `_send_locked` passed and `uv run pytest` really POSTed a fresh install id to
+# log.openai4s.org from every developer machine and CI runner.
+#
+# Belt to the braces: the two live-send paths are fixed at their source (the
+# benchmark step takes a recording transport, and the overflow test stubs its
+# opener like every sibling), so this is what catches the *next* one rather
+# than what rescues those.
+#
+# Loopback rather than an unroutable name: `endpoint()` must still return a
+# *valid* https URL so its own validation keeps running normally and the
+# transmission tests still exercise a send, and 127.0.0.1 means no DNS query
+# either — the sender's docstring counts a lookup of the real host as egress in
+# itself. Port 1 needs root to bind, so nothing can be listening. A test that
+# means to assert the built-in default clears this var explicitly.
+os.environ["OPENAI4S_TELEMETRY_ENDPOINT"] = "https://127.0.0.1:1/v1/events"
 
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
@@ -54,6 +73,10 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI4S_ALLOW_PRIVATE_FETCH", "0")
     # Never the developer's real keychain — see the module-level default.
     monkeypatch.setenv("OPENAI4S_SECRET_STORE", "plaintext")
+    # Re-applied per test: a test that overrode the endpoint for its own reasons
+    # must not leave the next one pointed at the real host. See the module-level
+    # default for why this is set at all.
+    monkeypatch.setenv("OPENAI4S_TELEMETRY_ENDPOINT", "https://127.0.0.1:1/v1/events")
     # A developer's git-ignored .env (loaded at import) may configure web sharing;
     # the offline suite must never inherit it (it would try a real relay).
     for var in (
@@ -63,5 +86,75 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
         "OPENAI4S_SHARE_ALLOW_INSECURE",
     ):
         monkeypatch.delenv(var, raising=False)
+    # The BYOC confinement self-test caches its verdict process-wide, keyed by
+    # the backend binary and the home directory. A test that stubs
+    # `subprocess.Popen` for its own reasons can make that probe answer
+    # something meaningless, and the answer would then stand for every test
+    # after it. Cleared on both sides so no verdict is inherited.
+    _reset_confinement_self_test()
     yield
+    _reset_confinement_self_test()
     reset_singletons()
+
+
+def _reset_confinement_self_test() -> None:
+    try:
+        from openai4s.security import byoc_confinement
+
+        byoc_confinement.reset_self_test_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------------------------------------------------------------------------
+# response-shape capture (off unless asked for)
+# ---------------------------------------------------------------------------
+#
+# `scripts/capture_response_schemas.py` sets OPENAI4S_CAPTURE_SCHEMAS to a path
+# and reruns this suite; every gateway response the tests provoke along the way
+# is generalised into a shape and frozen. Without the variable this costs one
+# environment lookup at collection time and changes nothing.
+
+
+def pytest_configure(config):
+    destination = os.environ.get("OPENAI4S_CAPTURE_SCHEMAS")
+    if not destination:
+        return
+    from openai4s.server import gateway as gateway_mod
+    from openai4s.server import response_capture
+
+    recorder = response_capture.Recorder()
+    response_capture.install(gateway_mod, recorder)
+    config._openai4s_recorder = (recorder, Path(destination))
+
+
+@pytest.fixture(autouse=True)
+def _pause_capture_for_stubbed_backends(request):
+    """A test that stubs the service must not publish a response shape.
+
+    `docs/response-schemas.json` claims to be captured from real responses. A
+    test that replaces `runner.restart_kernel` with a lambda returning
+    `{"ok": ...}` would otherwise freeze that fabrication as the route's
+    contract -- provenance that is wrong rather than absent, which is the worse
+    failure because a reader believes it.
+    """
+    captured = getattr(request.config, "_openai4s_recorder", None)
+    if not captured or request.node.get_closest_marker("stubbed_backend") is None:
+        yield
+        return
+    recorder = captured[0]
+    previous, recorder.paused = recorder.paused, True
+    try:
+        yield
+    finally:
+        recorder.paused = previous
+
+
+def pytest_unconfigure(config):
+    captured = getattr(config, "_openai4s_recorder", None)
+    if not captured:
+        return
+    recorder, destination = captured
+    from openai4s.server import response_capture
+
+    response_capture.save(recorder.document(), destination)

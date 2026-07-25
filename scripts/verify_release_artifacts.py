@@ -36,15 +36,18 @@ _WHEEL_REQUIRED = frozenset(
 )
 _SDIST_REQUIRED = frozenset(
     {
+        "CODE_OF_CONDUCT.md",
         "LICENSE",
         "MANIFEST.in",
         "README.md",
+        "SECURITY.md",
         "docs/release-validation.md",
         "pyproject.toml",
         "scripts/release_import_smoke.py",
         "scripts/setup_envs.sh",
         "scripts/source_secret_scan.py",
         "scripts/verify_release_artifacts.py",
+        "scripts/verify_release_tag.py",
         *_WHEEL_REQUIRED,
     }
 )

@@ -1,0 +1,57 @@
+{
+  "id": "python-analysis",
+  "version": "1.0.0",
+  "title": "Python 分析产出可追溯产物",
+  "summary": "在持久 Python 内核中执行分析代码，把结果注册为带校验和的 artifact。这是本系统最常见的一次科研运行。",
+  "steps": [
+    "open_session",
+    "run_python_cell",
+    "save_artifact"
+  ],
+  "permissions": [
+    "kernel:python",
+    "workspace:write"
+  ],
+  "artifacts": [
+    "scores.csv"
+  ],
+  "failure_conditions": [
+    "cell 抛出异常",
+    "声明的产物未被写出",
+    "artifact 校验和缺失"
+  ],
+  "cases": [
+    {
+      "id": "python-analysis/happy",
+      "title": "计算并写出 CSV",
+      "outcome": "success",
+      "inputs": {
+        "run_python_cell": {
+          "code": "import csv\nwith open('scores.csv','w',newline='') as f:\n    w=csv.writer(f); w.writerow(['sample','score']); w.writerow(['a',0.93])\nprint('done')"
+        },
+        "save_artifact": {
+          "filename": "scores.csv",
+          "content_type": "text/csv",
+          "as": "scores"
+        }
+      },
+      "expect": {
+        "stdout__contains": "done",
+        "checksum__len": 64
+      }
+    },
+    {
+      "id": "python-analysis/cell-error",
+      "title": "分析代码抛异常时必须失败而不是静默产出",
+      "outcome": "failure",
+      "inputs": {
+        "run_python_cell": {
+          "code": "raise ValueError('bad input frame')"
+        }
+      },
+      "expect": {
+        "error__contains": "bad input frame"
+      }
+    }
+  ]
+}

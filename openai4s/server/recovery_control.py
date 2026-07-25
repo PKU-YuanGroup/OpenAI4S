@@ -268,8 +268,17 @@ class RecoveryControlService:
                 ),
                 requires_ticket=True,
             ),
-            _action("inspect_log", True, None),
-            _action("continue_view_only", True, None),
+            # `inspect_log` and `continue_view_only` used to be advertised here
+            # as always-available. Nothing could invoke either: no route
+            # accepted them, the client's sanitiser dropped them, and
+            # `prepare_action` below refuses both as read-only. Neither named
+            # a real capability, and both were already satisfied by the card
+            # itself — it renders the recovery log inline, and a session
+            # pending recovery is view-only until someone recovers it.
+            #
+            # This list is a menu of mutations the caller may invoke. Anything
+            # in it that cannot be invoked is a promise the API does not keep,
+            # so nothing goes back in without a route to reach it.
             _action(
                 "restart_fresh",
                 not busy,

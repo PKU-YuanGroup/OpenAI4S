@@ -1,0 +1,224 @@
+"""`emit` sits on hot paths, so its first duty is to do no harm.
+
+It is called at daemon start and at the end of every turn. A telemetry bug on
+those paths must not surface as a failed turn or a daemon that will not bind, so
+the tests here are mostly about what `emit` refuses to let escape: a store that
+raises, a consent read that throws, a send that crashes. None of it may reach
+the caller, and none of it may happen on the caller's thread.
+
+The one behaviour that is not a refusal is the stop-reason mapping, and it is
+pinned against the engine's real vocabulary rather than an invented one -- the
+first version of the call site mapped `finalized`, a reason the engine never
+produces, and dropped `stopped`, `done` and `failed`, which it does.
+"""
+from __future__ import annotations
+
+import threading
+
+import pytest
+
+from openai4s.config import Config
+from openai4s.store import get_store
+from openai4s.telemetry import consent as consent_mod
+from openai4s.telemetry import emit as emit_mod
+from openai4s.telemetry.emit import emit, emit_session_start, turn_outcome
+
+
+@pytest.fixture(autouse=True)
+def _clean():
+    emit_mod._reset_for_tests()
+    yield
+    emit_mod._reset_for_tests()
+
+
+@pytest.fixture
+def store(tmp_path):
+    return get_store(Config(data_dir=tmp_path).db_path)
+
+
+@pytest.fixture
+def captured(monkeypatch):
+    """Capture what would be sent, without a thread or a socket."""
+    sent: list = []
+
+    def fake_dispatch(store, install_id, batch):
+        sent.append((install_id, batch))
+
+    monkeypatch.setattr(emit_mod, "_dispatch", fake_dispatch)
+    return sent
+
+
+# --------------------------------------------------------------------------
+# off by default
+# --------------------------------------------------------------------------
+
+
+def test_emit_without_consent_records_nothing(store, captured):
+    emit("daemon_start", store=store, surface="web")
+    assert captured == []
+
+
+def test_emit_with_consent_records_the_event(store, captured):
+    consent_mod.grant(store)
+    emit("daemon_start", store=store, surface="web")
+
+    assert len(captured) == 1
+    install_id, batch = captured[0]
+    assert len(install_id) == 32
+    assert batch == [{"event": "daemon_start", "surface": "web"}]
+
+
+def test_emit_drops_fields_outside_the_declaration(store, captured):
+    consent_mod.grant(store)
+    emit("turn_complete", store=store, surface="web", secret="/home/y/cohort.csv")
+
+    _install, batch = captured[0]
+    assert batch == [{"event": "turn_complete", "surface": "web"}]
+
+
+def test_emit_drops_an_undeclared_event_name(store, captured):
+    consent_mod.grant(store)
+    emit("exfiltrate", store=store)
+    assert captured == []
+
+
+# --------------------------------------------------------------------------
+# it never breaks the caller
+# --------------------------------------------------------------------------
+
+
+def test_a_store_that_raises_does_not_propagate(captured):
+    class Exploding:
+        def get_setting(self, *a, **k):
+            raise RuntimeError("db is unhappy")
+
+    emit("daemon_start", store=Exploding())  # must not raise
+    assert captured == []
+
+
+def test_a_dispatch_that_crashes_does_not_propagate(store, monkeypatch):
+    consent_mod.grant(store)
+
+    def boom(*a, **k):
+        raise RuntimeError("collector on fire")
+
+    monkeypatch.setattr(emit_mod, "_dispatch", boom)
+    emit("daemon_start", store=store)  # must not raise
+
+
+def test_the_send_happens_off_the_calling_thread(store, monkeypatch):
+    """A slow collector must not add latency to a turn, so the actual send runs
+    on a background thread, never inline.
+
+    It is now the gate's single worker rather than a thread per flush, so the
+    property is asserted on where the send *ran* rather than on a Thread being
+    constructed — the worker may well have been started by an earlier event.
+    """
+    consent_mod.grant(store)
+    sent_on: list = []
+    done = threading.Event()
+    from openai4s.telemetry import sender as sender_mod
+
+    def record(store, payload):
+        sent_on.append(threading.current_thread().name)
+        done.set()
+
+    monkeypatch.setattr(sender_mod, "send", record)
+
+    emit("daemon_start", store=store, surface="web")
+
+    assert done.wait(timeout=5), "the send never ran"
+    assert sent_on[0] != threading.current_thread().name
+    assert sent_on[0] == "openai4s-telemetry"
+
+
+# --------------------------------------------------------------------------
+# session_start fires once
+# --------------------------------------------------------------------------
+
+
+def test_session_start_fires_once_per_session(store, captured):
+    consent_mod.grant(store)
+    emit_session_start("frame-a", store=store, surface="web")
+    emit_session_start("frame-a", store=store, surface="web")
+    emit_session_start("frame-b", store=store, surface="web")
+
+    events = [b[0]["event"] for _i, b in captured]
+    assert events == ["session_start", "session_start"]  # a, then b, not a twice
+
+
+def test_a_session_is_not_marked_seen_while_telemetry_is_off(store, captured):
+    """The dedup mark must not be set for an event that never went.
+
+    A first turn at the default-off state marked the frame seen and dropped the
+    event; a later opt-in on the same session then found the frame already seen
+    and never sent `session_start`, so that whole period reported turns with no
+    session in front of them.
+    """
+    # Off: the call is a no-op and must not consume the once-per-session mark.
+    emit_session_start("frame-c", store=store, surface="web")
+    assert captured == []
+
+    # The user opts in mid-session; session_start must still fire.
+    consent_mod.grant(store)
+    emit_session_start("frame-c", store=store, surface="web")
+    events = [b[0]["event"] for _i, b in captured]
+    assert events == [
+        "session_start"
+    ], "opting in mid-session must still produce a session_start"
+
+
+# --------------------------------------------------------------------------
+# the stop-reason mapping, against the engine's real vocabulary
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "stop_reason,expected",
+    [
+        ("completed", "ok"),
+        ("done", "ok"),
+        ("stopped", "ok"),
+        ("submitted", "ok"),
+        ("plan", "ok"),
+        ("cancelled", "cancelled"),
+        ("max_turns", "timeout"),
+        ("failed", "error"),
+    ],
+)
+def test_every_engine_stop_reason_maps_to_a_declared_outcome(stop_reason, expected):
+    """These strings are what openai4s/agent/engine.py, loop.py and
+    server/agent_run.py actually return — including `submitted` (the normal
+    structured completion) and `plan` (a successful plan-mode exit), which
+    were missing and so reported `error` for successful turns. If the engine
+    gains a new one, this test is where it should be noticed."""
+    from openai4s.telemetry.schema import RECORD
+
+    assert turn_outcome(stop_reason) == expected
+    assert expected in RECORD["outcome"].members
+
+
+def test_an_unrecognised_stop_reason_is_error_not_ok():
+    """The safe default. A stop this mapping has not seen is likelier a failure
+    than a success worth reporting as one."""
+    assert turn_outcome("some_new_reason") == "error"
+    assert turn_outcome("") == "error"
+    assert turn_outcome(None) == "error"
+
+
+def test_a_regrant_mid_session_gets_its_own_session_start(store, captured):
+    """A revoke and regrant mints a new install id — a new participation
+    period. Keying dedup on the frame alone left the new period without a
+    session_start, so its turns had no session in front of them."""
+    consent_mod.grant(store)
+    emit_session_start("frame-x", store=store, surface="web")
+    first_id = captured[0][0]
+
+    consent_mod.revoke(store)
+    consent_mod.grant(store)  # a new install id
+    emit_session_start("frame-x", store=store, surface="web")
+
+    ids = [install for install, _b in captured]
+    assert len(captured) == 2, "the new identity must get its own session_start"
+    assert ids[0] != ids[1], "the two periods are under different identities"
+    assert ids[0] == first_id

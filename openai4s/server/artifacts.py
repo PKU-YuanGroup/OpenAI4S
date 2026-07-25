@@ -8,8 +8,10 @@ import hashlib
 import json
 import mimetypes
 import os
+import platform as _pf
 import re
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -144,7 +146,37 @@ def _write_confined_text(workspace: Path, relative: Path, content: str) -> Path:
     return target
 
 
+def _same_interpreter(interpreter: Any, has_generation: bool = False) -> bool:
+    """True when the kernel ran in this very process's interpreter.
+
+    Only then may this process's own version strings be attributed to it.
+
+    A *missing* interpreter is the daemon fallback only when there is no
+    generation on record. With a generation but no interpreter — a legacy or
+    imported one — the runtime is unknown, and stamping the daemon's Python
+    version and implementation onto it is the same confidently-wrong provenance
+    the package-list path already refuses. So a missing interpreter matches
+    only in the no-generation case.
+    """
+    if not interpreter:
+        return not has_generation
+    # Same executable *and* same environment. A virtualenv's bin/python is a
+    # symlink to the base python, so a resolved-executable match alone would
+    # stamp the daemon's version/implementation onto a different environment.
+    from openai4s.kernel.preinstall import _is_this_interpreter
+
+    try:
+        return _is_this_interpreter(str(interpreter))
+    except OSError:
+        return False
+
+
 class ArtifactManager:
+    #: A generation ends when its kernel does, so this cannot grow without
+    #: bound in practice. The ceiling is a backstop against a session that
+    #: restarts its kernel thousands of times, not a tuning knob.
+    _FREEZE_CACHE_MAX = 256
+
     def __init__(
         self,
         *,
@@ -152,7 +184,6 @@ class ArtifactManager:
         store: Any,
         workspace_for: Callable[[str], Path],
         broadcast: Callable[[str, dict], None],
-        environment_snapshot: Callable[[], dict],
         guess_content_type: Callable[[str], str],
         checksum: Callable[[Path], str],
     ) -> None:
@@ -160,9 +191,12 @@ class ArtifactManager:
         self.store = store
         self.workspace_for = workspace_for
         self.broadcast = broadcast
-        self.environment_snapshot = environment_snapshot
         self.guess_content_type = guess_content_type
         self.checksum = checksum
+        # (generation_id, interpreter) -> frozen packages, or None when the
+        # interpreter refused to be read. See _frozen_packages.
+        self._freeze_cache: dict[tuple[str, str], list[dict[str, Any]] | None] = {}
+        self._freeze_lock = threading.Lock()
 
     def _notify(
         self,
@@ -719,8 +753,17 @@ class ArtifactManager:
         figure_set = set(figures)
         files_written: list[str] = []
         artifacts: list[dict] = []
+        # `language` and the session's frame id were already in scope here and
+        # simply were not passed on, which is why every artifact was stamped
+        # with the daemon's Python environment regardless of what ran.
         env_snapshot_id = (
-            self.capture_environment(drain_remote_provenance) if changed else None
+            self.capture_environment(
+                drain_remote_provenance,
+                root_frame_id=getattr(session, "root_frame_id", None),
+                language=language,
+            )
+            if changed
+            else None
         )
         for path in sorted(
             changed,
@@ -744,11 +787,28 @@ class ArtifactManager:
         return CaptureResult(figures, files_written, artifacts)
 
     def capture_environment(
-        self, drain_remote_provenance: Callable[[], Any] | None = None
+        self,
+        drain_remote_provenance: Callable[[], Any] | None = None,
+        *,
+        root_frame_id: str | None = None,
+        language: str = "python",
     ) -> str | None:
-        """Freeze the local env plus buffered remote-compute provenance once."""
+        """Record the environment of the kernel that produced these files.
+
+        It used to record the *daemon's* — a zero-argument freeze of this
+        process, stamped ``kind: "python"`` whatever had actually run. An R
+        cell's artifact therefore carried a Python package list, and so did a
+        Python cell running in a selected conda environment. Both are the same
+        failure: provenance that is wrong rather than absent, presented by the
+        UI as the kernel's own.
+
+        The kernel generation is the authority. It knows the runtime, the
+        interpreter, and the environment name, and its id ties the artifact to
+        one exact kernel lifetime.
+        """
         try:
-            snapshot = self.environment_snapshot()
+            generation = self._generation_for(root_frame_id, language)
+            snapshot = self._snapshot_for(generation, language)
             if drain_remote_provenance is not None:
                 remote = drain_remote_provenance()
                 if remote:
@@ -756,6 +816,164 @@ class ArtifactManager:
             return self.store.upsert_env_snapshot(snapshot)
         except Exception:  # noqa: BLE001 — provenance cannot break artifact saving
             return None
+
+    def _generation_for(
+        self, root_frame_id: str | None, language: str
+    ) -> dict[str, Any] | None:
+        """The generation that actually produced these files, on this branch.
+
+        Generations are registered per ``branch_id``, and the repository
+        defaults an omitted one to ``root_frame_id`` — the root branch. Omitting
+        it here meant a file written by a cell on a *forked* branch was
+        attributed to the root branch's most recent kernel, or, if the root had
+        none, degraded to the assumed snapshot. Either way the artifact's
+        interpreter and package provenance described a kernel that did not
+        produce it, which is the failure this whole path exists to prevent.
+        """
+        if not root_frame_id:
+            return None
+        latest = getattr(self.store, "latest_kernel_generation", None)
+        if latest is None:
+            return None
+        try:
+            active = getattr(self.store, "active_session_branch", None)
+            branch_id = active(root_frame_id) if callable(active) else None
+            return latest(root_frame_id, language, branch_id=branch_id or None)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _snapshot_for(
+        self, generation: dict[str, Any] | None, language: str
+    ) -> dict[str, Any]:
+        """Build the snapshot from what the generation actually says.
+
+        With no generation on record -- a cell that wrote files before any
+        kernel was registered, or a store that predates them -- fall back to
+        describing this process, but say so, so a reader can tell a measured
+        environment from an assumed one.
+        """
+        from openai4s.kernel import preinstall
+
+        environment = (generation or {}).get("environment")
+        environment = environment if isinstance(environment, dict) else {}
+        runtime = str(environment.get("runtime") or language or "python").lower()
+        interpreter = environment.get("interpreter")
+
+        snapshot: dict[str, Any] = {
+            "kind": runtime,
+            "interpreter": interpreter,
+            "environment_name": environment.get("environment_name"),
+            "platform": _pf.platform(),
+        }
+        if generation:
+            snapshot["generation_id"] = generation.get("generation_id")
+            snapshot["environment_manifest_id"] = generation.get(
+                "environment_manifest_id"
+            )
+        else:
+            snapshot["provenance"] = "assumed: no kernel generation on record"
+
+        if runtime == "python":
+            if interpreter:
+                packages = self._frozen_packages(interpreter, generation)
+            elif generation:
+                # A generation *is* on record — legacy, imported, or written
+                # before the environment carried an interpreter path. Freezing
+                # the daemon here attributed this process's packages to that
+                # generation id, which is confidently wrong provenance rather
+                # than absent provenance. The daemon may only describe the case
+                # where no generation exists at all.
+                packages = None
+            else:
+                packages = preinstall.full_freeze()
+            if packages is None:
+                # Naming what we could not read beats implying the daemon's
+                # packages were this kernel's.
+                snapshot["packages"] = []
+                snapshot["package_count"] = 0
+                snapshot["packages_unavailable"] = (
+                    f"could not read distributions from {interpreter!r}"
+                    if interpreter
+                    else (
+                        "this kernel generation records no interpreter, and "
+                        "the daemon's packages are not this kernel's"
+                    )
+                )
+            else:
+                snapshot["packages"] = packages
+                snapshot["package_count"] = len(packages)
+            snapshot["python_version"] = (
+                _pf.python_version()
+                if _same_interpreter(interpreter, bool(generation))
+                else None
+            )
+            snapshot["implementation"] = (
+                _pf.python_implementation()
+                if _same_interpreter(interpreter, bool(generation))
+                else None
+            )
+        else:
+            # A non-Python kernel has no Python package set, and claiming an
+            # empty one would read as "nothing installed" rather than "not
+            # applicable".
+            snapshot["packages"] = []
+            snapshot["package_count"] = 0
+            snapshot[
+                "packages_unavailable"
+            ] = f"{runtime} kernel: Python distribution metadata does not apply"
+        return snapshot
+
+    def invalidate_freeze_cache(self) -> None:
+        """Forget every cached package list.
+
+        The cache is keyed by kernel generation on the premise that an
+        environment cannot change within one — which `/kernel/install` breaks:
+        installing with ``restart: false`` (or installing successfully and then
+        failing to restart) mutates the *same* generation's interpreter. A stale
+        entry would then attribute the pre-install package list to artifacts the
+        new packages actually produced, which is provenance that is wrong rather
+        than absent. The installer calls this so the next capture re-probes.
+        """
+        with self._freeze_lock:
+            self._freeze_cache.clear()
+
+    def _frozen_packages(
+        self, interpreter: Any, generation: dict[str, Any] | None
+    ) -> list[dict[str, Any]] | None:
+        """Freeze a foreign interpreter once per kernel generation.
+
+        ``freeze_for`` launches the target interpreter and enumerates its
+        distributions — up to a 20-second wait. Its docstring says callers
+        cache per generation because an environment cannot change within one;
+        no caller did, so every cell that produced a file paid the full probe
+        again. A persistent kernel writing a figure per cell paid it per
+        figure.
+
+        A failed probe is cached too: an interpreter that could not be read
+        will not become readable within the same generation, and re-paying the
+        timeout to rediscover that is the worst version of this.
+
+        Keyed by generation because that is the exact lifetime over which the
+        answer is constant. Without one there is nothing bounding the
+        environment's stability, so the probe runs.
+        """
+        from openai4s.kernel import preinstall
+
+        generation_id = str((generation or {}).get("generation_id") or "")
+        if not generation_id:
+            return preinstall.freeze_for(interpreter)
+        key = (generation_id, str(interpreter))
+        with self._freeze_lock:
+            if key in self._freeze_cache:
+                return self._freeze_cache[key]
+        packages = preinstall.freeze_for(interpreter)
+        with self._freeze_lock:
+            # Bounded: one entry per (generation, interpreter), and a
+            # generation ends when its kernel does.
+            if len(self._freeze_cache) >= self._FREEZE_CACHE_MAX:
+                self._freeze_cache.clear()
+            self._freeze_cache[key] = packages
+        return packages
 
 
 def _capture_snippet(index: int) -> str:

@@ -71,7 +71,17 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
     state = store.schema_state()
     assert state["version"] == SCHEMA_VERSION
     assert state["current"] is True
-    assert [m["name"] for m in state["applied"]] == ["legacy_baseline"]
+    assert [m["name"] for m in state["applied"]] == [
+        "legacy_baseline",
+        "compute_job_states",
+        "compute_job_manifest",
+        "artifact_env_identity",
+        "artifact_source",
+        "compute_job_pgid",
+        "env_snapshot_generation",
+        "env_snapshot_provenance",
+        "compute_job_owner",
+    ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
 
@@ -131,6 +141,50 @@ def _make_legacy_db(tmp_path) -> Path:
     conn.commit()
     conn.close()
     return db
+
+
+def test_an_upgraded_db_gains_owner_key_and_can_create_compute_jobs(tmp_path):
+    """Migration 9 must run on an *existing* install.
+
+    The offline suite otherwise only ever sees a fresh DB, whose CREATE TABLE
+    already carries owner_key — so a forgotten SCHEMA_VERSION bump left the
+    migration unreachable and every upgraded install unable to submit a compute
+    job, because the INSERT names owner_key the old table lacks. This is the
+    fresh-vs-upgraded blind spot; the test opens a real pre-owner_key database.
+    """
+    db = tmp_path / "v8.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(_schema_sql())
+    # Roll compute_jobs back to its pre-owner_key shape, as a released install has.
+    cols = [
+        r[1]
+        for r in conn.execute("PRAGMA table_info(compute_jobs)")
+        if r[1] != "owner_key"
+    ]
+    conn.execute(f"CREATE TABLE _cj AS SELECT {','.join(cols)} FROM compute_jobs")
+    conn.execute("DROP TABLE compute_jobs")
+    conn.execute("ALTER TABLE _cj RENAME TO compute_jobs")
+    conn.execute("PRAGMA user_version = 8")
+    conn.commit()
+    conn.close()
+
+    with sqlite3.connect(str(db)) as probe:
+        assert "owner_key" not in {
+            r[1] for r in probe.execute("PRAGMA table_info(compute_jobs)")
+        }
+
+    store = Store(db)
+    try:
+        after = {r[1] for r in store._conn.execute("PRAGMA table_info(compute_jobs)")}
+        assert "owner_key" in after, "migration 9 did not run on the upgraded DB"
+        assert store.schema_state()["version"] == SCHEMA_VERSION
+        # And a compute job can actually be created (the INSERT names owner_key).
+        row = store.create_compute_job(
+            job_id="j1", provider="ssh:lab", owner_key="/ws/a"
+        )
+        assert row["job_id"] == "j1"
+    finally:
+        store.close()
 
 
 def test_legacy_database_is_migrated_and_stamped(tmp_path):
@@ -472,3 +526,103 @@ def test_synchronous_stays_full(tmp_path):
     a future 'performance' change has to argue for the durability trade."""
     store = get_store(Config(data_dir=tmp_path).db_path)
     assert store._conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+
+
+# --------------------------------------------------------------------------
+# version 7: a generation attribution that cannot be verified is cleared
+# --------------------------------------------------------------------------
+
+
+def _legacy_env_snapshot(db: Path, snapshot_id: str, generation_id: str) -> None:
+    """Insert a row addressed the way version 6 addressed it.
+
+    The point is the id: before version 7 the address did not include the
+    generation, so a row created by generation 1 was reused verbatim by
+    generation 2 and kept naming the first.
+    """
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO env_snapshots(snapshot_id,created_at,kind,python_version,"
+            "implementation,platform,package_count,packages_json,interpreter,"
+            "environment_name,generation_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                snapshot_id,
+                1,
+                "python",
+                "3.12.0",
+                "CPython",
+                "macOS",
+                0,
+                "[]",
+                "/usr/bin/python3",
+                "base",
+                generation_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _rewind_to_version_six(db: Path) -> None:
+    """Put the database back where an installation upgrading from v0.1 is."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("DELETE FROM schema_migrations WHERE version >= 7")
+        conn.execute("PRAGMA user_version = 6")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_an_unverifiable_generation_attribution_is_labelled_not_erased(tmp_path):
+    """A row whose id predates the generation-aware address may have been
+    shared by a second kernel, and which rows actually were is not recoverable
+    — sharing leaves no trace.
+
+    Clearing the attribution would trade one wrong answer for a missing one and
+    discard provenance that is right far more often than not. It is kept and
+    qualified instead: a reader that needs certainty filters on the label."""
+    db = Config(data_dir=tmp_path).db_path
+    store = get_store(db)
+    _legacy_env_snapshot(db, "env-legacyaddress", "gen-1")
+    store.close()
+    _rewind_to_version_six(db)
+
+    upgraded = get_store(db)
+    assert upgraded.schema_state()["version"] == SCHEMA_VERSION
+    row = upgraded.get_env_snapshot("env-legacyaddress")
+    assert row is not None, "the environment itself is untouched"
+    assert row["generation_id"] == "gen-1", "provenance is never silently dropped"
+    assert row["generation_confidence"] == "legacy_unverified"
+    assert row["interpreter"] == "/usr/bin/python3"
+
+
+def test_a_correctly_addressed_row_is_labelled_verified(tmp_path):
+    """Idempotence: a row written after the fix hashes to its own id, so a
+    re-run of the migration must leave it alone."""
+    from openai4s.storage.artifacts import env_snapshot_id
+
+    db = Config(data_dir=tmp_path).db_path
+    store = get_store(db)
+    correct = env_snapshot_id(
+        kind="python",
+        python_version="3.12.0",
+        implementation="CPython",
+        platform="macOS",
+        interpreter="/usr/bin/python3",
+        environment_name="base",
+        generation_id="gen-1",
+        packages_json="[]",
+        remote_json="[]",
+    )
+    _legacy_env_snapshot(db, correct, "gen-1")
+    store.close()
+    _rewind_to_version_six(db)
+
+    row = get_store(db).get_env_snapshot(correct)
+    assert row["generation_id"] == "gen-1"
+    assert (
+        row["generation_confidence"] == "verified"
+    ), "an address that includes its generation cannot have been shared"

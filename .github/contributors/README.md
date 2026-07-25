@@ -12,7 +12,13 @@ reads this directory.
 | File | Purpose |
 | --- | --- |
 | `Grace-xyx.png` | Render-ready avatar for contributor `Grace-xyx`. |
+| `HowardLi1984.png` | Render-ready avatar for contributor `HowardLi1984`. |
+| `Linmj-Judy.png` | Render-ready avatar for contributor `Linmj-Judy`. |
+| `Lyu6PosHao.png` | Render-ready avatar for contributor `Lyu6PosHao`. |
 | `Nobody-Zhang.png` | Render-ready avatar for contributor `Nobody-Zhang`. |
+| `YuyangSunshine.png` | Render-ready avatar for contributor `YuyangSunshine`. |
+| `jiangzx25.png` | Render-ready avatar for contributor `jiangzx25`. |
+| `riiiiiiin.png` | Render-ready avatar for contributor `riiiiiiin`. |
 | `wangyu-sd.png` | Render-ready avatar for contributor `wangyu-sd`. |
 | `yusowa0716.png` | Render-ready avatar for contributor `yusowa0716`. |
 

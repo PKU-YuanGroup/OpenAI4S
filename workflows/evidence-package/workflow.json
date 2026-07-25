@@ -1,0 +1,60 @@
+{
+  "id": "evidence-package",
+  "version": "1.0.0",
+  "title": "证据包导出与验证",
+  "summary": "一次科研运行的可交付物：带 manifest、hash 与复现说明的会话包，且在干净环境可验证。",
+  "steps": [
+    "open_session",
+    "save_artifact",
+    "export_session_package"
+  ],
+  "permissions": [
+    "workspace:read"
+  ],
+  "artifacts": [
+    "result.csv",
+    "session.zip"
+  ],
+  "failure_conditions": [
+    "包无法通过自身校验",
+    "manifest 未覆盖全部成员"
+  ],
+  "cases": [
+    {
+      "id": "evidence-package/verifies",
+      "title": "导出的包能通过验证器",
+      "outcome": "success",
+      "inputs": {
+        "save_artifact": {
+          "filename": "result.csv",
+          "content": "score\n0.93\n",
+          "as": "result"
+        }
+      },
+      "expect": {
+        "files_verified__truthy": true
+      }
+    },
+    {
+      "id": "evidence-package/tamper",
+      "title": "改一个字节验证器必须拒绝",
+      "outcome": "provenance",
+      "inputs": {
+        "save_artifact": {
+          "filename": "result.csv",
+          "content": "score\n0.93\n",
+          "as": "result"
+        }
+      },
+      "expect": {
+        "problems__truthy": true
+      },
+      "steps": [
+        "open_session",
+        "save_artifact",
+        "export_session_package",
+        "tamper_with_package"
+      ]
+    }
+  ]
+}

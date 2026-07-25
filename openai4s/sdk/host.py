@@ -619,11 +619,20 @@ class _Host:
         input_version_ids: list[str] | None = None,
         producing_cell_id: str | None = None,
         priority: int = 0,
+        source: Any = None,
     ) -> dict:
         """Register a workspace file as a versioned artifact. Returns {version_id,...}.
 
         `input_version_ids` records data lineage edges from those inputs to
         this output.
+
+        `source` records where the data came from when the artifact was derived
+        from something retrieved. Pass the `provenance` envelope a
+        `host.science.search(...)` result carries: it names the database, the
+        exact request, when it was fetched, and the hash of the bytes that came
+        back. Without it a saved result answers "what is this" but not "when
+        was this true, and was it the same data I am looking at" -- which is
+        the difference between a file and evidence.
         """
         return self._call(
             "save_artifact",
@@ -635,6 +644,7 @@ class _Host:
                     "input_version_ids": input_version_ids or [],
                     "producing_cell_id": producing_cell_id,
                     "priority": priority,
+                    "source": source,
                 }
             ],
         )
