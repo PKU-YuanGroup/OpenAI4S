@@ -283,3 +283,45 @@ def test_artifact_marker_rejects_untrusted_ids(tmp_path, version_id):
 
     with pytest.raises(ValueError, match="not a valid version id"):
         service.artifact_marker(version_id)
+
+
+def test_view_image_confines_a_caller_supplied_path_to_the_workspace(tmp_path):
+    """`host.view_image(path=...)` was an existence oracle for the whole host.
+
+    Every sibling file operation goes through the workspace resolver. This one
+    checked `Path(path).exists()` and returned the path, so a kernel cell could
+    ask about any absolute path on the machine and read the answer off the
+    difference between a result and a `FileNotFoundError` -- `/etc/passwd`,
+    `~/.ssh/id_rsa`, a colleague's data directory.
+
+    The `version_id` branch is deliberately not confined: an artifact snapshot
+    legitimately lives under the data dir, outside the workspace. Its scope
+    check belongs with the other artifact read paths.
+    """
+    from openai4s.config import Config, LLMConfig
+    from openai4s.host_dispatch import HostDispatcher
+
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    dispatcher = HostDispatcher(cfg=cfg, frame_id="frame-1")
+    workspace = dispatcher._workspace()
+
+    inside = workspace / "figure.png"
+    inside.write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert dispatcher("view_image", [{"path": "figure.png"}])["rendered"] is True
+
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+    with pytest.raises(ValueError, match="escapes the workspace"):
+        dispatcher("view_image", [{"path": str(outside)}])
+
+    # The canary that made this worth fixing: a real host path the caller
+    # never had any business naming.
+    with pytest.raises(ValueError, match="escapes the workspace"):
+        dispatcher("view_image", [{"path": "/etc/passwd"}])
+
+    # A traversal spelled relatively is the same escape.
+    with pytest.raises(ValueError, match="escapes the workspace"):
+        dispatcher("view_image", [{"path": "../secret.png"}])

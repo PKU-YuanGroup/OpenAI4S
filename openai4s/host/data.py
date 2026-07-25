@@ -376,10 +376,23 @@ class HostDataService:
         version_id = spec.get("version_id")
         path = spec.get("path")
         if version_id and not path:
-            path = self._store().resolve_artifact_path(version_id)
-        if not path or not Path(path).exists():
-            raise FileNotFoundError(f"view_image: no such image: {path!r}")
-        return {"status": "ok", "rendered": True, "path": str(path)}
+            # Store-derived: an artifact snapshot legitimately lives outside
+            # the workspace, under the data dir. Its scope check belongs with
+            # the rest of the artifact read paths, not here.
+            resolved = self._store().resolve_artifact_path(version_id)
+            if not resolved or not Path(resolved).exists():
+                raise FileNotFoundError(f"view_image: no such image: {resolved!r}")
+            return {"status": "ok", "rendered": True, "path": str(resolved)}
+        # Caller-supplied: confined, like every other file the SDK can name.
+        # This branch checked only `Path(path).exists()`, which made
+        # `host.view_image(path="/etc/passwd")` an existence oracle for any
+        # absolute path on the host -- reachable straight from a kernel cell,
+        # and the one file operation here that skipped the workspace resolver
+        # its siblings all go through.
+        if not path:
+            raise FileNotFoundError("view_image: no such image: None")
+        target = self._resolve_path(str(path), must_exist=True)
+        return {"status": "ok", "rendered": True, "path": str(target)}
 
     def artifact_marker(self, version_id: str) -> str:
         if not _VALID_MARKER_ID.match(str(version_id)):
