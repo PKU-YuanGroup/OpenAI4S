@@ -212,6 +212,41 @@ class HostDataService:
             )
         return artifact
 
+    def _scoped_version(self, version_id: str) -> dict:
+        """Resolve one artifact *version* inside the caller's own scope.
+
+        `_scoped_artifact` covers the reads keyed on an artifact id.
+        The version-keyed ones -- `lineage_get`, `artifact_path`, the lineage
+        walk -- went straight to the store, so a kernel cell in one project
+        could name any version id and read back another project's filename,
+        checksum, producing-cell code and input lineage.
+
+        Scope lives on the parent `artifacts` row: `artifact_versions` carries
+        no project_id or root_frame_id, so resolving the parent is not an extra
+        query for convenience, it is the only place the answer exists.
+
+        Out of scope raises the *same* KeyError as missing. A distinct refusal
+        would confirm the version exists, which is most of what an enumerator
+        wants.
+        """
+        store = self._store()
+        unknown = KeyError(f"no artifact version {version_id!r} in the current session")
+        metadata = store.version_meta(version_id)
+        if metadata is None:
+            raise unknown
+        artifact = store.get_artifact(str(metadata.get("artifact_id") or ""))
+        if artifact is None:
+            raise unknown
+        frame_id = self._frame_id()
+        scope = store.resolve_frame_scope(frame_id)
+        if (
+            frame_id is None
+            or artifact.get("root_frame_id") != scope.get("root_frame_id")
+            or artifact.get("project_id") != scope.get("project_id")
+        ):
+            raise unknown
+        return metadata
+
     @staticmethod
     def _artifact_metadata_projection(artifact: dict) -> dict:
         fields = (
@@ -325,6 +360,7 @@ class HostDataService:
         )
 
     def artifact_path(self, version_id: str) -> str:
+        self._scoped_version(version_id)
         path = self._store().resolve_artifact_path(version_id)
         if path is None:
             raise KeyError(f"no artifact for id={version_id!r}")
@@ -456,9 +492,7 @@ class HostDataService:
 
     def lineage_get(self, version_id: str) -> dict:
         store = self._store()
-        metadata = store.version_meta(version_id)
-        if metadata is None:
-            raise KeyError(f"no artifact version {version_id!r}")
+        metadata = self._scoped_version(version_id)
         cell = store.producing_cell_for_version(version_id) or {}
         return {
             "version_id": version_id,
@@ -487,6 +521,8 @@ class HostDataService:
         is wrong rather than absent.
         """
         start = spec["version_id"]
+        # The root must be ours; the walk then follows edges from it.
+        self._scoped_version(start)
         direction = spec.get("direction", "up")
         max_depth = spec.get("max_depth")
         max_depth = _DEFAULT_LINEAGE_DEPTH if max_depth is None else int(max_depth)

@@ -304,3 +304,70 @@ def test_serving_an_artifact_by_filename_refuses_an_ambiguous_name(tmp_path):
         assert store.artifact_by_unique_filename("never-created.pdf") is None
     finally:
         store.close()
+
+
+def test_version_keyed_reads_are_confined_to_the_calling_session(tmp_path):
+    """`lineage_get` handed out another project's provenance.
+
+    `_scoped_artifact` covers the reads keyed on an artifact id. The
+    version-keyed ones went straight to the store, so a kernel cell in one
+    project could name any version id and read back the filename, checksum,
+    frame, producing-cell **code** and input lineage of an artifact belonging
+    to another project. Guessing a version id is the only barrier, and
+    `lineage_graph` walks outward from whatever it is given.
+
+    Scope lives on the parent `artifacts` row -- `artifact_versions` carries
+    neither project_id nor root_frame_id -- so resolving the parent is not an
+    extra query for convenience, it is the only place the answer exists.
+
+    A foreign version and a nonexistent one fail identically. A distinct
+    refusal would confirm the version exists, which is most of what an
+    enumerator wants.
+    """
+    from openai4s.host_dispatch import build_dispatcher
+
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    dispatcher = build_dispatcher(cfg, workspace=tmp_path / "ws")
+    mine = dispatcher.store.new_frame(kind="turn", project_id="mine")
+    theirs = dispatcher.store.new_frame(kind="turn", project_id="theirs")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    secret = workspace / "secret.csv"
+    secret.write_text("private", encoding="utf-8")
+    foreign = dispatcher.store.save_artifact(
+        path=str(secret),
+        filename="secret.csv",
+        content_type="text/csv",
+        size_bytes=secret.stat().st_size,
+        checksum="c" * 64,
+        frame_id=theirs,
+    )
+    ours_path = workspace / "ours.csv"
+    ours_path.write_text("mine", encoding="utf-8")
+    ours = dispatcher.store.save_artifact(
+        path=str(ours_path),
+        filename="ours.csv",
+        content_type="text/csv",
+        size_bytes=ours_path.stat().st_size,
+        checksum="d" * 64,
+        frame_id=mine,
+    )
+
+    dispatcher.frame_id = mine
+
+    # Our own version still reads, or the confinement would be useless.
+    assert (
+        dispatcher("lineage_get", [{"version_id": ours["version_id"]}])["filename"]
+        == "ours.csv"
+    )
+    dispatcher("lineage_graph", [{"version_id": ours["version_id"]}])
+
+    for method in ("lineage_get", "lineage_graph"):
+        with pytest.raises(KeyError):
+            dispatcher(method, [{"version_id": foreign["version_id"]}])
+        with pytest.raises(KeyError):
+            dispatcher(method, [{"version_id": "v-does-not-exist"}])

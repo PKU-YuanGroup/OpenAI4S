@@ -24,6 +24,35 @@ class FakeStore:
         self.metadata = {}
         self.frame_details = {}
         self.edges = {}
+        #: artifact_id -> row. Scope lives on the parent `artifacts` row, not
+        #: on the version, so a version-keyed read has to resolve it. The fake
+        #: declared neither this nor `resolve_frame_scope` while the Protocol
+        #: requires both, so it could only stand in for the unscoped calls.
+        self.artifacts_by_id = {
+            "a-root": {
+                "artifact_id": "a-root",
+                "root_frame_id": "frame-1",
+                "project_id": "default",
+            },
+            "a-1": {
+                "artifact_id": "a-1",
+                "root_frame_id": "frame-1",
+                "project_id": "default",
+            },
+        }
+        self.scope = {
+            "frame_id": "frame-1",
+            "root_frame_id": "frame-1",
+            "project_id": "default",
+        }
+
+    def get_artifact(self, artifact_id):
+        self.calls.append(("get_artifact", artifact_id))
+        return self.artifacts_by_id.get(artifact_id)
+
+    def resolve_frame_scope(self, frame_id):
+        self.calls.append(("resolve_frame_scope", frame_id))
+        return dict(self.scope)
 
     def query(self, sql, *, params=None, limit=None, timeout_s=5.0):
         self.calls.append(("query", sql, params, limit, timeout_s))
@@ -122,8 +151,16 @@ def test_artifact_search_keeps_filter_mutation_and_ranking(tmp_path):
 
     result = service.artifacts(filters)
 
-    assert filters == {"project_id": "p1"}
-    assert store.calls == [("list_artifacts", {"project_id": "p1"})]
+    # The caller's `project_id` is overwritten by the session's own scope --
+    # that confinement has always been the intent (see `artifacts`), but the
+    # fake did not implement `resolve_frame_scope`, so the branch never ran and
+    # this asserted the unscoped shape.
+    assert filters == {"root_frame_id": "frame-1", "project_id": "default"}
+    assert ("resolve_frame_scope", "frame-1") in store.calls
+    assert (
+        "list_artifacts",
+        {"root_frame_id": "frame-1", "project_id": "default"},
+    ) in store.calls
     assert result["count"] == 2
     assert [row["filename"] for row in result["artifacts"]] == [
         "protein_notes.txt",
