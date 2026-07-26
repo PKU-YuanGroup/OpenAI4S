@@ -2778,6 +2778,10 @@ class Store:
         """The most recent (non-discarded) plan for a frame, else the newest."""
         return self._plans.get_by_frame(frame_id)
 
+    def pause_orphaned_executing_plans(self) -> int:
+        """Startup reconciliation: no turn survives the process that ran it."""
+        return self._plans.pause_orphaned_executing()
+
     def list_plans(self, frame_id: str, *, limit: int = 50) -> list[dict]:
         return self._plans.list_for_frame(frame_id, limit=limit)
 

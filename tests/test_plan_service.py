@@ -190,7 +190,12 @@ def test_state_and_discard_keep_soft_failure_and_event_contract(tmp_path):
     [
         ("completed", "completed"),
         ("failed", "failed"),
-        ("cancelled", "executing"),
+        # Cancelling used to leave the plan on `executing`, which was not a
+        # preserved semantic so much as an absent one: nothing was going to
+        # move it afterwards, and `get_by_frame` prefers the newest
+        # non-discarded plan, so that row shadowed every later draft for the
+        # session. A cancelled plan is paused -- stopped, with work left.
+        ("cancelled", "paused"),
     ],
 )
 def test_execution_uses_normal_turn_and_preserves_status_semantics(

@@ -114,6 +114,12 @@ class SessionRecoveryService:
                 owner_instance_id=self.owner_instance_id,
                 finished_at=now,
             )
+        # Same reasoning as the kernel generations above: a turn cannot outlive
+        # the daemon that started it, so anything still `executing` here was
+        # left behind by a previous process and nothing is going to finish it.
+        pause_plans = getattr(self.store, "pause_orphaned_executing_plans", None)
+        if callable(pause_plans):
+            pause_plans()
         return generations
 
     def start(self) -> bool:

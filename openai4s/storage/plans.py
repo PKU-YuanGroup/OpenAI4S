@@ -7,6 +7,18 @@ import sqlite3
 import uuid
 from typing import Any, Callable
 
+#: Every status a plan may hold. Enforced in Python rather than as a SQL CHECK:
+#: the table is created with `CREATE TABLE IF NOT EXISTS`, so a constraint added
+#: now would apply to new databases only and quietly not to any existing one --
+#: a guard that protects whoever needs it least.
+#:
+#: `paused` is the one that was missing. A cancelled plan turn left the row on
+#: `executing` forever, and `get_by_frame` prefers the newest non-discarded
+#: plan, so that stuck row permanently shadowed every new draft for the session.
+PLAN_STATUSES = frozenset(
+    {"draft", "executing", "paused", "completed", "failed", "discarded"}
+)
+
 
 class PlanRepository:
     """CRUD for the ``plans`` table.
@@ -139,6 +151,11 @@ class PlanRepository:
         if steps is not None:
             add("steps", steps, as_json=True)
         if status is not None:
+            if status not in PLAN_STATUSES:
+                raise ValueError(
+                    f"unknown plan status {status!r}; expected one of "
+                    + ", ".join(sorted(PLAN_STATUSES))
+                )
             add("status", status)
         if step_status is not None:
             add("step_status", step_status, as_json=True)
@@ -154,6 +171,29 @@ class PlanRepository:
                 f"UPDATE plans SET {','.join(sets)} WHERE plan_id=?", params
             )
             self._connection.commit()
+
+    def pause_orphaned_executing(self) -> int:
+        """Move plans left mid-execution by a dead daemon to ``paused``.
+
+        A plan only reaches ``executing`` while a turn is running, and a turn
+        cannot outlive the process that started it. So on a fresh boot every
+        ``executing`` row is by definition orphaned: nothing is going to finish
+        it, and `get_by_frame` prefers the newest non-discarded plan, which
+        means that row shadows every new draft for its session until someone
+        edits the database.
+
+        Paused rather than failed. The steps that completed did complete, and
+        the honest description of a plan whose turn was interrupted is that it
+        stopped, not that it went wrong.
+        """
+        with self._lock:
+            cursor = self._connection.execute(
+                "UPDATE plans SET status='paused', updated_at=? "
+                "WHERE status='executing'",
+                (self._clock_ms(),),
+            )
+            self._connection.commit()
+            return int(cursor.rowcount or 0)
 
     def set_step_status(
         self,

@@ -5357,6 +5357,21 @@ class SessionRunner:
                 result = fn() or {}
                 result.setdefault("job_id", job.job_id)
                 job.finish(result=result)
+            except ExecutionCancelled as e:
+                # Cancelling is not failing. Without this clause a cancelled
+                # plan turn fell into the catch-all below and wrote
+                # `status="failed"` onto the frame -- so a user who pressed
+                # stop was shown an error, and the session carried a failure it
+                # never had. `submit_message` has always distinguished the two;
+                # the plan approve/revise path shares this spawner and did not.
+                job.finish(
+                    result={
+                        "status": "cancelled",
+                        "frame_id": root_frame_id,
+                        "job_id": job.job_id,
+                        "reason": str(e),
+                    }
+                )
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
                 try:

@@ -280,16 +280,23 @@ class PlanService:
             model,
             plan=False,
         )
-        final_status = (
-            "completed"
-            if result.get("status") == "completed"
-            else (
-                "failed"
-                if result.get("status") == "failed"
-                else self.store.get_plan(plan["plan_id"]).get("status") or "completed"
+        turn_status = result.get("status")
+        if turn_status == "completed":
+            final_status = "completed"
+        elif turn_status == "failed":
+            final_status = "failed"
+        elif turn_status == "cancelled":
+            # Cancelling leaves work to finish, so the plan is paused, not
+            # over. It used to fall through to "keep whatever is stored",
+            # which was `executing` -- and since `get_by_frame` prefers the
+            # newest non-discarded plan, that row then shadowed every new
+            # draft for the session, permanently.
+            final_status = "paused"
+        else:
+            final_status = (
+                self.store.get_plan(plan["plan_id"]).get("status") or "completed"
             )
-        )
-        if final_status in ("completed", "failed"):
+        if final_status in ("completed", "failed", "paused"):
             self.store.update_plan(plan["plan_id"], status=final_status)
         self.emit_ready(
             emit,
