@@ -19,7 +19,16 @@ import time
 import uuid
 from pathlib import Path
 
-_MAX_OUTPUT = 200_000  # per-job captured output cap (bytes)
+#: Per-job captured output cap. Characters, not bytes: `append` measures
+#: `len()` on a `str`, and the comment here said bytes for long enough that
+#: the two readings of the same number stopped agreeing. The R worker gates
+#: on bytes and says bytes; this one counts characters and now says so.
+_MAX_OUTPUT = 200_000
+#: Prepended, because the tail is what is kept. Without it a truncated log is
+#: indistinguishable from a job that printed less than it did.
+_TRUNCATION_NOTICE = (
+    f"...(earlier output dropped; showing the last {_MAX_OUTPUT} characters)\n"
+)
 _MAX_JOBS = 200  # registry cap (oldest finished pruned)
 _TERM_GRACE_S = 5.0  # how long a job may take to honour SIGTERM
 
@@ -163,6 +172,7 @@ class Job:
         self.finished_at: float | None = None
         self.exit_code: int | None = None
         self._out: list[str] = []
+        self._truncated = False
         self._proc: subprocess.Popen | None = None
         # Read at spawn and kept: once the leader is reaped, `os.getpgid` on
         # its pid raises, and the surviving group becomes unreachable exactly
@@ -182,14 +192,22 @@ class Job:
             total = sum(len(x) for x in self._out)
             while total > _MAX_OUTPUT and len(self._out) > 1:
                 total -= len(self._out.pop(0))
+                self._truncated = True
             # a single line larger than the cap must still be truncated, or the
             # per-job memory bound is defeated by one giant no-newline blob
             if total > _MAX_OUTPUT and len(self._out) == 1:
                 self._out[0] = self._out[0][-_MAX_OUTPUT:]
+                self._truncated = True
 
     def output(self) -> str:
         with self._lock:
-            return "".join(self._out)
+            value = "".join(self._out)
+            if not self._truncated:
+                return value
+            # The tail is kept on purpose -- for a job log the end is what
+            # explains how it finished. But the caller has to be told, or a
+            # silently short log reads as a job that simply printed less.
+            return _TRUNCATION_NOTICE + value
 
     def to_dict(self, *, with_output: bool = False) -> dict:
         d = {
@@ -399,10 +417,19 @@ class JobManager:
 
     def _prune_locked(self) -> None:
         while len(self._order) > _MAX_JOBS:
-            old = self._order.pop(0)
-            j = self._jobs.get(old)
-            if j and j.status in ("done", "failed", "cancelled"):
-                self._jobs.pop(old, None)
-            elif j:  # still running — keep it, drop from prune scan
-                self._order.append(old)
-                break
+            # Evict the oldest TERMINAL job, without disturbing the order of
+            # the rest. Re-appending a live job to the end used to move it:
+            # `list()` returns `reversed(self._order)`, so a long-running job
+            # climbed to the *top* of the Jobs panel and read as the newest
+            # submission -- the one entry a user is most likely to trust as
+            # "what I just started".
+            for index, job_id in enumerate(self._order):
+                job = self._jobs.get(job_id)
+                if job is None or job.status in ("done", "failed", "cancelled"):
+                    self._order.pop(index)
+                    self._jobs.pop(job_id, None)
+                    break
+            else:
+                # Every job is live. The registry stays over its cap rather
+                # than forgetting a job that is still running.
+                return
