@@ -120,11 +120,19 @@ jobs:
           python-version: "3.12"
       - name: Match the tag to both version declarations
         if: inputs.tag != ''
-        run: uv run --locked python scripts/verify_release_tag.py "${{ inputs.tag }}"
+        # Through env, not inlined. ci.yml states the rule for
+        # `github.head_ref` and this file broke it for `inputs.tag` -- the same
+        # substitution, in the most security-sensitive workflow. `attach` and
+        # `finalize` already do it correctly; these two did not.
+        env:
+          TAG: ${{ inputs.tag }}
+        run: uv run --locked python scripts/verify_release_tag.py "$TAG"
       - name: Require an annotated tag on main
         if: inputs.publish
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          if [ "$(git cat-file -t "${{ inputs.tag }}")" != "tag" ]; then
+          if [ "$(git cat-file -t "$TAG")" != "tag" ]; then
             echo "::error::Release tags must be annotated."
             exit 1
           fi
@@ -331,6 +339,10 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.tag }}
+          # This job holds `contents: write` and then runs a script out of the
+          # checked-out tag. Every other checkout here disables credential
+          # persistence; these two did not.
+          persist-credentials: false
           path: source
       - name: Publish, once PyPI has the version
         env:
