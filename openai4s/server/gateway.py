@@ -5931,7 +5931,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     global_views = GlobalResearchViewService(store, timeline)
     skill_customization = SkillCustomizationService(SkillLoader(cfg=cfg))
     _disabled_skills = skill_customization.disabled_names
-    _default_model = {"id": cfg.llm.model or "default"}
+    # Seeded from the store first. It used to read `cfg.llm.model` alone --
+    # the *process* config, whose `__post_init__` fills a concrete provider
+    # default when the field is blank. So a daemon whose model was configured
+    # through the UI (the documented path) came back after a restart offering
+    # only the stored model in `GET /models` while reporting a
+    # `default_model_id` that appeared in none of them; app.js assigns that id
+    # to `S.defaultModel`, no option matches, and the next message posts a
+    # model the user never chose to the provider they did.
+    _default_model = {
+        "id": (store.get_setting("llm_model") or "").strip()
+        or cfg.llm.model
+        or "default"
+    }
     model_profiles = ModelProfileService(
         store,
         cfg,
@@ -8580,9 +8592,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             return model_profiles.public_profile(p)
 
         def _model_profiles_payload(self) -> dict:
-            payload, selected_model = model_profiles.profiles_payload()
-            if selected_model:
-                _default_model["id"] = selected_model
+            # `profiles_payload` returns `(payload, None)` unconditionally, so
+            # the branch that used to live here never ran. It was the intended
+            # repair for the drift above, which is now fixed where the drift
+            # started -- at the seed -- rather than by a later route happening
+            # to be visited. Keeping a dead correction reads as coverage.
+            payload, _ = model_profiles.profiles_payload()
             return payload
 
         def _skills_catalog(self, disabled: set[str]) -> list[dict]:
