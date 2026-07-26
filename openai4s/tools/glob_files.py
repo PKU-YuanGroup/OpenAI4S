@@ -5,6 +5,10 @@ from __future__ import annotations
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
 
+#: How many matches a single glob returns. Named rather than inline so the
+#: bound and the `truncated` flag that reports it cannot drift apart.
+_MAX_MATCHES = 1000
+
 
 class GlobFilesTool(Tool):
     """Find files by glob while filtering credential-shaped basenames."""
@@ -44,11 +48,25 @@ class GlobFilesTool(Tool):
             relative = workspace.relative(path) if path.is_file() else None
             if relative is not None and not workspace.is_secret_path(relative):
                 matches.append(relative)
-        return {
+        # `count` used to be the PRE-slice total beside a sliced list, with no
+        # `truncated` key: a 5000-file glob answered `count: 5000` next to 1000
+        # entries, and the UI printed "5000 items" over 1000 rows. It also
+        # disagreed with `content_search`, whose `count` is the retained
+        # number -- one field name, two meanings, in the same tool family.
+        #
+        # `count` is now what was returned, everywhere. `total_count` keeps the
+        # information the old field carried, and `truncated` says plainly that
+        # the two differ.
+        returned = matches[:_MAX_MATCHES]
+        result = {
             "pattern": pattern,
-            "count": len(matches),
-            "matches": matches[:1000],
+            "count": len(returned),
+            "total_count": len(matches),
+            "matches": returned,
         }
+        if len(returned) < len(matches):
+            result["truncated"] = True
+        return result
 
 
 __all__ = ["GlobFilesTool"]

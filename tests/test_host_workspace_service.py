@@ -165,3 +165,59 @@ def test_list_dir_missing_directory_keeps_soft_fail_shape(tmp_path):
     result = dispatcher("list_dir", [{"path": "missing"}])
 
     assert result == {"error": "list_dir: no such directory: missing"}
+
+
+def test_grep_include_filters_recursively_like_the_unfiltered_search(tmp_path):
+    """`include` made the search narrower than the default, silently.
+
+    `Path.glob("*.py")` matches only direct children while the unfiltered
+    branch uses `rglob("*")`, so passing the schema's own documented example
+    searched one directory level instead of the tree. A model that followed the
+    documentation got a confident empty or partial answer -- the worst shape a
+    search result can have, because nothing about it looks wrong.
+    """
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / "nested").mkdir(parents=True, exist_ok=True)
+    (workspace / "top.py").write_text("NEEDLE here\n", encoding="utf-8")
+    (workspace / "nested" / "deep.py").write_text("NEEDLE there\n", encoding="utf-8")
+    (workspace / "nested" / "other.txt").write_text(
+        "NEEDLE ignored\n", encoding="utf-8"
+    )
+
+    filtered = dispatcher("grep", [{"pattern": "NEEDLE", "include": "*.py"}])
+    found = sorted(hit["file"] for hit in filtered["matches"])
+    assert found == ["nested/deep.py", "top.py"]
+
+    # Still a filter: the non-matching extension stays out.
+    assert all(name.endswith(".py") for name in found)
+
+
+def test_glob_reports_the_number_it_returned_not_the_number_it_found(tmp_path):
+    """`count` was the pre-slice total beside a sliced list.
+
+    A 5000-file glob answered `count: 5000` next to 1000 entries and no
+    `truncated` key, and `host_dispatch` rendered that straight into the UI as
+    "5000 items" over 1000 rows. It also disagreed with `content_search`, whose
+    `count` is the retained number -- one field name meaning opposite things in
+    the same tool family.
+    """
+    from openai4s.tools.glob_files import _MAX_MATCHES
+
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    bulk = workspace / "bulk"
+    bulk.mkdir(parents=True, exist_ok=True)
+    for index in range(_MAX_MATCHES + 25):
+        (bulk / f"f{index:05d}.dat").write_text("x", encoding="utf-8")
+
+    result = dispatcher("glob", [{"pattern": "bulk/*.dat"}])
+    assert len(result["matches"]) == _MAX_MATCHES
+    assert result["count"] == _MAX_MATCHES
+    assert result["total_count"] == _MAX_MATCHES + 25
+    assert result["truncated"] is True
+
+    # An untruncated glob says nothing about truncation.
+    small = dispatcher("glob", [{"pattern": "bulk/f0000*.dat"}])
+    assert small["count"] == small["total_count"] == len(small["matches"])
+    assert "truncated" not in small
