@@ -41,9 +41,22 @@ import threading
 import time
 import traceback
 
-MAX_OUTPUT = 1_000_000  # 1MB head cap on captured cell output
+MAX_OUTPUT = 1_000_000  # 1M-character head cap on captured cell output
 _DISCARD_BUDGET = 8  # bounded discard for desync
 _HOST_CALL_WIRE_CAP = 15_000_000  # 15MB host_call payload cap
+#: One streamed chunk. A `write()` used to become one frame of whatever size it
+#: was handed, so `print("x" * 200_000_000)` put a single ~200MB JSON line on
+#: the pipe and the host's `readline()` materialised it whole -- ~200MB
+#: allocated on both sides at once, from one ordinary statement.
+_MAX_CHUNK_CHARS = 64_000
+#: Hard backstop for every outbound frame, whatever its type. The inbound
+#: direction has had `_HOST_CALL_WIRE_CAP` all along; this side had nothing.
+#: Sits above the largest legitimate frame (a response carries stdout and
+#: stderr, each capped at MAX_OUTPUT) so it only ever catches a defect.
+_MAX_FRAME_BYTES = 8_000_000
+#: One spelling of the marker, so the streamed tail and the captured result
+#: cannot disagree about what happened.
+_TRUNCATION_MARKER = f"\n...(truncated at {MAX_OUTPUT} characters)"
 _MAX_CACHED_CELLS = 128  # linecache retention, evicted by counter
 
 # --- protocol channel setup (dup2 swap + publish) ---------------------
@@ -179,6 +192,23 @@ def _readline_protocol() -> str:
 
 def _write_frame(obj: dict) -> None:
     line = json.dumps(obj, ensure_ascii=False) + "\n"
+    if len(line.encode("utf-8", "replace")) > _MAX_FRAME_BYTES:
+        # Never put a frame on the wire that the host would have to
+        # materialise whole. Replaced rather than truncated: a truncated JSON
+        # line is not a frame at all, and the reader would desynchronise on it.
+        line = (
+            json.dumps(
+                {
+                    "type": "log",
+                    "msg": (
+                        f"kernel dropped an oversized {obj.get('type', 'unknown')!r} "
+                        f"frame (>{_MAX_FRAME_BYTES} bytes)"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
     with _write_lock():
         out = _proto_out()
         out.write(line)
@@ -403,17 +433,56 @@ def _install_host(ns: dict) -> None:
 
 
 class _StreamingStdout(io.StringIO):
-    """Captures stdout AND streams stdout_chunk frames live."""
+    """Captures stdout AND streams stdout_chunk frames live, both bounded.
+
+    Charged as the output is produced rather than when the response is built.
+    `_cap` at the end of the cell was the only bound, and it runs far too late
+    to matter: by then the whole string is already in worker RAM, and every
+    intermediate `write` has already been forwarded verbatim as its own frame.
+    """
 
     def __init__(self, cell_id: str) -> None:
         super().__init__()
         self._cell_id = cell_id
+        self._retained = 0
+        self._streamed = 0
+        self._marked = False
+        #: Whether anything was dropped. Retaining exactly `MAX_OUTPUT` makes
+        #: the result indistinguishable from output that simply ended there, so
+        #: the buffer has to say so itself -- otherwise the final `stdout` is
+        #: silently short, which is the failure this whole change is about.
+        self.truncated = False
+
+    def _emit(self, text: str) -> None:
+        _write_frame({"type": "stdout_chunk", "id": self._cell_id, "text": text})
 
     def write(self, s: str) -> int:  # type: ignore[override]
-        n = super().write(s)
-        if s:
-            _write_frame({"type": "stdout_chunk", "id": self._cell_id, "text": s})
-        return n
+        if not s:
+            return 0
+        room = MAX_OUTPUT - self._retained
+        if room > 0:
+            kept = s[:room]
+            super().write(kept)
+            self._retained += len(kept)
+            if len(kept) < len(s):
+                self.truncated = True
+        else:
+            self.truncated = True
+
+        budget = MAX_OUTPUT - self._streamed
+        if budget > 0:
+            payload = s[:budget]
+            self._streamed += len(payload)
+            for start in range(0, len(payload), _MAX_CHUNK_CHARS):
+                self._emit(payload[start : start + _MAX_CHUNK_CHARS])
+        if self._streamed >= MAX_OUTPUT and not self._marked:
+            # Exactly one marker per cell, matching the R worker's contract.
+            self._marked = True
+            self._emit(_TRUNCATION_MARKER)
+
+        # Report the full length. `print` treats a short return as a failed
+        # write and retries, which would turn a bounded stream into a loop.
+        return len(s)
 
 
 def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
@@ -515,14 +584,26 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
             guard_report = {}
 
     def _cap(s: str) -> str:
+        # `len` on a str counts characters, so the old "bytes" in this message
+        # was wrong -- and the R worker, which does gate on bytes, says so in
+        # its own units. Named for what it measures rather than made to agree
+        # by coincidence.
         if len(s) <= MAX_OUTPUT:
             return s
-        return s[:MAX_OUTPUT] + f"\n...(truncated at {MAX_OUTPUT} bytes)"
+        return s[:MAX_OUTPUT] + _TRUNCATION_MARKER
+
+    def _capped_stdout() -> str:
+        value = out_buf.getvalue()
+        # The streaming buffer stops retaining at the cap, so `_cap` alone can
+        # no longer tell a truncated result from one that ended there.
+        if getattr(out_buf, "truncated", False):
+            return value + _TRUNCATION_MARKER
+        return _cap(value)
 
     response = {
         "type": "response",
         "id": cell_id,
-        "stdout": _cap(out_buf.getvalue()),
+        "stdout": _capped_stdout(),
         "stderr": _cap(err_buf.getvalue()),
         "error": error_str,
         "interrupted": interrupted,
