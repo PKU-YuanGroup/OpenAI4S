@@ -1848,10 +1848,21 @@ def test_lineage_serializer_follows_latest_and_restored_version_edges(tmp_path):
     assert restored["interactions"][0]["files_read"] == ["input-a.txt"]
 
 
-def test_upload_base64_decode_and_raw_fallback(tmp_path):
-    """POST /api/uploads decode reality (docs/webapp-api.md §2): valid base64
-    decodes; non-alphabet chars are silently DISCARDED (not an error); only a
-    residual padding/length error falls back to storing the raw UTF-8 text."""
+def test_upload_decodes_base64_or_refuses_it(tmp_path):
+    """`POST /api/uploads` no longer reinterprets what it cannot decode.
+
+    It used to call `b64decode` without `validate=True`, so non-alphabet
+    characters were silently discarded and the payload decoded to *different
+    bytes* with no error -- the artifact then carried a checksum over content
+    nobody sent. When decoding did fail outright, it stored the raw string's
+    UTF-8 bytes: upload a `.npy` whose payload lost a character and the
+    artifact contained the base64 text, versioned and hashed and
+    indistinguishable from data.
+
+    This test asserted both behaviours, and the API doc recorded them as a
+    documented wart. A wart that silently rewrites scientific input is a
+    defect with a nicer name.
+    """
     cfg, runner, store, fid, st = _runner_frame(tmp_path)
     hub = _Hub()
     handler_cls = gateway_mod.make_handler(cfg, hub, runner)
@@ -1871,17 +1882,37 @@ def test_upload_base64_decode_and_raw_fallback(tmp_path):
     assert res["id"] == res["artifact_id"] and res["filename"] == "a.bin"
     assert _bytes(res) == b"\x00\x01binary"
 
-    # non-alphabet chars silently dropped, remainder decoded ("Zm9v!YmFy" → foobar)
+    # Line wrapping is transport formatting and still decodes.
+    wrapped = base64.b64encode(b"\x00\x01binary").decode()
     res = handler._upload(
-        {"filename": "b.bin", "content_base64": "Zm9v!YmFy", "frame_id": fid}
+        {
+            "filename": "wrapped.bin",
+            "content_base64": "\n".join(
+                wrapped[i : i + 4] for i in range(0, len(wrapped), 4)
+            ),
+            "frame_id": fid,
+        }
     )
-    assert _bytes(res) == b"foobar"
+    assert _bytes(res) == b"\x00\x01binary"
 
-    # padding/length error → the ORIGINAL string's UTF-8 bytes stored as-is
-    res = handler._upload(
-        {"filename": "c.bin", "content_base64": "%%% not base64 %%%", "frame_id": fid}
-    )
-    assert _bytes(res) == "%%% not base64 %%%".encode("utf-8")
+    # A stray non-alphabet character is corruption. It used to be dropped, and
+    # "Zm9v!YmFy" decoded to b"foobar" -- plausible bytes, wrong content.
+    with pytest.raises(gateway_mod.GatewayError) as dropped:
+        handler._upload(
+            {"filename": "b.bin", "content_base64": "Zm9v!YmFy", "frame_id": fid}
+        )
+    assert dropped.value.code == 400
+
+    # And text that is not base64 at all is refused rather than stored as-is.
+    with pytest.raises(gateway_mod.GatewayError) as raw:
+        handler._upload(
+            {
+                "filename": "c.bin",
+                "content_base64": "%%% not base64 %%%",
+                "frame_id": fid,
+            }
+        )
+    assert raw.value.code == 400
 
 
 # --- hand-rolled WebSocket wire format (risk register: payload drift) -------

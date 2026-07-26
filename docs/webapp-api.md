@@ -351,7 +351,7 @@ available through the query parameter.
 | `POST|PUT|PATCH /artifacts/{aid}/rename` | Body `{filename}`; missing → `400`; unknown → `404` → `{"ok":true,"artifact_id","filename"}`. |
 | `DELETE /artifacts/{aid}` | Deletes rows + snapshot files → `{"ok":true}`; broadcasts a *bare* `artifact_created`. |
 | `GET /artifacts/{ident}` | **Raw bytes** (see §1). |
-| `POST /uploads` | **Base64 JSON upload — not multipart.** Body `{filename?,content_base64` (or `content`)`,frame_id?,project_id?}`. Invalid base64 does not error (wart, two-tier): decoding uses `base64.b64decode` without `validate=True`, so **non-alphabet characters are silently discarded** before decoding; only when the result still has a bad length/padding (`binascii.Error`/`ValueError`) does it fall back to storing the raw string's UTF-8 bytes as-is. File lands in the session workspace (or `data_dir/uploads` without `frame_id`), is registered as a versioned artifact (`is_user_upload`), re-upload of the same name in the same frame creates a new version → `{"artifact_id","id","filename"}`. |
+| `POST /uploads` | **Base64 JSON upload — not multipart.** Body `{filename?, content_base64` (or `content`, or `content_text`)`, frame_id?, project_id?}`. Supply **exactly one** content field; two is a `400`, because which one is authoritative cannot be guessed. `content_base64`/`content` are strict base64 — whitespace is stripped (line wrapping is transport formatting) and anything else outside the alphabet is a `400`. `content_text` uploads text as UTF-8. A rejected upload writes nothing. This used to decode without `validate=True`, silently discarding stray characters so a corrupted payload decoded to different bytes with no error, and to fall back to storing the raw string's UTF-8 bytes — so a `.npy` that lost one character became an artifact containing base64 text, versioned and checksummed. File lands in the session workspace (or `data_dir/uploads` without `frame_id`), is registered as a versioned artifact (`is_user_upload`), re-upload of the same name in the same frame creates a new version → `{"artifact_id","id","filename"}`. |
 
 ### Skills / agents / specialists / connectors
 
@@ -556,9 +556,10 @@ compatibility; keep both when touching these serializers.
   `limit` on frames, and the Timeline's `before_ordinal`/`after_ordinal` +
   `limit` windows (§2).
 - `artifact_created` has four payload shapes; every field is optional (§3).
-- Uploads are JSON/base64, not multipart; non-alphabet characters in the
-  base64 are silently discarded, and input that still fails to decode is
-  silently stored as raw UTF-8 text (§2).
+- Uploads are JSON/base64, not multipart, and are strict: exactly one content
+  field, whitespace tolerated, anything else outside the base64 alphabet
+  refused with `400` rather than decoded to other bytes or stored as text
+  (§2).
 - Missing resources are inconsistently signaled: some routes 404 with
   `{error}`, others return `{}` (frame/project GET), `{"ok":true}`
   (idempotent deletes), a nulls-filled 200 (`/artifacts/{aid}/lineage`), or a
