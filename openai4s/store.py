@@ -2324,6 +2324,10 @@ class Store:
     def rename_artifact(self, artifact_id: str, filename: str) -> None:
         self._artifacts.rename_artifact(artifact_id, filename)
 
+    def artifact_by_unique_filename(self, filename: str) -> dict | None:
+        """A filename resolves only when it names exactly one artifact."""
+        return self._artifacts.artifact_by_unique_filename(filename)
+
     def artifact_by_filename(
         self, filename: str, root_frame_id: str | None = None, *, strict: bool = False
     ) -> dict | None:

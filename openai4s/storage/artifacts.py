@@ -264,6 +264,29 @@ class ArtifactRepository:
             ).fetchone()
         return self._get_artifact(row["artifact_id"]) if row else None
 
+    def artifact_by_unique_filename(self, filename: str) -> dict | None:
+        """Resolve a filename only when exactly one artifact carries it.
+
+        The unscoped lookup above answers "the most recently created artifact
+        with this name, anywhere" -- so `GET /artifacts/report.pdf` served
+        whichever *project* last happened to make a `report.pdf`. A caller
+        asking by name got an arbitrary cross-project match, with the right
+        content-type and no indication anything was chosen.
+
+        For a tool whose artifacts are research data, quietly serving the wrong
+        file is worse than serving none. Two matches is an ambiguous question,
+        and the honest answer to an ambiguous question is not one of the
+        candidates.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT artifact_id FROM artifacts WHERE filename=? LIMIT 2",
+                (filename,),
+            ).fetchall()
+        if len(rows) != 1:
+            return None
+        return self._get_artifact(rows[0]["artifact_id"])
+
     def artifact_write_scope(
         self,
         *,

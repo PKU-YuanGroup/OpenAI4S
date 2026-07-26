@@ -6518,7 +6518,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             path = store.resolve_artifact_path(ident)
             meta = None
             if path is None:
-                meta = store.artifact_by_filename(unquote(ident))
+                # Only when the name is unambiguous. This used to take the most
+                # recently created artifact with that filename *anywhere*, so
+                # `/artifacts/report.pdf` served whichever project last made a
+                # `report.pdf` -- an arbitrary cross-project match, delivered
+                # with a straight face. The UI never sends a filename here (it
+                # always sends `a.id`), so nothing first-party relied on the
+                # guess.
+                meta = store.artifact_by_unique_filename(unquote(ident))
                 if meta:
                     path = meta.get("path")
             else:

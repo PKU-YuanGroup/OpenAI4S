@@ -250,3 +250,57 @@ def test_web_state_requires_root_id_and_uses_root_project_as_authority(tmp_path)
     assert state.root_frame_id == root
     assert state.project_id == "project-web"
     assert state.workspace == runner.workspace_for(root)
+
+
+def test_serving_an_artifact_by_filename_refuses_an_ambiguous_name(tmp_path):
+    """`GET /artifacts/<name>` picked a project for you.
+
+    The fallback resolved a filename with `ORDER BY created_at DESC LIMIT 1`
+    across the whole installation, so a name shared by two projects served
+    whichever one was written most recently -- correct content-type, plausible
+    bytes, wrong file, no signal. For a tool whose artifacts are research data
+    that is worse than serving nothing.
+
+    Two matches is an ambiguous question, and the honest answer to an ambiguous
+    question is not one of the candidates. The UI always addresses artifacts by
+    id, so nothing first-party depended on the guess.
+    """
+    store = get_store(tmp_path / "ambiguous.db")
+    try:
+        shared = tmp_path / "report.pdf"
+        shared.write_bytes(b"alpha bytes")
+        first = store.save_artifact(
+            path=str(shared),
+            filename="report.pdf",
+            content_type="application/pdf",
+            size_bytes=shared.stat().st_size,
+            checksum="a" * 64,
+            frame_id="f-alpha",
+            root_frame_id="f-alpha",
+            project_id="alpha",
+        )
+        # A unique name still resolves.
+        assert store.artifact_by_unique_filename("report.pdf")["artifact_id"] == (
+            first["artifact_id"]
+        )
+
+        other = tmp_path / "beta-report.pdf"
+        other.write_bytes(b"beta bytes")
+        store.save_artifact(
+            path=str(other),
+            filename="report.pdf",
+            content_type="application/pdf",
+            size_bytes=other.stat().st_size,
+            checksum="b" * 64,
+            frame_id="f-beta",
+            root_frame_id="f-beta",
+            project_id="beta",
+        )
+
+        # Now two projects own the name, so it names nothing.
+        assert store.artifact_by_unique_filename("report.pdf") is None
+        # And the old lookup would still have answered, with one of them.
+        assert store.artifact_by_filename("report.pdf") is not None
+        assert store.artifact_by_unique_filename("never-created.pdf") is None
+    finally:
+        store.close()
