@@ -221,3 +221,52 @@ def test_glob_reports_the_number_it_returned_not_the_number_it_found(tmp_path):
     small = dispatcher("glob", [{"pattern": "bulk/f0000*.dat"}])
     assert small["count"] == small["total_count"] == len(small["matches"])
     assert "truncated" not in small
+
+
+def test_the_workspace_is_resolved_once_per_identity_not_once_per_call(tmp_path):
+    """`workspace()` did a `resolve()` and a `mkdir` on every call.
+
+    `relative()` calls it once per candidate path, and glob/grep/list_dir call
+    `relative()` once per file, so a scan over N files paid N resolves and N
+    mkdirs on top of the scan. Measured at ~16us per call before this change,
+    roughly half the total cost of `relative()` itself.
+
+    Keyed on the frame/workspace providers rather than cached outright, because
+    both are late-bound -- the CLI assigns its root frame after the dispatcher
+    exists. The key changing is precisely when the directory must be recomputed,
+    which is what the late-binding test above pins.
+    """
+    from openai4s.host.files import WorkspaceFileService
+
+    frame = {"id": "frame-a"}
+    made: list[str] = []
+    service = WorkspaceFileService(
+        data_dir=tmp_path / "data", frame_id=lambda: frame["id"]
+    )
+
+    real_mkdir = Path.mkdir
+
+    def counting_mkdir(self, *args, **kwargs):
+        # `parents=True` recurses into each missing parent, so count only the
+        # workspace directory itself.
+        if self.name.startswith("frame-"):
+            made.append(str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    Path.mkdir = counting_mkdir  # type: ignore[method-assign]
+    try:
+        first = service.workspace()
+        # However many syscalls creating it took, repeating the call adds none.
+        after_create = len(made)
+        for _ in range(50):
+            assert service.workspace() == first
+        assert len(made) == after_create, made[after_create:]
+
+        # A new frame is a different workspace, and must be resolved again --
+        # the memo is keyed, not unconditional.
+        frame["id"] = "frame-b"
+        second = service.workspace()
+        assert second != first
+        assert len(made) > after_create
+    finally:
+        Path.mkdir = real_mkdir  # type: ignore[method-assign]
