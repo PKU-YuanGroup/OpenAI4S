@@ -626,6 +626,17 @@ QUERY_DENYLIST = frozenset(
         "checkpoint_state_snapshots",
         "snapshot_operations",
         "recovery_journal",
+        # SQLite's own catalogue. The denylist above protects the *contents* of
+        # these tables and this one handed back their entire definition:
+        # `SELECT sql FROM sqlite_master WHERE name='permission_rules'` returned
+        # the full DDL of a denied table, and `SELECT name FROM sqlite_master`
+        # enumerated every one of them by name. `schema()` has always excluded
+        # the `sqlite_` prefix; `query()` never did, so the one surface actually
+        # exposed to the model was the one that leaked.
+        "sqlite_master",
+        "sqlite_schema",
+        "sqlite_temp_master",
+        "sqlite_temp_schema",
     }
 )
 

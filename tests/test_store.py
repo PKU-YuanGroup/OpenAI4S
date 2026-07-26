@@ -620,3 +620,35 @@ def test_lineage_input_with_no_version_row_keeps_id_null_identity(tmp_path):
     assert store.lineage_inputs(rec_out["version_id"]) == [
         {"version_id": "v-ghost", "filename": None, "path": None}
     ]
+
+
+def test_host_query_cannot_read_the_sqlite_catalogue(tmp_path):
+    """The denylist protected table *contents* and handed back their schema.
+
+    `QUERY_DENYLIST` covers `permission_rules`, `settings`, `host_call_log` and
+    two dozen others, so the model cannot read what is in them. But
+    `sqlite_master` was not on the list, and `SELECT sql FROM sqlite_master
+    WHERE name='permission_rules'` returned that table's entire DDL, while
+    `SELECT name FROM sqlite_master` enumerated every denied table by name.
+
+    `schema()` has always excluded the `sqlite_` prefix. `query()` -- the one
+    surface actually exposed to the model, via `host.query` -- never did, so
+    the protection was on the door nobody was trying.
+    """
+    store = get_store(tmp_path / "catalogue.db")
+    try:
+        for hostile in (
+            "SELECT name FROM sqlite_master",
+            "SELECT sql FROM sqlite_master WHERE name='permission_rules'",
+            "SELECT name FROM sqlite_schema",
+            "SELECT name FROM sqlite_temp_master",
+        ):
+            with pytest.raises(PermissionError):
+                store.query(hostile)
+
+        # The tables the model is meant to read are untouched.
+        assert store.query("SELECT * FROM frames LIMIT 1") == []
+        # And the sanctioned schema view still answers, without the catalogue.
+        assert not [name for name in store.schema() if str(name).startswith("sqlite_")]
+    finally:
+        store.close()
