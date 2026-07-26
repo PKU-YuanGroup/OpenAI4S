@@ -440,6 +440,84 @@ def build_provenance(assets: list[Path], *, version: str, source: dict) -> dict:
     }
 
 
+#: Name of the receipt the quality job writes and staging verifies.
+QUALITY_RECEIPT_NAME = "quality-receipt.json"
+
+
+def build_quality_receipt(source_sha: str, gates: list[dict]) -> dict:
+    """The document a quality run leaves behind.
+
+    Deliberately boring: the SHA the gates ran against, and one row per gate
+    with its exit code. Nothing here is a judgement -- the consumer decides
+    what passing means, so a receipt cannot flatter itself.
+    """
+    return {
+        "format": "openai4s-quality-receipt",
+        "schema_version": 1,
+        "source_sha": str(source_sha),
+        "gates": [
+            {
+                "name": str(gate["name"]),
+                "command": list(gate.get("command") or []),
+                "returncode": int(gate["returncode"]),
+            }
+            for gate in gates
+        ],
+    }
+
+
+def verify_quality_receipt(path: Path, *, expected_sha: str) -> dict:
+    """Read a receipt and refuse everything about it that is not proof.
+
+    The binding is the whole value. A receipt that records *a* SHA proves
+    nothing unless the consumer re-derives the SHA it is actually releasing and
+    compares -- otherwise it degrades into another `identity_configured`: a
+    field that reads as evidence and decides nothing.
+
+    Raises ``ReleaseError`` rather than returning a verdict, because every
+    caller here treats "cannot prove it" as "do not release".
+    """
+    if not path.is_file():
+        raise ReleaseError(
+            f"no quality receipt at {path}; staging cannot claim the suite ran. "
+            "The quality job must run at this SHA and upload its receipt."
+        )
+    try:
+        document = json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ReleaseError(f"quality receipt is unreadable: {error}") from error
+    if not isinstance(document, dict):
+        raise ReleaseError("quality receipt is not an object")
+    if document.get("format") != "openai4s-quality-receipt":
+        raise ReleaseError("quality receipt has an unrecognised format")
+    recorded = str(document.get("source_sha") or "")
+    if not recorded:
+        raise ReleaseError("quality receipt names no source SHA")
+    if not expected_sha:
+        raise ReleaseError(
+            "cannot determine the source SHA being released, so a receipt "
+            "cannot be bound to it"
+        )
+    if recorded != expected_sha:
+        raise ReleaseError(
+            f"quality receipt is for {recorded[:12]} but this release is "
+            f"{expected_sha[:12]}; the gates did not run on these sources"
+        )
+    gates = document.get("gates")
+    if not isinstance(gates, list) or not gates:
+        raise ReleaseError("quality receipt records no gates")
+    failed = [
+        str(gate.get("name"))
+        for gate in gates
+        if not isinstance(gate, dict) or int(gate.get("returncode", 1)) != 0
+    ]
+    if failed:
+        raise ReleaseError(
+            "quality receipt records failing gates: " + ", ".join(sorted(failed))
+        )
+    return document
+
+
 def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, Any]:
     """What actually signed this image, from evidence rather than intent.
 
@@ -616,11 +694,25 @@ class Pipeline:
 
     def step_test(self) -> StepResult:
         if self.from_artifacts:
+            # This used to answer "not run: the suite gated the build that
+            # produced these artifacts" and pass. The build job runs no suite
+            # at all -- it checks out the tag, scans for secrets, builds, and
+            # verifies the wheel's metadata. The sentence was not a shortcut,
+            # it was false, and it was the only thing standing between a
+            # release and "tests gated this".
+            head = self._head_sha()
+            receipt = verify_quality_receipt(
+                self.assets_dir / QUALITY_RECEIPT_NAME, expected_sha=head
+            )
             return StepResult(
                 "test",
                 True,
-                "not run: the suite gated the build that produced these artifacts",
-                {"from_artifacts": True},
+                f"quality receipt verified for {head[:12]}",
+                {
+                    "from_artifacts": True,
+                    "source_sha": head,
+                    "gates": [gate["name"] for gate in receipt["gates"]],
+                },
             )
         if self.dry_run:
             return StepResult("test", True, "would run the offline suite")
@@ -628,6 +720,12 @@ class Pipeline:
         if completed.returncode != 0:
             raise ReleaseError(f"the offline suite failed ({completed.returncode})")
         return StepResult("test", True, "offline suite passed")
+
+    def _head_sha(self) -> str:
+        completed = self._run(["git", "rev-parse", "HEAD"])
+        if completed.returncode != 0:
+            return ""
+        return (completed.stdout or b"").decode().strip()
 
     def step_assets(self) -> StepResult:
         if self.dry_run:

@@ -49,12 +49,56 @@ def _completed(returncode=0, stdout=b"", stderr=b""):
     return subprocess.CompletedProcess(["fake"], returncode, stdout, stderr)
 
 
+#: The SHA the fake runner reports for `git rev-parse HEAD`.
+FAKE_HEAD = "a" * 40
+
+
+def _git_aware(extra=None):
+    """A runner that answers `git rev-parse HEAD`, as the real one does.
+
+    `step_test` binds the quality receipt to the commit being released, so a
+    runner that answers every command with empty stdout leaves the pipeline
+    unable to say what it is releasing -- which the receipt check correctly
+    refuses.
+    """
+
+    def runner(argv, cwd=None):
+        parts = [str(a) for a in argv]
+        if extra is not None:
+            extra(" ".join(parts))
+        if parts[:3] == ["git", "rev-parse", "HEAD"]:
+            return _completed(0, FAKE_HEAD.encode())
+        return _completed()
+
+    return runner
+
+
+def _write_receipt(directory, *, source_sha=FAKE_HEAD, gates=None, **overrides):
+    """The document the quality job uploads beside the distributions."""
+    document = {
+        "format": "openai4s-quality-receipt",
+        "schema_version": 1,
+        "source_sha": source_sha,
+        "gates": gates
+        if gates is not None
+        else [
+            {"name": "pytest", "command": ["pytest"], "returncode": 0},
+            {"name": "mypy", "command": ["mypy"], "returncode": 0},
+        ],
+    }
+    document.update(overrides)
+    target = directory / "quality-receipt.json"
+    target.write_text(json.dumps(document), "utf-8")
+    return target
+
+
 @pytest.fixture
 def assets(tmp_path):
     directory = tmp_path / "dist"
     directory.mkdir()
     (directory / "openai4s-0.2.0-py3-none-any.whl").write_bytes(b"wheel-bytes")
     (directory / "openai4s-0.2.0.tar.gz").write_bytes(b"sdist-bytes")
+    _write_receipt(directory)
     return directory
 
 
@@ -103,7 +147,7 @@ def _matching_pypi(assets: Path):
 
 
 def _pipeline(assets, **kw):
-    kw.setdefault("runner", lambda argv, cwd=None: _completed())
+    kw.setdefault("runner", _git_aware())
     kw.setdefault("gh", lambda argv: _completed(0, b'{"assets": [], "isDraft": true}'))
     kw.setdefault("smoke", lambda wheel: "smoke injected")
     kw.setdefault("pypi_check", lambda project, version: True)
@@ -118,8 +162,14 @@ def _pipeline(assets, **kw):
 
 
 #: Local build evidence read from disk, never uploaded as release assets — so a
-#: faithful release listing must not include them.
-_LOCAL_ONLY_SIDECARS = (".codesign.json", ".components.json")
+#: faithful release listing must not include them. The quality receipt joins
+#: them: it is an *input* to staging, proving the gates ran at this commit, not
+#: something the release publishes.
+_LOCAL_ONLY_SIDECARS = (
+    ".codesign.json",
+    ".components.json",
+    "quality-receipt.json",
+)
 
 
 def _gh_for(assets: Path, *, is_draft=True, corrupt=None, drop=None, extra=None):
@@ -213,24 +263,78 @@ def test_a_dry_run_touches_nothing_and_still_reports_every_step(assets):
 # --------------------------------------------------------------------------
 
 
-def test_a_staging_run_does_not_rebuild_or_retest(assets):
-    """Its inputs *are* an earlier verified build. Rebuilding here would put
-    different bytes on GitHub than PyPI receives for the same version."""
+def test_a_staging_run_does_not_rebuild_but_must_prove_the_suite_ran(assets):
+    """Its inputs *are* an earlier verified build, so staging does not rebuild.
+
+    But "does not re-test" used to mean "asserts the tests happened". The step
+    returned `ok` with the sentence "not run: the suite gated the build that
+    produced these artifacts" -- and the build job runs no suite at all. It
+    checks out the tag, scans for secrets, builds, and verifies the wheel's
+    metadata. That sentence was the only thing standing between a release and
+    the claim that tests gated it, and it was false.
+
+    Staging now consumes a receipt bound to the commit it is releasing.
+    """
     ran: list[str] = []
-
-    def runner(argv, cwd=None):
-        ran.append(" ".join(str(a) for a in argv))
-        return _completed()
-
-    report = _pipeline(assets, from_artifacts=True, runner=runner).run()
+    report = _pipeline(assets, from_artifacts=True, runner=_git_aware(ran.append)).run()
 
     assert report["ok"], report
     joined = " ".join(ran)
     assert "-m build" not in joined, "staging re-ran the build"
     assert "-m pytest" not in joined, "staging re-ran the suite"
+
+    step = next(s for s in report["steps"] if s["step"] == "test")
+    assert step["facts"]["source_sha"] == FAKE_HEAD
+    assert step["facts"]["gates"] == ["pytest", "mypy"]
+
     for name in STAGING_SKIPPED:
-        step = next(s for s in report["steps"] if s["step"] == name)
-        assert step["facts"].get("from_artifacts") is True
+        if name == "test":
+            continue
+        skipped = next(s for s in report["steps"] if s["step"] == name)
+        assert skipped["facts"].get("from_artifacts") is True
+
+
+def test_staging_refuses_a_receipt_that_is_not_for_these_sources(assets):
+    """The binding is the whole value of the receipt.
+
+    A document that records *a* SHA proves nothing unless the consumer
+    re-derives the SHA it is actually releasing and compares. Without that it
+    is another `identity_configured`: a field that reads as evidence and
+    decides nothing.
+    """
+    _write_receipt(assets, source_sha="b" * 40)
+    report = _pipeline(assets, from_artifacts=True).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "test"
+    failed = next(s for s in report["steps"] if s["step"] == "test")
+    assert "did not run on these sources" in failed["detail"]
+
+
+def test_staging_refuses_a_missing_receipt(assets):
+    (assets / "quality-receipt.json").unlink()
+    report = _pipeline(assets, from_artifacts=True).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "test"
+    failed = next(s for s in report["steps"] if s["step"] == "test")
+    assert "no quality receipt" in failed["detail"]
+
+
+def test_staging_refuses_a_receipt_whose_gates_failed(assets):
+    """A receipt records exit codes and makes no judgement, so the consumer
+    has to make one. Recording a failure and releasing anyway would be a more
+    elaborate way of not checking."""
+    _write_receipt(
+        assets,
+        gates=[
+            {"name": "pytest", "command": ["pytest"], "returncode": 0},
+            {"name": "harness", "command": ["harness"], "returncode": 1},
+        ],
+    )
+    report = _pipeline(assets, from_artifacts=True).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "test"
+    failed = next(s for s in report["steps"] if s["step"] == "test")
+    assert "failing gates: harness" in failed["detail"]
 
 
 def test_a_distribution_that_changed_after_collection_stops_the_run(assets):
@@ -371,6 +475,10 @@ def test_a_release_is_never_published_when_a_check_failed(assets):
 def test_missing_assets_stop_the_run_before_anything_is_staged(tmp_path):
     empty = tmp_path / "dist"
     empty.mkdir()
+    # A valid receipt, so this test still fails on the thing it names. Without
+    # one the run stops earlier, at `test` -- also before anything is staged,
+    # but that is the receipt gate's assertion, not this one's.
+    _write_receipt(empty)
     report = _pipeline(empty).run()
     assert report["stopped_at"] == "assets"
 
@@ -552,7 +660,7 @@ def test_the_provenance_points_at_the_repository_this_source_lives_in(
         runner=lambda argv, cwd=None: (
             _completed(0, b"git@github.com:PKU-YuanGroup/OpenAI4S.git\n")
             if "remote.origin.url" in " ".join(str(a) for a in argv)
-            else _completed(0, b"abc123\n")
+            else _completed(0, FAKE_HEAD.encode())
         ),
     ).run()
     document = json.loads((assets / "provenance.intoto.json").read_text())

@@ -140,12 +140,16 @@ hardware and remain outside the secret-free default gate.
 
 ## Draft-first (from v0.2)
 
-The pipeline no longer starts after the release is public. `release.yml`
-triggers on `created`, which fires for a **draft**, and every step runs while
-nothing is visible:
+The pipeline no longer starts after the release is public. `release.yml` is
+`workflow_dispatch` only: a maintainer creates the draft, then runs the
+workflow against that tag, and every step runs while nothing is visible.
 
-    build → test → assets → SBOM → provenance → verify → draft → upload →
-    re-verify → publish
+It used to trigger on `release: [created]`. GitHub does not emit that event for
+a *draft*, so the intended entry point could never fire and the pipeline was
+unreachable by construction — which is why the trigger is now explicit.
+
+    build → test → assets → smoke → SBOM → provenance → checksums → verify →
+    draft → upload → re-verify → publish
 
 `publish` is last because it is the only step that cannot be undone. `verify`
 runs before the release is staged so a bad asset is caught while nothing is
@@ -167,11 +171,20 @@ published.
 
 ### What is and is not claimed about signing
 
-* `--mode release` **fails closed** when `OPENAI4S_MACOS_SIGNING_IDENTITY` is
-  unset and the release contains a `.dmg`. "The certificate was not
-  configured" is not a reason to publish unsigned.
-* `--mode local` builds the unsigned image and reports
-  `signing_identity_configured: false`. It does not pretend.
+* `--mode release` **fails closed** for a `.dmg` that is not
+  Developer-ID-signed. The judgement comes from evidence — a receipt written by
+  the macOS job, or `codesign` on the image — and the digest in that evidence
+  must bind to the image being released.
+* It deliberately does **not** consult `OPENAI4S_MACOS_SIGNING_IDENTITY`.
+  Reading a non-empty environment variable as "this is signed" is exactly what
+  let an ad-hoc image pass the gate as Developer-ID-signed, since
+  `build_macos_dmg.sh` only ever ad-hoc signs. The fact the report carries is
+  named `identity_configured`, it describes configuration rather than
+  signature, and nothing gates on it.
+* Consequence worth stating plainly: with no Developer ID certificate
+  available, **no DMG can pass `--mode release` today**. That is the intended
+  behaviour, not an oversight — but it means the macOS asset has no publishable
+  path until the certificate exists.
 * **Notarization is never reported as verified.** It requires Apple's notary
   service and a paid identity, so the pipeline reports `notarized: null` with
   the reason. A pipeline that printed `notarized: ok` without one would be
