@@ -246,6 +246,10 @@ def test_lineage_projection_and_bounded_graph(tmp_path):
         "inputs": [{"version_id": "v-input"}],
         "extraction_pending": False,
     }
+    # `v-a -> v-c` exists but is past the depth limit, so the graph is partial
+    # and says so. It used to return the same nodes with nothing to indicate
+    # that a reachable edge had been left out -- a lineage claim that is wrong
+    # rather than incomplete.
     assert service.lineage_graph(
         {"version_id": "v-root", "direction": "down", "max_depth": 1}
     ) == {
@@ -255,7 +259,13 @@ def test_lineage_projection_and_bounded_graph(tmp_path):
             {"from": "v-root", "to": "v-a", "direction": "down"},
             {"from": "v-root", "to": "v-b", "direction": "down"},
         ],
+        "truncated": True,
     }
+
+    # A walk that reaches the end of the graph makes no such claim.
+    assert "truncated" not in service.lineage_graph(
+        {"version_id": "v-root", "direction": "down"}
+    )
 
 
 def test_provenance_soft_failure_and_dynamic_store_provider(tmp_path):

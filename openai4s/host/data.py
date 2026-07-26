@@ -90,6 +90,14 @@ ConfigProvider = Callable[[], Any]
 FrameIdProvider = Callable[[], str | None]
 PathResolver = Callable[..., Path]
 
+#: Bounds for a lineage walk when the caller names none. They are generous
+#: enough that a real provenance chain fits, and they exist because the
+#: alternative -- omitting an optional argument -- used to mean "traverse
+#: everything reachable".
+_DEFAULT_LINEAGE_DEPTH = 32
+_DEFAULT_LINEAGE_NODES = 500
+_MAX_LINEAGE_EDGES = 5000
+
 FRAME_STATUSES = frozenset({"processing", "done", "failed", "awaiting_user_response"})
 
 _VALID_MARKER_ID = re.compile(
@@ -465,29 +473,57 @@ class HostDataService:
         }
 
     def lineage_graph(self, spec: dict) -> dict:
+        """Walk the lineage graph from one version, always bounded.
+
+        `max_depth` and `max_nodes` are both optional in the tool schema, and
+        with neither supplied this walked every edge reachable in the whole
+        `lineage_edges` table -- across every session and project -- while
+        `frontier` and `edges` grew without any limit of their own. A caller
+        that omits an argument should get a bounded answer, not the database.
+
+        The caps are still caller-lowerable; what changed is that omitting them
+        no longer means "no limit". `truncated` says plainly when the walk
+        stopped early, because a silently partial graph is a lineage claim that
+        is wrong rather than absent.
+        """
         start = spec["version_id"]
         direction = spec.get("direction", "up")
         max_depth = spec.get("max_depth")
+        max_depth = _DEFAULT_LINEAGE_DEPTH if max_depth is None else int(max_depth)
         max_nodes = spec.get("max_nodes")
+        max_nodes = _DEFAULT_LINEAGE_NODES if max_nodes is None else int(max_nodes)
+        max_nodes = max(1, max_nodes)
         seen: set[str] = set()
         edges: list[dict] = []
         frontier = [(start, 0)]
         store = self._store()
+        truncated = False
         while frontier:
             version_id, depth = frontier.pop(0)
             if version_id in seen:
                 continue
-            seen.add(version_id)
-            if max_nodes and len(seen) > max_nodes:
+            if len(seen) >= max_nodes:
+                # Checked BEFORE adding, so the cap is the number of nodes
+                # returned rather than one more than it.
+                truncated = True
                 break
-            if max_depth is not None and depth >= max_depth:
+            seen.add(version_id)
+            if depth >= max_depth:
+                if frontier or store.lineage_edges_for(version_id, direction):
+                    truncated = True
                 continue
             for adjacent in store.lineage_edges_for(version_id, direction):
+                if len(edges) >= _MAX_LINEAGE_EDGES:
+                    truncated = True
+                    break
                 edges.append(
                     {"from": version_id, "to": adjacent, "direction": direction}
                 )
                 frontier.append((adjacent, depth + 1))
-        return {"root": start, "nodes": sorted(seen), "edges": edges}
+        result = {"root": start, "nodes": sorted(seen), "edges": edges}
+        if truncated:
+            result["truncated"] = True
+        return result
 
     def provenance_resolve_path(self, path: str) -> Any:
         return self._store().version_for_path(path)

@@ -177,3 +177,104 @@ def test_listening_sockets_are_deliberately_out_of_scope():
     """
     sites = _egress_sites()
     assert "openai4s/share/relay.py" not in sites
+
+
+# --------------------------------------------------------------------------
+# the same question, asked of the bundled Skills
+# --------------------------------------------------------------------------
+
+_SKILLS = Path(__file__).resolve().parent.parent / "skills"
+
+#: Bundled skill sidecars that reach the network directly, and why each is
+#: still doing so. This table exists to *freeze* the set, not to bless it.
+#:
+#: The scanner above has only ever looked at `openai4s/`, and its own docstring
+#: names the gap: it "cannot see egress from a subprocess -- a kernel cell
+#: running `requests`". A skill sidecar is exactly that. `openai4s/egress.py`
+#: is consulted by `webtools`/`web_fetch` and the bash gate; `openai4s/kernel/`
+#: mentions egress once, to forward `OPENAI4S_EGRESS` as an environment
+#: variable. So these calls do not merely bypass the allowlist by convention --
+#: nothing in the analysis kernel enforces it on them at all.
+#:
+#: Removing an entry is the goal. Adding one needs a reason that survives
+#: someone asking why `host.web_fetch` would not do.
+_SKILL_EGRESS: dict[str, str] = {
+    "skills/literature-review/kernel.py": (
+        "DOI/OpenAlex lookups. The clean migration: `host.web_fetch` covers "
+        "the GET, but has no HEAD mode for the existence probe and no way to "
+        "pass the polite-pool User-Agent."
+    ),
+    "skills/mineral_spectra_analysis/kernel.py": (
+        "Downloads the RRUFF spectra ZIP. Binary, so `web_fetch` is the wrong "
+        "shape; it needs a host-mediated download-to-workspace, or a "
+        "caller-supplied `zip_path` using the `allow_download=False` branch "
+        "the function already has."
+    ),
+    "skills/catalyst_sar_screening/kernel.py": (
+        "A reachability probe against a model endpoint. Replaceable by a "
+        "short-timeout `host.web_fetch`, or by dropping it and failing at the "
+        "real download."
+    ),
+}
+
+
+def _skill_egress_sites() -> dict[str, list[tuple[int, str]]]:
+    """The same AST scan, rooted at `skills/` instead of the package."""
+    sites: dict[str, list[tuple[int, str]]] = {}
+    if not _SKILLS.is_dir():
+        return sites
+    for path in sorted(_SKILLS.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text("utf-8"))
+        except (OSError, SyntaxError):  # pragma: no cover - unreadable source
+            continue
+        rel = path.relative_to(_SKILLS.parent).as_posix()
+        for node in ast.walk(tree):
+            name = None
+            if isinstance(node, ast.ImportFrom) and node.module in _EGRESS_MODULES:
+                for alias in node.names:
+                    if alias.name in _EGRESS_NAMES:
+                        sites.setdefault(rel, []).append((node.lineno, alias.name))
+                continue
+            if isinstance(node, ast.Attribute) and node.attr in _EGRESS_NAMES:
+                name = node.attr
+            elif isinstance(node, ast.Name) and node.id in {
+                "urlopen",
+                "create_connection",
+                "build_opener",
+            }:
+                name = node.id
+            if name:
+                sites.setdefault(rel, []).append((node.lineno, name))
+    return sites
+
+
+def test_no_undeclared_skill_reaches_the_network():
+    """A bundled skill that opens a socket must be named here.
+
+    The frozen surface for `openai4s/` has existed for a while; `skills/` was
+    entirely outside it, which is where the unenforced egress actually lives.
+    This does not stop the three below from doing it -- it stops a fourth from
+    appearing without anyone deciding to allow it.
+    """
+    undeclared = {
+        module: sites
+        for module, sites in _skill_egress_sites().items()
+        if module not in _SKILL_EGRESS
+    }
+    assert undeclared == {}, (
+        "these bundled skills reach the network and are not declared in "
+        f"_SKILL_EGRESS: {undeclared}. Prefer `host.web_fetch`, which is "
+        "subject to the egress allowlist and the SSRF guard; if it genuinely "
+        "cannot serve, add an entry saying why."
+    )
+
+
+def test_every_declared_skill_egress_entry_is_still_real():
+    """A declaration for a skill that no longer reaches the network reads as a
+    standing exemption for something already fixed."""
+    sites = _skill_egress_sites()
+    stale = sorted(module for module in _SKILL_EGRESS if module not in sites)
+    assert (
+        stale == []
+    ), f"these no longer reach the network; drop their _SKILL_EGRESS entry: {stale}"
