@@ -11,14 +11,61 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
+import time
+from collections import deque
 from collections.abc import Mapping
 from typing import Any
 
 PROTOCOL_VERSION = "2024-11-05"
 _DEFAULT_TIMEOUT = 30.0
+
+#: Absolute deadline for one request. Previously there was none: `_read_reply`
+#: called `readline()` in a loop, so a connector that accepted a request and
+#: never answered held its caller forever -- and, because the manager takes its
+#: own lock across connect, held every other connector too.
+DEFAULT_TIMEOUT_S = 60.0
+#: Largest single JSON-RPC line accepted. `readline()` has no size bound, so one
+#: newline-free multi-gigabyte line was a single allocation in the daemon.
+_MAX_FRAME_BYTES = 4 * 1024 * 1024
+#: Bounded diagnostic tail. stderr used to go to DEVNULL: no deadlock, and also
+#: no way to say why a connector failed.
+_STDERR_TAIL_LINES = 200
+#: How many replies to ids nobody asked for before treating the channel as
+#: desynchronised. Staying attached to such a server only defers the failure.
+_MAX_INVALID_IDS = 64
+
+
+def _read_bounded_line(stream: Any) -> str | None:
+    """Read one line, refusing to materialise an unbounded one.
+
+    Returns ``None`` at EOF. A line over the budget is consumed and dropped
+    rather than truncated: half a JSON object is not a frame, and returning it
+    would desynchronise the reader on the next line.
+    """
+    if stream is None:
+        return None
+    chunks: list[str] = []
+    size = 0
+    while True:
+        char = stream.read(1)
+        if not char:
+            return "".join(chunks) if chunks else None
+        if char == "\n":
+            return "".join(chunks)
+        size += 1
+        if size > _MAX_FRAME_BYTES:
+            # Drain to the newline so the next read starts on a frame boundary.
+            while True:
+                skip = stream.read(1)
+                if not skip or skip == "\n":
+                    break
+            return ""
+        chunks.append(char)
+
 
 # A connector is third-party code.  Never copy the daemon's complete environment
 # into it: that would silently expose provider keys, cloud credentials, and
@@ -52,6 +99,14 @@ _CONNECTOR_RUNTIME_ENV = frozenset(
 
 class MCPError(RuntimeError):
     pass
+
+
+class MCPTimeout(MCPError):
+    """A request outlived its deadline.
+
+    A subclass so every existing `except MCPError` still catches it and the
+    soft-fail wrappers in `host/mcp.py` keep their exact message shapes.
+    """
 
 
 def _connector_environment(
@@ -95,21 +150,51 @@ def _connector_environment(
 
 class MCPConnection:
     def __init__(
-        self, command: list[str], env: dict | None = None, cwd: str | None = None
+        self,
+        command: list[str],
+        env: dict | None = None,
+        cwd: str | None = None,
+        *,
+        timeout: float | None = None,
     ):
         self.command = command
         self._id = 0
         self._lock = threading.Lock()
+        self._timeout = float(timeout if timeout is not None else DEFAULT_TIMEOUT_S)
+        #: id -> the waiter that asked for it. A dedicated reader thread routes
+        #: replies here instead of every caller racing on `readline`.
+        self._pending: dict[int, "queue.Queue[dict]"] = {}
+        #: ids whose caller has already given up. A server may still answer a
+        #: timed-out request, and without this the reply would be sitting in the
+        #: pipe for the NEXT request to read as its own -- which is why adding a
+        #: timeout to the old per-call `readline` would have been a correctness
+        #: regression rather than a fix.
+        self._abandoned: set[int] = set()
+        self._closed = threading.Event()
+        self._failure: str | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
         self._proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            # Piped so a failing connector can say why, and drained
+            # concurrently below. A pipe nobody reads fills at 64 KB and blocks
+            # the child in `write` -- the two halves of this change cannot be
+            # separated.
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             env=env,
             cwd=cwd,
         )
+        self._reader = threading.Thread(
+            target=self._read_loop, name="mcp-reader", daemon=True
+        )
+        self._reader.start()
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, name="mcp-stderr", daemon=True
+        )
+        self._stderr_thread.start()
         self._init()
 
     # -- wire ----------------------------------------------------------------
@@ -118,34 +203,114 @@ class MCPConnection:
         self._proc.stdin.write(json.dumps(obj) + "\n")
         self._proc.stdin.flush()
 
-    def _read_reply(self, want_id: int) -> dict:
-        assert self._proc.stdout is not None
-        while True:
-            line = self._proc.stdout.readline()
-            if not line:
-                raise MCPError("MCP server closed the connection")
-            line = line.strip()
-            if not line:
-                continue
+    def _drain_stderr(self) -> None:
+        stream = self._proc.stderr
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                self._stderr_tail.append(line.rstrip("\n"))
+        except (OSError, ValueError):
+            pass
+
+    def stderr_tail(self) -> str:
+        return "\n".join(self._stderr_tail)
+
+    def _fail_all(self, reason: str) -> None:
+        """Wake every waiter once the channel can no longer answer them."""
+        self._failure = reason
+        self._closed.set()
+        with self._lock:
+            waiters = list(self._pending.items())
+            self._pending.clear()
+        for _mid, waiter in waiters:
             try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            # skip notifications / unrelated ids
-            if msg.get("id") != want_id:
-                continue
-            if "error" in msg and msg["error"] is not None:
-                raise MCPError(str(msg["error"].get("message") or msg["error"]))
-            return msg.get("result") or {}
+                waiter.put_nowait({"__closed__": reason})
+            except Exception:  # noqa: BLE001 - a waiter that already gave up
+                pass
+
+    def _read_loop(self) -> None:
+        """The only reader. One thread owns the pipe; callers own their ids."""
+        stream = self._proc.stdout
+        invalid_ids = 0
+        try:
+            while True:
+                line = _read_bounded_line(stream)
+                if line is None:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                mid = msg.get("id")
+                if mid is None:
+                    continue  # a notification; nobody is waiting on it
+                with self._lock:
+                    waiter = self._pending.pop(mid, None)
+                    if waiter is None:
+                        if mid in self._abandoned:
+                            # Exactly what this set exists for: discard the
+                            # late answer instead of letting it be mistaken
+                            # for the next request's.
+                            self._abandoned.discard(mid)
+                            continue
+                        invalid_ids += 1
+                if waiter is not None:
+                    try:
+                        waiter.put_nowait(msg)
+                    except Exception:  # noqa: BLE001
+                        pass
+                elif invalid_ids > _MAX_INVALID_IDS:
+                    # A server answering ids nobody asked for is desynchronised,
+                    # and staying attached to it only defers the failure.
+                    break
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._fail_all(self._failure or "MCP server closed the connection")
 
     def _request(self, method: str, params: dict | None = None) -> dict:
+        deadline = time.monotonic() + self._timeout
         with self._lock:
+            if self._closed.is_set():
+                raise MCPError(self._failure or "MCP server closed the connection")
             self._id += 1
             mid = self._id
-            self._send(
-                {"jsonrpc": "2.0", "id": mid, "method": method, "params": params or {}}
-            )
-            return self._read_reply(mid)
+            waiter: "queue.Queue[dict]" = queue.Queue(maxsize=1)
+            self._pending[mid] = waiter
+            try:
+                self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": mid,
+                        "method": method,
+                        "params": params or {},
+                    }
+                )
+            except Exception:
+                self._pending.pop(mid, None)
+                raise
+        try:
+            msg = waiter.get(timeout=max(0.0, deadline - time.monotonic()))
+        except queue.Empty:
+            with self._lock:
+                self._pending.pop(mid, None)
+                self._abandoned.add(mid)
+            raise MCPTimeout(
+                f"MCP request {method!r} exceeded {self._timeout:g}s"
+            ) from None
+        if "__closed__" in msg:
+            raise MCPError(str(msg["__closed__"]))
+        if "error" in msg and msg["error"] is not None:
+            error = msg["error"]
+            detail = error.get("message") if isinstance(error, dict) else None
+            raise MCPError(str(detail or error))
+        return msg.get("result") or {}
 
     def _notify(self, method: str, params: dict | None = None) -> None:
         with self._lock:
@@ -170,6 +335,7 @@ class MCPConnection:
         return self._proc.poll() is None
 
     def close(self) -> None:
+        self._fail_all("MCP connection closed")
         try:
             if self._proc.stdin:
                 self._proc.stdin.close()
@@ -181,6 +347,20 @@ class MCPConnection:
         except Exception:  # noqa: BLE001
             try:
                 self._proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+            else:
+                # Reap it. `kill()` only delivers the signal; without the wait
+                # the child stays a zombie, and a connector that has to be
+                # killed is exactly the one that gets closed repeatedly.
+                try:
+                    self._proc.wait(timeout=3)
+                except Exception:  # noqa: BLE001
+                    pass
+        for stream in (self._proc.stdout, self._proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -239,6 +419,10 @@ class MCPManager:
 
     def __init__(self) -> None:
         self._conns: dict[str, MCPConnection] = {}
+        #: Live probes. They are not cached by connector id -- a probe is
+        #: deliberately a fresh connection -- but they are still children this
+        #: process owns, and `shutdown` has to be able to reach them.
+        self._probes: set[MCPConnection] = set()
         self._lock = threading.Lock()
 
     @staticmethod
@@ -274,12 +458,25 @@ class MCPManager:
             conn = self._connect(config)
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
+        # Registered while it lives, so `shutdown` can reach it. A probe used
+        # to connect without registering anywhere: if it hung, its `finally`
+        # never ran and the orphaned connector process was invisible to both
+        # `disconnect` and `shutdown` forever -- one leaked child per hung
+        # "Test" click, unreapable.
+        with self._lock:
+            self._probes.add(conn)
         try:
             tools = conn.list_tools()
             return {"ok": True, "tools": tools}
         except Exception as e:  # noqa: BLE001
-            return {"ok": False, "error": str(e)}
+            detail = str(e)
+            tail = conn.stderr_tail()
+            if tail:
+                detail = f"{detail} (connector stderr: {tail[-500:]})"
+            return {"ok": False, "error": detail}
         finally:
+            with self._lock:
+                self._probes.discard(conn)
             conn.close()
 
     def list_tools(self, connector_id: str, config: dict) -> list[dict]:
@@ -326,8 +523,9 @@ class MCPManager:
 
     def shutdown(self) -> None:
         with self._lock:
-            conns = list(self._conns.values())
+            conns = list(self._conns.values()) + list(self._probes)
             self._conns.clear()
+            self._probes.clear()
         for c in conns:
             c.close()
 

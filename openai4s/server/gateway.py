@@ -8197,6 +8197,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json({"error": "name and command required"}, 400)
                     return
                 cid = b.get("connector_id") or _skill_slug(nm)
+                # Drop any cached process first: it was spawned from the old
+                # command/env and would keep serving from them. Only DELETE
+                # disconnected, so editing a connector left the previous
+                # configuration running and answering.
+                from openai4s.mcp_client import manager as _mcp_manager
+
+                _mcp_manager().disconnect(cid)
                 # upsert_connector re-reads the row, so echoing its return value
                 # replayed the env the client just sent straight back out.
                 self._json(
@@ -8218,9 +8225,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/connectors/([^/]+)/enabled", sub)
             if m and method in ("PUT", "PATCH"):
-                store.set_connector_enabled(
-                    m.group(1), bool(self._body().get("enabled", True))
-                )
+                enabled = bool(self._body().get("enabled", True))
+                store.set_connector_enabled(m.group(1), enabled)
+                if not enabled:
+                    # Disabling wrote the row and left the child running. A
+                    # connector the user has switched off should not still be a
+                    # live process holding whatever it holds.
+                    from openai4s.mcp_client import manager as _mcp_manager
+
+                    _mcp_manager().disconnect(m.group(1))
                 self._json({"ok": True})
                 return
             m = re.fullmatch(r"/connectors/([^/]+)/probe", sub)
