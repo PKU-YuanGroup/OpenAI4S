@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from openai4s.artifact_restore import ArtifactRestoreService
+from openai4s.artifact_restore import ArtifactRestoreService, trusted_snapshot_roots
 from openai4s.execution import CaptureResult
 
 _JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
@@ -309,7 +309,7 @@ class ArtifactManager:
             restored = ArtifactRestoreService(
                 store=self.store,
                 primary_snapshot_dir=self.versions_dir(),
-                trusted_snapshot_dirs=(self.data_dir / "artifacts",),
+                trusted_snapshot_dirs=trusted_snapshot_roots(self.data_dir),
                 resolve_live_path=self.restore_live_path,
             ).restore(
                 artifact=artifact,

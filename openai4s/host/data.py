@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from openai4s.artifact_restore import ArtifactRestoreService
+from openai4s.artifact_restore import ArtifactRestoreService, trusted_snapshot_roots
 
 
 class HostDataStore(Protocol):
@@ -297,15 +297,15 @@ class HostDataService:
         artifact = self._scoped_artifact(artifact_id)
         store = self._store()
         config = self._config()
-        legacy_versions = (
-            (Path(config.data_dir) / "artifact-versions")
+        trusted = (
+            trusted_snapshot_roots(config.data_dir)
             if getattr(config, "data_dir", None) is not None
-            else Path(config.artifacts_dir)
+            else (Path(config.artifacts_dir),)
         )
         service = ArtifactRestoreService(
             store=store,
             primary_snapshot_dir=Path(config.artifacts_dir),
-            trusted_snapshot_dirs=(legacy_versions,),
+            trusted_snapshot_dirs=trusted,
             resolve_live_path=lambda current_artifact, current: self._resolve_path(
                 str(current.get("path") or current_artifact.get("filename"))
             ),
