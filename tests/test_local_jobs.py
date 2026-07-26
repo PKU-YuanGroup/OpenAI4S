@@ -108,8 +108,14 @@ def test_a_cancel_that_cannot_stop_the_job_reports_failure(manager, monkeypatch)
     job = manager.submit("sleep 120", kind="bash")
     assert _wait_for(lambda: manager._jobs[job["id"]]._proc is not None)
 
-    monkeypatch.setattr("openai4s.jobs._signal_group", lambda proc, pgid, sig: None)
-    monkeypatch.setattr("openai4s.jobs._TERM_GRACE_S", 0.2)
+    # The seam lives with the ladder, which `jobs` and the kernel-side bash
+    # executor now share. Patching `openai4s.jobs` would silently stop
+    # reaching it -- `stop_process_group` resolves these from its own module.
+    monkeypatch.setattr(
+        "openai4s.execution.process_group.signal_group",
+        lambda proc, pgid, sig: None,
+    )
+    monkeypatch.setattr("openai4s.execution.process_group.TERM_GRACE_S", 0.2)
 
     out = manager.cancel(job["id"])
     assert out["ok"] is False
