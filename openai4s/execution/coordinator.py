@@ -48,6 +48,13 @@ TERMINAL_STATES = frozenset(
 )
 
 
+#: How many executions may wait behind the running one, per session. An
+#: initial value rather than a frozen one: it is generous enough that no
+#: interactive workflow reaches it, and the point is that *some* number exists
+#: where previously none did.
+DEFAULT_MAX_QUEUE_DEPTH = 64
+
+
 class CoordinatorError(RuntimeError):
     """Base error for admission and ticket-lifecycle failures."""
 
@@ -62,6 +69,21 @@ class ExecutionCancelled(CoordinatorError):
 
 class TicketStateError(CoordinatorError):
     """Raised when an operation does not target the exact active ticket."""
+
+
+class QueueDepthExceeded(CoordinatorError):
+    """Raised when a session's pending queue is already at its cap.
+
+    The FIFO is the one admission path every executing writer goes through --
+    agent turns, user REPL cells, lifecycle and recovery work -- and its
+    `deque` had no length check anywhere in the file. Capping the workers and
+    the buffers while leaving the queue unbounded moves the growth rather than
+    stopping it: the tickets accumulate instead, each holding its own metadata
+    and resource keys, and nothing refuses the submission that will never run.
+
+    Refused at submit rather than dropped later, so the caller learns now
+    instead of waiting on a ticket that was never going to be admitted.
+    """
 
 
 @dataclass(frozen=True)
@@ -270,7 +292,9 @@ class SessionExecutionCoordinator:
         event_sink: EventSink | None = None,
         clock: Clock = time.time,
         id_factory: IdFactory | None = None,
+        max_queue_depth: int = DEFAULT_MAX_QUEUE_DEPTH,
     ) -> None:
+        self._max_queue_depth = max(1, int(max_queue_depth))
         self._event_sink = event_sink
         self._clock = clock
         self._id_factory = id_factory or (lambda: f"exec-{uuid.uuid4().hex}")
@@ -324,6 +348,18 @@ class SessionExecutionCoordinator:
                 resource_keys=resource_keys,
                 metadata=metadata,
             )
+            # Refuse before registering anything. The cap counts what is
+            # waiting, not what is running: one admitted execution plus a full
+            # queue is the intended steady state, and counting the active
+            # ticket would make the effective depth one smaller than the
+            # number says.
+            if len(session.queued) >= self._max_queue_depth:
+                raise QueueDepthExceeded(
+                    f"session {session_id!r} already has "
+                    f"{len(session.queued)} executions waiting "
+                    f"(cap {self._max_queue_depth}); wait for one to finish "
+                    "or cancel a queued one"
+                )
             session.execution_ids.add(ticket_id)
             session.queued.append(ticket)
             events.append(self._state_event(ticket, queue_position=len(session.queued)))
@@ -844,7 +880,9 @@ __all__ = [
     "CoordinatorError",
     "ExecutionCancelled",
     "ExecutionOwner",
+    "DEFAULT_MAX_QUEUE_DEPTH",
     "ExecutionTicket",
+    "QueueDepthExceeded",
     "SessionExecutionCoordinator",
     "TicketState",
     "TicketStateError",
