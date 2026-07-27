@@ -907,7 +907,10 @@ Object.assign(I18N.zh, {
   "prov.env.remoteRun": "运行时间(UTC)",
   "prov.env.thPackage": "Package",
   "prov.env.thVersion": "Version",
-  "prov.exec.downloadNotebook": "下载 Notebook",
+  "prov.exec.downloadNotebook": "下载 Notebook（打包）",
+  "prov.exec.downloadPython": "只下载 Python Notebook (.ipynb)",
+  "prov.exec.downloadR": "只下载 R Notebook (.ipynb)",
+  "prov.exec.downloadMore": "其他导出格式",
   "prov.exec.noRecords": "暂无执行记录。",
   "prov.msg.loadFailed": "无法加载对话：{0}",
   "prov.msg.loading": "加载对话…",
@@ -1761,7 +1764,10 @@ Object.assign(I18N.en, {
   "prov.env.remoteRun": "Run (UTC)",
   "prov.env.thPackage": "Package",
   "prov.env.thVersion": "Version",
-  "prov.exec.downloadNotebook": "Download notebook",
+  "prov.exec.downloadNotebook": "Download notebooks (zip)",
+  "prov.exec.downloadPython": "Python notebook only (.ipynb)",
+  "prov.exec.downloadR": "R notebook only (.ipynb)",
+  "prov.exec.downloadMore": "Other export formats",
   "prov.exec.noRecords": "No execution records yet.",
   "prov.msg.loadFailed": "Failed to load conversation: {0}",
   "prov.msg.loading": "Loading conversation…",
@@ -6211,13 +6217,49 @@ function projectNotebookCells(rawEntries) {
     };
   });
 }
+// The export has always produced three things — a Python .ipynb, an R .ipynb,
+// and a zip of both — and the UI could only ever ask for the zip, because the
+// language was hardcoded. Two working formats were unreachable: a user wanting
+// the Python notebook had to unzip a bundle to get at it, and nothing said the
+// other options existed.
+const NOTEBOOK_EXPORTS = [
+  { language: "bundle", key: "prov.exec.downloadNotebook", suffix: "notebooks.zip" },
+  { language: "python", key: "prov.exec.downloadPython", suffix: "python.ipynb" },
+  { language: "r", key: "prov.exec.downloadR", suffix: "r.ipynb" },
+];
 function notebookExportLink(frameId) {
+  const wrap = el("div", "prov-dl");
+  // The default action stays exactly what it was, so the common path is one
+  // click and nobody has to learn a menu to get what they used to get.
+  const primary = NOTEBOOK_EXPORTS[0];
   const dl = el("a", "prov-dlbtn");
   dl.appendChild(iconEl("download", 14));
-  dl.appendChild(el("span", null, t("prov.exec.downloadNotebook")));
-  dl.href = `${API}/frames/${encodeURIComponent(frameId)}/notebook/export?language=bundle`;
-  dl.setAttribute("download", `${frameId}.notebooks.zip`);
-  return dl;
+  dl.appendChild(el("span", null, t(primary.key)));
+  dl.href = `${API}/frames/${encodeURIComponent(frameId)}/notebook/export?language=${primary.language}`;
+  dl.setAttribute("download", `${frameId}.${primary.suffix}`);
+  wrap.appendChild(dl);
+
+  const toggle = el("button", "prov-dlmore");
+  toggle.setAttribute("aria-label", t("prov.exec.downloadMore"));
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.appendChild(iconEl("chevron-down", 13));
+  const menu = el("div", "prov-dlmenu hidden");
+  NOTEBOOK_EXPORTS.slice(1).forEach(option => {
+    const item = el("a", "prov-dlitem");
+    item.appendChild(el("span", null, t(option.key)));
+    item.href = `${API}/frames/${encodeURIComponent(frameId)}/notebook/export?language=${option.language}`;
+    item.setAttribute("download", `${frameId}.${option.suffix}`);
+    // A download navigates; the menu should not stay open behind it.
+    item.onclick = () => { menu.classList.add("hidden"); toggle.setAttribute("aria-expanded", "false"); };
+    menu.appendChild(item);
+  });
+  toggle.onclick = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const open = menu.classList.toggle("hidden") === false;
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  wrap.appendChild(toggle); wrap.appendChild(menu);
+  return wrap;
 }
 async function refreshVariableInspector() {
   const inspector = S.variableInspector, frameId = S.currentId;

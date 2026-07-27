@@ -646,9 +646,14 @@ def test_notebook_live_input_appends_cells_and_keeps_history_read_only() -> None
     assert 'el("textarea", "nb-repl-input")' in notebook
     assert "notebookExportLink(S.currentId)" in notebook
     assert "notebookExportLink(S.currentId)" in provenance
-    assert 't("prov.exec.downloadNotebook")' in export
-    assert "/notebook/export?language=bundle" in export
-    assert ".notebooks.zip" in export
+    # The default action, asserted as behaviour rather than as a literal. This
+    # read `t("prov.exec.downloadNotebook")`, which was a proxy for "the button
+    # says the right thing" and broke the moment the label came from a table
+    # instead of a call site — without anything about the button changing.
+    assert "NOTEBOOK_EXPORTS[0]" in export
+    assert 'language: "bundle"' in APP_JS
+    assert "${primary.suffix}" in export
+    assert "notebooks.zip" in APP_JS
     assert 'download", "notebook.json"' not in APP_JS
     assert '[["python", "Python"], ["r", "R"]]' in notebook
     assert 'event.key === "Enter" && event.shiftKey' in notebook
@@ -1090,3 +1095,34 @@ def test_unresolved_references_are_rendered_not_swallowed() -> None:
     assert 'm.type === "artifact_ref_problems"' in APP_JS
     assert "function renderRefProblems(" in APP_JS
     assert APP_JS.count('"refs.problemsTitle"') == 3
+
+
+def test_every_notebook_export_format_is_reachable_from_the_ui() -> None:
+    """The export has always produced three things; the UI could ask for one.
+
+    `notebook/export` accepts `python`, `r` and `bundle`, and the client
+    hardcoded `?language=bundle`. Two working formats were unreachable — a user
+    who wanted the Python notebook had to download a zip and unpack it, and
+    nothing in the UI said the other options existed.
+    """
+    for language in ("bundle", "python", "r"):
+        assert (
+            f'language: "{language}"' in APP_JS
+        ), f"the {language} export has no UI entry point"
+    # The default action must stay what it was: one click, same file. Scoped to
+    # the export table -- `{ language: "python" }` also appears in the variable
+    # inspector's state, and an unscoped index comparison compares the wrong
+    # occurrences and passes or fails for unrelated reasons.
+    table = APP_JS[
+        APP_JS.index("const NOTEBOOK_EXPORTS") : APP_JS.index(
+            "function notebookExportLink"
+        )
+    ]
+    assert table.index('language: "bundle"') < table.index(
+        'language: "python"'
+    ), "the bundle must remain the default action"
+    assert "NOTEBOOK_EXPORTS[0]" in APP_JS
+    for key in ("prov.exec.downloadPython", "prov.exec.downloadR"):
+        assert (
+            APP_JS.count(f'"{key}"') == 3
+        ), f"{key} is missing from a translation table"

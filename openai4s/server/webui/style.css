@@ -604,6 +604,15 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .prov-subtab.active{color:var(--accent);border-bottom-color:var(--accent-line)}
 .prov-body{padding:14px}
 .prov-file-h{font-weight:600;font-size:13px;margin-bottom:12px;word-break:break-word}
+/* Split download: the default action keeps its old one-click behaviour and the
+   two formats that were previously unreachable live behind the chevron. */
+.prov-dl{position:relative;display:inline-flex;align-items:stretch;margin-bottom:12px}
+.prov-dl .prov-dlbtn{margin-bottom:0;border-radius:8px 0 0 8px}
+.prov-dlmore{display:inline-flex;align-items:center;padding:0 8px;background:var(--accent-fill);color:#fff;border:0;border-left:1px solid rgba(255,255,255,.25);border-radius:0 8px 8px 0;cursor:pointer}
+.prov-dlmenu{position:absolute;top:calc(100% + 4px);right:0;z-index:20;min-width:230px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.18)}
+.prov-dlmenu.hidden{display:none}
+.prov-dlitem{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:var(--text-200);text-decoration:none}
+.prov-dlitem:hover{background:var(--bg-2)}
 .prov-dlbtn{display:inline-flex;align-items:center;gap:6px;background:var(--accent-fill);color:#fff;border:0;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:500;margin-bottom:12px;text-decoration:none}
 .prov-card{border:.5px solid var(--border-card);border-radius:var(--radius-card);padding:14px;background:var(--panel)}
 .prov-h{font-weight:600;font-size:14px;margin-bottom:4px}
