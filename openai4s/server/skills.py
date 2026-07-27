@@ -14,6 +14,45 @@ from typing import Any
 
 from openai4s.skills_loader import SkillLoader, SkillVersionService
 
+#: Every domain failure this service can report, as a stable machine-readable
+#: code and the HTTP status the gateway turns it into.
+#:
+#: The soft-dictionary return shape is kept on purpose -- it is what the three
+#: service-level test modules drive, and a service that raises HTTP exceptions
+#: is a service that cannot be called from anywhere but a request. What was
+#: missing is that the *gateway* then answered 200, so these never reached
+#: `errors.public_failure` and carried neither a stable `code` nor the
+#: `request_id` that ties a user's report to a log line. Worse, `api()` in the
+#: web client only throws on a non-2xx, so the Customize skill editor reported
+#: "saved" and closed the modal on a save that had not happened.
+#:
+#: The code is the contract; the status is a projection of it. Callers branch
+#: on the code -- the messages are prose and will be reworded.
+SKILL_FAILURE_STATUS: dict[str, int] = {
+    "skill_name_required": 400,
+    # A name that resolves outside the user skills directory. 400 rather than
+    # 403: nothing was denied by policy, the name is unusable.
+    "skill_name_unsafe": 400,
+    "skill_name_conflict": 409,
+    "skill_not_found": 404,
+    "skill_read_only": 403,
+    "skill_no_version_history": 404,
+    # The version store is a dependency that is absent, not a bad request.
+    "skill_version_storage_unavailable": 503,
+    "skill_write_failed": 500,
+}
+
+
+def _fail(code: str, message: str) -> dict:
+    """A domain failure carrying the code a client branches on.
+
+    `code` first, `error` unchanged: the enrichment in `errors.public_failure`
+    is additive and defers to a `code` the payload already set, so a route that
+    returns one of these keeps its specific code instead of the generic one
+    derived from the status.
+    """
+    return {"error": message, "code": code}
+
 
 class SkillCustomizationService:
     """Own user-skill CRUD, import, catalog projection, and UI enablement."""
@@ -86,7 +125,7 @@ class SkillCustomizationService:
     ) -> dict:
         name = (name or "").strip()
         if not name:
-            return {"error": "skill name is required"}
+            return _fail("skill_name_required", "skill name is required")
         slug = self.slug(name)
 
         existing_skill = self._find_skill(name) if existing else None
@@ -107,15 +146,17 @@ class SkillCustomizationService:
                 existing_skill.name if existing_skill is not None else name
             )
             if collision is not None:
-                return {
-                    "error": f"'{slug}' collides with a built-in skill — "
-                    "pick a different name"
-                }
+                return _fail(
+                    "skill_name_conflict",
+                    f"'{slug}' collides with a built-in skill — "
+                    "pick a different name",
+                )
             if not existing and (self.loader.skills_dir / slug).is_dir():
-                return {
-                    "error": f"'{slug}' collides with a built-in skill — "
-                    "pick a different name"
-                }
+                return _fail(
+                    "skill_name_conflict",
+                    f"'{slug}' collides with a built-in skill — "
+                    "pick a different name",
+                )
         except Exception:  # noqa: BLE001 - preserve the legacy soft collision check
             pass
 
@@ -125,22 +166,22 @@ class SkillCustomizationService:
             else self.loader.user_skills_dir()
         )
         if user_directory.is_symlink():
-            return {"error": "unsafe user skill path"}
+            return _fail("skill_name_unsafe", "unsafe user skill path")
         user_directory.mkdir(parents=True, exist_ok=True)
         user_directory = user_directory.resolve()
         root = (
             existing_skill.root if existing_skill is not None else user_directory / slug
         )
         if root.is_symlink():
-            return {"error": "unsafe user skill path"}
+            return _fail("skill_name_unsafe", "unsafe user skill path")
         root = root.resolve()
         if root == user_directory or not root.is_relative_to(user_directory):
-            return {"error": "unsafe user skill path"}
+            return _fail("skill_name_unsafe", "unsafe user skill path")
         if self.versions is None:
             root.mkdir(parents=True, exist_ok=True)
         document = root / "SKILL.md"
         if document.is_symlink():
-            return {"error": "unsafe user skill path"}
+            return _fail("skill_name_unsafe", "unsafe user skill path")
         description = " ".join((description or "").split())
         document_name = existing_skill.name if existing_skill is not None else name
         origin = (
@@ -171,8 +212,11 @@ class SkillCustomizationService:
             except (OSError, ValueError, PermissionError, RuntimeError) as error:
                 message = str(error)
                 if "unsafe" in message.lower() or "symlink" in message.lower():
-                    return {"error": "unsafe user skill path"}
-                return {"error": message or "skill version update failed"}
+                    return _fail("skill_name_unsafe", "unsafe user skill path")
+                return _fail(
+                    "skill_write_failed",
+                    message or "skill version update failed",
+                )
         else:
             document.write_text(content, "utf-8")
         self.loader.discover()
@@ -215,7 +259,7 @@ class SkillCustomizationService:
                 "origin": skill.origin,
                 "editable": not skill.read_only,
             }
-        return {"error": "skill not found"}
+        return _fail("skill_not_found", "skill not found")
 
     def delete(self, name: str) -> dict:
         user_directory = (
@@ -226,7 +270,7 @@ class SkillCustomizationService:
         for skill in self._all_skills().values():
             if skill.name == name or skill.root.name == name:
                 if skill.root.is_symlink():
-                    return {"error": "unsafe user skill path"}
+                    return _fail("skill_name_unsafe", "unsafe user skill path")
                 root = skill.root.resolve()
                 if root != user_directory and root.is_relative_to(user_directory):
                     if self.versions is not None:
@@ -249,8 +293,10 @@ class SkillCustomizationService:
                         shutil.rmtree(root, ignore_errors=True)
                     self.loader.discover()
                     return {"ok": True}
-                return {"error": "only user-authored skills can be deleted"}
-        return {"error": "skill not found"}
+                return _fail(
+                    "skill_read_only", "only user-authored skills can be deleted"
+                )
+        return _fail("skill_not_found", "skill not found")
 
     def set_enabled(self, name: str, enabled: Any) -> dict:
         state = self.loader.set_enabled(
@@ -342,7 +388,10 @@ class SkillCustomizationService:
                 "rollback_available": False,
             }
         if self.versions is None:
-            return {"error": "skill version storage is unavailable"}
+            return _fail(
+                "skill_version_storage_unavailable",
+                "skill version storage is unavailable",
+            )
         return {
             **self.versions.status(
                 name,
@@ -356,7 +405,10 @@ class SkillCustomizationService:
         """Return immutable install/upgrade/publish/rollback events."""
 
         if self.versions is None:
-            return {"error": "skill version storage is unavailable"}
+            return _fail(
+                "skill_version_storage_unavailable",
+                "skill version storage is unavailable",
+            )
         try:
             return self.versions.history(
                 name,
@@ -365,16 +417,19 @@ class SkillCustomizationService:
                 limit=limit,
             )
         except KeyError:
-            return {"error": "skill has no version history"}
+            return _fail("skill_no_version_history", "skill has no version history")
 
     def rollback(self, name: str, version_id: str) -> dict:
         """Activate a prior version without deleting newer immutable history."""
 
         skill = self._find_skill(name)
         if skill is not None and skill.read_only:
-            return {"error": "built-in skills are read-only"}
+            return _fail("skill_read_only", "built-in skills are read-only")
         if self.versions is None:
-            return {"error": "skill version storage is unavailable"}
+            return _fail(
+                "skill_version_storage_unavailable",
+                "skill version storage is unavailable",
+            )
         try:
             result = self.versions.rollback(
                 name,
@@ -383,7 +438,7 @@ class SkillCustomizationService:
                 project_id=self.project_id,
             )
         except (KeyError, PermissionError, ValueError, RuntimeError) as error:
-            return {"error": str(error)}
+            return _fail("skill_write_failed", str(error))
         self.loader.discover()
         return result
 

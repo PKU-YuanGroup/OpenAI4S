@@ -289,14 +289,15 @@ def test_no_response_path_builds_its_own_lossy_error() -> None:
     as different.
     """
     # Scoped to conversions of a *failed* HTTP response, which is the only
-    # place an envelope exists to keep. It deliberately does not flag
-    # `if (r.error) throw ...` after a 200: six Customize routes report domain
-    # failures in a soft dictionary at HTTP 200 (`server/skills.py`), so those
-    # bodies never pass through `public_failure` and have no `code` or
-    # `request_id` to preserve. That is a real gap in the error contract and it
-    # is recorded as one -- see docs/next-version-progress.md -- rather than
-    # being quietly absorbed into a check that would then be asserting
-    # something it cannot deliver.
+    # place an envelope exists to keep.
+    #
+    # This carried a note that the Customize skill routes reported domain
+    # failures at HTTP 200 and were therefore out of reach. That gap is closed:
+    # `server/skills.py` attaches a stable code to every soft failure and the
+    # gateway projects it to a real status, so those bodies go through
+    # `public_failure` like any other. The one client-side `if (r.error) throw`
+    # that existed to work around it is gone, which is why nothing here needs
+    # to carve out an exception any more.
     lossy = re.findall(
         r"if\s*\(!\s*\w+\.ok\)[^;]*throw new Error\([^)]*\)"
         r"|throw new Error\(\s*result\.error[^)]*\)",

@@ -3888,17 +3888,41 @@
         "type": "object"
       }
     },
-    "DELETE /skills/([^/]+) [ok]": {
+    "DELETE /skills/([^/]+) [error]": {
       "schema": {
         "properties": {
+          "code": {
+            "type": "string"
+          },
           "error": {
             "type": "string"
           },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /skills/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
           "ok": {
             "type": "boolean"
           }
         },
-        "required": [],
+        "required": [
+          "ok"
+        ],
         "type": "object"
       }
     },
@@ -10115,6 +10139,31 @@
         "type": "object"
       }
     },
+    "GET /skills/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /skills/([^/]+) [ok]": {
       "schema": {
         "properties": {
@@ -10127,9 +10176,6 @@
           "editable": {
             "type": "boolean"
           },
-          "error": {
-            "type": "string"
-          },
           "name": {
             "type": "string"
           },
@@ -10137,7 +10183,13 @@
             "type": "string"
           }
         },
-        "required": [],
+        "required": [
+          "body",
+          "description",
+          "editable",
+          "name",
+          "origin"
+        ],
         "type": "object"
       }
     },
@@ -22372,12 +22424,34 @@
         "type": "object"
       }
     },
-    "POST /skills [ok]": {
+    "POST /skills [error]": {
       "schema": {
         "properties": {
+          "code": {
+            "type": "string"
+          },
           "error": {
             "type": "string"
           },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /skills [ok]": {
+      "schema": {
+        "properties": {
           "name": {
             "type": "string"
           },
@@ -22391,7 +22465,12 @@
             "type": "string"
           }
         },
-        "required": [],
+        "required": [
+          "name",
+          "ok",
+          "origin",
+          "slug"
+        ],
         "type": "object"
       }
     },
@@ -22680,12 +22759,34 @@
         "type": "object"
       }
     },
-    "POST /skills/import [ok]": {
+    "POST /skills/import [error]": {
       "schema": {
         "properties": {
+          "code": {
+            "type": "string"
+          },
           "error": {
             "type": "string"
           },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /skills/import [ok]": {
+      "schema": {
+        "properties": {
           "name": {
             "type": "string"
           },
@@ -22699,7 +22800,12 @@
             "type": "string"
           }
         },
-        "required": [],
+        "required": [
+          "name",
+          "ok",
+          "origin",
+          "slug"
+        ],
         "type": "object"
       }
     },

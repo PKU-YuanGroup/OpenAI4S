@@ -137,7 +137,7 @@ from openai4s.server.share_projection import ShareProjectionBuilder
 from openai4s.server.share_router import ShareRouter
 from openai4s.server.share_service import ShareConflict, ShareService
 from openai4s.server.skill_sidecars import GenerationSidecarRecorder
-from openai4s.server.skills import SkillCustomizationService
+from openai4s.server.skills import SKILL_FAILURE_STATUS, SkillCustomizationService
 from openai4s.server.titles import SessionTitleService
 from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
@@ -270,6 +270,27 @@ _UNAUTHENTICATED_PATHS = frozenset({"/health", _API_ROOT + "/auth/status"})
 _API_PREFIX = _API_ROOT + "/"
 _API_WS = _API_ROOT + "/ws"
 _MAX_JSON_BODY_BYTES = MAX_ARCHIVE_BYTES
+
+
+def _skill_result_status(payload: object) -> int:
+    """The status a Customize skill result should be answered with.
+
+    These routes answered 200 with an ``{"error": ...}`` body. The service
+    returns soft dictionaries by design -- see ``server/skills.py`` -- but the
+    *gateway* is where a domain failure becomes an HTTP one, and it was not
+    making that translation. Three things followed. The body never reached
+    ``errors.public_failure``, so it carried no ``request_id``; a client had
+    nothing to branch on but the prose, which the contract says is not an
+    interface; and ``api()`` in the web client only throws on a non-2xx, so a
+    failed save was reported to the user as a successful one.
+
+    Read from the code, never from the message. Mapping prose to a status is
+    the thing this change exists to remove, and an unrecognised code answers
+    400 rather than 200 -- a failure whose kind is unknown is still a failure.
+    """
+    if not isinstance(payload, dict) or not payload.get("error"):
+        return 200
+    return SKILL_FAILURE_STATUS.get(str(payload.get("code") or ""), 400)
 
 
 def _is_navigation(path: str) -> bool:
@@ -8277,24 +8298,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # ---- skill authoring (create / edit / import / delete) ----
             if sub == "/skills" and method == "POST":
                 b = self._body()
-                self._json(
-                    skill_customization.create_or_update(
-                        b.get("name") or "",
-                        b.get("description") or "",
-                        b.get("body") or b.get("content") or "",
-                    )
+                created = skill_customization.create_or_update(
+                    b.get("name") or "",
+                    b.get("description") or "",
+                    b.get("body") or b.get("content") or "",
                 )
+                self._json(created, _skill_result_status(created))
                 return
             if sub == "/skills/import" and method == "POST":
                 b = self._body()
-                self._json(
-                    skill_customization.import_document(
-                        content=b.get("content") or "",
-                        name=b.get("name") or "",
-                        description=b.get("description") or "",
-                        body=b.get("body") or "",
-                    )
+                imported = skill_customization.import_document(
+                    content=b.get("content") or "",
+                    name=b.get("name") or "",
+                    description=b.get("description") or "",
+                    body=b.get("body") or "",
                 )
+                self._json(imported, _skill_result_status(imported))
                 return
             m = re.fullmatch(r"/skills/([^/]+)/versions", sub)
             if m and method == "GET":
@@ -8350,21 +8369,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and sub not in ("/skills/catalog", "/skills/import"):
                 name = unquote(m.group(1))
                 if method == "GET":
-                    self._json(skill_customization.get(name))
+                    fetched = skill_customization.get(name)
+                    self._json(fetched, _skill_result_status(fetched))
                     return
                 if method in ("PUT", "PATCH"):
                     b = self._body()
-                    self._json(
-                        skill_customization.create_or_update(
-                            name,
-                            b.get("description") or "",
-                            b.get("body") or b.get("content") or "",
-                            existing=True,
-                        )
+                    updated = skill_customization.create_or_update(
+                        name,
+                        b.get("description") or "",
+                        b.get("body") or b.get("content") or "",
+                        existing=True,
                     )
+                    self._json(updated, _skill_result_status(updated))
                     return
                 if method == "DELETE":
-                    self._json(skill_customization.delete(name))
+                    removed = skill_customization.delete(name)
+                    self._json(removed, _skill_result_status(removed))
                     return
             # ---- agents ----
             if sub == "/agents" and method == "GET":

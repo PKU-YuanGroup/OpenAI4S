@@ -389,6 +389,38 @@ available through the query parameter.
 
 ### Skills / agents / specialists / connectors
 
+**Customize skill failures are real failures.** `POST /skills`,
+`PUT|PATCH /skills/{name}`, `GET /skills/{name}`, `DELETE /skills/{name}` and
+`POST /skills/import` used to answer `200` with `{"error": …}` in the body. The
+service returns soft dictionaries by design (`server/skills.py`) and still
+does; what changed is that the gateway now projects them to a status. Each
+failure carries a stable `code` — the status is derived from the code, never
+from the message:
+
+| `code` | Status | When |
+| --- | --- | --- |
+| `skill_name_required` | `400` | empty name, including an import whose frontmatter has none |
+| `skill_name_unsafe` | `400` | the name resolves outside the user skills directory (symlink or traversal). Not `403`: nothing was denied by policy, the name is unusable |
+| `skill_name_conflict` | `409` | collides with a bundled skill, which discovery would shadow anyway |
+| `skill_not_found` | `404` | no such user skill |
+| `skill_read_only` | `403` | a bundled skill cannot be edited or deleted. Not `404` — it plainly exists, and saying otherwise is a lie the user can disprove |
+| `skill_no_version_history` | `404` | version history requested for a skill with none |
+| `skill_version_storage_unavailable` | `503` | the version store is absent — a missing dependency, not a bad request |
+| `skill_write_failed` | `500` | the write itself failed (`OSError`, permissions) |
+
+Why it mattered beyond tidiness: `api()` in the web client throws only on a
+non-2xx, and the Customize editor's save handler does not inspect the body — so
+a rejected save closed the modal and told the user "saved" while nothing was
+written. These bodies also never reached `public_failure`, so they carried no
+`request_id`.
+
+The four sibling routes that already answered a real status —
+`GET /skills/{name}/versions` and `POST /skills/{name}/rollback`, plus their
+`/projects/{pid}/…` twins — keep the statuses they had (`404` and `409`
+respectively, chosen per route) and now carry the specific `code` too. Their
+statuses are deliberately **not** re-derived from the code table: that would
+change published behaviour for no stated benefit. Branch on `code`.
+
 | Method & path | Behavior |
 | --- | --- |
 | `GET /skills/catalog` | `{"skills":[{…,enabled}…]}`. |

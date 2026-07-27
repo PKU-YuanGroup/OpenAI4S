@@ -7066,7 +7066,7 @@ async function skillImport() {
   const ta = el("textarea", "skill-body"); ta.placeholder = t("skill.importPlaceholder"); ta.style.minHeight = "260px";
   form.appendChild(el("label", "skill-lbl", t("skill.importLabel"))); form.appendChild(ta);
   const save = el("button", "solid-btn", t("skill.importBtn"));
-  save.onclick = async () => { if (!ta.value.trim()) return; save.disabled = true; save.textContent = t("cust.importing"); try { const r = await api("/skills/import", { method: "POST", body: JSON.stringify({ content: ta.value }) }); if (r.error) throw new Error(r.error); S.skillsCatalog = null; closeModalEl($("#modal")); hint(t("toast.skill.imported", (r.name || ""))); custTab("skills"); } catch (e) { save.disabled = false; save.textContent = t("skill.importBtn"); hint(t("toast.importFailed", apiErrorText(e)), true); } };
+  save.onclick = async () => { if (!ta.value.trim()) return; save.disabled = true; save.textContent = t("cust.importing"); try { const r = await api("/skills/import", { method: "POST", body: JSON.stringify({ content: ta.value }) }); S.skillsCatalog = null; closeModalEl($("#modal")); hint(t("toast.skill.imported", (r.name || ""))); custTab("skills"); } catch (e) { save.disabled = false; save.textContent = t("skill.importBtn"); hint(t("toast.importFailed", apiErrorText(e)), true); } };
   const fa = el("div", "form-actions"); fa.appendChild(save); form.appendChild(fa);
   body.appendChild(form); openModalEl($("#modal"));
 }
