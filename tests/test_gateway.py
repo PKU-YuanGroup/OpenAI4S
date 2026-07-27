@@ -3212,3 +3212,123 @@ def test_the_gate_accepts_bearer_and_the_explicit_header(tmp_path, monkeypatch):
         assert token not in json.dumps(seen[-1])
     finally:
         runner.close()
+
+
+def test_the_correlation_id_reaches_the_job_thread():
+    """`contextvars` do not cross a `threading.Thread`.
+
+    The comment above `_correlation_id` said the opposite -- that a ContextVar
+    was chosen "because the gateway hands requests to threads *and* the value
+    has to survive into anything those threads schedule". A new thread starts
+    with an empty context, so every structured log line emitted from a turn, a
+    plan or a REPL job carried an empty `request_id`: the id a user quotes off
+    a failed request matched nothing in the log for the work that failed, which
+    is the one place it was supposed to help.
+
+    Two halves, because a unit test of the helper would prove the helper and
+    the defect was that the spawn sites did not use one: the behaviour is
+    asserted here, and that the three request-serving spawns actually go
+    through it is asserted in the companion test below.
+    """
+    from openai4s.observability import (
+        carry_context,
+        correlation_id,
+        new_correlation_id,
+        reset_correlation_id,
+        set_correlation_id,
+    )
+
+    request_id = new_correlation_id()
+    token = set_correlation_id(request_id)
+    try:
+        captured: list[str] = []
+        thread = threading.Thread(
+            target=carry_context(lambda: captured.append(correlation_id()))
+        )
+        thread.start()
+        thread.join(5)
+        assert captured == [request_id], "the spawn helper did not carry the id"
+
+        # ...and a bare thread still does not, which is what makes the helper
+        # load-bearing rather than decorative.
+        bare: list[str] = []
+        plain = threading.Thread(target=lambda: bare.append(correlation_id()))
+        plain.start()
+        plain.join(5)
+        assert bare == [""], "a bare thread carried the id; the helper is moot"
+
+        # The job records the id it was built under, so the failure a user
+        # reads and the log line for the failed work share one id.
+        job = gateway_mod.MessageJob("job-1", "root-1")
+        assert job.request_id == request_id
+        job.finish(error="boom")
+        assert job.wait_result()["request_id"] == request_id
+    finally:
+        reset_correlation_id(token)
+
+
+def test_every_request_serving_spawn_goes_through_the_helper():
+    """The half that would have caught the original defect.
+
+    `carry_context` working proves nothing if the spawn sites do not call it,
+    and that is exactly the state this started in. Read as source because the
+    threads are created inside closures that a real turn would have to reach --
+    and a test that has to run a whole turn to check one keyword argument
+    tends not to be written at all.
+    """
+    import inspect
+    import re as _re
+
+    source = inspect.getsource(gateway_mod)
+    unwrapped = []
+    for name in ("openai4s-turn-", "openai4s-plan-", "openai4s-repl-"):
+        index = source.find(name)
+        assert index > 0, f"the {name} spawn site moved; this test cannot see it"
+        window = source[max(0, index - 400) : index]
+        # The nearest preceding `target=` is this Thread's.
+        targets = _re.findall(r"target=(\w+)", window)
+        if not targets or targets[-1] != "carry_context":
+            unwrapped.append(name)
+    assert not unwrapped, (
+        "these request-serving threads do not carry the caller's correlation "
+        f"id: {unwrapped}"
+    )
+
+
+def test_a_job_built_outside_a_request_omits_the_field_rather_than_nulling_it():
+    """A `request_id: null` reads as "this request had no id". What it would
+    actually mean is that there was no request -- a daemon-lifetime sweep, a
+    recovery pass -- and the error envelope already has a way to say that."""
+    from openai4s.observability import reset_correlation_id, set_correlation_id
+
+    token = set_correlation_id("")
+    try:
+        job = gateway_mod.MessageJob("job-2", "root-2")
+        job.finish(error="boom")
+        result = job.wait_result()
+        assert "request_id" not in result
+        assert result["error"] == "boom"
+    finally:
+        reset_correlation_id(token)
+
+
+def test_daemon_lifetime_threads_do_not_inherit_a_request_id():
+    """The sweepers are deliberately left alone.
+
+    A thread that lives as long as the daemon is not serving the request that
+    happened to start it. Stamping every later sweep with that request's id
+    would be a false attribution, which is worse than a missing one because it
+    gets believed -- the same failure this whole batch has been removing.
+    """
+    import inspect
+
+    source = inspect.getsource(gateway_mod)
+    for name in ("openai4s-kernel-idle-sweeper", "openai4s-share-sweeper"):
+        index = source.find(name)
+        if index < 0:
+            continue
+        window = source[max(0, index - 400) : index]
+        assert "carry_context" not in window, (
+            f"{name} is a daemon-lifetime thread and must not inherit a "
+            "request's correlation id"
+        )

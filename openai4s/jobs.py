@@ -27,6 +27,7 @@ from openai4s.execution.process_group import await_group_exit as _await_group_ex
 from openai4s.execution.process_group import group_alive as _group_alive
 from openai4s.execution.process_group import signal_group as _signal_group
 from openai4s.execution.process_group import stop_process_group as _stop_process_group
+from openai4s.observability import carry_context
 
 #: Per-job captured output cap. Characters, not bytes: `append` measures
 #: `len()` on a `str`, and the comment here said bytes for long enough that
@@ -147,7 +148,13 @@ class JobManager:
             self._order.append(job.id)
             self._prune_locked()
         thread = threading.Thread(
-            target=self._run, args=(job,), daemon=True, name=f"os-job-{job.id}"
+            # Carries the caller's correlation id: a local job is started on
+            # behalf of one request or one cell, and its failures are read
+            # alongside that request's.
+            target=carry_context(self._run),
+            args=(job,),
+            daemon=True,
+            name=f"os-job-{job.id}",
         )
         job._thread = thread
         thread.start()

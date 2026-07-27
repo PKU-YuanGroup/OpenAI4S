@@ -64,6 +64,8 @@ from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
 from openai4s.llm import PROVIDERS, chat, get_model_capabilities, provider_specs
 from openai4s.observability import (
+    carry_context,
+    correlation_id,
     log_event,
     new_correlation_id,
     reset_correlation_id,
@@ -1286,6 +1288,10 @@ class MessageJob:
         self.thread: threading.Thread | None = None
         self.execution_id: str | None = None
         self.execution_owner: dict[str, str] | None = None
+        # Captured here, on the request thread that constructs the job. The
+        # failure a user reads and the log line for the work that failed have
+        # to be the same id, or the id ties nothing to anything.
+        self.request_id: str = correlation_id()
 
     def finish(self, result: dict | None = None, error: str | None = None) -> None:
         self.result = result
@@ -1297,12 +1303,18 @@ class MessageJob:
         self.done.wait()
         if self.result is not None:
             return self.result
-        return {
+        failure = {
             "status": "failed",
             "frame_id": self.root_frame_id,
             "job_id": self.job_id,
             "error": self.error or "message job failed",
         }
+        # Only when there is one. A null field here would read as "this request
+        # had no id", when what it means is that the job was built outside a
+        # request -- and the error envelope already distinguishes those.
+        if self.request_id:
+            failure["request_id"] = self.request_id
+        return failure
 
 
 def _maybe_call(v):
@@ -4086,7 +4098,9 @@ class SessionRunner:
                 job.finish(error=str(e))
 
         t = threading.Thread(
-            target=_target, name=f"openai4s-turn-{root_frame_id}", daemon=True
+            target=carry_context(_target),
+            name=f"openai4s-turn-{root_frame_id}",
+            daemon=True,
         )
         job.thread = t
         t.start()
@@ -5449,7 +5463,9 @@ class SessionRunner:
                 job.finish(error=str(e))
 
         t = threading.Thread(
-            target=_target, name=f"openai4s-plan-{root_frame_id}", daemon=True
+            target=carry_context(_target),
+            name=f"openai4s-plan-{root_frame_id}",
+            daemon=True,
         )
         job.thread = t
         t.start()
@@ -5613,7 +5629,7 @@ class SessionRunner:
                 job.finish(error=str(error))
 
         thread = threading.Thread(
-            target=target,
+            target=carry_context(target),
             name=f"openai4s-repl-{root_frame_id}",
             daemon=True,
         )
@@ -9468,7 +9484,9 @@ class _ExampleSeedState:
                     traceback.print_exc()
 
             self._thread = threading.Thread(
-                target=_run, name="openai4s-example-seed", daemon=True
+                target=carry_context(_run),
+                name="openai4s-example-seed",
+                daemon=True,
             )
             self._thread.start()
             return True

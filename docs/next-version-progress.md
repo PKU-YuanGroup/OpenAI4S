@@ -56,7 +56,7 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | 4.1 | Error envelope extracted to one definition in `errors.py`; the test module drives the real `Handler` instead of a copy of it | `83ea03b` | `Completed` | Neutering `public_failure` fails three tests; before the change the same neutering failed none |
 | 4.2 | Both capture points observe the enriched body; artifacts regenerated | `e3bd0a4` | `Completed` | `grep -c request_id docs/response-*.json` went 0 → 1107 |
 | 4.4 | `PLAN_STATUSES` enforced in the repository; `paused` added; `_spawn_job` distinguishes cancel from failure; startup reconciles orphaned `executing` rows | `23fab8c` | `Completed` | Removing the enum check and the reconciliation fails two tests |
-| 4.3 | request-id propagation across job threads (`contextvars` do not cross `threading.Thread`) | — | `Not started` | — |
+| 4.3 | request-id carried into the turn/plan/REPL/local-job threads by an explicit context copy; `MessageJob` records the id it was built under so a failed job's result and its log line share one; daemon-lifetime sweepers deliberately excluded | *pending* | `Completed` | Unwiring any one spawn site fails the wiring test *by thread name*; the behavioural half asserts a bare thread still sees `""`, so the helper cannot be moot |
 | 4.5 | Plan resume running only unfinished steps, reusing `ExecutionOwner` | — | `Not started` | Backend can hold `paused`; no resume entry point yet |
 | 4.6 | Structured `ApiError` in the frontend; `paused` plan controls | — | `Not started` | — |
 
@@ -94,9 +94,9 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | # | Item | Commit | Status | Falsification |
 |---|---|---|---|---|
 | 1.3 | Dead unauthenticated second HTTP server deleted; guard against a replacement | `b74372f` | `Completed` | See A6 |
-| 1.4 | Local auth required on loopback by default (D1): persistent owner-only token minted atomically, CLI credential + `OPENAI4S_TOKEN` escape hatch, constant-time compare, mutation query token refused, `/auth/status` reports the real mode, `OPENAI4S_REQUIRE_TOKEN=0` loopback-only for one minor release | *pending* | `Completed` | Restoring the opt-in default fails the default test; the DNS-rebinding test was deliberately made *authenticated* so it still proves the Host check rather than the gate |
-| 1.1/1.2 | Demo seed opt-in; the example moved behind `POST /example/session` with `{"confirm": true}` and a dashboard button | *pending* | `Completed` | Restoring the `"1"` default fails the behavioural test with all six cells listed — not just the flag test |
-| 1.x | The browser client's 3Dmol CDN fallback removed; frontend egress surface frozen | *pending* | `Completed` | Replanting the fallback fails both new gates by file and line |
+| 1.4 | Local auth required on loopback by default (D1): persistent owner-only token minted atomically, CLI credential + `OPENAI4S_TOKEN` escape hatch, constant-time compare, mutation query token refused, `/auth/status` reports the real mode, `OPENAI4S_REQUIRE_TOKEN=0` loopback-only for one minor release | `57d4ff7` | `Completed` | Restoring the opt-in default fails the default test; the DNS-rebinding test was deliberately made *authenticated* so it still proves the Host check rather than the gate |
+| 1.1/1.2 | Demo seed opt-in; the example moved behind `POST /example/session` with `{"confirm": true}` and a dashboard button | `57d4ff7` | `Completed` | Restoring the `"1"` default fails the behavioural test with all six cells listed — not just the flag test |
+| 1.x | The browser client's 3Dmol CDN fallback removed; frontend egress surface frozen | `57d4ff7` | `Completed` | Replanting the fallback fails both new gates by file and line |
 
 ## 6. P0-0 — exact-source-SHA release evidence
 
@@ -107,7 +107,7 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | 0.x | Every ci.yml action pinned to a digest; `inputs.tag` no longer inlined into `run:`; `persist-credentials: false` on the write-capable checkouts | `2eb3544` | `Implemented but unverified` | Each digest was independently re-resolved and matched. **Missing run:** one real CI run. |
 | 0.x | `docs/release-validation.md` corrected in three load-bearing places | `5e32495` | `Completed` | — |
 | 0.4 | Release evidence bundle sealed for `evidence.verify_package` | — | `Not started` | — |
-| 0.5 | Python support matrix reconciled (classifiers 3.10–3.12 / CI 3.10+3.12 / DMG 3.13) | — | `Not started` | — |
+| 0.5 | Python support matrix reconciled: 3.13 classified and added to the CI matrix, and the three files are compared by a test rather than restated in prose | `20b46cd` | `Completed` | Reverting the classifier, the CI matrix or the `requires-python` floor fails a different arm each time, naming the exact file conflict |
 | 0.7 | macOS signing/notarization state vocabulary (D11) | — | `Not started` | `Blocked` for the certificate itself |
 
 ## 7. Cross-cutting engineering

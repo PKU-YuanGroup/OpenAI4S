@@ -50,6 +50,15 @@ Origin, token or header defences.
   a transient failure would loop on a request that can never succeed.
   `request_id` matches the `X-Request-Id` response header and the correlation id
   in the structured log line, so one id ties a user report to a server event.
+  A **background job that fails** carries the same field on its *success-path*
+  body (`200 {"status":"failed", …}` from a waited turn, plan or cell), holding
+  the id of the request that started it. It used to be absent there, and worse,
+  the log lines from inside those job threads carried an empty id: a new thread
+  starts with an empty `contextvars` context, so the id was lost at exactly the
+  boundary where the slow, failure-prone work begins. The field is **omitted,
+  never null**, when a job was built outside any request — a daemon-lifetime
+  sweep or a recovery pass — because `null` would read as "this request had no
+  id" rather than "there was no request".
 - **Success bodies are not wrapped in a `{data: …}` envelope.** Considered and
   declined: it would churn every route and every consumer to relocate
   information that is already unambiguous, and a half-finished reshape presents
