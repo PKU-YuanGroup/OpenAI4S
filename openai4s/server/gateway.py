@@ -299,6 +299,21 @@ def _skill_result_status(payload: object) -> int:
     return SKILL_FAILURE_STATUS.get(str(payload.get("code") or ""), 400)
 
 
+#: What one turn may attach as images, in three dimensions. None of these
+#: existed: `_build_annotated_content` attached every pinned figure at full
+#: size, re-encoded as PNG, so eight pins on a 3000x2200 raster sent ~10 MiB to
+#: the provider and eighty sent ten times that. The failure is not subtle when
+#: it lands -- a provider rejects the request, or bills for it -- but nothing
+#: in the product said a limit existed, because none did.
+#:
+#: Enforced at assembly time, and reported. Silently dropping the ninth figure
+#: would mean a user pins something, asks about it, and is answered about a
+#: picture the model never saw.
+MAX_ATTACHED_IMAGES = 8
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024
+
+
 def _is_navigation(path: str) -> bool:
     """Does this path serve the SPA shell rather than data?
 
@@ -4418,7 +4433,16 @@ class SessionRunner:
         by_art: dict = {}
         for a in annos:
             by_art.setdefault(a.get("artifact_id"), []).append(a)
+        attached = 0
+        total_bytes = 0
+        dropped: list[dict] = []
         for art_id, pins in by_art.items():
+            name = pins[0].get("artifact_name") or "figure"
+            if attached >= MAX_ATTACHED_IMAGES:
+                dropped.append(
+                    {"name": name, "reason": "too_many", "limit": MAX_ATTACHED_IMAGES}
+                )
+                continue
             try:
                 path = self.store.resolve_artifact_path(art_id)
                 if not path or not _is_raster_image(path):
@@ -4426,6 +4450,31 @@ class SessionRunner:
                 data, mime = _figure_with_pins(path, pins)
                 if not data:
                     continue
+                # Measured after the pin markers are drawn, because that is
+                # what actually goes on the wire -- the re-encode can be larger
+                # than the file on disk.
+                size = len(data)
+                if size > MAX_IMAGE_BYTES:
+                    dropped.append(
+                        {
+                            "name": name,
+                            "reason": "too_large",
+                            "bytes": size,
+                            "limit": MAX_IMAGE_BYTES,
+                        }
+                    )
+                    continue
+                if total_bytes + size > MAX_TOTAL_IMAGE_BYTES:
+                    dropped.append(
+                        {
+                            "name": name,
+                            "reason": "budget_exhausted",
+                            "limit": MAX_TOTAL_IMAGE_BYTES,
+                        }
+                    )
+                    continue
+                attached += 1
+                total_bytes += size
                 name = pins[0].get("artifact_name") or "figure"
                 parts.append(
                     {
@@ -4439,6 +4488,29 @@ class SessionRunner:
                 parts.append({"type": "image", "data": data, "mime": mime})
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
+        if dropped:
+            # Told to the user, and told to the model. The user needs to know
+            # their pin was not sent; the model needs to know the picture it is
+            # being asked about is missing, rather than answering confidently
+            # about an image it never received.
+            self.hub.emitter(st.root_frame_id)(
+                {
+                    "type": "attachment_problems",
+                    "frame_id": st.root_frame_id,
+                    "problems": dropped[:8],
+                }
+            )
+            names = "、".join(item["name"] for item in dropped[:8])
+            parts.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "[System note: the following pinned figures exceeded "
+                        f"this turn's attachment budget and were NOT sent: {names}. "
+                        "Do not describe them; say they were not received.]"
+                    ),
+                }
+            )
         return parts if len(parts) > 1 else text
 
     def bind_model_revision(self, root_frame_id: str) -> dict:
