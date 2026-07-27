@@ -906,6 +906,24 @@ class _Host:
         """List a workspace directory."""
         return self._call("list_dir", [{"path": path}])
 
+    def materialise_artifact(
+        self, version_id: str, *, filename: str | None = None
+    ) -> dict:
+        """Bring another session's artifact version into this session.
+
+        Use this instead of opening another session's file by path. The file
+        arrives as *this* session's Artifact, with a lineage edge back to where
+        it came from, so an analysis built on it keeps a resolvable provenance
+        even if the source session is later deleted or reverted.
+
+        Same project only. A version in another project raises the same
+        `KeyError` an absent one does.
+        """
+        spec: dict = {"version_id": version_id}
+        if filename:
+            spec["filename"] = filename
+        return self._call("materialise_artifact", [spec])
+
     def web_fetch(
         self,
         url: str,

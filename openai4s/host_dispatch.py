@@ -1718,6 +1718,9 @@ class HostDispatcher:
     def _m_restore_artifact_version(self, spec: dict) -> dict:
         return self._data_service.restore_artifact_version(spec)
 
+    def _m_materialise_artifact(self, spec: dict) -> dict:
+        return self._data_service.materialise_artifact(spec)
+
     def _m_view_image(self, spec: dict) -> dict:
         return self._data_service.view_image(spec)
 

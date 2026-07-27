@@ -371,3 +371,159 @@ def test_version_keyed_reads_are_confined_to_the_calling_session(tmp_path):
             dispatcher(method, [{"version_id": foreign["version_id"]}])
         with pytest.raises(KeyError):
             dispatcher(method, [{"version_id": "v-does-not-exist"}])
+
+
+def _materialisation_service(cfg, store, frame_id, workspace):
+    """A real HostDataService over the real Store -- no double.
+
+    The whole subject here is one transaction plus a scope check, and both are
+    exactly what a fake would have to reimplement to be useful. A fake that got
+    the scope rule subtly wrong would pass while the real one leaked.
+    """
+    from openai4s.host.data import HostDataService
+
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    def _resolve(path, must_exist=False):
+        target = (workspace / path).resolve()
+        if must_exist and not target.exists():
+            raise FileNotFoundError(target)
+        return target
+
+    return HostDataService(
+        store=store, config=cfg, frame_id=lambda: frame_id, resolve_path=_resolve
+    )
+
+
+def _seed_version(cfg, store, root_frame_id, project_id, filename, payload):
+    """One artifact version with real frozen bytes, as a cell write would make."""
+    import hashlib
+    import uuid
+
+    versions = Path(cfg.data_dir) / "artifact-versions"
+    versions.mkdir(parents=True, exist_ok=True)
+    version_id = f"v-{uuid.uuid4().hex[:12]}"
+    snapshot = versions / f"{version_id}__{filename}"
+    snapshot.write_bytes(payload)
+    row = store.record_cell_artifact(
+        path=str(snapshot),
+        filename=filename,
+        content_type="text/csv",
+        size_bytes=len(payload),
+        checksum=hashlib.sha256(payload).hexdigest(),
+        producing_cell_id=None,
+        frame_id=root_frame_id,
+        root_frame_id=root_frame_id,
+        project_id=project_id,
+        snapshot_path=str(snapshot),
+    )
+    return row
+
+
+def test_materialising_a_sibling_session_artifact_copies_identity_not_the_bytes(
+    tmp_path,
+):
+    """D3: nothing reads another session's file in place.
+
+    A cross-session read leaves the borrowing session holding an analysis whose
+    input has no version in its own history -- delete or revert the source and
+    this session's provenance becomes unresolvable, silently. Materialising
+    gives the target its own Artifact and version plus an edge back, so the
+    question keeps an answer that does not depend on the other session.
+
+    The bytes are shared by hardlink. A version snapshot is immutable by
+    contract, so two rows may name one inode, and a materialised multi-gigabyte
+    dataset costs a directory entry rather than a second copy.
+    """
+    cfg = _config(tmp_path)
+    store = get_store(cfg.db_path)
+    source_root = store.new_frame(kind="turn", project_id="proj-a")
+    target_root = store.new_frame(kind="turn", project_id="proj-a")
+    payload = b"col\n1\n2\n"
+    seeded = _seed_version(cfg, store, source_root, "proj-a", "data.csv", payload)
+
+    service = _materialisation_service(cfg, store, target_root, tmp_path / "ws-target")
+    result = service.materialise_artifact({"version_id": seeded["version_id"]})
+
+    assert result["materialised_from_version_id"] == seeded["version_id"]
+    assert result["checksum"] == seeded["checksum"]
+
+    # It is the target session's own artifact now.
+    materialised = store.get_artifact(result["artifact_id"])
+    assert materialised["root_frame_id"] == target_root
+    assert materialised["project_id"] == "proj-a"
+    assert materialised["artifact_id"] != seeded["artifact_id"]
+
+    # ...with an edge back, so lineage crosses the session boundary even though
+    # no read ever does.
+    inputs = store.lineage_inputs(result["version_id"])
+    assert [row["version_id"] for row in inputs] == [seeded["version_id"]]
+
+    # One inode, two names: shared, not duplicated.
+    source_snapshot = Path(store.version_meta(seeded["version_id"])["snapshot_path"])
+    target_snapshot = Path(
+        result["snapshot_path"]
+        if "snapshot_path" in result
+        else store.version_meta(result["version_id"])["snapshot_path"]
+    )
+    assert target_snapshot.read_bytes() == payload
+    assert source_snapshot.stat().st_ino == target_snapshot.stat().st_ino
+
+
+def test_a_version_in_another_project_is_indistinguishable_from_one_that_is_absent(
+    tmp_path,
+):
+    """The refusal must not be a disclosure.
+
+    A distinct "forbidden" would confirm the version exists, which is most of
+    what an enumerator wants: version ids are short and a caller can grind
+    them. Both answers are the same KeyError with the same message.
+    """
+    cfg = _config(tmp_path)
+    store = get_store(cfg.db_path)
+    other_root = store.new_frame(kind="turn", project_id="proj-other")
+    mine_root = store.new_frame(kind="turn", project_id="proj-mine")
+    seeded = _seed_version(cfg, store, other_root, "proj-other", "secret.csv", b"x")
+
+    service = _materialisation_service(cfg, store, mine_root, tmp_path / "ws-mine")
+
+    with pytest.raises(KeyError) as cross_project:
+        service.materialise_artifact({"version_id": seeded["version_id"]})
+    with pytest.raises(KeyError) as absent:
+        service.materialise_artifact({"version_id": "v-000000000000"})
+
+    # Same shape, differing only in the id the caller supplied.
+    assert str(cross_project.value).replace(seeded["version_id"], "ID") == str(
+        absent.value
+    ).replace("v-000000000000", "ID")
+    # And nothing was written for the refused call.
+    assert store.list_artifacts({"root_frame_id": mine_root}) == []
+
+
+def test_materialising_from_the_same_session_is_refused_as_pointless(tmp_path):
+    """It would mint a second identity for a file the session already owns,
+    and a lineage edge from a version to its own copy."""
+    cfg = _config(tmp_path)
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="proj-a")
+    seeded = _seed_version(cfg, store, root, "proj-a", "mine.csv", b"y")
+
+    service = _materialisation_service(cfg, store, root, tmp_path / "ws")
+    with pytest.raises(ValueError, match="already belongs to this session"):
+        service.materialise_artifact({"version_id": seeded["version_id"]})
+
+
+def test_a_version_whose_frozen_bytes_are_gone_says_so(tmp_path):
+    """Distinct from "not found" on purpose: the version is real, and a caller
+    that cannot tell the two apart cannot tell a scope refusal from a storage
+    problem."""
+    cfg = _config(tmp_path)
+    store = get_store(cfg.db_path)
+    source_root = store.new_frame(kind="turn", project_id="proj-a")
+    target_root = store.new_frame(kind="turn", project_id="proj-a")
+    seeded = _seed_version(cfg, store, source_root, "proj-a", "gone.csv", b"z")
+    Path(store.version_meta(seeded["version_id"])["snapshot_path"]).unlink()
+
+    service = _materialisation_service(cfg, store, target_root, tmp_path / "ws2")
+    with pytest.raises(FileNotFoundError, match="no frozen snapshot"):
+        service.materialise_artifact({"version_id": seeded["version_id"]})

@@ -8,6 +8,7 @@ and routing envelope and delegates the domain behaviour here.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 import uuid
@@ -365,6 +366,103 @@ class HostDataService:
         if path is None:
             raise KeyError(f"no artifact for id={version_id!r}")
         return path
+
+    def materialise_artifact(self, spec: dict) -> dict:
+        """Bring another session's artifact version into this one.
+
+        D3: no path reads another session's file in place. A cross-session read
+        leaves the borrowing session holding an analysis whose input has no
+        version in its own history -- delete or revert the other session and
+        this one's provenance quietly becomes unresolvable. Materialising gives
+        the caller its own Artifact and version plus a lineage edge back, so
+        "where did this come from" keeps an answer that does not depend on the
+        other session still existing.
+
+        Same project only. A version in another project raises exactly the
+        `KeyError` an absent one raises: a distinct refusal would confirm the
+        object is there, which is most of what an enumerator wants and the same
+        reasoning `_scoped_version` already applies to every version-keyed read.
+
+        The bytes are hardlinked, not copied. A version snapshot is immutable by
+        contract -- `write_version_snapshot` returns early rather than rewriting
+        one -- so two rows may share an inode safely, and a materialised
+        multi-gigabyte dataset costs a directory entry. The copy fallback is for
+        a data dir spanning devices, where a hardlink cannot exist.
+        """
+        source_version_id = str(spec.get("version_id") or "").strip()
+        if not source_version_id:
+            raise ValueError("materialise_artifact requires version_id")
+
+        store = self._store()
+        frame_id = self._frame_id()
+        scope = store.resolve_frame_scope(frame_id)
+        root_frame_id = str(scope.get("root_frame_id") or "")
+        project_id = str(scope.get("project_id") or "")
+        if not root_frame_id or not project_id:
+            raise KeyError(f"no artifact version {source_version_id!r} available")
+
+        # Deliberately NOT `_scoped_version`: that one confines to the calling
+        # *session*, and the whole point here is to reach a sibling session in
+        # the same project. The project bound is enforced below, inside the
+        # transaction, where it cannot race with a project move.
+        metadata = store.version_meta(source_version_id)
+        unknown = KeyError(f"no artifact version {source_version_id!r} available")
+        if metadata is None:
+            raise unknown
+        parent = store.get_artifact(str(metadata.get("artifact_id") or ""))
+        if parent is None or parent.get("project_id") != project_id:
+            raise unknown
+
+        snapshot = metadata.get("snapshot_path") or ""
+        if not snapshot or not Path(str(snapshot)).is_file():
+            # The row exists but its immutable bytes do not, so there is
+            # nothing honest to hand over. Reported as its own failure rather
+            # than as "not found": the version is real and the caller may want
+            # to know the difference.
+            raise FileNotFoundError(
+                f"artifact version {source_version_id!r} has no frozen snapshot"
+            )
+
+        filename = str(spec.get("filename") or metadata.get("filename") or "artifact")
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "artifact"
+        version_id = f"v-{uuid.uuid4().hex[:12]}"
+        config = self._config()
+        versions_dir = Path(config.data_dir) / "artifact-versions"
+        versions_dir.mkdir(parents=True, exist_ok=True)
+        destination = versions_dir / f"{version_id}__{safe}"
+        try:
+            os.link(str(snapshot), str(destination))
+        except OSError:
+            shutil.copyfile(str(snapshot), str(destination))
+
+        # The live file too, so the cell can just open it by name.
+        live = self._resolve_path(filename, must_exist=False)
+        live.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if live.exists():
+                live.unlink()
+            os.link(str(destination), str(live))
+        except OSError:
+            shutil.copyfile(str(destination), str(live))
+
+        try:
+            return store.materialise_artifact_version(
+                source_version_id=source_version_id,
+                artifact_id=f"a-{uuid.uuid4().hex[:12]}",
+                version_id=version_id,
+                filename=filename,
+                path=str(live),
+                snapshot_path=str(destination),
+                frame_id=frame_id,
+                root_frame_id=root_frame_id,
+                project_id=project_id,
+            )
+        except Exception:
+            # The transaction rolled back, so the two links describe a version
+            # that does not exist. Removing them keeps the versions directory
+            # from accumulating files no row will ever name.
+            destination.unlink(missing_ok=True)
+            raise
 
     def save_artifact(self, spec: dict) -> dict:
         source = self._resolve_path(str(spec["path"]), must_exist=True)

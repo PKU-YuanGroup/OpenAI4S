@@ -76,6 +76,7 @@ the in-kernel `host` singleton
 
 ```python
 host.web_search(...)   host.web_fetch(...)   host.web_download(...)   # networked tools
+host.materialise_artifact(version_id)                                 # D3: copy in, never read in place
 host.bash(...)          # shell — runs INSIDE the kernel process, never on the host
 host.read_file / write_file / edit_file / grep / glob / list_dir     # filesystem (workspace-jailed)
 host.llm(...)          host.delegate(...)    host.collect(...)       # models & sub-agents

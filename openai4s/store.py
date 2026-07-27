@@ -2456,6 +2456,31 @@ class Store:
             project_id=project_id,
         )
 
+    def materialise_artifact_version(
+        self,
+        *,
+        source_version_id: str,
+        artifact_id: str,
+        version_id: str,
+        filename: str,
+        path: str,
+        snapshot_path: str,
+        frame_id: str | None,
+        root_frame_id: str,
+        project_id: str,
+    ) -> dict:
+        return self._artifacts.materialise_artifact_version(
+            source_version_id=source_version_id,
+            artifact_id=artifact_id,
+            version_id=version_id,
+            filename=filename,
+            path=path,
+            snapshot_path=snapshot_path,
+            frame_id=frame_id,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
+        )
+
     def upsert_env_snapshot(self, snapshot: dict) -> str:
         return self._artifacts.upsert_env_snapshot(snapshot)
 
