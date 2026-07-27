@@ -25,6 +25,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -184,6 +185,81 @@ def _first_paragraph(body: str) -> str:
     return ""
 
 
+#: How a declared requirement is checked, and every one of these is local.
+#:
+#: Browsing the catalogue must not reach the network — a user scrolling a Skill
+#: list is not asking to contact anything, and the report says so explicitly.
+#: So readiness is derived from what this machine can observe about itself, and
+#: a requirement nobody knows how to check answers `unknown` rather than
+#: guessing in either direction: claiming `ready` invites a failure deep into a
+#: task, and claiming `needs_setup` sends a user to install something that may
+#: already be there.
+def _has_gpu() -> bool:
+    import shutil
+
+    # `nvidia-smi` on PATH, not a probe of it. Executing it here would make
+    # rendering a catalogue spawn a subprocess per Skill.
+    return bool(shutil.which("nvidia-smi"))
+
+
+_REQUIREMENT_CHECKS: dict[str, "Callable[[], bool]"] = {"gpu": _has_gpu}
+
+#: Readiness is not enabledness. A disabled Skill can be perfectly ready, and
+#: an enabled one can be missing its hardware; conflating them means a user who
+#: enables a Skill believes they have made it work.
+READY = "ready"
+NEEDS_SETUP = "needs_setup"
+UNKNOWN = "unknown"
+
+
+def skill_readiness(requirements: "Sequence[str]") -> dict[str, object]:
+    """Can this Skill run here? Answered from local state alone."""
+    missing: list[str] = []
+    unknown: list[str] = []
+    for requirement in requirements or ():
+        check = _REQUIREMENT_CHECKS.get(str(requirement).lower())
+        if check is None:
+            unknown.append(str(requirement))
+        elif not check():
+            missing.append(str(requirement))
+    if missing:
+        state = NEEDS_SETUP
+    elif unknown:
+        state = UNKNOWN
+    else:
+        state = READY
+    return {
+        "state": state,
+        "missing": sorted(missing),
+        "unverifiable": sorted(unknown),
+        # Said explicitly so a caller cannot mistake this for a probe.
+        "checked_locally": True,
+    }
+
+
+def _requirements(value: object) -> tuple[str, ...]:
+    """Normalise a frontmatter `requirements:` value to lowercase tokens.
+
+    Tolerant of the three spellings that actually appear in the wild — a YAML
+    list, a comma-separated string, a bare word — because rejecting a Skill
+    over its punctuation would hide a real Skill for a cosmetic reason. An
+    unparseable value yields no requirements rather than a fabricated one:
+    claiming a Skill needs something it never declared would send a user to
+    install a thing they do not need.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        parts = [
+            part.strip() for part in value.replace("[", "").replace("]", "").split(",")
+        ]
+    elif isinstance(value, (list, tuple, set)):
+        parts = [str(part).strip() for part in value]
+    else:
+        return ()
+    return tuple(sorted({part.lower() for part in parts if part}))
+
+
 def _tokenize(*texts: str) -> set[str]:
     toks: set[str] = set()
     for t in texts:
@@ -204,6 +280,12 @@ class Skill:
     # make a bundled directory writable.
     source: str = "bundled"
     keywords: set[str] = field(default_factory=set)
+    #: What this Skill needs before it can actually run — `requirements: [gpu]`
+    #: in the frontmatter. Five bundled Skills have declared this since they
+    #: were written and nothing read it, so a GPU-only Skill looked identical
+    #: to one that runs anywhere and the agent discovered the difference at
+    #: execution time, deep into a task.
+    requirements: tuple[str, ...] = ()
     version: str = ""
     document_sha256: str = ""
     sidecar_sha256: str | None = None
@@ -540,6 +622,7 @@ class SkillLoader:
                     origin=origin,
                     source=source,
                     keywords=_tokenize(name, description, body),
+                    requirements=_requirements(meta.get("requirements")),
                     version=version,
                     document_sha256=document_sha256,
                     sidecar_sha256=sidecar_sha256,
@@ -734,6 +817,12 @@ class SkillLoader:
                 "distribution_scope": s.source,
                 "has_kernel": s.has_kernel,
                 "enabled": self.is_enabled(s.name),
+                # Deliberately beside `enabled` and deliberately not folded
+                # into it. A disabled Skill can be perfectly ready and an
+                # enabled one can be missing its hardware; merging them means a
+                # user who enables a Skill believes they have made it work.
+                "requirements": list(s.requirements),
+                "readiness": skill_readiness(s.requirements),
                 "version": s.version,
                 "document_sha256": s.document_sha256,
                 "sidecar_sha256": s.sidecar_sha256,

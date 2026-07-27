@@ -152,6 +152,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_public_api_contract.py`](test_public_api_contract.py) | 公开的 import 表面，钉住它是为了让后端还能继续搬家：包版本、构造函数的参数名、`run_task` 的调用约定，以及 Host 与 server 两个门面。它钉住的只是调用方看得见的东西，仅此而已。 |
 | [`test_r_kernel.py`](test_r_kernel.py) | R 内核。大部分测试跑在一个说着同样协议的假 `Rscript` 上，因此不需要装 R；少数几个在本机有 R 时会用真的 R。`sh -c` 的 fd 交换是被直接断言的，因为协议帧跑错描述符正是这条通道的失效方式；子进程刷出的大量 stderr 也不许把读取端拖进死锁。 |
 | [`test_recovery_recipe.py`](test_recovery_recipe.py) | 关于恢复配方的三个测试。它会编译出一个依赖闭合的 Python 或 R 命名空间；把外部状态和解不出来的部分留成手工步骤交给人，而不是替人 replay；并且只有记录的源码哈希仍然匹配，它才肯执行。 |
+| [`test_skill_requirements.py`](test_skill_requirements.py) | 一个 Skill 真正跑起来之前需要什么。有五个内置 Skill 从写出来那天就在 frontmatter 里写了 `requirements: [gpu]`，而没有任何地方去读它——于是「只能在有 GPU 的机器上跑」和「哪儿都能跑」这两种 Skill 在执行之前完全看不出区别。覆盖三种状态（`ready`/`needs_setup`/`unknown`——无法判断的依赖绝不向任何一个方向猜）、浏览目录不产生任何网络请求，以及就绪判断不会给每个 Skill 起一个子进程。 |
 | [`test_resource_allowlist.py`](test_resource_allowlist.py) | Skill 的三态允许名单，以及为什么 `None` 和 `[]` 明明都是假值却绝不能等同——`if not allowed:` 会把「全部禁止」变成「全部放行」，而且恰好是在用户专门为了上锁而选的那种配置上向开放方向失败。同时覆盖退出标准点名的四个面：未列出的 Skill 在目录、搜索、`load`/`get` 以及 `read`（真正吐出文件内容的那个）里都不可见，而且给出的答复和「这个 Skill 不存在」完全一样。 |
 | [`test_retrieval_source.py`](test_retrieval_source.py) | 客户端可以看到「数据是从哪儿取来的」中的哪一部分。`artifact_versions.source` 这个信封从检索溯源加进来那天起就记录着请求 URL、查询和响应哈希，而没有任何地方去读它——于是一张基于实时 API 抓取的图，看上去和凭空算出来的一模一样。但原样发出去也不行：它是由未经审计的检索代码写入的自由格式 JSON，而科研 API 把 key 放在查询串里是家常便饭。覆盖白名单、长度上限，以及查询串、路径和 userinfo 三处的脱敏。 |
 | [`test_release_gates.py`](test_release_gates.py) | 发布之前跑的那些门禁。secret 扫描会报出命中却不回显具体值；发布包校验器会拒掉一个引入了第三方核心依赖的构建——那正是整个项目立身的约束。 |
