@@ -87,7 +87,7 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | 2.x | Lineage walk bounded by default and reports truncation; `skills/` egress surface frozen | `7a21459` | `Completed` | A planted fourth networked sidecar is named by the gate |
 | 2.4 | Version-keyed reads (`lineage_get`, `artifact_path`, `lineage_graph`) confined to the calling session | `3301579` | `Completed` | Removing the scoping fails the test |
 | 2.6 | Same-project cross-session materialisation (D3): `host.materialise_artifact` gives the caller its own Artifact/version plus a source→target lineage edge, in one transaction. Bytes are shared by hardlink (snapshots are immutable by contract), so a materialised dataset costs a directory entry. Cross-project refused with the *same* message as absent — at both layers, worded identically so the depth is not itself a leak | `f078abf` | `Completed` | Removing the project bound at either layer fails; forcing the copy fallback fails the shared-inode assertion |
-| 2.10 | `ModelSelection` immutable revision (D2): append-only `revisions[]` keyed on `(provider, base_url, model)` — **not** on name or key, because the credential ref is derived from `profile_id`; migration **10** adds `frames.model_profile_id/revision`; binding happens on send only, so an unbound legacy session stays readable; `409 model_revision_unavailable` for a dangling pin and `409 model_revision_ambiguous` for a legacy session matching more than one profile | *pending* | `Completed` | Four mutations caught: sealing on every edit, ignoring the pin, guessing on ambiguity, and forgetting the `SCHEMA_VERSION` bump |
+| 2.10 | `ModelSelection` immutable revision (D2): append-only `revisions[]` keyed on `(provider, base_url, model)` — **not** on name or key, because the credential ref is derived from `profile_id`; migration **10** adds `frames.model_profile_id/revision`; binding happens on send only, so an unbound legacy session stays readable; `409 model_revision_unavailable` for a dangling pin and `409 model_revision_ambiguous` for a legacy session matching more than one profile | `5e56325` | `Completed` | Four mutations caught: sealing on every edit, ignoring the pin, guessing on ambiguity, and forgetting the `SCHEMA_VERSION` bump |
 | 2.17 | All three networked skill sidecars migrated off raw `urllib`; the Host network capability grew the three things that were missing — `web_fetch(method="HEAD")` (one hop, no redirect following, so doi.org's own 302/404 survives), `user_agent=`, and `web_download` (workspace-confined, byte-capped while reading). `_SKILL_EGRESS` is now **empty** | `0453bea` | `Completed` | Replanting one `urlopen` in a skill is reported by file and line; removing the path check, the byte cap or the HEAD guard each fails its own test |
 
 ## 5. P0-1 — no implicit startup, local authentication
@@ -107,9 +107,9 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | 0.x | Quality job, receipt upload, release concurrency mutex, timeouts on all seven jobs, `attach` runs inside the checkout | `5e32495` | `Implemented but unverified` | **Missing run:** one real `workflow_dispatch`. Nothing in this repository executes `.github/workflows/*.yml`. |
 | 0.x | Every ci.yml action pinned to a digest; `inputs.tag` no longer inlined into `run:`; `persist-credentials: false` on the write-capable checkouts | `2eb3544` | `Implemented but unverified` | Each digest was independently re-resolved and matched. **Missing run:** one real CI run. |
 | 0.x | `docs/release-validation.md` corrected in three load-bearing places | `5e32495` | `Completed` | — |
-| 0.4 | Every run seals `openai4s-<version>-evidence.zip` in the format the product's **own** `evidence.verify_package` reads — not a second implementation that could disagree. A stopped run seals too; sealing is best-effort so it cannot fail a good release | *pending* | `Completed` | Dropping the manifest self-hash, or leaving a file out of the manifest, each fails; tampering and an added payload are both detected |
+| 0.4 | Every run seals `openai4s-<version>-evidence.zip` in the format the product's **own** `evidence.verify_package` reads — not a second implementation that could disagree. A stopped run seals too; sealing is best-effort so it cannot fail a good release | `5e56325` | `Completed` | Dropping the manifest self-hash, or leaving a file out of the manifest, each fails; tampering and an added payload are both detected |
 | 0.5 | Python support matrix reconciled: 3.13 classified and added to the CI matrix, and the three files are compared by a test rather than restated in prose | `20b46cd` | `Completed` | Reverting the classifier, the CI matrix or the `requires-python` floor fails a different arm each time, naming the exact file conflict |
-| 0.7 | `verified / not_notarized / preview / not_configured`, computed from evidence and never from a configured secret. `verified` is **unreachable** today (ad-hoc signing, no notarization attempt), so the macOS asset has no publishable path this version — stated in `macos_publishable`, not left as an absence. Per D11 the release-mode hard failure is untouched | *pending* | `Completed` | Inferring the state from `OPENAI4S_MACOS_SIGNING_IDENTITY` fails; claiming notarization fails the unreachability test, forcing the claim to be revisited rather than silently outdated |
+| 0.7 | `verified / not_notarized / preview / not_configured`, computed from evidence and never from a configured secret. `verified` is **unreachable** today (ad-hoc signing, no notarization attempt), so the macOS asset has no publishable path this version — stated in `macos_publishable`, not left as an absence. Per D11 the release-mode hard failure is untouched | `5e56325` | `Completed` | Inferring the state from `OPENAI4S_MACOS_SIGNING_IDENTITY` fails; claiming notarization fails the unreachability test, forcing the claim to be revisited rather than silently outdated |
 
 | 4.x | **Found by running it, not by reading it:** the startup access-token banner used block-buffered stdout while every neighbouring notice uses stderr, so under `nohup`/systemd/Docker the credential a user needs to open their own daemon never appeared | `8a20ae6` | `Completed` | Reproduced against a real daemon with stdout redirected to a file: banner absent before, present after |
 | 4.x | Both browser harnesses navigated to `/` with no credential and would have failed every check on a 401 once the gate was on; a shared `tests/browser_auth.mjs` logs in through the `?token=` bootstrap, exercising the 303 and cookie hand-off | `8a20ae6` | `Completed` | Neutering the login makes `browser_smoke.mjs` fail at its first check with HTTP 401 |
@@ -121,13 +121,32 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 |---|---|---|
 | Route-module inventory derived from the filesystem, with a convention guard | `3f4f59b` | `Completed` |
 
-## 8. Not started
+## 8. P0 is closed
+
+Every P0 item in the integrated report is `Completed`, with two exceptions that
+are `Implemented but unverified` for one shared reason: **nothing in this
+repository executes `.github/workflows/*.yml`**. The release quality job, the
+receipt upload, the concurrency mutex, the seven job timeouts, the SHA-pinned
+actions and the 3.13 matrix entry are all written and reviewed; one real
+`workflow_dispatch` is the only thing that can settle them.
+
+Two further statements belong here rather than in a release note, because both
+are easy to mistake for oversights:
+
+- **macOS has no publishable path in this version.** `verified` is unreachable
+  by D11's own decision — the build ad-hoc signs and notarization is not
+  attempted. The state vocabulary describes that accurately; it does not change
+  it.
+- **Six Web Customize routes** now answer a real status, but the wider question
+  of which services may use soft dictionaries at all is untouched.
+
+## 9. Not started
 
 `P1-A` (visible product closure), `P1-B` (Agent/Skill/Compute control planes),
 and all of `P2` (design freeze and real-platform experiments). P2 by decision
 D8 enters no public API, schema or definition of done in this version.
 
-## 9. Externally unverifiable
+## 10. Externally unverifiable
 
 See [`v03-decisions.md`](v03-decisions.md#externally-unverifiable). Nothing in
 this file marks those `Completed`.
