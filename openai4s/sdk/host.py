@@ -913,8 +913,18 @@ class _Host:
         format: str = "markdown",
         timeout: float = 30,
         max_chars: int = 20000,
+        method: str = "GET",
+        user_agent: str | None = None,
     ) -> dict:
-        """Fetch a URL and return its content as markdown/text/html/json."""
+        """Fetch a URL and return its content as markdown/text/html/json.
+
+        ``method="HEAD"`` asks only whether the resource exists and returns
+        ``{"exists": True, ...}`` with no content. ``user_agent`` overrides the
+        default one, which Crossref and OpenAlex require before they will serve
+        their polite pool. Both exist because without them a skill that needed
+        either used raw ``urllib``, and such a request is subject to neither the
+        egress allowlist nor the SSRF guard.
+        """
         return self._call(
             "web_fetch",
             [
@@ -923,9 +933,35 @@ class _Host:
                     "format": format,
                     "timeout": timeout,
                     "max_chars": max_chars,
+                    "method": method,
+                    "user_agent": user_agent,
                 }
             ],
         )
+
+    def web_download(
+        self,
+        url: str,
+        path: str,
+        *,
+        max_bytes: int | None = None,
+        timeout: float = 60,
+        user_agent: str | None = None,
+    ) -> dict:
+        """Download a URL to a workspace file. Returns path/bytes/sha256.
+
+        For content `web_fetch` cannot represent as text -- an archive, a
+        compressed dataset, a binary structure file. ``path`` is resolved
+        against the session workspace and an escape is refused before the
+        request is made, so a rejected path does not even reveal whether the
+        URL was reachable.
+        """
+        spec: dict = {"url": url, "path": path, "timeout": timeout}
+        if max_bytes is not None:
+            spec["max_bytes"] = max_bytes
+        if user_agent:
+            spec["user_agent"] = user_agent
+        return self._call("web_download", [spec])
 
     def web_search(
         self, query: str, *, num_results: int = 8, timeout: float = 20

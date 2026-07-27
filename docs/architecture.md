@@ -75,7 +75,7 @@ the in-kernel `host` singleton
 ([`openai4s/sdk/host.py`](../openai4s/sdk/host.py)):
 
 ```python
-host.web_search(...)   host.web_fetch(...)                           # networked tools
+host.web_search(...)   host.web_fetch(...)   host.web_download(...)   # networked tools
 host.bash(...)          # shell — runs INSIDE the kernel process, never on the host
 host.read_file / write_file / edit_file / grep / glob / list_dir     # filesystem (workspace-jailed)
 host.llm(...)          host.delegate(...)    host.collect(...)       # models & sub-agents

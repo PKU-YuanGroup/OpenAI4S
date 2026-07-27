@@ -198,24 +198,21 @@ _SKILLS = Path(__file__).resolve().parent.parent / "skills"
 #:
 #: Removing an entry is the goal. Adding one needs a reason that survives
 #: someone asking why `host.web_fetch` would not do.
-_SKILL_EGRESS: dict[str, str] = {
-    "skills/literature-review/kernel.py": (
-        "DOI/OpenAlex lookups. The clean migration: `host.web_fetch` covers "
-        "the GET, but has no HEAD mode for the existence probe and no way to "
-        "pass the polite-pool User-Agent."
-    ),
-    "skills/mineral_spectra_analysis/kernel.py": (
-        "Downloads the RRUFF spectra ZIP. Binary, so `web_fetch` is the wrong "
-        "shape; it needs a host-mediated download-to-workspace, or a "
-        "caller-supplied `zip_path` using the `allow_download=False` branch "
-        "the function already has."
-    ),
-    "skills/catalyst_sar_screening/kernel.py": (
-        "A reachability probe against a model endpoint. Replaceable by a "
-        "short-timeout `host.web_fetch`, or by dropping it and failing at the "
-        "real download."
-    ),
-}
+#: Bundled skills allowed to reach the network directly, with why.
+#:
+#: Empty, and that is the point. Three skills were here -- `literature-review`
+#: (DOI/OpenAlex lookups), `mineral_spectra_analysis` (the RRUFF archive) and
+#: `catalyst_sar_screening` (a model-endpoint probe) -- each because
+#: `host.web_fetch` could not express what it needed: a HEAD existence probe
+#: that does not follow redirects, a contactable User-Agent, a binary download.
+#: So each used raw `urllib`, and a request made that way is subject to neither
+#: the egress allowlist nor the SSRF guard. The gap in the Host API was the
+#: reason part of the product's own traffic went around the fence built for it.
+#:
+#: The API grew those three powers (`host.web_fetch(method="HEAD")`,
+#: `user_agent=`, and `host.web_download`), all guarded, and the skills moved
+#: onto them. A new entry here is a new hole and has to argue for itself.
+_SKILL_EGRESS: dict[str, str] = {}
 
 
 def _skill_egress_sites() -> dict[str, list[tuple[int, str]]]:

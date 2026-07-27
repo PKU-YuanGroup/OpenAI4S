@@ -106,6 +106,7 @@ from openai4s.tools.skills import (
     SkillStatusTool,
 )
 from openai4s.tools.taxonomy import READ_ONLY, SIDE_EFFECT_CLASSES
+from openai4s.tools.web_download import WebDownloadTool
 from openai4s.tools.web_fetch import WebFetchTool
 from openai4s.tools.web_search import WebSearchTool
 from openai4s.tools.write_file import WriteFileTool
@@ -125,6 +126,7 @@ TOOL_TYPES: tuple[type[Tool], ...] = (
     EnvUseTool,
     EnvCreateTool,
     WebSearchTool,
+    WebDownloadTool,
     WebFetchTool,
     ScienceListDatabasesTool,
     ScienceSearchTool,

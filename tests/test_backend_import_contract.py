@@ -45,7 +45,19 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
         }
     ),
     "openai4s.webtools": frozenset(
-        {"NetworkDisabled", "network_allowed", "web_fetch", "web_search"}
+        {
+            "NetworkDisabled",
+            # Both refusals are part of the public surface because the control
+            # tools have to catch them by name: the Host's soft-fail contract
+            # turns a single-key {"error": ...} into a RuntimeError the cell can
+            # handle, and a traceback escaping the dispatcher is not that.
+            "ResponseTooLarge",
+            "SSRFBlocked",
+            "network_allowed",
+            "web_download",
+            "web_fetch",
+            "web_search",
+        }
     ),
     "openai4s.mcp_client": frozenset({"manager"}),
     "openai4s.permissions": frozenset({"PermissionBroker", "broker"}),

@@ -110,6 +110,13 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     if method == "web_fetch":
         url = a.get("url", "")
         return ("fetch", f"Reading {_domain(url) or url}", {"url": url})
+    if method == "web_download":
+        url = a.get("url", "")
+        return (
+            "fetch",
+            f"Downloading from {_domain(url) or url}",
+            {"url": url, "path": a.get("path", "")},
+        )
     if method == "science_list_dbs":
         return (
             "science",
@@ -405,7 +412,7 @@ def _gate_target(method: str, args: list) -> str:
         return a.get("path", "") or ""
     if method == "save_artifact":
         return a.get("filename") or a.get("path", "") or ""
-    if method == "web_fetch":
+    if method in ("web_fetch", "web_download"):
         return _domain(a.get("url", "")) or a.get("url", "") or ""
     if method == "web_search":
         return a.get("query", "") or ""
@@ -1150,7 +1157,9 @@ class HostDispatcher:
     # DATA, not instructions. We screen it and, when it looks like an injection
     # attempt, PREPEND a warning banner to the primary text field — never drop
     # the content (the agent may still need the legitimate part).
-    _SCREENED_METHODS = frozenset({"web_fetch", "web_search", "mcp_call"})
+    _SCREENED_METHODS = frozenset(
+        {"web_download", "web_fetch", "web_search", "mcp_call"}
+    )
 
     def _screen_tool_result(
         self, method: str, result: Any, control_tool: Any | None = None
@@ -1399,6 +1408,7 @@ class HostDispatcher:
             "todo": True,
             "web_search": webtools.network_allowed(),
             "web_fetch": webtools.network_allowed(),
+            "web_download": webtools.network_allowed(),
             "science": webtools.network_allowed(),
             "network": webtools.network_allowed(),
             "model": self.cfg.llm.model,
@@ -1424,6 +1434,7 @@ class HostDispatcher:
                 "todo": "workflow",
                 "web_search": "web",
                 "web_fetch": "web",
+                "web_download": "web",
                 "science": "science",
                 "network": "network",
             }
@@ -1512,6 +1523,9 @@ class HostDispatcher:
 
     def _m_web_fetch(self, spec: dict) -> dict:
         return self._execute_control_tool("web_fetch", spec)
+
+    def _m_web_download(self, spec: dict) -> dict:
+        return self._execute_control_tool("web_download", spec)
 
     def _m_web_search(self, spec: dict) -> dict:
         return self._execute_control_tool("web_search", spec)
