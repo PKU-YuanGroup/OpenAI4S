@@ -150,6 +150,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_public_api_contract.py`](test_public_api_contract.py) | 公开的 import 表面，钉住它是为了让后端还能继续搬家：包版本、构造函数的参数名、`run_task` 的调用约定，以及 Host 与 server 两个门面。它钉住的只是调用方看得见的东西，仅此而已。 |
 | [`test_r_kernel.py`](test_r_kernel.py) | R 内核。大部分测试跑在一个说着同样协议的假 `Rscript` 上，因此不需要装 R；少数几个在本机有 R 时会用真的 R。`sh -c` 的 fd 交换是被直接断言的，因为协议帧跑错描述符正是这条通道的失效方式；子进程刷出的大量 stderr 也不许把读取端拖进死锁。 |
 | [`test_recovery_recipe.py`](test_recovery_recipe.py) | 关于恢复配方的三个测试。它会编译出一个依赖闭合的 Python 或 R 命名空间；把外部状态和解不出来的部分留成手工步骤交给人，而不是替人 replay；并且只有记录的源码哈希仍然匹配，它才肯执行。 |
+| [`test_retrieval_source.py`](test_retrieval_source.py) | 客户端可以看到「数据是从哪儿取来的」中的哪一部分。`artifact_versions.source` 这个信封从检索溯源加进来那天起就记录着请求 URL、查询和响应哈希，而没有任何地方去读它——于是一张基于实时 API 抓取的图，看上去和凭空算出来的一模一样。但原样发出去也不行：它是由未经审计的检索代码写入的自由格式 JSON，而科研 API 把 key 放在查询串里是家常便饭。覆盖白名单、长度上限，以及查询串、路径和 userinfo 三处的脱敏。 |
 | [`test_release_gates.py`](test_release_gates.py) | 发布之前跑的那些门禁。secret 扫描会报出命中却不回显具体值；发布包校验器会拒掉一个引入了第三方核心依赖的构建——那正是整个项目立身的约束。 |
 | [`test_remote_capability_probe.py`](test_remote_capability_probe.py) | SSH 上的命令注入，一项输入一项输入地封死。shell 字符串在 SSH 启动前就被拒；含糊或类型不对的 spec 根本到不了 SSH；而且哪怕被拒绝，这次探测仍然会投影出一条活动记录，让这次尝试可见。 |
 | [`test_remote_compute_control_tools.py`](test_remote_compute_control_tools.py) | 远程算力这几个 Tool。提交任务要审批，取消与关闭不用——因为哪怕正在拒绝新工作，清理这条路也必须留着能走。 |

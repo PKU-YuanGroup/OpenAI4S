@@ -1455,3 +1455,11 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
 .ref-problem{display:flex;gap:8px;align-items:baseline;font-size:12px;line-height:1.5}
 .ref-problem-ref{color:var(--text-300);white-space:nowrap}
 .ref-problem-msg{color:var(--text-400)}
+
+/* Read-only retrieval provenance under an artifact version. */
+.ver-src{margin:4px 0 10px 12px;padding:8px 10px;border-left:2px solid var(--border);font-size:12px}
+.ver-src-head{color:var(--text-300);margin-bottom:5px}
+.ver-src-row{display:flex;gap:8px;line-height:1.6}
+.ver-src-k{color:var(--text-400);min-width:130px;flex:none}
+.ver-src-v{color:var(--text-200);word-break:break-all}
+.ver-src-note{color:var(--text-400);margin-top:5px;font-style:italic}

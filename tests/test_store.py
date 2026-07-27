@@ -436,6 +436,14 @@ def test_list_versions_row_shape_ordering_and_latest_pointer(tmp_path):
         "producing_cell_id",
         "frame_id",
         "created_at",
+        # The retrieval provenance envelope. It was written on every retrieved
+        # version and selected by nothing, so a figure built on a live API
+        # fetch was indistinguishable from one computed out of thin air. Raw
+        # here on purpose: the gateway projects it through an allowlist, a
+        # length cap and credential redaction before any of it leaves the
+        # process (`server/retrieval_source.py`). A store row is not the place
+        # to decide what a client may see.
+        "source",
         "is_latest",
         "ordinal",
     }

@@ -503,6 +503,9 @@ Object.assign(I18N.zh, {
   "dash.sessions.empty": "还没有会话。",
   "ac.fromOtherSession": "来自其他会话，发送时会复制进来",
   "refs.problemsTitle": "有 {0} 处引用没能解析（这一轮仍在继续）",
+  "versions.retrievalSource": "数据来源（只读）",
+  "versions.retrievalTruncated": "以下字段过长已截断：{0}",
+  "versions.retrievalWithheld": "另有 {0} 个字段未展示",
   "dash.example.cta": "运行示例分析",
   "dash.example.hint": "一次真实的 NIF3/DUF34 分析：调用 UniProt 与 RCSB PDB 接口、执行 6 个 Python Cell、产出图表与报告。启动时不会自动运行——只有你点它才跑。",
   "dash.example.running": "正在运行示例分析……",
@@ -1360,6 +1363,9 @@ Object.assign(I18N.en, {
   "dash.sessions.empty": "No sessions yet.",
   "ac.fromOtherSession": "from another session — copied in on send",
   "refs.problemsTitle": "{0} reference(s) did not resolve (the turn still ran)",
+  "versions.retrievalSource": "Retrieved from (read-only)",
+  "versions.retrievalTruncated": "clipped for length: {0}",
+  "versions.retrievalWithheld": "{0} further field(s) not shown",
   "dash.example.cta": "Run the example analysis",
   "dash.example.hint": "A real NIF3/DUF34 analysis: calls the UniProt and RCSB PDB APIs, runs 6 Python cells, and produces figures and a report. It does not run on startup \u2014 only when you click.",
   "dash.example.running": "Running the example analysis\u2026",
@@ -5710,6 +5716,13 @@ async function showVersions(a) {
       const view = el("a", "outline-btn small", t("common.view")); view.href = `${API}/artifacts/${v.version_id}`; view.target = "_blank"; acts.appendChild(view);
       if (!v.is_latest) { const rb = el("button", "solid-btn small", t("versions.restore")); rb.onclick = async () => { rb.disabled = true; rb.textContent = t("versions.restoring"); try { const restored = await api(`/artifacts/${a.id}/versions/${v.version_id}/restore`, { method: "POST" }); syncArtifactVersion((restored && restored.artifact) || { id: a.id, version_id: v.version_id }, true); hint(t("versions.restored", v.ordinal)); (S._artBust = S._artBust || {})[a.id] = Date.now(); if (S.currentId) loadArtifacts(S.currentId); if (S.dockArtifact && S.dockArtifact.id === a.id) { if (S.provMode) showProvenance(S.dockArtifact); else renderViewer(); } render(); } catch (e) { rb.disabled = false; rb.textContent = t("versions.restore"); hint(t("versions.restore.err", apiErrorText(e)), true); } }; acts.appendChild(rb); }
       row.appendChild(acts); wrap.appendChild(row);
+      // Where this version's data came from, when it came from anywhere. The
+      // envelope has been recorded on every retrieved version since retrieval
+      // provenance existed and read by nothing, so a figure built on a live
+      // API fetch looked exactly like one computed from thin air. Read-only,
+      // and already allowlisted, bounded and redacted by the server -- the
+      // client renders what it is given and derives nothing.
+      if (v.retrieval_source) wrap.appendChild(retrievalSourcePanel(v.retrieval_source));
     });
     body.appendChild(wrap);
   };
@@ -7843,6 +7856,34 @@ function renderRefProblems(problems) {
   });
   messages.appendChild(card);
   down();
+}
+// Read-only retrieval provenance. Deliberately dumb: every value here has
+// already been through the server's allowlist, length cap and redaction, and
+// re-deriving or re-formatting any of it in the client is how the two ends
+// start disagreeing about what was sent.
+const RETRIEVAL_FIELD_ORDER = [
+  "database", "source", "retrieved_at", "request_url", "query",
+  "normalization_version", "response_sha256", "record_count",
+];
+function retrievalSourcePanel(src) {
+  const box = el("div", "ver-src");
+  box.appendChild(el("div", "ver-src-head", t("versions.retrievalSource")));
+  RETRIEVAL_FIELD_ORDER.forEach(field => {
+    if (src[field] === undefined || src[field] === null || src[field] === "") return;
+    const row = el("div", "ver-src-row");
+    row.appendChild(el("span", "ver-src-k", field));
+    row.appendChild(el("span", "ver-src-v", String(src[field])));
+    box.appendChild(row);
+  });
+  // Both notes matter: a clipped value shown plain reads as the whole value,
+  // and fields withheld without a count read as fields that never existed.
+  if (Array.isArray(src.truncated_fields) && src.truncated_fields.length) {
+    box.appendChild(el("div", "ver-src-note", t("versions.retrievalTruncated", src.truncated_fields.join(", "))));
+  }
+  if (src.undisclosed_field_count) {
+    box.appendChild(el("div", "ver-src-note", t("versions.retrievalWithheld", src.undisclosed_field_count)));
+  }
+  return box;
 }
 function acClose() { ac.open = false; const b = $("#composer-ac"); if (b) b.classList.add("hidden"); }
 

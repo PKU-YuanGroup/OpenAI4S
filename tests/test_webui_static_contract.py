@@ -1126,3 +1126,25 @@ def test_every_notebook_export_format_is_reachable_from_the_ui() -> None:
         assert (
             APP_JS.count(f'"{key}"') == 3
         ), f"{key} is missing from a translation table"
+
+
+def test_the_retrieval_panel_renders_only_what_the_server_sent() -> None:
+    """The client must not re-derive or re-format the provenance.
+
+    Every value in it has already been through the server's allowlist, length
+    cap and redaction. A client that reassembled a URL, or decided for itself
+    which fields to show, would be a second implementation of the rule that
+    keeps an API key out of the UI — and the two would drift.
+    """
+    assert "function retrievalSourcePanel(" in APP_JS
+    # It renders a fixed field order, not `Object.keys(src)`: iterating the
+    # payload would display any field a future server version adds, which is
+    # the allowlist decision being made in the wrong place.
+    assert "RETRIEVAL_FIELD_ORDER" in APP_JS
+    assert "Object.keys(src)" not in APP_JS
+    # Both notes are shown, because a clipped value rendered plain reads as the
+    # whole value and withheld fields with no count read as absent ones.
+    for key in ("versions.retrievalTruncated", "versions.retrievalWithheld"):
+        assert (
+            APP_JS.count(f'"{key}"') == 3
+        ), f"{key} is missing from a translation table"

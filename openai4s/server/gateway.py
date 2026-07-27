@@ -72,7 +72,13 @@ from openai4s.observability import (
     set_correlation_id,
 )
 from openai4s.review import review_evidence
-from openai4s.server import artifact_refs, kernel_routes, local_auth, ws_frames
+from openai4s.server import (
+    artifact_refs,
+    kernel_routes,
+    local_auth,
+    retrieval_source,
+    ws_frames,
+)
 from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.server.agent_run import EventCancellation
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
@@ -8412,6 +8418,23 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 "checksum": v.get("checksum"),
                                 "producing_cell_id": v.get("producing_cell_id"),
                                 "created_at": _iso(v["created_at"]),
+                                # Where retrieved data came from, allowlisted,
+                                # bounded and redacted. Stored since retrieval
+                                # provenance was added and never sent anywhere,
+                                # so a figure built on a live API fetch looked
+                                # exactly like one computed from nothing.
+                                # Omitted entirely when there is none: most
+                                # artifacts are computed, and an empty panel
+                                # reads as a finding about the data.
+                                **(
+                                    {"retrieval_source": projected}
+                                    if (
+                                        projected := retrieval_source.public_source(
+                                            v.get("source")
+                                        )
+                                    )
+                                    else {}
+                                ),
                             }
                             for v in vs
                         ]

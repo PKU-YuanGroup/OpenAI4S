@@ -1145,9 +1145,15 @@ class ArtifactRepository:
                 (artifact_id,),
             ).fetchone()
             rows = self._connection.execute(
+                # `source` is the retrieval provenance envelope. It was
+                # written on every retrieved version and selected by nothing,
+                # so a figure built on a live API fetch was indistinguishable
+                # from one computed out of thin air. The gateway projects it
+                # through an allowlist before any of it reaches a client.
                 "SELECT version_id,filename,content_type,size_bytes,checksum,"
-                "producing_cell_id,frame_id,created_at FROM artifact_versions "
-                "WHERE artifact_id=? ORDER BY created_at DESC, rowid DESC",
+                "producing_cell_id,frame_id,created_at,source FROM "
+                "artifact_versions WHERE artifact_id=? "
+                "ORDER BY created_at DESC, rowid DESC",
                 (artifact_id,),
             ).fetchall()
         latest_version_id = latest["latest_version_id"] if latest else None
