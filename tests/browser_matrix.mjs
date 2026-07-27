@@ -16,6 +16,8 @@
 
 const REQUESTED = (process.argv.find((a) => a.startsWith("--browser=")) || "").split("=")[1];
 const ENGINES = REQUESTED ? [REQUESTED] : ["chromium", "firefox", "webkit"];
+import { authenticate } from "./browser_auth.mjs";
+
 const baseUrl = process.env.OPENAI4S_BROWSER_URL || "http://127.0.0.1:8760/";
 
 let playwright;
@@ -71,6 +73,7 @@ async function runEngine(engineName) {
   };
 
   try {
+    await authenticate(page, baseUrl);  // the gate is on by default; see browser_auth.mjs
     await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
 
     // ---- the shell loads and its script actually ran --------------------

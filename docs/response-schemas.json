@@ -2169,7 +2169,7 @@
         "type": "object"
       }
     },
-    "DELETE /frames/([^/]+)/plan/(approve|revise|discard) [error]": {
+    "DELETE /frames/([^/]+)/plan/(approve|resume|revise|discard) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -7780,7 +7780,7 @@
         "type": "object"
       }
     },
-    "GET /frames/([^/]+)/plan/(approve|revise|discard) [error]": {
+    "GET /frames/([^/]+)/plan/(approve|resume|revise|discard) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -12979,7 +12979,7 @@
         "type": "object"
       }
     },
-    "PATCH /frames/([^/]+)/plan/(approve|revise|discard) [error]": {
+    "PATCH /frames/([^/]+)/plan/(approve|resume|revise|discard) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -19209,7 +19209,7 @@
         "type": "object"
       }
     },
-    "POST /frames/([^/]+)/plan/(approve|revise|discard) [ok]": {
+    "POST /frames/([^/]+)/plan/(approve|resume|revise|discard) [ok]": {
       "schema": {
         "properties": {
           "frame_id": {
@@ -25023,7 +25023,7 @@
         "type": "object"
       }
     },
-    "PUT /frames/([^/]+)/plan/(approve|revise|discard) [error]": {
+    "PUT /frames/([^/]+)/plan/(approve|resume|revise|discard) [error]": {
       "schema": {
         "properties": {
           "code": {

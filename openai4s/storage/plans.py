@@ -66,6 +66,20 @@ class PlanRepository:
         artifact_id: str | None = None,
         status: str = "draft",
     ) -> dict:
+        # The enum is enforced here too, not only in `update`. It was not,
+        # and the asymmetry mattered because of who calls this: session import
+        # passes the status straight out of an uploaded package
+        # (`server/session_package.py`), so any string in a user-supplied ZIP
+        # landed in the column. A plan row reading "not-a-status" is not
+        # cosmetic -- `get_by_frame` prefers the newest non-discarded plan, so
+        # it shadows every new draft for that session forever, the UI's status
+        # switch falls through to an empty card, and the orphan sweep does not
+        # match it either.
+        if status not in PLAN_STATUSES:
+            raise ValueError(
+                f"unknown plan status {status!r}; expected one of "
+                + ", ".join(sorted(PLAN_STATUSES))
+            )
         now = self._clock_ms()
         plan_id = f"plan-{uuid.uuid4().hex[:12]}"
         self._execute(

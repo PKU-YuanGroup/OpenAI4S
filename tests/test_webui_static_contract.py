@@ -236,11 +236,115 @@ def test_all_literal_icon_names_have_svg_definitions() -> None:
     assert not missing, f"literal icon names missing from ICONS: {missing}"
 
 
-def test_frontend_uses_backend_error_envelope() -> None:
-    api_source = APP_JS[APP_JS.index("const api =") : APP_JS.index("const S =")]
-    assert re.search(
-        r"\bj\s*(?:\?\.|\.)\s*error\b", api_source
-    ), "api() must surface the backend's {error: ...} message"
+def test_frontend_keeps_the_whole_error_envelope_not_just_the_prose() -> None:
+    """This used to assert only that `api()` mentioned `j.error`.
+
+    That was the right check when `error` was all the backend sent. The
+    envelope is now `{error, code, status, request_id}`, and `api()` parsed all
+    four and threw away three: `code` is the stable machine-readable contract
+    -- the backend documents the prose as explicitly *not* an interface -- and
+    `request_id` is the string that ties a user's report to a server log line,
+    which existed on both ends and was displayed at neither.
+
+    So assert the whole envelope survives, which the weaker check could not
+    distinguish from dropping it.
+    """
+    start = APP_JS.index("class ApiError")
+    error_source = APP_JS[start : APP_JS.index("const S =")]
+    for field in ("error", "code", "status", "request_id"):
+        assert re.search(rf"\b{field}\b", error_source), (
+            f"the failure envelope's `{field}` is parsed and then dropped; "
+            "a client cannot branch on what it never receives"
+        )
+    assert "throw new ApiError(" in error_source, (
+        "api() must throw the structured error, not a bare Error that flattens "
+        "the envelope into one string"
+    )
+
+
+def test_every_user_facing_error_shows_the_request_id() -> None:
+    """A `request_id` nobody sees ties nothing to anything.
+
+    The whole point of the correlation id is that a user can quote it and an
+    operator can find the matching log line. Rendering `e.message` alone in the
+    composer hint drops it at the last step, after both ends went to the
+    trouble of carrying it. `apiErrorText` appends it when there is one.
+    """
+    raw = re.findall(r'hint\(t\("[^"]+",\s*\w+\.message', APP_JS)
+    assert not raw, (
+        "these error hints render the message without the request id: "
+        f"{sorted(set(raw))}"
+    )
+    assert "function apiErrorText(" in APP_JS
+
+
+def test_no_response_path_builds_its_own_lossy_error() -> None:
+    """`api()` was not the only converter.
+
+    Three call sites re-implemented the same `!ok -> new Error(string)` by
+    hand -- `shareCall`, the session-package import, and `fetchArtifactText`,
+    which never parsed the body at all. Each discarded the envelope
+    independently, so fixing `api()` alone would have left three paths whose
+    failures carry less information than the rest, with nothing marking them
+    as different.
+    """
+    # Scoped to conversions of a *failed* HTTP response, which is the only
+    # place an envelope exists to keep. It deliberately does not flag
+    # `if (r.error) throw ...` after a 200: six Customize routes report domain
+    # failures in a soft dictionary at HTTP 200 (`server/skills.py`), so those
+    # bodies never pass through `public_failure` and have no `code` or
+    # `request_id` to preserve. That is a real gap in the error contract and it
+    # is recorded as one -- see docs/next-version-progress.md -- rather than
+    # being quietly absorbed into a check that would then be asserting
+    # something it cannot deliver.
+    lossy = re.findall(
+        r"if\s*\(!\s*\w+\.ok\)[^;]*throw new Error\([^)]*\)"
+        r"|throw new Error\(\s*result\.error[^)]*\)",
+        APP_JS,
+    )
+    assert not lossy, (
+        "these build an error from a failed response without keeping the "
+        f"envelope: {sorted(set(lossy))}"
+    )
+
+
+def test_no_error_branch_reads_a_status_out_of_prose() -> None:
+    """The annotation save had `/404/.test(e.message)`.
+
+    It was testing `api()`'s *fallback* string (`"HTTP 404"`), which the
+    gateway never produces -- every failure carries a JSON body, so the message
+    was `"not found"` and the regex never matched. The specific guidance it
+    selected ("backend annotation API not loaded, restart the service") was
+    therefore unreachable, and the user got the generic message instead. Not a
+    style problem: a live dead branch, and exactly what a structured `status`
+    and `code` exist to prevent.
+    """
+    prose_status = re.findall(r"/\s*\d{3}\s*/\s*\.test\(", APP_JS)
+    assert (
+        not prose_status
+    ), f"an error branch is matching a status code out of prose: {prose_status}"
+    assert (
+        "e.status === 404" in APP_JS
+    ), "the annotation-save branch should read the structured status"
+
+
+def test_a_paused_plan_is_rendered_and_can_be_resumed() -> None:
+    """The backend could hold `paused` before anything could show it.
+
+    `renderPlanCard` handled draft/executing/completed/failed and fell through
+    for `paused` to an empty status line and no controls -- so a plan that
+    stopped with steps left looked like a plan with nothing to say, and the
+    only way out was to discard it and start over. The status existed, the
+    reconciliation that produces it existed, and the user could not act on it.
+    """
+    assert '"plan.eyebrow.paused"' in APP_JS
+    assert '"plan.status.paused"' in APP_JS
+    assert "async function resumePlan()" in APP_JS
+    assert "/plan/resume" in APP_JS
+    # Both translation tables, not just the one the developer reads.
+    assert (
+        APP_JS.count('"plan.resume":') == 2
+    ), "the resume control is missing from one of the two i18n tables"
 
 
 def test_frontend_never_hardcodes_an_unversioned_api_path() -> None:

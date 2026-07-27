@@ -894,7 +894,7 @@
         404
       ]
     },
-    "/frames/([^/]+)/plan/(approve|revise|discard)": {
+    "/frames/([^/]+)/plan/(approve|resume|revise|discard)": {
       "content_types": [
         "application/json"
       ],

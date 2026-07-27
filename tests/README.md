@@ -17,6 +17,7 @@ The offline correctness gate for OpenAI4S. `uv run pytest` runs every module her
 | File | Responsibility |
 | --- | --- |
 | [`conftest.py`](conftest.py) | Sets up import paths, gives every test its own data directory, configures a fake LLM provider and key, cleans up the `Store` afterwards, and holds the shared pytest fixtures. |
+| [`browser_auth.mjs`](browser_auth.mjs) | The credential both browser harnesses present. The daemon requires an access token by default, including on loopback, so a harness that navigates to `/` with nothing would fail every check on a 401 and report it as a product failure. It reads the token from the same file the CLI does, and logs in the way a user does — open the printed `?token=` URL once and let the 303 set the cookie — so the bootstrap and the cookie hand-off are exercised rather than routed around. |
 | [`browser_smoke.mjs`](browser_smoke.mjs) | Drives a real browser against the running Gateway UI and its streamed interaction paths. You invoke it separately from local pytest; the normal PR CI workflow runs it automatically. |
 | [`scientific_renderers_smoke.cjs`](scientific_renderers_smoke.cjs) | A dependency-light Node runner that checks the UMD scientific artifact parsers in the Web UI against their contract. |
 

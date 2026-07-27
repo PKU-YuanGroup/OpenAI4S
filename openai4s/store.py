@@ -513,7 +513,7 @@ CREATE TABLE IF NOT EXISTS plans (
     rationale     TEXT,
     confidence    TEXT,               -- 'high'|'medium'|'low' (or a 0..1 string)
     steps         TEXT NOT NULL,      -- JSON [{id,title,detail,deliverables:[...]}]
-    status        TEXT NOT NULL DEFAULT 'draft',   -- draft|executing|completed|failed|discarded
+    status        TEXT NOT NULL DEFAULT 'draft',   -- see storage/plans.py PLAN_STATUSES
     step_status   TEXT,               -- JSON {step_id: {status, note, updated_at}}
     artifact_id   TEXT,               -- the plan_*.json artifact (so revises re-version it)
     created_at    INTEGER NOT NULL,
@@ -2826,8 +2826,17 @@ class Store:
     def set_plan_step_status(
         self, plan_id: str, step_id: str, status: str, note: str | None = None
     ) -> dict | None:
-        """Merge one step's status into the plan's step_status JSON. Returns the
-        updated plan (with steps[] status folded in)."""
+        """Merge one step's status into the plan's ``step_status`` JSON.
+
+        Returns the updated plan **row**, not a folded view: ``steps[]`` still
+        carries whatever the plan was created with, and each step's live status
+        lives in the separate ``step_status`` map keyed by step id. The folding
+        is done by ``server/plans.py::public_plan`` on the way to the client.
+
+        This said "with steps[] status folded in", which is a description of a
+        different function. A caller that believed it would read `steps[i]
+        ["status"]`, find nothing, and conclude no step had progressed.
+        """
         return self._plans.set_step_status(plan_id, step_id, status, note)
 
     def delete_plans_for_frame(self, frame_id: str) -> None:

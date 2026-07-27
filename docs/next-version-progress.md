@@ -57,8 +57,9 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | 4.2 | Both capture points observe the enriched body; artifacts regenerated | `e3bd0a4` | `Completed` | `grep -c request_id docs/response-*.json` went 0 → 1107 |
 | 4.4 | `PLAN_STATUSES` enforced in the repository; `paused` added; `_spawn_job` distinguishes cancel from failure; startup reconciles orphaned `executing` rows | `23fab8c` | `Completed` | Removing the enum check and the reconciliation fails two tests |
 | 4.3 | request-id carried into the turn/plan/REPL/local-job threads by an explicit context copy; `MessageJob` records the id it was built under so a failed job's result and its log line share one; daemon-lifetime sweepers deliberately excluded | *pending* | `Completed` | Unwiring any one spawn site fails the wiring test *by thread name*; the behavioural half asserts a bare thread still sees `""`, so the helper cannot be moot |
-| 4.5 | Plan resume running only unfinished steps, reusing `ExecutionOwner` | — | `Not started` | Backend can hold `paused`; no resume entry point yet |
-| 4.6 | Structured `ApiError` in the frontend; `paused` plan controls | — | `Not started` | — |
+| 4.5 | Plan resume: `POST /frames/{id}/plan/resume` runs only the unfinished steps, through the same FIFO-owned turn the approve path uses; refused per-status with its own reason; a paused plan with nothing left completes instead of running an empty turn | *pending* | `Completed` | Three mutations caught: treating `failed` as unfinished, treating `in_progress` as settled, and relaxing the paused-only guard |
+| 4.6 | `ApiError` keeps the whole envelope (`code`/`status`/`request_id`); 53 user-facing hints now show the id; four hand-rolled lossy conversions removed; the dead `/404/.test(e.message)` branch reads the structured status; `paused` plans render and offer a resume control | *pending* | `Completed` | Each of the three gates fails on its own reinstated defect |
+| 4.x | **Known gap, not closed:** six Web Customize routes report domain failures as `{"error"}` inside HTTP 200 (`server/skills.py`'s deliberate soft dictionaries), so they never reach `public_failure` and carry no `code` or `request_id` | — | `Not started` | The frontend gate is scoped to `!ok` conversions and says so in a comment, rather than silently covering a case it cannot deliver |
 
 ## 3. P0-3 — bounded runtime and transport
 
@@ -109,6 +110,10 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | 0.4 | Release evidence bundle sealed for `evidence.verify_package` | — | `Not started` | — |
 | 0.5 | Python support matrix reconciled: 3.13 classified and added to the CI matrix, and the three files are compared by a test rather than restated in prose | `20b46cd` | `Completed` | Reverting the classifier, the CI matrix or the `requires-python` floor fails a different arm each time, naming the exact file conflict |
 | 0.7 | macOS signing/notarization state vocabulary (D11) | — | `Not started` | `Blocked` for the certificate itself |
+
+| 4.x | **Found by running it, not by reading it:** the startup access-token banner used block-buffered stdout while every neighbouring notice uses stderr, so under `nohup`/systemd/Docker the credential a user needs to open their own daemon never appeared | *pending* | `Completed` | Reproduced against a real daemon with stdout redirected to a file: banner absent before, present after |
+| 4.x | Both browser harnesses navigated to `/` with no credential and would have failed every check on a 401 once the gate was on; a shared `tests/browser_auth.mjs` logs in through the `?token=` bootstrap, exercising the 303 and cookie hand-off | *pending* | `Completed` | Neutering the login makes `browser_smoke.mjs` fail at its first check with HTTP 401 |
+| 4.x | `PlanRepository.create` did not enforce `PLAN_STATUSES` while `update` did, and session import fed it a status straight from an uploaded package; an imported plan claiming `executing` now arrives `paused` | *pending* | `Completed` | Disabling either the enum check or the `executing`→`paused` mapping fails its own test |
 
 ## 7. Cross-cutting engineering
 

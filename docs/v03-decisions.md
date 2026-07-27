@@ -65,5 +65,5 @@ than an oversight. None of these can be established from a working copy.
 | Developer ID certificate | `build_macos_dmg.sh` only ad-hoc signs, so `--mode release` cannot pass for a DMG. |
 | Apple notarization | Requires the paid identity above. Reported as a state, never as verified. |
 | PyPI OIDC publish | Only exercised by a real release. |
-| Live browser smoke | `tests/browser_smoke.mjs` and `browser_matrix.mjs` need a daemon on `127.0.0.1:8760`. |
+| ~~Live browser smoke~~ | **No longer unverifiable — it was run.** Both harnesses were driven against a real daemon on `127.0.0.1:8760` with CI's environment, and both pass. Running them is what caught two things the offline suite could not: the auth flip 401'd every check in both harnesses (they navigated to `/` with no credential — fixed by `tests/browser_auth.mjs`, and verified to fail again when the login is removed), and the startup token banner went to block-buffered stdout, so the one line a user needs to open their own daemon never appeared under `nohup`/systemd/Docker. |
 | Linux CI behaviour | Development is macOS: `sh` execs where macOS forks, there is no Seatbelt but there is bubblewrap, and the platform branches taken there are not taken here. |

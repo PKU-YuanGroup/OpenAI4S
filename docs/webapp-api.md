@@ -267,6 +267,7 @@ success response body. Serializer shapes are in §4.
 | --- | --- |
 | `GET /frames/{fid}/plan` | `{"frame_id","plan_id","status","plan"}` (nulls when no plan). |
 | `POST /frames/{fid}/plan/approve` | `202 {"status":"accepted","frame_id","job_id"}` — auto-execution runs in the background. |
+| `POST /frames/{fid}/plan/resume` | `202 {"status":"accepted","frame_id","job_id"}` — runs only the plan's **unfinished** steps. `409 plan_not_paused` when the plan is any other status, refused synchronously so the caller is not handed a job that accepts and then reports a failure. A step counts as settled when it is `completed` or `failed`: `failed` is a decision the agent made and moved on from, while `in_progress` was interrupted with no record of how far it got, so it is re-run. The resume seed names the settled steps and instructs the agent not to redo them. A paused plan with nothing unfinished is marked `completed` without running a turn. |
 | `POST /frames/{fid}/plan/revise` | Body `{changes}` (or `{feedback}`); empty → `400 {"error":"changes required"}`; else `202` accepted. |
 | `POST /frames/{fid}/plan/discard` | Result of `runner.discard_plan` (synchronous). |
 

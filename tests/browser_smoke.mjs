@@ -7,11 +7,17 @@ try {
   playwright = await import(fallback);
 }
 const { chromium } = playwright;
+import { authenticate } from "./browser_auth.mjs";
 
 const baseUrl = process.env.OPENAI4S_BROWSER_URL || "http://127.0.0.1:8760/";
 const executablePath = process.env.OPENAI4S_BROWSER_EXECUTABLE || undefined;
 const browser = await chromium.launch({ headless: true, executablePath });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+// Log in before anything else. The daemon requires a token by default now, so
+// without this every check below fails on a 401 and reports it as a product
+// failure. Doing it through the query-string bootstrap means the harness also
+// exercises the 303 and the cookie hand-off a real browser goes through.
+const accessToken = await authenticate(page, baseUrl);
 const pageErrors = [];
 const workbenchSockets = [];
 const workbenchEvents = [];

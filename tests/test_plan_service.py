@@ -309,3 +309,138 @@ def test_execution_guards_and_revision_prompt(tmp_path):
     )
     assert store.get_plan(plan["plan_id"])["status"] == "completed"
     assert calls == []
+
+
+def _plan_with_steps(store, frame_id, statuses):
+    """A plan whose steps carry `statuses` (index -> status, None = untouched)."""
+    steps = [
+        {
+            "id": f"s{i + 1}",
+            "title": f"step {i + 1}",
+            "detail": "do it",
+            "deliverables": [f"out{i + 1}.csv"],
+        }
+        for i in range(len(statuses))
+    ]
+    plan = store.create_plan(
+        frame_id=frame_id,
+        project_id="science",
+        title="resumable",
+        rationale="r",
+        confidence="high",
+        steps=steps,
+        status="paused",
+    )
+    for index, status in enumerate(statuses):
+        if status:
+            store.set_plan_step_status(plan["plan_id"], f"s{index + 1}", status)
+    return store.get_plan(plan["plan_id"])
+
+
+def test_resume_runs_the_unfinished_steps_and_leaves_the_settled_ones(tmp_path):
+    """`completed` and `failed` are both settled; `in_progress` is not.
+
+    `failed` is a decision, not an interruption: the execution seed tells the
+    agent to mark a step failed with a reason *and carry on*, so re-running it
+    would redo work someone already concluded cannot be done. `in_progress` is
+    the opposite -- the step was interrupted part-way, nothing records how far
+    it got, and assuming it landed is the one guess that silently loses work.
+    """
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _plan_with_steps(
+        store, frame_id, ["completed", "failed", "in_progress", None]
+    )
+
+    remaining = service.unfinished_steps(plan)
+    assert [step["id"] for step in remaining] == ["s3", "s4"]
+
+
+def test_the_resume_seed_names_the_finished_work_so_it_is_not_redone(tmp_path):
+    """Sending only the remainder would leave the agent to infer that earlier
+    work exists. A plan whose first steps produced files is one where "start
+    from the top" quietly overwrites them."""
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _plan_with_steps(store, frame_id, ["completed", None])
+
+    seed = service.resume_seed(plan, service.unfinished_steps(plan))
+    assert "s1" in seed and "不要重做" in seed
+    assert "step 2" in seed
+    assert "out2.csv" in seed
+
+
+def test_only_a_paused_plan_resumes_and_each_refusal_says_why(tmp_path):
+    """Refused per-status rather than with one "cannot resume", because the
+    caller's next move differs: approve a draft, wait for an executing one, do
+    nothing for a finished one."""
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+
+    assert "no plan" in service.resume_execution(frame_id, "science")["error"]
+
+    plan = _plan_with_steps(store, frame_id, [None])
+    for status in ("draft", "executing", "completed", "failed", "discarded"):
+        store.update_plan(plan["plan_id"], status=status)
+        result = service.resume_execution(frame_id, "science")
+        assert result["status"] == "failed", status
+        assert status in result["error"], result["error"]
+        assert result["plan_status"] == status
+
+
+def test_resume_runs_the_turn_and_reports_how_many_steps_it_took(tmp_path):
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _plan_with_steps(store, frame_id, ["completed", None, None])
+
+    seen = {}
+
+    def _run_message(root_frame_id, project_id, seed, model, plan=False):
+        seen["seed"] = seed
+        # The plan is `executing` while the turn runs, not before and not after.
+        seen["status_during"] = store.get_plan(plan_id)["status"]
+        return {"status": "completed", "frame_id": root_frame_id}
+
+    plan_id = plan["plan_id"]
+    service.run_message = _run_message
+    result = service.resume_execution(frame_id, "science")
+
+    assert result["resumed_steps"] == 2
+    assert result["plan_status"] == "completed"
+    assert seen["status_during"] == "executing"
+    assert store.get_plan(plan_id)["status"] == "completed"
+
+
+def test_a_cancelled_resume_pauses_again_rather_than_sticking_on_executing(tmp_path):
+    """The same reasoning as the approve path: a stuck `executing` row shadows
+    every new draft for the session, because `get_by_frame` prefers the newest
+    non-discarded plan."""
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _plan_with_steps(store, frame_id, [None, None])
+
+    service.run_message = lambda *a, **k: {"status": "cancelled"}
+    result = service.resume_execution(frame_id, "science")
+
+    assert result["plan_status"] == "paused"
+    assert store.get_plan(plan["plan_id"])["status"] == "paused"
+    # ...and it can be resumed again, which is the point of pausing.
+    service.run_message = lambda *a, **k: {"status": "completed"}
+    assert service.resume_execution(frame_id, "science")["plan_status"] == "completed"
+
+
+def test_a_paused_plan_with_nothing_left_completes_instead_of_running_a_turn(tmp_path):
+    """Otherwise it sits paused forever, shadowing new drafts, and the resume
+    button starts an agent turn with an empty step list."""
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _plan_with_steps(store, frame_id, ["completed", "failed"])
+
+    ran = []
+    service.run_message = lambda *a, **k: ran.append(1) or {"status": "completed"}
+    result = service.resume_execution(frame_id, "science")
+
+    assert ran == [], "it started a turn with no steps to run"
+    assert result["resumed_steps"] == 0
+    assert result["plan_status"] == "completed"
+    assert store.get_plan(plan["plan_id"])["status"] == "completed"

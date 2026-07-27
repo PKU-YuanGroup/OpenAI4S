@@ -1558,9 +1558,19 @@ def test_token_gate_401_and_cookie_redirect(monkeypatch, tmp_path, capsys):
     cfg = _cfg(tmp_path)
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
-    printed = capsys.readouterr().out
-    tok = re.search(r"\?token=([A-Za-z0-9_-]{20,})", printed)
-    assert tok, "gateway did not print the access token"
+    captured = capsys.readouterr()
+    # stderr, and this assertion is the point rather than a detail. On `print`
+    # to stdout the banner is block-buffered whenever stdout is not a TTY, so
+    # under nohup, systemd, Docker or any redirect to a log file the one line a
+    # user needs in order to open their own daemon never appeared. It showed in
+    # a terminal, which is exactly why it survived review -- the configuration
+    # that hides it is the one nobody develops in. Found by running a real
+    # daemon with stdout redirected, not by reading the code.
+    assert (
+        "?token=" not in captured.out
+    ), "the access token went to stdout, which is block-buffered off a TTY"
+    tok = re.search(r"\?token=([A-Za-z0-9_-]{20,})", captured.err)
+    assert tok, "gateway did not print the access token to stderr"
     token = tok.group(1)
 
     # Persisted, so a second daemon on the same data dir uses the same token

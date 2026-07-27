@@ -5400,6 +5400,19 @@ class SessionRunner:
             lambda: self.run_plan_execution(root_frame_id, project_id, model),
         )
 
+    def run_plan_resume(
+        self, root_frame_id: str, project_id: str, model: str | None = None
+    ) -> dict:
+        return self.plans.resume_execution(root_frame_id, project_id, model)
+
+    def submit_plan_resume(
+        self, root_frame_id: str, project_id: str, model: str | None = None
+    ) -> "MessageJob":
+        return self._spawn_job(
+            root_frame_id,
+            lambda: self.run_plan_resume(root_frame_id, project_id, model),
+        )
+
     def submit_plan_revision(
         self,
         root_frame_id: str,
@@ -6094,17 +6107,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     # readable by the CLI, which must present a credential once the gate is
     # required and cannot import the web server to find out what it is.
     _auth_token = local_auth.load_or_mint(cfg.data_dir) if _needs_token else None
+    # stderr and flushed, like every other startup notice here. On plain
+    # `print` this went to stdout, which is block-buffered whenever it is not a
+    # TTY -- so under nohup, systemd, Docker or any redirect to a log file, the
+    # one line a user needs in order to open their own daemon sat in a buffer
+    # and did not appear. It showed up in a terminal, which is exactly why it
+    # survived: the configuration that hides it is the one nobody develops in.
     if _auth_token:
         print(
             f"[openai4s] access token required.\n"
-            f"  open: http://{cfg.host}:{cfg.port}/?token={_auth_token}"
+            f"  open: http://{cfg.host}:{cfg.port}/?token={_auth_token}",
+            file=sys.stderr,
+            flush=True,
         )
     elif _loopback:
         print(
             "[openai4s] WARNING: OPENAI4S_REQUIRE_TOKEN=0 — this daemon answers "
             "without a credential, and it can execute code. Any other process "
             "on this machine can drive it. This opt-out is removed in the next "
-            "minor release."
+            "minor release.",
+            file=sys.stderr,
+            flush=True,
         )
     # honour persisted network toggle on boot
     if store.get_setting("network_enabled") == "0":
@@ -7615,7 +7638,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "GET":
                 self._json(runner.get_plan_state(m.group(1)))
                 return
-            m = re.fullmatch(r"/frames/([^/]+)/plan/(approve|revise|discard)", sub)
+            m = re.fullmatch(
+                r"/frames/([^/]+)/plan/(approve|resume|revise|discard)", sub
+            )
             if m and method == "POST":
                 fid, action = m.group(1), m.group(2)
                 b = self._body()
@@ -7624,6 +7649,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 model = b.get("model")
                 if action == "approve":
                     job = runner.submit_plan_approval(fid, pid, model)
+                    self._json(
+                        {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
+                        202,
+                    )
+                elif action == "resume":
+                    # Refused synchronously when the plan is not paused, so the
+                    # caller learns why now rather than from a job that
+                    # accepts, starts nothing and reports a failure later.
+                    plan = store.get_plan_by_frame(fid) or {}
+                    if plan.get("status") != "paused":
+                        raise GatewayError(
+                            409,
+                            (
+                                "only a paused plan can resume; this one is "
+                                f"{plan.get('status') or 'absent'}"
+                            ),
+                            "plan_not_paused",
+                        )
+                    job = runner.submit_plan_resume(fid, pid, model)
                     self._json(
                         {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
                         202,
