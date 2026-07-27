@@ -152,13 +152,20 @@ are easy to mistake for oversights:
 | A.4 | Image attachment budgets: 8 images, 4 MiB each, 12 MiB total, measured after the pin markers are drawn because that is what goes on the wire. None existed — eight pins on a 3000×2200 raster sent ~10 MiB and nothing stopped eighty. Dropped figures are named to the user *and* to the model, which is told to say they were not received rather than describe them | `7c92a0c` | `Completed` | Raising any of the three limits fails its own test — **after** a rewrite: the first version of two of those tests defined their expectation in terms of the constant under test, so removing the budget broke nothing. Mutation testing found that, not review |
 | A.2 | Readiness card (local-only: `ready`/`needs_key`/`needs_model`/`unsupported`, `checked_endpoint` always false), explicit `POST /model-profiles/{id}/probe`, and **two** providers made selectable — `gemini` *and* `openai_responses` were both dispatchable and both unreachable from the menu. Identity selection itself landed earlier in P0-2.10 | `8d715eb` | `Completed` | Making the card probe on render fails; dropping gemini fails by name; probing a keyless profile fails. **A live provider endpoint is never contacted by any test** — the success path of `probe` is `Implemented but unverified` |
 
-## 10. Not started
+## 10. P1-B — Agent, Skill and Compute control
 
-`P1-A` (visible product closure), `P1-B` (Agent/Skill/Compute control planes),
+| # | Item | Commit | Status | Falsification |
+|---|---|---|---|---|
+| B.4 | Specialist tri-state allowlist enforced. D5 deferred exactly this to P1-B and **hid the UI meanwhile, so no lock was displayed that was not enforced** — until now `skill_names` was stored, inherited through delegation, merged into the child spec, and read by nothing. `None` inherits, `[]` denies all, a list is exactly those; a child may only narrow, and inheriting is not widening. Enforced on all four surfaces the exit criterion names: catalogue, search, `load`/`get`, and `read` | *pending* | `Completed` | The falsy collapse (`if not allowed:`) fails 3 tests; letting a child's `None` clear the parent fails 3; ungating `read` fails 1 |
+| B.1–B.3, B.5, B.6 | Follow-up FIFO while running; delegation subtree stop and turn-boundary steering; Skill `requirements` parser and readiness; owner-scoped remote compute task centre; Memory budgets and context projection | — | `Not started` | — |
+
+## 11. Not started
+
+`P1-B` (Agent/Skill/Compute control planes),
 and all of `P2` (design freeze and real-platform experiments). P2 by decision
 D8 enters no public API, schema or definition of done in this version.
 
-## 11. Externally unverifiable
+## 12. Externally unverifiable
 
 See [`v03-decisions.md`](v03-decisions.md#externally-unverifiable). Nothing in
 this file marks those `Completed`.
