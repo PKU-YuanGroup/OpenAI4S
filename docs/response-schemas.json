@@ -6762,6 +6762,9 @@
           "message_count": {
             "type": "integer"
           },
+          "omitted": {
+            "type": "array"
+          },
           "output_reserve": {
             "type": "integer"
           },
@@ -6782,6 +6785,7 @@
           "handoff",
           "layers",
           "message_count",
+          "omitted",
           "output_reserve",
           "root_frame_id",
           "token_count",
@@ -8881,10 +8885,18 @@
         "properties": {
           "context": {
             "type": "string"
+          },
+          "included_count": {
+            "type": "integer"
+          },
+          "omitted": {
+            "type": "array"
           }
         },
         "required": [
-          "context"
+          "context",
+          "included_count",
+          "omitted"
         ],
         "type": "object"
       }

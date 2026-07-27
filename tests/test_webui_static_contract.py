@@ -1148,3 +1148,34 @@ def test_the_retrieval_panel_renders_only_what_the_server_sent() -> None:
         assert (
             APP_JS.count(f'"{key}"') == 3
         ), f"{key} is missing from a translation table"
+
+
+def test_the_context_panel_carries_the_servers_omission_report() -> None:
+    """The server reports what a budget left out; the client has to keep it.
+
+    `sanitizeContext` rebuilds the payload field by field, so anything it does
+    not name is dropped on the floor. That is how a projection stays looking
+    complete while quietly becoming partial — and it is the same shape as the
+    retrieval `source` envelope, the specialist allowlist, and the notebook
+    export formats: server-side work that reached nothing.
+    """
+    sanitizer = APP_JS[APP_JS.index("function sanitizeContext(") :]
+    sanitizer = sanitizer[: sanitizer.index("\nfunction ")]
+    assert "omitted:" in sanitizer, "the omission report is dropped by the normaliser"
+
+    panel = APP_JS[APP_JS.index("function renderContextPanel(") :]
+    panel = panel[: panel.index("\nfunction ")]
+    assert "state.omitted" in panel, "the omission report is never rendered"
+
+
+def test_an_optional_label_can_actually_fall_back() -> None:
+    """`t()` returns the key itself when it is missing, which makes
+    `t(key) || fallback` a dead branch — the fallback can never run and a user
+    sees `context.omitted.images` rendered as text. Optional labels go through
+    a lookup that can return null."""
+    panel = APP_JS[APP_JS.index("function renderContextPanel(") :]
+    panel = panel[: panel.index("\nfunction ")]
+    for computed in ('t("context.omitted." +', 't("context.reason." +'):
+        assert computed not in panel, f"{computed} can never fall back"
+    assert 'tOptional("context.omitted." +' in panel
+    assert 'tOptional("context.reason." +' in panel

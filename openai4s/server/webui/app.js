@@ -139,6 +139,15 @@ let LANG = (() => {
   return "zh";
 })();
 // t("key", ...args) — current-language string with {0},{1}… positional interpolation; falls back to zh, then the key.
+// `t` falls back to the key itself, which is right for a missing translation
+// (a developer sees the key) and wrong for an optional label (a user would see
+// "context.omitted.images" rendered as text). This says "translate if you know
+// it" and lets the caller supply something a person can read otherwise.
+function tOptional(key) {
+  const d = I18N[LANG] || {}, z = I18N.zh || {};
+  const value = d[key] != null ? d[key] : z[key];
+  return value != null ? String(value) : null;
+}
 function t(key, ...args) {
   const d = I18N[LANG] || I18N.zh || {};
   let s = d[key]; if (s == null) { const z = (I18N.zh || {})[key]; s = z != null ? z : key; }
@@ -770,6 +779,11 @@ Object.assign(I18N.zh, {
   "context.history": "压缩历史（{0}）",
   "context.compaction": "Compaction",
   "context.savings": "{0} → {1} tokens",
+  "context.omitted.memory": "记忆（未注入）",
+  "context.omittedCount": "略去 {0} 条",
+  "context.reason.too_long": "单条过长",
+  "context.reason.too_many": "超出条数",
+  "context.reason.budget_exhausted": "超出总量",
   "context.artifacts": "{0} 个 Artifact 引用",
   "security.sandbox": "Sandbox",
   "security.generation": "Generation",
@@ -1630,6 +1644,11 @@ Object.assign(I18N.en, {
   "context.history": "Compaction history ({0})",
   "context.compaction": "Compaction",
   "context.savings": "{0} → {1} tokens",
+  "context.omitted.memory": "Memory (not injected)",
+  "context.omittedCount": "{0} omitted",
+  "context.reason.too_long": "too long",
+  "context.reason.too_many": "over the count",
+  "context.reason.budget_exhausted": "over the total",
   "context.artifacts": "{0} Artifact refs",
   "security.sandbox": "Sandbox",
   "security.generation": "Generation",
@@ -2407,6 +2426,16 @@ function sanitizeContext(payload) {
       token_count: Number.isFinite(+layer.token_count) ? +layer.token_count : null,
       status: publicText(layer.status, 48), compressed: !!layer.compressed
     })),
+    // What this turn's budgets left out. Dropping it here would have made the
+    // server-side omission report unreachable — the panel would keep reading
+    // as a complete account of the context while quietly being a partial one.
+    omitted: (Array.isArray(source.omitted) ? source.omitted : []).slice(0, 20).map(item => ({
+      kind: publicText(item && item.kind, 48),
+      count: Math.max(0, Number(item && item.count) || 0),
+      reasons: (Array.isArray(item && item.reasons) ? item.reasons : []).slice(0, 8).map(r => ({
+        reason: publicText(r && r.reason, 48), count: Math.max(0, Number(r && r.count) || 0)
+      }))
+    })),
     compaction_history: history.slice(0, 50).map(item => ({
       archive_id: publicText(item && item.archive_id, 120), branch_id: publicText(item && item.branch_id, 120),
       generation_id: publicText(item && item.generation_id, 120), created_at: Number(item && item.created_at) || 0,
@@ -2821,6 +2850,13 @@ function renderContextPanel() {
   if (state.compressed) summary.appendChild(el("span", "timeline-pill", t("context.compressed")));
   if (state.handoff) summary.appendChild(el("span", "timeline-pill", t("context.handoff"))); panel.appendChild(summary);
   state.layers.forEach(layer => { const row = el("div", "context-layer"); row.appendChild(el("span", "context-layer-name", layer.name || layer.kind || "context")); if (layer.token_count != null) row.appendChild(el("span", "context-layer-tokens", t("context.tokens", layer.token_count))); if (layer.status) row.appendChild(el("span", "timeline-pill", layer.status)); panel.appendChild(row); });
+  (state.omitted || []).forEach(item => {
+    const row = el("div", "context-layer context-omitted");
+    row.appendChild(el("span", "context-layer-name", tOptional("context.omitted." + item.kind) || item.kind));
+    row.appendChild(el("span", "context-layer-tokens", t("context.omittedCount", item.count)));
+    (item.reasons || []).forEach(r => row.appendChild(el("span", "timeline-pill", (tOptional("context.reason." + r.reason) || r.reason) + " ×" + r.count)));
+    panel.appendChild(row);
+  });
   if ((state.compaction_history || []).length) {
     const history = el("details", "context-history"); history.appendChild(el("summary", null, t("context.history", state.compaction_count || state.compaction_history.length)));
     state.compaction_history.forEach(item => {
