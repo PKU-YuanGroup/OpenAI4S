@@ -156,7 +156,7 @@ are easy to mistake for oversights:
 
 | # | Item | Commit | Status | Falsification |
 |---|---|---|---|---|
-| B.4 | Specialist tri-state allowlist enforced. D5 deferred exactly this to P1-B and **hid the UI meanwhile, so no lock was displayed that was not enforced** — until now `skill_names` was stored, inherited through delegation, merged into the child spec, and read by nothing. `None` inherits, `[]` denies all, a list is exactly those; a child may only narrow, and inheriting is not widening. Enforced on all four surfaces the exit criterion names: catalogue, search, `load`/`get`, and `read` | *pending* | `Completed` | The falsy collapse (`if not allowed:`) fails 3 tests; letting a child's `None` clear the parent fails 3; ungating `read` fails 1 |
+| B.4 | Specialist tri-state allowlist enforced. D5 deferred exactly this to P1-B and **hid the UI meanwhile, so no lock was displayed that was not enforced** — until now `skill_names` was stored, inherited through delegation, merged into the child spec, and read by nothing. `None` inherits, `[]` denies all, a list is exactly those; a child may only narrow, and inheriting is not widening. Enforced on all four surfaces the exit criterion names: catalogue, search, `load`/`get`, and `read` | `f7c108b` | `Completed` | The falsy collapse (`if not allowed:`) fails 3 tests; letting a child's `None` clear the parent fails 3; ungating `read` fails 1 |
 | B.1–B.3, B.5, B.6 | Follow-up FIFO while running; delegation subtree stop and turn-boundary steering; Skill `requirements` parser and readiness; owner-scoped remote compute task centre; Memory budgets and context projection | — | `Not started` | — |
 
 ## 11. Not started
