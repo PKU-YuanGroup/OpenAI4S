@@ -247,8 +247,12 @@ def test_profile_service_crud_activation_and_header_projection(tmp_path):
     store, service = _service(tmp_path)
     with pytest.raises(ModelProfileError, match="name required"):
         service.create({})
+    # Not `gemini` any more. It was the example of an unsupported protocol
+    # here, which quietly recorded an oversight as intended behaviour: the LLM
+    # layer has always been able to dispatch Gemini, and the profile menu just
+    # never listed it. A test asserting the gap is how the gap survives.
     with pytest.raises(ModelProfileError, match="protocol must be one of"):
-        service.create({"name": "Unsupported", "provider": "gemini"})
+        service.create({"name": "Unsupported", "provider": "not-a-protocol"})
     created = service.create(
         {
             "name": "Local",

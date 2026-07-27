@@ -1217,7 +1217,17 @@ def test_model_profile_mask_and_empty_defaults_ignore_placeholder_keys(tmp_path)
     store.set_setting("llm_api_key", "your-api-key-here")
     payload = handler._model_profiles_payload()
     assert payload["profiles"] == []
-    assert payload["protocols"] == ["chatgpt", "claude", "ark"]
+    # Every protocol the LLM layer can dispatch. `gemini` and
+    # `openai_responses` were dispatchable and unlisted, so a user holding a
+    # Gemini key had no way to select it; `test_model_profile_readiness.py`
+    # now fails if a provider is neither offered nor declared withheld.
+    assert payload["protocols"] == [
+        "chatgpt",
+        "claude",
+        "ark",
+        "gemini",
+        "openai_responses",
+    ]
     assert store.list_model_profiles() == []
 
 

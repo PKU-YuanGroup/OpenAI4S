@@ -1231,6 +1231,17 @@
         404
       ]
     },
+    "/model-profiles/([^/]+)/probe": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/models": {
       "content_types": [
         "application/json"

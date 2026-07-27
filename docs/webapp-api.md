@@ -206,6 +206,27 @@ success response body. Serializer shapes are in §4.
 
 ### Models and model profiles
 
+**Readiness is local; reachability is asked for.** Every profile carries a
+`readiness` object — `ready` / `needs_key` / `needs_model` / `unsupported` —
+derived entirely from stored state, so listing profiles costs no network at
+all. `checked_endpoint` is always `false` there, and `ready` means *the
+configuration is complete*, not that anyone answered; the detail line says so,
+because a user who read it as "verified" would be reading a stronger claim than
+the data supports.
+
+`POST /model-profiles/{id}/probe` is the only thing that contacts a provider.
+POST rather than GET because it spends the user's own quota and rate limit, and
+a GET invites a prefetch or a refresh loop to spend it for them. It refuses
+without contacting anything when readiness is not `ready` — a keyless profile's
+401 reads like an endpoint fault rather than the missing credential it is. A
+failure reports the provider's own message, redacted, because a rewritten one
+loses the detail that distinguishes a bad key from a bad model name.
+
+`gemini` and `openai_responses` are selectable protocols. Both were dispatchable
+by the LLM layer and absent from the profile menu, so a user holding a Gemini
+key had no way to say so.
+
+
 **A session binds `profile_id + revision`.** A frame used to store a model
 *string*, which answers "which model name" and not "which configuration" — and
 the two come apart in exactly the case that matters, because two profiles can

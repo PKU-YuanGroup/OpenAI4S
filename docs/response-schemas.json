@@ -2954,6 +2954,39 @@
         "type": "object"
       }
     },
+    "DELETE /model-profiles/([^/]+)/probe [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /models [error]": {
       "schema": {
         "properties": {
@@ -4733,6 +4766,73 @@
       "schema": {
         "properties": {
           "versions": {
+            "items": {
+              "properties": {
+                "checksum": {
+                  "type": "string"
+                },
+                "content_type": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "is_latest": {
+                  "type": "boolean"
+                },
+                "ordinal": {
+                  "type": "integer"
+                },
+                "producing_cell_id": {
+                  "type": "null"
+                },
+                "retrieval_source": {
+                  "properties": {
+                    "database": {
+                      "type": "string"
+                    },
+                    "record_count": {
+                      "type": "integer"
+                    },
+                    "request_url": {
+                      "type": "string"
+                    },
+                    "retrieved_at": {
+                      "type": "string"
+                    },
+                    "undisclosed_field_count": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "database",
+                    "record_count",
+                    "request_url",
+                    "retrieved_at",
+                    "undisclosed_field_count"
+                  ],
+                  "type": "object"
+                },
+                "size_bytes": {
+                  "type": "integer"
+                },
+                "version_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "checksum",
+                "content_type",
+                "created_at",
+                "is_latest",
+                "ordinal",
+                "producing_cell_id",
+                "retrieval_source",
+                "size_bytes",
+                "version_id"
+              ],
+              "type": "object"
+            },
             "type": "array"
           }
         },
@@ -7638,6 +7738,9 @@
     "GET /frames/([^/]+)/messages [ok]": {
       "schema": {
         "properties": {
+          "has_earlier": {
+            "type": "boolean"
+          },
           "messages": {
             "items": {
               "properties": {
@@ -7658,6 +7761,9 @@
                 },
                 "role": {
                   "type": "string"
+                },
+                "seq": {
+                  "type": "integer"
                 }
               },
               "required": [
@@ -7665,11 +7771,15 @@
                 "created_at",
                 "fork_checkpoint_id",
                 "message_id",
-                "role"
+                "role",
+                "seq"
               ],
               "type": "object"
             },
             "type": "array"
+          },
+          "next_before_seq": {
+            "type": "integer"
           }
         },
         "required": [
@@ -8897,6 +9007,39 @@
       }
     },
     "GET /model-profiles/([^/]+)/activate [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /model-profiles/([^/]+)/probe [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -13873,6 +14016,39 @@
       }
     },
     "PATCH /model-profiles/([^/]+)/activate [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /model-profiles/([^/]+)/probe [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -21308,6 +21484,31 @@
         "type": "object"
       }
     },
+    "POST /model-profiles/([^/]+)/probe [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /models [error]": {
       "schema": {
         "properties": {
@@ -25946,6 +26147,39 @@
       }
     },
     "PUT /model-profiles/([^/]+)/activate [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /model-profiles/([^/]+)/probe [error]": {
       "schema": {
         "properties": {
           "code": {

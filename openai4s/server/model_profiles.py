@@ -7,14 +7,34 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from openai4s.config import Config, is_placeholder_api_key
+from openai4s.config import Config, LLMConfig, is_placeholder_api_key
 from openai4s.llm.catalog import ModelPreset, model_presets
 from openai4s.security.secret_broker import is_ref
 
 # Model profiles select a transport contract, not an arbitrary vendor name.
 # Keep the persisted ids compatible with the existing LLM registry while the
 # UI presents these as human-readable protocol choices.
-PROFILE_PROTOCOLS = ("chatgpt", "claude", "ark")
+#
+# `gemini` and `openai_responses` were missing, and not because anyone decided
+# they should be: both have complete provider specs, both are dispatched by the
+# LLM layer, and neither could be chosen. A user with a Gemini key had no way
+# to say so — the capability was built, shipped, and unreachable.
+#
+# Kept in step with the registry by `tests/test_model_catalog.py`, which fails
+# when a provider exists that is neither selectable nor listed below as
+# deliberately withheld. A provider that should not be user-selectable is a
+# decision worth writing down; silence is how the last two went unnoticed.
+PROFILE_PROTOCOLS = (
+    "chatgpt",
+    "claude",
+    "ark",
+    "gemini",
+    "openai_responses",
+)
+
+#: Registry providers deliberately not offered as a profile choice, each with a
+#: reason. Empty today.
+WITHHELD_PROTOCOLS: dict[str, str] = {}
 
 
 class ModelProfileError(ValueError):
@@ -106,6 +126,126 @@ class ModelProfileService:
             except Exception:  # noqa: BLE001 - removing the row still matters
                 pass
 
+    def probe(self, profile_id: str) -> dict[str, Any]:
+        """Contact the endpoint, once, because a user asked.
+
+        Never called from a read path. `readiness` answers "is this configured"
+        from local state alone precisely so that this — the only thing here
+        that spends a request, a token allowance and a rate-limit slot — needs
+        somebody to press a button.
+
+        Reports what happened rather than a verdict. "ok" means the endpoint
+        answered a minimal request; it does not mean the model is good, the
+        quota is sufficient, or that a later call will succeed, and phrasing it
+        as `reachable` rather than `verified` keeps that difference visible.
+        """
+        profile = next(
+            (
+                item
+                for item in self.store.list_model_profiles()
+                if item.get("id") == profile_id
+            ),
+            None,
+        )
+        if profile is None:
+            raise ModelProfileError("profile not found", 404)
+
+        local = self.readiness(profile)
+        if local["state"] != "ready":
+            # No request at all: a profile with no key cannot be probed, and
+            # sending one anyway would produce a 401 that reads like an
+            # endpoint problem rather than the missing credential it is.
+            return {
+                "reachable": False,
+                "state": local["state"],
+                "detail": local["detail"],
+                "contacted": False,
+            }
+
+        provider = str(profile.get("provider") or "")
+        try:
+            from openai4s.llm import chat
+
+            chat(
+                [{"role": "user", "content": "ping"}],
+                LLMConfig(
+                    provider=provider,
+                    api_key=self.resolve_key(profile),
+                    base_url=str(profile.get("base_url") or "") or None,
+                    model=str(profile.get("model") or "") or None,
+                ),
+                max_tokens=1,
+            )
+        except Exception as error:  # noqa: BLE001 - reported, never raised
+            # The provider's own words, redacted. A rewritten message would
+            # lose the one detail that tells a user whether it is their key,
+            # their model name or their network.
+            from openai4s.observability import redact_text
+
+            return {
+                "reachable": False,
+                "state": "unreachable",
+                "detail": redact_text(f"{type(error).__name__}: {error}")[:400],
+                "contacted": True,
+            }
+        return {
+            "reachable": True,
+            "state": "reachable",
+            "detail": "the endpoint answered a minimal request",
+            "contacted": True,
+        }
+
+    def readiness(self, profile: Mapping[str, Any]) -> dict[str, Any]:
+        """What can be said about this profile *without contacting anyone*.
+
+        The distinction is the whole design. Everything here is derived from
+        local state — is there a key, is the protocol one we can dispatch, is
+        there an endpoint and a model — so opening Customize answers "is this
+        usable" for every profile at zero network cost and with no chance of a
+        page load spending someone's API quota or waking a rate limiter.
+
+        Reachability is deliberately *not* here. It cannot be known without a
+        request, and a request is a thing the user asks for (see `probe`). A
+        readiness card that quietly probed on render would be exactly the
+        implicit outbound call this version spent P0-1 removing.
+
+        `state` is one of:
+          ready        — everything local checks out; the endpoint is untested
+          needs_key    — no credential resolves
+          needs_model  — no model named and the protocol has no default
+          unsupported  — the protocol is not one the LLM layer dispatches
+        """
+        provider = str(profile.get("provider") or "").strip().lower()
+        problems: list[str] = []
+        if provider not in PROFILE_PROTOCOLS:
+            return {
+                "state": "unsupported",
+                "detail": f"{provider or 'no protocol'} is not a protocol this "
+                "build can dispatch",
+                "checked_endpoint": False,
+            }
+        if not self.resolve_key(profile):
+            problems.append("needs_key")
+        if not str(profile.get("model") or "").strip():
+            spec = self._providers().get(provider, {})
+            if not spec.get("model"):
+                problems.append("needs_model")
+        if problems:
+            return {
+                "state": problems[0],
+                "detail": "; ".join(problems),
+                "checked_endpoint": False,
+            }
+        return {
+            "state": "ready",
+            # Said out loud rather than implied. "Ready" here means the local
+            # configuration is complete, not that anyone answered -- and a card
+            # that let a user read the stronger claim into it would be the
+            # confident-wrong-answer shape all over again.
+            "detail": "configuration is complete; the endpoint has not been contacted",
+            "checked_endpoint": False,
+        }
+
     def public_profile(self, profile: Mapping[str, Any]) -> dict[str, Any]:
         """Return a profile projection that never includes the raw API key.
 
@@ -120,6 +260,8 @@ class ModelProfileService:
             "base_url": profile.get("base_url") or "",
             "model": profile.get("model") or "",
             "has_api_key": bool(self.resolve_key(profile)),
+            # Local-only readiness. Never a network call: see `readiness`.
+            "readiness": self.readiness(profile),
             # The number a session binds to. Surfaced so a client can show
             # which configuration a session is pinned at, and tell "this is the
             # current one" from "this profile has moved on since".

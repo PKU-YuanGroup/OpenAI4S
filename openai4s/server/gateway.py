@@ -7279,6 +7279,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 except ModelProfileError as exc:
                     self._json({"error": str(exc)}, exc.status_code)
                 return
+            m = re.fullmatch(r"/model-profiles/([^/]+)/probe", sub)
+            if m and method == "POST":
+                # POST, not GET, because this spends a request against the
+                # user's own provider quota. A GET invites a prefetch, a
+                # refresh loop or a link crawler to spend it for them, and the
+                # whole point of an *explicit* probe is that a human asked.
+                try:
+                    self._json(model_profiles.probe(m.group(1)))
+                except ModelProfileError as exc:
+                    self._json({"error": str(exc)}, exc.status_code)
+                return
             m = re.fullmatch(r"/model-profiles/([^/]+)/activate", sub)
             if m and method == "POST":
                 try:
