@@ -134,6 +134,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_methodology_skills.py`](test_methodology_skills.py) | 关于纯方法学内置 Skill 的三个测试：以只读方式被发现、能被取回，其中一个还在 Agent 循环里被真正用了一次。 |
 | [`test_mineral_spectra_analysis.py`](test_mineral_spectra_analysis.py) | 矿物谱图 Skill，以及它守着的那个设计。流水线是盲的：报告是在不知道真值的情况下产出的，对真值的评估是循环之后一个显式的步骤，绝不掺进循环里。那些纯 helper 在没装科学栈时也能 import。 |
 | [`test_model_revision_binding.py`](test_model_revision_binding.py) | D2：一个会话要能说出自己当初跑在哪一份模型配置上，而不是它所属 Profile 今天碰巧写着什么。覆盖 revision 到底以什么为准——`(provider, base_url, model)`，故意不含名字，而且**不可能**含 key，因为凭据引用是由 profile id 推导出来的——以及只在发送时绑定、两条 409 重绑路径，还有把一个已有数据的 v9 库升到 v10：历史行必须是「未绑定」，而不是被当成「用了默认值」。 |
+| [`test_message_pagination.py`](test_message_pagination.py) | 打开一个长会话时看到的是哪一头。640 条消息的会话返回的是第 0–299 条——最旧的一页，最新的 340 条根本不在里面——因为排序只有 `seq ASC` 加一个 limit，没有方向。覆盖最新在前的翻页、`before_seq` 键集游标（用 offset 的话每来一条新消息都会错位）、翻页过程中来了新消息该页仍然稳定，以及不带这个参数时旧的「最旧在前」行为完全不变。 |
 | [`test_model_catalog.py`](test_model_catalog.py) | 可以扩展的 provider 与模型目录。自定义 provider 要先通过校验才能路由；带连字符的 provider 名字仍然能得到一个对 shell 安全的环境变量前缀；内置预设保持不可变，用户预设围着它们加。 |
 | [`test_native_tools.py`](test_native_tools.py) | 关于原生 Tool 声明的四个测试。名字必须落在四家 provider 限制的交集里；每次调用拿到的都是一份独立的 schema 拷贝；shell 与完成信号从不作为原生 Tool 声明出去。 |
 | [`test_notebook_export.py`](test_notebook_export.py) | 关于导出的三个测试。Python 与 R 各自成为一份独立的只读 Notebook；导出包是确定性的，manifest 校验和对得上；未知的 Notebook 语言会被拒绝。 |

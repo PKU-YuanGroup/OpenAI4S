@@ -7498,26 +7498,62 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 start = int((q.get("from") or ["0"])[0])
                 limit = int((q.get("limit") or ["300"])[0])
                 branch_id = (q.get("branch_id") or [None])[0]
+                # `before_seq` opts into latest-first. Absent, the response is
+                # exactly what it always was: oldest-first from `from`. A long
+                # session opened without it returns messages 0-299 of 640,
+                # which is the wrong end -- so the client asks for the newest
+                # page and walks back.
+                raw_before = (q.get("before_seq") or [None])[0]
+                try:
+                    before_seq = (
+                        int(raw_before) if raw_before not in (None, "") else None
+                    )
+                except (TypeError, ValueError):
+                    raise GatewayError(
+                        400, "before_seq must be an integer", "invalid_cursor"
+                    )
+                newest_first = before_seq is not None or (
+                    (q.get("newest_first") or ["0"])[0] in ("1", "true", "yes")
+                )
                 msgs = store.list_branch_message_boundaries(
                     fid,
                     branch_id=(branch_id or store.active_session_branch(fid)),
                     start=start,
                     limit=limit,
+                    before_seq=before_seq,
+                    newest_first=newest_first,
                 )
-                self._json(
-                    {
-                        "messages": [
-                            {
-                                "message_id": mm.get("message_id"),
-                                "role": mm["role"],
-                                "content": mm["content"],
-                                "created_at": _iso(mm["created_at"]),
-                                "fork_checkpoint_id": mm.get("fork_checkpoint_id"),
-                            }
-                            for mm in msgs
-                        ]
-                    }
-                )
+                payload = {
+                    "messages": [
+                        {
+                            "message_id": mm.get("message_id"),
+                            "role": mm["role"],
+                            "content": mm["content"],
+                            "created_at": _iso(mm["created_at"]),
+                            "seq": mm.get("seq"),
+                            "fork_checkpoint_id": mm.get("fork_checkpoint_id"),
+                        }
+                        for mm in msgs
+                    ]
+                }
+                if newest_first:
+                    # The cursor for the *next* (older) page, and whether one
+                    # exists. Reported rather than inferred from a short page:
+                    # a page can be short because the branch projection hid
+                    # rows, which a client cannot tell from the end of history.
+                    oldest = min((int(mm.get("seq") or 0) for mm in msgs), default=None)
+                    payload["next_before_seq"] = oldest
+                    payload["has_earlier"] = bool(
+                        oldest is not None
+                        and store.list_branch_message_boundaries(
+                            fid,
+                            branch_id=(branch_id or store.active_session_branch(fid)),
+                            before_seq=oldest,
+                            newest_first=True,
+                            limit=1,
+                        )
+                    )
+                self._json(payload)
                 return
             m = re.fullmatch(r"/frames/([^/]+)/review-settings", sub)
             if m and method in ("GET", "PUT", "PATCH"):

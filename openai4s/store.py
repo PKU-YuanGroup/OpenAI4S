@@ -1625,12 +1625,16 @@ class Store:
         branch_id: str | None = None,
         start: int = 0,
         limit: int | None = 300,
+        before_seq: int | None = None,
+        newest_first: bool = False,
     ) -> list[dict]:
         return self._frames.list_messages(
             root_frame_id,
             branch_id=branch_id,
             start=start,
             limit=limit,
+            before_seq=before_seq,
+            newest_first=newest_first,
         )
 
     def list_message_boundaries(
@@ -1655,6 +1659,8 @@ class Store:
         branch_id: str | None = None,
         start: int = 0,
         limit: int | None = 300,
+        before_seq: int | None = None,
+        newest_first: bool = False,
         boundaries: bool = False,
     ) -> list[dict]:
         """Project one branch's visible conversation without deleting rows."""
@@ -1677,6 +1683,30 @@ class Store:
             cursor_key="message_cursor",
             normalize_cursor=count_cursor,
         )
+        if newest_first or before_seq is not None:
+            # Latest-first, walking backwards by `seq`. Opening a 640-message
+            # session used to return messages 0-299 -- the *oldest* page, with
+            # the newest 340 absent -- because the only order was ascending and
+            # the only bound was a limit. A reader arriving at a long session
+            # wants its end.
+            #
+            # Honest about what this does NOT do: the branch projection above
+            # is whole-history by construction (it walks branch cursors to
+            # decide what is visible at all), so this pages the projected list
+            # rather than pushing a cursor into SQL. The user-visible defect --
+            # seeing the wrong end of the conversation -- is fixed; the read is
+            # still O(branch). Making the projection incremental is a larger
+            # change and is not claimed here.
+            ordered = sorted(
+                projected, key=lambda m: int(m.get("seq") or 0), reverse=True
+            )
+            if before_seq is not None:
+                ordered = [
+                    m for m in ordered if int(m.get("seq") or 0) < int(before_seq)
+                ]
+            if limit is None:
+                return ordered
+            return ordered[: max(0, int(limit))]
         start = max(0, int(start))
         if limit is None:
             return projected[start:]
@@ -1689,12 +1719,16 @@ class Store:
         branch_id: str | None = None,
         start: int = 0,
         limit: int | None = 300,
+        before_seq: int | None = None,
+        newest_first: bool = False,
     ) -> list[dict]:
         return self.list_branch_messages(
             root_frame_id,
             branch_id=branch_id,
             start=start,
             limit=limit,
+            before_seq=before_seq,
+            newest_first=newest_first,
             boundaries=True,
         )
 

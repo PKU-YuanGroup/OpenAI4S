@@ -294,26 +294,54 @@ class FrameRepository:
         branch_id: str | None = None,
         start: int = 0,
         limit: int | None = 300,
+        before_seq: int | None = None,
+        newest_first: bool = False,
     ) -> list[dict]:
+        """Messages for one session, oldest-first by default.
+
+        ``newest_first`` with ``before_seq`` is the pagination a conversation
+        actually needs. Opening a 640-message session returned messages 0-299:
+        the *oldest* page, with the newest 340 simply not present. A reader
+        arriving at a long session wants the end of it, and then to walk
+        backwards.
+
+        `before_seq` is a keyset cursor, not an offset. Ordering newest-first
+        and paging by offset would skew on every arriving message, because a
+        new message shifts what "offset 50 from the newest" means — the exact
+        problem the session list solved with `(created_at, frame_id)`. `seq` is
+        already monotonic and unique per root frame, so it needs no tiebreaker.
+        """
         where = "root_frame_id=?"
         params: list[Any] = [root_frame_id]
         if branch_id is not None:
             where += " AND branch_id=?"
             params.append(branch_id)
+        if before_seq is not None:
+            where += " AND seq<?"
+            params.append(int(before_seq))
+        order = " ORDER BY seq DESC" if newest_first else " ORDER BY seq ASC"
         suffix = ""
         if limit is not None:
-            suffix = " LIMIT ? OFFSET ?"
-            params.extend((max(0, int(limit)), max(0, int(start))))
+            # OFFSET stays for the oldest-first callers that still use `start`.
+            # It is meaningless alongside a keyset cursor, so a caller passing
+            # both gets the cursor honoured and the offset ignored rather than
+            # a silently wrong page.
+            suffix = " LIMIT ?" + ("" if before_seq is not None else " OFFSET ?")
+            params.append(max(0, int(limit)))
+            if before_seq is None:
+                params.append(max(0, int(start)))
         with self._lock:
             rows = self._connection.execute(
                 "SELECT role,content,metadata,created_at,seq FROM messages WHERE "
                 + where
-                + " ORDER BY seq ASC"
+                + order
                 + suffix,
                 tuple(params),
             ).fetchall()
         values = [dict(row) for row in rows]
-        return values[start:] if limit is None and start else values
+        if limit is None and start and before_seq is None:
+            return values[start:]
+        return values
 
     def list_message_boundaries(
         self,
