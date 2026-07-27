@@ -140,13 +140,20 @@ are easy to mistake for oversights:
 - **Six Web Customize routes** now answer a real status, but the wider question
   of which services may use soft dictionaries at all is untouched.
 
-## 9. Not started
+## 9. P1-A — visible product closure
+
+| # | Item | Commit | Status | Falsification |
+|---|---|---|---|---|
+| A.6 | Tabular preview told the truth about neither dimension: `csv()` split on a hardcoded comma, so **every** `.tsv` reported one column with the whole header line as its name; and the renderer capped columns at 24 with a rows-only banner, so a 101-column table rendered 24 and looked complete. One `delimiterFor` now trusts the extension and sniffs the header when there is none (science writes tab-separated `.txt` constantly), and the banner names both dimensions | *pending* | `Completed` | Forcing `delimiterFor` to a comma fails the **browser** check with the defect's own signature (`expected 3 column(s), got 1`); removing the column banner fails the static gate |
+| A.1–A.5, A.7 | ArtifactRef composer chip; profile readiness card + probe + Gemini entry; session keyset cursor + branch export; image attachments with budgets; Notebook split menu; retrieval-source panel | — | `Not started` | — |
+
+## 10. Not started
 
 `P1-A` (visible product closure), `P1-B` (Agent/Skill/Compute control planes),
 and all of `P2` (design freeze and real-platform experiments). P2 by decision
 D8 enters no public API, schema or definition of done in this version.
 
-## 10. Externally unverifiable
+## 11. Externally unverifiable
 
 See [`v03-decisions.md`](v03-decisions.md#externally-unverifiable). Nothing in
 this file marks those `Completed`.

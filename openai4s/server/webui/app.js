@@ -627,6 +627,8 @@ Object.assign(I18N.zh, {
   "nb.status.ready": "就绪 · {0}",
   "nb.revisions.summary": "共 {0} 次尝试 · 展开查看 {1} 个失败版本",
   "nb.table.rowsHidden": "… {0} 行未显示",
+  "nb.table.colsHidden": "… {0} 列未显示",
+  "nb.table.bothHidden": "… {0} 行、{1} 列未显示",
   "nb.action.copy": "复制",
   "nb.action.copied": "已复制代码",
   "nb.action.rerun": "作为新单元运行",
@@ -1477,6 +1479,8 @@ Object.assign(I18N.en, {
   "nb.status.ready": "Ready · {0}",
   "nb.revisions.summary": "{0} attempts · expand {1} failed revisions",
   "nb.table.rowsHidden": "… {0} rows not shown",
+  "nb.table.colsHidden": "… {0} columns not shown",
+  "nb.table.bothHidden": "… {0} rows and {1} columns not shown",
   "nb.action.copy": "Copy",
   "nb.action.copied": "Code copied",
   "nb.action.rerun": "Rerun as new",
@@ -5796,6 +5800,9 @@ function renderTableInto(holder, fname) {
   const build = (rows) => {
     if (!rows || !rows.length) return;
     const view = rows.slice(0, 51);  // header + 50 body rows
+    // The widest row, not the header's width: a ragged file whose header is
+    // short would otherwise under-report how much is being hidden.
+    const width = rows.reduce((most, r) => Math.max(most, (r || []).length), 0);
     const tbl = el("table", "nbc-table");
     const thead = el("thead"), htr = el("tr");
     (view[0] || []).slice(0, 24).forEach(h => htr.appendChild(el("th", null, h)));
@@ -5804,13 +5811,25 @@ function renderTableInto(holder, fname) {
     view.slice(1).forEach(r => { const tr = el("tr"); r.slice(0, 24).forEach(cell => tr.appendChild(el("td", null, cell))); tb.appendChild(tr); });
     tbl.appendChild(tb);
     const scroll = el("div", "nbc-table-scroll"); scroll.appendChild(tbl); holder.appendChild(scroll);
-    if (rows.length > 51) holder.appendChild(el("div", "nbc-table-more", t("nb.table.rowsHidden", (rows.length - 51))));
+    // Both dimensions. Columns beyond 24 were dropped with no notice at all,
+    // so a 101-column table showed 24 and looked complete -- the reader has no
+    // way to tell a narrow table from a truncated view of a wide one.
+    const hiddenRows = Math.max(0, rows.length - 51);
+    const hiddenCols = Math.max(0, width - 24);
+    if (hiddenRows && hiddenCols) {
+      holder.appendChild(el("div", "nbc-table-more", t("nb.table.bothHidden", hiddenRows, hiddenCols)));
+    } else if (hiddenRows) {
+      holder.appendChild(el("div", "nbc-table-more", t("nb.table.rowsHidden", hiddenRows)));
+    } else if (hiddenCols) {
+      holder.appendChild(el("div", "nbc-table-more", t("nb.table.colsHidden", hiddenCols)));
+    }
   };
   S._tbl = S._tbl || {};
   if (S._tbl[url]) { build(S._tbl[url]); return; }
   fetch(url).then(r => r.ok ? r.text() : null).then(text => {
     if (text == null) return;
-    const rows = parseDelimited(text, /\.tsv$/i.test(fname) ? "\t" : ",");
+    const firstLine = text.replace(/\r/g, "").split("\n", 1)[0] || "";
+    const rows = parseDelimited(text, delimiterFor(fname, "", firstLine));
     S._tbl[url] = rows; build(rows);
   }).catch(() => {});
 }
@@ -7626,8 +7645,46 @@ function renderMd(src) {
   }
   return html;
 }
-function parseTable(text, a) { const nm = (a.filename || "").toLowerCase(); if (nm.endsWith(".json") || /^\s*[\[{]/.test(text)) { try { let j = JSON.parse(text); if (!Array.isArray(j)) j = j.rows || j.data || j.candidates || j.items || []; if (Array.isArray(j) && j.length && typeof j[0] === "object") return j; } catch {} return null; } const lines = text.replace(/\r/g, "").split("\n").filter(l => l.trim()); if (lines.length < 2) return null; const cols = csv(lines[0]); return lines.slice(1).map(l => { const v = csv(l); const o = {}; cols.forEach((c, i) => o[c] = v[i] ?? ""); return o; }); }
-function csv(line) { const o = []; let cur = "", q = false; for (let i = 0; i < line.length; i++) { const c = line[i]; if (q) { if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (c === '"') q = false; else cur += c; } else { if (c === '"') q = true; else if (c === ",") { o.push(cur); cur = ""; } else cur += c; } } o.push(cur); return o.map(s => s.trim()); }
+function parseTable(text, a) { const nm = (a.filename || "").toLowerCase(); if (nm.endsWith(".json") || /^\s*[\[{]/.test(text)) { try { let j = JSON.parse(text); if (!Array.isArray(j)) j = j.rows || j.data || j.candidates || j.items || []; if (Array.isArray(j) && j.length && typeof j[0] === "object") return j; } catch {} return null; } const lines = text.replace(/\r/g, "").split("\n").filter(l => l.trim()); if (lines.length < 2) return null; const sep = delimiterFor(nm, a && a.content_type, lines[0]); const cols = csv(lines[0], sep); return lines.slice(1).map(l => { const v = csv(l, sep); const o = {}; cols.forEach((c, i) => o[c] = v[i] ?? ""); return o; }); }
+// The delimiter a tabular artifact actually uses.
+//
+// This was decided by `csv()` hardcoding a comma, so every `.tsv` parsed as a
+// single column: the tile for a differential-expression table with three
+// columns reported "1 column", and the column's *name* was the entire header
+// line. Wrong numbers about scientific output, shown with the same confidence
+// as right ones.
+//
+// The extension is checked first because it is a declaration. When there is
+// none to trust -- science writes tab-separated `.txt` and `.dat` constantly --
+// the header is sniffed, and the winner is whichever candidate splits it into
+// the most fields. A file with no delimiter at all yields one field for every
+// candidate, so the comma default is reached only when nothing distinguishes.
+function delimiterFor(filename, contentType, headerLine) {
+  const name = String(filename || "").toLowerCase();
+  const type = String(contentType || "").toLowerCase();
+  if (/\.tsv$/.test(name) || /tab-separated/.test(type)) return "\t";
+  if (/\.csv$/.test(name) || /\bcsv\b/.test(type)) return ",";
+  const header = String(headerLine || "");
+  let best = ",", width = 1;
+  for (const candidate of ["\t", ",", ";", "|"]) {
+    const fields = csvFields(header, candidate).length;
+    if (fields > width) { best = candidate; width = fields; }
+  }
+  return best;
+}
+// One field splitter, parameterised. `sep` defaults to a comma only so that
+// callers predating the parameter keep their behaviour.
+function csvFields(line, sep) {
+  sep = sep || ",";
+  const o = []; let cur = "", q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) { if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (c === '"') q = false; else cur += c; }
+    else { if (c === '"') q = true; else if (c === sep) { o.push(cur); cur = ""; } else cur += c; }
+  }
+  o.push(cur); return o.map(s => s.trim());
+}
+function csv(line, sep) { return csvFields(line, sep); }
 function ago(iso) { if (!iso) return ""; const t = new Date(iso).getTime(); if (isNaN(t)) return ""; const d = (Date.now() - t) / 1000; if (d < 60) return "just now"; if (d < 3600) return (d / 60 | 0) + "m"; if (d < 86400) return (d / 3600 | 0) + "h"; return (d / 86400 | 0) + "d"; }
 function bytes(b) { b = b || 0; if (b < 1024) return b + " B"; if (b < 1048576) return (b / 1024).toFixed(1) + " KB"; return (b / 1048576).toFixed(1) + " MB"; }
 function hint(t, err, spin) { const h = $("#composer-hint"); h.innerHTML = ""; if (!t) return; if (spin) { h.appendChild(iconEl("loader", 13, "spin")); h.appendChild(document.createTextNode(" ")); } const s = el("span", null, t); if (err) s.style.color = "var(--danger)"; h.appendChild(s); }

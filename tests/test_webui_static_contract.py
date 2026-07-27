@@ -1030,3 +1030,38 @@ def test_customize_skills_exposes_scoped_version_history_and_safe_rollback() -> 
     assert APP_JS.count('"skill.rollbackConfirm"') >= 2
     assert ".skill-version-list" in STYLE_CSS
     assert ".skill-version-card" in STYLE_CSS
+
+
+def test_no_tabular_parser_hardcodes_a_delimiter() -> None:
+    """`csv()` split on a literal comma, so every `.tsv` parsed as one column.
+
+    The artifact tile for a three-column differential-expression table reported
+    "1 column", and the column's *name* was the whole header line. Wrong
+    numbers about scientific output, displayed with the same confidence as
+    right ones -- and nothing about the tile suggested it was guessing.
+
+    Both parsers now take the delimiter from `delimiterFor`, which trusts the
+    extension when there is one and sniffs the header when there is not,
+    because science writes tab-separated `.txt` and `.dat` constantly.
+    """
+    assert "function delimiterFor(" in APP_JS
+    # The literal-comma split, which is what made this filename-blind.
+    assert (
+        'else if (c === ",")' not in APP_JS
+    ), "a tabular parser still splits on a hardcoded comma"
+    # And no caller decides the delimiter from the suffix alone.
+    assert '/\\.tsv$/i.test(fname) ? "\\t" : ","' not in APP_JS
+
+
+def test_a_truncated_table_says_which_dimension_was_cut() -> None:
+    """Columns beyond 24 were dropped with no notice at all.
+
+    A 101-column table rendered 24 and looked complete: nothing distinguishes a
+    narrow table from a truncated view of a wide one, so the reader cannot know
+    to go and open the file. The row cap had a banner from the start, which is
+    what makes the column one an omission rather than a decision.
+    """
+    for key in ("nb.table.rowsHidden", "nb.table.colsHidden", "nb.table.bothHidden"):
+        assert (
+            APP_JS.count(f'"{key}"') >= 3
+        ), f"{key} is missing from a translation table or from the renderer"

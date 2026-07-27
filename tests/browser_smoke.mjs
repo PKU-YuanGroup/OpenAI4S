@@ -635,6 +635,34 @@ try {
   if (workbenchSockets.length < 2) {
     throw new Error(`expected WebSocket reconnection after navigation/reload, saw ${workbenchSockets.length}`);
   }
+  // ---- tabular parsing, run against the page's own loaded functions -------
+  // A source-level assertion can say `delimiterFor` exists. Only the real
+  // loaded code can say what it returns, and this defect was entirely about
+  // the answer: a three-column TSV reported "1 column", with the whole header
+  // line as the column name.
+  const tabular = await page.evaluate(() => {
+    const columnsOf = (name, text) => {
+      const rows = parseTable(text, { filename: name });
+      return rows && rows.length ? Object.keys(rows[0]).length : 0;
+    };
+    return {
+      tsv: columnsOf("de.tsv", "gene\tlogFC\tpval\nTP53\t2.4\t0.001\n"),
+      csv: columnsOf("t.csv", "gene,logFC,pval\nTP53,2.4,0.001\n"),
+      // No usable extension: science writes tab-separated `.txt` constantly.
+      sniffed: columnsOf("counts.txt", "gene\ts1\ts2\ts3\nA\t1\t2\t3\n"),
+      // A delimiter inside a quoted field must not split it.
+      quoted: columnsOf("q.tsv", 'a\tb\n"x\ty"\tz\n'),
+      plain: columnsOf("notes.txt", "one column\nsecond line\n"),
+    };
+  });
+  for (const [label, expected] of [["tsv", 3], ["csv", 3], ["sniffed", 4], ["quoted", 2], ["plain", 1]]) {
+    if (tabular[label] !== expected) {
+      throw new Error(
+        `tabular ${label}: expected ${expected} column(s), got ${tabular[label]}`
+      );
+    }
+  }
+
   if (pageErrors.length) {
     throw new Error(`browser page errors: ${pageErrors.join(" | ")}`);
   }
