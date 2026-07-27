@@ -41,6 +41,7 @@ gateway.py
 | [`artifacts.py`](artifacts.py) | Agent 写出的工作区文件在这里变成带版本的 Artifact。UI 上的编辑、重命名、上传、恢复和提升也走同一个 service，版本每动一次，快照、溯源和广播都跟着对齐。 |
 | [`cell_run.py`](cell_run.py) | 按固定顺序跑完一个 Python/R Cell：执行准入、安全检查、内核执行、实时输出、Artifact 捕获、执行日志、终止投影。这个事务跑完只是一条 observation，它不会判定 Agent 的任务已经完成。 |
 | [`completions.py`](completions.py) | 生成用户看到的那段叙述。进度和结果文字都做了本地化；结构化的 completion 是照着真实的 Artifact 版本增量渲染的，而不是照着一句声称。隐藏推理不会进到这里。 |
+| [`local_auth.py`](local_auth.py) | daemon 自己的访问令牌：在数据目录下只铸一次、仅属主可读、比较用恒定时间。是文件而非 Store 行，因为 CLI 必须在任何数据库存在之前读到它，而 `openai4s doctor` 恰恰要在数据库本身坏掉时还能工作。此前它活在闭包里、每次重启都换，已发出的每个 cookie 都因此失效。|
 | [`execution_coordinator.py`](execution_coordinator.py) | 会话级 FIFO 执行所有权的 Web 适配层。ticket 状态会被投影成 WebSocket 事件；已准入的 ticket 会绑定到它的取消事件和当时那把内核 lease 上；中断只会打到由那个执行 id 精确持有的那把 lease。 |
 | [`execution_views.py`](execution_views.py) | 读不可变的 Cell 历史，回答 Notebook 想问的问题：这个 Cell 跑在哪个运行时 generation 上、依赖了什么、之后是否已经失效、重试过几次、数据从哪来。 |
 | [`gateway.py`](gateway.py) | HTTP/WebSocket 的主组合门面。协议 frame 的编解码、hub 与续传缓冲、`SessionState` 与 `SessionRunner`、REST 路由、静态资源和安全检查都落在这里，本表所列全部 service 的装配也在这里。 |

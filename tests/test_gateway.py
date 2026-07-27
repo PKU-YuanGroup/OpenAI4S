@@ -1385,18 +1385,32 @@ def test_auto_title_broadcasts_titled_frame_update(monkeypatch, tmp_path):
 
 
 def test_token_gate_401_and_cookie_redirect(monkeypatch, tmp_path, capsys):
-    """The token gate (docs/webapp-api.md §1): with OPENAI4S_REQUIRE_TOKEN=1,
-    a request without the token gets a 401 {"error": ...} envelope; a GET
-    carrying a valid ?token= gets 303 Location:/ + Set-Cookie os_token;
-    /health stays exempt."""
+    """The token gate: no credential is a 401 envelope, a valid `?token=` on a
+    GET sets the cookie and redirects with the token stripped, `/health` and
+    `/auth/status` stay reachable so a client can discover it needs one.
+
+    Three things changed here and each was a defect on its own. The token was
+    minted per boot into a closure, so every restart invalidated every cookie
+    already issued. Comparison was `==`, which leaks a secret's prefix through
+    timing. And the redirect went to "/" unconditionally, so a bookmarked deep
+    link carrying a token landed on the dashboard instead of its target.
+    """
     monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "1")
     cfg = _cfg(tmp_path)
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
     printed = capsys.readouterr().out
-    tok = re.search(r"\?token=([0-9a-f]{32})", printed)
+    tok = re.search(r"\?token=([A-Za-z0-9_-]{20,})", printed)
     assert tok, "gateway did not print the access token"
     token = tok.group(1)
+
+    # Persisted, so a second daemon on the same data dir uses the same token
+    # rather than invalidating the first one's cookies.
+    from openai4s.server import local_auth
+
+    assert local_auth.read_token(cfg.data_dir) == token
+    gateway_mod.make_handler(cfg, _Hub(), runner)
+    assert local_auth.read_token(cfg.data_dir) == token
 
     handler = object.__new__(handler_cls)
     handler.headers = {}  # no Cookie, no Origin
@@ -1415,6 +1429,20 @@ def test_token_gate_401_and_cookie_redirect(monkeypatch, tmp_path, capsys):
     handler._route("GET")
     assert replies[-1][0] == 401
 
+    # A mutation may not authenticate from the query string at all. A URL
+    # carrying a credential is logged by proxies, kept in history and leaked by
+    # Referer, and a mutation is the request least able to afford that.
+    handler.path = f"/api/v1/frames?token={token}"
+    handler._route("POST")
+    assert replies[-1][0] == 401
+
+    # ...but the header works for a non-browser client.
+    handler.headers = {"X-OpenAI4S-Token": token}
+    handler.path = "/health"
+    handler._route("GET")
+    assert replies[-1][0] == 200
+    handler.headers = {}
+
     # /health is exempt from the gate
     handler.path = "/health"
     handler._route("GET")
@@ -1422,7 +1450,19 @@ def test_token_gate_401_and_cookie_redirect(monkeypatch, tmp_path, capsys):
     assert code == 200 and body["status"] == "ok"
     assert "data_dir" not in body
 
-    # valid ?token= on a GET → 303 to / with the os_token cookie set
+    # /auth/status is reachable unauthenticated, and tells the truth. It used
+    # to answer `auth_mode: "none"` even with the gate on, so the frontend had
+    # no way to learn a token was required.
+    handler.path = "/api/v1/auth/status"
+    handler._route("GET")
+    code, body = replies[-1]
+    assert code == 200
+    assert body["auth_mode"] == "token"
+    assert body["authenticated"] is False
+    assert token not in json.dumps(body)
+
+    # valid ?token= on a GET → 303 with the os_token cookie, token stripped
+    # from the URL but the rest of the path and query preserved.
     resp = {"code": None, "headers": {}}
     handler.send_response = lambda c: resp.__setitem__("code", c)
     handler.send_header = lambda k, v: resp["headers"].__setitem__(k, v)
@@ -1433,6 +1473,12 @@ def test_token_gate_401_and_cookie_redirect(monkeypatch, tmp_path, capsys):
     assert resp["headers"]["Location"] == "/"
     assert resp["headers"]["Set-Cookie"].startswith(f"os_token={token}")
     assert "HttpOnly" in resp["headers"]["Set-Cookie"]
+
+    resp["headers"].clear()
+    handler.path = f"/preview/abc?token={token}&mode=raw"
+    handler._route("GET")
+    assert resp["code"] == 303
+    assert resp["headers"]["Location"] == "/preview/abc?mode=raw"
 
 
 def test_gateway_error_maps_to_error_envelope(tmp_path):
@@ -2775,3 +2821,48 @@ def test_a_stale_cursor_declares_the_gap_without_replaying_anything():
     assert not [
         e for e in conn.events if e.get("type") == "text_chunk"
     ], "a cursor this process cannot place must not trigger a full replay"
+
+
+def test_the_access_token_is_minted_once_and_survives_a_restart(tmp_path):
+    """A token in a closure changed on every boot.
+
+    That is tolerable while the gate is off by default and intolerable once it
+    is on: every cookie already issued stops working, and the user is locked
+    out of their own daemon by a restart. It also has to be readable by the
+    CLI, which must present a credential and cannot import the web server to
+    find out what it is.
+    """
+    from openai4s.server import local_auth
+
+    first = local_auth.load_or_mint(tmp_path)
+    assert first
+    assert local_auth.load_or_mint(tmp_path) == first
+    assert local_auth.read_token(tmp_path) == first
+
+    # Owner-only on POSIX; the file holds a live credential.
+    import os as _os
+
+    mode = (tmp_path / local_auth.TOKEN_FILENAME).stat().st_mode & 0o777
+    if _os.name == "posix":
+        assert mode == 0o600, oct(mode)
+
+    # No temporary left behind by the atomic write.
+    assert not [p.name for p in tmp_path.glob(".*tmp*")]
+
+    # A different data dir is a different daemon.
+    other = tmp_path / "elsewhere"
+    assert local_auth.load_or_mint(other) != first
+
+
+def test_token_comparison_is_constant_time_and_refuses_empties():
+    """`==` on a secret leaks its prefix through timing -- weak over loopback,
+    real over a tunnel. An absent value must never compare equal to an absent
+    expectation, or a daemon with no token would accept anyone."""
+    from openai4s.server import local_auth
+
+    assert local_auth.matches("abc", "abc") is True
+    assert local_auth.matches("abc", "abd") is False
+    assert local_auth.matches(None, "abc") is False
+    assert local_auth.matches("abc", None) is False
+    assert local_auth.matches(None, None) is False
+    assert local_auth.matches("", "") is False

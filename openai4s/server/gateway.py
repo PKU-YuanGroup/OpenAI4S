@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 from openai4s.agent.actions import NO_NATIVE_COMPLETION_NUDGE
 from openai4s.agent.engine import AgentEngine
@@ -70,7 +70,7 @@ from openai4s.observability import (
     set_correlation_id,
 )
 from openai4s.review import review_evidence
-from openai4s.server import kernel_routes, ws_frames
+from openai4s.server import kernel_routes, local_auth, ws_frames
 from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.server.agent_run import EventCancellation
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
@@ -207,6 +207,27 @@ _WATCHDOG_KILL_GRACE_S = 10.0
 # modules can raise GatewayError without importing this file (that import is a
 # cycle: GatewayError sat ~5,800 lines below gateway's own imports, so a sibling
 # importing it failed the daemon at boot).
+#: The header a non-browser client presents instead of a query token.
+_TOKEN_HEADER = "X-OpenAI4S-Token"
+
+
+def _strip_token_from_url(path: str, query: str) -> str:
+    """The same URL without the `token` parameter.
+
+    The redirect used to go to "/" unconditionally, so opening a bookmarked
+    deep link with a token landed the user on the dashboard rather than at
+    what they asked for.
+    """
+    remaining = [
+        (key, value)
+        for key, value in parse_qsl(query, keep_blank_values=True)
+        if key != "token"
+    ]
+    if not remaining:
+        return path or "/"
+    return f"{path or '/'}?{urlencode(remaining)}"
+
+
 _ERROR_CODES = ERROR_CODES
 _error_code_for = error_code_for
 _public_failure = public_failure
@@ -238,6 +259,12 @@ def _decode_frame_cursor(value: str | None) -> tuple[int, str] | None:
 
 
 _API_ROOT = "/api/v1"
+
+#: Reachable without a credential. `/health` is a liveness probe. `/auth/status`
+#: joins it because a client cannot be told it needs a token by a response it
+#: is not allowed to read -- and the route answers with a mode string only,
+#: never with any part of the token.
+_UNAUTHENTICATED_PATHS = frozenset({"/health", _API_ROOT + "/auth/status"})
 _API_PREFIX = _API_ROOT + "/"
 _API_WS = _API_ROOT + "/ws"
 _MAX_JSON_BODY_BYTES = MAX_ARCHIVE_BYTES
@@ -6000,7 +6027,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         "true",
         "yes",
     )
-    _auth_token = _secrets.token_hex(16) if _needs_token else None
+    # Persisted, not per-boot. A token minted into a closure changed on every
+    # restart, which invalidated every cookie already issued -- tolerable for a
+    # gate that is off by default, not for one that is on. It also has to be
+    # readable by the CLI, which must present a credential once the gate is
+    # required and cannot import the web server to find out what it is.
+    _auth_token = local_auth.load_or_mint(cfg.data_dir) if _needs_token else None
     if _auth_token:
         print(
             f"[openai4s] SECURITY: bound to {cfg.host} — access token required.\n"
@@ -6053,6 +6085,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self.end_headers()
             if body:
                 self.wfile.write(body)
+
+        def _is_authenticated(self) -> bool:
+            """Whether this request carried a valid credential.
+
+            Shared with the gate so `/auth/status` cannot drift from what the
+            gate actually accepts -- a status route that answers from its own
+            reasoning is how the old hardcoded "none" survived.
+            """
+            if not _auth_token:
+                return True
+            from http.cookies import SimpleCookie
+
+            jar = SimpleCookie(self.headers.get("Cookie", "") or "")
+            cookie = jar.get("os_token")
+            if local_auth.matches(
+                cookie.value if cookie is not None else None, _auth_token
+            ):
+                return True
+            return local_auth.matches(self.headers.get(_TOKEN_HEADER), _auth_token)
 
         def _json(self, obj, code: int = 200) -> None:
             # Every error response carries a stable `code` and the request's
@@ -6337,36 +6388,52 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             self._json({"error": "cross-origin request refused"}, 403)
                             return
                 # M2: token gate (only active when bound non-loopback / opt-in).
-                if _auth_token and path != "/health":
+                if _auth_token and path not in _UNAUTHENTICATED_PATHS:
                     from http.cookies import SimpleCookie
 
                     jar = SimpleCookie(self.headers.get("Cookie", "") or "")
-                    have_cookie = (
-                        jar.get("os_token") is not None
-                        and jar["os_token"].value == _auth_token
+                    cookie = jar.get("os_token")
+                    # Constant-time. `==` on a secret leaks its prefix through
+                    # timing -- weak over loopback, real over a tunnel, and the
+                    # fix costs nothing.
+                    have_cookie = local_auth.matches(
+                        cookie.value if cookie is not None else None, _auth_token
                     )
+                    header_token = self.headers.get(_TOKEN_HEADER)
                     qtok = parse_qs(parsed.query).get("token", [None])[0]
-                    if have_cookie:
+                    if have_cookie or local_auth.matches(header_token, _auth_token):
                         pass  # already authenticated
-                    elif qtok == _auth_token:
-                        if method == "GET":
-                            # browser navigation → set cookie, redirect to strip token
-                            self.send_response(303)
-                            self.send_header("Location", "/")
-                            self.send_header(
-                                "Set-Cookie",
-                                f"os_token={_auth_token}; Path=/; HttpOnly; "
-                                "SameSite=Strict",
-                            )
-                            self.send_header("Content-Length", "0")  # keep-alive
-                            self.end_headers()
-                            return
-                        # non-GET carrying ?token= → authenticate and proceed (the
-                        # request must not be lost to a redirect)
+                    elif local_auth.matches(qtok, _auth_token) and method == "GET":
+                        # Browser navigation: set the cookie and redirect to the
+                        # same path with the token stripped. It used to redirect
+                        # to "/" unconditionally, so every bookmarked deep link
+                        # landed on the dashboard instead of its target.
+                        scrubbed = _strip_token_from_url(path, parsed.query)
+                        self.send_response(303)
+                        self.send_header("Location", scrubbed)
+                        self.send_header(
+                            "Set-Cookie",
+                            f"os_token={_auth_token}; Path=/; HttpOnly; "
+                            "SameSite=Strict",
+                        )
+                        self.send_header("Content-Length", "0")  # keep-alive
+                        self.end_headers()
+                        return
                     else:
+                        # A non-GET may not authenticate from the query string.
+                        # A URL carrying a credential is logged by proxies, kept
+                        # in history and leaked by Referer, and a mutation is the
+                        # request least able to afford that; the browser has the
+                        # cookie and a script can send the header.
                         self.close_connection = True
                         self._json(
-                            {"error": "unauthorized — append ?token=… to the URL"}, 401
+                            {
+                                "error": (
+                                    "unauthorized — open the printed URL once to "
+                                    f"set the cookie, or send {_TOKEN_HEADER}"
+                                )
+                            },
+                            401,
                         )
                         return
                 # websocket upgrade
@@ -6759,7 +6826,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         or cfg.llm.provider,
                         "has_api_key": bool(runner.effective_api_key()),
                         "shared_api_key": False,
-                        "auth_mode": "none",
+                        "auth_mode": "token" if _auth_token else "none",
                     }
                 )
                 return
@@ -6800,7 +6867,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     return
             if sub == "/auth/status":
-                self._json({"authenticated": True, "auth_mode": "none"})
+                # Reachable without a credential, so a client can discover that
+                # it needs one. It reported `auth_mode: "none"` unconditionally
+                # -- a daemon running with the gate on told every caller there
+                # was no gate, and the frontend had no way to learn otherwise.
+                #
+                # Says whether a token is required and whether this request
+                # carried a valid one. Never any part of the token itself.
+                self._json(
+                    {
+                        "authenticated": self._is_authenticated(),
+                        "auth_mode": "token" if _auth_token else "none",
+                        "token_header": _TOKEN_HEADER if _auth_token else None,
+                    }
+                )
                 return
             if sub == "/csrf":
                 self._json({"csrf_token": "local"})
