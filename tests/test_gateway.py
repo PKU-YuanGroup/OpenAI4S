@@ -32,14 +32,158 @@ class _Hub:
         self.events.append(event)
 
 
-def test_demo_seed_can_be_disabled_for_ci_and_air_gapped_startup(monkeypatch):
+def test_a_fresh_daemon_seeds_no_demo_and_the_variable_now_opts_in(monkeypatch):
+    """The default was `"1"`, and on a fresh data dir that meant: bind the port,
+    then start a Python kernel, execute six cells, call the UniProt and RCSB
+    REST APIs, spawn the bundled MCP connector and write four artifacts --
+    before the user had typed anything. Every one of those is something this
+    application otherwise asks permission for.
+
+    The variable keeps its name and reverses sense, which is the cheap part.
+    The load-bearing part is that a fresh boot now does *nothing*.
+    """
     monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
-    assert gateway_mod._demo_seed_enabled() is True
-    for value in ("0", "false", "NO", "off"):
+    assert gateway_mod._demo_seed_enabled() is False
+    for value in ("0", "false", "NO", "off", "", "  "):
         monkeypatch.setenv("OPENAI4S_SEED_DEMO", value)
         assert gateway_mod._demo_seed_enabled() is False
-    monkeypatch.setenv("OPENAI4S_SEED_DEMO", "1")
-    assert gateway_mod._demo_seed_enabled() is True
+    for value in ("1", "true", "YES", "on"):
+        monkeypatch.setenv("OPENAI4S_SEED_DEMO", value)
+        assert gateway_mod._demo_seed_enabled() is True
+
+
+def test_a_fresh_boot_starts_no_kernel_and_executes_no_cell(tmp_path, monkeypatch):
+    """The behavioural half of the test above.
+
+    Asserting the flag is off proves the flag is off. This asserts the thing
+    the flag was gating: build the server on a brand-new data dir and let the
+    background threads have a moment, and no cell ran, no kernel spawned and no
+    artifact exists. Driven through `build_app_server` rather than the seeder,
+    because the defect was in the wiring, not in `_seed_demo_session`.
+    """
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
+    cfg = _cfg(tmp_path)
+    cfg.port = 0  # ask the OS for a free port; do not fight a live daemon
+
+    executed: list[object] = []
+    monkeypatch.setattr(
+        gateway_mod.SessionRunner,
+        "run_repl",
+        lambda self, *a, **k: executed.append(a),
+    )
+    spawned: list[object] = []
+    monkeypatch.setattr(
+        gateway_mod.SessionRunner,
+        "_spawn_kernel",
+        lambda self, st: spawned.append(st),
+    )
+
+    httpd = gateway_mod.build_app_server(cfg)
+    try:
+        time.sleep(0.4)  # a seeding thread would have started by now
+        store = get_store(cfg.db_path)
+        assert executed == [], "a fresh boot executed a cell"
+        assert spawned == [], "a fresh boot spawned a kernel"
+        assert store.list_artifacts({}) == [], "a fresh boot created an artifact"
+        roots = store.browse_frames(project_id="proj_example", roots_only=True)
+        assert roots == [], "a fresh boot created a session"
+    finally:
+        httpd.server_close()
+        httpd.runner.close()
+
+
+def test_the_example_seed_is_on_demand_idempotent_and_single_flight(
+    tmp_path, monkeypatch
+):
+    """`_seed_demo_session` is idempotent by session name, which stops it
+    duplicating the example but not two concurrent requests both *starting* it:
+    the name check and the insert are not one transaction, and the seed runs for
+    as long as six live cells take. Two clicks would have run twelve cells and
+    two sets of API calls.
+    """
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+
+    release = threading.Event()
+    runs: list[int] = []
+
+    def _slow_seed(_cfg, _runner):
+        runs.append(1)
+        release.wait(5)
+
+    monkeypatch.setattr(gateway_mod, "_seed_demo_session", _slow_seed)
+    try:
+        assert runner.example_seed.start(cfg, runner) is True
+        for _ in range(50):  # wait for the thread to actually enter the seed
+            if runs:
+                break
+            time.sleep(0.01)
+        assert runner.example_seed.running() is True
+        # The second caller is refused, and refused distinguishably: `started`
+        # false with `running` true is "someone else is doing it", which the UI
+        # shows differently from a failure.
+        assert runner.example_seed.start(cfg, runner) is False
+        assert runs == [1]
+    finally:
+        release.set()
+        runner.close()
+
+
+def test_the_example_seed_route_reports_state_and_surfaces_its_error(
+    tmp_path, monkeypatch
+):
+    """A background seed that fails has nowhere to report to, so it reports
+    here. Without this the UI's only signal is that the example never appears,
+    which is indistinguishable from a slow network."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    try:
+        handler = object.__new__(handler_cls)
+        handler.path = "/api/v1/example/session"
+        seen: list[tuple[dict, int]] = []
+        handler._json = lambda obj, code=200: seen.append((obj, code))
+        handler._body = lambda: {}
+
+        handler._api("GET", "/example/session")
+        body, code = seen[-1]
+        assert code == 200
+        assert body["seeded"] is False and body["running"] is False
+        assert body["started"] is False  # a GET never starts anything
+        assert body["seeds_at_startup"] is False
+
+        # An unconfirmed POST refuses and, more to the point, seeds nothing.
+        # This is what keeps a generic surface driver -- the contract capture,
+        # a route-coverage sweep -- from executing six cells and calling two
+        # external APIs just by enumerating verbs. Asserting the 400 alone
+        # would not prove it: the check has to happen *before* the start.
+        ran: list[int] = []
+        monkeypatch.setattr(gateway_mod, "_seed_demo_session", lambda *a: ran.append(1))
+        with pytest.raises(gateway_mod.GatewayError) as refused:
+            handler._api("POST", "/example/session")
+        assert refused.value.code == 400
+        assert refused.value.error_code == "confirmation_required"
+        time.sleep(0.1)
+        assert ran == [], "an unconfirmed POST started the example seed"
+
+        def _boom(_cfg, _runner):
+            raise RuntimeError("uniprot unreachable")
+
+        monkeypatch.setattr(gateway_mod, "_seed_demo_session", _boom)
+        handler._body = lambda: {"confirm": True}
+        handler._api("POST", "/example/session")
+        assert seen[-1][0]["started"] is True
+        for _ in range(200):
+            if runner.example_seed.last_error():
+                break
+            time.sleep(0.01)
+        handler._api("GET", "/example/session")
+        assert "uniprot unreachable" in (seen[-1][0]["error"] or "")
+    finally:
+        runner.close()
 
 
 def test_ws_resume_buffer_replaces_notebook_drafts_and_keeps_live_cell_events():
@@ -429,6 +573,21 @@ def test_ws_live_frame_limit_is_hard_even_when_every_buffer_is_running():
     assert list(hub._live) == ["root-live-2", "root-live-3"]
     assert all(buf["running"] for buf in hub._live.values())
     assert hub.is_running("root-live-1") is False
+
+
+def _auth_headers(cfg, extra: dict | None = None) -> dict:
+    """Headers a client presents now that the token gate is on by default.
+
+    Tests that drive `_route` go through the gate; tests that call `_api`
+    directly do not. Rather than each remembering that distinction, this makes
+    the credential explicit wherever `_route` is used -- which is also what a
+    real client does.
+    """
+    from openai4s.server import local_auth
+
+    headers = {local_auth.TOKEN_HEADER: local_auth.load_or_mint(cfg.data_dir)}
+    headers.update(extra or {})
+    return headers
 
 
 def _cfg(tmp_path):
@@ -1489,7 +1648,7 @@ def test_gateway_error_maps_to_error_envelope(tmp_path):
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
     handler = object.__new__(handler_cls)
-    handler.headers = {}
+    handler.headers = _auth_headers(cfg)
     replies = []
     handler._json = lambda obj, code=200: replies.append((code, obj))
 
@@ -1510,7 +1669,7 @@ def test_unhandled_exception_maps_to_500_error_envelope(tmp_path, capsys):
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
     handler = object.__new__(handler_cls)
-    handler.headers = {}
+    handler.headers = _auth_headers(cfg)
     replies = []
     handler._json = lambda obj, code=200: replies.append((code, obj))
 
@@ -1573,8 +1732,10 @@ def test_ws_upgrade_allows_absent_and_same_origin(tmp_path):
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
     for headers in (
-        {"Host": "127.0.0.1:8760"},
-        {"Origin": "http://127.0.0.1:8760", "Host": "127.0.0.1:8760"},
+        _auth_headers(cfg, {"Host": "127.0.0.1:8760"}),
+        _auth_headers(
+            cfg, {"Origin": "http://127.0.0.1:8760", "Host": "127.0.0.1:8760"}
+        ),
     ):
         handler = object.__new__(handler_cls)
         handler.headers = headers
@@ -1600,7 +1761,11 @@ def test_dns_rebinding_host_header_is_rejected(tmp_path):
 
     def _run(headers, method, path):
         handler = object.__new__(handler_cls)
-        handler.headers = headers
+        # Authenticated on purpose: the Host allowlist must reject a rebind
+        # even for a caller holding a valid credential, because the browser in
+        # this attack *has* the user's cookie. A test that relied on the token
+        # gate to produce the 403 would prove nothing about the Host check.
+        handler.headers = _auth_headers(cfg, headers)
         replies = []
         api_calls = []
         handler._json = lambda obj, code=200: replies.append((code, obj))
@@ -2086,7 +2251,7 @@ def test_preview_route_forces_html_content_type(tmp_path):
     text/html, whatever the stored content_type says."""
     cfg, runner, store, fid, st = _runner_frame(tmp_path)
     handler, sends = _bytes_handler(cfg, runner)
-    handler.headers = {}  # _route consults Origin/Cookie headers
+    handler.headers = _auth_headers(cfg)  # _route consults Origin/Cookie headers
 
     f = st.workspace / "report.md"
     f.write_text("# hi")
@@ -2168,7 +2333,7 @@ def test_body_rejects_unparseable_json_with_an_explicit_4xx(tmp_path):
         assert e.value.code == 400
         assert "must be a JSON object" in e.value.message
 
-    handler.headers = {}  # no Content-Length header at all
+    handler.headers = _auth_headers(cfg)  # no Content-Length header at all
     handler.rfile = io.BytesIO(b'{"ignored": true}')
     assert handler._body() == {}
 
@@ -2231,7 +2396,7 @@ def test_request_body_cache_is_released_after_keepalive_dispatch(tmp_path):
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
     handler = object.__new__(handler_cls)
     handler.path = "/ignored"
-    handler.headers = {"Content-Length": "2"}
+    handler.headers = _auth_headers(cfg, {"Content-Length": "2"})
     handler.rfile = io.BytesIO(b"{}")
     handler.close_connection = False
     replies = []
@@ -2252,7 +2417,7 @@ def test_websocket_upgrade_is_never_reused_as_http_keepalive(tmp_path):
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
     handler = object.__new__(handler_cls)
     handler.path = "/api/v1/ws"
-    handler.headers = {}
+    handler.headers = _auth_headers(cfg)
     handler.close_connection = False
     upgraded = []
     handler._handle_ws = lambda: upgraded.append(True)
@@ -2866,3 +3031,184 @@ def test_token_comparison_is_constant_time_and_refuses_empties():
     assert local_auth.matches("abc", None) is False
     assert local_auth.matches(None, None) is False
     assert local_auth.matches("", "") is False
+
+
+def test_the_loopback_gate_is_required_by_default(tmp_path, monkeypatch):
+    """It used to be opt-in on loopback.
+
+    The reasoning was that a single-user local tool needs no gate. But the
+    daemon exposes unauthenticated code execution -- `kernel/execute`,
+    `compute/jobs`, `host.bash` -- and "local" includes every other process on
+    the machine. The Host and Origin guards cover the browser; they do not
+    cover a local process.
+
+    `OPENAI4S_REQUIRE_TOKEN=0` is the escape hatch, and it lives for one minor
+    release. Same variable that used to opt *in*, sense reversed, so a script
+    setting it to 1 keeps working and simply asks for what is now the default.
+    """
+    from openai4s.server import local_auth
+
+    monkeypatch.delenv("OPENAI4S_REQUIRE_TOKEN", raising=False)
+    cfg = _cfg(tmp_path / "default")
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    gateway_mod.make_handler(cfg, _Hub(), runner)
+    assert local_auth.read_token(cfg.data_dir), "loopback did not require a token"
+
+    # The legacy opt-out, honoured on loopback.
+    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
+    relaxed = _cfg(tmp_path / "relaxed")
+    relaxed_runner = gateway_mod.SessionRunner(relaxed, _Hub())
+    gateway_mod.make_handler(relaxed, _Hub(), relaxed_runner)
+    assert local_auth.read_token(relaxed.data_dir) is None
+
+    # ...and ignored off loopback. A bind anything can route to has no
+    # configuration under which it should answer without a credential.
+    exposed = Config(
+        data_dir=tmp_path / "exposed",
+        host="0.0.0.0",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+    )
+    exposed_runner = gateway_mod.SessionRunner(exposed, _Hub())
+    gateway_mod.make_handler(exposed, _Hub(), exposed_runner)
+    assert local_auth.read_token(exposed.data_dir), "non-loopback honoured the opt-out"
+
+
+def test_the_cli_presents_the_daemon_credential(tmp_path, monkeypatch):
+    """Every daemon-backed subcommand 401s without this.
+
+    `_daemon_request` sent no credential at all and leaned on a comment saying
+    the CSRF guard passes non-browser clients -- true, and unrelated to the
+    token gate. `OPENAI4S_TOKEN` exists because the token file is owner-only:
+    a daemon under another account (a systemd unit) writes a file this user
+    cannot read, and without an override the CLI would need a chmod or a `su`.
+    """
+    from openai4s.cli.main import _daemon_credential_hint, _daemon_token
+    from openai4s.server import local_auth
+
+    cfg = _cfg(tmp_path)
+    monkeypatch.delenv("OPENAI4S_TOKEN", raising=False)
+
+    # Nothing minted yet: the hint names the path and what to do.
+    assert _daemon_token(cfg) is None
+    assert "OPENAI4S_TOKEN" in _daemon_credential_hint(cfg)
+
+    minted = local_auth.load_or_mint(cfg.data_dir)
+    assert _daemon_token(cfg) == minted
+
+    # The override wins, for the cross-account case it exists for.
+    monkeypatch.setenv("OPENAI4S_TOKEN", "supplied-by-the-operator")
+    assert _daemon_token(cfg) == "supplied-by-the-operator"
+
+    # And the gate accepts what the CLI sends.
+    monkeypatch.delenv("OPENAI4S_TOKEN", raising=False)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    handler.headers = {local_auth.TOKEN_HEADER: _daemon_token(cfg)}
+    handler.path = "/api/v1/frames"
+    reached = []
+    handler._json = lambda obj, code=200: reached.append(("json", code))
+    handler._api = lambda method, sub: reached.append(("api", sub))
+    handler._route("GET")
+    assert reached and reached[-1][0] == "api"
+
+
+def _probe_route(handler_cls, headers, path, method="GET"):
+    """Drive `_route` and report what it did: an int status, or ("api", sub)."""
+    handler = object.__new__(handler_cls)
+    handler.headers = headers
+    handler.path = path
+    seen: list[object] = []
+    handler._json = lambda obj, code=200: seen.append(code)
+    handler._api = lambda m, sub: seen.append(("api", sub))
+    handler.send_response = lambda code: seen.append(code)
+    handler.send_header = lambda k, v: None
+    handler.end_headers = lambda: None
+    handler._prepare_request_body = lambda *a, **k: None
+    handler._route(method)
+    return seen[-1] if seen else None
+
+
+def test_a_query_token_bootstraps_only_a_navigation(tmp_path, monkeypatch):
+    """A URL with a credential in it is a shareable credential.
+
+    It gets pasted into chat, logged by a proxy and kept in browser history.
+    The gate accepted `?token=` on *any* GET, so
+    `/api/v1/artifacts/<id>/download?token=…` was a link that hands over the
+    file to whoever holds it -- no redirect, no cookie hand-off, the response
+    body is the payload. On a path that serves the SPA shell the same link buys
+    only the bootstrap it was minted for, and the 303 strips it immediately.
+
+    Deep links keep working: the redirect goes to the same path, not to "/".
+    """
+    from openai4s.server import local_auth
+
+    monkeypatch.delenv("OPENAI4S_REQUIRE_TOKEN", raising=False)
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    token = local_auth.read_token(cfg.data_dir)
+    try:
+        assert _probe_route(handler_cls, {}, f"/?token={token}") == 303
+        assert _probe_route(handler_cls, {}, f"/session/abc?token={token}") == 303
+        # Data paths: refused, even with a valid token in the query.
+        assert _probe_route(handler_cls, {}, f"/api/v1/frames?token={token}") == 401
+        assert _probe_route(handler_cls, {}, f"/static/app.js?token={token}") == 401
+        # And a mutation is refused on every path, navigation or not.
+        assert (
+            _probe_route(handler_cls, {}, f"/session/abc?token={token}", "POST") == 401
+        )
+    finally:
+        runner.close()
+
+
+def test_the_gate_accepts_bearer_and_the_explicit_header(tmp_path, monkeypatch):
+    """`Authorization: Bearer` is what a generic client reaches for unprompted.
+
+    Neither spelling is preferred. `X-OpenAI4S-Token` stays because something
+    upstream may already own `Authorization`, and the CLI sends it; Bearer is
+    here so `curl -H` and any SDK work without reading the docs first.
+
+    Both go through one parser, which `/auth/status` also calls -- a status
+    route that answers from its own reasoning is how the old hardcoded "none"
+    survived a gate that was actually on.
+    """
+    from openai4s.server import local_auth
+
+    monkeypatch.delenv("OPENAI4S_REQUIRE_TOKEN", raising=False)
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    token = local_auth.read_token(cfg.data_dir)
+    try:
+        for headers in (
+            {"Authorization": f"Bearer {token}"},
+            {"Authorization": f"bearer {token}"},  # RFC 7235: scheme is caseless
+            {local_auth.TOKEN_HEADER: token},
+        ):
+            assert _probe_route(handler_cls, headers, "/api/v1/frames") == (
+                "api",
+                "/frames",
+            ), headers
+        for headers in (
+            {"Authorization": f"Basic {token}"},  # right value, wrong scheme
+            {"Authorization": "Bearer "},
+            {"Authorization": token},  # bare, no scheme
+            {"Authorization": "Bearer not-the-token"},
+        ):
+            assert _probe_route(handler_cls, headers, "/api/v1/frames") == 401, headers
+
+        # /auth/status reports through the same parser, and never leaks the
+        # token itself -- only whether one was accepted.
+        handler = object.__new__(handler_cls)
+        handler.headers = {"Authorization": f"Bearer {token}"}
+        handler.path = "/api/v1/auth/status"
+        seen: list[dict] = []
+        handler._json = lambda obj, code=200: seen.append(obj)
+        handler._api("GET", "/auth/status")
+        assert seen[-1]["authenticated"] is True
+        assert seen[-1]["auth_mode"] == "token"
+        assert token not in json.dumps(seen[-1])
+    finally:
+        runner.close()

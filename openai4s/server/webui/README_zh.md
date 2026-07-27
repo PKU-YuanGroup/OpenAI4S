@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-浏览器客户端放在这里，由标准库 Gateway 在 `/static/` 下提供。这里没有 npm、没有打包器、没有编译步骤：源码 checkout 里改一行，刷新浏览器就能看到；安装后的 wheel 提供的则是包内副本。`index.html` 本身只加载 `favicon.js`、`scientific_renderers.js` 和 `app.js`，但它并不是页面上唯一的脚本来源。有一个第三方库仍会进到页面里：打开分子 Artifact 时，`app.js` 会在运行时注入 3Dmol，先取 `vendor/` 下自带的那一份；这一份加载失败时，它会改从 `https://3Dmol.org/build/3Dmol-min.js` 再取一次——对一个平时只跑在 loopback 上的应用来说，这是一次真实的对外请求。如果 CDN 上的那份也失败，Artifact 就退回成纯文本展示。客户端通过 REST 读取和写入，并跟随一条 WebSocket 事件流。它手里只有会话状态的投影，规范状态始终在服务端。
+浏览器客户端放在这里，由标准库 Gateway 在 `/static/` 下提供。这里没有 npm、没有打包器、没有编译步骤：源码 checkout 里改一行，刷新浏览器就能看到；安装后的 wheel 提供的则是包内副本。`index.html` 本身只加载 `favicon.js`、`scientific_renderers.js` 和 `app.js`，但它并不是页面上唯一的脚本来源。有一个第三方库仍会进到页面里：打开分子 Artifact 时，`app.js` 会在运行时注入 3Dmol，只取 `vendor/` 下自带的那一份，不再有别的来源。这次注入原先在本地那份加载失败时会改从 `https://3Dmol.org/build/3Dmol-min.js` 再取一次——那是一次悄无声息的真实对外请求，而且是在持有会话 Cookie 的页面里执行第三方脚本。它已经被删掉了：自带的那份加载不上时，Artifact 直接退回成纯文本展示，而这本来就是 CDN 那条路失败时的同一个结果。客户端通过 REST 读取和写入，并跟随一条 WebSocket 事件流。它手里只有会话状态的投影，规范状态始终在服务端。
 
 ## 运行时职责
 
@@ -28,7 +28,7 @@
 | 目录 | 职责 |
 | --- | --- |
 | `share/` | 独立的只读分享查看器（`share.html`/`share.js`/`share.css`），由 relay 隧道的 ShareRouter 提供，与主单页应用分开。它复用 `scientific_renderers.js` 和自带的 3Dmol，但有自己的极简外壳，且从不建立 WebSocket。 |
-| `vendor/` | 从上游取来的压缩版 3Dmol 运行时和字体资源。3Dmol 是客户端里唯一的第三方 JavaScript，而且只有在打开分子 Artifact 时才由 `app.js` 动态注入。自带的那份如果加载不上，这次注入会先回退到 `3Dmol.org` 的 CDN，都失败才退回纯文本展示（见 [`app.js`](app.js) 里注入 `3Dmol-min.js` 的两处 script 标签）。把它们当作上游的、逐字节敏感的资产：不参与格式化，本 README 也不逐个文件说明。 |
+| `vendor/` | 从上游取来的压缩版 3Dmol 运行时和字体资源。3Dmol 是客户端里唯一的第三方 JavaScript，而且只有在打开分子 Artifact 时才由 `app.js` 动态注入。自带的那份如果加载不上，Artifact 直接退回纯文本展示，不存在 CDN 回退（见 [`app.js`](app.js) 里注入 `3Dmol-min.js` 的那处 script 标签）。把它们当作上游的、逐字节敏感的资产：不参与格式化，本 README 也不逐个文件说明。 |
 
 ## 验证
 

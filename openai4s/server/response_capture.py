@@ -520,7 +520,14 @@ def unroutable(route: str) -> bool:
         return True
 
 
-def drive_all_routes(recorder: "Recorder", make_handler, config, runner) -> None:
+def drive_all_routes(
+    recorder: "Recorder",
+    make_handler,
+    config,
+    runner,
+    *,
+    authenticated_headers: dict[str, str] | None = None,
+) -> None:
     """Ask every known route for an answer, against a real handler.
 
     One implementation, shared by the two capture scripts and the coverage
@@ -546,7 +553,12 @@ def drive_all_routes(recorder: "Recorder", make_handler, config, runner) -> None
             handler = object.__new__(handler_class)
             handler._query = lambda: {}
             handler._body = lambda: {}
-            handler.headers = {}
+            # The driver calls `_api` directly, so the token gate in `_route`
+            # is not on its path today. The credential is presented anyway: the
+            # gate is one refactor from moving, and a driver that only works
+            # while authentication happens to be elsewhere would fail as a wall
+            # of 401s at exactly the moment the contract mattered most.
+            handler.headers = dict(authenticated_headers or {})
             # Deterministic and non-empty. `_route` gives every real request a
             # correlation id (an inbound X-Request-Id, else `new_correlation_id()`),
             # so `request_id` is a string on the wire and never null. Leaving

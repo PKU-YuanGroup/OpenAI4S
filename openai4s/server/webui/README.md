@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-The browser client lives here, and the stdlib gateway serves it at `/static/`. There is no npm, no bundler and no compile step: in a source checkout an edit shows up on the next browser reload, while an installed wheel serves its packaged copy. `index.html` itself loads only `favicon.js`, `scientific_renderers.js` and `app.js`, but it is not the only script source. One third-party library reaches the page: when you open a molecule artifact, `app.js` injects 3Dmol at runtime from the vendored copy under `vendor/`, and if that script fails to load it retries from `https://3Dmol.org/build/3Dmol-min.js`, a real outbound request from an application that otherwise stays on loopback. Should the CDN copy fail too, the artifact is shown as plain text. The client reads and mutates over REST and follows one WebSocket event stream. It holds projections of session state, never the canonical copy.
+The browser client lives here, and the stdlib gateway serves it at `/static/`. There is no npm, no bundler and no compile step: in a source checkout an edit shows up on the next browser reload, while an installed wheel serves its packaged copy. `index.html` itself loads only `favicon.js`, `scientific_renderers.js` and `app.js`, but it is not the only script source. One third-party library reaches the page: when you open a molecule artifact, `app.js` injects 3Dmol at runtime from the vendored copy under `vendor/`, and from nowhere else. That injection used to retry from `https://3Dmol.org/build/3Dmol-min.js` — a real outbound request, made silently, executing third-party script in the page that holds the session cookie. It was removed; if the vendored file does not load, the artifact is shown as plain text, which is the same outcome the CDN path reached whenever it failed anyway. The client reads and mutates over REST and follows one WebSocket event stream. It holds projections of session state, never the canonical copy.
 
 ## Runtime responsibilities
 
@@ -28,7 +28,7 @@ The browser client lives here, and the stdlib gateway serves it at `/static/`. T
 | Directory | Responsibility |
 | --- | --- |
 | `share/` | The standalone read-only share viewer (`share.html`/`share.js`/`share.css`), served by the relay tunnel's ShareRouter — separate from the main single-page app. It reuses `scientific_renderers.js` and the vendored 3Dmol, but has its own minimal shell and never connects a WebSocket. |
-| `vendor/` | Vendored minified 3Dmol runtime and font assets. 3Dmol is the one piece of third-party JavaScript in the client, and `app.js` injects it only when a molecule artifact is opened. If the vendored file does not load, that injection falls back to the `3Dmol.org` CDN before it gives up and renders plain text ([`app.js`](app.js), the `3Dmol-min.js` script tags). Treat these as upstream, byte-sensitive assets; they are excluded from formatting and are not documented file-by-file here. |
+| `vendor/` | Vendored minified 3Dmol runtime and font assets. 3Dmol is the one piece of third-party JavaScript in the client, and `app.js` injects it only when a molecule artifact is opened. If the vendored file does not load, the artifact is rendered as plain text — there is no CDN fallback ([`app.js`](app.js), the `3Dmol-min.js` script tag). Treat these as upstream, byte-sensitive assets; they are excluded from formatting and are not documented file-by-file here. |
 
 ## Verification
 

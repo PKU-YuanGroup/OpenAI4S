@@ -246,11 +246,41 @@ def test_a_module_carrying_routes_must_follow_the_naming_convention():
     )
 
 
-def test_widening_the_scan_did_not_change_the_surface_it_reports():
-    """Landed on an unchanged tree, so the count must be exactly what the
-    gateway-only scan reported. A widening that also *adds* routes is scanning
-    something that is not surface -- a validator pattern, or a test fixture."""
-    assert len(http_routes()) == 144
+def test_widening_the_scan_adds_only_what_the_route_modules_declare():
+    """The widening must not invent surface.
+
+    This was pinned as ``len(http_routes()) == 144``, which was the right check
+    on the day the scan was widened -- an unchanged tree, so any change in the
+    count meant the wider scan was reading something that is not surface. It is
+    the wrong check afterwards: it fails for the *intended* reason (a route was
+    added) as loudly as for the unintended one, and a test whose only failure
+    mode is "bump the number" is not read before it is bumped.
+
+    So assert the property instead of the total. Every route the widened scan
+    reports comes from gateway.py or from a module named by the route-module
+    convention -- nothing appears from a source neither of those covers. That
+    holds however many routes exist, and still fails if the extractor starts
+    picking up a validator pattern or a fixture.
+    """
+    from openai4s.server import contract
+
+    widened = set(http_routes())
+    declared = set(http_routes(contract._source()))
+    for name in contract._route_modules():
+        path = contract._SERVER_PKG / name
+        if path.is_file():
+            declared |= set(http_routes(path.read_text("utf-8")))
+
+    assert not (widened - declared), (
+        "the widened scan reports routes that no declared source contains: "
+        f"{sorted(widened - declared)}"
+    )
+    # And the reverse, which is the cheaper half: a declared source whose routes
+    # go missing means `_route_sources` stopped reading it.
+    assert not (declared - widened), (
+        "a declared route source is no longer being read: "
+        f"{sorted(declared - widened)}"
+    )
 
 
 # --------------------------------------------------------------------------

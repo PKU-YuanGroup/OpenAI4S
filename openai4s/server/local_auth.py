@@ -27,6 +27,11 @@ from openai4s.security.permissions import harden_dir, harden_file
 #: Filename under the data dir. Not in the database: see the module docstring.
 TOKEN_FILENAME = "access-token"
 
+#: The header a non-browser client presents. Named here so the gateway and the
+#: CLI cannot disagree about it -- two string literals is one typo away from a
+#: client that authenticates against nothing.
+TOKEN_HEADER = "X-OpenAI4S-Token"
+
 #: 32 bytes of urlsafe randomness. Long enough that guessing is not the attack,
 #: short enough to paste.
 _TOKEN_BYTES = 32
@@ -100,6 +105,7 @@ def matches(supplied: str | None, expected: str | None) -> bool:
 
 __all__ = [
     "TOKEN_FILENAME",
+    "TOKEN_HEADER",
     "load_or_mint",
     "matches",
     "read_token",

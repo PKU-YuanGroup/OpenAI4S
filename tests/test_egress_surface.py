@@ -278,3 +278,120 @@ def test_every_declared_skill_egress_entry_is_still_real():
     assert (
         stale == []
     ), f"these no longer reach the network; drop their _SKILL_EGRESS entry: {stale}"
+
+
+#: The browser client's own egress surface, which the AST walk above cannot see:
+#: it reads Python, and this is JavaScript loaded into a page that holds the
+#: session cookie. Frozen the same way and for the same reason.
+_WEBUI = _PACKAGE / "server" / "webui"
+
+#: Absolute URLs the client may *name*, each with why it is not a request. A
+#: string is not egress; a string handed to something that fetches it is. Both
+#: of these are inert, so they are listed rather than removed -- and listed with
+#: a reason, so a third entry has to argue for itself.
+#:
+#: `vendor/` is excluded from the scan entirely: it is upstream minified code,
+#: and a URL inside a bundled library is not the client choosing to call it.
+_WEBUI_NAMED_HOSTS = {
+    "www.w3.org": "the SVG XML namespace passed to createElementNS -- an "
+    "identifier, never dereferenced by any browser",
+    "api.tavily.com": "displayed as the default search endpoint in Customize. "
+    "The call is made by the daemon; the client only renders the string",
+}
+
+#: Constructs that turn a URL into a request. An absolute URL on the same line
+#: as one of these fails regardless of the table above, because the question
+#: there is not which host but whether the client fetches at all.
+_WEBUI_REQUEST_SITES = (
+    "fetch(",
+    ".src",
+    ".href",
+    "import(",
+    "new Worker(",
+    "XMLHttpRequest",
+    "sendBeacon(",
+    "new EventSource(",
+    "new WebSocket(",
+)
+
+
+def _webui_sources() -> list[Path]:
+    return [
+        path
+        for path in sorted(_WEBUI.rglob("*"))
+        if path.is_file()
+        and path.suffix in {".js", ".html", ".css"}
+        and "vendor" not in path.relative_to(_WEBUI).parts
+    ]
+
+
+def _webui_absolute_urls() -> list[tuple[str, int, str, str]]:
+    """(file, line, host, text) for every absolute URL in live client code."""
+    import re
+
+    pattern = re.compile(r"""["'`](https?://[^"'`\s]+)""")
+    found: list[tuple[str, int, str, str]] = []
+    for path in _webui_sources():
+        for lineno, line in enumerate(
+            path.read_text("utf-8", errors="replace").splitlines(), 1
+        ):
+            # A URL in a comment documents what was removed; it is not code.
+            stripped = line.lstrip()
+            if stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            for match in pattern.finditer(line):
+                url = match.group(1)
+                found.append(
+                    (str(path.relative_to(_PACKAGE)), lineno, url.split("/")[2], line)
+                )
+    return found
+
+
+def test_the_browser_client_fetches_nothing_off_its_own_origin():
+    """A CDN fallback is an outbound request the user did not ask for.
+
+    `app.js` used to retry 3Dmol from `https://3Dmol.org/build/3Dmol-min.js`
+    when the vendored copy failed to load. Three things were wrong with it at
+    once: it is a real outbound request from an application whose premise is
+    that it stays on loopback; it executes third-party script in the page
+    holding the session cookie; and it is silent, so the one user who would
+    care -- an air-gapped or regulated install -- learns nothing. The degraded
+    path it was skipping (render the coordinates as text) was already written.
+
+    This asserts the sharp thing: no absolute URL is handed to anything that
+    fetches. The host table is the softer companion check below, and neither
+    subsumes the other -- an allowlisted host in a `fetch(` still fails here.
+    """
+    offenders = [
+        (path, line, host)
+        for path, line, host, text in _webui_absolute_urls()
+        if any(site in text for site in _WEBUI_REQUEST_SITES)
+    ]
+    assert (
+        not offenders
+    ), "the browser client fetches from an external origin:\n" + "\n".join(
+        f"  {path}:{line} -> {host}" for path, line, host in offenders
+    )
+
+
+def test_every_external_host_the_client_names_is_accounted_for():
+    """The softer half: a new hostname in client code has to be argued for.
+
+    Kept separate from the fetch check because it catches a different mistake --
+    a URL that is inert today and one refactor away from being passed to
+    `fetch`. Adding a row here is a decision; typing a hostname into `app.js`
+    is a Tuesday.
+    """
+    unaccounted = sorted(
+        {
+            (path, line, host)
+            for path, line, host, _ in _webui_absolute_urls()
+            if host not in _WEBUI_NAMED_HOSTS
+        }
+    )
+    assert not unaccounted, (
+        "client code names a host with no recorded reason:\n"
+        + "\n".join(f"  {path}:{line} -> {host}" for path, line, host in unaccounted)
+        + "\n\nAdd it to _WEBUI_NAMED_HOSTS with why it is not a request, or "
+        "remove it."
+    )

@@ -428,11 +428,15 @@
           },
           "authenticated": {
             "type": "boolean"
+          },
+          "token_header": {
+            "type": "string"
           }
         },
         "required": [
           "auth_mode",
-          "authenticated"
+          "authenticated",
+          "token_header"
         ],
         "type": "object"
       }
@@ -952,6 +956,39 @@
       }
     },
     "DELETE /environments/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /example/session [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -4714,11 +4751,15 @@
           },
           "authenticated": {
             "type": "boolean"
+          },
+          "token_header": {
+            "type": "string"
           }
         },
         "required": [
           "auth_mode",
-          "authenticated"
+          "authenticated",
+          "token_header"
         ],
         "type": "object"
       }
@@ -5361,6 +5402,9 @@
                       "type": "string"
                     },
                     "missing": {
+                      "items": {
+                        "type": "string"
+                      },
                       "type": "array"
                     },
                     "phase": {
@@ -5404,6 +5448,46 @@
         },
         "required": [
           "environments"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /example/session [ok]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "frame_id": {
+            "type": "null"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "seeded": {
+            "type": "boolean"
+          },
+          "seeds_at_startup": {
+            "type": "boolean"
+          },
+          "started": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "error",
+          "frame_id",
+          "project_id",
+          "running",
+          "seeded",
+          "seeds_at_startup",
+          "started"
         ],
         "type": "object"
       }
@@ -8488,6 +8572,9 @@
                 "type": "string"
               },
               "missing": {
+                "items": {
+                  "type": "string"
+                },
                 "type": "array"
               },
               "phase": {
@@ -11159,11 +11246,15 @@
           },
           "authenticated": {
             "type": "boolean"
+          },
+          "token_header": {
+            "type": "string"
           }
         },
         "required": [
           "auth_mode",
-          "authenticated"
+          "authenticated",
+          "token_header"
         ],
         "type": "object"
       }
@@ -11707,6 +11798,39 @@
       }
     },
     "PATCH /environments/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /example/session [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -15466,11 +15590,15 @@
           },
           "authenticated": {
             "type": "boolean"
+          },
+          "token_header": {
+            "type": "string"
           }
         },
         "required": [
           "auth_mode",
-          "authenticated"
+          "authenticated",
+          "token_header"
         ],
         "type": "object"
       }
@@ -15766,6 +15894,58 @@
         "type": "object"
       }
     },
+    "POST /connectors [ok]": {
+      "schema": {
+        "properties": {
+          "args": {
+            "type": "array"
+          },
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "connector_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "env_keys": {
+            "type": "array"
+          },
+          "has_env": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "args",
+          "command",
+          "connector_id",
+          "created_at",
+          "description",
+          "enabled",
+          "env_keys",
+          "has_env",
+          "name",
+          "updated_at"
+        ],
+        "type": "object"
+      }
+    },
     "POST /connectors/([^/]+) [error]": {
       "schema": {
         "properties": {
@@ -15990,6 +16170,68 @@
           "path",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /example/session [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /example/session [ok]": {
+      "schema": {
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "frame_id": {
+            "type": "null"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "seeded": {
+            "type": "boolean"
+          },
+          "seeds_at_startup": {
+            "type": "boolean"
+          },
+          "started": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "error",
+          "frame_id",
+          "project_id",
+          "running",
+          "seeded",
+          "seeds_at_startup",
+          "started"
         ],
         "type": "object"
       }
@@ -22996,11 +23238,15 @@
           },
           "authenticated": {
             "type": "boolean"
+          },
+          "token_header": {
+            "type": "string"
           }
         },
         "required": [
           "auth_mode",
-          "authenticated"
+          "authenticated",
+          "token_header"
         ],
         "type": "object"
       }
@@ -23544,6 +23790,39 @@
       }
     },
     "PUT /environments/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /example/session [error]": {
       "schema": {
         "properties": {
           "code": {

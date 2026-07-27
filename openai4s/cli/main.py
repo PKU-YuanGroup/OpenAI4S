@@ -772,6 +772,43 @@ def cmd_benchmark(args) -> int:
     return 1 if report["failed"] else 0
 
 
+def _daemon_token(cfg) -> str | None:
+    """The credential this CLI presents, or None when there is none to find.
+
+    Two sources, in this order. `OPENAI4S_TOKEN` exists because the token file
+    is owner-only: a daemon running under another account (a systemd unit, say)
+    writes a file this user cannot read, and without an override the CLI would
+    be unusable without changing permissions or switching user.
+
+    Never a query parameter. A URL carrying a credential is logged by proxies
+    and kept in history, and the daemon refuses query tokens on mutations for
+    that reason.
+    """
+    override = (os.environ.get("OPENAI4S_TOKEN") or "").strip()
+    if override:
+        return override
+    from openai4s.server import local_auth
+
+    return local_auth.read_token(cfg.data_dir)
+
+
+def _daemon_credential_hint(cfg) -> str:
+    """Why the CLI has no token, phrased so the reader can act on it."""
+    from openai4s.server import local_auth
+
+    path = local_auth.token_path(cfg.data_dir)
+    if path.exists():
+        return (
+            f"error: cannot read the daemon's access token at {path} "
+            "(it is owner-only). Run this as the user the daemon runs as, or "
+            "set OPENAI4S_TOKEN to the token that daemon printed at startup."
+        )
+    return (
+        f"error: no daemon access token at {path}. Start the daemon with "
+        "`openai4s serve`, or set OPENAI4S_TOKEN if it runs elsewhere."
+    )
+
+
 def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
     """Call the running daemon's REST API; returns (status, parsed_json)."""
 
@@ -779,6 +816,14 @@ def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
+    # The gate is required by default now, so every daemon-backed subcommand
+    # has to present a credential. Sent as a header rather than `?token=`,
+    # which the daemon refuses on mutations anyway.
+    from openai4s.server import local_auth
+
+    token = _daemon_token(cfg)
+    if token:
+        req.add_header(local_auth.TOKEN_HEADER, token)
     # The daemon's CSRF guard passes non-browser clients (no Origin header).
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:
@@ -786,6 +831,10 @@ def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
             return resp.status, (json.loads(raw) if raw else {})
     except urllib.error.HTTPError as error:
         raw = error.read().decode("utf-8", "replace")
+        if error.code == 401 and not token:
+            # A bare 401 tells the reader nothing they can act on. Say which
+            # file could not be read and what to do instead.
+            print(_daemon_credential_hint(cfg), file=sys.stderr)
         try:
             return error.code, json.loads(raw)
         except ValueError:

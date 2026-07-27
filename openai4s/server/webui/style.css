@@ -75,6 +75,12 @@ button{font:inherit;cursor:pointer}
 .col-title .ci{color:var(--text-000);display:inline-flex}
 .dash-card{background:var(--card);border:.5px solid var(--border-card);border-radius:var(--radius-card);overflow:hidden;box-shadow:var(--shadow-card)}
 .dash-empty{padding:20px;color:var(--text-400);font-size:13px;text-align:center}
+/* The offered example analysis. Sits under the empty-sessions line; the hint is
+   deliberately not a tooltip, because what it says (this makes outbound API
+   calls and runs code) has to be readable before the click, not after. */
+.dash-example{padding:0 20px 20px;text-align:center}
+.dash-example .btn{margin:0 auto}
+.dash-example-hint{margin-top:8px;color:var(--text-400);font-size:12px;line-height:1.5;max-width:46em;margin-left:auto;margin-right:auto}
 .d-row{display:flex;align-items:center;gap:12px;padding:13px 16px;cursor:pointer;border-bottom:.5px solid var(--border)}
 .d-row:last-child{border-bottom:0}
 .d-row:hover{background:var(--bg-200)}

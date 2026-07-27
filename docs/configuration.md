@@ -73,9 +73,29 @@ Heavier toolchains live in ready-to-use Conda specs instead, so native dependenc
 
 `OPENAI4S_HOST` (`127.0.0.1`) · `OPENAI4S_PORT` (`8760`) · `OPENAI4S_DATA_DIR` (`~/.openai4s`, holds the SQLite db, artifacts, logs, pidfile). See [Security](security.md) for remote / SSH-tunnel access.
 
-`OPENAI4S_SEED_DEMO` (`1`) — set to `0` to skip the first-boot live
-UniProt/RCSB demo. This is useful for CI, air-gapped deployments, or an
-intentionally empty workbench; it does not affect existing sessions.
+`OPENAI4S_SEED_DEMO` (`0`) — set to `1` to run the bundled example analysis at
+startup. **The default changed and the variable's sense reversed.** It used to
+default to `1`, and on a fresh data dir that meant the daemon bound its port and
+then, on a background thread, started a Python kernel, executed six cells,
+called the UniProt and RCSB REST APIs, spawned the bundled MCP connector and
+wrote four artifacts — before the user had typed anything. A fresh boot now does
+none of that.
+
+The example is still there; it moved behind a button. The dashboard offers *Run
+the example analysis* when a session list is empty, and the button posts
+`{"confirm": true}` to `POST /api/v1/example/session` (see
+[Web app API](webapp-api.md)). Set the variable to `1` on a demo machine that
+should come up pre-populated. Either way the seed runs at most once — the two
+paths share one seeder.
+
+`OPENAI4S_TOKEN` — the daemon access token, for CLI subcommands when the token
+file under the data dir is not readable by the calling user (a daemon running
+under another account). Normally unset: the CLI reads the file.
+
+`OPENAI4S_REQUIRE_TOKEN` (`1`) — `0` turns the local access-token gate off, and
+only on a loopback bind. Kept for one minor release; see
+[Security](security.md) for what the daemon exposes to an unauthenticated
+caller.
 
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
 

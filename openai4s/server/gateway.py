@@ -207,8 +207,8 @@ _WATCHDOG_KILL_GRACE_S = 10.0
 # modules can raise GatewayError without importing this file (that import is a
 # cycle: GatewayError sat ~5,800 lines below gateway's own imports, so a sibling
 # importing it failed the daemon at boot).
-#: The header a non-browser client presents instead of a query token.
-_TOKEN_HEADER = "X-OpenAI4S-Token"
+#: Re-exported so the gate and the CLI cannot disagree about the spelling.
+_TOKEN_HEADER = local_auth.TOKEN_HEADER
 
 
 def _strip_token_from_url(path: str, query: str) -> str:
@@ -268,6 +268,36 @@ _UNAUTHENTICATED_PATHS = frozenset({"/health", _API_ROOT + "/auth/status"})
 _API_PREFIX = _API_ROOT + "/"
 _API_WS = _API_ROOT + "/ws"
 _MAX_JSON_BODY_BYTES = MAX_ARCHIVE_BYTES
+
+
+def _is_navigation(path: str) -> bool:
+    """Does this path serve the SPA shell rather than data?
+
+    Only these may bootstrap from `?token=`. Everything else -- the API, the
+    static assets -- must present a cookie or a header, because a URL with a
+    credential in it gets pasted into chat, logged by a proxy, and kept in
+    history, and on a data path that single link hands over the data itself.
+    """
+    return not (path.startswith(_API_PREFIX) or path.startswith("/static/"))
+
+
+def _presented_token(headers: Any) -> str | None:
+    """The credential a non-browser client sent, from either accepted spelling.
+
+    `Authorization: Bearer` is what a generic HTTP client, an SDK or `curl -H`
+    reaches for without being told; `X-OpenAI4S-Token` is unambiguous when
+    something upstream already owns `Authorization`. Neither is preferred --
+    whichever is present is checked, and both are compared in constant time by
+    the caller.
+    """
+    explicit = headers.get(local_auth.TOKEN_HEADER)
+    if explicit:
+        return str(explicit)
+    raw = str(headers.get("Authorization") or "")
+    scheme, _, value = raw.partition(" ")
+    if scheme.strip().casefold() == "bearer" and value.strip():
+        return value.strip()
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -1666,6 +1696,9 @@ class SessionRunner:
         self._lock = threading.Lock()
         self._closed = False
         self._deleting_projects: set[str] = set()
+        # One per daemon, so the startup opt-in and the on-demand route cannot
+        # both be seeding the example at the same time.
+        self.example_seed = _ExampleSeedState()
         self.executions = WebExecutionCoordinator(
             lambda root_frame_id, event: self.hub.emitter(root_frame_id)(event),
             clock=self._clock,
@@ -6022,11 +6055,23 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     import secrets as _secrets
 
     _loopback = cfg.host in ("127.0.0.1", "localhost", "::1")
-    _needs_token = (not _loopback) or os.environ.get("OPENAI4S_REQUIRE_TOKEN", "") in (
-        "1",
-        "true",
-        "yes",
-    )
+    # Required by default (decision D1). It used to be opt-in on loopback, on
+    # the reasoning that a single-user local tool needs no gate -- but the
+    # daemon exposes unauthenticated code execution (kernel/execute,
+    # compute/jobs, host.bash), and "local" includes every other process on the
+    # machine and every web page the user visits. The Host and Origin guards
+    # cover the browser; they do not cover a local process.
+    #
+    # `OPENAI4S_REQUIRE_TOKEN=0` is the escape hatch, and it lives for exactly
+    # one minor release. It is the same variable that used to opt *in*, with
+    # its sense reversed: a script setting it to 1 keeps working and simply
+    # asks for what is now the default.
+    #
+    # It is honoured on loopback only. A non-loopback bind is reachable by
+    # anything that can route to it, and there is no configuration under which
+    # that should answer without a credential.
+    _legacy_opt_out = os.environ.get("OPENAI4S_REQUIRE_TOKEN", "").strip().casefold()
+    _needs_token = (not _loopback) or _legacy_opt_out not in ("0", "false", "no")
     # Persisted, not per-boot. A token minted into a closure changed on every
     # restart, which invalidated every cookie already issued -- tolerable for a
     # gate that is off by default, not for one that is on. It also has to be
@@ -6035,8 +6080,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     _auth_token = local_auth.load_or_mint(cfg.data_dir) if _needs_token else None
     if _auth_token:
         print(
-            f"[openai4s] SECURITY: bound to {cfg.host} — access token required.\n"
+            f"[openai4s] access token required.\n"
             f"  open: http://{cfg.host}:{cfg.port}/?token={_auth_token}"
+        )
+    elif _loopback:
+        print(
+            "[openai4s] WARNING: OPENAI4S_REQUIRE_TOKEN=0 — this daemon answers "
+            "without a credential, and it can execute code. Any other process "
+            "on this machine can drive it. This opt-out is removed in the next "
+            "minor release."
         )
     # honour persisted network toggle on boot
     if store.get_setting("network_enabled") == "0":
@@ -6103,7 +6155,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 cookie.value if cookie is not None else None, _auth_token
             ):
                 return True
-            return local_auth.matches(self.headers.get(_TOKEN_HEADER), _auth_token)
+            return local_auth.matches(_presented_token(self.headers), _auth_token)
 
         def _json(self, obj, code: int = 200) -> None:
             # Every error response carries a stable `code` and the request's
@@ -6399,15 +6451,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     have_cookie = local_auth.matches(
                         cookie.value if cookie is not None else None, _auth_token
                     )
-                    header_token = self.headers.get(_TOKEN_HEADER)
+                    header_token = _presented_token(self.headers)
                     qtok = parse_qs(parsed.query).get("token", [None])[0]
                     if have_cookie or local_auth.matches(header_token, _auth_token):
                         pass  # already authenticated
-                    elif local_auth.matches(qtok, _auth_token) and method == "GET":
+                    elif (
+                        local_auth.matches(qtok, _auth_token)
+                        and method == "GET"
+                        and _is_navigation(path)
+                    ):
                         # Browser navigation: set the cookie and redirect to the
                         # same path with the token stripped. It used to redirect
                         # to "/" unconditionally, so every bookmarked deep link
                         # landed on the dashboard instead of its target.
+                        #
+                        # Restricted to paths that serve the SPA shell. A URL
+                        # carrying a credential is a shareable credential, and
+                        # on an API or download path it is worse than on a
+                        # navigation: the response *is* the data, delivered
+                        # straight to whoever holds the link, with no redirect
+                        # and no cookie hand-off in between. Here the only thing
+                        # the link buys is the bootstrap it was minted for.
                         scrubbed = _strip_token_from_url(path, parsed.query)
                         self.send_response(303)
                         self.send_header("Location", scrubbed)
@@ -6969,6 +7033,46 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
 
             # ---- projects ----
+            if sub == "/example/session" and method in ("GET", "POST"):
+                # The example analysis, on demand. It used to run itself on
+                # first boot; see `_demo_seed_enabled` for why that was wrong.
+                # GET reports state so the UI can offer the button, hide it once
+                # the example exists, and show progress while it runs.
+                existing = _example_session_frame(cfg)
+                started = False
+                if method == "POST" and existing is None:
+                    # The confirmation is in the body, not implied by the verb.
+                    # This route executes six cells and calls two external APIs,
+                    # so "someone sent a POST" is not enough evidence of intent
+                    # -- and anything that drives the surface generically (the
+                    # contract capture, a route-coverage sweep, a client
+                    # retrying a queue) sends exactly that. Requiring a field
+                    # makes the expensive path unreachable by accident rather
+                    # than relying on every driver to know about this route.
+                    if self._body().get("confirm") is not True:
+                        raise GatewayError(
+                            400,
+                            "the example analysis runs code and calls external "
+                            'APIs; POST {"confirm": true} to run it',
+                            "confirmation_required",
+                        )
+                    started = runner.example_seed.start(cfg, runner)
+                self._json(
+                    {
+                        "seeded": existing is not None,
+                        "frame_id": (existing or {}).get("frame_id")
+                        or (existing or {}).get("id"),
+                        "project_id": "proj_example",
+                        # Distinguishable on purpose: `started` false with
+                        # `running` true means someone else's request is already
+                        # doing it, which is a different thing from a refusal.
+                        "started": started,
+                        "running": runner.example_seed.running(),
+                        "seeds_at_startup": _demo_seed_enabled(),
+                        "error": runner.example_seed.last_error(),
+                    }
+                )
+                return
             if sub == "/projects" and method == "GET":
                 self._json(
                     {
@@ -9276,19 +9380,14 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
     httpd.daemon_threads = True
     if _demo_seed_enabled():
-        # The demo session runs real cells (UniProt/RCSB network + a gated MCP
-        # call whose approval can block up to DEFAULT_TIMEOUT).  It must never
-        # run on the synchronous startup path or the daemon never binds its
-        # port; seed best-effort in the background after the server is built.
-        def _seed_demo_bg() -> None:
-            try:
-                _seed_demo_session(cfg, runner)
-            except Exception:  # noqa: BLE001 - seeding must never break the daemon
-                traceback.print_exc()
-
-        threading.Thread(
-            target=_seed_demo_bg, name="openai4s-demo-seed", daemon=True
-        ).start()
+        # Opt-in only (`OPENAI4S_SEED_DEMO=1`), because this runs real cells:
+        # UniProt/RCSB network, a gated MCP call whose approval can block up to
+        # DEFAULT_TIMEOUT, and four artifacts. It must never run on the
+        # synchronous startup path or the daemon never binds its port, so it
+        # goes through the same background seeder the route uses -- one seeder,
+        # so an operator who sets the variable *and* clicks the button gets one
+        # run rather than two.
+        runner.example_seed.start(cfg, runner)
 
     # Opt-in, off by default: a no-op that reads one settings row unless the
     # user has recorded consent. It cannot raise (emit swallows everything) and
@@ -9301,12 +9400,93 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
 
 
 def _demo_seed_enabled() -> bool:
-    return os.environ.get("OPENAI4S_SEED_DEMO", "1").strip().casefold() not in {
-        "0",
-        "false",
-        "no",
-        "off",
+    """Whether the daemon seeds the example session *at startup*. Off by default.
+
+    It used to default on, and what that meant on a fresh data dir was: the
+    daemon binds its port, then a background thread starts a Python kernel,
+    executes six cells, calls the UniProt and RCSB REST APIs, spawns the
+    bundled MCP connector and writes four artifacts -- before the user has
+    typed anything. Every one of those is a thing this application otherwise
+    asks permission for. An air-gapped install saw failing network calls it
+    never made; a regulated one saw outbound traffic in its logs from a tool
+    that had, as far as its operator knew, only been started.
+
+    The example itself is worth keeping, so it did not get deleted -- it moved
+    behind `POST /example/session`, which the user triggers. `OPENAI4S_SEED_DEMO=1`
+    restores the startup behaviour for a demo machine that wants it.
+    """
+    return os.environ.get("OPENAI4S_SEED_DEMO", "0").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
     }
+
+
+class _ExampleSeedState:
+    """Serialises the on-demand example seed and reports what it is doing.
+
+    `_seed_demo_session` is idempotent by session name, which is enough to stop
+    it *duplicating* the example but not enough to stop two concurrent requests
+    both starting it -- the name check and the insert are not one transaction,
+    and the seed runs for as long as its six cells take. Two clicks would run
+    twelve cells and two sets of live API calls.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._last_error: str | None = None
+
+    def running(self) -> bool:
+        with self._lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    def last_error(self) -> str | None:
+        with self._lock:
+            return self._last_error
+
+    def start(self, cfg: Config, runner: "SessionRunner") -> bool:
+        """Begin seeding on a background thread. False if one is already going.
+
+        Background because the seed runs real cells against live APIs: on the
+        request thread it would hold the connection open for as long as the
+        network takes, and a client that gave up would leave the seed running
+        with nothing to report to.
+        """
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._last_error = None
+
+            def _run() -> None:
+                try:
+                    _seed_demo_session(cfg, runner)
+                except Exception as exc:  # noqa: BLE001 - reported, never raised
+                    with self._lock:
+                        self._last_error = f"{type(exc).__name__}: {exc}"
+                    traceback.print_exc()
+
+            self._thread = threading.Thread(
+                target=_run, name="openai4s-example-seed", daemon=True
+            )
+            self._thread.start()
+            return True
+
+
+def _example_session_frame(cfg: Config) -> dict[str, Any] | None:
+    """The seeded example session, if it is there. Never raises: this answers a
+    status route, and a store that cannot be read is 'not seeded', not a 500."""
+    try:
+        roots = get_store(cfg.db_path).browse_frames(
+            project_id="proj_example", roots_only=True, limit=200
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    for row in roots:
+        if (row.get("name") or "") == _DEMO_SESSION_NAME:
+            return row
+    return None
 
 
 def serve_app(cfg: Config | None = None, *, block: bool = True) -> ThreadingHTTPServer:

@@ -414,6 +414,19 @@
         404
       ]
     },
+    "/example/session": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        400,
+        404
+      ]
+    },
     "/folders/([^/]+)": {
       "content_types": [
         "application/json"

@@ -94,8 +94,9 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | # | Item | Commit | Status | Falsification |
 |---|---|---|---|---|
 | 1.3 | Dead unauthenticated second HTTP server deleted; guard against a replacement | `b74372f` | `Completed` | See A6 |
-| 1.1/1.2 | Demo seed opt-in; no implicit kernel, network, cell or artifact on first boot | — | `Not started` | — |
-| 1.4 | Local auth required by default (D1) | — | `Not started` | — |
+| 1.4 | Local auth required on loopback by default (D1): persistent owner-only token minted atomically, CLI credential + `OPENAI4S_TOKEN` escape hatch, constant-time compare, mutation query token refused, `/auth/status` reports the real mode, `OPENAI4S_REQUIRE_TOKEN=0` loopback-only for one minor release | *pending* | `Completed` | Restoring the opt-in default fails the default test; the DNS-rebinding test was deliberately made *authenticated* so it still proves the Host check rather than the gate |
+| 1.1/1.2 | Demo seed opt-in; the example moved behind `POST /example/session` with `{"confirm": true}` and a dashboard button | *pending* | `Completed` | Restoring the `"1"` default fails the behavioural test with all six cells listed — not just the flag test |
+| 1.x | The browser client's 3Dmol CDN fallback removed; frontend egress surface frozen | *pending* | `Completed` | Replanting the fallback fails both new gates by file and line |
 
 ## 6. P0-0 — exact-source-SHA release evidence
 

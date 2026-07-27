@@ -476,6 +476,10 @@ Object.assign(I18N.zh, {
   "dash.running.activeNow": "活跃中",
   "dash.running.count": "{0} 个运行中",
   "dash.sessions.empty": "还没有会话。",
+  "dash.example.cta": "运行示例分析",
+  "dash.example.hint": "一次真实的 NIF3/DUF34 分析：调用 UniProt 与 RCSB PDB 接口、执行 6 个 Python Cell、产出图表与报告。启动时不会自动运行——只有你点它才跑。",
+  "dash.example.running": "正在运行示例分析……",
+  "dash.example.failed": "示例分析失败：",
   "dash.tag.example": "Example",
   "data.col.data": "数据",
   "data.column.plural": " 列",
@@ -1317,6 +1321,10 @@ Object.assign(I18N.en, {
   "dash.running.activeNow": "active now",
   "dash.running.count": "{0} running",
   "dash.sessions.empty": "No sessions yet.",
+  "dash.example.cta": "Run the example analysis",
+  "dash.example.hint": "A real NIF3/DUF34 analysis: calls the UniProt and RCSB PDB APIs, runs 6 Python cells, and produces figures and a report. It does not run on startup \u2014 only when you click.",
+  "dash.example.running": "Running the example analysis\u2026",
+  "dash.example.failed": "The example analysis failed: ",
   "dash.tag.example": "Example",
   "data.col.data": "data",
   "data.column.plural": " columns",
@@ -3753,11 +3761,47 @@ function renderDashProjects() {
     pc.appendChild(row);
   });
 }
+// The example analysis, offered rather than performed. It used to run itself
+// on first boot -- six cells, live UniProt/RCSB calls, four artifacts, before
+// the user had typed anything. The work is worth having; doing it unasked was
+// the problem, so it became a button. The hint says what clicking will do,
+// because "run the example" should not be the first time someone learns this
+// app makes outbound calls.
+function exampleSeedCta() {
+  const box = el("div", "dash-example");
+  const btn = el("button", "btn", t("dash.example.cta"));
+  const note = el("div", "dash-example-hint", t("dash.example.hint"));
+  box.appendChild(btn); box.appendChild(note);
+  let timer = 0;
+  const stop = () => { if (timer) { clearInterval(timer); timer = 0; } };
+  const paint = (st) => {
+    if (st.running) { btn.disabled = true; btn.textContent = t("dash.example.running"); }
+    else { btn.disabled = false; btn.textContent = t("dash.example.cta"); }
+    // Report a failed seed. Without this the only signal is that the example
+    // never appears, which looks identical to a slow network.
+    if (st.error) note.textContent = t("dash.example.failed") + st.error;
+    if (st.seeded) { stop(); loadDashboard(); }
+  };
+  const poll = () => api("/example/session").then(paint).catch(stop);
+  btn.onclick = () => {
+    btn.disabled = true;
+    // `confirm` is required by the route: it runs code and calls external
+    // APIs, so intent has to be in the body rather than implied by the verb.
+    api("/example/session", { method: "POST", body: JSON.stringify({ confirm: true }) }).then(st => {
+      paint(st);
+      stop(); timer = setInterval(poll, 1500);
+    }).catch(e => { btn.disabled = false; note.textContent = t("dash.example.failed") + (e && e.message ? e.message : String(e)); });
+  };
+  // Hidden entirely once the example exists, and while a startup-opt-in seed
+  // (OPENAI4S_SEED_DEMO=1) is already doing the same work.
+  api("/example/session").then(st => { if (st.seeded) box.remove(); else paint(st); if (st.running) timer = setInterval(poll, 1500); }).catch(() => box.remove());
+  return box;
+}
 function renderDashRecent(frames) {
   const recent = frames.filter(f => (f.message_count || 0) > 0 || f.name || f.task_summary)
     .sort((a, b) => (new Date(b.updated_at) - new Date(a.updated_at))).slice(0, 10);
   const sc = $("#dash-sessions"); if (!sc) return; sc.innerHTML = "";
-  if (!recent.length) sc.appendChild(el("div", "dash-empty", t("dash.sessions.empty")));
+  if (!recent.length) { sc.appendChild(el("div", "dash-empty", t("dash.sessions.empty"))); sc.appendChild(exampleSeedCta()); }
   recent.forEach(f => {
     const row = el("div", "d-row"); row.appendChild(el("div", f.running ? "d-dot live" : "d-dot"));
     const main = el("div", "d-main"); main.appendChild(el("div", "d-name", f.name || f.task_summary || t("session.untitled")));
@@ -5652,7 +5696,13 @@ function molecule(container, url, nm) {
   }).catch(() => {});
   const fb = () => fetch(url).then(r => r.text()).then(t => view.innerHTML = "<pre style='padding:16px'>" + esc(t.slice(0, 8000)) + "</pre>").catch(() => {});
   if (window.$3Dmol) return boot();
-  const s = el("script"); s.src = "/static/vendor/3Dmol-min.js"; s.onload = boot; s.onerror = () => { const s2 = el("script"); s2.src = "https://3Dmol.org/build/3Dmol-min.js"; s2.onload = boot; s2.onerror = fb; document.head.appendChild(s2); }; document.head.appendChild(s);
+  // Vendored copy only. A missing local 3Dmol used to fall back to fetching
+  // https://3Dmol.org/build/3Dmol-min.js, which executes third-party script in
+  // the page that holds the session cookie -- and does it silently, on an app
+  // whose whole premise is that it runs locally and makes no call the user did
+  // not ask for. The degraded path below (render the coordinates as text) was
+  // already written; the CDN hop only stood between the failure and it.
+  const s = el("script"); s.src = "/static/vendor/3Dmol-min.js"; s.onload = boot; s.onerror = fb; document.head.appendChild(s);
 }
 
 /* ---------- Notebook tab (F2) ---------- */

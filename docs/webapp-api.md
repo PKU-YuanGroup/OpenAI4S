@@ -101,12 +101,34 @@ Origin, token or header defences.
   the `Host` header is rejected with `403 {"error": "cross-origin request
   refused"}`. Requests without an `Origin` header (curl, same-origin fetches)
   pass.
-- **Token gate** (only active when bound to a non-loopback address or
-  `OPENAI4S_REQUIRE_TOKEN=1`): all paths except `/health` require either the
-  `os_token` cookie or `?token=<hex>`. A `GET` carrying a valid `?token=`
-  responds `303 Location: /` and sets the cookie; a valid non-GET proceeds.
-  Anything else gets `401 {"error": "unauthorized — append ?token=… to the
-  URL"}`. On the default loopback bind there is **no authentication at all**.
+- **Token gate — on by default, including on loopback.** All paths except
+  `/health` and `/api/v1/auth/status` require a credential, in either spelling:
+  the `os_token` cookie, `Authorization: Bearer <token>` (what a generic client
+  or `curl -H` reaches for), or `X-OpenAI4S-Token` (for when something upstream
+  already owns `Authorization`). Neither header is preferred; the scheme is
+  compared caselessly per RFC 7235 and the value in constant time.
+- **`?token=` bootstraps a navigation only.** A `GET` for a path that serves
+  the SPA shell responds `303` with the cookie set, redirecting to the *same*
+  path with only the token stripped — so deep links survive. It is refused on
+  `/api/v1/*`, on `/static/*`, and on every non-GET. A URL carrying a
+  credential is a shareable credential: pasted into chat, logged by proxies,
+  kept in history, leaked by `Referer`. On a navigation the link buys only the
+  bootstrap it was minted for; on a data path the response *is* the payload,
+  delivered to whoever holds the link with no cookie hand-off in between.
+- The token is minted once under the data dir (`access-token`, owner-only) and
+  survives restarts; it used to be per-boot, which invalidated every cookie
+  already issued. The CLI reads the same file, or `OPENAI4S_TOKEN` when the
+  daemon runs under another account.
+- `OPENAI4S_REQUIRE_TOKEN=0` disables the gate **on loopback only**, for one
+  minor release. It is the same variable that used to opt *in*, with its sense
+  reversed. Off loopback it is ignored: a bind anything can route to has no
+  configuration under which it should answer without a credential.
+- `GET /api/v1/auth/status` is reachable unauthenticated so a client can
+  discover it needs a credential, and answers
+  `{authenticated, auth_mode: "token"|"none", token_header}` — a mode string
+  only, never any part of the token. It previously reported `"none"`
+  unconditionally, so a daemon running with the gate on told every caller there
+  was no gate.
 
 ### Error envelope
 
@@ -187,7 +209,7 @@ success response body. Serializer shapes are in §4.
 | `PUT|PATCH /model-profiles/{id}` | Partial edit; `api_key` only overwrites when non-empty; `clear_api_key:true` clears. Editing the active profile also syncs the live settings → masked profile; unknown id → 404. |
 | `DELETE /model-profiles/{id}` | Removes it (clears `active_model_profile` if it was active) → `{"ok":true}`. Deleting a nonexistent id still returns `{"ok":true}`. |
 
-### Projects, notes, folders
+### Projects, notes, folders, example session
 
 | Method & path | Behavior |
 | --- | --- |
@@ -206,6 +228,8 @@ success response body. Serializer shapes are in §4.
 | `PUT|PATCH /folders/{fid}` | Rename → `{"ok":true}`. |
 | `DELETE /folders/{fid}` | `{"ok":true}`. |
 | `POST|PUT|PATCH /frames/{fid}/folder` | Body `{folder_id}` (or null) → `{"ok":true}`. |
+| `GET /example/session` | `{seeded,frame_id,project_id,started,running,seeds_at_startup,error}` — state of the bundled example analysis. `started` is always `false` on a GET. |
+| `POST /example/session` | Body **must** be `{"confirm": true}`; anything else is `400 confirmation_required` and seeds nothing. Idempotent: already seeded → `{"seeded": true, "started": false}`; already running → `{"started": false, "running": true}`, which is distinguishable from a refusal. Seeding happens on a background thread, so this returns immediately and the client polls the `GET`. |
 
 ### Frames (sessions) and turns
 
