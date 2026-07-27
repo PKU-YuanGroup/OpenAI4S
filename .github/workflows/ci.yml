@@ -133,7 +133,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        # 3.13 is here because the macOS .dmg embeds it: the build that
+        # reaches the most end users was, until this line, the one Python
+        # nothing tested. 3.10 is the floor from requires-python.
+        python-version: ["3.10", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
@@ -147,6 +150,13 @@ jobs:
       - name: Install dev, science, and chemistry dependencies
         if: matrix.python-version == '3.12'
         run: uv sync --locked --extra science --extra chemistry
+      # The .dmg's interpreter. The science extra is not optional here even
+      # though the core is stdlib-only: a few test modules import pandas at
+      # module scope, so without it pytest fails during *collection* and the
+      # job reports an error rather than a result.
+      - name: Install dev and science dependencies
+        if: matrix.python-version == '3.13'
+        run: uv sync --locked --extra science
       - name: Byte-compile all first-party sources
         run: uv run python -m compileall -q openai4s openai4s_compute_provider harness tests
       - name: Collect tests (strict markers, default deselection)
