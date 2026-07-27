@@ -206,6 +206,31 @@ success response body. Serializer shapes are in §4.
 
 ### Models and model profiles
 
+**A session binds `profile_id + revision`.** A frame used to store a model
+*string*, which answers "which model name" and not "which configuration" — and
+the two come apart in exactly the case that matters, because two profiles can
+name the same model against different providers or endpoints, and editing a
+profile rewrote it in place. A replayed session therefore reported whatever its
+profile says today.
+
+- Each profile carries `revision` and an append-only `revisions[]`. A new
+  revision is minted only when `(provider, base_url, model)` changes. A rename
+  does not, and neither does a key rotation — the credential reference is
+  derived from `(scope, profile_id)`, so revisions must share the profile id or
+  rotating a key would strand earlier revisions on an unreadable secret and
+  deleting any revision would destroy the key the others point at.
+- Binding happens on **send only**. Reading a session never binds it, so an
+  unbound legacy session stays fully readable — history, artifacts, Notebook.
+- `409 model_revision_unavailable` — the session is pinned to a revision that
+  no longer exists. Resolving to the nearest one would be the silent
+  follow-latest behaviour this replaces, wearing a number.
+- `409 model_revision_ambiguous` — a legacy session whose recorded model
+  matches more than one profile. Backfill happens only on a **unique** match;
+  an ambiguous one stays unbound and asks, because picking either would be a
+  guess presented as a fact.
+- An install with no profiles at all (driven by `.env`) binds nothing and runs.
+  An absent profile is an absent binding, not an error.
+
 | Method & path | Behavior |
 | --- | --- |
 | `GET /models` | `{"models":{"default":[{id,name,description}…]},"default_model_id"}` — the live model first, then the saved profiles' models, deduped. Built-in provider defaults are not listed: an endpoint the user never configured must not be selectable. A profile that leaves `model` blank is resolved through its protocol's default. |

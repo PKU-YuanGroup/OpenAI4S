@@ -78,11 +78,21 @@ def test_frames_row_columns_and_runtime_env_roundtrip(tmp_path):
         "input_tokens",
         "output_tokens",
         "cost_usd",
+        # D2 (migration 10). Both nullable, and NULL means *unbound* rather
+        # than "used the default": a session nobody has pinned is one whose
+        # configuration is unknown, and inventing one would be the fabricated
+        # provenance the binding exists to remove.
+        "model_profile_id",
+        "model_profile_revision",
         "created_at",
         "updated_at",
     }
     # a brand-new frame has no pinned runtime env yet
     assert row["runtime_env"] is None
+    # ...and no model binding: that happens on send, never on create, so an
+    # unbound legacy session stays readable.
+    assert row["model_profile_id"] is None
+    assert row["model_profile_revision"] is None
 
     store.update_frame(fid, runtime_env="struct")
     assert store.get_frame(fid)["runtime_env"] == "struct"

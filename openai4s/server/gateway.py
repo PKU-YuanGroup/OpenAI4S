@@ -4435,6 +4435,123 @@ class SessionRunner:
                 traceback.print_exc()
         return parts if len(parts) > 1 else text
 
+    def bind_model_revision(self, root_frame_id: str) -> dict:
+        """Pin this session to the exact model configuration it is about to use.
+
+        D2: a session binds `profile_id + revision`, never "whatever the
+        profile says today". A frame used to store a model *string*, which
+        answers "which model name" and not "which configuration" -- and those
+        differ in the case that matters, because two profiles can name the same
+        model against different providers, and editing a profile rewrote it in
+        place, so a replayed session reported today's settings rather than the
+        ones it ran under.
+
+        Called on the send path only. Reading a session never binds it: an
+        unbound legacy session stays fully readable -- history, artifacts,
+        Notebook -- and only continuing it asks for a decision.
+
+        Raises `GatewayError(409, ...)` when the session is bound to a revision
+        that no longer exists, which is the rebind prompt. Guessing the nearest
+        revision would be the silent-follow-latest behaviour being removed.
+        """
+        frame = self.store.get_frame(root_frame_id) or {}
+        bound_id = str(frame.get("model_profile_id") or "")
+        bound_revision = frame.get("model_profile_revision")
+        profiles = self.store.list_model_profiles()
+
+        if bound_id:
+            profile = next(
+                (item for item in profiles if item.get("id") == bound_id), None
+            )
+            usable = (
+                profile is not None
+                and ModelProfileService.revision_config(
+                    profile, int(bound_revision or 0)
+                )
+                is not None
+            )
+            if not usable:
+                raise GatewayError(
+                    409,
+                    "this session is pinned to a model configuration that no "
+                    "longer exists; choose one to continue",
+                    "model_revision_unavailable",
+                )
+            return {
+                "model_profile_id": bound_id,
+                "model_profile_revision": int(bound_revision or 0),
+                "bound": False,
+            }
+
+        # A session that already has history is a *legacy* one: it ran under
+        # some configuration, and D2 says to recover that rather than to adopt
+        # whatever happens to be active now. The only thing a pre-upgrade frame
+        # recorded is a model string, so that is what there is to match on.
+        recorded = str(frame.get("model") or "").strip()
+        if recorded and self.store.message_count(root_frame_id) > 0:
+            matches = [
+                item
+                for item in profiles
+                if str(item.get("model") or "").strip() == recorded
+            ]
+            if len(matches) == 1:
+                target = matches[0]
+                revision = int(target.get("revision") or 0) or 1
+                self.store.update_frame(
+                    root_frame_id,
+                    model_profile_id=str(target.get("id") or ""),
+                    model_profile_revision=revision,
+                )
+                return {
+                    "model_profile_id": str(target.get("id") or ""),
+                    "model_profile_revision": revision,
+                    "bound": True,
+                    "backfilled": True,
+                }
+            if len(matches) > 1:
+                # Two profiles name this model against different providers or
+                # endpoints, so "which one did it use" has no answer in the
+                # data. Picking either would be a guess presented as a fact,
+                # which is the whole failure D2 removes -- so it asks.
+                raise GatewayError(
+                    409,
+                    f"more than one model profile matches {recorded!r}; choose "
+                    "which configuration this session continues under",
+                    "model_revision_ambiguous",
+                )
+
+        active_id = str(self.store.get_setting("active_model_profile") or "")
+        active = next((item for item in profiles if item.get("id") == active_id), None)
+        if active is None:
+            # Nothing to bind to. Deliberately not an error: an install driven
+            # entirely by .env has no profiles at all, and refusing to run would
+            # break a configuration this project documents as supported.
+            return {"model_profile_id": "", "model_profile_revision": 0, "bound": False}
+
+        revision = int(active.get("revision") or 0)
+        if not revision:
+            # A profile written before revisions existed. Seal one now rather
+            # than binding to a number that names nothing.
+            def _seal(items):
+                for item in items:
+                    if item.get("id") == active_id:
+                        return ModelProfileService._seal_revision(
+                            item, now_ms=int(time.time() * 1000)
+                        )
+                return 0
+
+            revision = int(self.store.mutate_model_profiles(_seal) or 1)
+        self.store.update_frame(
+            root_frame_id,
+            model_profile_id=active_id,
+            model_profile_revision=revision,
+        )
+        return {
+            "model_profile_id": active_id,
+            "model_profile_revision": revision,
+            "bound": True,
+        }
+
     def run_message(
         self,
         root_frame_id: str,
@@ -4446,6 +4563,9 @@ class SessionRunner:
         explore: bool = False,
     ) -> dict:
         st = self._state(root_frame_id, project_id)
+        # Before anything runs: a session continues under a configuration it
+        # names, or it stops and asks. Raises 409 for a dangling pin.
+        self.bind_model_revision(root_frame_id)
         if model:
             st.model = model
         st.plan = bool(plan)

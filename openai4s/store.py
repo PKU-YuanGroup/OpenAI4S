@@ -943,6 +943,7 @@ class Store:
                         self._apply_env_snapshot_provenance,
                     ),
                     9: ("compute_job_owner", self._apply_compute_job_owner),
+                    10: ("frame_model_binding", self._apply_frame_model_binding),
                 },
             )
             if report["migrated"]:
@@ -1078,6 +1079,41 @@ class Store:
                 raise MigrationError(
                     f"compute_jobs.pgid could not be added: {e}"
                 ) from e
+
+    def _apply_frame_model_binding(self, conn: sqlite3.Connection) -> None:
+        """Version 10: record which model configuration a session actually used.
+
+        A frame stored a model *string*. That answers "which model name" and
+        not "which configuration", and the two differ in exactly the case that
+        matters: two profiles can name the same model against different
+        providers or endpoints, and editing a profile rewrote it in place, so a
+        replayed session reported whatever the profile happened to say today.
+        D2's rule is that a session binds `profile_id + revision` and never
+        silently follows the latest.
+
+        Historical rows keep NULL for both, which reads as *unbound* -- not as
+        "used the default". That distinction is the point: an unbound session
+        stays fully readable, and only sending a new message asks the user to
+        rebind. Backfill happens at read time and only on a unique
+        `(provider, endpoint, model)` match, because an ambiguous one is a
+        guess and a guess here is the thing being removed.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(frames)").fetchall()}
+        for column, decl in (
+            ("model_profile_id", "TEXT"),
+            ("model_profile_revision", "INTEGER"),
+        ):
+            if column in have:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE frames ADD COLUMN {column} {decl}")
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"frames.{column} could not be added: {e}"
+                    ) from e
 
     def _apply_compute_job_owner(self, conn: sqlite3.Connection) -> None:
         """Version 9: record which session/workspace owns each compute job.

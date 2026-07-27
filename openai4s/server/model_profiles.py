@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -62,12 +63,14 @@ class ModelProfileService:
         providers: Callable[[], Mapping[str, Mapping[str, Any]]],
         presets: Callable[[], Sequence[ModelPreset]] = model_presets,
         id_factory: Callable[[], str] | None = None,
+        clock_ms: Callable[[], int] | None = None,
     ) -> None:
         self.store = store
         self.cfg = cfg
         self._providers = providers
         self._presets = presets
         self._id_factory = id_factory or (lambda: "mp-" + uuid.uuid4().hex[:8])
+        self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
 
     def effective_model_id(self, provider: Any, model: Any) -> str:
         explicit = str(model or "").strip()
@@ -117,6 +120,10 @@ class ModelProfileService:
             "base_url": profile.get("base_url") or "",
             "model": profile.get("model") or "",
             "has_api_key": bool(self.resolve_key(profile)),
+            # The number a session binds to. Surfaced so a client can show
+            # which configuration a session is pinned at, and tell "this is the
+            # current one" from "this profile has moved on since".
+            "revision": int(profile.get("revision") or 0) or None,
         }
 
     def models_payload(self, default_model_id: str) -> dict[str, Any]:
@@ -200,6 +207,78 @@ class ModelProfileService:
             None,
         )
 
+    #: The fields whose change is a different *configuration*, and therefore a
+    #: new revision. Deliberately not `name`, and deliberately not `api_key`.
+    #:
+    #: A rename is a label change; a replayed session that reports the model it
+    #: used should not claim a different one because someone tidied the list.
+    #:
+    #: The key is the load-bearing exclusion. `make_ref` derives the broker
+    #: reference from `(scope, profile_id)` alone, so a revision that forked the
+    #: profile id would fork the credential with it: rotating a key would strand
+    #: earlier revisions on a secret nobody can read, and deleting any revision
+    #: would destroy the key every other one still points at. Revisions share
+    #: the profile id, which is also what D2 asks for -- a session binds
+    #: `profile_id + revision`.
+    REVISIONED_FIELDS = ("provider", "base_url", "model")
+
+    @classmethod
+    def _configuration(cls, profile: Mapping[str, Any]) -> tuple[str, ...]:
+        return tuple(str(profile.get(field) or "") for field in cls.REVISIONED_FIELDS)
+
+    @classmethod
+    def _seal_revision(cls, profile: dict[str, Any], *, now_ms: int) -> int:
+        """Append the profile's current configuration as a new revision.
+
+        Append-only: an existing entry is never rewritten, because the entire
+        point is that a session bound to revision 3 can still say what
+        revision 3 was after the profile has moved on.
+
+        Returns the revision number now current.
+        """
+        history = profile.get("revisions")
+        if not isinstance(history, list):
+            history = []
+        current = cls._configuration(profile)
+        if history:
+            last = history[-1]
+            if (
+                tuple(str(last.get(field) or "") for field in cls.REVISIONED_FIELDS)
+                == current
+            ):
+                # Nothing that identifies the configuration changed, so this is
+                # still the same revision. Editing a name repeatedly must not
+                # produce a history of identical entries.
+                return int(last.get("revision") or 1)
+            revision = int(last.get("revision") or 0) + 1
+        else:
+            revision = 1
+        entry = {
+            "revision": revision,
+            "created_at": now_ms,
+            **{field: str(profile.get(field) or "") for field in cls.REVISIONED_FIELDS},
+        }
+        history.append(entry)
+        profile["revisions"] = history
+        profile["revision"] = revision
+        return revision
+
+    @classmethod
+    def revision_config(
+        cls, profile: Mapping[str, Any], revision: int
+    ) -> dict[str, Any] | None:
+        """The exact configuration a given revision named, or None if unknown.
+
+        None is the 409 case: the profile exists but the revision it was bound
+        to does not, which happens when a database predates the history or when
+        a profile was rebuilt. Guessing the nearest revision would be the
+        "silently follow latest" behaviour D2 exists to remove.
+        """
+        for entry in profile.get("revisions") or []:
+            if int(entry.get("revision") or 0) == int(revision):
+                return dict(entry)
+        return None
+
     @staticmethod
     def _protocol(value: Any) -> str:
         protocol = str(value or "").strip().lower()
@@ -223,6 +302,7 @@ class ModelProfileService:
             # The blob records a reference; the key itself goes to the broker.
             "api_key": self._store_key(profile_id, clean_api_key(body.get("api_key"))),
         }
+        self._seal_revision(profile, now_ms=self._clock_ms())
         self.store.mutate_model_profiles(lambda profiles: profiles.append(profile))
         return self.public_profile(profile)
 
@@ -288,6 +368,11 @@ class ModelProfileService:
             if body.get("clear_api_key"):
                 self._forget_key(profile)
                 profile["api_key"] = ""
+            # After the field writes, before the copy is returned: a no-op for
+            # a rename or a key rotation, a new revision when the configuration
+            # actually moved. Also backfills revision 1 for a profile written
+            # before revisions existed, which is what lets an old session bind.
+            self._seal_revision(profile, now_ms=self._clock_ms())
             return dict(profile)
 
         profile = self.store.mutate_model_profiles(mutate)

@@ -81,6 +81,9 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "env_snapshot_generation",
         "env_snapshot_provenance",
         "compute_job_owner",
+        # D2: a session binds `profile_id + revision` rather than storing a
+        # model string that says which name, not which configuration.
+        "frame_model_binding",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
