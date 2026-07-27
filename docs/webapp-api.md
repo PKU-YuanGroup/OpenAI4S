@@ -267,6 +267,19 @@ profile says today.
 
 ### Frames (sessions) and turns
 
+**`@file` references are version-pinned.** `@name#v-<version_id>` sends the
+frozen bytes of that exact version; it used to read the artifact's *live path*,
+so the same reference meant different bytes once a later cell overwrote the
+file. A same-project reference belonging to another session is **materialised**
+into this one (D3) when the turn is sent — not when the reference is typed, so
+an inserted-then-deleted reference leaves no Artifact and no lineage edge
+behind. Cross-project is refused with the same answer as absent.
+
+The bare `@name` spelling still works for one minor release. It resolves inside
+the calling session only, through the artifact's latest *version* rather than
+its live path, and says in the injected block that it is unpinned.
+
+
 | Method & path | Behavior |
 | --- | --- |
 | `GET /frames?project_id=&limit=&cursor=` | `{"frames":[…],"next_cursor":…,"has_more":bool}`. Keyset pagination, newest first; `limit` 1–200 (default 100). `cursor` is opaque — parsing it would couple a client to the sort key. An unreadable cursor is a `400`, never a silent restart, which would loop a client on page one. `has_more` is observed by collecting one row beyond the page, not inferred from the page being full: hidden abandoned sessions are filtered *after* the read, so a full-looking page is not evidence of a next one. |
@@ -583,6 +596,7 @@ m.frame_id`.
 | `branch_projection_restored` | `frame_id`, `branch_id`, `checkpoint_id` | The branch-scoped projection was rebuilt (for example after a Revert); clients holding a stale message/Notebook view must refetch it rather than patch. |
 | `branch_activation_state` | `frame_id`, `root_frame_id`, `branch_id`, `checkpoint_id`, `status`/`state` | Activation of a branch runtime progressed. `status` and `state` carry the same value — a compatibility duplication kept because both spellings are already consumed. |
 | `artifact_created` | **non-uniform — see below** | An artifact was produced, edited, renamed, uploaded, restored, or deleted. |
+| `artifact_ref_problems` | `frame_id`, `problems[]` of `{ref, code, message}` (max 8) | One or more `@file` references in the user's message did not resolve. Emitted rather than raised: a user who referenced four files and mistyped one wants an answer about the other three plus a note, not a refusal. Codes: `not_found` (absent, or in another project — deliberately the same answer), `no_frozen_bytes`, `not_text` (a binary artifact, which used to be pasted in as replacement characters), `cross_session_not_allowed`, `materialise_failed`, `too_many_refs`. The previous behaviour was to drop an unresolvable reference silently, so the user asked about a file the model never received. |
 | `pong` | — | Reply to JSON ping. |
 
 ### `artifact_created` payload non-uniformity (wart, load-bearing)

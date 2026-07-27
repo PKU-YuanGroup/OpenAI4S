@@ -145,7 +145,8 @@ are easy to mistake for oversights:
 | # | Item | Commit | Status | Falsification |
 |---|---|---|---|---|
 | A.6 | Tabular preview told the truth about neither dimension: `csv()` split on a hardcoded comma, so **every** `.tsv` reported one column with the whole header line as its name; and the renderer capped columns at 24 with a rows-only banner, so a 101-column table rendered 24 and looked complete. One `delimiterFor` now trusts the extension and sniffs the header when there is none (science writes tab-separated `.txt` constantly), and the banner names both dimensions | `54ef6e8` | `Completed` | Forcing `delimiterFor` to a comma fails the **browser** check with the defect's own signature (`expected 3 column(s), got 1`); removing the column banner fails the static gate |
-| A.1–A.5, A.7 | ArtifactRef composer chip; profile readiness card + probe + Gemini entry; session keyset cursor + branch export; image attachments with budgets; Notebook split menu; retrieval-source panel | — | `Not started` | — |
+| A.1 | ArtifactRef **backend contract**: `@name#v-<id>` sends that version's frozen bytes, never the live path; an unresolvable reference is reported instead of dropped; a binary artifact is named rather than pasted as U+FFFD; a same-project cross-session reference materialises **at send** (D3, decided with the owner) so an inserted-then-deleted chip leaves nothing behind. Legacy `@name` kept one release, session-scoped, and says it is unpinned | *pending* | `Partially completed` | Reading the live path, dropping refs silently, or widening the legacy form to the project each fail. **Remaining: the composer chip UI** |
+| A.2–A.5, A.7 | Profile readiness card + probe + Gemini entry; session keyset cursor + branch export; image attachments with budgets; Notebook split menu; retrieval-source panel | — | `Not started` | — |
 
 ## 10. Not started
 

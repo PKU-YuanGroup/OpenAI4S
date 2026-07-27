@@ -72,7 +72,7 @@ from openai4s.observability import (
     set_correlation_id,
 )
 from openai4s.review import review_evidence
-from openai4s.server import kernel_routes, local_auth, ws_frames
+from openai4s.server import artifact_refs, kernel_routes, local_auth, ws_frames
 from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.server.agent_run import EventCancellation
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
@@ -4846,29 +4846,52 @@ class SessionRunner:
         return response
 
     def _resolve_mentions(self, st: SessionState, text: str) -> str:
-        """If the user @-referenced artifacts by filename, append their content so
-        the agent actually receives them (M4)."""
-        names = set(re.findall(r"(?:^|\s)@([\w./-]+\.\w+)", text))
-        if not names:
-            return text
-        blocks = []
-        for name in list(names)[:5]:
-            # scope to THIS session only — no cross-session/project fallback,
-            # else a user could inject another project's file by guessing its name.
-            ref = self.store.artifact_by_filename(name, st.root_frame_id, strict=True)
-            if not ref:
-                continue
-            art = self.store.get_artifact(ref["artifact_id"]) or {}
-            path = art.get("path")
-            try:
-                data = Path(path).read_bytes()[:200_000] if path else b""
-                snippet = data.decode("utf-8", errors="replace")
-                blocks.append(f"### Referenced file: {name}\n```\n{snippet}\n```")
-            except OSError:
-                continue
-        if not blocks:
-            return text
-        return text + "\n\n---\n(附:被引用的文件内容)\n\n" + "\n\n".join(blocks)
+        """Append the content of any @-referenced artifact to the prompt.
+
+        The resolution itself lives in `server/artifact_refs.py`. What used to
+        be here read the artifact's *live path*, so the same reference meant
+        different bytes once a later cell overwrote the file, and an
+        unresolvable name was dropped in silence -- the user asked a question
+        about a file the model never received.
+
+        A failed reference is now surfaced to the session rather than swallowed.
+        """
+        resolved, problems = artifact_refs.resolve_message_refs(
+            text,
+            store=self.store,
+            root_frame_id=st.root_frame_id,
+            project_id=st.project_id,
+            materialise=lambda version_id, name: self._materialise_for_message(
+                st, version_id, name
+            ),
+        )
+        if problems:
+            # Emitted, not raised: the turn should still run. A user who
+            # referenced four files and mistyped one wants an answer about the
+            # other three plus a note, not a refusal.
+            self.hub.emitter(st.root_frame_id)(
+                {
+                    "type": "artifact_ref_problems",
+                    "frame_id": st.root_frame_id,
+                    "problems": problems[:8],
+                }
+            )
+        return resolved
+
+    def _materialise_for_message(
+        self, st: SessionState, version_id: str, name: str
+    ) -> dict:
+        """Bring a sibling session's version into this one, at send time.
+
+        Goes through the same Host data service a cell would use, so the scope
+        rule and the atomic write have exactly one implementation.
+        """
+        service = getattr(st.dispatcher, "_data_service", None)
+        if service is None:
+            raise RuntimeError("this session cannot materialise artifacts")
+        return service.materialise_artifact(
+            {"version_id": version_id, "filename": name}
+        )
 
     def _context_archive_metadata(
         self, st: SessionState, action_ledger: RuntimeActionLedger | None
