@@ -501,6 +501,8 @@ Object.assign(I18N.zh, {
   "dash.running.activeNow": "活跃中",
   "dash.running.count": "{0} 个运行中",
   "dash.sessions.empty": "还没有会话。",
+  "ac.fromOtherSession": "来自其他会话，发送时会复制进来",
+  "refs.problemsTitle": "有 {0} 处引用没能解析（这一轮仍在继续）",
   "dash.example.cta": "运行示例分析",
   "dash.example.hint": "一次真实的 NIF3/DUF34 分析：调用 UniProt 与 RCSB PDB 接口、执行 6 个 Python Cell、产出图表与报告。启动时不会自动运行——只有你点它才跑。",
   "dash.example.running": "正在运行示例分析……",
@@ -1353,6 +1355,8 @@ Object.assign(I18N.en, {
   "dash.running.activeNow": "active now",
   "dash.running.count": "{0} running",
   "dash.sessions.empty": "No sessions yet.",
+  "ac.fromOtherSession": "from another session — copied in on send",
+  "refs.problemsTitle": "{0} reference(s) did not resolve (the turn still ran)",
   "dash.example.cta": "Run the example analysis",
   "dash.example.hint": "A real NIF3/DUF34 analysis: calls the UniProt and RCSB PDB APIs, runs 6 Python cells, and produces figures and a report. It does not run on startup \u2014 only when you click.",
   "dash.example.running": "Running the example analysis\u2026",
@@ -2934,6 +2938,14 @@ function onEvent(m) {
       if (S._replayGap === fid) { S._replayGap = null; openConversation(fid, S.project); }
       down();
     }
+  }
+  else if (m.type === "artifact_ref_problems") {
+    // A reference that did not resolve is *shown*. The old resolver dropped
+    // one in silence, so a user could ask a question about a file the model
+    // never received and had no way to notice. Not an error state for the
+    // turn -- it still runs, and referencing four files with one typo should
+    // answer about the other three.
+    if (mine(fid)) renderRefProblems(m.problems || []);
   }
   else if (m.type === "text_reset") { if (mine(fid)) startStream(); }
   else if (m.type === "notebook_cell_draft") { if (mine(fid)) nbCellDraft(m); }
@@ -7726,7 +7738,26 @@ async function acProjectFiles() {
 async function acUpdate() {
   const d = acDetect(); if (!d) { acClose(); return; }
   let items = [];
-  if (d.trigger === "@") items = (await acProjectFiles()).map(a => ({ label: a.filename || "artifact", insert: a.filename || "artifact", sub: a.content_type || "" }));
+  if (d.trigger === "@") items = (await acProjectFiles()).map(a => {
+    const name = a.filename || "artifact";
+    // Pin the version. Inserting the bare filename is what this menu used to
+    // do, and it had a trap in it: the menu lists artifacts from across the
+    // *project*, while the resolver only ever looked inside the current
+    // session -- so picking a file from another conversation inserted a
+    // reference that silently resolved to nothing. Naming the version makes it
+    // resolvable (it is materialised at send) and makes it mean one thing
+    // forever, rather than whatever a later cell leaves in that filename.
+    const version = a.version_id || "";
+    const elsewhere = a.root_frame_id && S.currentId && a.root_frame_id !== S.currentId;
+    return {
+      label: name,
+      insert: version ? `${name}#${version}` : name,
+      // The provenance matters at pick time: "this comes from another session
+      // and will be copied in" is the one thing a user cannot see from a
+      // filename, and it is what makes the copy unsurprising afterwards.
+      sub: (elsewhere ? t("ac.fromOtherSession") + " · " : "") + (a.content_type || ""),
+    };
+  });
   else if (d.trigger === "#") items = (S.sessions || []).map(f => ({ label: f.name || f.task_summary || "session", insert: f.name || f.task_summary || "session", sub: "" }));
   else if (d.trigger === "/") { const sk = await loadSkillsCatalog(); items = sk.map(s => ({ label: s.displayName || s.name, insert: s.name, sub: s.description || "" })); }
   const q = (d.query || "").toLowerCase();
@@ -7753,6 +7784,23 @@ function acPick(i) {
   c.value = val.slice(0, ac.start) + token + val.slice(pos);
   const np = ac.start + token.length; c.setSelectionRange(np, np);
   acClose(); grow(); c.focus();
+}
+// Unresolved @references, shown inline above the composer.
+function renderRefProblems(problems) {
+  if (!Array.isArray(problems) || !problems.length) return;
+  const messages = $("#messages"); if (!messages) return;
+  const card = el("div", "ref-problems");
+  card.appendChild(el("div", "ref-problems-head", t("refs.problemsTitle", problems.length)));
+  problems.slice(0, 8).forEach(p => {
+    const row = el("div", "ref-problem");
+    row.appendChild(el("code", "ref-problem-ref", "@" + String((p && p.ref) || "")));
+    // The server's message, not a code lookup: it already names the file and
+    // says what to do, and re-deriving it here is how the two drift apart.
+    row.appendChild(el("span", "ref-problem-msg", String((p && p.message) || "")));
+    card.appendChild(row);
+  });
+  messages.appendChild(card);
+  down();
 }
 function acClose() { ac.open = false; const b = $("#composer-ac"); if (b) b.classList.add("hidden"); }
 

@@ -1065,3 +1065,28 @@ def test_a_truncated_table_says_which_dimension_was_cut() -> None:
         assert (
             APP_JS.count(f'"{key}"') >= 3
         ), f"{key} is missing from a translation table or from the renderer"
+
+
+def test_the_at_menu_inserts_a_pinned_reference() -> None:
+    """The menu lists artifacts from across the *project*; the resolver only
+    ever looked inside the current session.
+
+    So picking a file from another conversation inserted a reference that
+    resolved to nothing, silently — the menu was offering files it could not
+    deliver. Inserting `name#version_id` makes them resolvable (materialised at
+    send) and fixes what they mean, instead of leaving them to follow whatever
+    a later cell writes to that filename.
+    """
+    assert "insert: version ? `${name}#${version}` : name" in APP_JS
+    # And the pick tells the user when a file is about to be copied in, which
+    # is the one thing a filename cannot show.
+    assert APP_JS.count('"ac.fromOtherSession"') == 3
+
+
+def test_unresolved_references_are_rendered_not_swallowed() -> None:
+    """The server emits `artifact_ref_problems` precisely so the user learns a
+    reference failed. Emitting it and then dropping it in the client would
+    reproduce the original defect one layer up."""
+    assert 'm.type === "artifact_ref_problems"' in APP_JS
+    assert "function renderRefProblems(" in APP_JS
+    assert APP_JS.count('"refs.problemsTitle"') == 3
