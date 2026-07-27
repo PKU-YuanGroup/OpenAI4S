@@ -144,7 +144,7 @@ are easy to mistake for oversights:
 
 | # | Item | Commit | Status | Falsification |
 |---|---|---|---|---|
-| A.6 | Tabular preview told the truth about neither dimension: `csv()` split on a hardcoded comma, so **every** `.tsv` reported one column with the whole header line as its name; and the renderer capped columns at 24 with a rows-only banner, so a 101-column table rendered 24 and looked complete. One `delimiterFor` now trusts the extension and sniffs the header when there is none (science writes tab-separated `.txt` constantly), and the banner names both dimensions | *pending* | `Completed` | Forcing `delimiterFor` to a comma fails the **browser** check with the defect's own signature (`expected 3 column(s), got 1`); removing the column banner fails the static gate |
+| A.6 | Tabular preview told the truth about neither dimension: `csv()` split on a hardcoded comma, so **every** `.tsv` reported one column with the whole header line as its name; and the renderer capped columns at 24 with a rows-only banner, so a 101-column table rendered 24 and looked complete. One `delimiterFor` now trusts the extension and sniffs the header when there is none (science writes tab-separated `.txt` constantly), and the banner names both dimensions | `54ef6e8` | `Completed` | Forcing `delimiterFor` to a comma fails the **browser** check with the defect's own signature (`expected 3 column(s), got 1`); removing the column banner fails the static gate |
 | A.1–A.5, A.7 | ArtifactRef composer chip; profile readiness card + probe + Gemini entry; session keyset cursor + branch export; image attachments with budgets; Notebook split menu; retrieval-source panel | — | `Not started` | — |
 
 ## 10. Not started
