@@ -479,3 +479,72 @@ def test_child_model_steps_and_policy_overrides_remain_visible(monkeypatch):
     assert child["depth"] == 1
     assert child["parent_child_id"] is None
     assert child["progress"]["max_turns"] == 3
+
+
+def test_stopping_one_child_leaves_its_siblings_running(monkeypatch):
+    """P1-B's exit criterion, stated directly: cancelling one child or queued
+    item must not affect its siblings.
+
+    `_stop_subtree` walks `descendants`, which follows `parent_child_id` links,
+    so siblings are structurally outside the walk. That is the right design and
+    it is exactly the kind of thing that survives a refactor into "stop
+    everything under the parent" without anybody noticing, because the common
+    case — one child — behaves identically either way.
+    """
+    _reset_fake_kernel(block_actions=True)
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        return {"content": "```python\nprint('long cell')\n```", "tool_calls": []}
+
+    monkeypatch.setattr(loop_mod, "Kernel", _FakeKernel)
+    monkeypatch.setattr(loop_mod, "chat", fake_chat)
+    runner = DelegationRunner(get_config(), child_max_turns=2)
+
+    doomed = runner({"request": "child A", "wait": False})
+    spared = runner({"request": "child B", "wait": False})
+    assert _FakeKernel.action_started.wait(2)
+
+    stopped = runner.stop_child(doomed["child_id"])
+    assert stopped["status"] == "stopped"
+
+    # The sibling is untouched: not stopped, and still collectable on its own
+    # terms rather than reporting someone else's cancellation.
+    states = {item["child_id"]: item for item in runner.children()}
+    assert states[spared["child_id"]]["status"] != "stopped"
+
+    runner.stop_child(spared["child_id"])  # clean up the second kernel
+
+
+def test_stopping_a_parent_stops_its_descendants_but_not_a_cousin(monkeypatch):
+    """The other half. A subtree stop must reach grandchildren — otherwise a
+    stopped branch keeps burning budget underneath — while still not touching a
+    branch that merely shares a root.
+    """
+    from types import SimpleNamespace
+
+    from openai4s.agent.delegation import _DelegationTree
+
+    # `descendants` reads exactly two attributes — `child_id` and
+    # `parent_child_id` — so a minimal stand-in is faithful *for this
+    # function*, and building six real `_Child` objects (each needing a store,
+    # a budget and a clock) would test the constructor rather than the walk.
+    tree = _DelegationTree(clock=lambda: 0.0)
+    for child_id, parent in (
+        ("a", None),
+        ("a1", "a"),
+        ("a2", "a"),
+        ("a1x", "a1"),
+        ("b", None),
+        ("b1", "b"),
+    ):
+        tree.children[child_id] = SimpleNamespace(
+            child_id=child_id, parent_child_id=parent
+        )
+
+    reached = {child.child_id for child in tree.descendants("a")}
+    assert reached == {"a", "a1", "a2", "a1x"}, "the subtree walk is wrong"
+    assert "b" not in reached and "b1" not in reached
+
+    # And a leaf stop reaches only itself.
+    assert {child.child_id for child in tree.descendants("a1x")} == {"a1x"}
