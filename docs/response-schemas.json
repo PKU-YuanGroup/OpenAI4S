@@ -5785,13 +5785,91 @@
       "schema": {
         "properties": {
           "frames": {
+            "items": {
+              "properties": {
+                "conversation_type": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "folder_id": {
+                  "type": "null"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "input_tokens": {
+                  "type": "null"
+                },
+                "kernel_alive": {
+                  "type": "boolean"
+                },
+                "message_count": {
+                  "type": "integer"
+                },
+                "model": {
+                  "type": "null"
+                },
+                "name": {
+                  "type": "null"
+                },
+                "output_tokens": {
+                  "type": "null"
+                },
+                "parent_frame_id": {
+                  "type": "null"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "running": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "task_summary": {
+                  "type": "null"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "conversation_type",
+                "created_at",
+                "folder_id",
+                "id",
+                "input_tokens",
+                "kernel_alive",
+                "message_count",
+                "model",
+                "name",
+                "output_tokens",
+                "parent_frame_id",
+                "project_id",
+                "root_frame_id",
+                "running",
+                "status",
+                "task_summary",
+                "updated_at"
+              ],
+              "type": "object"
+            },
             "type": "array"
           },
           "has_more": {
             "type": "boolean"
           },
           "next_cursor": {
-            "type": "null"
+            "type": [
+              "null",
+              "string"
+            ]
           }
         },
         "required": [

@@ -548,3 +548,75 @@ def test_stopping_a_parent_stops_its_descendants_but_not_a_cousin(monkeypatch):
 
     # And a leaf stop reaches only itself.
     assert {child.child_id for child in tree.descendants("a1x")} == {"a1x"}
+
+
+# --------------------------------------------------------------------------
+# a child compacts against its own model's window
+# --------------------------------------------------------------------------
+
+
+def test_a_child_compacts_against_its_own_models_window():
+    """The defect. `_SteeringContextPolicy` built a bare `CompactionPolicy`,
+    which falls back to `cfg.context_window_tokens` — the daemon default of
+    262,144 — while the Web session path has always derived the budget from the
+    model's declared capability.
+
+    A child may run a different model than its parent, which is exactly when
+    the two numbers diverge: a model whose usable window is 136,000 tokens
+    would compact against 262,144 and sail past its real limit, learning about
+    it as a provider rejection rather than as a compaction.
+
+    Asserted against the real capability rather than a literal, since the
+    number belongs to the model and not to this test — but the *inequality*
+    with the daemon default is the point and is checked explicitly.
+    """
+    import dataclasses
+
+    from openai4s.agent.delegation import _child_context_budget
+    from openai4s.config import get_config
+    from openai4s.llm import get_model_capabilities
+
+    base = get_config()
+    cfg = dataclasses.replace(
+        base,
+        llm=dataclasses.replace(
+            base.llm, provider="claude", model="claude-opus-4-20250514"
+        ),
+    )
+    expected = get_model_capabilities("claude", "claude-opus-4-20250514")
+    budget = _child_context_budget(cfg)(None)
+
+    assert budget == expected.usable_context_tokens
+    assert (
+        budget != base.context_window_tokens
+    ), "this model's window matches the daemon default, so the test proves nothing"
+
+
+def test_an_unknown_model_falls_back_rather_than_guessing():
+    """Returning None restores the previous behaviour on purpose: a model
+    nobody has capabilities for uses the configured default, and a capability
+    lookup that raises must not take the child down with it."""
+    import dataclasses
+
+    from openai4s.agent.delegation import _child_context_budget
+    from openai4s.config import get_config
+
+    base = get_config()
+    cfg = dataclasses.replace(
+        base,
+        llm=dataclasses.replace(
+            base.llm, provider="not-a-provider", model="not-a-model"
+        ),
+    )
+    assert _child_context_budget(cfg)(None) is None
+
+
+def test_the_policy_actually_installs_the_provider():
+    """A budget function nothing calls is the shape of the bug it replaces."""
+    import inspect
+
+    from openai4s.agent import delegation
+
+    source = inspect.getsource(delegation._SteeringContextPolicy.__init__)
+    assert "context_budget_provider=" in source
+    assert "_child_context_budget" in source
