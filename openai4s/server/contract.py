@@ -34,6 +34,14 @@ import re
 import textwrap
 from pathlib import Path
 
+#: Where the HTTP API lives. Defined here rather than in the gateway because
+#: two very different callers need it and neither should guess: the gateway
+#: routes on it, and the CLI builds daemon URLs with it. `openai4s share`
+#: hard-coded "/api/" and every one of its subcommands 404'd against the
+#: daemon's own "the API is versioned" refusal -- a whole feature that had
+#: never reached a route.
+API_ROOT = "/api/v1"
+
 _GATEWAY = Path(__file__).with_name("gateway.py")
 # Events are emitted from the focused services too, not only the composition
 # adapter. Scanning gateway.py alone left fifteen live event types invisible to

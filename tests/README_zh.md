@@ -71,6 +71,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_cell_execution_service.py`](test_cell_execution_service.py) | Web 的 Cell 服务，事务顺序都在这里。attempt 在 Cell 准备之前就分配好，哪怕 worker 抛异常也要收尾。R 的协议异常只关掉当时正在执行的那个 lease，绝不误伤它的替身。只走协议的 `host.submit_output` 照样进审计，只是不作为 Notebook cell 流式播出去。 |
 | [`test_cell_watchdog.py`](test_cell_watchdog.py) | 一个停不下来的 Cell 的超时恢复。要读的是那个不显眼的情形：当 Cell 停在等待权限审批时，超时预算会被冻结——否则一个人思考一分钟就足以杀掉内核。 |
 | [`test_checkpoint_state_snapshots.py`](test_checkpoint_state_snapshots.py) | 绑定到不可变 checkpoint 的 plan、review 与记忆状态。两个行为是承重的：遗留 checkpoint 被当成“部分状态”，而不是会抹掉现有数据的空状态；损坏的状态失败即拒绝，而不是恢复出半个自己。 |
+| [`test_cli_daemon_api_root.py`](test_cli_daemon_api_root.py) | CLI 打给守护进程的请求到底有没有命中路由。`openai4s share` 用 `/api/...` 拼 URL；而守护进程只在 `/api/v1` 下提供 API，其它一律用「the API is versioned」明确拒绝——于是**九条** share 子命令全部 404：这个功能在任何已发布版本里都从未命中过任何一条路由，连分享页面让接收方执行的那行 `openai4s share import <url>` 也一样。现在前缀取自 `contract.API_ROOT`——网关路由用的同一个常量；而自带 `/api/` 的路径会被**大声拒绝**，而不是再生成一个没人会当成缺陷的 404。断言是针对**所有**调用点的性质，因为那九处错得一模一样。 |
 | [`test_cli_contract.py`](test_cli_contract.py) | 别人写脚本会依赖的那层 CLI 表面：入口、子命令、选项与 help 文本。`status` 只报告本地数据目录，并不宣称 daemon 是健康的。 |
 | [`test_compute_nvidia.py`](test_compute_nvidia.py) | NVIDIA BYOC provider，每一次 `docker` 调用都被假的子进程层截住，所以不需要 Docker、GPU 或网络。安全的那一半是两阶段 secret 清洗：provider 的顶层代码在被 import 时，不能读到形似凭据、或带已知前缀的环境变量。 |
 | [`test_config.py`](test_config.py) | 分层配置，而且基本围着同一类 bug 转：从模板里抄来的占位 API key 绝不能被当成真 key，无论它是从环境变量来的还是显式传进来的，也不能挡住真正的按 provider 配置的 key。 |
@@ -206,12 +207,14 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_skill_sidecar_recovery.py`](test_skill_sidecar_recovery.py) | 两个测试，跑在真实 worker 上。只有真的加载成功的 sidecar 才会被冻进 generation manifest；被篡改的 sidecar 记录会把这个 generation 标成不可恢复，而不是照样 replay。 |
 | [`test_skill_versions.py`](test_skill_versions.py) | 内容寻址的 Skill 安装、升级、发布、回滚与删除。有两道防线值得知道：内置 Skill 永远不能成为安装、发布或回滚的目标；对自己 sidecar 字节撒谎的 manifest，会在激活之前被拒。 |
 | [`test_skills.py`](test_skills.py) | Skill loader。其中出人意料的一大块是 YAML frontmatter 解析——折叠标量、字面块、chomping 指示符、行内注释——因为一个漏进摘要里的 `>`，正是渐进披露开始输出乱码的起点。每个内置 Skill 里的 import 提示也被当成真正的 Python 检查了一遍。 |
+| [`test_specialist_delegation_roundtrip.py`](test_specialist_delegation_roundtrip.py) | 对一个**真正保存过**的 specialist 做 delegate。`agents.unrestricted` 是 `INTEGER NOT NULL`，SQLite 读回来是 `0`/`1`；仓储层解码了 `skill_names` 和 `connectors`，唯独漏了这一列；而 `child_execution_policy` 只接受严格的 `bool`。结果是每一个存过的 specialist 都无法委派——受限的和不受限的一样。严格检查本身是对的、也没改：`"false"` 是真值，绝不能当成 True 放行。原有测试是绿的，因为它们在内存里用真正的 Python `False` 构造 profile，那个 int 根本不会出现——这些用例是写进去再读回来。 |
 | [`test_store.py`](test_store.py) | schema、迁移，以及调用方今天就依赖的那些行结构。真正会咬人的是 Artifact 的合并规则：临时版本必须合并而不是复制出一个新的；血缘写失败时，版本要跟着一起回滚。 |
 | [`test_structured_finalize.py`](test_structured_finalize.py) | `finalize_response` 归引擎所有，不属于 Tool 注册表，而且只有它单独出现时才算完成一次运行。含有它的混合批次不构成完成；无效的调用会变成一条规范的错误结果，模型看得见，也能重来。 |
 | [`test_tool_schema.py`](test_tool_schema.py) | 用纯标准库实现的校验器，负责 Host 接受的那个 JSON Schema 子集。嵌套路径和约束违规是一起报出来的，而不是一次报一个；provider 的 strict 模式要求 required 对象递归封闭。 |
 | [`test_tools.py`](test_tools.py) | 控制类 Tool 的那些类，以及旧版的 fenced Tool 解析器。解析这部分测试的存在就是为了不让什么东西被误执行：嵌在 Python cell 里、嵌在更长的 fence 里、嵌在波浪号 fence 里的 Tool fence，都不算 Tool 调用。而 `execute` 无论参数多么恶意，都不许抛出来。 |
 | [`test_variable_inspector_service.py`](test_variable_inspector_service.py) | 三个测试，把变量检查限制得很窄。它从不进入 Cell 状态；读任何东西之前先检查语言和 lease；协议出错时只给出笼统信息，而不是内核内部细节。 |
 | [`test_webtools.py`](test_webtools.py) | HTML 转 Markdown 与几个搜索后端，跑在离线 fixture 上。前三个测试是围着同一个 bug 织的回归网：arXiv 的摘要页，摘要、作者和标题被转换器整个丢掉了。 |
+| [`test_webtools_redirect_guard.py`](test_webtools_redirect_guard.py) | 重定向之后，SSRF 与 egress 检查还在不在。`_http_get` 的文档说它手动跟随重定向、好让每一跳都受检——但那只在可选的 `requests` 分支上成立。兜底分支调的是 `urllib.request.urlopen`，它在标准库内部自己跟随重定向；而零依赖安装走的永远是这条分支。修复前用本地 302 实测：取了两个 URL，只有一个过了检查。这些用例**故意不打** `network` 标记——那台服务器是进程内的 loopback socket，而 `addopts` 默认剔除 `network`，打上标记等于把三条安全测试从每次运行里悄悄拿掉、表面上却还在。 |
 | [`test_webui_static_contract.py`](test_webui_static_contract.py) | 把静态前端当源码读，不开浏览器也不起网关。它抓的是别处抓不到的东西——引用了却不存在的资源、重复的 DOM ID、有名字却没有 SVG 的图标——同时钉住 UI 自己作出的那些安全声明，比如提升后的 Markdown 只允许安全的位图 data 图片、Timeline 是一个按允许名单做的投影。它证明不了 UI 能用；那是 `browser_smoke.mjs` 的活。 |
 | [`test_ws_frames.py`](test_ws_frames.py) | 加固过的 RFC 6455 编解码：长度阶梯、客户端掩码往返、掩码方向强制、截断/RSV/分片/未知 opcode/超大控制帧/非 canonical 长度的拒绝、载荷上限、严格模式 UTF-8，以及 RFC 的 accept 示例。 |
 | [`test_workbench_state_service.py`](test_workbench_state_service.py) | Context 与 Security 两个面板。安全投影是刻意往小了说的：worker 还没启动时，它绝不宣称沙箱是生效的；Python 与 R 的说法不一致时，它报两者中更弱的那个。 |

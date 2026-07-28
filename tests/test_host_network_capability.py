@@ -49,7 +49,16 @@ def _network_on(monkeypatch):
 
 
 def _stub_urlopen(monkeypatch, response_factory, recorder=None):
-    """Replace urlopen and record the Request objects it is handed."""
+    """Intercept the outbound request and record what it was handed.
+
+    Both seams, deliberately. `_http_get` stopped calling
+    `urllib.request.urlopen` when redirects became something it follows
+    itself — the stdlib opener follows them internally, which silently
+    defeated the per-hop SSRF and egress checks — so it now goes through
+    `build_opener`. Patching only `urlopen` would leave these tests exercising
+    a function the module no longer calls: they would pass on a code path that
+    does not exist.
+    """
     monkeypatch.setattr(webtools, "requests", None, raising=False)
     import urllib.request
 
@@ -58,7 +67,12 @@ def _stub_urlopen(monkeypatch, response_factory, recorder=None):
             recorder.append(request)
         return response_factory(request)
 
+    class _Opener:
+        def open(self, request, timeout=None):  # noqa: ANN001
+            return _fake(request, timeout)
+
     monkeypatch.setattr(urllib.request, "urlopen", _fake)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *_a, **_k: _Opener())
 
 
 # --------------------------------------------------------------------------

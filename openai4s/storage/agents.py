@@ -42,6 +42,16 @@ class AgentProfileRepository:
                         agent[key] = json.loads(agent[key])
                     except (ValueError, TypeError):
                         agent[key] = None
+            # `unrestricted INTEGER NOT NULL` comes back as 0/1, and the two
+            # columns above were decoded while this one was not. That is not a
+            # cosmetic difference: `child_execution_policy` checks
+            # `type(unrestricted) is not bool` and refuses anything else, so
+            # EVERY stored specialist -- restricted and unrestricted alike --
+            # failed to delegate. The strict check is right and stays: a
+            # truthy string like "false" must not pass for True. The column is
+            # decoded here, next to its siblings, so one boundary owns the
+            # conversion instead of each caller remembering to coerce.
+            agent["unrestricted"] = bool(agent.get("unrestricted", 1))
             agents.append(agent)
         return agents
 

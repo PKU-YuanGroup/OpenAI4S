@@ -125,6 +125,36 @@ def _read_capped(reader: Any, limit: int) -> bytes:
         chunks.append(chunk)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Surface a 3xx as an HTTPError instead of quietly following it.
+
+    `urllib.request.urlopen` follows redirects inside the stdlib, so a caller
+    that means to inspect every hop never sees the intermediate ones. That is
+    exactly what `_http_get` and `web_probe` both need to prevent, so the
+    handler lives here rather than being defined twice.
+    """
+
+    def redirect_request(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        return None
+
+
+def _no_redirect_opener() -> urllib.request.OpenerDirector:
+    """Build the opener per call rather than once at import.
+
+    Reusing a module-level opener looks like the obvious optimisation and it is
+    the wrong trade twice over: assembling a handler chain is nothing next to
+    an HTTP request, and an opener created at import time cannot be replaced by
+    a test that patches `urllib.request.build_opener` -- which is exactly how
+    `web_probe`'s own test drives this code.
+    """
+    return urllib.request.build_opener(_NoRedirect)
+
+
+#: The 3xx codes a redirect-following client would act on. 304 is deliberately
+#: absent -- it is a cache answer, not a redirect, and has no Location.
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+
+
 def _http_get(
     url: str,
     *,
@@ -186,14 +216,26 @@ def _http_get(
             return body, r.url, r.headers.get("Content-Type", "")
         req = urllib.request.Request(cur, headers=hdrs, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            # NOT `urlopen`. The stdlib opener follows redirects internally, so
+            # this branch -- the one a zero-dependency install always takes,
+            # since `requests` is not a core dependency -- checked only the
+            # first hop. A public, allowlisted URL that 302s to
+            # 169.254.169.254 was fetched: two URLs retrieved, one guarded.
+            # Demonstrated with a local redirect before this was changed.
+            with _no_redirect_opener().open(req, timeout=timeout) as resp:  # noqa: S310
                 return (
                     b"" if method == "HEAD" else _read_capped(resp, limit),
                     resp.geturl(),
                     resp.headers.get("Content-Type", ""),
                 )
-        except urllib.error.HTTPError as e:  # urllib follows redirects itself
-            raise e
+        except urllib.error.HTTPError as e:
+            location = (e.headers or {}).get("Location") if e.headers else None
+            if e.code in _REDIRECT_CODES and location:
+                # Round the loop so `egress.check_url` and `_guard_url` run
+                # against the destination as well.
+                cur = urllib.parse.urljoin(cur, location)
+                continue
+            raise
     raise RuntimeError("too many redirects")
 
 
@@ -411,14 +453,11 @@ def web_probe(
 
     hdrs = {"User-Agent": user_agent or _UA, "Accept": "*/*"}
 
-    class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
-            return None  # surfaces the 3xx as an HTTPError instead of following
-
-    opener = urllib.request.build_opener(_NoRedirect)
     request = urllib.request.Request(url, headers=hdrs, method="HEAD")
     try:
-        with opener.open(request, timeout=timeout) as response:  # noqa: S310
+        with _no_redirect_opener().open(
+            request, timeout=timeout
+        ) as response:  # noqa: S310
             status = int(getattr(response, "status", 0) or 200)
             location = response.headers.get("Location") or ""
     except urllib.error.HTTPError as error:

@@ -102,7 +102,14 @@ def test_list_orders_and_preserves_json_decoding_edges(tmp_path):
     assert [agent["name"] for agent in agents] == ["A_AGENT", "Z_AGENT"]
     assert agents[0]["skill_names"] is False
     assert agents[0]["connectors"] is None
-    assert agents[0]["unrestricted"] == 2
+    # `2` is not a state this column has — it is written here to prove the
+    # decode is a decode and not a passthrough. It used to assert `== 2`, which
+    # pinned the raw SQLite int as the contract; that is what reached
+    # `child_execution_policy`'s `type(x) is not bool` check and made every
+    # stored specialist fail to delegate. A boolean column reads back as a
+    # boolean, and anything truthy in it means unrestricted.
+    assert agents[0]["unrestricted"] is True
+    assert agents[1]["unrestricted"] is False
     assert agents[1]["skill_names"] is None
     assert agents[1]["connectors"] == ""
     assert repository.get("a_agent") is None

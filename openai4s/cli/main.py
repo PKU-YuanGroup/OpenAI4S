@@ -810,9 +810,29 @@ def _daemon_credential_hint(cfg) -> str:
 
 
 def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
-    """Call the running daemon's REST API; returns (status, parsed_json)."""
+    """Call the running daemon's REST API; returns (status, parsed_json).
 
-    url = _url(cfg).rstrip("/") + path
+    `path` is relative to the API root -- "/shares", not "/api/shares". Every
+    `openai4s share` subcommand passed the latter, and the daemon serves the
+    API only under `/api/v1`, so all nine answered with the daemon's own "the
+    API is versioned" 404. The whole feature had never reached a route,
+    including the `openai4s share import <url>` line the generated share page
+    tells a recipient to run.
+
+    The version is joined from `contract.API_ROOT`, the constant the gateway
+    routes on, so the two cannot drift.
+    """
+    from openai4s.server import contract
+
+    if path.startswith("/api/"):
+        # A caller supplying its own prefix is the bug this signature exists to
+        # prevent, and papering over it would be wrong: a merely-wrong path
+        # produces a 404 that nobody reads as a defect.
+        raise ValueError(
+            f"path must be relative to the API root, not {path!r} "
+            f"(it is joined with {contract.API_ROOT})"
+        )
+    url = _url(cfg).rstrip("/") + contract.API_ROOT + path
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
@@ -887,7 +907,7 @@ def cmd_share(args) -> int:
         if action == "create":
             root = args.session
             if root == "latest":
-                _, frames = _daemon_request(cfg, "GET", "/api/frames")
+                _, frames = _daemon_request(cfg, "GET", "/frames")
                 items = frames.get("frames") if isinstance(frames, dict) else frames
                 if not items:
                     print("error: no sessions found", file=sys.stderr)
@@ -898,9 +918,7 @@ def cmd_share(args) -> int:
                 body["title"] = args.title
             if args.expires:
                 body["expires_in"] = _parse_duration(args.expires)
-            status, rec = _daemon_request(
-                cfg, "POST", f"/api/frames/{root}/shares", body
-            )
+            status, rec = _daemon_request(cfg, "POST", f"/frames/{root}/shares", body)
         elif action == "update":
             ubody: dict = {}
             if getattr(args, "no_expiry", False):
@@ -908,25 +926,25 @@ def cmd_share(args) -> int:
             elif args.expires:
                 ubody["expires_in"] = _parse_duration(args.expires)
             status, rec = _daemon_request(
-                cfg, "PUT", f"/api/shares/{args.share_id}", ubody or None
+                cfg, "PUT", f"/shares/{args.share_id}", ubody or None
             )
         elif action == "list":
-            status, rec = _daemon_request(cfg, "GET", "/api/shares")
+            status, rec = _daemon_request(cfg, "GET", "/shares")
         elif action == "revoke":
-            status, rec = _daemon_request(cfg, "DELETE", f"/api/shares/{args.share_id}")
+            status, rec = _daemon_request(cfg, "DELETE", f"/shares/{args.share_id}")
         elif action == "enable":
             status, rec = _daemon_request(
-                cfg, "PUT", "/api/share/settings", {"enabled": True}
+                cfg, "PUT", "/share/settings", {"enabled": True}
             )
         elif action == "disable":
             status, rec = _daemon_request(
-                cfg, "PUT", "/api/share/settings", {"enabled": False}
+                cfg, "PUT", "/share/settings", {"enabled": False}
             )
         elif action == "status":
-            status, rec = _daemon_request(cfg, "GET", "/api/share/status")
+            status, rec = _daemon_request(cfg, "GET", "/share/status")
         elif action == "import":
             status, rec = _daemon_request(
-                cfg, "POST", "/api/sessions/import-url", {"url": args.url}
+                cfg, "POST", "/sessions/import-url", {"url": args.url}
             )
         else:  # pragma: no cover
             print("error: unknown share action", file=sys.stderr)

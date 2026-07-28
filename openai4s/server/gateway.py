@@ -77,6 +77,7 @@ from openai4s.review import review_evidence
 from openai4s.server import (
     artifact_refs,
     compute_tasks,
+    contract,
     kernel_routes,
     local_auth,
     retrieval_source,
@@ -269,7 +270,10 @@ def _decode_frame_cursor(value: str | None) -> tuple[int, str] | None:
         raise GatewayError(400, f"invalid cursor: {e}", "invalid_cursor")
 
 
-_API_ROOT = "/api/v1"
+# One definition, in `contract.py`, so the prefix the gateway routes on and the
+# prefix the CLI builds daemon URLs from cannot drift apart. They had: every
+# `openai4s share` subcommand hard-coded "/api/" and 404'd.
+_API_ROOT = contract.API_ROOT
 
 #: Reachable without a credential. `/health` is a liveness probe. `/auth/status`
 #: joins it because a client cannot be told it needs a token by a response it
