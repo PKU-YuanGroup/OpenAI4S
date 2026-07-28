@@ -251,6 +251,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_observability.py`](test_observability.py) | correlation ID 与按形状脱敏的结构化日志字段。 |
 | [`test_doctor.py`](test_doctor.py) | `openai4s doctor` 不依赖 daemon 就能跑，能区分「降级」与「无法进行」，退出码即结论，且绝不打印任何凭据值。 |
 | [`test_error_envelope.py`](test_error_envelope.py) | 统一的成功/错误信封，稳定错误码与 request id。 |
+| [`test_compute_task_centre.py`](test_compute_task_centre.py) | 在不额外花钱的前提下查看远程任务。远程任务的寿命长过发起它的那一轮、内核和守护进程，但那份持久记录原先只能从 cell 里够到——一个 GPU 任务跑了两小时的人根本没地方看。这个页面不能轮询，因为**探测即回收**：`result()` 会去联系远端，而联系远端就会把文件拉回来并结束任务，于是自动刷新的页面等于在没人看着的会话里做回收。验证这一点的用例读的是模块的 `ast` **导入**，而不是它的文本——第一版直接 grep "ComputeManager"，结果被那段专门解释「为什么不用它」的 docstring 判了失败。此外还覆盖跨会话不可枚举（不列出、不计数、也不说「已隐藏」）、重启后仍可读、`unknown` 绝不渲染成失败（任务可能还在跑、还在计费），以及 pid、sandbox 句柄和集群路径不会出现在投影里。 |
 | [`test_contract_inventory.py`](test_contract_inventory.py) | 每个对外 route 与 event 都被契约清单覆盖。 |
 | [`test_frame_pagination.py`](test_frame_pagination.py) | 会话列表的 keyset 分页。 |
 | [`test_ws_resume_cursor.py`](test_ws_resume_cursor.py) | 单调事件序号，以及重连客户端可用的 resume cursor。 |

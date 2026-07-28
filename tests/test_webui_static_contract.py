@@ -1179,3 +1179,84 @@ def test_an_optional_label_can_actually_fall_back() -> None:
         assert computed not in panel, f"{computed} can never fall back"
     assert 'tOptional("context.omitted." +' in panel
     assert 'tOptional("context.reason." +' in panel
+
+
+def test_no_panel_calls_a_helper_that_does_not_exist() -> None:
+    """`node --check` parses; it does not resolve names.
+
+    Three calls in one new panel — `toast(...)`, `formatBytes(...)`, and
+    `apiErrorText(e, fallback)` with an arity the function does not have —
+    parsed cleanly and would have thrown the first time the panel rendered.
+    The helpers were real, under other names (`hint`, `bytes`), which is why
+    reading the code did not catch it either.
+
+    Scoped to the workbench panels because that is where a throw blanks a
+    surface the user opened deliberately, and because a whole-file sweep of a
+    9,000-line script would drown the signal in browser globals.
+    """
+    import re
+
+    known = set(re.findall(r"function\s+([A-Za-z_$][\w$]*)\s*\(", APP_JS))
+    known |= set(re.findall(r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=", APP_JS))
+    # Globals the browser supplies, plus the ones this file gets from vendor.
+    known |= {
+        "Array",
+        "Boolean",
+        "Date",
+        "Error",
+        "JSON",
+        "Math",
+        "Number",
+        "Object",
+        "Promise",
+        "RegExp",
+        "String",
+        "Set",
+        "Map",
+        "URL",
+        "URLSearchParams",
+        "encodeURIComponent",
+        "decodeURIComponent",
+        "parseInt",
+        "parseFloat",
+        "isNaN",
+        "setTimeout",
+        "clearTimeout",
+        "setInterval",
+        "clearInterval",
+        "fetch",
+        "alert",
+        "confirm",
+        "prompt",
+        "require",
+        "import",
+        "await",
+        "if",
+        "for",
+        "while",
+        "switch",
+        "catch",
+        "return",
+        "typeof",
+        "super",
+        "function",
+        "of",
+        "in",
+        "new",
+        "$3Dmol",
+    }
+
+    missing: list[tuple[str, str]] = []
+    for name in (
+        "renderComputeTasksPanel",
+        "refreshComputeTask",
+        "sanitizeComputeTasks",
+    ):
+        start = APP_JS.index(f"function {name}(")
+        body = APP_JS[start : APP_JS.index("\nfunction ", start + 1)]
+        # `(?<![.\w$])` excludes method calls: `row.appendChild(...)` is a
+        # property of an object, not a free identifier this file must define.
+        for called in re.findall(r"(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(", body):
+            if called not in known and not called.startswith("_"):
+                missing.append((name, called))
+    assert not missing, f"undefined helpers called: {missing}"

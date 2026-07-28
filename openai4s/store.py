@@ -3255,6 +3255,12 @@ class Store:
     def list_compute_jobs(self, limit: int = 200) -> list[dict]:
         return self._compute_jobs.list(limit)
 
+    def compute_jobs_for_owner(
+        self, owner_key: str | None, limit: int = 200
+    ) -> list[dict]:
+        """One owner's remote jobs, live and finished. Never installation-wide."""
+        return self._compute_jobs.for_owner(owner_key, limit)
+
     def append_compute_job_event(self, job_id: str, kind: str, payload=None) -> int:
         return self._compute_jobs.append_event(job_id, kind, payload)
 

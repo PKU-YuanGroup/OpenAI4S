@@ -121,7 +121,7 @@ const S = { projects: [], sessions: [], project: null, currentId: null, ws: null
   // The workbench surfaces are projections only. They deliberately keep no
   // provider wire payloads or raw tool arguments in browser state.
   actionTimeline: null, executionQueue: null, executionIdentity: null, recoveryState: null,
-  recoveryActions: null, branchState: null, branchUndo: null, contextState: null, securityState: null,
+  recoveryActions: null, branchState: null, branchUndo: null, contextState: null, securityState: null, computeTasks: null,
   delegationState: null,
   workbenchErrors: {}, _workbenchReq: 0, _timelineHistoryReq: 0, _timelineHistoryLoading: null,
   _recoveryActionLoading: null, _branchActionLoading: null,
@@ -729,6 +729,15 @@ Object.assign(I18N.zh, {
   "timeline.panel.context": "Context composition",
   "timeline.panel.security": "Sandbox · Permission",
   "timeline.panel.delegation": "子代理树",
+  "timeline.panel.compute": "远程计算任务",
+  "compute.none": "本会话还没有远程计算任务。",
+  "compute.live": "进行中 {0}",
+  "compute.fromRecord": "来自本地记录，未联网核对",
+  "compute.checked": "刚刚向远端核对过",
+  "compute.refresh": "向远端核对并回收产物",
+  "compute.refreshFailed": "核对失败",
+  "compute.outputs": "产物 {0} 个 · {1}",
+  "compute.status.unknown": "未知（联系不上远端）",
   "timeline.noBranch": "尚无 branch/checkpoint 投影。",
   "timeline.noContext": "尚无 context composition 投影。",
   "timeline.noSecurity": "尚无 sandbox/permission 状态投影。",
@@ -1594,6 +1603,15 @@ Object.assign(I18N.en, {
   "timeline.panel.context": "Context composition",
   "timeline.panel.security": "Sandbox · Permission",
   "timeline.panel.delegation": "Sub-agent tree",
+  "timeline.panel.compute": "Remote compute",
+  "compute.none": "No remote compute tasks in this session.",
+  "compute.live": "{0} in flight",
+  "compute.fromRecord": "from the local record — not re-checked",
+  "compute.checked": "just checked with the remote",
+  "compute.refresh": "Check the remote and harvest outputs",
+  "compute.refreshFailed": "Refresh failed",
+  "compute.outputs": "{0} output file(s) · {1}",
+  "compute.status.unknown": "unknown (the remote could not be reached)",
   "timeline.noBranch": "No branch/checkpoint projection is available yet.",
   "timeline.noContext": "No context composition projection is available yet.",
   "timeline.noSecurity": "No sandbox/permission projection is available yet.",
@@ -2538,11 +2556,17 @@ async function loadWorkbenchState(id, force = false) {
   const request = S._workbenchReq = (S._workbenchReq || 0) + 1;
   S._workbenchLoading = id;
   const base = `/frames/${id}`;
-  const [timeline, execution, branches, context, security, delegation, recovery, recoveryActions] = await Promise.all([
+  const [timeline, execution, branches, context, security, delegation, recovery, recoveryActions, computeTasks] = await Promise.all([
     optionalApi([base + `/action-timeline?limit=${ACTION_TIMELINE_PAGE_SIZE}`]),
     optionalApi([base + "/execution-queue", base + "/execution"]),
     optionalApi([base + "/branches"]), optionalApi([base + "/context"]), optionalApi([base + "/security"]), optionalApi([base + "/delegations"]),
-    optionalApi([base + "/recovery"]), optionalApi([base + "/recovery/actions"])
+    optionalApi([base + "/recovery"]), optionalApi([base + "/recovery/actions"]),
+    // Reading the durable record, not asking a provider. The server route has
+    // no path to a ComputeManager, so opening the workbench cannot contact a
+    // remote — which matters because in this system contacting the remote is
+    // what harvests files and closes the job. The harvest stays behind the
+    // per-task button below.
+    optionalApi([base + "/compute/tasks"])
   ]);
   if (request !== S._workbenchReq || id !== S.currentId) return;
   S._workbenchLoading = null;
@@ -2554,6 +2578,7 @@ async function loadWorkbenchState(id, force = false) {
   if (delegation) S.delegationState = sanitizeDelegations(delegation);
   if (recovery) S.recoveryState = sanitizeRecovery(recovery);
   if (recoveryActions) S.recoveryActions = sanitizeRecoveryActions(recoveryActions);
+  if (computeTasks) S.computeTasks = sanitizeComputeTasks(computeTasks);
   if (S.activeTab === "timeline") renderActionTimeline();
   if (S.activeTab === "notebook") renderNotebook();
 }
@@ -2885,6 +2910,71 @@ function renderSecurityPanel() {
   row(t("security.permission"), [permission.mode || "unknown", permission.pending_count ? t("security.pending", permission.pending_count) : ""]);
   if (sandbox.detail) panel.appendChild(el("div", "security-detail", sandbox.detail)); return panel;
 }
+function sanitizeComputeTasks(payload) {
+  const source = payload && (payload.tasks ? payload : payload.payload || payload) || {};
+  const tasks = Array.isArray(source.tasks) ? source.tasks : [];
+  return {
+    // `polled` is the server saying whether it contacted a provider. Rendered,
+    // not inferred: a panel that decided for itself would be guessing about
+    // the one thing the user needs to be able to trust here.
+    polled: !!source.polled,
+    live_count: Math.max(0, Number(source.live_count) || 0),
+    tasks: tasks.slice(0, 200).map(task => ({
+      job_id: publicText(task && task.job_id, 120),
+      provider: publicText(task && task.provider, 64),
+      status: publicText(task && task.status, 32) || "unknown",
+      reason: publicText(task && (task.reason || task.termination_reason), 500),
+      live: !!(task && task.live), terminal: !!(task && task.terminal),
+      updated_at: Number(task && task.updated_at) || 0,
+      outputs: {
+        file_count: Math.max(0, Number(task && task.outputs && task.outputs.file_count) || 0),
+        total_bytes: Math.max(0, Number(task && task.outputs && task.outputs.total_bytes) || 0)
+      }
+    }))
+  };
+}
+async function refreshComputeTask(jobId, button) {
+  // The only action here that reaches a provider — and it harvests, which is
+  // why it is a button a person presses rather than something on a timer.
+  const id = S.currentId; if (!id || !jobId) return;
+  button.disabled = true;
+  try {
+    await api(`/frames/${id}/compute/tasks/${encodeURIComponent(jobId)}/refresh`, { method: "POST", body: "{}" });
+    await loadWorkbenchState(id, true);
+  } catch (e) {
+    hint(t("compute.refreshFailed") + " — " + apiErrorText(e), true);
+  } finally { button.disabled = false; }
+}
+function renderComputeTasksPanel() {
+  const panel = panelShell(t("timeline.panel.compute"), "compute-panel"), state = S.computeTasks;
+  if (!state || !(state.tasks || []).length) { panel.appendChild(el("div", "workbench-empty", t("compute.none"))); return panel; }
+  const summary = el("div", "compute-summary");
+  summary.appendChild(el("span", "timeline-pill", t("compute.live", state.live_count)));
+  // Said out loud. A list of states with no provenance reads as current, and
+  // these rows are as old as the last time anyone actually checked.
+  summary.appendChild(el("span", "timeline-pill", state.polled ? t("compute.checked") : t("compute.fromRecord")));
+  panel.appendChild(summary);
+  state.tasks.forEach(task => {
+    const row = el("div", "compute-task status-" + String(task.status).toLowerCase());
+    const head = el("div", "compute-task-head");
+    head.appendChild(el("span", "compute-task-id", shortRuntime(task.job_id) || task.job_id));
+    head.appendChild(el("span", "timeline-status " + String(task.status).toLowerCase(), tOptional("compute.status." + task.status) || task.status));
+    if (task.provider) head.appendChild(el("span", "timeline-pill", task.provider));
+    row.appendChild(head);
+    if (task.outputs.file_count) row.appendChild(el("div", "compute-task-outputs", t("compute.outputs", task.outputs.file_count, bytes(task.outputs.total_bytes))));
+    if (task.reason) row.appendChild(el("div", "compute-task-message", task.reason));
+    // Only a job that might still be out there is worth contacting a provider
+    // about. A finished one has nothing left to harvest, and offering the
+    // button anyway would invite a paid round trip that cannot change anything.
+    if (task.live) {
+      const btn = ghostIconBtn("refresh", t("compute.refresh"));
+      btn.onclick = () => refreshComputeTask(task.job_id, btn);
+      row.appendChild(btn);
+    }
+    panel.appendChild(row);
+  });
+  return panel;
+}
 function renderDelegationPanel() {
   const panel = panelShell(t("timeline.panel.delegation"), "delegation-panel"), state = S.delegationState;
   if (!state || !(state.children || []).length) {
@@ -2919,7 +3009,7 @@ function renderActionTimeline() {
   const refresh = ghostIconBtn("refresh", t("timeline.refresh")); refresh.onclick = () => loadWorkbenchState(S.currentId, true); top.appendChild(refresh); root.appendChild(top);
   root.appendChild(runtimeSummaryNode(false));
   const layout = el("div", "workbench-layout"), side = el("div", "workbench-side"), actions = el("section", "timeline-actions");
-  side.appendChild(renderBranchPanel()); side.appendChild(renderDelegationPanel()); side.appendChild(renderContextPanel()); side.appendChild(renderSecurityPanel()); layout.appendChild(side);
+  side.appendChild(renderBranchPanel()); side.appendChild(renderDelegationPanel()); side.appendChild(renderComputeTasksPanel()); side.appendChild(renderContextPanel()); side.appendChild(renderSecurityPanel()); layout.appendChild(side);
   const timeline = S.actionTimeline || {}, groups = timeline.groups || [];
   if (timeline.has_more_before) {
     const controls = el("div", "workbench-controls timeline-history-controls");

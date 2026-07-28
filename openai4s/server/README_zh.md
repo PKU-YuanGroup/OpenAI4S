@@ -90,6 +90,7 @@ gateway.py
 
 - [`security_headers.py`](security_headers.py) —— 基于 hash 的 CSP 与加固响应头，作用于每一个响应。
 - [`contract.py`](contract.py) —— 版本化对外面的统一信封、错误码与 route/event 清单。
+- [`compute_tasks.py`](compute_tasks.py) —— 一个会话的远程计算工作的只读视图。远程任务的寿命长过发起它的那一轮、内核、乃至守护进程，而那份持久记录原先只能从 cell 里够到。这个页面不能轮询，原因是这套系统特有的：**探测即回收**——`ComputeManager.result()` 才是去联系远端的那一步，而联系远端就会把文件拉回来并结束任务，所以一个会自动刷新的页面等于在没人看着的会话里偷偷做回收。本模块只接收一个 `Store`，完全没有 import `ComputeManager`，所以这条保证是结构性的，而不是一句关于调用顺序的承诺。按 `owner_key`（会话工作区）限定范围；别的会话的任务不会被列出、不计入计数，也不会以「已隐藏」的形式被提及。
 - [`errors.py`](errors.py) —— `GatewayError` 与稳定机器错误码。独立成模块，是因为 `GatewayError` 原本位于 gateway 自身 import 区块下方约 5800 行处，兄弟模块从那里 import 它构成循环导入，会让 daemon 在**启动时**就失败。从 `Handler._api` 里切出的每个路由组都要抛这个异常，否则每抽一次就要重新踩一次这个坑。gateway 仍然再导出原来的名字。
 - [`kernel_routes.py`](kernel_routes.py) —— 十二条 kernel 路由，作为 `Handler._api` 拆解的第一刀原样搬出（2100 行 / 261 分支 → 1887 / 237）。选它是因为它是唯一**可被核对**的一组：它拥有十一个冻结响应形状，而 `memory`、`permissions`、`connectors`、`compute` 一个都没有。`handle()` 是三态返回——True 表示已发出响应，False 表示路径匹配但方法分支未触发、链条必须继续走到 404；写成 `return bool(regex_matched)` 会吞掉十二个「方法不对」的 404。两处位置依赖是承重的，并且用测试而非注释来保证：调用点必须在 `frame_mutation` 守卫之后（那是七条改写路由——含代码执行端点——唯一的写保护），以及在 `workbench` 守卫之后（`GET /frames/{id}/execution` 的 404 完全来自它）。
 - [`response_schema.py`](response_schema.py) —— 一套小而明确的形状代数（类型、必填键、元素形状），零依赖，因为 core 只用标准库。它回答的是「这个响应的形状变了吗」；它不是 JSON Schema draft-2020-12，也不假装是。

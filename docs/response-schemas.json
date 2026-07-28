@@ -1458,6 +1458,72 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/compute/tasks [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/compute/tasks/([^/]+)/refresh [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/context [error]": {
       "schema": {
         "properties": {
@@ -6657,6 +6723,139 @@
       }
     },
     "GET /frames/([^/]+)/cancel [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/compute/tasks [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/compute/tasks [ok]": {
+      "schema": {
+        "properties": {
+          "live_count": {
+            "type": "integer"
+          },
+          "polled": {
+            "type": "boolean"
+          },
+          "tasks": {
+            "items": {
+              "properties": {
+                "created_at": {
+                  "type": "integer"
+                },
+                "job_id": {
+                  "type": "string"
+                },
+                "live": {
+                  "type": "boolean"
+                },
+                "outputs": {
+                  "properties": {
+                    "file_count": {
+                      "type": "integer"
+                    },
+                    "total_bytes": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "file_count",
+                    "total_bytes"
+                  ],
+                  "type": "object"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "terminal": {
+                  "type": "boolean"
+                },
+                "terminal_at": {
+                  "type": "integer"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "created_at",
+                "job_id",
+                "live",
+                "outputs",
+                "provider",
+                "status",
+                "terminal",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "live_count",
+          "polled",
+          "tasks"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/compute/tasks/([^/]+)/refresh [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -12463,6 +12662,72 @@
       }
     },
     "PATCH /frames/([^/]+)/cancel [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/compute/tasks [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/compute/tasks/([^/]+)/refresh [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -18716,6 +18981,64 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/compute/tasks [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/compute/tasks/([^/]+)/refresh [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/context [error]": {
       "schema": {
         "properties": {
@@ -19310,12 +19633,14 @@
             ],
             "type": "object"
           },
+          "queue_position": {
+            "type": "integer"
+          },
           "status": {
             "type": "string"
           }
         },
         "required": [
-          "error",
           "execution_id",
           "frame_id",
           "job_id",
@@ -24619,6 +24944,72 @@
       }
     },
     "PUT /frames/([^/]+)/cancel [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/compute/tasks [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/compute/tasks/([^/]+)/refresh [error]": {
       "schema": {
         "properties": {
           "code": {

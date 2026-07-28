@@ -625,6 +625,28 @@
         404
       ]
     },
+    "/frames/([^/]+)/compute/tasks": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
+    "/frames/([^/]+)/compute/tasks/([^/]+)/refresh": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/context": {
       "content_types": [
         "application/json"

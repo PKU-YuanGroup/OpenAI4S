@@ -76,6 +76,7 @@ from openai4s.observability import (
 from openai4s.review import review_evidence
 from openai4s.server import (
     artifact_refs,
+    compute_tasks,
     kernel_routes,
     local_auth,
     retrieval_source,
@@ -1962,6 +1963,52 @@ class SessionRunner:
         if start_idle_sweeper:
             self.recovery.start()
             self._share_boot_restore()
+
+    def refresh_compute_task(self, root_frame_id: str, job_id: str) -> dict:
+        """Contact the remote for ONE job, because a person asked.
+
+        `ComputeManager.result()` is the probe, and in this system the probe is
+        also the harvest: it pulls output files back into the workspace,
+        registers artifacts, and closes the job. There is no read-only way to
+        ask a provider how a job is doing, which is the whole reason the
+        listing beside this does not poll.
+
+        The manager is built with this session's workspace, so its owner scope
+        is the same one the listing reads. A job id belonging to another
+        session resolves to "no such job" through the manager's own
+        owner-scoped `_jobs` map -- the same predicate `job_history` uses, and
+        for the same reason: a distinct refusal would confirm the job exists.
+        """
+        workspace = self.active_workspace_for(root_frame_id)
+        dispatcher = build_dispatcher(
+            self.cfg, frame_id=root_frame_id, workspace=workspace
+        )
+        try:
+            manager = dispatcher.compute
+        except Exception as error:  # noqa: BLE001 - no provider configured
+            raise GatewayError(
+                503, f"remote compute is not available here: {error}", "no_provider"
+            ) from error
+        try:
+            outcome = manager.result({"job_id": job_id})
+        except Exception as error:  # noqa: BLE001
+            # `not_found` is a client error, not a server fault; anything else
+            # is the remote or the transport failing, which the user can retry.
+            code = getattr(error, "kind", "") or getattr(error, "code", "")
+            if str(code) == "not_found":
+                raise GatewayError(404, f"no such job {job_id}", "not_found") from error
+            raise GatewayError(502, str(error), "refresh_failed") from error
+        # Project the durable record rather than the call's return value, so
+        # the refreshed row and the listing beside it are the same shape from
+        # the same source. `hasattr`-guarding this would have hidden the fact
+        # that the method was named something else -- a guard that always takes
+        # the fallback looks like tolerance and is really a silent miss.
+        record = self.store.get_compute_job(job_id) or {"job_id": job_id, **outcome}
+        task = compute_tasks.public_task(record)
+        # Named, because this is the one response in the pair that DID reach a
+        # provider. The listing says `polled: False` for the same reason.
+        task["polled"] = True
+        return task
 
     def workspace_for(self, root_frame_id: str) -> Path:
         ws = self._ws_root / root_frame_id
@@ -8990,6 +9037,35 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json(_host_info())
                 return
             # ---- compute jobs (submit / monitor / cancel) ----
+            m = re.fullmatch(r"/frames/([^/]+)/compute/tasks", sub)
+            if m and method == "GET":
+                # Read-only, owner-scoped, and it does not contact a remote.
+                # That is structural rather than a promise: `compute_tasks`
+                # takes a Store and has no import of ComputeManager, so there
+                # is no code path from opening this page to probing a provider.
+                # It matters because in this system the probe *is* the harvest
+                # -- `result()` pulls files back and closes the job -- so a
+                # self-refreshing page would harvest into a session nobody was
+                # watching, on a schedule nobody chose.
+                fid = m.group(1)
+                if store.get_frame(fid) is None:
+                    raise GatewayError(404, "session not found")
+                self._json(
+                    compute_tasks.owner_tasks(
+                        store, str(runner.active_workspace_for(fid))
+                    )
+                )
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/compute/tasks/([^/]+)/refresh", sub)
+            if m and method == "POST":
+                # The explicit action, and the only one that reaches a remote.
+                # It harvests, which is why it is a POST a person has to press
+                # rather than something the page does on a timer.
+                fid, job_id = m.groups()
+                if store.get_frame(fid) is None:
+                    raise GatewayError(404, "session not found")
+                self._json(runner.refresh_compute_task(fid, job_id))
+                return
             if sub == "/compute/jobs" and method == "GET":
                 self._json({"jobs": _jobs_mgr.list()})
                 return
