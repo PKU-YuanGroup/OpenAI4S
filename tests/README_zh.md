@@ -151,6 +151,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_plan_repository.py`](test_plan_repository.py) | 三个测试，证明 `PlanRepository` 透过 `Store` 门面的表现完全一致，畸形 JSON 也一样：它会回退，而不是抛出来。 |
 | [`test_plan_service.py`](test_plan_service.py) | plan 服务这一层边界。定稿会复用草稿那一行和它的 Artifact，而不是再造一个；Artifact 写失败时它也扛得住，不会把 plan 丢掉。 |
 | [`test_protein_mutation_enhancement_skill.py`](test_protein_mutation_enhancement_skill.py) | 蛋白突变 Skill 的纯 helper。枚举、排序与选择轮次都是确定性的；错误路径被明确检查：野生型残基对不上的突变、越界的位点、没有位点的变体，一律抛错，而不是被悄悄打了分。 |
+| [`test_provenance_identity.py`](test_provenance_identity.py) | 被打了标签的对象，还是不是当初被打标签的那个对象。侧表原先是 `id(obj) -> tags`，而 id 不是身份：CPython 会立刻复用已释放对象的地址，于是一个毫不相干的对象继承了它的血缘——**第一次分配**就能复现。这是在「结果可复现」这一核心主张所依赖的子系统里伪造了一条血缘边；而且侧表是主路径而非边角情况：`list` 和 `dict` 都走这里，而它们正是 `json.loads` 的返回类型。其中两条用例的存在要归功于变异测试打掉了第一版——干等真实地址复用无法证伪修复（钉住对象本身就杜绝了复用，于是测试落到了一条更弱的断言上），而用 `MAX_SIDE_TAGS` 来决定循环次数会让「上限被调大」表现为卡死而不是失败。 |
 | [`test_provenance_paths.py`](test_provenance_paths.py) | worker 内部的文件系统身份——溯源正是在这里悄悄断掉的。一个 Cell 若在打开文件和写入文件之间换了工作目录，仍然必须给出同一个规范路径；最后那个测试拿真实内核验证了这一点。 |
 | [`test_public_api_contract.py`](test_public_api_contract.py) | 公开的 import 表面，钉住它是为了让后端还能继续搬家：包版本、构造函数的参数名、`run_task` 的调用约定，以及 Host 与 server 两个门面。它钉住的只是调用方看得见的东西，仅此而已。 |
 | [`test_r_kernel.py`](test_r_kernel.py) | R 内核。大部分测试跑在一个说着同样协议的假 `Rscript` 上，因此不需要装 R；少数几个在本机有 R 时会用真的 R。`sh -c` 的 fd 交换是被直接断言的，因为协议帧跑错描述符正是这条通道的失效方式；子进程刷出的大量 stderr 也不许把读取端拖进死锁。 |
