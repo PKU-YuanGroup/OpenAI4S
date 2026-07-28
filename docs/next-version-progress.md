@@ -178,3 +178,49 @@ recorded in §12 rather than left implied.
 
 See [`v03-decisions.md`](v03-decisions.md#externally-unverifiable). Nothing in
 this file marks those `Completed`.
+
+## 13. Post-v0.3 audit remediation
+
+A two-round multi-agent audit of this repository produced 41 candidate defects;
+adversarial verification confirmed 28 and refuted 13 (8 on mechanism, 5 on
+consequence). Every fix below was reproduced before being made and falsified
+after, one property at a time.
+
+| Severity | Defect | Commit |
+| --- | --- | --- |
+| High | provenance side table keyed on `id()` — a freed object's lineage inherited by an unrelated one, on the first allocation | `5c28437` |
+| High | every saved specialist failed to delegate: SQLite's `int` met a strict `bool` check | `c8ce530` |
+| High | `web_fetch` redirects escaped the SSRF/egress guard on the stdlib path | `c8ce530` |
+| High | all nine `openai4s share` subcommands 404'd on an unversioned API root | `c8ce530` |
+| High | an oversized `error` dropped the response frame and hung the kernel | `c6fb624` |
+| High | `prov_record` published any absolute host path as a session artifact | `dce5ff4` |
+| High | an enforced sandbox exposed the daemon access token and the macOS keychain | `dce5ff4` |
+| Medium | the biosecurity trajectory screener never ran on the Web daemon | `b8dcad4` |
+| Medium | the R variable inspector reported every variable as `symbol` | `8239f1f` |
+| Medium | R read captured output whole before capping; reported a false `0` peak RSS; the loader escape was UNSAFE in Python and SAFE in R | `eb5fc53` |
+| Medium | the managed-endpoint readiness probe was an unguarded SSRF oracle | `52e2833` |
+| Medium | eight `@` references could add 1.6 MB to one prompt | `a13acce` |
+| Medium | opening a project showed a blank new session instead of its sessions | `2165438` |
+| Medium | `attachment_problems` was emitted to a client that never listened | `adfa082` |
+| Medium | a fan-out to a specialist dropped the specialist's prompt | `37d9293` |
+| Medium | a delegated child compacted against the daemon default, not its own model | `f2652bd` |
+| Medium | a remote job in a cell that wrote nothing became the next cell's provenance | `669c1e0` |
+
+### Still open from the audit
+
+| Severity | Defect | Note |
+| --- | --- | --- |
+| Medium | R cells emit no `stdout_chunk`, so live output streaming is dead for the R half | verifiable here; not yet done |
+| Medium | `env_snapshots.provenance` and `generation_confidence` are written with a migration and read by nothing | the UI shows every snapshot as "Recorded from the kernel environment" |
+| Medium | `stop_kernel` queues its lifecycle ticket behind waiting executions | needs a concurrency repro before a fix |
+| Low | `Tool.dangerous` is declared and asserted by policy tests, but no gate or UI reads it | |
+| Low | `host.app_render` and in-memory `SessionState` grow without bound | |
+| Low | `POST /model-profiles/{id}/probe` and the `readiness` object have no UI call site | |
+
+### Deliberately not fixed
+
+bubblewrap keeps the host PID namespace so `Kernel.interrupt()` can target
+`Popen.pid` exactly. The credential-bearing half is closed —
+`/proc/<daemon>/environ` is masked after the `--proc` mount — and the rest is
+recorded in [`v03-decisions.md`](v03-decisions.md) rather than attempted blind
+on a platform this is not developed on.
