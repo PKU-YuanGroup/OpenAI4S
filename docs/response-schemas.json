@@ -15704,7 +15704,7 @@
             "type": "string"
           },
           "unrestricted": {
-            "type": "integer"
+            "type": "boolean"
           },
           "updated_at": {
             "type": "integer"
@@ -28069,7 +28069,7 @@
             "type": "string"
           },
           "unrestricted": {
-            "type": "integer"
+            "type": "boolean"
           },
           "updated_at": {
             "type": "integer"
