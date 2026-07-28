@@ -31,7 +31,7 @@ from openai4s.host_dispatch import HostDispatcher, build_dispatcher
 from openai4s.kernel import Kernel
 from openai4s.kernel.lazy import LazyKernel
 from openai4s.llm import chat, get_model_capabilities
-from openai4s.security import classify_code, screen_trajectory
+from openai4s.security import classify_code, gather_trajectory, screen_trajectory
 from openai4s.tools import parse_tool_calls, scan_fenced_blocks
 
 SYSTEM_PROMPT = """\
@@ -321,7 +321,7 @@ class Agent:
         # agent to seek context) so we don't deadlock without a human.
         if sec.biosecurity:
             try:
-                user_text, actions = _gather_trajectory(messages, code)
+                user_text, actions = gather_trajectory(messages, code)
                 screen = screen_trajectory(user_text, actions, self.cfg)
             except Exception:  # noqa: BLE001
                 screen = None
@@ -607,24 +607,6 @@ def _extract_code(text: str) -> str | None:
         ):
             return block.body
     return None
-
-
-def _gather_trajectory(messages: list[dict], current_code: str) -> tuple[str, str]:
-    """Split the running conversation into (user_text, agent_actions) for the
-    biosecurity screener: all user turns vs. all assistant turns + this cell."""
-    user_parts: list[str] = []
-    action_parts: list[str] = []
-    for m in messages:
-        role = m.get("role")
-        content = m.get("content")
-        if not isinstance(content, str):
-            continue
-        if role == "user":
-            user_parts.append(content)
-        elif role == "assistant":
-            action_parts.append(content)
-    action_parts.append(current_code)
-    return ("\n\n".join(user_parts[-6:]), "\n\n".join(action_parts[-8:]))
 
 
 def run_task(task: str, *, verbose: bool = False, cfg: Config | None = None) -> dict:

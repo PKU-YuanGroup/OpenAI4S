@@ -64,6 +64,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_backend_import_contract.py`](test_backend_import_contract.py) | 这是一次源码扫描，不是行为测试。在实现逐步搬进新包的过程中，调用方只能 import 已声明的门面表面，并且不许新增对未声明的旧模块内部符号的依赖。 |
 | [`test_background_cleanup.py`](test_background_cleanup.py) | 一个测试，一条保证：关闭会话时先中断、再杀掉它的后台内核，不让任何 worker 活得比会话久。 |
 | [`test_bash_authorization.py`](test_bash_authorization.py) | `host.bash` 在内核本地执行，Host 从不代跑，只负责授权。这个模块就是“这张 token 足够了”的完整论证：它绑定命令、cwd、generation 与 challenge，一次性、会过期，而且被篡改后 worker 会在拉起任何子进程之前就拒掉。 |
+| [`test_biosecurity_web_parity.py`](test_biosecurity_web_parity.py) | 生物安全筛查器在用户真正使用的那个界面上到底跑没跑。`OPENAI4S_BIOSECURITY` 默认开启，`config.py` 明确写着它做两件事：拼接「校准问责」提示词**并且**运行 diO 轨迹筛查器。CLI 的预执行闸门两件都做了；Web 守护进程的 `_safety_refusal` 调完 `classify_code` 就返回——于是 `uv run openai4s run` 会拒绝的 cell，`./start.sh` 照跑不误。丢掉的恰恰是更要紧的那一半：提示词是请模型守规矩，筛查器才是检查它有没有守。筛查器判定的是**轨迹**，所以端口必须放宽以传入 session；`_gather_trajectory` 是从 CLI loop import 过来的，不是重写一份——「什么算轨迹」有两份定义，就是两套安全策略顶着同一个名字。 |
 | [`test_bioprobench_skill.py`](test_bioprobench_skill.py) | BioProBench Skill 里两个会「安静出错」的评分器。真值写成 `0`/`1` 或 `"true"`/`"false"` 时，必须和写成 JSON 布尔值时打出完全一样的分；无法识别的标签要落进 `failed_rate`，而不是被当成一次笃定的错答来计分；PQA 里像 `0.3` 这样本身就正确的裸答案，不能被当成它自己的置信度吞掉。 |
 | [`test_capability_state.py`](test_capability_state.py) | 持久的 Skill 与 Specialist 启用状态。它防的是这样一种失败：某个 Skill 在提示词里是禁用的，在 `search` 里却不是；或者 loader 还攥着一个已经关闭的 `Store` 的仓储。 |
 | [`test_catalyst_sar_screening.py`](test_catalyst_sar_screening.py) | catalyst SAR Skill：它文档里的流水线和硬性锁定、随包带的 CONTCAR 目录，以及 POSCAR 解析器的边界情况——负的缩放系数、被截断的文件、要先做净化才能当文件名的结构化名字。 |

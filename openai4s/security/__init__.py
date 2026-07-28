@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from openai4s.security.biosecurity import (
     ScreenVerdict,
+    gather_trajectory,
     looks_biosecurity_relevant,
     screen_trajectory,
 )
@@ -41,5 +42,6 @@ __all__ = [
     "scan_tool_result",
     "ScreenVerdict",
     "looks_biosecurity_relevant",
+    "gather_trajectory",
     "screen_trajectory",
 ]

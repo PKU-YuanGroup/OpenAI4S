@@ -1908,7 +1908,9 @@ class SessionRunner:
                 ),
                 snapshot=self.artifacts.snapshot,
                 protect_versions=self.artifacts.protect_latest,
-                safety_refusal=lambda code, origin: self._safety_refusal(code, origin),
+                safety_refusal=lambda st, code, origin: (
+                    self._safety_refusal(st, code, origin)
+                ),
                 run=lambda st, request, cell_id, on_chunk, lease: (
                     self._execute_with_watchdog(
                         st,
@@ -5607,26 +5609,63 @@ class SessionRunner:
             # exact generation is current rather than mutating a stale record.
             self.recovery.touch(st, language, state="active")
 
-    def _safety_refusal(self, code: str, origin: str) -> str | None:
-        """Pre-exec code-safety verdict for an agent cell (report e6w).
+    def _safety_refusal(self, st: Any, code: str, origin: str) -> str | None:
+        """Pre-exec safety verdict for an agent cell (reports e6w and diO).
 
         Returns an error-observation string if the cell is refused, else None.
         Only `agent`-origin cells are screened; user/system cells pass through.
-        Fails open (None) on any error.
+        Fails open (None) on any error -- a broken gate must not break a turn.
+
+        Two screens, and only the first used to run here. `OPENAI4S_BIOSECURITY`
+        is documented as doing two things -- "splice the calibrated-
+        accountability prompt AND run the diO trajectory screener" -- and is on
+        by default, but on the Web daemon only the prompt half happened. The
+        CLI ran both. So the same cell that `uv run openai4s run` refused was
+        executed by `./start.sh`, which is the surface people actually use: the
+        model got a prompt asking it to behave, and nothing checked whether it
+        had.
+
+        The screener judges a *trajectory*, not a cell, which is why the port
+        had to widen to pass the session. `gather_trajectory` lives in
+        `openai4s.security` beside the screener that consumes it, so both
+        surfaces share one definition -- two copies of "what counts as the
+        trajectory" would be two safety policies wearing one name.
         """
         if origin != "agent":
             return None
         try:
-            if not self.cfg.security.code_gate_enabled:
-                return None
-            from openai4s.security import classify_code
+            security = self.cfg.security
+            if security.code_gate_enabled:
+                from openai4s.security import classify_code
 
-            verdict = classify_code(code, self.cfg)
+                verdict = classify_code(code, self.cfg)
+                if verdict is not None and not verdict.safe:
+                    return verdict.as_observation()
         except Exception:  # noqa: BLE001 - the gate must never break a turn
+            pass
+
+        try:
+            if not self.cfg.security.biosecurity:
+                return None
+            from openai4s.security import gather_trajectory, screen_trajectory
+
+            messages = list(getattr(st, "messages", ()) or ())
+            user_text, actions = gather_trajectory(messages, code)
+            screen = screen_trajectory(user_text, actions, self.cfg)
+        except Exception:  # noqa: BLE001
             return None
-        if verdict is None or verdict.safe:
-            return None
-        return verdict.as_observation()
+        # Only BLOCK stops a cell. ESCALATE stays advisory here for the same
+        # reason it is advisory in the CLI loop: there is no human in the
+        # execution path to escalate to, and turning it into a refusal would
+        # deadlock the turn rather than get anyone consulted.
+        if screen is not None and screen.blocked:
+            return (
+                "[BLOCKED by the biosecurity trajectory screener] "
+                f"{screen.reason}. This cell was NOT executed. If this is "
+                "legitimate research, stop and explain the scientific context "
+                "and safeguards to the user rather than proceeding."
+            )
+        return None
 
     def _capture_cursor_checkpoint_best_effort(
         self,
