@@ -272,7 +272,30 @@ def test_real_r_persistent_namespace_error_lineno_and_quit_guard(tmp_path):
 
 
 @pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
-def test_real_r_variable_inspector_does_not_force_bindings_or_object_methods(tmp_path):
+def test_real_r_variable_inspector_reports_values_without_invoking_bindings(tmp_path):
+    """What the R inspector may and may not do to a session to describe it.
+
+    It used to describe nothing. `substitute()` does not substitute bindings
+    from `.GlobalEnv` — the only environment this inspector reads — so every
+    ordinary variable came back as an opaque `symbol` with no type, length or
+    preview. The feature was a list of names, and the previous version of this
+    test wrote that outcome down as the contract ("the safe fallback is an
+    opaque symbol for every ordinary binding").
+
+    Safe it was, and the safety is real: inspection must not run user code.
+    But the two things were conflated. Reading an ordinary binding runs
+    nothing; only a promise has anything to force. So the inspector probes with
+    `substitute` first — the one tool that can see an unforced promise without
+    running it — and reads the binding for real when the probe says nothing.
+
+    The cost, stated rather than hidden: on builds where the probe cannot
+    distinguish a promise (current R, in `.GlobalEnv`), inspecting a
+    `delayedAssign` binding forces it. Only that binding, and only when
+    inspected. A promise whose body raises degrades to the same opaque answer
+    instead of failing the whole inspection — which is how this first showed
+    up, with one `stop()` in a promise turning the entire variable list into
+    "failed closed".
+    """
     kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
     try:
         setup = kernel.execute(
@@ -287,28 +310,30 @@ def test_real_r_variable_inspector_does_not_force_bindings_or_object_methods(tmp
 
         inspected = kernel.inspect_variables()
         variables = {item["name"]: item for item in inspected["variables"]}
+
+        # The hard guarantee, unchanged: an active binding is never invoked.
+        # Its accessor is arbitrary user code and calling it would be running
+        # the session rather than describing it.
         assert variables["active_trap"] == {
             "name": "active_trap",
             "type": "active_binding",
         }
-        # R versions differ in how substitute() projects an unforced global
-        # promise: some expose its language expression, newer builds retain the
-        # binding symbol.  Both are deliberately opaque and, critically, do not
-        # force the delayedAssign body.
+
+        # The fix: ordinary variables describe themselves.
+        assert variables["score"]["type"] == "double"
+        assert variables["score"]["length"] == 1
+        assert variables["samples"]["type"] == "list"
+        assert variables["samples"]["length"] == 2
+        assert variables["custom"] == {"name": "custom", "type": "list"}
+
+        # The promise stays opaque either way — exposed by the probe on builds
+        # that can, or degraded after a failed read on builds that cannot.
         assert variables["later"]["type"] in {"language", "symbol"}
         assert "preview" not in variables["later"]
-        if variables["score"]["type"] == "symbol":
-            # Base R deliberately does not substitute bindings from
-            # .GlobalEnv on builds such as R 4.5.  The safe fallback is an
-            # opaque symbol for every ordinary binding; forcing values merely
-            # to improve the preview would violate the inspector contract.
-            for name in ("score", "samples", "custom"):
-                assert variables[name] == {"name": name, "type": "symbol"}
-        else:
-            assert variables["score"]["length"] == 1
-            assert variables["samples"]["length"] == 2
-            assert variables["custom"] == {"name": "custom", "type": "list"}
-        assert kernel.execute("cat(forced)")["stdout"] == "FALSE"
+
+        # And one raising promise does not take the rest of the list with it:
+        # every variable above was still reported.
+        assert {"score", "samples", "custom", "active_trap"} <= set(variables)
     finally:
         kernel.shutdown()
 

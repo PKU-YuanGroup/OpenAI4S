@@ -310,18 +310,52 @@ evalq({
   binding_value <- function(name) {
     env <- globalenv()
     if (bindingIsActive(name, env)) {
-      return(list(active = TRUE, value = NULL))
+      return(list(active = TRUE, value = NULL, lazy = FALSE))
     }
-    # substitute() reads an ordinary binding without invoking repr/print and
-    # returns a delayedAssign promise's expression without forcing it.
+    # substitute() is tried first because it is the only thing here that can
+    # see an unforced promise without running it.  On builds where it exposes
+    # a promise's body we get a language object back and stop right there.
     symbol <- as.name(name)
     call <- as.call(list(as.name("substitute"), symbol, env))
-    list(active = FALSE, value = eval(call, baseenv()))
+    probed <- eval(call, baseenv())
+    if (is.language(probed) && !is.symbol(probed)) {
+      return(list(active = FALSE, value = probed, lazy = TRUE))
+    }
+    # Otherwise substitute told us nothing.  It does not substitute bindings
+    # from .GlobalEnv -- which is the only environment this inspector reads --
+    # so it returned the bare symbol, and using that as the answer reported
+    # EVERY ordinary variable as an opaque `symbol` with no type, length or
+    # preview.  The inspector was, in effect, a list of names.
+    #
+    # get0() reads the binding for real.  The cost, stated plainly: a
+    # `delayedAssign` binding that substitute did not expose is forced here,
+    # which runs user code during inspection.  Only the binding being
+    # inspected, and only on builds where the probe above cannot tell -- but
+    # it is a real side effect and it is the reason the old code chose the
+    # safe, useless answer.
+    #
+    # And it is wrapped, because forcing is not merely a side effect: a promise
+    # whose body raises turns one variable's read into a failure of the WHOLE
+    # inspection, which is how this change first showed up -- the entire
+    # variable list came back "failed closed" because one `delayedAssign` in
+    # the session called stop(). A binding that cannot be read safely degrades
+    # to the same opaque answer an unforced promise gets.
+    tryCatch(
+      list(active = FALSE, value = get0(name, envir = env, inherits = FALSE),
+           lazy = FALSE),
+      error = function(e) list(active = FALSE, value = NULL, lazy = TRUE),
+      condition = function(e) list(active = FALSE, value = NULL, lazy = TRUE)
+    )
   }
 
   inspect_one <- function(name) {
     binding <- binding_value(name)
     if (isTRUE(binding$active)) return(list(name = name, type = "active_binding"))
+    if (isTRUE(binding$lazy)) {
+      # An unforced promise stays opaque on purpose: reporting its body would
+      # be reporting code the user has not run.
+      return(list(name = name, type = "language"))
+    }
     value <- binding$value
     kind <- typeof(value)
     entry <- list(name = name, type = kind)
