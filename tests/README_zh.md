@@ -260,6 +260,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_evidence_verification.py`](test_evidence_verification.py) | 导出的包无需 daemon 即可校验，四种篡改都被抓到——含 payload 与其记录 hash 被一起改写。 |
 | [`test_observability.py`](test_observability.py) | correlation ID 与按形状脱敏的结构化日志字段。 |
 | [`test_doctor.py`](test_doctor.py) | `openai4s doctor` 不依赖 daemon 就能跑，能区分「降级」与「无法进行」，退出码即结论，且绝不打印任何凭据值。 |
+| [`test_endpoint_probe_guard.py`](test_endpoint_probe_guard.py) | 托管端点的就绪探测允许打到哪里。`register` 直接采用 `spec["url"]`，只有在没给的时候才回落到 loopback——也就是说探测目标是 agent 提供的；而 `probe_ready` 对它直接 `urlopen`，没有任何防护。一个 cell 可以把端点注册到 `169.254.169.254`、或守护进程能到达的任意主机任意端口，然后调用 probe，从返回的布尔值里读出「在不在」。这是探测器而非数据外泄，但端口扫描本身就是一种真实能力。这个修复很容易往反方向做错：托管的本地端点**本来就是** loopback，一刀切地拦截会连正常情况一起拒绝。豁免的只有这个守护进程自己分配的那一个地址——而不是「放行 127.0.0.1」，后者恰恰就是本地端口扫描，测试会在这种放宽上变红。 |
 | [`test_error_envelope.py`](test_error_envelope.py) | 统一的成功/错误信封，稳定错误码与 request id。 |
 | [`test_compute_task_centre.py`](test_compute_task_centre.py) | 在不额外花钱的前提下查看远程任务。远程任务的寿命长过发起它的那一轮、内核和守护进程，但那份持久记录原先只能从 cell 里够到——一个 GPU 任务跑了两小时的人根本没地方看。这个页面不能轮询，因为**探测即回收**：`result()` 会去联系远端，而联系远端就会把文件拉回来并结束任务，于是自动刷新的页面等于在没人看着的会话里做回收。验证这一点的用例读的是模块的 `ast` **导入**，而不是它的文本——第一版直接 grep "ComputeManager"，结果被那段专门解释「为什么不用它」的 docstring 判了失败。此外还覆盖跨会话不可枚举（不列出、不计数、也不说「已隐藏」）、重启后仍可读、`unknown` 绝不渲染成失败（任务可能还在跑、还在计费），以及 pid、sandbox 句柄和集群路径不会出现在投影里。 |
 | [`test_contract_inventory.py`](test_contract_inventory.py) | 每个对外 route 与 event 都被契约清单覆盖。 |

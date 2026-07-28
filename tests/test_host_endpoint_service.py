@@ -152,7 +152,7 @@ def test_status_list_and_probe_preserve_hard_errors_and_minimal_updates():
     store = FakeEndpointStore()
     probes = []
 
-    def readiness(url, route):
+    def readiness(url, route, **_kwargs):
         probes.append((url, route))
         return False
 
@@ -233,14 +233,28 @@ def test_endpoint_helpers_keep_fingerprint_and_http_readiness_contract(monkeypat
         return Response()
 
     monkeypatch.setattr("urllib.request.urlopen", open_ok)
-    assert probe_ready("http://localhost:8000/", "/ready", timeout=0.25) is True
+    # `own_port` says this is the daemon's own managed endpoint. Without it the
+    # SSRF guard refuses the probe before `urlopen` is ever reached — which is
+    # the point of the guard, since the endpoint URL is agent-supplied, and it
+    # is why this line carries the port now.
+    assert (
+        probe_ready("http://localhost:8000/", "/ready", timeout=0.25, own_port=8000)
+        is True
+    )
     assert seen == [("http://localhost:8000/ready", 0.25)]
 
     def open_failed(_url, timeout):
         raise urllib.error.URLError(f"timeout={timeout}")
 
     monkeypatch.setattr("urllib.request.urlopen", open_failed)
-    assert probe_ready("http://localhost:8000", "/ready") is False
+    assert probe_ready("http://localhost:8000", "/ready", own_port=8000) is False
+
+    # ...and a target that is NOT this endpoint's own is refused without any
+    # request being made at all.
+    seen.clear()
+    monkeypatch.setattr("urllib.request.urlopen", open_ok)
+    assert probe_ready("http://169.254.169.254", "/ready", own_port=8000) is False
+    assert seen == [], "a guarded target still reached the network"
 
 
 def test_free_port_scans_closes_sockets_and_falls_back_on_permission(monkeypatch):
@@ -307,7 +321,7 @@ def test_dispatcher_endpoint_wrappers_share_the_extracted_service(
     monkeypatch.setattr("openai4s.host_dispatch._free_port", lambda: 24400)
     monkeypatch.setattr(
         "openai4s.host_dispatch._probe_ready",
-        lambda _url, _route: True,
+        lambda _url, _route, **_kwargs: True,
     )
     monkeypatch.setattr(
         "openai4s.host_dispatch._endpoint_fingerprint",

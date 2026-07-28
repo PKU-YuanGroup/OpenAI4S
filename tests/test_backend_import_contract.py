@@ -53,6 +53,13 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             # handle, and a traceback escaping the dispatcher is not that.
             "ResponseTooLarge",
             "SSRFBlocked",
+            # The SSRF check itself, not just the exception it raises. Two
+            # subsystems apply it now: `_http_get` per redirect hop, and the
+            # managed-endpoint readiness probe, whose target URL is
+            # agent-supplied. A guard two subsystems depend on is surface; the
+            # alternative was `host/endpoints.py` reaching for `_guard_url`
+            # across a package boundary, which this test refused.
+            "guard_url",
             "network_allowed",
             "web_download",
             "web_fetch",

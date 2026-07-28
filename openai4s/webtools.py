@@ -80,6 +80,18 @@ def _host_is_private(host: str) -> bool:
     return False
 
 
+def guard_url(url: str) -> None:
+    """Refuse a URL that resolves to a private, loopback or metadata address.
+
+    Public because more than one module needs it: `_http_get` applies it per
+    redirect hop, and `host/endpoints.py` applies it to an agent-supplied
+    endpoint URL before probing. Reaching for `_guard_url` across a package
+    boundary is what `test_backend_import_contract` refuses, and rightly — a
+    guard two subsystems depend on is surface, not an internal.
+    """
+    return _guard_url(url)
+
+
 def _guard_url(url: str) -> None:
     if os.environ.get("OPENAI4S_ALLOW_PRIVATE_FETCH", "") in ("1", "true", "yes"):
         return  # explicit opt-in (e.g. fetching a local model endpoint)

@@ -696,7 +696,9 @@ class HostDispatcher:
         self._endpoint_service = EndpointService(
             self.store,
             allocate_port=lambda: _free_port(),
-            readiness_probe=lambda url, route: _probe_ready(url, route),
+            readiness_probe=lambda url, route, **kwargs: _probe_ready(
+                url, route, **kwargs
+            ),
             fingerprint=lambda *fields: _endpoint_fingerprint(*fields),
         )
         self._mcp_service = MCPService(self.store)
