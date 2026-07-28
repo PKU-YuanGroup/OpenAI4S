@@ -42,7 +42,7 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | # | Defect | Commit | Status | Falsification |
 |---|---|---|---|---|
 | A1 | Every UI edit of a Specialist silently NULLed both allowlists and reset `unrestricted` to true — a restriction that loosened itself | `33e649c` | `Completed` | Routing the partial update back through `upsert` fails both repository tests |
-| A2 | Web-Customize skill edit rewrote frontmatter to `name/description/origin`, destroying `requirements`/`license`/`category` | — | `Not started` | Scheduled with P1-B, before the `requirements` parser |
+| A2 | Web-Customize skill edit rewrote frontmatter to `name/description/origin`, destroying `requirements`/`license`/`category` | this batch | `Completed` | Measured across the 34 bundled skills: `license`+`category` on 23, nested `metadata` on 17, `requirements` on 13, `fold_cue` on 1 — all deleted by fixing a typo. Now edits raw lines rather than rebuilding. Restoring the rebuild fails 2 tests; parse-and-re-emit and a plain line filter each fail one, so both tempting wrong fixes are excluded |
 | A3 | Cross-project memory leak: `list_memories(project_id=st.project_id or "all")` with `"all"` meaning no WHERE clause | `ae53e8e` | `Completed` | Restoring `or "all"` fails the forced-degenerate-state test |
 | A4 | Imported sessions could restore no artifact version — snapshots written to a directory absent from `trusted_snapshot_dirs` | `9deac73` | `Completed` | Removing `session-imports` from the shared roots fails the test |
 | A5 | `host.view_image` read any absolute path; an existence oracle for the host | `677f3f0` | `Completed` | Removing the confinement fails the test |
@@ -165,9 +165,14 @@ are easy to mistake for oversights:
 
 ## 11. Not started
 
-`P1-B` (Agent/Skill/Compute control planes),
-and all of `P2` (design freeze and real-platform experiments). P2 by decision
-D8 enters no public API, schema or definition of done in this version.
+All of `P2` (design freeze and real-platform experiments). By decision D8, P2
+enters no public API, schema or definition of done in this version.
+
+`P1-B` is complete: B.1 (follow-up admission), B.2 (delegation control and the
+stale-record 409), B.3 (Skill `requirements` and readiness), B.4 (specialist
+tri-state allowlists), B.5 (remote compute task centre) and B.6 (memory budgets
+and context projection) have all landed. What each of them could not verify is
+recorded in §12 rather than left implied.
 
 ## 12. Externally unverifiable
 

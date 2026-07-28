@@ -12,7 +12,7 @@ import re
 import shutil
 from typing import Any
 
-from openai4s.skills_loader import SkillLoader, SkillVersionService
+from openai4s.skills_loader import SkillLoader, SkillVersionService, frontmatter_edit
 
 #: Every domain failure this service can report, as a stable machine-readable
 #: code and the HTTP status the gateway turns it into.
@@ -190,11 +190,23 @@ class SkillCustomizationService:
             and existing_skill.origin in {"draft", "personal"}
             else "user"
         )
-        frontmatter = (
-            f"---\nname: {document_name}\ndescription: {description}\n"
-            f"origin: {origin}\n---\n\n"
+        # Edit the three fields this form owns; leave the author's other
+        # frontmatter alone. Rebuilding it from `name`/`description`/`origin`
+        # deleted `requirements`, `license`, `category` and any nested
+        # `metadata` block — and `requirements` is load-bearing, so a skill
+        # that lost `[gpu]` stopped reporting `needs_setup` and started
+        # claiming it could run anywhere.
+        try:
+            previous = document.read_text("utf-8") if document.exists() else ""
+        except OSError:
+            previous = ""
+        content = frontmatter_edit.rewrite(
+            previous,
+            name=document_name,
+            description=description,
+            origin=origin,
+            body=body or "",
         )
-        content = frontmatter + (body or "").strip() + "\n"
         if self.versions is not None:
             try:
                 files = self.versions.read_package(root) if document.exists() else {}
