@@ -196,19 +196,29 @@ def _write_frame(obj: dict) -> None:
         # Never put a frame on the wire that the host would have to
         # materialise whole. Replaced rather than truncated: a truncated JSON
         # line is not a frame at all, and the reader would desynchronise on it.
-        line = (
-            json.dumps(
-                {
-                    "type": "log",
-                    "msg": (
-                        f"kernel dropped an oversized {obj.get('type', 'unknown')!r} "
-                        f"frame (>{_MAX_FRAME_BYTES} bytes)"
-                    ),
-                },
-                ensure_ascii=False,
-            )
-            + "\n"
+        note = (
+            f"kernel dropped an oversized {obj.get('type', 'unknown')!r} "
+            f"frame (>{_MAX_FRAME_BYTES} bytes)"
         )
+        # A dropped `response` leaves the host waiting for an id that will
+        # never arrive -- `Kernel.execute` blocks until the watchdog kills the
+        # worker, which reads to the user as a hang rather than as a refusal.
+        # So the replacement keeps the contract: same type, same id, no
+        # payload, and an error that says what happened. Capping the fields
+        # above is what stops this being reached; this is what stops the next
+        # unbounded field being a hang instead of a message.
+        if obj.get("type") == "response" and obj.get("id"):
+            replacement: dict = {
+                "type": "response",
+                "id": obj.get("id"),
+                "stdout": "",
+                "stderr": "",
+                "error": note,
+                "interrupted": bool(obj.get("interrupted")),
+            }
+        else:
+            replacement = {"type": "log", "msg": note}
+        line = json.dumps(replacement, ensure_ascii=False) + "\n"
     with _write_lock():
         out = _proto_out()
         out.write(line)
@@ -605,7 +615,14 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
         "id": cell_id,
         "stdout": _capped_stdout(),
         "stderr": _cap(err_buf.getvalue()),
-        "error": error_str,
+        # Capped like its two neighbours. It was not, and an exception carrying
+        # a large message -- `raise ValueError("x" * 12_000_000)`, or a
+        # traceback quoting a big repr -- pushed the whole response frame past
+        # `_MAX_FRAME_BYTES`. `_write_frame` then correctly refused to put it
+        # on the wire and sent a `log` in its place, so no response for this
+        # cell id ever arrived and `Kernel.execute` blocked until the watchdog
+        # killed the kernel. Verified: the cell had not returned after 90s.
+        "error": _cap(error_str) if error_str else error_str,
         "interrupted": interrupted,
         "trace": {"error_lineno": error_lineno, "error_call": error_call},
         "guards": guard_report,
