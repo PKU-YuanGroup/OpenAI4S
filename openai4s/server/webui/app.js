@@ -4279,7 +4279,17 @@ async function deleteProject(id) {
 
 /* ---------- sessions ---------- */
 async function loadSessions() {
-  try { const f = await api("/frames?limit=100"); S.sessions = (f.frames || []).filter(x => !x.parent_frame_id); } catch { S.sessions = []; }
+  // Scoped to the open project. This fetched the 100 most recent sessions
+  // across ALL projects and filtered by project in the browser, so a project
+  // whose sessions sat outside that global page appeared to have none — and
+  // `openProject` reads "none" as a reason to call `newSession()`. Switching
+  // to a quiet project therefore created a blank session instead of showing
+  // the work that was sitting in SQLite the whole time.
+  //
+  // The server has supported `project_id` (and cursor paging) all along; this
+  // was one unused query parameter.
+  const scope = S.project ? `&project_id=${encodeURIComponent(S.project)}` : "";
+  try { const f = await api(`/frames?limit=100${scope}`); S.sessions = (f.frames || []).filter(x => !x.parent_frame_id); } catch { S.sessions = []; }
   await loadFolders();
   renderSessions(); syncCurrentTitle(); if (!$("#dashboard").classList.contains("hidden")) loadDashboard();
 }

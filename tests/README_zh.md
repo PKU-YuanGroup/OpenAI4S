@@ -183,6 +183,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_server_agent_run.py`](test_server_agent_run.py) | 纯引擎外围的 Web 适配器，其中大半在讲用户不该看到什么。fence 要跨增量边界一直藏住；代码草稿是临时的、可丢弃的；只用于完成的 Cell 在执行之前先把草稿清掉。旧版的 fenced Tool 调用仍然会执行，并以一条用户 observation 的形式回来。 |
 | [`test_server_completions.py`](test_server_completions.py) | 一轮结束时给用户看的东西。完成消息由真实的 Artifact 增量和实际输出渲染出来，绝不依赖隐藏的推理内容；只跑了代码的一轮，会拿到一个如实的状态，而不是被暗示成成功。 |
 | [`test_server_execution_coordinator.py`](test_server_execution_coordinator.py) | Web 侧的准入与取消。没有确切的执行与持有者身份，取消就失败即拒绝；它绝不能退化成“把当下在跑的随便取消掉”。取消排队中的 REPL 也碰不到正在跑的 Agent。 |
+| [`test_session_sidebar_scope.py`](test_session_sidebar_scope.py) | 打开一个 project 时，它的会话到底看不看得见。`loadSessions` 拉的是**全局**的 `/frames?limit=100`，然后在浏览器里按 project 过滤；于是会话落在那一页之外的 project 看起来就是空的——而 `openProject` 把「空」当成调用 `newSession()` 的理由，于是给一个работ还好端端躺在 SQLite 里的用户呈现了一个崭新的空会话。实测：一个 project 里 120 个会话就足以把另一个只有 3 个会话的 project 整个挤出全局页；修复前可见 0/3，修复后 3/3，并在真实浏览器里再次确认。服务端从一开始就支持 `project_id`、游标和 `next_cursor`——缺的只是一个没被用上的查询参数。 |
 | [`test_session_branching.py`](test_session_branching.py) | 关于 checkpoint、fork、revert 与 undo 的四个测试。revert 预览会报告所有状态维度，且一个字都不写盘；工作区被外部改动过时，revert 会被挡下并记录在案，而不是把改动覆盖掉。 |
 | [`test_session_control_tools.py`](test_session_control_tools.py) | 当前会话与 capability 这两类 Tool。capability 搜索始终可见，并会激活会话这一组；审批输入在经过 dispatcher 时会被脱敏；当它需要的 domain 不感知文件系统时，写操作失败即拒绝。 |
 | [`test_session_deletion.py`](test_session_deletion.py) | 删掉一个会话或 project，同时不能顺手删掉别人的数据。内容寻址存储是共享的，所以它的 GC 要等 checkpoint 的引用发布之后再动；快照清理绝不跟着符号链接走出这棵树；feedback 删除会转义 LIKE 的元字符。 |
