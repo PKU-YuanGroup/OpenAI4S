@@ -153,6 +153,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_plan_repository.py`](test_plan_repository.py) | 三个测试，证明 `PlanRepository` 透过 `Store` 门面的表现完全一致，畸形 JSON 也一样：它会回退，而不是抛出来。 |
 | [`test_plan_service.py`](test_plan_service.py) | plan 服务这一层边界。定稿会复用草稿那一行和它的 Artifact，而不是再造一个；Artifact 写失败时它也扛得住，不会把 plan 丢掉。 |
 | [`test_protein_mutation_enhancement_skill.py`](test_protein_mutation_enhancement_skill.py) | 蛋白突变 Skill 的纯 helper。枚举、排序与选择轮次都是确定性的；错误路径被明确检查：野生型残基对不上的突变、越界的位点、没有位点的变体，一律抛错，而不是被悄悄打了分。 |
+| [`test_prov_record_confinement.py`](test_prov_record_confinement.py) | 一个 cell 可以把哪些文件登记成本会话的 artifact。`provenance_record` 用 `Path(path).expanduser()` 解析路径、只检查文件是否存在，于是宿主上任意绝对路径都能登记——修复前实测：写在工作区之外的一把私钥拿到了 version id，并出现在所有展示 artifact 的界面上、可下载。约束机制并非缺失，而是没被用上：`self._resolve_path` 本来就注入进了这个 service，它的兄弟方法都在调。同一个函数还会把整个文件读进守护进程内存来算校验和，而其它 artifact 路径都是流式处理的。 |
 | [`test_provenance_identity.py`](test_provenance_identity.py) | 被打了标签的对象，还是不是当初被打标签的那个对象。侧表原先是 `id(obj) -> tags`，而 id 不是身份：CPython 会立刻复用已释放对象的地址，于是一个毫不相干的对象继承了它的血缘——**第一次分配**就能复现。这是在「结果可复现」这一核心主张所依赖的子系统里伪造了一条血缘边；而且侧表是主路径而非边角情况：`list` 和 `dict` 都走这里，而它们正是 `json.loads` 的返回类型。其中两条用例的存在要归功于变异测试打掉了第一版——干等真实地址复用无法证伪修复（钉住对象本身就杜绝了复用，于是测试落到了一条更弱的断言上），而用 `MAX_SIDE_TAGS` 来决定循环次数会让「上限被调大」表现为卡死而不是失败。 |
 | [`test_provenance_paths.py`](test_provenance_paths.py) | worker 内部的文件系统身份——溯源正是在这里悄悄断掉的。一个 Cell 若在打开文件和写入文件之间换了工作目录，仍然必须给出同一个规范路径；最后那个测试拿真实内核验证了这一点。 |
 | [`test_public_api_contract.py`](test_public_api_contract.py) | 公开的 import 表面，钉住它是为了让后端还能继续搬家：包版本、构造函数的参数名、`run_task` 的调用约定，以及 Host 与 server 两个门面。它钉住的只是调用方看得见的东西，仅此而已。 |
@@ -189,6 +190,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_session_recovery.py`](test_session_recovery.py) | 空闲清扫器。释放一个会话之前，每一个阻断条件都必须解除，而正在进行的恢复就是其中之一——清扫器不能把内核从恢复脚下抽走。TTL 解析、持久化的活动记录与启动时的对账也在这里。 |
 | [`test_session_snapshots.py`](test_session_snapshots.py) | 内容寻址存储里的工作区快照。做快照时会排除秘密、符号链接与超大文件；恢复时拒绝盖在被外部改动过的工作区上，也不动未跟踪的文件；分支头部的移动由 compare-and-swap 守着。 |
 | [`test_share_expiry.py`](test_share_expiry.py) | 分享有效期 / 自动撤销：记录 `expires_at`、sweeper 撤销过期而保留未过期、无有效期的从不被扫、update 保留或清除有效期、restore 撤销 daemon 关机期间过期的，以及时长解析。 |
+| [`test_sandbox_credential_denies.py`](test_sandbox_credential_denies.py) | 强制沙箱到底把哪些凭据挡在 cell 之外——用真实的 `sandbox-exec` 实测，而不是读 profile 文本推断。拒绝清单里对 `openai4s.db` 用的是**前缀**规则，而守护进程的 access token 是它的**同级文件**，于是数据库被挡住、token 却被读了出来；而那个 token 是整个 HTTP API 的门禁。另外 cell 仍然可以运行 `/usr/bin/security` 去够 macOS 钥匙串——`OPENAI4S_SECRET_STORE` 在 macOS 上默认就把 LLM API key 放在那里。只拒绝钥匙串**文件**是那个看起来很对的错误修法（`securityd` 是代替调用方去打开它们的），测试会在这种改法上变红。同时断言在同样规则下 TLS 仍然可用——因为那正是这个修复可能弄错的取舍。 |
 | [`test_share_gateway.py`](test_share_gateway.py) | gateway 装配：默认关闭且无隧道、未配置时启用会报出缺失项、无隧道也能创建/撤销、删除会话会撤销分享、以及存储层级联删除 shares 行。 |
 | [`test_share_import.py`](test_share_import.py) | URL 导入的 SSRF 策略（非 loopback 仅 HTTPS、禁 credentials、拒私网地址与非 HTTP、bundle 路径归一化）以及导入侧对不可信消息的静态注入标注。 |
 | [`test_share_projection.py`](test_share_projection.py) | 扁平化分享快照：能被 `import_bytes` 原样导入、无 dangling 引用、memories/权限/能力恒空、把 revert-to-sibling 历史扁平化、脱敏 secret 形态文本、残余已知密钥字节时失败即拒、并与查看器文档一致。 |

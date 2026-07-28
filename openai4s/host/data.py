@@ -662,18 +662,64 @@ class HostDataService:
     def provenance_resolve_path(self, path: str) -> Any:
         return self._store().version_for_path(path)
 
+    #: How much of a file is read at a time when checksumming it.
+    _DIGEST_CHUNK = 1024 * 1024
+
     def provenance_record(self, spec: dict) -> dict:
+        """Register a file this cell produced as an artifact of this session.
+
+        The path is resolved through the workspace confinement every other
+        file capability uses. It was not: `Path(path).expanduser()` accepted
+        any absolute path on the host, so a cell could name `~/.ssh/id_rsa` or
+        the daemon's own access-token file and have it registered as a session
+        artifact -- readable, downloadable, and shareable through every surface
+        that lists artifacts. Verified before this changed: a private key
+        outside the workspace came back with a version id.
+
+        `self._resolve_path` was already injected into this service and used by
+        its siblings, which is what makes this an omission rather than a
+        missing mechanism.
+        """
         path = spec["path"]
-        output = Path(path).expanduser()
-        if not output.exists():
+        try:
+            output = self._resolve_path(path, must_exist=True)
+        except FileNotFoundError:
             return {"error": f"prov_record: no such output file: {path}"}
-        data = output.read_bytes()
+        except (ValueError, OSError) as error:
+            # Soft-fail: the worker turns a single-key error dict into a
+            # RuntimeError in the cell, which is how the agent learns it asked
+            # for something outside its workspace.
+            return {"error": f"prov_record: {error}"}
+
+        # Streamed rather than `read_bytes()`. Every other artifact path in
+        # this codebase streams; this one materialised the whole file in the
+        # daemon to checksum it, so recording a 4 GB output cost 4 GB of
+        # daemon memory in a process that also serves every other session.
+        digest = hashlib.sha256()
+        size_bytes = 0
+        try:
+            with open(output, "rb") as handle:
+                while True:
+                    chunk = handle.read(self._DIGEST_CHUNK)
+                    if not chunk:
+                        break
+                    size_bytes += len(chunk)
+                    digest.update(chunk)
+        except FileNotFoundError:
+            # Reported the same way whether the resolver enforced existence or
+            # the open did. A caller with a pass-through resolver would
+            # otherwise get "prov_record: <path>: [Errno 2]..." for the same
+            # situation the branch above calls "no such output file".
+            return {"error": f"prov_record: no such output file: {path}"}
+        except OSError as error:
+            return {"error": f"prov_record: {path}: {error}"}
+
         return self._store().record_cell_artifact(
             path=str(output),
             filename=spec.get("filename") or output.name,
             content_type=spec.get("content_type"),
-            size_bytes=len(data),
-            checksum=hashlib.sha256(data).hexdigest(),
+            size_bytes=size_bytes,
+            checksum=digest.hexdigest(),
             producing_cell_id=spec.get("producing_cell_id"),
             frame_id=self._frame_id(),
             input_version_ids=spec.get("input_version_ids") or [],
