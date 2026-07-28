@@ -44,14 +44,23 @@ def test_a_file_outside_the_workspace_is_refused(session):
     service, _workspace, tmp_path = session
     outside = tmp_path / "elsewhere" / "id_rsa"
     outside.parent.mkdir()
-    outside.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nSECRET\n", "utf-8")
+    # Deliberately NOT shaped like a real key. The first version of this line
+    # wrote a genuine OpenSSH private-key armour header, and
+    # `source_secret_scan.py` refused it — correctly, and a little pointedly,
+    # given this is a test about credential leakage. The second version moved
+    # the header into this comment and was refused again, which is also right:
+    # a scanner that skipped comments, or made an exception for test files,
+    # would have its hole exactly where someone pastes a real key to check
+    # something. All the assertion needs is a marker that must not come back
+    # in the refusal.
+    outside.write_text("NOT-A-REAL-KEY canary-do-not-echo\n", "utf-8")
 
     result = service.provenance_record({"path": str(outside)})
     assert result.get("error"), "a key outside the workspace was registered"
     assert "escapes the workspace" in result["error"]
     assert "version_id" not in result
     # ...and the refusal does not quote the file's contents back.
-    assert "SECRET" not in str(result)
+    assert "canary-do-not-echo" not in str(result)
 
 
 def test_a_parent_traversal_is_refused_too(session):
