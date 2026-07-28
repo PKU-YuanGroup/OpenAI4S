@@ -61,6 +61,7 @@ from openai4s.execution import (
     WatchdogPolicy,
     execute_with_watchdog,
 )
+from openai4s.execution.coordinator import QueueDepthExceeded
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
 from openai4s.llm import PROVIDERS, chat, get_model_capabilities, provider_specs
@@ -277,6 +278,12 @@ _UNAUTHENTICATED_PATHS = frozenset({"/health", _API_ROOT + "/auth/status"})
 _API_PREFIX = _API_ROOT + "/"
 _API_WS = _API_ROOT + "/ws"
 _MAX_JSON_BODY_BYTES = MAX_ARCHIVE_BYTES
+
+#: One chat message. Deliberately the same number as ``MAX_REF_BYTES``: a
+#: message a person types or pastes may be as large as one referenced file and
+#: no larger, because anything bigger belongs on disk where the agent can read
+#: the part it needs instead of carrying all of it in every later prompt.
+MAX_MESSAGE_CHARS = 200_000
 
 
 def _skill_result_status(payload: object) -> int:
@@ -2851,16 +2858,27 @@ class SessionRunner:
             with st.admission_lock:
                 if st.stop_requested.is_set():
                     continue
-                return self.executions.submit(
-                    st.root_frame_id,
-                    owner=owner,
-                    owner_id=owner_id,
-                    execution_id=execution_id,
-                    branch_id=st.branch_id,
-                    language=language,
-                    resource_keys=("workspace", f"kernel:{language or 'control'}"),
-                    metadata={"reason": reason},
-                )
+                try:
+                    return self.executions.submit(
+                        st.root_frame_id,
+                        owner=owner,
+                        owner_id=owner_id,
+                        execution_id=execution_id,
+                        branch_id=st.branch_id,
+                        language=language,
+                        resource_keys=(
+                            "workspace",
+                            f"kernel:{language or 'control'}",
+                        ),
+                        metadata={"reason": reason},
+                    )
+                except QueueDepthExceeded as error:
+                    # A full queue surfaced as HTTP 500 `internal_error`, which
+                    # is wrong about both halves: nothing failed internally, and
+                    # a client that retries 5xx would loop against a queue that
+                    # cannot accept anything until the user waits or cancels --
+                    # which is exactly what the message already tells them.
+                    raise GatewayError(429, str(error), "queue_full") from error
 
     @contextmanager
     def _session_execution(
@@ -4080,9 +4098,40 @@ class SessionRunner:
 
         The HTTP handler may still wait for completion for legacy frontend
         compatibility, but the work is no longer tied to the client socket.
+
+        Everything that can refuse this turn runs *here*, synchronously, before
+        a ticket exists. Both checks below used to happen later -- one inside
+        the worker thread, one nowhere at all -- and "later" is the wrong place
+        for a refusal twice over: the client has already been told 202
+        accepted, and a queued follow-up would not discover the problem until
+        it reached the head of a queue the user had since walked away from.
         """
-        job = MessageJob(f"job-{uuid.uuid4().hex[:12]}", root_frame_id)
         st = self._state(root_frame_id, project_id)
+
+        # 1. Bound the text. The only limit was `_MAX_JSON_BODY_BYTES`, which is
+        #    the *session archive* cap (128 MiB) doing duty as a chat-message
+        #    cap. An 8 MiB message is persisted, replayed into every later turn,
+        #    and is eight times the whole context window on its own -- so the
+        #    session is bricked, and compaction cannot rescue it because
+        #    summarising the message means sending it. Refusing costs the user
+        #    one paste; accepting costs them the session.
+        text = str(user_text or "")
+        if len(text) > MAX_MESSAGE_CHARS:
+            raise GatewayError(
+                413,
+                f"this message is {len(text):,} characters; the limit is "
+                f"{MAX_MESSAGE_CHARS:,}. Save the text as a file and reference "
+                "it with @name so the agent reads it from disk instead.",
+                "message_too_large",
+            )
+
+        # 2. Freeze the model identity at send, not at dequeue. Binding when the
+        #    turn finally runs meant a follow-up sitting in the queue adopted
+        #    whatever the profile said by then. `run_message` still calls this --
+        #    it is idempotent, and other callers (plans) come in that way.
+        self.bind_model_revision(root_frame_id)
+
+        job = MessageJob(f"job-{uuid.uuid4().hex[:12]}", root_frame_id)
         ticket = self._queue_execution(
             st,
             owner="agent",
