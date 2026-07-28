@@ -101,7 +101,8 @@
     ',"error_call":', if (is.null(callname)) "null" else .oai4s_esc(callname),
     '},"guards":{},"usage":{"wall_s":', .oai4s_num(wall),
     ',"cpu_s":', .oai4s_num(cpu),
-    ',"peak_rss_kb":', sprintf("%d", as.integer(.oai4s_or(rss, 0L))),
+    ',"peak_rss_kb":',
+    if (is.null(rss)) "null" else sprintf("%d", as.integer(rss)),
     "}}"
   )
   .oai4s_responded <<- TRUE
@@ -111,10 +112,19 @@
 # --- capture helpers ---------------------------------------------------------
 
 .oai4s_slurp <- function(path) {
+  # Reads at most one byte past the cap, never the whole file. It used to read
+  # `sz` -- the entire capture -- and hand it to .oai4s_cap, which threw all
+  # but the first megabyte away. A cell printing 300 MB therefore allocated
+  # 300 MB in this worker to keep 1 MB of it, while worker.py has bounded the
+  # same output *at write time* since the streaming buffer landed.
+  #
+  # The extra byte is what tells a file that ended exactly at the cap from one
+  # that was cut, so the truncation marker is not attached to complete output.
   if (!file.exists(path)) return("")
   sz <- file.info(path)$size
   if (is.na(sz) || sz <= 0) return("")
-  tryCatch(readChar(path, sz, useBytes = TRUE), error = function(e) "")
+  want <- min(sz, .oai4s_MAX_OUTPUT + 1)
+  tryCatch(readChar(path, want, useBytes = TRUE), error = function(e) "")
 }
 
 .oai4s_cap <- function(s) {
@@ -140,7 +150,18 @@
       if (!is.na(kb)) return(kb)
     }
   }
-  0L  # non-Linux; best-effort like worker.py
+  # NULL, not 0L. `0` is a measurement -- "this cell used no memory" -- and it
+  # is one this worker cannot make: there is no /proc on macOS, which is the
+  # platform this project is developed on, so every R cell reported a peak RSS
+  # of zero and the usage row said so. Absent is the true answer, and the
+  # column is nullable precisely so it can be given.
+  #
+  # The Linux value is left as VmHWM deliberately, and it is worth naming what
+  # that is: a process-lifetime high-water mark, not a per-cell peak. One
+  # memory-hungry cell raises the number every later cell reports. Resetting it
+  # per cell needs /proc/self/clear_refs and a Linux run to verify, so it is
+  # recorded rather than guessed at from here.
+  NULL
 }
 
 .oai4s_unwind_sinks <- function() {

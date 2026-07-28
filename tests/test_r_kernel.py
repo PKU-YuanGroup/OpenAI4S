@@ -369,3 +369,107 @@ def test_real_r_worker_survives_hostile_cells(tmp_path):
         assert "truncated" in big["stdout"]
     finally:
         k.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_bounds_captured_output_without_reading_it_whole(tmp_path):
+    """A chatty R cell must not cost its own size in worker memory.
+
+    `.oai4s_slurp` read the entire capture file and handed it to `.oai4s_cap`,
+    which threw all but the first megabyte away — so a cell printing 300 MB
+    allocated 300 MB to keep 1 MB. `worker.py` has bounded the same output at
+    write time since the streaming buffer landed; the R half never did.
+
+    The visible behaviour is unchanged by design, which is exactly why this
+    test alone cannot check the fix: reverting to the whole-file read leaves
+    every assertion below green. `test_real_r_slurp_reads_at_most_the_cap`
+    drives `.oai4s_slurp` directly and is the one that fails. Mutation testing
+    is what exposed that, and this docstring says so rather than leaving a
+    reader to assume the pair is redundant.
+    """
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        result = kernel.execute("for (i in 1:400000) cat('line', i, '\n')")
+        assert result["error"] is None
+        stdout = result["stdout"]
+        # Capped, and it says so.
+        assert 1_000_000 <= len(stdout) <= 1_000_100
+        assert "truncated" in stdout[-80:]
+
+        # Short output is untouched — no marker on something that ended.
+        short = kernel.execute("cat('brief\n')")
+        assert short["stdout"] == "brief\n"
+        assert "truncated" not in short["stdout"]
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_reports_no_peak_rss_rather_than_zero(tmp_path):
+    """`0` is a measurement this worker cannot make.
+
+    Peak RSS comes from `/proc/self/status`, which does not exist on macOS —
+    the platform this project is developed on — so every R cell reported a
+    peak RSS of zero and the usage row recorded it as fact. Absent is the true
+    answer, and the column is nullable so that it can be given.
+
+    On Linux the value is `VmHWM`, a process-lifetime high-water mark rather
+    than a per-cell peak; that is recorded in the worker rather than silently
+    presented as a per-cell number.
+    """
+    import sys
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        result = kernel.execute("x <- 1")
+        usage = result["usage"]
+        assert "wall_s" in usage and "cpu_s" in usage
+        if sys.platform == "linux":
+            assert usage["peak_rss_kb"] is None or usage["peak_rss_kb"] > 0
+        else:
+            assert usage["peak_rss_kb"] is None, (
+                f"a platform with no /proc reported {usage['peak_rss_kb']!r} "
+                "as a measured peak RSS"
+            )
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_slurp_reads_at_most_the_cap(tmp_path):
+    """Drive `.oai4s_slurp` itself, because the capped output looks the same
+    either way.
+
+    The helper is lifted out of the real worker file and evaluated on its own —
+    sourcing the whole file would start the protocol loop. Lifting keeps the
+    code under test the shipped code rather than a copy of it, which is the
+    hazard a hand-written stand-in would introduce.
+    """
+    import re
+    import subprocess
+    from pathlib import Path
+
+    worker = Path("openai4s/kernel/r_worker.R").read_text(encoding="utf-8")
+    match = re.search(r"\.oai4s_slurp <- function.*?\n\}", worker, re.S)
+    assert match, "the helper this test drives is no longer in the worker"
+
+    big = tmp_path / "big.txt"
+    big.write_bytes(b"A" * (8 * 1024 * 1024))  # 8 MiB, well past the 1 MB cap
+    script = (
+        ".oai4s_MAX_OUTPUT <- 1000000\n"
+        + match.group(0)
+        + f"\ncat(nchar(.oai4s_slurp('{big}'), type='bytes'), '\\n')\n"
+    )
+    result = subprocess.run(
+        [_REAL_R, "--vanilla", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[:300]
+    read_bytes = int(result.stdout.strip().split()[-1])
+    assert (
+        read_bytes <= 1_000_001
+    ), f"slurp read {read_bytes:,} bytes of an 8 MiB file to keep 1 MB of it"
+    # ...and it read enough to fill the cap and know it was cut.
+    assert read_bytes == 1_000_001
