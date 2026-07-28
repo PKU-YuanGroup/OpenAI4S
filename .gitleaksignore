@@ -1,3 +1,15 @@
+# Known false positives, by gitleaks fingerprint (commit:file:rule:line).
+#
+# Every entry here must be a TEST FIXTURE or DOCUMENTATION PLACEHOLDER that was
+# verified by reading it at that commit. A bare list of fingerprints is how a
+# real leak eventually hides in one of these files, so anything added here is
+# expected to say what it is.
+#
+# Fingerprints are per-introduction: gitleaks scans commit diffs, so a literal
+# is flagged once, at the commit that added the line. Moving the line later
+# mints a new fingerprint.
+
+# README / docs: illustrative API keys in configuration examples.
 7fba0472c801237e274d5dd1313f8d113dcdf5c9:README_zh.md:generic-api-key:202
 7fba0472c801237e274d5dd1313f8d113dcdf5c9:README_zh.md:generic-api-key:203
 7fba0472c801237e274d5dd1313f8d113dcdf5c9:README_zh.md:generic-api-key:204
@@ -5,8 +17,24 @@
 576207dc278bd00253433f172700d61709e1162b:README.md:generic-api-key:189
 576207dc278bd00253433f172700d61709e1162b:README.md:generic-api-key:190
 df92eb25a1c69bd9c616a470aabaa2212b5fd8a7:docs/refactor-plan.md:generic-api-key:271
+
+# Test fixtures predating this batch.
 f35863d9dee282772ae0dd420c1364ebf413afa5:tests/test_compute_nvidia.py:generic-api-key:87
 a4b1e49ba48653c811cd8cd6a3a29e84bc5ab9fd:tests/test_diagnostics.py:generic-api-key:33
 a44f5c7f58eae1f0c9cff643249ec89caeb1ccdf:tests/test_observability.py:generic-api-key:27
 7f0c242d4f7b5c13f3e427d58ee596b0a5407167:tests/test_diagnostics.py:generic-api-key:33
 7f0c242d4f7b5c13f3e427d58ee596b0a5407167:tests/test_observability.py:generic-api-key:27
+
+# tests/test_model_profile_readiness.py — `abc123def456ghi789`, an obvious
+# placeholder in a profile dict. Verified by reading the commit.
+8d715ebe7ccf52764ecdf37f6537876a6d656462:tests/test_model_profile_readiness.py:generic-api-key:80
+8d715ebe7ccf52764ecdf37f6537876a6d656462:tests/test_model_profile_readiness.py:generic-api-key:114
+8d715ebe7ccf52764ecdf37f6537876a6d656462:tests/test_model_profile_readiness.py:generic-api-key:159
+
+# tests/test_retrieval_source.py — the canary a redaction test needs. It is
+# high-entropy ON PURPOSE and deliberately NOT provider-shaped: the obvious
+# `sk-...` spelling was refused twice by scripts/source_secret_scan.py, which
+# is correct. The two scanners pull in opposite directions — one refuses
+# provider-shaped strings, the other flags high-entropy ones — and a canary
+# has to be opaque to be worth testing with.
+3dcda11f08cd75dbd3f62e07c430ff2010acdeec:tests/test_retrieval_source.py:generic-api-key:26
