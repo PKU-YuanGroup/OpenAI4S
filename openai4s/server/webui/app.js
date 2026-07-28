@@ -730,6 +730,10 @@ Object.assign(I18N.zh, {
   "timeline.panel.security": "Sandbox · Permission",
   "timeline.panel.delegation": "子代理树",
   "timeline.panel.compute": "远程计算任务",
+  "attach.problemsTitle": "有 {0} 张图没有随本轮发送",
+  "attach.tooLarge": "单张 {0}，超过上限 {1}；请缩小分辨率后重新钉图。",
+  "attach.budget": "本轮图片总量已达上限 {0}；请减少图钉数量或分几轮发送。",
+  "attach.tooMany": "本轮最多附带 {0} 张图。",
   "delegation.stop": "停止这个子代理及其下级",
   "delegation.steer": "在下一个回合边界给它一句话",
   "delegation.steerPrompt": "要在下一个回合边界告诉这个子代理什么？",
@@ -1610,6 +1614,10 @@ Object.assign(I18N.en, {
   "timeline.panel.security": "Sandbox · Permission",
   "timeline.panel.delegation": "Sub-agent tree",
   "timeline.panel.compute": "Remote compute",
+  "attach.problemsTitle": "{0} image(s) were not sent with this turn",
+  "attach.tooLarge": "{0}, over the {1} per-image limit — downscale it and pin again.",
+  "attach.budget": "this turn's {0} image budget is spent — pin fewer figures, or split across turns.",
+  "attach.tooMany": "at most {0} images may be attached to one turn.",
   "delegation.stop": "Stop this sub-agent and everything under it",
   "delegation.steer": "Send it a message at its next turn boundary",
   "delegation.steerPrompt": "What should this sub-agent be told at its next turn boundary?",
@@ -3140,6 +3148,9 @@ function onEvent(m) {
     // turn -- it still runs, and referencing four files with one typo should
     // answer about the other three.
     if (mine(fid)) renderRefProblems(m.problems || []);
+  }
+  else if (m.type === "attachment_problems") {
+    if (mine(fid)) renderAttachmentProblems(m.problems || []);
   }
   else if (m.type === "text_reset") { if (mine(fid)) startStream(); }
   else if (m.type === "notebook_cell_draft") { if (mine(fid)) nbCellDraft(m); }
@@ -8033,6 +8044,41 @@ function acPick(i) {
   acClose(); grow(); c.focus();
 }
 // Unresolved @references, shown inline above the composer.
+function renderAttachmentProblems(problems) {
+  // The server emits `attachment_problems` to tell the user which pinned
+  // figures were left out of a turn, and nothing here listened for it. The
+  // model is told separately, in a system note, so the assistant usually
+  // mentions it — but only usually, and never with the reason, the limit, or
+  // what to do instead. A pin the user placed and the model never received is
+  // the kind of gap that reads as "the model is broken".
+  //
+  // Not reusable as `renderRefProblems`: these carry {name, reason, limit,
+  // bytes}, not {ref, code, message}. The server sends facts here and the
+  // wording lives in the client, which is the opposite of the ref-problem
+  // card and deliberate — these reasons are a closed set the client can
+  // translate, where a ref problem's message names arbitrary files.
+  if (!Array.isArray(problems) || !problems.length) return;
+  const messages = $("#messages"); if (!messages) return;
+  const card = el("div", "ref-problems");
+  card.appendChild(el("div", "ref-problems-head", t("attach.problemsTitle", problems.length)));
+  problems.slice(0, 8).forEach(p => {
+    const row = el("div", "ref-problem");
+    row.appendChild(el("code", "ref-problem-ref", publicText((p && p.name) || "", 80)));
+    const reason = String((p && p.reason) || "");
+    const limit = Number(p && p.limit) || 0;
+    const detail = reason === "too_large"
+      ? t("attach.tooLarge", bytes(Number(p.bytes) || 0), bytes(limit))
+      : reason === "budget_exhausted"
+        ? t("attach.budget", bytes(limit))
+        : reason === "too_many"
+          ? t("attach.tooMany", limit)
+          : reason;
+    row.appendChild(el("span", "ref-problem-msg", detail));
+    card.appendChild(row);
+  });
+  messages.appendChild(card);
+  down();
+}
 function renderRefProblems(problems) {
   if (!Array.isArray(problems) || !problems.length) return;
   const messages = $("#messages"); if (!messages) return;

@@ -1316,3 +1316,48 @@ def test_a_finished_sub_agent_is_not_offered_a_control_that_cannot_work() -> Non
         - 400 : panel.index("delegation-child-controls")
     ]
     assert "running" in gate and "pending" in gate
+
+
+def test_the_attachment_problem_event_reaches_the_user() -> None:
+    """The server emits `attachment_problems` to say which pinned figures were
+    left out of a turn, and nothing listened for it.
+
+    The model is told separately in a system note, so the assistant usually
+    mentions it — but only usually, and never with the reason, the limit, or
+    what to do instead. A pin the user placed and the model never received
+    reads as "the model is broken" rather than "that figure was too large".
+    """
+    assert '"attachment_problems"' in APP_JS, "the event type is never matched"
+
+    dispatch = APP_JS[APP_JS.index('m.type === "attachment_problems"') :][:200]
+    assert "renderAttachmentProblems" in dispatch
+
+    body = APP_JS[APP_JS.index("function renderAttachmentProblems(") :]
+    body = body[: body.index("\nfunction ")]
+    # Every reason the server can send has wording here; an unhandled one would
+    # render the raw enum to a user.
+    for reason in ("too_large", "budget_exhausted", "too_many"):
+        assert reason in body, f"no wording for {reason}"
+
+
+def test_every_attachment_reason_the_server_sends_is_handled() -> None:
+    """Read the reasons out of the gateway rather than listing them here, so a
+    new one added server-side fails this instead of reaching a user as a bare
+    identifier."""
+    import re
+    from pathlib import Path
+
+    gateway = Path("openai4s/server/gateway.py").read_text(encoding="utf-8")
+    # Bounded to the block that builds this list. A wider slice picked up
+    # `"reason"` keys from unrelated features — quarantine records, review
+    # state — and the test failed for reasons that were never attachment
+    # problems at all.
+    block = gateway[gateway.index("dropped: list[dict] = []") :]
+    block = block[: block.index('"type": "attachment_problems"')]
+    reasons = set(re.findall(r'"reason":\s*"([a-z_]+)"', block))
+    assert reasons, "the attachment budget no longer reports reasons"
+
+    body = APP_JS[APP_JS.index("function renderAttachmentProblems(") :]
+    body = body[: body.index("\nfunction ")]
+    missing = sorted(r for r in reasons if r not in body)
+    assert not missing, f"the client has no wording for: {missing}"
