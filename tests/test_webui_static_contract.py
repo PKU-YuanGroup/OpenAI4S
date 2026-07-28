@@ -1260,3 +1260,59 @@ def test_no_panel_calls_a_helper_that_does_not_exist() -> None:
             if called not in known and not called.startswith("_"):
                 missing.append((name, called))
     assert not missing, f"undefined helpers called: {missing}"
+
+
+def test_every_icon_a_button_asks_for_exists() -> None:
+    """`ghostIconBtn("square", …)` renders a button with nothing in it.
+
+    `icon()` looks the name up in `ICONS`; a miss is not an error, it is an
+    empty string, so the control is present, clickable, and invisible. That is
+    worse than a broken button, because nothing in the page or the console says
+    anything is wrong — and `node --check` cannot see it either.
+    """
+    import re
+
+    block = APP_JS[APP_JS.index("const ICONS = {") :]
+    block = block[: block.index("\n};")]
+    known = set(re.findall(r'^\s*"?([\w-]+)"?\s*:', block, re.M))
+    asked = set(re.findall(r'ghostIconBtn\(\s*"([\w-]+)"', APP_JS))
+    asked |= set(re.findall(r'\bicon\(\s*"([\w-]+)"', APP_JS))
+    missing = sorted(asked - known)
+    assert not missing, f"buttons ask for icons that do not exist: {missing}"
+
+
+def test_the_delegation_controls_reach_their_routes() -> None:
+    """The routes exist so a user can stop a runaway sub-agent. A panel that
+    renders the tree and offers nothing leaves them where they started —
+    which is the state this work was opened to fix, and exactly the shape
+    (server-side capability, no client call site) that this file has caught
+    for retrieval provenance, notebook exports and skill allowlists.
+    """
+    panel = APP_JS[APP_JS.index("function renderDelegationPanel(") :]
+    panel = panel[: panel.index("\nfunction ")]
+    assert "stopDelegationChild(" in panel
+    assert "steerDelegationChild(" in panel
+
+    for name, path in (
+        ("stopDelegationChild", "/stop"),
+        ("steerDelegationChild", "/steer"),
+    ):
+        body = APP_JS[APP_JS.index(f"async function {name}(") :]
+        body = body[: body.index("\n}")]
+        assert "/delegations/" in body and path in body
+        assert (
+            'method: "POST"' in body
+        ), "a control that mutates a run must not be a GET"
+
+
+def test_a_finished_sub_agent_is_not_offered_a_control_that_cannot_work() -> None:
+    """After a daemon restart every child in the record is `stopped`. Offering
+    Stop there produces a 409 the user can do nothing about, so the buttons are
+    gated on a status that can still act."""
+    panel = APP_JS[APP_JS.index("function renderDelegationPanel(") :]
+    panel = panel[: panel.index("\nfunction ")]
+    gate = panel[
+        panel.index("delegation-child-controls")
+        - 400 : panel.index("delegation-child-controls")
+    ]
+    assert "running" in gate and "pending" in gate

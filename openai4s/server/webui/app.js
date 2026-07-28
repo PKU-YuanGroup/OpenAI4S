@@ -730,6 +730,12 @@ Object.assign(I18N.zh, {
   "timeline.panel.security": "Sandbox · Permission",
   "timeline.panel.delegation": "子代理树",
   "timeline.panel.compute": "远程计算任务",
+  "delegation.stop": "停止这个子代理及其下级",
+  "delegation.steer": "在下一个回合边界给它一句话",
+  "delegation.steerPrompt": "要在下一个回合边界告诉这个子代理什么？",
+  "delegation.steerQueued": "已排队，将在该子代理的下一个回合边界送达。",
+  "delegation.stopFailed": "停止失败",
+  "delegation.steerFailed": "引导失败",
   "compute.none": "本会话还没有远程计算任务。",
   "compute.live": "进行中 {0}",
   "compute.fromRecord": "来自本地记录，未联网核对",
@@ -1604,6 +1610,12 @@ Object.assign(I18N.en, {
   "timeline.panel.security": "Sandbox · Permission",
   "timeline.panel.delegation": "Sub-agent tree",
   "timeline.panel.compute": "Remote compute",
+  "delegation.stop": "Stop this sub-agent and everything under it",
+  "delegation.steer": "Send it a message at its next turn boundary",
+  "delegation.steerPrompt": "What should this sub-agent be told at its next turn boundary?",
+  "delegation.steerQueued": "Queued — it will arrive at the sub-agent's next turn boundary.",
+  "delegation.stopFailed": "Stop failed",
+  "delegation.steerFailed": "Steering failed",
   "compute.none": "No remote compute tasks in this session.",
   "compute.live": "{0} in flight",
   "compute.fromRecord": "from the local record — not re-checked",
@@ -2975,6 +2987,37 @@ function renderComputeTasksPanel() {
   });
   return panel;
 }
+async function stopDelegationChild(childId, button) {
+  const id = S.currentId; if (!id || !childId) return;
+  button.disabled = true;
+  try {
+    await api(`/frames/${id}/delegations/${encodeURIComponent(childId)}/stop`, { method: "POST", body: "{}" });
+    await loadWorkbenchState(id, true);
+  } catch (e) {
+    // A 409 here is the ordinary post-restart answer, not a fault: the record
+    // survived and the run that owned it did not. Show what the server said
+    // rather than a generic failure, then re-read so the row stops offering
+    // an action that cannot work.
+    hint(t("delegation.stopFailed") + " — " + apiErrorText(e), true);
+    await loadWorkbenchState(id, true);
+  } finally { button.disabled = false; }
+}
+async function steerDelegationChild(childId, button) {
+  const id = S.currentId; if (!id || !childId) return;
+  const message = prompt(t("delegation.steerPrompt"));
+  if (!message || !message.trim()) return;
+  button.disabled = true;
+  try {
+    await api(`/frames/${id}/delegations/${encodeURIComponent(childId)}/steer`, {
+      method: "POST", body: JSON.stringify({ message })
+    });
+    hint(t("delegation.steerQueued"));
+    await loadWorkbenchState(id, true);
+  } catch (e) {
+    hint(t("delegation.steerFailed") + " — " + apiErrorText(e), true);
+    await loadWorkbenchState(id, true);
+  } finally { button.disabled = false; }
+}
 function renderDelegationPanel() {
   const panel = panelShell(t("timeline.panel.delegation"), "delegation-panel"), state = S.delegationState;
   if (!state || !(state.children || []).length) {
@@ -2999,6 +3042,19 @@ function renderDelegationPanel() {
     if (child.steering && (child.steering.queued || child.steering.delivered)) details.appendChild(el("span", "timeline-pill", t("delegation.steering", child.steering.queued || 0, child.steering.delivered || 0)));
     row.appendChild(details);
     if (child.error || child.stop_reason) row.appendChild(el("div", "delegation-child-message", child.error || child.stop_reason));
+    // Only a child that is actually going can be stopped or steered. Offering
+    // the controls on a finished one invites a 409 the user cannot act on,
+    // and after a daemon restart every child here is finished.
+    if (["running", "pending"].includes(String(child.status || "").toLowerCase())) {
+      const controls = el("div", "delegation-child-controls");
+      const stop = ghostIconBtn("stop", t("delegation.stop"));
+      stop.onclick = () => stopDelegationChild(child.child_id, stop);
+      controls.appendChild(stop);
+      const steer = ghostIconBtn("message-square", t("delegation.steer"));
+      steer.onclick = () => steerDelegationChild(child.child_id, steer);
+      controls.appendChild(steer);
+      row.appendChild(controls);
+    }
     panel.appendChild(row);
   });
   return panel;

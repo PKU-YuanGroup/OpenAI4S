@@ -680,6 +680,29 @@
         404
       ]
     },
+    "/frames/([^/]+)/delegations/([^/]+)/steer": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        400,
+        404
+      ]
+    },
+    "/frames/([^/]+)/delegations/([^/]+)/stop": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/environments": {
       "content_types": [
         "application/json"

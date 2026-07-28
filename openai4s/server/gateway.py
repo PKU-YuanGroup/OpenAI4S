@@ -1964,6 +1964,107 @@ class SessionRunner:
             self.recovery.start()
             self._share_boot_restore()
 
+    def _live_delegation_child(self, root_frame_id: str, child_id: str):
+        """The live child a control action can actually reach, or a refusal.
+
+        Three answers, and collapsing any two of them tells the user something
+        untrue:
+
+          404  no such child in the durable record — it never existed here
+          409  the record has it, but nothing live can act on it
+          ok   a running child this runner owns
+
+        The 409 case is the interesting one and it is ordinary rather than
+        exotic. A daemon restart marks every `pending`/`running` child
+        `stopped` with `stop_reason='daemon_restart'` and discards queued
+        steering, so a page opened before the restart is holding ids for
+        children that are gone. Answering 404 there would say "that never
+        existed" about work the user watched run; answering 200 would claim a
+        stop that stopped nothing.
+        """
+        tree = self.store.delegation_tree(root_frame_id) or {}
+        record = next(
+            (
+                child
+                for child in (tree.get("children") or [])
+                if str(child.get("child_id") or "") == child_id
+            ),
+            None,
+        )
+        if record is None:
+            raise GatewayError(404, f"no such sub-agent {child_id}", "not_found")
+
+        state = self._existing_state(root_frame_id)
+        runner = state.delegation_runner if state is not None else None
+        if runner is None:
+            raise GatewayError(
+                409,
+                "this sub-agent belongs to a run that is no longer active; "
+                "reload the session to see its final state",
+                "delegation_record_stale",
+            )
+        try:
+            with runner._tree.lock:  # noqa: SLF001 - same module boundary
+                live = runner._children.get(child_id)  # noqa: SLF001
+        except Exception:  # noqa: BLE001 - a broken runner is a stale record
+            live = None
+        if live is None:
+            raise GatewayError(
+                409,
+                f"sub-agent {child_id} is recorded as "
+                f"'{record.get('status') or 'unknown'}' and cannot be steered "
+                "or stopped from here",
+                "delegation_record_stale",
+            )
+        return runner, record
+
+    def stop_delegation_subtree(self, root_frame_id: str, child_id: str) -> dict:
+        """Stop one child and everything below it, and nothing beside it.
+
+        `_stop_subtree` walks `descendants`, which follows `parent_child_id`,
+        so a sibling is structurally outside the walk rather than spared by a
+        filter somebody has to remember.
+        """
+        runner, _record = self._live_delegation_child(root_frame_id, child_id)
+        try:
+            return runner._stop_subtree(child_id, "stopped by user")  # noqa: SLF001
+        except KeyError as error:
+            # Lost the race with its own completion between the check and here.
+            raise GatewayError(
+                409, f"sub-agent {child_id} finished first", "delegation_record_stale"
+            ) from error
+
+    def steer_delegation_child(
+        self, root_frame_id: str, child_id: str, message: str
+    ) -> dict:
+        """Queue a message for delivery at the child's next turn boundary.
+
+        Never mid-turn: a child that received text in the middle of a tool call
+        would act on it with half its own reasoning already committed.
+        """
+        text = str(message or "").strip()
+        if not text:
+            raise GatewayError(400, "message is required", "bad_request")
+        if len(text) > MAX_MESSAGE_CHARS:
+            raise GatewayError(
+                413,
+                f"steering message is {len(text):,} characters; the limit is "
+                f"{MAX_MESSAGE_CHARS:,}",
+                "message_too_large",
+            )
+        runner, _record = self._live_delegation_child(root_frame_id, child_id)
+        result = runner.send_message({"child_id": child_id, "message": text})
+        if not result.get("ok"):
+            # `send_message` answers a refusal with `{"ok": False, …}` and a
+            # 200 would carry it as success. A child that reached a terminal
+            # state between the read and the send is precisely a stale record.
+            raise GatewayError(
+                409,
+                str(result.get("reason") or "the sub-agent is no longer accepting"),
+                "delegation_record_stale",
+            )
+        return result
+
     def refresh_compute_task(self, root_frame_id: str, job_id: str) -> dict:
         """Contact the remote for ONE job, because a person asked.
 
@@ -9037,6 +9138,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json(_host_info())
                 return
             # ---- compute jobs (submit / monitor / cancel) ----
+            m = re.fullmatch(r"/frames/([^/]+)/delegations/([^/]+)/stop", sub)
+            if m and method == "POST":
+                fid, child_id = m.groups()
+                self._json(runner.stop_delegation_subtree(fid, child_id))
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/delegations/([^/]+)/steer", sub)
+            if m and method == "POST":
+                fid, child_id = m.groups()
+                self._json(
+                    runner.steer_delegation_child(
+                        fid, child_id, (self._body() or {}).get("message") or ""
+                    )
+                )
+                return
             m = re.fullmatch(r"/frames/([^/]+)/compute/tasks", sub)
             if m and method == "GET":
                 # Read-only, owner-scoped, and it does not contact a remote.
