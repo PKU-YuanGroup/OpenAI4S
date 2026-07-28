@@ -615,13 +615,17 @@ def test_r_capture_never_runs_python_figure_probe(tmp_path):
 
 def test_no_changes_skip_environment_and_remote_provenance(tmp_path):
     harness = ArtifactHarness(tmp_path)
+    # Without this the counter is never wrapped, so `environment_calls` stays 0
+    # whatever the code does — the assertion below asserted nothing at all.
+    # Found by mutating the gate away and watching the test stay green.
+    harness.count_environment_captures()
     before = harness.manager.snapshot(harness.workspace)
     remote_calls = 0
 
     def drain_remote():
         nonlocal remote_calls
         remote_calls += 1
-        return [{"job_id": "should-remain-buffered"}]
+        return [{"job_id": "must-not-outlive-this-cell"}]
 
     captured = harness.manager.capture(
         harness.session,
@@ -634,7 +638,16 @@ def test_no_changes_skip_environment_and_remote_provenance(tmp_path):
     )
 
     assert captured.artifacts == []
-    assert harness.environment_calls == remote_calls == 0
+    # The environment freeze is still skipped: it lists packages, and there is
+    # no artifact here for it to describe.
+    assert harness.environment_calls == 0
+    # The drain is NOT skipped, and this is the assertion that changed. The
+    # fixture above still calls its entry "should-remain-buffered", which is
+    # what the old contract wanted — and what made a remote job in a cell that
+    # wrote nothing reappear as the provenance of the next cell's artifact.
+    # A buffer that survives its own cell is how provenance becomes wrong
+    # rather than absent.
+    assert remote_calls == 1
 
 
 def test_snapshot_ignores_hidden_junk_and_nested_git_repositories(tmp_path):

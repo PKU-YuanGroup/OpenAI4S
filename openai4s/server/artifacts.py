@@ -813,9 +813,38 @@ class ArtifactManager:
         # `language` and the session's frame id were already in scope here and
         # simply were not passed on, which is why every artifact was stamped
         # with the daemon's Python environment regardless of what ran.
+        # Drained on EVERY cell, not only on cells that wrote files. The
+        # buffer's own docstring says "drained per cell", and it was not: a
+        # cell that ran a remote GPU job and produced no local output left its
+        # entry sitting there, and the next cell that happened to write a file
+        # was stamped with it. A fold in cell 3 became the provenance of a
+        # figure from cell 7 — provenance that is wrong rather than absent,
+        # which is the failure this subsystem exists to prevent.
+        #
+        # `capture_environment` is what performs the drain, so it is called
+        # either way; its result is only *kept* when there is an artifact to
+        # attach it to. A remote run whose cell produced nothing has no
+        # artifact to describe, and discarding it is the honest outcome.
+        # Two different concerns, separated because they want opposite answers
+        # on a cell that wrote nothing.
+        #
+        # The DRAIN must happen every cell. The buffer's own docstring says
+        # "drained per cell" and it was not: the whole block was gated on the
+        # cell having written files, so a cell that ran a remote GPU job and
+        # produced no local output left its entry sitting there, and the next
+        # cell that happened to write something was stamped with it. A fold in
+        # cell 3 became the provenance of a figure from cell 7 — provenance
+        # that is wrong rather than absent.
+        #
+        # The environment FREEZE should not happen on such a cell: it lists
+        # packages, and there is no artifact for it to describe. Skipping it
+        # was the sound half of the old behaviour and is kept.
+        remote_entries = (
+            drain_remote_provenance() if drain_remote_provenance is not None else None
+        )
         env_snapshot_id = (
             self.capture_environment(
-                drain_remote_provenance,
+                lambda: remote_entries,
                 root_frame_id=getattr(session, "root_frame_id", None),
                 language=language,
             )
