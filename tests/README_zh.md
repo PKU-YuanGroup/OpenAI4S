@@ -59,7 +59,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_artifact_manager.py`](test_artifact_manager.py) | 工作区 Artifact 的捕获、版本化与 cell 提升。其中很大一部分是在防重复：临时版本必须合并进去，而不是变成第二个版本；R 的捕获也不许跑 Python 的图像探测。提升会拒绝符号链接的输出路径，图像只以安全的 data URL 形式内嵌。 |
 | [`test_artifact_mutation_service.py`](test_artifact_mutation_service.py) | 界面上的交互式编辑、重命名、上传与删除。事件形状被一字不差地钉住，因为前端要读它们；任何想逃出工作区的路径都会失败即拒绝。 |
 | [`test_artifact_repository.py`](test_artifact_repository.py) | manager 底下的 artifact、版本、环境与血缘四类仓储。要盯的是事务这条承诺：血缘写失败时，整个 `record_cell` 事务连同那个版本一起回滚。 |
-| [`test_artifact_refs.py`](test_artifact_refs.py) | 消息里的 `@文件` 到底发出去了什么。旧的解析读的是 Artifact 的**活文件**，所以同一条引用在后续 cell 覆写文件之后就指向了不同的字节；解析不出来的名字被静默丢掉，用户于是在问一个模型根本没收到的文件；而且所有 Artifact 都按 UTF-8 `errors="replace"` 解码，于是一个 `.npz` 变成一整片 U+FFFD——模型读到的是「损坏的文本」，而不是「这不是文本」。覆盖钉版本的写法、保留一个小版本的旧写法、发送时才做的跨会话物化，以及各项预算。 |
+| [`test_artifact_refs.py`](test_artifact_refs.py) | 消息里的 `@文件` 到底发出去了什么。旧的解析读的是 Artifact 的**活文件**，所以同一条引用在后续 cell 覆写文件之后就指向了不同的字节；解析不出来的名字被静默丢掉，用户于是在问一个模型根本没收到的文件；而且所有 Artifact 都按 UTF-8 `errors="replace"` 解码，于是一个 `.npz` 变成一整片 U+FFFD——模型读到的是「损坏的文本」，而不是「这不是文本」。覆盖钉版本的写法、保留一个小版本的旧写法、发送时才做的跨会话物化，以及各项预算。 另外还覆盖了那条「前两个上限乘起来没人管」的预算：`MAX_REFS` 限个数、`MAX_REF_BYTES` 限单个，但 8 个都顶到上限就是 1,600,000 字符——约等于 262,144 token 窗口的 1.5 倍，也是用户手打消息上限的 8 倍。现在所有引用共享一份预算，被砍掉的会被点名，而不是悄悄消失。 |
 | [`test_artifact_scope.py`](test_artifact_scope.py) | 子 frame 产出的 Artifact 到底归谁。scope 从根 project 继承下来；显式指定的根若与已知的生产者冲突，会被拒绝；一次迁移会修好规则出现之前写下的那些会话。 |
 | [`test_backend_import_contract.py`](test_backend_import_contract.py) | 这是一次源码扫描，不是行为测试。在实现逐步搬进新包的过程中，调用方只能 import 已声明的门面表面，并且不许新增对未声明的旧模块内部符号的依赖。 |
 | [`test_background_cleanup.py`](test_background_cleanup.py) | 一个测试，一条保证：关闭会话时先中断、再杀掉它的后台内核，不让任何 worker 活得比会话久。 |

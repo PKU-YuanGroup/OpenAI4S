@@ -52,6 +52,15 @@ LEGACY_REF = re.compile(r"(?:^|\s)@([\w./-]+\.\w+)(?![\w#])")
 MAX_REFS = 8
 MAX_REF_BYTES = 200_000
 
+#: ...and how much they may add *together*, which is the bound that was
+#: missing. Eight references at 200,000 bytes each is 1,600,000 characters —
+#: roughly 400,000 tokens against a 262,144-token window, so one message could
+#: exceed the whole context by half again, and be eight times the 200,000-char
+#: cap on the message a person actually types. A count bounds how many; a
+#: per-item cap bounds each; neither bounds the product, which is the same
+#: mistake `memory_budget` was written for.
+MAX_TOTAL_REF_BYTES = 400_000
+
 #: Extensions whose bytes are not text. Injecting them as `errors="replace"`
 #: produces a wall of U+FFFD that a model reads as corrupted text rather than
 #: as "this is a binary file", which is a worse answer than saying so.
@@ -140,6 +149,16 @@ def resolve_message_refs(
     pinned_names = {name for name, _ in pinned}
     legacy = [n for n in LEGACY_REF.findall(text or "") if n not in pinned_names]
 
+    spent = 0
+
+    def _afford(block: str) -> bool:
+        """Charge a resolved block against the shared budget."""
+        nonlocal spent
+        if spent + len(block) > MAX_TOTAL_REF_BYTES:
+            return False
+        spent += len(block)
+        return True
+
     for name, version_id in pinned:
         if len(seen) >= limit:
             problems.append(
@@ -164,7 +183,23 @@ def resolve_message_refs(
         if problem is not None:
             problems.append(problem)
         elif block:
-            blocks.append(block)
+            if _afford(block):
+                blocks.append(block)
+            else:
+                # Named, not silently dropped. A reference the user inserted
+                # and the model never received is the failure this module was
+                # written to stop; running out of budget is a different reason
+                # for it, not an exemption from saying so.
+                problems.append(
+                    _problem(
+                        f"{name}#{version_id}",
+                        "ref_budget_exhausted",
+                        f"{name} was not sent: the referenced files together "
+                        f"exceed this turn's {MAX_TOTAL_REF_BYTES:,}-character "
+                        "budget. Reference fewer files, or ask the agent to "
+                        "read this one in a cell.",
+                    )
+                )
 
     for name in legacy:
         if len(seen) >= limit:
@@ -174,7 +209,18 @@ def resolve_message_refs(
         if problem is not None:
             problems.append(problem)
         elif block:
-            blocks.append(block)
+            if _afford(block):
+                blocks.append(block)
+            else:
+                problems.append(
+                    _problem(
+                        name,
+                        "ref_budget_exhausted",
+                        f"{name} was not sent: the referenced files together "
+                        f"exceed this turn's {MAX_TOTAL_REF_BYTES:,}-character "
+                        "budget.",
+                    )
+                )
 
     if not blocks:
         return text, problems
@@ -301,6 +347,7 @@ __all__ = [
     "LEGACY_REF",
     "MAX_REFS",
     "MAX_REF_BYTES",
+    "MAX_TOTAL_REF_BYTES",
     "PINNED_REF",
     "resolve_message_refs",
 ]

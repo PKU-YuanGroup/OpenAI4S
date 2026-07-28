@@ -308,3 +308,78 @@ def test_a_legacy_reference_never_reaches_another_session(tmp_path):
     )
     assert problems[0]["code"] == "not_found"
     assert "not yours" not in resolved
+
+
+# --------------------------------------------------------------------------
+# the budget the count and the per-file cap did not add up to
+# --------------------------------------------------------------------------
+
+
+def test_references_share_one_character_budget(tmp_path):
+    """`MAX_REFS` bounds how many and `MAX_REF_BYTES` bounds each; neither
+    bounds the product. Eight at the per-file cap is 1,600,000 characters —
+    about 400,000 tokens against a 262,144-token window, so one message could
+    exceed the whole context by half again, and be eight times the cap on the
+    message a person actually types.
+
+    Asserted against a fixed number rather than against the constant under
+    test: writing `<= MAX_TOTAL_REF_BYTES` would keep passing if the budget
+    were raised back to 1.6 MB, which is the state being fixed.
+    """
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    payload = b"x" * 150_000
+    refs = []
+    for index in range(6):
+        seeded = _seed(cfg, store, root, "p", f"big{index}.csv", payload)
+        refs.append(f"@big{index}.csv#{seeded['version_id']}")
+
+    resolved, problems = artifact_refs.resolve_message_refs(
+        " ".join(refs), store=store, root_frame_id=root, project_id="p"
+    )
+    assert (
+        len(resolved) < 500_000
+    ), f"{len(resolved):,} characters reached the prompt from 6 references"
+    cut = [p for p in problems if p["code"] == "ref_budget_exhausted"]
+    assert cut, "references were dropped with nothing said"
+
+
+def test_the_budget_cut_names_every_file_it_dropped(tmp_path):
+    """Same rule as an unresolvable reference: the user asked a question about
+    a file the model never received, and running out of budget is a different
+    reason for that, not an exemption from saying so."""
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    payload = b"y" * 150_000
+    refs = []
+    for index in range(6):
+        seeded = _seed(cfg, store, root, "p", f"f{index}.csv", payload)
+        refs.append(f"@f{index}.csv#{seeded['version_id']}")
+
+    _resolved, problems = artifact_refs.resolve_message_refs(
+        " ".join(refs), store=store, root_frame_id=root, project_id="p"
+    )
+    dropped = [p for p in problems if p["code"] == "ref_budget_exhausted"]
+    assert dropped
+    for problem in dropped:
+        assert problem["ref"].startswith("f")
+        assert "budget" in problem["message"]
+
+
+def test_a_single_ordinary_reference_is_unaffected(tmp_path):
+    """A budget that catches the common case is a bug, not a bound."""
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    seeded = _seed(cfg, store, root, "p", "small.csv", b"a,b\n1,2\n")
+
+    resolved, problems = artifact_refs.resolve_message_refs(
+        f"@small.csv#{seeded['version_id']}",
+        store=store,
+        root_frame_id=root,
+        project_id="p",
+    )
+    assert problems == []
+    assert "1,2" in resolved
