@@ -4007,7 +4007,15 @@ class SessionRunner:
         can be started again to resume. A running turn is cancelled first."""
         st = self._sessions.get(root_frame_id)
         if st is None:
-            return {"ok": True, "state": "none", "frame_id": root_frame_id}
+            # Same shape as the stopped case. A caller should not have to
+            # handle two response shapes from one route depending on whether
+            # the session happened to be resident.
+            return {
+                "ok": True,
+                "state": "none",
+                "frame_id": root_frame_id,
+                "cancelled_queued": [],
+            }
         emit = self.hub.emitter(root_frame_id)
         with st.stop_lock:
             try:
@@ -4020,6 +4028,20 @@ class SessionRunner:
                     cancel_result = self._cancel_current_for_lifecycle(
                         root_frame_id,
                         reason="manual kernel stop",
+                    )
+                    # ...and everything queued behind it. Stop used to cancel
+                    # only the running execution, then submit its own ticket to
+                    # the back of the same FIFO — so anything already waiting
+                    # ran first, and a turn admitted after `stop_requested` is
+                    # set blocks on `stop_finished` as soon as it submits
+                    # anything, which is exactly what Stop sets when it
+                    # finishes. Measured: no return after 40s with three items
+                    # queued behind a turn that cancelled correctly.
+                    #
+                    # Cancelling them is also what the user asked for: a queued
+                    # follow-up is waiting for a kernel that is being stopped.
+                    drained = self.executions.drain_queued(
+                        root_frame_id, reason="kernel stopped"
                     )
                     ticket = self.executions.submit(
                         root_frame_id,
@@ -4065,7 +4087,16 @@ class SessionRunner:
             finally:
                 st.stop_requested.clear()
                 st.stop_finished.set()
-        return {"ok": True, "state": "stopped", "frame_id": root_frame_id}
+        # Reported, not discarded. A queued follow-up that will never run is
+        # something the user is entitled to know about — silently dropping work
+        # they submitted is the same failure as silently dropping a referenced
+        # file from a prompt.
+        return {
+            "ok": True,
+            "state": "stopped",
+            "frame_id": root_frame_id,
+            "cancelled_queued": drained,
+        }
 
     def start_kernel(self, root_frame_id: str, project_id: str = "default") -> dict:
         """(Re)start a stopped/absent kernel WITHOUT wiping the conversation, so
