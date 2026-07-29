@@ -102,8 +102,11 @@ def test_readiness_rides_on_every_listed_profile(api):
     listed = call("GET", "/model-profiles")["body"]
     profile = next(p for p in listed["profiles"] if p["name"] == "keyless")
     assert profile["readiness"]["state"] == "needs_key"
-    assert profile["readiness"]["detail"]
     assert profile["readiness"]["checked_endpoint"] is False
+    # Prose, not the state code repeated. The card renders `detail` verbatim,
+    # and it read "needs_key" at the user until this branch was given the same
+    # treatment as the `ready` and `unsupported` ones either side of it.
+    assert profile["readiness"]["detail"] == "no credential resolves for this profile"
 
 
 def test_a_configured_profile_reads_ready_without_being_contacted(api):

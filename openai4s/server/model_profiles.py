@@ -36,6 +36,13 @@ PROFILE_PROTOCOLS = (
 #: reason. Empty today.
 WITHHELD_PROTOCOLS: dict[str, str] = {}
 
+#: What each readiness problem means, in the words a user reads. The `state`
+#: code stays the thing a client branches on; this is only the sentence.
+PROBLEM_DETAIL = {
+    "needs_key": "no credential resolves for this profile",
+    "needs_model": "no model is named and this protocol has no default",
+}
+
 
 class ModelProfileError(ValueError):
     def __init__(self, message: str, status_code: int = 400) -> None:
@@ -231,9 +238,15 @@ class ModelProfileService:
             if not spec.get("model"):
                 problems.append("needs_model")
         if problems:
+            # Prose, like the two states either side of this branch. `detail`
+            # was the joined problem *codes*, which was fine while nothing
+            # displayed it and became a card reading "needs_key" at a user the
+            # moment one did. `state` is still the code a client branches on.
             return {
                 "state": problems[0],
-                "detail": "; ".join(problems),
+                "detail": "; ".join(
+                    PROBLEM_DETAIL.get(item, item) for item in problems
+                ),
                 "checked_endpoint": False,
             }
         return {
