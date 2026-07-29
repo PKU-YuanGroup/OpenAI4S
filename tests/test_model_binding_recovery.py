@@ -195,13 +195,27 @@ def test_rebinding_is_not_something_send_does_on_its_own(api):
     assert "bind_model_revision" in source
 
 
-def test_the_route_refuses_on_a_read_only_session(api):
+def test_the_route_refuses_on_a_read_only_session(api, monkeypatch):
     """It mutates a session, so it takes the same writability gate as every
-    other session mutation — a quarantined import must not be re-pinned."""
-    source = __import__("inspect").getsource(gateway_mod.make_handler)
-    index = source.index("/frames/([^/]+)/model-binding")
-    window = source[index : index + 900]
-    assert "_require_session_writable" in window
+    other session mutation — a quarantined import must not be re-pinned.
+
+    Driven rather than read out of the source. The first version asserted on
+    `inspect.getsource(make_handler)`, passed locally and failed in CI — the
+    frozen-shape recorder wraps the handler, so the source it hands back is the
+    wrapper's. Falsifying that version then showed the assertion was pointing
+    at the wrong thing entirely: deleting the route's own
+    `_require_session_writable` call changed nothing, because the blanket
+    `frame_mutation` gate covers every non-GET under `/frames/{id}/...`
+    already. The redundant call is gone and this checks the behaviour, which is
+    what the claim was always about.
+    """
+    runner, call = api
+    frame, _profile_id = _pinned_session(runner, call)
+    monkeypatch.setattr(
+        runner, "import_quarantine", lambda _frame_id: {"reason": "imported"}
+    )
+    result = call("POST", f"/frames/{frame}/model-binding")
+    assert result["code"] == 423, result
 
 
 # --------------------------------------------------------------------------

@@ -7713,8 +7713,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # client sends `model` on EVERY message, so treating a supplied
                 # model as consent would rebind silently on every turn — the
                 # drift D2 removed. Re-pinning is a thing someone asks for.
+                # No explicit writability check: the blanket
+                # `frame_mutation` gate above already covers every non-GET
+                # under `/frames/{id}/...`, and a second one here reads as
+                # though this route protects itself — which would invite moving
+                # it above the real gate some day. Verified by a test that
+                # drives a quarantined session and expects 423.
                 frame_id = m.group(1)
-                _require_session_writable(frame_id, "rebinding the model")
                 store.unpin_model(frame_id)
                 self._json(
                     {"ok": True, "binding": runner.bind_model_revision(frame_id)}

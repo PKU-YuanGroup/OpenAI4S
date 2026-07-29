@@ -92,14 +92,58 @@ def test_the_backstop_still_stops_a_runaway():
     assert len(json.dumps(runaway).encode("utf-8")) > worker_mod._MAX_FRAME_BYTES
 
 
-def test_an_oversized_frame_still_answers_the_caller():
-    """Dropping the frame outright would hang the cell that is waiting on it —
-    the reason the replacement keeps the type and the id."""
-    import inspect
+def test_an_oversized_frame_still_answers_the_caller(monkeypatch):
+    """Dropping the frame outright would hang the cell waiting on it —
+    `Kernel.execute` blocks until the watchdog kills the worker, which reads as
+    a hang rather than a refusal. So the replacement keeps the same type and
+    the same id.
 
-    source = inspect.getsource(worker_mod._write_frame)
-    assert '"id"' in source or "id" in source
-    assert "type" in source
+    Driven, not grepped: the first version of this asserted `"id" in source`,
+    which is true of almost any Python source and would have passed against a
+    replacement that dropped the id entirely.
+    """
+    written: list[str] = []
+
+    class _Sink:
+        def write(self, text):
+            written.append(text)
+
+        def flush(self):
+            return None
+
+    # The worker resolves its protocol channel through `_proto_out()`, so that
+    # is what has to be replaced. Patching a module-level name that does not
+    # exist would leave this skipping forever on its own except clause —
+    # a test that reports success by never running.
+    sink = _Sink()
+    monkeypatch.setattr(worker_mod, "_proto_out", lambda: sink)
+    # `_write_frame` serialises on a lock the worker installs on `sys` at
+    # startup, which no test process has. Supplying it is what makes this run
+    # instead of skip — and a skipping test reports success without asserting
+    # anything, which is the failure mode this whole file exists to catch.
+    import sys as _sys
+    import threading as _threading
+
+    if not hasattr(_sys, "_openai4s_protocol_lock"):
+        monkeypatch.setattr(
+            _sys, "_openai4s_protocol_lock", _threading.Lock(), raising=False
+        )
+    oversized = {
+        "type": "response",
+        "id": "req-42",
+        "stdout": "x" * (worker_mod._MAX_FRAME_BYTES + 10),
+    }
+    try:
+        worker_mod._write_frame(oversized)
+    except Exception as error:  # noqa: BLE001
+        raise AssertionError(f"the frame writer could not run: {error}") from error
+
+    assert written, "nothing was written at all"
+    frame = json.loads(written[-1])
+    assert frame["type"] == "response", "the caller cannot match this to its request"
+    assert frame["id"] == "req-42", "the id is gone; the cell waits forever"
+    assert frame["error"], "no reason given for the drop"
+    assert len(json.dumps(frame).encode("utf-8")) <= worker_mod._MAX_FRAME_BYTES
 
 
 # --------------------------------------------------------------------------
