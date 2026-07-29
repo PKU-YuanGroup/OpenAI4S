@@ -19,6 +19,18 @@ from openai4s.agent.models import RunState
 from openai4s.config import get_config
 from openai4s.store import get_store
 
+#: How long to wait for a worker thread to reach its rendezvous.
+#:
+#: These are handshakes, not latency assertions — the claims around them
+#: are about which child stops, which model a child compacts against, and
+#: whether a grandchild is reachable. It was 2 seconds, which is plenty on
+#: an idle laptop and not plenty on a loaded CI runner with the
+#: frozen-shape recorder installed: that is where it failed, having passed
+#: locally three times in a row and in the CI run before it. A longer wait
+#: weakens nothing, because an event that never fires still fails the
+#: test — it just stops failing when the machine is busy.
+_RENDEZVOUS_TIMEOUT = 30
+
 
 def _submitted(output=None):
     return {
@@ -216,7 +228,7 @@ class _FakeKernel:
         self.action_codes.append(code)
         type(self).action_started.set()
         if type(self).block_actions:
-            assert type(self).release_action.wait(2)
+            assert type(self).release_action.wait(_RENDEZVOUS_TIMEOUT)
         return {
             "stdout": "",
             "stderr": "",
@@ -259,7 +271,7 @@ def test_stop_child_interrupts_exact_foreground_kernel_and_engine_cancels(monkey
     runner = DelegationRunner(get_config(), child_max_turns=2)
     handle = runner({"request": "run a long cell", "wait": False})
 
-    assert _FakeKernel.action_started.wait(2)
+    assert _FakeKernel.action_started.wait(_RENDEZVOUS_TIMEOUT)
     stopped = runner.stop_child(handle["child_id"])
     result = runner.collect({"child_ids": [handle["child_id"]]})[0]
 
@@ -294,7 +306,7 @@ def test_late_model_reply_after_stop_cannot_execute_or_submit(monkeypatch):
         del messages, cfg, kwargs
         model_calls.append("started")
         model_started.set()
-        assert release_model.wait(2)
+        assert release_model.wait(_RENDEZVOUS_TIMEOUT)
         return {
             "content": (
                 "```python\n"
@@ -310,7 +322,7 @@ def test_late_model_reply_after_stop_cannot_execute_or_submit(monkeypatch):
     runner = DelegationRunner(get_config(), child_max_turns=2)
     handle = runner({"request": "wait for the model", "wait": False})
 
-    assert model_started.wait(2)
+    assert model_started.wait(_RENDEZVOUS_TIMEOUT)
     runner.stop_child(handle["child_id"])
     release_model.set()
     result = runner.collect({"child_ids": [handle["child_id"]]})[0]
@@ -338,10 +350,10 @@ def test_parent_stop_propagates_to_running_descendants(monkeypatch):
                 self.dispatcher._delegate_fn({"request": "grandchild", "wait": False})
             )
             child_ready.set()
-            assert grandchild_ready.wait(2)
+            assert grandchild_ready.wait(_RENDEZVOUS_TIMEOUT)
         elif self.delegate_depth == 1:
             sibling_ready.set()
-            assert release_sibling.wait(2)
+            assert release_sibling.wait(_RENDEZVOUS_TIMEOUT)
             assert not self.cancellation.cancelled()
             return _submitted({"sibling": "unharmed"})
         else:
@@ -357,9 +369,9 @@ def test_parent_stop_propagates_to_running_descendants(monkeypatch):
     runner = DelegationRunner(get_config())
     parent = runner({"request": "parent child", "wait": False})
     sibling = runner({"request": "sibling child", "wait": False})
-    assert child_ready.wait(2)
-    assert grandchild_ready.wait(2)
-    assert sibling_ready.wait(2)
+    assert child_ready.wait(_RENDEZVOUS_TIMEOUT)
+    assert grandchild_ready.wait(_RENDEZVOUS_TIMEOUT)
+    assert sibling_ready.wait(_RENDEZVOUS_TIMEOUT)
 
     runner.stop_child(parent["child_id"])
     runner.collect({"child_ids": [parent["child_id"]]})
@@ -394,7 +406,7 @@ def test_live_steering_is_delivered_at_next_turn_boundary(monkeypatch):
         )
         self.context_policy.prepare(state)
         first_boundary.set()
-        assert continue_turn.wait(2)
+        assert continue_turn.wait(_RENDEZVOUS_TIMEOUT)
         state.turn = 1
         self.context_policy.prepare(state)
         observed_messages.extend(state.messages)
@@ -403,7 +415,7 @@ def test_live_steering_is_delivered_at_next_turn_boundary(monkeypatch):
     monkeypatch.setattr(loop_mod.Agent, "run", boundary_run)
     runner = DelegationRunner(get_config(), event_sink=events.append)
     handle = runner({"request": "initial task", "wait": False})
-    assert first_boundary.wait(2)
+    assert first_boundary.wait(_RENDEZVOUS_TIMEOUT)
 
     queued = runner.send_message(
         {"child_id": handle["child_id"], "message": "Use the newer dataset"}
@@ -503,7 +515,7 @@ def test_stopping_one_child_leaves_its_siblings_running(monkeypatch):
 
     doomed = runner({"request": "child A", "wait": False})
     spared = runner({"request": "child B", "wait": False})
-    assert _FakeKernel.action_started.wait(2)
+    assert _FakeKernel.action_started.wait(_RENDEZVOUS_TIMEOUT)
 
     stopped = runner.stop_child(doomed["child_id"])
     assert stopped["status"] == "stopped"
