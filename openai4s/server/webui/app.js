@@ -419,6 +419,10 @@ Object.assign(I18N.zh, {
   "cust.models.editHeading": "编辑：{0}",
   "cust.models.empty2": "还没有模型配置。用上面的表单新增一个。",
   "cust.models.hasKey": "🔑 已配置 Key",
+  "cust.models.reachable": "端点已响应一次最小请求",
+  "cust.models.test": "测试连接",
+  "cust.models.testing": "正在联系该端点…",
+  "cust.models.unreachable": "未能联系上该端点",
   "cust.models.key.configured": "✅ API Key 已配置",
   "cust.models.key.missing": "⚠️ 尚未配置 API Key — 发送消息会失败",
   "cust.models.key.placeholder.set": "API Key（已配置，留空则不改动）",
@@ -826,6 +830,7 @@ Object.assign(I18N.zh, {
   "palette.group.skills": "技能",
   "palette.searchPlaceholder": "搜索会话、产物、技能，或执行命令…",
   "perm.badge.subAgent": "子智能体",
+  "perm.badge.dangerous": "高风险",
   "perm.btn.allow": "允许",
   "perm.btn.continueReplan": "继续并重新规划",
   "perm.btn.deny": "拒绝",
@@ -934,6 +939,7 @@ Object.assign(I18N.zh, {
   "prov.env.loadingSnapshot": "加载环境快照…",
   "prov.env.noPackages": "没有可报告的包。",
   "prov.env.recorded": "已记录于该产物生产时的内核环境",
+  "prov.env.recordedUnverified": "环境已记录，但无法确认它只属于这一次生产运行",
   "prov.env.remoteTitle": "远程 GPU 计算（可复现）",
   "prov.env.remoteHost": "主机",
   "prov.env.remoteEnv": "环境",
@@ -1303,6 +1309,10 @@ Object.assign(I18N.en, {
   "cust.models.editHeading": "Edit: {0}",
   "cust.models.empty2": "No models configured yet. Add one with the form above.",
   "cust.models.hasKey": "🔑 Key configured",
+  "cust.models.reachable": "the endpoint answered a minimal request",
+  "cust.models.test": "Test",
+  "cust.models.testing": "contacting the endpoint…",
+  "cust.models.unreachable": "could not reach the endpoint",
   "cust.models.key.configured": "✅ API Key configured",
   "cust.models.key.missing": "⚠️ API Key not configured yet — sending messages will fail",
   "cust.models.key.placeholder.set": "API Key (already configured, leave blank to keep unchanged)",
@@ -1710,6 +1720,7 @@ Object.assign(I18N.en, {
   "palette.group.skills": "Skills",
   "palette.searchPlaceholder": "Search sessions, artifacts, skills, or run a command…",
   "perm.badge.subAgent": "Subagent",
+  "perm.badge.dangerous": "High risk",
   "perm.btn.allow": "Allow",
   "perm.btn.continueReplan": "Continue and replan",
   "perm.btn.deny": "Deny",
@@ -1818,6 +1829,7 @@ Object.assign(I18N.en, {
   "prov.env.loadingSnapshot": "Loading environment snapshot…",
   "prov.env.noPackages": "No packages to report.",
   "prov.env.recorded": "Recorded from the kernel environment at the time this artifact was produced",
+  "prov.env.recordedUnverified": "Environment recorded, but not confirmed to belong to this production run alone",
   "prov.env.remoteTitle": "Remote GPU compute (reproducible)",
   "prov.env.remoteHost": "Host",
   "prov.env.remoteEnv": "Env",
@@ -3892,6 +3904,19 @@ function permActionLine(m) {
   if (t === "delegate") return { mono: false, text: inp.specialist || m.target || "" };
   return { mono: true, text: m.target || "" };
 }
+// How much the card offers to remember by default.
+//
+// It was "conversation" for everything. Combined with a pre-filled pattern and
+// an Allow button, that made a single click on a `restore_artifact_version` or
+// `compute_submit` prompt grant that capability for the rest of the session —
+// and the card gave no sign the two were different, because nothing read the
+// tool's `dangerous` declaration. Now the risky ones default to a grant that
+// covers only this call. Every scope is still offered; the user picks a broader
+// one deliberately rather than by not noticing the selector.
+function defaultRememberScope(m) {
+  return (m && m.dangerous) ? "once" : "conversation";
+}
+
 function renderPermissionCard(m) {
   S.permCards = S.permCards || Object.create(null);  // null-proto: keys like __proto__ can't pollute
   const prev = S.permCards[m.decision_id];
@@ -3903,12 +3928,13 @@ function renderPermissionCard(m) {
   head.appendChild(iconEl("lock", 15, "perm-ic"));
   head.appendChild(el("span", "perm-title", m.title || t("perm.title.run", m.tool)));
   if (m.sub_agent) head.appendChild(el("span", "perm-badge", t("perm.badge.subAgent")));
+  if (m.dangerous) head.appendChild(el("span", "perm-badge danger", t("perm.badge.dangerous")));
   card.appendChild(head);
   card.appendChild(el("div", "perm-sub", t("perm.sub.approvalNeeded")));
   const act = permActionLine(m);
   if (act.text) card.appendChild(el("div", "perm-detail" + (act.mono ? " mono" : ""), act.text));
 
-  let scope = "conversation";
+  let scope = defaultRememberScope(m);
   card.appendChild(el("div", "perm-lbl", t("perm.lbl.rememberScope")));
   const scRow = el("div", "perm-scope");
   const segs = {};
@@ -3919,6 +3945,10 @@ function renderPermissionCard(m) {
     segs[s] = b; scRow.appendChild(b);
   });
   card.appendChild(scRow);
+  // The rule box is meaningless for a "once" grant, and was only ever hidden by
+  // the click handler — so a card that starts at "once" would show an input
+  // that does nothing.
+  patWrap.style.display = (scope === "once") ? "none" : "";
 
   patWrap.appendChild(el("div", "perm-lbl", t("perm.lbl.rememberRule")));
   const patIn = el("input", "perm-in"); patIn.type = "text";
@@ -6901,12 +6931,33 @@ async function renderProvEnvironment(body, a) {
   if (env.packages_unavailable) {
     body.appendChild(el("div", "env-src warn", publicText(env.packages_unavailable, 200)));
   }
-  // provenance honesty: say whether this is the recorded production env or a live fallback
+  // Provenance honesty, in three states rather than two. "Captured or live"
+  // was the only distinction drawn, so a snapshot the STORE labels
+  // `legacy_unverified` — the named generation produced this environment, but
+  // it may not be the only one that did — rendered identically to one whose
+  // address includes its generation and cannot have been shared. So did a row
+  // carrying `provenance: "assumed: no kernel generation on record"`.
+  //
+  // The migration that wrote `generation_confidence` says in its own docstring
+  // that "a reader that needs certainty filters on the label", and no reader
+  // did: 0 occurrences in this file before now. The label was computed,
+  // migrated, stored, shipped over the wire, and ignored — so the UI made the
+  // strong claim on every snapshot regardless of what the data supported.
   const captured = env.source !== "live";
-  const note = el("div", "env-src" + (captured ? " ok" : " warn"));
+  const verified = String(env.generation_confidence || "") === "verified";
+  const note = el("div", "env-src" + (captured && verified ? " ok" : " warn"));
   note.appendChild(iconEl(captured ? "package" : "clock", 13));
-  note.appendChild(el("span", null, captured ? t("prov.env.recorded") : t("prov.env.liveFallback")));
+  note.appendChild(el("span", null,
+    !captured ? t("prov.env.liveFallback")
+      : verified ? t("prov.env.recorded")
+      : t("prov.env.recordedUnverified")));
   body.appendChild(note);
+  // The row's own words about why, when it has any. Rendered rather than
+  // reworded: it is written next to the code that could not establish the
+  // provenance, and that code knows why better than this does.
+  if (captured && !verified && env.provenance) {
+    body.appendChild(el("div", "env-src warn", publicText(env.provenance, 200)));
+  }
   const remote = env.remote || [];
   if (remote.length) {
     const rw = el("div", "env-remote"); rw.appendChild(el("div", "env-remote-h", t("prov.env.remoteTitle")));
@@ -7737,8 +7788,41 @@ async function custModels(c) {
     info.appendChild(nm);
     const bits = []; if (p.provider) bits.push(protocolLabel(p.provider)); if (p.model) bits.push(p.model); bits.push(p.has_api_key ? t("cust.models.hasKey") : (loopbackModelBase(p.base_url) ? t("cust.models.local.keyless") : t("cust.models.noKey")));
     info.appendChild(el("div", "ds", bits.join(" · ") + (p.base_url ? "  ·  " + p.base_url : "")));
+    // `readiness` is computed server-side from local state alone — no network,
+    // deliberately — and had no reader: the row derived its own worse version
+    // from `has_api_key`, so "no model named and this protocol has no default"
+    // and "this build cannot dispatch that protocol" both displayed as a
+    // configured profile that simply failed later.
+    const rd = p.readiness || {};
+    if (rd.state && rd.state !== "ready") {
+      info.appendChild(el("div", "ds prof-warn", publicText(rd.detail || rd.state, 200)));
+    }
+    // Where a probe's answer lands. Created empty so the result appears in the
+    // row that was tested rather than as a toast that outlives its context.
+    const probeOut = el("div", "ds prof-probe"); probeOut.style.display = "none";
+    info.appendChild(probeOut);
     row.appendChild(info);
     if (!isActive) { const use = el("button", "outline-btn small", t("cust.models.setActive")); use.onclick = async () => { use.disabled = true; try { await api(`/model-profiles/${p.id}/activate`, { method: "POST" }); hint(t("toast.models.switched", (p.name || p.id))); S.defaultModel = p.model || S.defaultModel; await loadModels(); refreshKeyBanner(); custTab("models"); } catch (e) { use.disabled = false; hint(t("toast.switchFailed", apiErrorText(e)), true); } }; row.appendChild(use); } else { row.appendChild(el("div", "col-spacer")); }
+    // The only thing here that spends a request against the user's provider
+    // quota, so it is a button and never a render-time call.
+    const test = el("button", "outline-btn small", t("cust.models.test"));
+    test.onclick = async () => {
+      test.disabled = true;
+      probeOut.style.display = ""; probeOut.className = "ds prof-probe";
+      probeOut.textContent = t("cust.models.testing");
+      try {
+        const r = await api(`/model-profiles/${encodeURIComponent(p.id)}/probe`, { method: "POST" });
+        // "reachable" is not "verified" — the server is careful about that
+        // difference and the wording here keeps it.
+        probeOut.className = "ds prof-probe " + (r.reachable ? "ok" : "bad");
+        probeOut.textContent = (r.reachable ? t("cust.models.reachable") : t("cust.models.unreachable"))
+          + (r.detail ? " — " + publicText(r.detail, 240) : "");
+      } catch (e) {
+        probeOut.className = "ds prof-probe bad";
+        probeOut.textContent = apiErrorText(e);
+      } finally { test.disabled = false; }
+    };
+    row.appendChild(test);
     const edit = el("button", "outline-btn small", t("common.edit")); edit.onclick = () => startEdit(p); row.appendChild(edit);
     const del = el("button", "icon-ghost"); del.title = t("common.delete"); del.appendChild(iconEl("trash-2", 14)); del.onclick = async () => { if (!confirm(t("model.delete.confirm", (p.name || p.id)))) return; try { await api(`/model-profiles/${p.id}`, { method: "DELETE" }); hint(t("toast.deleted")); if (isActive) { refreshKeyBanner(); await loadModels(); } custTab("models"); } catch (e) { hint(t("toast.deleteFailed", apiErrorText(e)), true); } }; row.appendChild(del);
     c.appendChild(row);

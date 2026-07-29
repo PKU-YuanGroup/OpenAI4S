@@ -4616,8 +4616,38 @@
     "GET /artifacts/([^/]+)/environment [ok]": {
       "schema": {
         "properties": {
+          "created_at": {
+            "type": "integer"
+          },
+          "environment_name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "generation_confidence": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "generation_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "implementation": {
-            "type": "string"
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "interpreter": {
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "kind": {
             "type": "string"
@@ -4643,10 +4673,28 @@
             },
             "type": "array"
           },
+          "packages_unavailable": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "platform": {
             "type": "string"
           },
+          "provenance": {
+            "type": "string"
+          },
           "python_version": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "remote": {
+            "type": "array"
+          },
+          "snapshot_id": {
             "type": "string"
           },
           "source": {

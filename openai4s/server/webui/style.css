@@ -689,6 +689,9 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .nb-revive .solid-btn{cursor:pointer}
 .cust-input{flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--line,#8883);border-radius:8px;background:var(--bg,transparent);color:var(--ink,inherit);font:inherit}
 .cust-row .ds{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}
+.cust-row .prof-warn{color:var(--danger)}
+.cust-row .prof-probe.ok{color:var(--success-text)}
+.cust-row .prof-probe.bad{color:var(--danger)}
 body.layout-compact{font-size:13px}
 body.layout-compact .messages{padding-top:6px}
 body.layout-compact .cust-row{padding-top:8px;padding-bottom:8px}
@@ -910,6 +913,7 @@ body.has-key-banner #sidebar,body.has-key-banner #main,body.has-key-banner #righ
 .perm-ic{color:var(--clay-em);flex:none}
 .perm-title{font-weight:600;color:var(--text-000);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .perm-badge{flex:none;background:var(--bg-200);color:var(--text-400);font-size:11px;padding:1px 8px;border-radius:999px}
+.perm-badge.danger{background:var(--danger-bg);color:var(--danger)}
 .perm-sub{color:var(--text-400);font-size:12.5px;margin:3px 0 9px}
 .perm-detail{font-size:12.5px;color:var(--text-200);background:var(--bg-200);border-radius:8px;padding:7px 10px;margin-bottom:10px;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
 .perm-detail.mono{font-family:var(--mono);font-size:12px}

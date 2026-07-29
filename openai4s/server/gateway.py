@@ -2274,6 +2274,25 @@ class SessionRunner:
                             return False
                         stopped = st.kernels.stop("python", manual=False, reason=reason)
                         stopped += st.kernels.stop("r", manual=False, reason=reason)
+                        if stopped:
+                            # The provider history is the largest thing a cold
+                            # session holds — measured at ~1.1 MB for a 200-turn
+                            # conversation, and essentially all of a
+                            # SessionState's resident cost. The sweeper has just
+                            # decided this session is cold enough to tear its
+                            # kernels down, and ``_seed_messages`` rebuilds the
+                            # history from ``restore_action_history`` because the
+                            # store is the canonical provider history. So this
+                            # leaves the session in exactly the state a daemon
+                            # restart leaves it in — a state every reader already
+                            # handles, since after a restart no session is
+                            # resident. What it stops is a daemon accumulating
+                            # every conversation it has ever served: nothing
+                            # removed a SessionState from ``_sessions`` short of
+                            # an explicit close, so 100 idle sessions held 110 MB
+                            # of history for kernels that no longer existed.
+                            st.messages = []
+                            st.context_omissions = {}
                     finally:
                         st.turn_lock.release()
                     if not stopped:

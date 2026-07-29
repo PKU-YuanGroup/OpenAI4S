@@ -205,17 +205,17 @@ after, one property at a time.
 | Medium | a fan-out to a specialist dropped the specialist's prompt | `37d9293` |
 | Medium | a delegated child compacted against the daemon default, not its own model | `f2652bd` |
 | Medium | a remote job in a cell that wrote nothing became the next cell's provenance | `669c1e0` |
+| Medium | R cells emitted no `stdout_chunk`, so live output was dead for the R half | `2c3fae3` |
+| Medium | `stop_kernel` queued its lifecycle ticket behind the executions it was cancelling | `7322140` |
+| Medium | `generation_confidence` and `provenance` were written by a migration and read by nothing | `PENDING` |
+| Low | `Tool.dangerous` was declared on ten tools and read by no gate, audit or prompt | `PENDING` |
+| Low | `host.app_render` grew without bound (100 MB measured); a released idle session kept its history | `PENDING` |
+| Low | model-profile `readiness` and the probe route had no UI call site | `PENDING` |
 
 ### Still open from the audit
 
-| Severity | Defect | Note |
-| --- | --- | --- |
-| Medium | R cells emit no `stdout_chunk`, so live output streaming is dead for the R half | verifiable here; not yet done |
-| Medium | `env_snapshots.provenance` and `generation_confidence` are written with a migration and read by nothing | the UI shows every snapshot as "Recorded from the kernel environment" |
-| Medium | `stop_kernel` queues its lifecycle ticket behind waiting executions | needs a concurrency repro before a fix |
-| Low | `Tool.dangerous` is declared and asserted by policy tests, but no gate or UI reads it | |
-| Low | `host.app_render` and in-memory `SessionState` grow without bound | |
-| Low | `POST /model-profiles/{id}/probe` and the `readiness` object have no UI call site | |
+Nothing. Every finding from the audit round is either fixed above or recorded
+below as a decision.
 
 ### Deliberately not fixed
 

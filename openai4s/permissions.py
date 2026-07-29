@@ -266,6 +266,7 @@ class PermissionBroker:
         tool_call_id: str | None = None,
         side_effect_class: str | None = None,
         resource_keys: list[str] | tuple[str, ...] | None = None,
+        dangerous: bool = False,
         timeout: float | None = None,
     ) -> dict:
         # Resolve the conversation identity + project from the dispatcher's frame
@@ -343,6 +344,12 @@ class PermissionBroker:
             "tool_call_id": tool_call_id,
             "side_effect_class": side_effect_class,
             "resource_keys": list(resource_keys or ()),
+            # The tool's own risk declaration, so the card can ask for a
+            # dangerous capability differently than for a file read. Carried in
+            # the payload rather than a new column: the payload is stored with
+            # the request, so the durable record and any replay of it keep the
+            # fact without a migration.
+            "dangerous": bool(dangerous),
         }
         wait_seconds = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         try:
