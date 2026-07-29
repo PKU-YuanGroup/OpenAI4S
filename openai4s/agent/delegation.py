@@ -1229,6 +1229,20 @@ def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
     if isinstance(item, dict):
         normalized = dict(inherited)
         normalized.update(item)
+        # `update` lets a child REPLACE what it inherited, which for a resource
+        # allowlist means delegating is the way out of it: a child restricted
+        # to one Skill could name three and get three. Narrow instead, so the
+        # child's own list can only ever be a subset of its parent's. `None`
+        # on either side inherits the other, which is what the tri-state means.
+        from openai4s.host import resource_allowlist
+
+        for key in ("skill_names", "connectors"):
+            if key in inherited or key in item:
+                narrowed = resource_allowlist.narrow(inherited.get(key), item.get(key))
+                if narrowed is None:
+                    normalized.pop(key, None)
+                else:
+                    normalized[key] = sorted(narrowed)
         return normalized
     raise DelegationError(
         f"delegate: each request item must be str or dict, got {type(item).__name__}"

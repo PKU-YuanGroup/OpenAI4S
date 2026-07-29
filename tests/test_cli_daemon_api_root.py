@@ -104,7 +104,11 @@ def test_the_url_is_built_under_the_versioned_root(monkeypatch):
         seen["url"] = request.full_url
         return _Response()
 
-    monkeypatch.setattr(cli_main, "_url", lambda _cfg: "http://127.0.0.1:8760/")
+    # Signature-compatible with the real `_url`, which grew `with_token` so the
+    # human-facing callers can print a URL that actually opens. A lambda that
+    # only accepts the old shape turns a real change into a TypeError here and
+    # says nothing about the API root this test is actually about.
+    monkeypatch.setattr(cli_main, "_url", lambda _cfg, **_kw: "http://127.0.0.1:8760/")
     monkeypatch.setattr(cli_main, "_daemon_token", lambda _cfg: "t")
     monkeypatch.setattr(cli_main.urllib.request, "urlopen", _fake_urlopen)
 

@@ -587,6 +587,8 @@ Object.assign(I18N.zh, {
   "menu.versionHistory": "版本历史",
   "modal.title.preview": "预览",
   "model.delete.confirm": "删除模型配置「{0}」？",
+  "model.rebind.confirm": "该会话固定的模型配置已不存在。是否改绑到当前启用的配置以继续？",
+  "model.rebind.done": "已改绑到当前启用的模型配置",
   "models.none": "无模型",
   "mol.foot": "拖动旋转 • 滚动缩放 • Shift+拖动平移",
   "mol.style.cartoon": "卡通",
@@ -1477,6 +1479,8 @@ Object.assign(I18N.en, {
   "menu.versionHistory": "Version history",
   "modal.title.preview": "Preview",
   "model.delete.confirm": "Delete model profile \"{0}\"?",
+  "model.rebind.confirm": "The model configuration this session was pinned to no longer exists. Re-bind it to the active configuration and continue?",
+  "model.rebind.done": "Re-bound to the active model configuration",
   "models.none": "No models",
   "mol.foot": "Drag to rotate • Scroll to zoom • Shift+drag to pan",
   "mol.style.cartoon": "Cartoon",
@@ -4319,6 +4323,24 @@ async function deleteProject(id) {
 }
 
 /* ---------- sessions ---------- */
+// Newest-first paging, which the server has supported the whole time.
+//
+// Every message fetch here sent `?from=0&limit=N` — the OLDEST N — so opening a
+// 640-message session showed messages 0 to 299 and the work you came back for
+// was off the end. `newest_first` / `before_seq` / `next_before_seq` went in
+// through the store, the repository and the route, and `app.js` contained
+// neither string; a comment on the route even described "the client asks for
+// the newest page", describing a client nobody had written.
+//
+// The rows come back descending, so they are sorted back into reading order
+// here rather than at each call site.
+async function fetchRecentMessages(fid, limit) {
+  const data = await api(`/frames/${encodeURIComponent(fid)}/messages?newest_first=1&limit=${limit}`);
+  const rows = (data && data.messages) || [];
+  rows.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+  return { ...data, messages: rows };
+}
+
 async function loadSessions() {
   // Scoped to the open project. This fetched the 100 most recent sessions
   // across ALL projects and filtered by project in the browser, so a project
@@ -4468,7 +4490,7 @@ async function openConversation(fid, pid) {
   let msgCount = 0;
   try {
     const [d, sd] = await Promise.all([
-      api(`/frames/${fid}/messages?from=0&limit=300`),
+      fetchRecentMessages(fid, 300),
       api(`/frames/${fid}/steps`).catch(() => ({ steps: [] })),
     ]);
     if (gen !== S._openGen) return;
@@ -4556,7 +4578,7 @@ async function showContextUsage() {
 }
 async function saveCurrentAsSkill() {
   if (!S.currentId) { skillEditor(null); return; }
-  let messages = []; try { const data = await api(`/frames/${S.currentId}/messages?from=0&limit=500`); messages = data.messages || []; } catch {}
+  let messages = []; try { const data = await fetchRecentMessages(S.currentId, 500); messages = data.messages || []; } catch {}
   const latestUser = [...messages].reverse().find(m => m.role === "user");
   const latestAssistant = [...messages].reverse().find(m => m.role === "assistant");
   const title = (S._titleName || "research-workflow").toLowerCase().replace(/[^a-z0-9一-龥]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "research-workflow";
@@ -4823,7 +4845,7 @@ function moveToFolderAt(anchor, fid) {
 async function exportSession(fid) {
   try {
     const [d, arts] = await Promise.all([
-      api(`/frames/${fid}/messages?from=0&limit=500`),
+      fetchRecentMessages(fid, 500),
       api(`/frames/${fid}/artifacts`).catch(() => []),
     ]);
     const f = S.sessions.find(x => x.id === fid) || {};
@@ -4973,6 +4995,22 @@ async function send(text, opts) {
       const reloaded = await loadAnnotations(S.currentId);
       if (!reloaded) setLocalAnnotationStatus(annIds, "open");
       refreshAllStages(); updateAnnotBadge();
+    }
+    // 409 `model_revision_unavailable` is the one send failure the user cannot
+    // do anything about from anywhere else in the app. It says "choose one to
+    // continue" and there was nothing to choose with: the binding is not in
+    // any PATCH allowlist, forking inherits it, and this file had zero
+    // references to the code. So the session was unsendable for good.
+    if (e && e.code === "model_revision_unavailable") {
+      if (confirm(t("model.rebind.confirm"))) {
+        try {
+          await api(`/frames/${encodeURIComponent(S.currentId)}/model-binding`, { method: "POST" });
+          hint(t("model.rebind.done"));
+          if (S.running) turnDone("failed");
+          loadSessions();
+          return;
+        } catch (rebindError) { hint(apiErrorText(rebindError), true); }
+      }
     }
     hint(t("toast.sendFailed", apiErrorText(e)), true);
     if (S.running) turnDone("failed");
@@ -6990,7 +7028,7 @@ async function renderProvEnvironment(body, a) {
 async function renderProvMessages(body) {
   body.appendChild(el("div", "dock-empty", t("prov.msg.loading")));
   let msgs;
-  try { const d = await api(`/frames/${S.currentId}/messages?from=0&limit=500`); msgs = (d && d.messages) || []; }
+  try { const d = await fetchRecentMessages(S.currentId, 500); msgs = (d && d.messages) || []; }
   catch (e) { if (S.provMode && S.provSub === "messages") { body.innerHTML = ""; body.appendChild(el("div", "dock-empty", t("prov.msg.loadFailed", e.message))); } return; }
   if (!S.provMode || S.provSub !== "messages") return;  // tab changed while loading
   body.innerHTML = "";

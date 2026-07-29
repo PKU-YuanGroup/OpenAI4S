@@ -280,6 +280,45 @@ _API_ROOT = contract.API_ROOT
 #: is not allowed to read -- and the route answers with a mode string only,
 #: never with any part of the token.
 _UNAUTHENTICATED_PATHS = frozenset({"/health", _API_ROOT + "/auth/status"})
+
+
+def _wants_html(headers) -> bool:
+    """Is this a person in a browser, or a script?
+
+    Browsers send `text/html` first in Accept; `curl`, `fetch` and every SDK do
+    not. Getting this wrong in the permissive direction only means a script
+    receives a readable page instead of a JSON error, so it errs toward HTML
+    only on an explicit html preference.
+    """
+    accept = str(headers.get("Accept", "") or "")
+    return "text/html" in accept
+
+
+def _unauthorized_page() -> bytes:
+    """What a first-run user sees instead of `{"error": "unauthorized"}`.
+
+    No token in it, and nothing fetched: the page is the whole recovery path,
+    because every asset it could load is behind the same gate.
+    """
+    return (
+        "<!doctype html><meta charset=utf-8>"
+        "<title>OpenAI4S — access token required</title>"
+        "<style>body{font:15px/1.6 -apple-system,system-ui,sans-serif;"
+        "max-width:34rem;margin:12vh auto;padding:0 1.5rem;color:#222}"
+        "code{background:#f4f4f5;padding:.15em .4em;border-radius:4px;"
+        "font:13px ui-monospace,SFMono-Regular,Menlo,monospace}"
+        "p{margin:.9em 0}@media(prefers-color-scheme:dark){body{background:#18181b;"
+        "color:#e4e4e7}code{background:#27272a}}</style>"
+        "<h1>Access token required</h1>"
+        "<p>This daemon can execute code, so it does not answer without a "
+        "credential \u2014 even on this machine.</p>"
+        "<p>Run this in a terminal and open the URL it prints:</p>"
+        "<p><code>openai4s url</code></p>"
+        "<p>The same URL is printed on startup. Opening it once sets a cookie "
+        "for this browser; you will not need it again.</p>"
+    ).encode("utf-8")
+
+
 _API_PREFIX = _API_ROOT + "/"
 _API_WS = _API_ROOT + "/ws"
 _MAX_JSON_BODY_BYTES = MAX_ARCHIVE_BYTES
@@ -4596,11 +4635,75 @@ class SessionRunner:
         # `model FAIL` while working perfectly.
         from openai4s.llm.resolve import resolve_llm_config
 
+        # Honour the session's pin before falling back to whatever is active.
+        #
+        # `bind_model_revision` wrote `model_profile_id` / `model_profile_revision`
+        # on every session and `revision_config` was used only as an existence
+        # test — so the pin was write-only, and the turn was dispatched to the
+        # globally active profile's provider, endpoint, model AND credential
+        # while the database recorded revision N of a different profile. A
+        # session pinned to A and continued after B was activated ran on B and
+        # said it ran on A. That is the whole thing D2 exists to prevent, and it
+        # was recorded rather than enforced.
+        pinned = self._pinned_llm_config(st)
+        if pinned is not None:
+            return pinned
         return resolve_llm_config(
             self.cfg.llm,
             self.store,
             model_override=(st.model if (st is not None and st.model) else None),
         )
+
+    def _pinned_llm_config(self, st: "SessionState | None"):
+        """The configuration this session named, or None to use the active one.
+
+        Conservative on purpose: anything unresolvable — no binding, a profile
+        that went away, a revision that is not in the history, a missing
+        credential — returns None and leaves the previous behaviour in place.
+        A pin that cannot be honoured must not become a turn that cannot run,
+        and `bind_model_revision` already refuses the cases a user should be
+        asked about.
+        """
+        if st is None or not getattr(st, "root_frame_id", ""):
+            return None
+        try:
+            frame = self.store.get_frame(st.root_frame_id) or {}
+            profile_id = str(frame.get("model_profile_id") or "")
+            revision = int(frame.get("model_profile_revision") or 0)
+            if not profile_id or revision <= 0:
+                return None
+            profile = next(
+                (
+                    item
+                    for item in self.store.list_model_profiles()
+                    if item.get("id") == profile_id
+                ),
+                None,
+            )
+            if profile is None:
+                return None
+            recorded = ModelProfileService.revision_config(profile, revision)
+            if not recorded:
+                return None
+            service = ModelProfileService(
+                self.store, self.cfg, providers=lambda: PROVIDERS
+            )
+            api_key = service.resolve_key(profile)
+            if not api_key:
+                return None
+            from dataclasses import replace
+
+            return replace(
+                self.cfg.llm,
+                provider=str(recorded.get("provider") or "") or self.cfg.llm.provider,
+                base_url=str(recorded.get("base_url") or "") or None,
+                # The composer's per-session choice is an explicit act by the
+                # user and still wins over the recorded model name.
+                model=str(st.model or recorded.get("model") or ""),
+                api_key=api_key,
+            )
+        except Exception:  # noqa: BLE001 — never let provenance break a turn
+            return None
 
     @staticmethod
     def _friendly_error(exc: Exception) -> str:
@@ -7077,6 +7180,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         # request least able to afford that; the browser has the
                         # cookie and a script can send the header.
                         self.close_connection = True
+                        if _wants_html(self.headers) and method == "GET":
+                            # A person, in a browser, who opened the URL the CLI
+                            # and the .app print. They used to get raw JSON —
+                            # and `/static/app.js` is behind this same gate, so
+                            # the SPA cannot load and cannot offer a way in. The
+                            # only working URL went to stderr, which the .app
+                            # redirects into a log file. Say what to do, in the
+                            # one place they are actually looking.
+                            self._send(
+                                401, _unauthorized_page(), "text/html; charset=utf-8"
+                            )
+                            return
                         self._json(
                             {
                                 "error": (
@@ -7584,6 +7699,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json(model_profiles.create(self._body()), 201)
                 except ModelProfileError as exc:
                     self._json({"error": str(exc)}, exc.status_code)
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/model-binding", sub)
+            if m and method == "POST":
+                # The answer to `model_revision_unavailable`. That 409 says
+                # "choose one to continue" and, until this existed, nothing
+                # could: the two writers of `model_profile_id` sit past the
+                # raise, `PATCH /frames/{id}` allowlists name and task_summary,
+                # and forking inherits the pin. A session was unsendable for
+                # good.
+                #
+                # Deliberately its own route rather than a flag on send. The
+                # client sends `model` on EVERY message, so treating a supplied
+                # model as consent would rebind silently on every turn — the
+                # drift D2 removed. Re-pinning is a thing someone asks for.
+                frame_id = m.group(1)
+                _require_session_writable(frame_id, "rebinding the model")
+                store.unpin_model(frame_id)
+                self._json(
+                    {"ok": True, "binding": runner.bind_model_revision(frame_id)}
+                )
                 return
             m = re.fullmatch(r"/model-profiles/([^/]+)/probe", sub)
             if m and method == "POST":

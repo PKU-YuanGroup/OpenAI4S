@@ -904,6 +904,18 @@
         404
       ]
     },
+    "/frames/([^/]+)/model-binding": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/frames/([^/]+)/notebook/export": {
       "content_types": [
         "application/json"

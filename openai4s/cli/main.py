@@ -65,8 +65,29 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def _url(cfg) -> str:
-    return f"http://{cfg.host}:{cfg.port}/"
+def _url(cfg, *, with_token: bool = True) -> str:
+    """The URL a person can actually open.
+
+    This returned the bare origin, and every human-facing caller used it: the
+    browser auto-open on `serve`, the `status` line, the `url` command, and the
+    macOS .app. Since the access token became required by default on loopback,
+    that URL answers 401 — and so does `/static/app.js`, so the SPA never loads
+    and cannot offer a way in. The one working URL went to stderr, which the
+    .app redirects into a log file nobody is looking at on first launch.
+
+    `with_token=False` is for anywhere the string is not being handed to a
+    person to open — a credential does not belong in a log line or a title.
+    """
+    base = f"http://{cfg.host}:{cfg.port}/"
+    if not with_token:
+        return base
+    try:
+        from openai4s.server import local_auth
+
+        token = local_auth.read_token(cfg.data_dir)
+    except Exception:  # noqa: BLE001 — never let this break `serve`
+        token = None
+    return f"{base}?token={token}" if token else base
 
 
 def cmd_serve(args) -> int:
@@ -198,7 +219,9 @@ def cmd_status(args) -> int:
         return 1
     # confirm via /health
     try:
-        with urllib.request.urlopen(_url(cfg) + "health", timeout=3) as r:
+        with urllib.request.urlopen(
+            _url(cfg, with_token=False) + "health", timeout=3
+        ) as r:
             health = json.loads(r.read().decode("utf-8"))
         print(f"daemon: running (pid {pid}) at {_url(cfg)}")
         print(f"  model    : {health.get('model')}")
@@ -832,7 +855,7 @@ def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
             f"path must be relative to the API root, not {path!r} "
             f"(it is joined with {contract.API_ROOT})"
         )
-    url = _url(cfg).rstrip("/") + contract.API_ROOT + path
+    url = _url(cfg, with_token=False).rstrip("/") + contract.API_ROOT + path
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")

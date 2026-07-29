@@ -215,6 +215,16 @@ class ChildExecutionPolicy:
     restricted: bool
     allowed: frozenset[str]
     permissions: Mapping[str, str]
+    #: Tri-state Skill allowlist: None inherits, empty denies everything, a
+    #: populated set is exactly those. It rides on the policy because the
+    #: policy is already the one object the spawn path applies to a child, and
+    #: the enforcement it feeds — `SkillService.set_allowed_skills` — had no
+    #: production caller at all: one definition, six call sites, every one of
+    #: them in `tests/test_resource_allowlist.py`. The filter was correct and
+    #: covered; it was simply never handed a restriction, so `_allowed_skills`
+    #: stayed None and a specialist locked to one Skill saw all 34 and could
+    #: read any of them.
+    skill_names: frozenset[str] | None = None
 
     def allows(self, method: str, tool: Any | None = None) -> bool:
         method = _name(method)
@@ -333,10 +343,23 @@ def child_execution_policy(spec: Mapping[str, Any]) -> ChildExecutionPolicy:
                     f"permission {key!r} must be allow, ask, or deny"
                 )
             permissions[key] = decision
+    raw_skills = spec.get("skill_names")
+    if raw_skills is None:
+        skill_names = None
+    elif isinstance(raw_skills, str) or not isinstance(raw_skills, Sequence):
+        raise DelegationPolicyError("skill_names must be a list of Skill names")
+    else:
+        # Not `if not raw_skills` — Python spells "deny everything" false, and
+        # collapsing it to None is the fail-open this allowlist exists to
+        # avoid. An empty list is a decision.
+        skill_names = frozenset(str(item or "").strip() for item in raw_skills)
+        skill_names = frozenset(item for item in skill_names if item)
+
     return ChildExecutionPolicy(
         restricted=restricted,
         allowed=capabilities,
         permissions=MappingProxyType(permissions),
+        skill_names=skill_names,
     )
 
 

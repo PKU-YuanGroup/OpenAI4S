@@ -2210,6 +2210,39 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/model-binding [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/notebook/export [error]": {
       "schema": {
         "properties": {
@@ -8249,6 +8282,39 @@
         "type": "object"
       }
     },
+    "GET /frames/([^/]+)/model-binding [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /frames/([^/]+)/notebook/export [error]": {
       "schema": {
         "properties": {
@@ -9425,6 +9491,61 @@
             "type": "string"
           },
           "profiles": {
+            "items": {
+              "properties": {
+                "base_url": {
+                  "type": "string"
+                },
+                "has_api_key": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "readiness": {
+                  "properties": {
+                    "checked_endpoint": {
+                      "type": "boolean"
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "checked_endpoint",
+                    "detail",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "revision": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "base_url",
+                "has_api_key",
+                "id",
+                "model",
+                "name",
+                "provider",
+                "readiness",
+                "revision"
+              ],
+              "type": "object"
+            },
             "type": "array"
           },
           "protocols": {
@@ -13652,6 +13773,39 @@
       }
     },
     "PATCH /frames/([^/]+)/messages [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/model-binding [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -20057,6 +20211,39 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/model-binding [ok]": {
+      "schema": {
+        "properties": {
+          "binding": {
+            "properties": {
+              "bound": {
+                "type": "boolean"
+              },
+              "model_profile_id": {
+                "type": "string"
+              },
+              "model_profile_revision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "bound",
+              "model_profile_id",
+              "model_profile_revision"
+            ],
+            "type": "object"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "binding",
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/notebook/export [error]": {
       "schema": {
         "properties": {
@@ -22116,6 +22303,63 @@
         "type": "object"
       }
     },
+    "POST /model-profiles [ok]": {
+      "schema": {
+        "properties": {
+          "base_url": {
+            "type": "string"
+          },
+          "has_api_key": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "readiness": {
+            "properties": {
+              "checked_endpoint": {
+                "type": "boolean"
+              },
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "checked_endpoint",
+              "detail",
+              "state"
+            ],
+            "type": "object"
+          },
+          "revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "base_url",
+          "has_api_key",
+          "id",
+          "model",
+          "name",
+          "provider",
+          "readiness",
+          "revision"
+        ],
+        "type": "object"
+      }
+    },
     "POST /model-profiles/([^/]+) [error]": {
       "schema": {
         "properties": {
@@ -22216,6 +22460,31 @@
           "error",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /model-profiles/([^/]+)/probe [ok]": {
+      "schema": {
+        "properties": {
+          "contacted": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "reachable": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contacted",
+          "detail",
+          "reachable",
+          "state"
         ],
         "type": "object"
       }
@@ -26050,6 +26319,39 @@
       }
     },
     "PUT /frames/([^/]+)/messages [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/model-binding [error]": {
       "schema": {
         "properties": {
           "code": {

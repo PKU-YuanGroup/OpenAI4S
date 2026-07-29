@@ -869,6 +869,15 @@ class HostDispatcher:
         """Bind one additional fail-closed policy for a delegated child."""
 
         self._child_execution_policy = policy
+        # Arm the Skill allowlist here rather than at the spawn site: this is
+        # already the single choke point every child passes through, and
+        # `set_allowed_skills` only ever narrows, so applying it twice — which
+        # a delegation chain does — cannot widen. `None` inherits.
+        if policy is not None:
+            try:
+                self._skill_service.set_allowed_skills(policy.skill_names)
+            except Exception:  # noqa: BLE001 - a child must not die on this
+                pass
         self._session_tool_catalog = None
         self._session_tool_scope = None
 

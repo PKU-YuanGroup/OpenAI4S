@@ -156,7 +156,7 @@ are easy to mistake for oversights:
 
 | # | Item | Commit | Status | Falsification |
 |---|---|---|---|---|
-| B.4 | Specialist tri-state allowlist enforced. D5 deferred exactly this to P1-B and **hid the UI meanwhile, so no lock was displayed that was not enforced** — until now `skill_names` was stored, inherited through delegation, merged into the child spec, and read by nothing. `None` inherits, `[]` denies all, a list is exactly those; a child may only narrow, and inheriting is not widening. Enforced on all four surfaces the exit criterion names: catalogue, search, `load`/`get`, and `read` | `f7c108b` | `Completed` | The falsy collapse (`if not allowed:`) fails 3 tests; letting a child's `None` clear the parent fails 3; ungating `read` fails 1 |
+| B.4 | Specialist tri-state allowlist enforced. `None` inherits, `[]` denies all, a list is exactly those; a child may only narrow, and inheriting is not widening. Filtering covers the four surfaces the exit criterion names: catalogue, search, `load`/`get`, and `read`. **Corrected 2026-07-29** — this row previously read `Completed` / "Enforced on all four surfaces", and the filter was never armed: `set_allowed_skills` had one definition and six call sites, every one of them in `tests/test_resource_allowlist.py`. `_allowed_skills` stayed `None` — permit everything — for the life of every real dispatcher, so a specialist restricted to one Skill saw all 34 and could read any of them (measured). The tests passed because they armed the allowlist themselves. Now armed at `HostDispatcher.set_child_execution_policy`, the single choke point every child passes, and spec inheritance narrows instead of replacing so a nested child cannot widen. **The connector half remains unbuilt**: there is no `set_allowed_connectors` to call, so `connectors` is still stored, inherited and merged while enforcing nothing | `f7c108b` + this batch | `Partial — skills enforced, connectors not` | Disarming the dispatcher fails 5; the falsy collapse (`if not allowed:`) fails 1 here and 3 in the older file; letting a nested child replace its inherited list fails 1 |
 | B.2 | Subtree stop and turn-boundary steering were **already implemented** and are recorded as verified, not built: `_stop_subtree` walks `descendants`, which follows `parent_child_id`, so siblings are structurally outside the walk, and `send_message` already queues with an explicit rejection. The exit criterion — cancelling one child does not affect a sibling — now has a test against the real runner | `624eaf5` + this batch | `Verified` | Replacing the walk with "stop everything" fails the sibling test; removing the descent fails the subtree test. The 409 now has a surface: `POST /frames/{id}/delegations/{child}/stop` and `.../steer` make the already-verified runner behaviour reachable, and keep three answers apart — **404** no such child in the record, **409** the record has it but nothing live can act on it (the ordinary post-restart state, where `daemon_restart` marks every pending child stopped), **200** done. `send_message`'s `{"ok": False}` became a 409 instead of riding out as success. Five properties falsified; success-path tests included, since a file that only asserts refusals passes on a handler wired to the wrong method. |
 | B.3 | Skill `requirements` parsed and surfaced with `ready`/`needs_setup`/`unknown`. Five bundled Skills have declared `requirements: [gpu]` since they were written and **nothing read it** — not the loader, not the Skill object, not the catalogue — so a GPU-only Skill looked identical to one that runs anywhere and the agent found out at execution time. Readiness is local-only (`nvidia-smi` is looked for on PATH, never run), and sits beside `enabled` rather than inside it | `d905419` | `Completed` | Dropping the parse fails 1; guessing `ready` for an unknowable requirement fails 2; probing by running `nvidia-smi` fails 4 |
 | B.6 | Memory budgets and context projection | `openai4s/memory_budget.py`, `server/gateway.py`, `tests/test_memory_budget.py` | `Verified` | The injection was `mems[:50]` — a count, and nothing else. Measured on 60 memories of a pasted protocol: **600,647 characters** added to every system prompt, roughly 150k tokens against a 262,144-token window. Now three budgets (50 items / 2,000 chars each / 16,000 total), and the model is told when items were withheld so it can say its remembered context is incomplete. Each of the four properties falsified individually. |
@@ -168,11 +168,14 @@ are easy to mistake for oversights:
 All of `P2` (design freeze and real-platform experiments). By decision D8, P2
 enters no public API, schema or definition of done in this version.
 
-`P1-B` is complete: B.1 (follow-up admission), B.2 (delegation control and the
-stale-record 409), B.3 (Skill `requirements` and readiness), B.4 (specialist
-tri-state allowlists), B.5 (remote compute task centre) and B.6 (memory budgets
-and context projection) have all landed. What each of them could not verify is
-recorded in §12 rather than left implied.
+`P1-B` has landed except for one half of B.4: B.1 (follow-up admission), B.2
+(delegation control and the stale-record 409), B.3 (Skill `requirements` and
+readiness), B.5 (remote compute task centre) and B.6 (memory budgets and
+context projection) are complete. B.4's Skill allowlist is now enforced — it
+was recorded here as complete for several days while nothing armed it — and its
+**connector allowlist is not built**: `connectors` is stored, inherited through
+delegation and echoed by the API while restricting nothing. What each of them
+could not verify is recorded in §12 rather than left implied.
 
 ## 12. Externally unverifiable
 
@@ -211,6 +214,25 @@ after, one property at a time.
 | Low | `Tool.dangerous` was declared on ten tools and read by no gate, audit or prompt | `PENDING` |
 | Low | `host.app_render` grew without bound (100 MB measured); a released idle session kept its history | `PENDING` |
 | Low | model-profile `readiness` and the probe route had no UI call site | `PENDING` |
+
+### Found by the pre-merge aggregate review (2026-07-29)
+
+Eighty-seven commits were each reviewed and tested individually and CI was
+green; six lenses then read the range as **one change**, and every finding was
+handed to an independent adversarial verifier. 21 raised, 15 survived
+refutation, 3 distinct blockers — each found by two lenses independently. None
+was a test failure: all eight gates were green throughout, because these are
+unreachable-code and no-recovery-path defects.
+
+| Severity | Defect | Note |
+| --- | --- | --- |
+| Blocker | Deleting a model profile permanently bricked every session pinned to it: 409 "choose one to continue" with nothing able to choose | delete now releases the bindings; `POST /frames/{id}/model-binding` answers the other trigger; the client can act on the code |
+| Blocker | The auth gate was on by default and nothing that hands a human a URL was updated — `GET /` and `/static/app.js` both 401, so the SPA could not load to offer a way in | `openai4s url` carries the token; a browser navigation gets an actionable HTML page |
+| Blocker | `set_allowed_skills` had one definition and six call sites, all in one test file — a restricted specialist saw all 34 Skills and could read any | armed at `set_child_execution_policy`; spec inheritance narrows so a nested child cannot widen. **Connector half still unbuilt** |
+| Medium | The model pin was write-only: a session pinned to A after B was activated dispatched to B's endpoint, model and credential | `_llm_cfg` honours the pin, falling back on anything unresolvable |
+| Medium | Latest-first paging had no client: a 640-message session opened on messages 0–299 | four call sites through one helper that also restores reading order |
+| Medium | An 8 MB frame backstop counted bytes against caps counted in characters — CJK output within every documented limit lost stderr, the exception text, `error_lineno`, `guards` and `usage` | derived from `MAX_OUTPUT`; the first constant (6) was itself wrong and a test caught it |
+| Medium | `web_download` was the only `writes_files` tool with no `secret_path_key`, so it could overwrite a `.env` that `write_file` refuses | declared; asserted over every file-writing tool |
 
 ### Still open from the audit
 

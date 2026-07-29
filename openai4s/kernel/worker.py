@@ -51,9 +51,30 @@ _HOST_CALL_WIRE_CAP = 15_000_000  # 15MB host_call payload cap
 _MAX_CHUNK_CHARS = 64_000
 #: Hard backstop for every outbound frame, whatever its type. The inbound
 #: direction has had `_HOST_CALL_WIRE_CAP` all along; this side had nothing.
-#: Sits above the largest legitimate frame (a response carries stdout and
-#: stderr, each capped at MAX_OUTPUT) so it only ever catches a defect.
-_MAX_FRAME_BYTES = 8_000_000
+#:
+#: Derived, not chosen. It was a flat 8_000_000 with a comment claiming it sat
+#: "above the largest legitimate frame (a response carries stdout and stderr,
+#: each capped at MAX_OUTPUT)" -- true only for ASCII. MAX_OUTPUT counts
+#: CHARACTERS and this counts BYTES, and one character is up to 4 bytes in
+#: UTF-8 and up to 6 in JSON's `\uXXXX` escape. Measured: both streams filled
+#: to the cap with CJK text, or with control characters, serialise to
+#: 12,000,059 bytes -- so a cell whose output obeyed every documented limit had
+#: its whole frame replaced by a drop note, taking stderr, the exception text,
+#: `error_lineno`, `guards` and `usage` with it. Only stdout survived, and only
+#: because the manager backfills it from the streamed chunks.
+#:
+#: Twelve, not six. `\uXXXX` is six bytes and that is what a CJK character or a
+#: control character costs -- but Python counts an astral character (an emoji,
+#: say) as ONE character while JSON must emit it as a surrogate pair,
+#: `\ud83d\ude00`, which is twelve. Six was the first value here and the test
+#: below caught it: `MAX_OUTPUT` characters of emoji is 12 MB per stream, and a
+#: cap derived from six would have gone on dropping exactly the frames this
+#: change exists to stop dropping.
+#:
+#: It still bounds the allocation the backstop is for: a
+#: `print("x" * 200_000_000)` is stopped just the same.
+_JSON_WORST_BYTES_PER_CHAR = 12
+_MAX_FRAME_BYTES = _JSON_WORST_BYTES_PER_CHAR * 2 * MAX_OUTPUT + 2_000_000
 #: One spelling of the marker, so the streamed tail and the captured result
 #: cannot disagree about what happened.
 _TRUNCATION_MARKER = f"\n...(truncated at {MAX_OUTPUT} characters)"

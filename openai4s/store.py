@@ -1545,6 +1545,12 @@ class Store:
             fallback_project=fallback_project,
         )
 
+    def unpin_model(self, frame_id: str) -> None:
+        self._frames.unpin_model(frame_id)
+
+    def release_model_binding(self, profile_id: str) -> int:
+        return self._frames.release_model_binding(profile_id)
+
     def update_frame(self, frame_id: str, **fields: Any) -> None:
         self._frames.update_frame(frame_id, **fields)
 

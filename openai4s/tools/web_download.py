@@ -86,6 +86,17 @@ class WebDownloadTool(Tool):
     # The workspace write is already fenced by `resolve` below, and cannot
     # leave the session whatever the answer.
     permission_target_key = "url"
+    # Orthogonal to the permission target above, and the reason that comment is
+    # not the whole story. `secret_path_key` is not about *asking*; it is the
+    # hard refusal that stops any tool overwriting a credential file, and
+    # `write_file` and `edit_file` both declare it while this one -- the third
+    # tool in the codebase with `writes_files = True` -- did not. So
+    # `write_file(".env", ...)` was refused outright and
+    # `web_download(url, ".env")` was not, on the same workspace. Under the CLI
+    # that workspace is the user's cwd, so it overwrote a real project `.env`;
+    # and the written file is then invisible to `glob`/`grep`, which filter
+    # secret basenames, so nothing afterwards shows what happened.
+    secret_path_key = "path"
     side_effect_class = "workspace_write"
     resource_key_prefix = "network"
     resource_target_key = "url"
