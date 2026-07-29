@@ -473,3 +473,76 @@ def test_real_r_slurp_reads_at_most_the_cap(tmp_path):
     ), f"slurp read {read_bytes:,} bytes of an 8 MiB file to keep 1 MB of it"
     # ...and it read enough to fill the cap and know it was cut.
     assert read_bytes == 1_000_001
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_streams_stdout_while_the_cell_runs(tmp_path):
+    """Live output, which the R half of the product did not have.
+
+    The host has always accepted `stdout_chunk` frames — `manager.py` collects
+    them and the Notebook renders them — and the R worker never emitted one.
+    A long R cell showed nothing at all until it finished, while the same cell
+    in Python reported as it went.
+
+    Streaming happens between top-level expressions, which the evaluator was
+    already looping over. Mid-expression streaming would need C-level work: R
+    is single-threaded, `addTaskCallback` does not fire inside an expression,
+    and a connection callback cannot be written in R. So a chatty `for` loop
+    still arrives in one piece — that limit is real and is stated in the
+    worker rather than implied.
+    """
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        chunks: list[str] = []
+        result = kernel.execute(
+            "cat('first\n')\nSys.sleep(0.05)\ncat('second\n')\ncat('third\n')",
+            on_chunk=chunks.append,
+        )
+        assert result["error"] is None
+        assert len(chunks) >= 2, f"no live output: {chunks}"
+        assert "first" in chunks[0]
+
+        # ...and the final response is the output once, not twice. The manager
+        # falls back to the accumulated chunks only when the frame carries no
+        # stdout, so a worker that sent both would double it.
+        assert result["stdout"] == "first\nsecond\nthird\n"
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_streaming_is_bounded_like_the_capture(tmp_path):
+    """A runaway cell must not stream its whole output to the host in frames
+    and then have it capped in the response — the host paying for output it
+    will not keep."""
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        chunks: list[str] = []
+        result = kernel.execute(
+            "for (i in 1:200000) cat('line', i, '\n')\ncat('done\n')",
+            on_chunk=chunks.append,
+        )
+        assert result["error"] is None
+        streamed = sum(len(chunk) for chunk in chunks)
+        assert streamed <= 1_000_001, f"{streamed:,} characters streamed"
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_error_lineno_survives_streaming(tmp_path):
+    """The flush sits inside the loop that walks parsed expressions, next to
+    the srcref bookkeeping `error_lineno` depends on. Breaking that would trade
+    a feature for a regression in the one thing the R worker documents as hard
+    to get right."""
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        # `\\n` so the R source is three lines. Written with a bare `\n` the
+        # first time, which made the R source five lines and `error_lineno` 5 —
+        # correctly. The test was wrong, not the worker.
+        result = kernel.execute("cat('a\\n')\ncat('b\\n')\nstop('boom')")
+        assert result["error"] is not None
+        assert "boom" in result["error"]
+        assert result["trace"]["error_lineno"] == 3
+    finally:
+        kernel.shutdown()

@@ -173,6 +173,45 @@
   }, error = function(e) NULL)
 }
 
+.oai4s_stream_stdout <- function(out_con, out_file, id, sent) {
+  # Emit whatever landed on stdout since the last call as a `stdout_chunk`
+  # frame, and return the new offset.
+  #
+  # The R worker never emitted these at all, so live output — the Notebook's
+  # running-cell view and `exec_peek` on a background job — was dead for the R
+  # half of the product while the host side has always accepted the frames.
+  # A long R cell showed nothing until it finished.
+  #
+  # This runs between top-level expressions, which the evaluator was already
+  # looping over. Mid-expression streaming would need C-level work: R is
+  # single-threaded, `addTaskCallback` does not fire inside an expression, and
+  # a connection callback cannot be written in R. So a chatty `for` loop still
+  # arrives in one piece, and a multi-statement cell now reports as it goes.
+  #
+  # Bounded the same way the final capture is. Without a cap a runaway cell
+  # would stream its whole output to the host in frames *and* have it capped
+  # in the response — the host paying for output it will not keep.
+  if (sent >= .oai4s_MAX_OUTPUT) return(sent)
+  ok <- tryCatch({ flush(out_con); TRUE }, error = function(e) FALSE)
+  if (!ok) return(sent)
+  size <- file.info(out_file)$size
+  if (is.na(size) || size <= sent) return(sent)
+  want <- min(size, .oai4s_MAX_OUTPUT) - sent
+  if (want <= 0) return(sent)
+  text <- tryCatch({
+    con <- file(out_file, open = "rb")
+    on.exit(close(con), add = TRUE)
+    seek(con, where = sent)
+    rawToChar(readBin(con, "raw", n = want))
+  }, error = function(e) NULL)
+  if (is.null(text) || !nzchar(text)) return(sent)
+  .oai4s_write_frame(paste0(
+    '{"type":"stdout_chunk","id":', .oai4s_esc(id),
+    ',"text":', .oai4s_esc(text), '}'
+  ))
+  sent + want
+}
+
 # --- one cell ----------------------------------------------------------------
 
 .oai4s_run <- function(code, id) {
@@ -184,6 +223,7 @@
   sink(msg_con, type = "message")
 
   err <- NULL; lineno <- NULL; callname <- NULL; interrupted <- FALSE
+  streamed <- 0
   t0 <- Sys.time(); p0 <- proc.time()
 
   parsed <- tryCatch(parse(text = code, keep.source = TRUE), error = function(e) e)
@@ -233,6 +273,7 @@
           message("print failed: ", conditionMessage(e))
         })
       }
+      streamed <- .oai4s_stream_stdout(out_con, out_file, id, streamed)
     }
   }
 
