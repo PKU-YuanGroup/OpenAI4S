@@ -96,10 +96,13 @@ from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.server.completions import completion_message, response_language
 from openai4s.server.errors import (
     ERROR_CODES,
+    INTERNAL_ERROR_MESSAGE,
     GatewayError,
     error_code_for,
     gateway_error_payload,
+    public_exception,
     public_failure,
+    record_diagnostic,
 )
 from openai4s.server.execution_coordinator import (
     ExecutionCancelled,
@@ -1404,12 +1407,36 @@ class MessageJob:
         # cannot drift no matter what the frame says later.
         self.model_profile_id: str = ""
         self.model_profile_revision: int = 0
+        # Set by `project` below. A job failure is read back over HTTP 200
+        # (`{"status": "failed", ...}` is the result, not an error envelope),
+        # so `Handler._json` never enriches it and the code has to be carried
+        # here or it does not exist on this surface at all.
+        self.error_code: str = ""
 
     def finish(self, result: dict | None = None, error: str | None = None) -> None:
         self.result = result
         self.error = error
         self.finished_at = time.time()
         self.done.set()
+
+    def project(self, exc: BaseException, surface: str) -> str:
+        """Record the diagnostic once, and return the one sentence this failure
+        is allowed to say.
+
+        The three spawners each did `job.finish(error=str(e))`, and the message
+        turn additionally streamed the same `str(e)` into a `text_chunk` — so a
+        `PermissionError` naming a path under $HOME, or a provider error
+        echoing the credential it was sent, reached the browser twice over two
+        different transports. Projecting here rather than at each call site
+        means the WebSocket chunk and the job result cannot disagree about what
+        happened, and the original is written to the operator diagnostic once
+        rather than once per surface.
+        """
+        body, _status = public_exception(
+            exc, surface=surface, request_id=self.request_id
+        )
+        self.error_code = str(body.get("code") or "internal_error")
+        return str(body.get("error") or INTERNAL_ERROR_MESSAGE)
 
     def wait_result(self) -> dict:
         self.done.wait()
@@ -1419,7 +1446,8 @@ class MessageJob:
             "status": "failed",
             "frame_id": self.root_frame_id,
             "job_id": self.job_id,
-            "error": self.error or "message job failed",
+            "error": self.error or INTERNAL_ERROR_MESSAGE,
+            "code": self.error_code or "internal_error",
         }
         # Only when there is one. A null field here would read as "this request
         # had no id", when what it means is that the job was built outside a
@@ -2154,8 +2182,15 @@ class SessionRunner:
         try:
             manager = dispatcher.compute
         except Exception as error:  # noqa: BLE001 - no provider configured
+            # The reason used to be interpolated in. It is raised by provider
+            # shim code loaded from `skills/remote-compute-<id>/provider.py`,
+            # so its text is whatever a third party wrote -- routinely the
+            # config path it read and the env var it could not find.
+            record_diagnostic(
+                error, surface="compute:provider", request_id=correlation_id()
+            )
             raise GatewayError(
-                503, f"remote compute is not available here: {error}", "no_provider"
+                503, "remote compute is not available here", "no_provider"
             ) from error
         st = self._state(root_frame_id, "default")
         emit = self.hub.emitter(root_frame_id)
@@ -2169,7 +2204,20 @@ class SessionRunner:
             code = getattr(error, "kind", "") or getattr(error, "code", "")
             if str(code) == "not_found":
                 raise GatewayError(404, f"no such job {job_id}", "not_found") from error
-            raise GatewayError(502, str(error), "refresh_failed") from error
+            # The provider's own text does not go in. A remote SDK's error
+            # quotes the endpoint it called, the credential prefix it used and
+            # the *provider's* request id -- and that last one is the worst of
+            # the three, because it reads like the id to quote in a support
+            # ticket while naming a request neither the user nor this daemon
+            # can look up. `public_exception` answers with this daemon's local
+            # correlation id instead, and the original reaches the operator
+            # diagnostic only.
+            record_diagnostic(
+                error, surface="compute:refresh", request_id=correlation_id()
+            )
+            raise GatewayError(
+                502, "remote compute refresh failed", "refresh_failed"
+            ) from error
         finally:
             # In `finally`, not after: a harvest that extracted some outputs and
             # then failed has still written real bytes into the workspace, and
@@ -4478,6 +4526,7 @@ class SessionRunner:
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
                 emit = self.hub.emitter(root_frame_id)
+                message = job.project(e, "web:message")
                 try:
                     self.store.update_frame(root_frame_id, status="failed")
                     emit({"type": "text_reset", "frame_id": root_frame_id})
@@ -4486,7 +4535,7 @@ class SessionRunner:
                             "type": "text_chunk",
                             "frame_id": root_frame_id,
                             "block_type": "text",
-                            "chunk": f"\n\n_Error: {e}_\n",
+                            "chunk": f"\n\n_Error: {message}_\n",
                         }
                     )
                     emit(
@@ -4498,7 +4547,7 @@ class SessionRunner:
                     )
                 except Exception:
                     pass
-                job.finish(error=str(e))
+                job.finish(error=message)
 
         t = threading.Thread(
             target=carry_context(_target),
@@ -6177,17 +6226,35 @@ class SessionRunner:
             lambda: self.run_plan_execution(root_frame_id, project_id, model),
         )
 
+    def claim_plan_resume(self, root_frame_id: str) -> dict:
+        """Compare-and-swap the plan into `executing` for exactly one caller."""
+        return self.plans.claim_resume(root_frame_id)
+
     def run_plan_resume(
-        self, root_frame_id: str, project_id: str, model: str | None = None
+        self,
+        root_frame_id: str,
+        project_id: str,
+        model: str | None = None,
+        *,
+        claimed_plan_id: str | None = None,
     ) -> dict:
-        return self.plans.resume_execution(root_frame_id, project_id, model)
+        return self.plans.resume_execution(
+            root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
+        )
 
     def submit_plan_resume(
-        self, root_frame_id: str, project_id: str, model: str | None = None
+        self,
+        root_frame_id: str,
+        project_id: str,
+        model: str | None = None,
+        *,
+        claimed_plan_id: str | None = None,
     ) -> "MessageJob":
         return self._spawn_job(
             root_frame_id,
-            lambda: self.run_plan_resume(root_frame_id, project_id, model),
+            lambda: self.run_plan_resume(
+                root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
+            ),
         )
 
     def submit_plan_revision(
@@ -6238,6 +6305,7 @@ class SessionRunner:
                 )
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
+                message = job.project(e, "web:plan")
                 try:
                     emit = self.hub.emitter(root_frame_id)
                     self.store.update_frame(root_frame_id, status="failed")
@@ -6250,7 +6318,7 @@ class SessionRunner:
                     )
                 except Exception:
                     pass
-                job.finish(error=str(e))
+                job.finish(error=message)
 
         t = threading.Thread(
             target=carry_context(_target),
@@ -6416,7 +6484,11 @@ class SessionRunner:
                 )
             except Exception as error:  # noqa: BLE001 - job owns its failure
                 traceback.print_exc()
-                job.finish(error=str(error))
+                # A *kernel* error is not this path: a traceback from the
+                # user's own cell arrives as a normal result and is the whole
+                # point of a REPL. This clause only fires when the machinery
+                # around the cell threw, which is machinery detail.
+                job.finish(error=job.project(error, "web:repl"))
 
         thread = threading.Thread(
             target=carry_context(target),
@@ -7410,7 +7482,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
                 try:
-                    self._json({"error": str(e)}, 500)
+                    # Projected, not enveloped. `_json` adds `code`/`status`/
+                    # `request_id` to whatever body it is handed, so a raw
+                    # `str(e)` used to be shipped with a tidy `code` bolted on
+                    # -- the envelope made the leak look deliberate. Anything
+                    # that reaches this clause is by definition a failure
+                    # nobody wrote a message for, so it gets the generic one
+                    # and the original goes to the operator diagnostic.
+                    body, status = public_exception(
+                        e,
+                        surface=f"http:{method}",
+                        request_id=getattr(self, "_correlation_id", ""),
+                    )
+                    self._json(body, status)
                 except (BrokenPipeError, ConnectionResetError):
                     self.close_connection = True
             finally:
@@ -8550,20 +8634,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         202,
                     )
                 elif action == "resume":
-                    # Refused synchronously when the plan is not paused, so the
-                    # caller learns why now rather than from a job that
-                    # accepts, starts nothing and reports a failure later.
-                    plan = store.get_plan_by_frame(fid) or {}
-                    if plan.get("status") != "paused":
-                        raise GatewayError(
-                            409,
-                            (
-                                "only a paused plan can resume; this one is "
-                                f"{plan.get('status') or 'absent'}"
-                            ),
-                            "plan_not_paused",
-                        )
-                    job = runner.submit_plan_resume(fid, pid, model)
+                    # The paused -> executing transition *is* the acceptance,
+                    # so it happens here, before the 202, and it is a
+                    # compare-and-swap rather than a status read. It used to be
+                    # a read here plus an unconditional write in the job this
+                    # spawns -- and since the job runs on a background thread,
+                    # two POSTs on the threading server both read `paused`,
+                    # both were accepted, and both turns executed the same
+                    # steps. Now exactly one caller wins the swap; the other is
+                    # refused synchronously with the status it lost to.
+                    claim = runner.claim_plan_resume(fid)
+                    if not claim.get("ok"):
+                        raise GatewayError(409, claim["error"], "plan_not_paused")
+                    job = runner.submit_plan_resume(
+                        fid, pid, model, claimed_plan_id=claim["plan_id"]
+                    )
                     self._json(
                         {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
                         202,
@@ -9464,7 +9549,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         )
                     )
                 except Exception as e:  # noqa: BLE001
-                    self._json({"error": str(e)}, 200)
+                    # 502, not the 200 this answered with. An MCP server is a
+                    # subprocess this daemon spawned and talked to; when that
+                    # conversation fails the request did not succeed, and
+                    # `api()` in app.js only rejects on a non-2xx -- so a
+                    # connector that never ran was reported as one that did.
+                    # The message was `str(e)` from a third-party server whose
+                    # errors routinely quote the argv and env it was launched
+                    # with, which is the launch command and its secrets.
+                    body, status = public_exception(
+                        e,
+                        surface="connector:call",
+                        request_id=getattr(self, "_correlation_id", ""),
+                        status=502,
+                        error_code="connector_failed",
+                    )
+                    self._json(body, status)
                 return
             m = re.fullmatch(r"/connectors/([^/]+)", sub)
             if m and method == "DELETE":

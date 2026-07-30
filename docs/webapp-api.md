@@ -153,12 +153,21 @@ Origin, token or header defences.
 - The frontend `api()` helper reads `j.error || j.detail`, so the Gateway's
   error text is shown. `detail` remains accepted for compatibility with
   external adapters.
-- Some handlers return errors **inside a 200 body** instead of an error
-  status: `POST /api/connectors/{id}/call` returns `{"error": str(e)}` with
-  HTTP 200 on exception, and `POST
-  /api/artifacts/{aid}/versions/{vid}/restore` maps a soft
+- An **unhandled** exception never puts its own text on the wire. It is
+  projected through `errors.public_exception` into `{"error": "internal
+  error", "code": "internal_error", "status", "request_id"}`, and the original
+  goes to the redacted `unhandled_exception` diagnostic that
+  `diagnostics.build_bundle` collects. A `GatewayError`'s message is
+  author-written and is passed through unchanged. Quote `request_id` in a
+  support report: it is this daemon's own correlation id, never an upstream
+  provider's.
+- Some handlers still return errors **inside a 200 body** instead of an error
+  status: `POST /api/artifacts/{aid}/versions/{vid}/restore` maps a soft
   `{"error": …}` result to 404 but other handlers pass soft errors through as
-  200. Do not assume "2xx ⇒ no `error` key".
+  200. Do not assume "2xx ⇒ no `error` key". `POST /api/connectors/{id}/call`
+  used to be in this list and now answers `502 connector_failed`: `api()` in
+  the web client only rejects on a non-2xx, so a connector that never ran was
+  reported to the user as one that did.
 
 ### JSON routes vs raw-bytes routes
 
@@ -326,7 +335,7 @@ its live path, and says in the injected block that it is unpinned.
 | --- | --- |
 | `GET /frames/{fid}/plan` | `{"frame_id","plan_id","status","plan"}` (nulls when no plan). |
 | `POST /frames/{fid}/plan/approve` | `202 {"status":"accepted","frame_id","job_id"}` — auto-execution runs in the background. |
-| `POST /frames/{fid}/plan/resume` | `202 {"status":"accepted","frame_id","job_id"}` — runs only the plan's **unfinished** steps. `409 plan_not_paused` when the plan is any other status, refused synchronously so the caller is not handed a job that accepts and then reports a failure. A step counts as settled when it is `completed` or `failed`: `failed` is a decision the agent made and moved on from, while `in_progress` was interrupted with no record of how far it got, so it is re-run. The resume seed names the settled steps and instructs the agent not to redo them. A paused plan with nothing unfinished is marked `completed` without running a turn. |
+| `POST /frames/{fid}/plan/resume` | `202 {"status":"accepted","frame_id","job_id"}` — runs only the plan's **unfinished** steps. `409 plan_not_paused` when the plan is any other status, refused synchronously: the `paused` → `executing` transition is a compare-and-swap performed *before* the 202, so of two concurrent resumes exactly one is accepted and the other is refused with the status it lost to, instead of both being handed a job that runs the same steps. A step counts as settled when it is `completed` or `failed`: `failed` is a decision the agent made and moved on from, while `in_progress` was interrupted with no record of how far it got, so it is re-run. The resume seed names the settled steps and instructs the agent not to redo them. A paused plan with nothing unfinished is marked `completed` without running a turn. |
 | `POST /frames/{fid}/plan/revise` | Body `{changes}` (or `{feedback}`); empty → `400 {"error":"changes required"}`; else `202` accepted. |
 | `POST /frames/{fid}/plan/discard` | Result of `runner.discard_plan` (synchronous). |
 
@@ -503,7 +512,7 @@ change published behaviour for no stated benefit. Branch on `code`.
 | `GET /connectors/directory` | `{"directory":[…]}` — the curated install list. |
 | `PUT|PATCH /connectors/{id}/enabled` | `{"ok":true}`. |
 | `POST /connectors/{id}/probe` | Spawns the server, lists tools; unknown id → 404. |
-| `POST /connectors/{id}/call` | Body `{tool,args}` → tool result; **exceptions are returned as `{"error":…}` with HTTP 200**. |
+| `POST /connectors/{id}/call` | Body `{tool,args}` → tool result; a failing call answers `502` with `code: "connector_failed"` (the MCP server's own message is not echoed — it quotes the argv and env it was launched with). |
 | `DELETE /connectors/{id}` | Disconnect + delete → `{"ok":true}`. |
 
 ### Session sharing (`shares`)
@@ -689,8 +698,7 @@ compatibility; keep both when touching these serializers.
   (§2).
 - Missing resources are inconsistently signaled: some routes 404 with
   `{error}`, others return `{}` (frame/project GET), `{"ok":true}`
-  (idempotent deletes), a nulls-filled 200 (`/artifacts/{aid}/lineage`), or a
-  200 body containing `{error}` (`/connectors/{id}/call`).
+  (idempotent deletes), or a nulls-filled 200 (`/artifacts/{aid}/lineage`).
 - Malformed JSON request bodies are rejected with `400 malformed_json`.
 - Raw-bytes artifact routes return JSON bodies on 404.
 - Skill enable-disable state is durable; the legacy built-in-agent roster

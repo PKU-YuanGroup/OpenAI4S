@@ -318,39 +318,89 @@ class PlanService:
             "5. 全部完成后写一段简洁的最终总结，并调用 host.submit_output(...)。"
         )
 
+    def claim_resume(self, root_frame_id: str) -> dict[str, Any]:
+        """Take this frame's plan from `paused` to `executing`, or say why not.
+
+        The claim is a compare-and-swap, not a status check, and it is the
+        whole point of this method existing separately from
+        `resume_execution`: the web route answers 202 and *then* runs the plan
+        on a background thread, so if the transition is not already made by the
+        time that 202 is written, two requests can both be accepted and both
+        turns can execute the same steps.
+
+        Refused per-status rather than with one "cannot resume", because the
+        caller's next move differs: approve a draft, wait for an executing one,
+        do nothing for a finished one. The status is read after the swap has
+        already lost, so it describes the row as it is now -- for the loser of
+        a real race that is `executing`, which is exactly the advice it needs.
+        """
+        plan = self.store.get_plan_by_frame(root_frame_id)
+        if not plan:
+            return {
+                "ok": False,
+                "plan_id": None,
+                "plan_status": None,
+                "error": "no plan to resume",
+            }
+        plan_id = str(plan["plan_id"])
+        if self.store.compare_and_set_plan_status(
+            plan_id, expected="paused", new_status="executing"
+        ):
+            return {
+                "ok": True,
+                "plan_id": plan_id,
+                "plan_status": "executing",
+                "plan": self.store.get_plan(plan_id),
+            }
+        current = self.store.get_plan(plan_id) or {}
+        status = current.get("status")
+        return {
+            "ok": False,
+            "plan_id": plan_id,
+            "plan_status": status,
+            "error": f"only a paused plan can resume; this one is "
+            f"{status or 'absent'}",
+        }
+
     def resume_execution(
         self,
         root_frame_id: str,
         project_id: str,
         model: str | None = None,
+        *,
+        claimed_plan_id: str | None = None,
     ) -> dict[str, Any]:
         """Run the steps a paused plan has left, and nothing else.
 
-        Only `paused` resumes. A `draft` has not been approved, an `executing`
-        one is already running somewhere -- resuming it would put two turns on
-        the same plan -- and `completed`/`failed`/`discarded` are over. Each is
-        refused with its own reason rather than a single "cannot resume",
-        because the caller's next move differs: approve it, wait, or nothing.
+        `claim_resume` is what enforces "only paused resumes", and being a
+        compare-and-swap it also enforces "only once". `claimed_plan_id` is
+        passed by the web route, which has to claim synchronously for its 202
+        to mean anything; claiming again here would look for a `paused` row
+        that the route already moved and refuse its own turn.
 
         Goes through the same `run_message` the approve path uses, so the
         resumed turn is an ordinary FIFO-owned execution with its own owner and
         lease, and cancelling it pauses the plan again exactly as before.
         """
-        plan = self.store.get_plan_by_frame(root_frame_id)
+        if claimed_plan_id is None:
+            claim = self.claim_resume(root_frame_id)
+            if not claim["ok"]:
+                return {
+                    "status": "failed",
+                    "frame_id": root_frame_id,
+                    "plan_id": claim["plan_id"],
+                    "plan_status": claim["plan_status"],
+                    "error": claim["error"],
+                }
+            plan = claim["plan"]
+        else:
+            # Claimed by the route; the row is already `executing`.
+            plan = self.store.get_plan(claimed_plan_id)
         if not plan:
             return {
                 "status": "failed",
                 "frame_id": root_frame_id,
                 "error": "no plan to resume",
-            }
-        if plan.get("status") != "paused":
-            return {
-                "status": "failed",
-                "frame_id": root_frame_id,
-                "plan_id": plan.get("plan_id"),
-                "plan_status": plan.get("status"),
-                "error": f"only a paused plan can resume; this one is "
-                f"{plan.get('status')}",
             }
 
         remaining = self.unfinished_steps(plan)
@@ -371,8 +421,10 @@ class PlanService:
             }
 
         emit = self.emitter_for(root_frame_id)
-        self.store.update_plan(plan["plan_id"], status="executing")
-        self.emit_ready(emit, root_frame_id, self.store.get_plan(plan["plan_id"]))
+        # No status write here: the claim already made it, and writing
+        # `executing` unconditionally is precisely the step that let a second
+        # resume overwrite a first one's claim.
+        self.emit_ready(emit, root_frame_id, plan)
         result = self.run_message(
             root_frame_id,
             project_id,

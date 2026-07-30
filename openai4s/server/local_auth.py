@@ -22,7 +22,7 @@ import os
 import secrets
 from pathlib import Path
 
-from openai4s.security.permissions import harden_dir, harden_file
+from openai4s.security.permissions import FILE_MODE, harden_dir, harden_file
 
 #: Filename under the data dir. Not in the database: see the module docstring.
 TOKEN_FILENAME = "access-token"
@@ -51,45 +51,105 @@ def read_token(data_dir: Path | str) -> str | None:
     return value or None
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Persist the directory entry, not just the bytes behind it.
+
+    Publishing the token is a change to the *directory*; fsyncing only the file
+    leaves a crash able to keep the content and lose the name. The next boot
+    would mint a second token and invalidate every cookie already issued --
+    the exact failure persisting the token was meant to end.
+
+    Best-effort by contract: not every filesystem lets a directory be opened
+    for fsync, and refusing to start the daemon over a durability nicety is
+    the worse trade.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def load_or_mint(data_dir: Path | str) -> str:
     """Return the daemon's token, creating it on first use.
 
-    Written through a temporary in the same directory and `os.replace`d, so a
-    second daemon starting concurrently either sees no file or sees a complete
-    one -- never a half-written token that would authenticate nothing and lock
-    the user out of their own machine.
+    Concurrent minters settle on exactly one token. The candidate is written
+    into a temporary in the same directory, fsynced, and published with
+    `os.link` onto the final name: the link is the one operation that can only
+    succeed once, so a single process creates the token and everybody else
+    gets EEXIST and reads what that winner wrote.
 
-    The loser of that race keeps the winner's token rather than overwriting it:
-    a token that changes because two processes started together is the same
-    failure as one that changes on every restart.
+    This used to be a read, then a mint, then an *unconditional* `os.replace`,
+    which meant every racer won. Each overwrote the file, and each re-read
+    outside any exclusion, so N daemons starting together held N different
+    tokens with only the last write on disk -- a daemon authorising cookies
+    against a value the CLI could no longer read. `os.replace` cannot pick the
+    winner here precisely because it never fails on a name already taken; only
+    an exclusive create can.
+
+    Publishing through a link is also what makes "the loser re-reads" true
+    rather than hopeful: the content is complete *before* the final name
+    exists, so a loser's read cannot land on an empty or half-written file --
+    which an `O_EXCL` create on the final path itself would leave open for as
+    long as the winner takes to write and fsync.
     """
     directory = Path(data_dir).expanduser()
     directory.mkdir(parents=True, exist_ok=True)
     harden_dir(directory)
 
+    path = token_path(directory)
     existing = read_token(directory)
     if existing:
         return existing
 
-    path = token_path(directory)
     candidate = secrets.token_urlsafe(_TOKEN_BYTES)
     temporary = path.with_name(f".{path.name}.tmp-{secrets.token_hex(8)}")
     try:
-        # x mode: never clobber a token another process is mid-write on.
-        with temporary.open("x", encoding="utf-8") as handle:
+        # 0o600 in the open() itself rather than a chmod afterwards: the mode
+        # is on the inode before a single byte of the secret exists, so there
+        # is no instant at which another local account could read it.
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(candidate)
             handle.flush()
             os.fsync(handle.fileno())
+        # A umask only ever clears bits, so this is about an unusual umask
+        # having taken owner-read away -- not about exposure.
         harden_file(temporary)
-        os.replace(temporary, path)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            published = False
+        else:
+            published = True
     finally:
-        temporary.unlink(missing_ok=True)
-    harden_file(path)
+        # Removing the temporary does not touch the published inode: after the
+        # link both names refer to it, and the mode travels with it, so the
+        # final path is owner-only from the instant it appears.
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
 
-    # Re-read rather than returning `candidate`: if another process won the
-    # replace, the file holds *its* token and that is the one the cookies and
-    # the CLI will be checked against.
-    return read_token(directory) or candidate
+    _fsync_dir(directory)
+    if published:
+        return candidate
+
+    # Lost the race. Returning `candidate` here is the whole defect: it is not
+    # what is on disk, and a daemon authorising against it accepts a token no
+    # other process can present.
+    settled = read_token(directory)
+    if settled:
+        return settled
+    raise RuntimeError(
+        f"access token file {path} exists but is empty; minting cannot claim a "
+        f"name that is already taken, so remove it and start again"
+    )
 
 
 def matches(supplied: str | None, expected: str | None) -> bool:

@@ -3092,6 +3092,20 @@ class Store:
             artifact_id=artifact_id,
         )
 
+    def compare_and_set_plan_status(
+        self, plan_id: str, *, expected: str, new_status: str
+    ) -> bool:
+        """Claim a plan transition: True for the one caller that performed it.
+
+        ``update_plan(status=...)`` writes whatever it is given, so a caller
+        that checks the status first has already let go of the row by the time
+        it writes. Anything that must happen once -- resuming a paused plan --
+        goes through here instead.
+        """
+        return self._plans.compare_and_set_status(
+            plan_id, expected=expected, new_status=new_status
+        )
+
     def set_plan_step_status(
         self, plan_id: str, step_id: str, status: str, note: str | None = None
     ) -> dict | None:

@@ -186,6 +186,34 @@ class PlanRepository:
             )
             self._connection.commit()
 
+    def compare_and_set_status(
+        self, plan_id: str, *, expected: str, new_status: str
+    ) -> bool:
+        """Move a plan off ``expected`` onto ``new_status``; True only if we did.
+
+        ``update`` writes the status unconditionally, so every guard built on
+        top of it is a read followed by a write with nothing holding the row in
+        between. That is what ``POST /plan/resume`` was: two requests on the
+        threading server both read ``paused``, both were accepted, and both
+        turns executed the same steps. Here the expectation rides inside the
+        UPDATE and ``rowcount`` is what decides -- re-reading the row to check
+        instead would be the same race one layer up, because by then the row
+        holds the *winner's* write and the loser would read it as success.
+        """
+        for status in (expected, new_status):
+            if status not in PLAN_STATUSES:
+                raise ValueError(
+                    f"unknown plan status {status!r}; expected one of "
+                    + ", ".join(sorted(PLAN_STATUSES))
+                )
+        with self._lock:
+            cursor = self._connection.execute(
+                "UPDATE plans SET status=?, updated_at=? WHERE plan_id=? AND status=?",
+                (new_status, self._clock_ms(), plan_id, expected),
+            )
+            self._connection.commit()
+            return int(cursor.rowcount or 0) == 1
+
     def pause_orphaned_executing(self) -> int:
         """Move plans left mid-execution by a dead daemon to ``paused``.
 

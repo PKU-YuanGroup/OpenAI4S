@@ -1691,8 +1691,15 @@ def test_gateway_error_maps_to_error_envelope(tmp_path):
 
 
 def test_unhandled_exception_maps_to_500_error_envelope(tmp_path, capsys):
-    """A non-GatewayError exception under /api/* becomes a 500 with the
-    same {"error": str(e)} envelope (and never a raw traceback body)."""
+    """A non-GatewayError exception under /api/* becomes a 500 whose body says
+    nothing about the exception.
+
+    This used to assert `{"error": str(e)}` -- it pinned the leak. An
+    exception nobody wrote a message for carries whatever the raising code
+    happened to interpolate, which in practice is a path, an argv or a
+    credential, so the projector replaces it. See
+    tests/test_public_exception_projector.py for the canary that proves it.
+    """
     cfg = _cfg(tmp_path)
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
@@ -1708,7 +1715,12 @@ def test_unhandled_exception_maps_to_500_error_envelope(tmp_path, capsys):
     handler.path = "/api/v1/anything"
     handler._route("GET")
 
-    assert replies[-1] == (500, {"error": "kaput"})
+    code, body = replies[-1]
+    assert code == 500
+    assert "kaput" not in json.dumps(body)
+    assert body["error"] == gateway_mod.INTERNAL_ERROR_MESSAGE
+    assert body["code"] == "internal_error"
+    assert body["request_id"]
     capsys.readouterr()  # swallow the printed traceback
 
 
