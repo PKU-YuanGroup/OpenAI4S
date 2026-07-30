@@ -289,7 +289,11 @@ def build_profile(
 
     Order is load-bearing — SBPL takes the *last* matching rule — so the home
     denial comes after `allow default`, and the runtime read allowances come
-    after the denial.
+    after the denial. There are two of those, and they are not interchangeable:
+    `file-read*` subpaths for the trees the helper reads, and
+    `file-read-metadata` literals for the components the loader walks to reach
+    them. A subpath where a literal belongs would hand back everything beneath
+    `$HOME`'s directories, which is the disclosure the denial exists to end.
     """
     home_dir = _canonical(home if home is not None else Path.home())
     stage_dir = _canonical(stage)
