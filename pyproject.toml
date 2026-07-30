@@ -134,10 +134,13 @@ markers = [
 # State the rule set instead of inheriting whatever the pinned ruff calls its
 # default. Until now there was no [tool.ruff] section at all, so the rule set
 # was whatever the hook's version happened to ship: ruff 0.0.274 defaulted to
-# E + F (59 rules), and 0.16.0 defaults to 413 — turning a version bump into
-# an unreviewed adoption of ~350 rules and 1081 findings across the tree.
+# E + F, and 0.16.0 defaults to 413 rules — turning a version bump into an
+# unreviewed adoption of ~350 rules and 1081 findings across the tree.
 #
-# E + F reproduces the rule set this codebase was actually written against.
+# E + F reproduces the rule set this codebase was actually written against;
+# a normalized-name diff of 0.0.274's default against 0.16.0 under this select
+# differs by exactly one entry, E999/SyntaxError, which modern ruff no longer
+# models as a lint rule at all.
 # Adopting further families (S, UP, RUF, SIM, ...) is real work with real
 # value, but it is a lint-policy decision that belongs in its own PR, one
 # family at a time, where the diff can be read — not a side effect of
