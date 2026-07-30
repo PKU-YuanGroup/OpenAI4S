@@ -414,6 +414,19 @@
         404
       ]
     },
+    "/example/session": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        400,
+        404
+      ]
+    },
     "/folders/([^/]+)": {
       "content_types": [
         "application/json"
@@ -612,6 +625,28 @@
         404
       ]
     },
+    "/frames/([^/]+)/compute/tasks": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
+    "/frames/([^/]+)/compute/tasks/([^/]+)/refresh": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/context": {
       "content_types": [
         "application/json"
@@ -635,6 +670,29 @@
       ]
     },
     "/frames/([^/]+)/delegations": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
+    "/frames/([^/]+)/delegations/([^/]+)/steer": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        400,
+        404
+      ]
+    },
+    "/frames/([^/]+)/delegations/([^/]+)/stop": {
       "content_types": [
         "application/json"
       ],
@@ -846,6 +904,18 @@
         404
       ]
     },
+    "/frames/([^/]+)/model-binding": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/frames/([^/]+)/notebook/export": {
       "content_types": [
         "application/json"
@@ -881,7 +951,7 @@
         404
       ]
     },
-    "/frames/([^/]+)/plan/(approve|revise|discard)": {
+    "/frames/([^/]+)/plan/(approve|resume|revise|discard)": {
       "content_types": [
         "application/json"
       ],
@@ -1208,6 +1278,17 @@
       ]
     },
     "/model-profiles/([^/]+)/activate": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
+    "/model-profiles/([^/]+)/probe": {
       "content_types": [
         "application/json"
       ],
@@ -1571,7 +1652,7 @@
         "json"
       ],
       "statuses": [
-        200,
+        400,
         404
       ]
     },
@@ -1643,7 +1724,7 @@
         "json"
       ],
       "statuses": [
-        200,
+        400,
         404
       ]
     },

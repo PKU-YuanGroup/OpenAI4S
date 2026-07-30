@@ -601,3 +601,57 @@ def test_query_split_identifier_bypass_does_not_leak_secret(tmp_path):
         with pytest.raises((PermissionError, sqlite3.Error)) as exc:
             st.query(sql)
         assert _SYNTH_SECRET not in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# the classifier screens both kernel languages, not just Python
+# --------------------------------------------------------------------------
+
+
+def test_the_loader_escape_is_unsafe_in_r_as_well_as_python():
+    """The same attack was UNSAFE in one language and SAFE in the other.
+
+    One classifier screens both kernels — `classify_code` takes no language —
+    but its loader vocabulary named only Python's spellings. Measured before
+    this: `open("x.so","wb")` + `ctypes.CDLL` scored UNSAFE while
+    `writeBin(payload,"x.so")` + `dyn.load` scored SAFE. Whether an attack was
+    screened depended on which kernel the cell asked for.
+    """
+    from openai4s.security import classify_code
+
+    python_combo = (
+        'open("x.so", "wb").write(payload)\nimport ctypes; ctypes.CDLL("x.so")'
+    )
+    r_combo = 'writeBin(payload, "x.so")\ndyn.load("x.so")'
+    r_dynam = (
+        'con <- file("x.so", "wb"); writeBin(payload, con); close(con)\n'
+        'library.dynam("x", "p", ".")'
+    )
+
+    assert classify_code(python_combo).decision == "UNSAFE"
+    assert classify_code(r_combo).decision == "UNSAFE"
+    assert classify_code(r_dynam).decision == "UNSAFE"
+
+
+def test_ordinary_r_science_is_still_safe():
+    """The fix must not make the R kernel unusable. A classifier that flags
+    `read.csv` gets turned off, and then it screens nothing at all."""
+    from openai4s.security import classify_code
+
+    for code in (
+        'df <- read.csv("data.csv"); summary(df)',
+        "library(ggplot2); ggplot(df, aes(x, y)) + geom_point()",
+        "fit <- lm(y ~ x, data = df); print(summary(fit))",
+        'saveRDS(model, "model.rds")',
+    ):
+        assert classify_code(code).decision == "SAFE", code
+
+
+def test_a_lone_r_loader_call_is_allowed_like_a_lone_python_one():
+    """Deliberate symmetry with the existing policy: a bare risk token is
+    routine in scientific code and only a clear signature is refused. Loading
+    a compiled package is ordinary R; writing the object first is not."""
+    from openai4s.security import classify_code
+
+    assert classify_code('dyn.load("libfoo.so")').decision == "SAFE"
+    assert classify_code('import ctypes; ctypes.CDLL("libfoo.so")').decision == "SAFE"

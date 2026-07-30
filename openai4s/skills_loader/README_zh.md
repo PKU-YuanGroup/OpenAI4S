@@ -15,6 +15,7 @@ Skill 是 Code-as-Action 的扩展面，不是原生 JSON 工具 schema。一个
 | 文件 | 职责 |
 | --- | --- |
 | [`__init__.py`](./__init__.py) | 用 docstring 写清 Skill 目录的约定，并重新导出公开名字：`Skill`、`SkillLoader`、`SkillVersionService` 和 `discover_skills`。 |
+| [`frontmatter_edit.py`](./frontmatter_edit.py) | 只改 `name`/`description`/`origin`，其余原样保留。Web Customize 的保存原先是拿这三个字段把 frontmatter 整个重建一遍，于是 `license` 和 `category`（34 个内置 skill 里有 23 个）、嵌套的 `metadata` 块（17 个）、`requirements`（13 个）和 `fold_cue`（1 个）都会被「顺手改个错别字」的人删掉。真正让它从元数据问题变成正确性问题的是 `requirements`：readiness 由它算出，丢了 `[gpu]` 的 skill 不再报 `needs_setup`，转而声称自己哪儿都能跑。先解析再重新输出解决不了——`_parse_frontmatter` 按设计就会压平列表值、忽略嵌套块——所以这里改的是原始文本行，凡是它不拥有的内容都逐字节保留。 |
 | [`loader.py`](./loader.py) | 负责找到 Skill，并决定露出多少。它解析 `SKILL.md` 的 frontmatter，扫描内置、project 与用户三个 root，解析能力状态，并按关键词重合度给搜索结果打分。系统 prompt 只拿得到摘要；完整 recipe、sidecar 的 import 提示，以及内核启动用的 bootstrap manifest 都按需生成。`kernel.py` sidecar 在被任何人 import 之前，先过一遍编译检查。 |
 | [`versions.py`](./versions.py) | 可写 Skill 的安装、升级、发布、回滚与删除。包体先校验（大小有界、不含 symlink、路径不得越出目录），再作为不可变版本存起来；磁盘上的 personal/project 目录只是一份视图，先在旁边重建好再整体换入。数据库侧的激活走 compare-and-swap；这一步失败时，会先把原来的目录换回来，错误才向上抛。 |
 

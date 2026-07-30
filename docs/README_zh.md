@@ -30,6 +30,8 @@
 | `response-schemas.json` | 离线套件触达的每条 HTTP 响应的形状，从真实响应里抓取固化，不是手写的。由 [`scripts/capture_response_schemas.py`](../scripts/capture_response_schemas.py) 生成；这里出现 diff 就意味着某条 route 改变了它的返回。覆盖率是部分的，而且刻意可见：文件里没有的 route，就是没有任何离线测试触达的 route。描述宿主机而非 API 的子树——内核的 `sandbox` 块，它的字段**类型**在能强制 sandbox 的机器和不能的机器上本就不同；以及 `default_host`，compute registry 把它定义为 `"<alias>" | null`，于是配了 ssh alias 的机器与没配的机器对它的类型看法不同——记为 `machine_state`，不予固化。把这类字段钉住并不能抓到漂移，只会把抓取这份文件的那台机器冻结下来，然后把其他每一台机器都报成 API 的破坏性变更。带 `stubbed_backend` 标记的测试不贡献任何形状：把服务换成桩之后，路由返回的是编造出来的东西，把它作为契约发布比让这条路由没有形状更糟，因为读的人会当真。这些路由改由单元测试看守。 |
 | `response-contract.json` | 每个对外响应的**声明**形状，是手写的而不是抓取的：它写的是 route **承诺**什么，因此抓取到的 schema 与它不一致时那是一个发现，而不是新的事实。抓取的那一侧由 `scripts/capture_response_contract.py` 重新生成；这个文件是由人签字的那一侧。 |
 | `v02-decisions.md` | nextgen 改进提案第 8 节里那些待定决策的所有者签署答复，2026-07-20 冻结。依赖其中任何一条的工作，在答案被记录到一个 reviewer 查得到的地方之前不得启动。每一行还写明这个选择放弃了什么——代价看不见的决策，后来会被悄悄推翻。|
+| `v03-decisions.md` | v0.3 的所有者签署答复，2026-07-26 冻结，包含推翻 v0.2「每个 Phase 一个大 PR」的那一条，以及本版本据以衡量的验收口径。它还用一张表列出所有无法从工作副本验证的事项——GitHub Actions 的真实执行、Developer ID 证书、公证、PyPI OIDC、实机浏览器、Linux CI——好让它们不出现在「已验证」一栏是有意为之，而不是疏漏。|
+| `next-version-progress.md` | v0.3 的逐项事实记录：什么落地了、在哪个提交、以及那一列真正承重的内容——为证明每个新测试确实会失败，把什么缺陷放了回去。不会失败的测试什么也没测，而存在一个同名的类不构成完成证据。凡是证明所需的那次运行需要本仓库没有的机器，一律标 `Implemented but unverified` 并写明缺的是哪一次运行。|
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
 | `webshare.md` | Web 分享：只读快照 + 出站 relay 隧道、部署方式与信任模型。 |
 

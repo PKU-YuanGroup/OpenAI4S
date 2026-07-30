@@ -236,11 +236,116 @@ def test_all_literal_icon_names_have_svg_definitions() -> None:
     assert not missing, f"literal icon names missing from ICONS: {missing}"
 
 
-def test_frontend_uses_backend_error_envelope() -> None:
-    api_source = APP_JS[APP_JS.index("const api =") : APP_JS.index("const S =")]
-    assert re.search(
-        r"\bj\s*(?:\?\.|\.)\s*error\b", api_source
-    ), "api() must surface the backend's {error: ...} message"
+def test_frontend_keeps_the_whole_error_envelope_not_just_the_prose() -> None:
+    """This used to assert only that `api()` mentioned `j.error`.
+
+    That was the right check when `error` was all the backend sent. The
+    envelope is now `{error, code, status, request_id}`, and `api()` parsed all
+    four and threw away three: `code` is the stable machine-readable contract
+    -- the backend documents the prose as explicitly *not* an interface -- and
+    `request_id` is the string that ties a user's report to a server log line,
+    which existed on both ends and was displayed at neither.
+
+    So assert the whole envelope survives, which the weaker check could not
+    distinguish from dropping it.
+    """
+    start = APP_JS.index("class ApiError")
+    error_source = APP_JS[start : APP_JS.index("const S =")]
+    for field in ("error", "code", "status", "request_id"):
+        assert re.search(rf"\b{field}\b", error_source), (
+            f"the failure envelope's `{field}` is parsed and then dropped; "
+            "a client cannot branch on what it never receives"
+        )
+    assert "throw new ApiError(" in error_source, (
+        "api() must throw the structured error, not a bare Error that flattens "
+        "the envelope into one string"
+    )
+
+
+def test_every_user_facing_error_shows_the_request_id() -> None:
+    """A `request_id` nobody sees ties nothing to anything.
+
+    The whole point of the correlation id is that a user can quote it and an
+    operator can find the matching log line. Rendering `e.message` alone in the
+    composer hint drops it at the last step, after both ends went to the
+    trouble of carrying it. `apiErrorText` appends it when there is one.
+    """
+    raw = re.findall(r'hint\(t\("[^"]+",\s*\w+\.message', APP_JS)
+    assert not raw, (
+        "these error hints render the message without the request id: "
+        f"{sorted(set(raw))}"
+    )
+    assert "function apiErrorText(" in APP_JS
+
+
+def test_no_response_path_builds_its_own_lossy_error() -> None:
+    """`api()` was not the only converter.
+
+    Three call sites re-implemented the same `!ok -> new Error(string)` by
+    hand -- `shareCall`, the session-package import, and `fetchArtifactText`,
+    which never parsed the body at all. Each discarded the envelope
+    independently, so fixing `api()` alone would have left three paths whose
+    failures carry less information than the rest, with nothing marking them
+    as different.
+    """
+    # Scoped to conversions of a *failed* HTTP response, which is the only
+    # place an envelope exists to keep.
+    #
+    # This carried a note that the Customize skill routes reported domain
+    # failures at HTTP 200 and were therefore out of reach. That gap is closed:
+    # `server/skills.py` attaches a stable code to every soft failure and the
+    # gateway projects it to a real status, so those bodies go through
+    # `public_failure` like any other. The one client-side `if (r.error) throw`
+    # that existed to work around it is gone, which is why nothing here needs
+    # to carve out an exception any more.
+    lossy = re.findall(
+        r"if\s*\(!\s*\w+\.ok\)[^;]*throw new Error\([^)]*\)"
+        r"|throw new Error\(\s*result\.error[^)]*\)",
+        APP_JS,
+    )
+    assert not lossy, (
+        "these build an error from a failed response without keeping the "
+        f"envelope: {sorted(set(lossy))}"
+    )
+
+
+def test_no_error_branch_reads_a_status_out_of_prose() -> None:
+    """The annotation save had `/404/.test(e.message)`.
+
+    It was testing `api()`'s *fallback* string (`"HTTP 404"`), which the
+    gateway never produces -- every failure carries a JSON body, so the message
+    was `"not found"` and the regex never matched. The specific guidance it
+    selected ("backend annotation API not loaded, restart the service") was
+    therefore unreachable, and the user got the generic message instead. Not a
+    style problem: a live dead branch, and exactly what a structured `status`
+    and `code` exist to prevent.
+    """
+    prose_status = re.findall(r"/\s*\d{3}\s*/\s*\.test\(", APP_JS)
+    assert (
+        not prose_status
+    ), f"an error branch is matching a status code out of prose: {prose_status}"
+    assert (
+        "e.status === 404" in APP_JS
+    ), "the annotation-save branch should read the structured status"
+
+
+def test_a_paused_plan_is_rendered_and_can_be_resumed() -> None:
+    """The backend could hold `paused` before anything could show it.
+
+    `renderPlanCard` handled draft/executing/completed/failed and fell through
+    for `paused` to an empty status line and no controls -- so a plan that
+    stopped with steps left looked like a plan with nothing to say, and the
+    only way out was to discard it and start over. The status existed, the
+    reconciliation that produces it existed, and the user could not act on it.
+    """
+    assert '"plan.eyebrow.paused"' in APP_JS
+    assert '"plan.status.paused"' in APP_JS
+    assert "async function resumePlan()" in APP_JS
+    assert "/plan/resume" in APP_JS
+    # Both translation tables, not just the one the developer reads.
+    assert (
+        APP_JS.count('"plan.resume":') == 2
+    ), "the resume control is missing from one of the two i18n tables"
 
 
 def test_frontend_never_hardcodes_an_unversioned_api_path() -> None:
@@ -541,9 +646,14 @@ def test_notebook_live_input_appends_cells_and_keeps_history_read_only() -> None
     assert 'el("textarea", "nb-repl-input")' in notebook
     assert "notebookExportLink(S.currentId)" in notebook
     assert "notebookExportLink(S.currentId)" in provenance
-    assert 't("prov.exec.downloadNotebook")' in export
-    assert "/notebook/export?language=bundle" in export
-    assert ".notebooks.zip" in export
+    # The default action, asserted as behaviour rather than as a literal. This
+    # read `t("prov.exec.downloadNotebook")`, which was a proxy for "the button
+    # says the right thing" and broke the moment the label came from a table
+    # instead of a call site — without anything about the button changing.
+    assert "NOTEBOOK_EXPORTS[0]" in export
+    assert 'language: "bundle"' in APP_JS
+    assert "${primary.suffix}" in export
+    assert "notebooks.zip" in APP_JS
     assert 'download", "notebook.json"' not in APP_JS
     assert '[["python", "Python"], ["r", "R"]]' in notebook
     assert 'event.key === "Enter" && event.shiftKey' in notebook
@@ -925,3 +1035,329 @@ def test_customize_skills_exposes_scoped_version_history_and_safe_rollback() -> 
     assert APP_JS.count('"skill.rollbackConfirm"') >= 2
     assert ".skill-version-list" in STYLE_CSS
     assert ".skill-version-card" in STYLE_CSS
+
+
+def test_no_tabular_parser_hardcodes_a_delimiter() -> None:
+    """`csv()` split on a literal comma, so every `.tsv` parsed as one column.
+
+    The artifact tile for a three-column differential-expression table reported
+    "1 column", and the column's *name* was the whole header line. Wrong
+    numbers about scientific output, displayed with the same confidence as
+    right ones -- and nothing about the tile suggested it was guessing.
+
+    Both parsers now take the delimiter from `delimiterFor`, which trusts the
+    extension when there is one and sniffs the header when there is not,
+    because science writes tab-separated `.txt` and `.dat` constantly.
+    """
+    assert "function delimiterFor(" in APP_JS
+    # The literal-comma split, which is what made this filename-blind.
+    assert (
+        'else if (c === ",")' not in APP_JS
+    ), "a tabular parser still splits on a hardcoded comma"
+    # And no caller decides the delimiter from the suffix alone.
+    assert '/\\.tsv$/i.test(fname) ? "\\t" : ","' not in APP_JS
+
+
+def test_a_truncated_table_says_which_dimension_was_cut() -> None:
+    """Columns beyond 24 were dropped with no notice at all.
+
+    A 101-column table rendered 24 and looked complete: nothing distinguishes a
+    narrow table from a truncated view of a wide one, so the reader cannot know
+    to go and open the file. The row cap had a banner from the start, which is
+    what makes the column one an omission rather than a decision.
+    """
+    for key in ("nb.table.rowsHidden", "nb.table.colsHidden", "nb.table.bothHidden"):
+        assert (
+            APP_JS.count(f'"{key}"') >= 3
+        ), f"{key} is missing from a translation table or from the renderer"
+
+
+def test_the_at_menu_inserts_a_pinned_reference() -> None:
+    """The menu lists artifacts from across the *project*; the resolver only
+    ever looked inside the current session.
+
+    So picking a file from another conversation inserted a reference that
+    resolved to nothing, silently — the menu was offering files it could not
+    deliver. Inserting `name#version_id` makes them resolvable (materialised at
+    send) and fixes what they mean, instead of leaving them to follow whatever
+    a later cell writes to that filename.
+    """
+    assert "insert: version ? `${name}#${version}` : name" in APP_JS
+    # And the pick tells the user when a file is about to be copied in, which
+    # is the one thing a filename cannot show.
+    assert APP_JS.count('"ac.fromOtherSession"') == 3
+
+
+def test_unresolved_references_are_rendered_not_swallowed() -> None:
+    """The server emits `artifact_ref_problems` precisely so the user learns a
+    reference failed. Emitting it and then dropping it in the client would
+    reproduce the original defect one layer up."""
+    assert 'm.type === "artifact_ref_problems"' in APP_JS
+    assert "function renderRefProblems(" in APP_JS
+    assert APP_JS.count('"refs.problemsTitle"') == 3
+
+
+def test_every_notebook_export_format_is_reachable_from_the_ui() -> None:
+    """The export has always produced three things; the UI could ask for one.
+
+    `notebook/export` accepts `python`, `r` and `bundle`, and the client
+    hardcoded `?language=bundle`. Two working formats were unreachable — a user
+    who wanted the Python notebook had to download a zip and unpack it, and
+    nothing in the UI said the other options existed.
+    """
+    for language in ("bundle", "python", "r"):
+        assert (
+            f'language: "{language}"' in APP_JS
+        ), f"the {language} export has no UI entry point"
+    # The default action must stay what it was: one click, same file. Scoped to
+    # the export table -- `{ language: "python" }` also appears in the variable
+    # inspector's state, and an unscoped index comparison compares the wrong
+    # occurrences and passes or fails for unrelated reasons.
+    table = APP_JS[
+        APP_JS.index("const NOTEBOOK_EXPORTS") : APP_JS.index(
+            "function notebookExportLink"
+        )
+    ]
+    assert table.index('language: "bundle"') < table.index(
+        'language: "python"'
+    ), "the bundle must remain the default action"
+    assert "NOTEBOOK_EXPORTS[0]" in APP_JS
+    for key in ("prov.exec.downloadPython", "prov.exec.downloadR"):
+        assert (
+            APP_JS.count(f'"{key}"') == 3
+        ), f"{key} is missing from a translation table"
+
+
+def test_the_retrieval_panel_renders_only_what_the_server_sent() -> None:
+    """The client must not re-derive or re-format the provenance.
+
+    Every value in it has already been through the server's allowlist, length
+    cap and redaction. A client that reassembled a URL, or decided for itself
+    which fields to show, would be a second implementation of the rule that
+    keeps an API key out of the UI — and the two would drift.
+    """
+    assert "function retrievalSourcePanel(" in APP_JS
+    # It renders a fixed field order, not `Object.keys(src)`: iterating the
+    # payload would display any field a future server version adds, which is
+    # the allowlist decision being made in the wrong place.
+    assert "RETRIEVAL_FIELD_ORDER" in APP_JS
+    assert "Object.keys(src)" not in APP_JS
+    # Both notes are shown, because a clipped value rendered plain reads as the
+    # whole value and withheld fields with no count read as absent ones.
+    for key in ("versions.retrievalTruncated", "versions.retrievalWithheld"):
+        assert (
+            APP_JS.count(f'"{key}"') == 3
+        ), f"{key} is missing from a translation table"
+
+
+def test_the_context_panel_carries_the_servers_omission_report() -> None:
+    """The server reports what a budget left out; the client has to keep it.
+
+    `sanitizeContext` rebuilds the payload field by field, so anything it does
+    not name is dropped on the floor. That is how a projection stays looking
+    complete while quietly becoming partial — and it is the same shape as the
+    retrieval `source` envelope, the specialist allowlist, and the notebook
+    export formats: server-side work that reached nothing.
+    """
+    sanitizer = APP_JS[APP_JS.index("function sanitizeContext(") :]
+    sanitizer = sanitizer[: sanitizer.index("\nfunction ")]
+    assert "omitted:" in sanitizer, "the omission report is dropped by the normaliser"
+
+    panel = APP_JS[APP_JS.index("function renderContextPanel(") :]
+    panel = panel[: panel.index("\nfunction ")]
+    assert "state.omitted" in panel, "the omission report is never rendered"
+
+
+def test_an_optional_label_can_actually_fall_back() -> None:
+    """`t()` returns the key itself when it is missing, which makes
+    `t(key) || fallback` a dead branch — the fallback can never run and a user
+    sees `context.omitted.images` rendered as text. Optional labels go through
+    a lookup that can return null."""
+    panel = APP_JS[APP_JS.index("function renderContextPanel(") :]
+    panel = panel[: panel.index("\nfunction ")]
+    for computed in ('t("context.omitted." +', 't("context.reason." +'):
+        assert computed not in panel, f"{computed} can never fall back"
+    assert 'tOptional("context.omitted." +' in panel
+    assert 'tOptional("context.reason." +' in panel
+
+
+def test_no_panel_calls_a_helper_that_does_not_exist() -> None:
+    """`node --check` parses; it does not resolve names.
+
+    Three calls in one new panel — `toast(...)`, `formatBytes(...)`, and
+    `apiErrorText(e, fallback)` with an arity the function does not have —
+    parsed cleanly and would have thrown the first time the panel rendered.
+    The helpers were real, under other names (`hint`, `bytes`), which is why
+    reading the code did not catch it either.
+
+    Scoped to the workbench panels because that is where a throw blanks a
+    surface the user opened deliberately, and because a whole-file sweep of a
+    9,000-line script would drown the signal in browser globals.
+    """
+    import re
+
+    known = set(re.findall(r"function\s+([A-Za-z_$][\w$]*)\s*\(", APP_JS))
+    known |= set(re.findall(r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=", APP_JS))
+    # Globals the browser supplies, plus the ones this file gets from vendor.
+    known |= {
+        "Array",
+        "Boolean",
+        "Date",
+        "Error",
+        "JSON",
+        "Math",
+        "Number",
+        "Object",
+        "Promise",
+        "RegExp",
+        "String",
+        "Set",
+        "Map",
+        "URL",
+        "URLSearchParams",
+        "encodeURIComponent",
+        "decodeURIComponent",
+        "parseInt",
+        "parseFloat",
+        "isNaN",
+        "setTimeout",
+        "clearTimeout",
+        "setInterval",
+        "clearInterval",
+        "fetch",
+        "alert",
+        "confirm",
+        "prompt",
+        "require",
+        "import",
+        "await",
+        "if",
+        "for",
+        "while",
+        "switch",
+        "catch",
+        "return",
+        "typeof",
+        "super",
+        "function",
+        "of",
+        "in",
+        "new",
+        "$3Dmol",
+    }
+
+    missing: list[tuple[str, str]] = []
+    for name in (
+        "renderComputeTasksPanel",
+        "refreshComputeTask",
+        "sanitizeComputeTasks",
+    ):
+        start = APP_JS.index(f"function {name}(")
+        body = APP_JS[start : APP_JS.index("\nfunction ", start + 1)]
+        # `(?<![.\w$])` excludes method calls: `row.appendChild(...)` is a
+        # property of an object, not a free identifier this file must define.
+        for called in re.findall(r"(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(", body):
+            if called not in known and not called.startswith("_"):
+                missing.append((name, called))
+    assert not missing, f"undefined helpers called: {missing}"
+
+
+def test_every_icon_a_button_asks_for_exists() -> None:
+    """`ghostIconBtn("square", …)` renders a button with nothing in it.
+
+    `icon()` looks the name up in `ICONS`; a miss is not an error, it is an
+    empty string, so the control is present, clickable, and invisible. That is
+    worse than a broken button, because nothing in the page or the console says
+    anything is wrong — and `node --check` cannot see it either.
+    """
+    import re
+
+    block = APP_JS[APP_JS.index("const ICONS = {") :]
+    block = block[: block.index("\n};")]
+    known = set(re.findall(r'^\s*"?([\w-]+)"?\s*:', block, re.M))
+    asked = set(re.findall(r'ghostIconBtn\(\s*"([\w-]+)"', APP_JS))
+    asked |= set(re.findall(r'\bicon\(\s*"([\w-]+)"', APP_JS))
+    missing = sorted(asked - known)
+    assert not missing, f"buttons ask for icons that do not exist: {missing}"
+
+
+def test_the_delegation_controls_reach_their_routes() -> None:
+    """The routes exist so a user can stop a runaway sub-agent. A panel that
+    renders the tree and offers nothing leaves them where they started —
+    which is the state this work was opened to fix, and exactly the shape
+    (server-side capability, no client call site) that this file has caught
+    for retrieval provenance, notebook exports and skill allowlists.
+    """
+    panel = APP_JS[APP_JS.index("function renderDelegationPanel(") :]
+    panel = panel[: panel.index("\nfunction ")]
+    assert "stopDelegationChild(" in panel
+    assert "steerDelegationChild(" in panel
+
+    for name, path in (
+        ("stopDelegationChild", "/stop"),
+        ("steerDelegationChild", "/steer"),
+    ):
+        body = APP_JS[APP_JS.index(f"async function {name}(") :]
+        body = body[: body.index("\n}")]
+        assert "/delegations/" in body and path in body
+        assert (
+            'method: "POST"' in body
+        ), "a control that mutates a run must not be a GET"
+
+
+def test_a_finished_sub_agent_is_not_offered_a_control_that_cannot_work() -> None:
+    """After a daemon restart every child in the record is `stopped`. Offering
+    Stop there produces a 409 the user can do nothing about, so the buttons are
+    gated on a status that can still act."""
+    panel = APP_JS[APP_JS.index("function renderDelegationPanel(") :]
+    panel = panel[: panel.index("\nfunction ")]
+    gate = panel[
+        panel.index("delegation-child-controls")
+        - 400 : panel.index("delegation-child-controls")
+    ]
+    assert "running" in gate and "pending" in gate
+
+
+def test_the_attachment_problem_event_reaches_the_user() -> None:
+    """The server emits `attachment_problems` to say which pinned figures were
+    left out of a turn, and nothing listened for it.
+
+    The model is told separately in a system note, so the assistant usually
+    mentions it — but only usually, and never with the reason, the limit, or
+    what to do instead. A pin the user placed and the model never received
+    reads as "the model is broken" rather than "that figure was too large".
+    """
+    assert '"attachment_problems"' in APP_JS, "the event type is never matched"
+
+    dispatch = APP_JS[APP_JS.index('m.type === "attachment_problems"') :][:200]
+    assert "renderAttachmentProblems" in dispatch
+
+    body = APP_JS[APP_JS.index("function renderAttachmentProblems(") :]
+    body = body[: body.index("\nfunction ")]
+    # Every reason the server can send has wording here; an unhandled one would
+    # render the raw enum to a user.
+    for reason in ("too_large", "budget_exhausted", "too_many"):
+        assert reason in body, f"no wording for {reason}"
+
+
+def test_every_attachment_reason_the_server_sends_is_handled() -> None:
+    """Read the reasons out of the gateway rather than listing them here, so a
+    new one added server-side fails this instead of reaching a user as a bare
+    identifier."""
+    import re
+    from pathlib import Path
+
+    gateway = Path("openai4s/server/gateway.py").read_text(encoding="utf-8")
+    # Bounded to the block that builds this list. A wider slice picked up
+    # `"reason"` keys from unrelated features — quarantine records, review
+    # state — and the test failed for reasons that were never attachment
+    # problems at all.
+    block = gateway[gateway.index("dropped: list[dict] = []") :]
+    block = block[: block.index('"type": "attachment_problems"')]
+    reasons = set(re.findall(r'"reason":\s*"([a-z_]+)"', block))
+    assert reasons, "the attachment budget no longer reports reasons"
+
+    body = APP_JS[APP_JS.index("function renderAttachmentProblems(") :]
+    body = body[: body.index("\nfunction ")]
+    missing = sorted(r for r in reasons if r not in body)
+    assert not missing, f"the client has no wording for: {missing}"

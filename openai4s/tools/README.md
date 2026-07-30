@@ -50,6 +50,7 @@ When a model reply contains native calls, the outer loop runs the ordered tool b
 | [`skills.py`](./skills.py) | Progressive Skill search and load, plus status, history, and an approval-gated version rollback. |
 | [`taxonomy.py`](./taxonomy.py) | The stable side-effect classes and the canonical resource-key/workspace-target normalization. Audit events record them, and resource conflict scheduling compares them. |
 | [`web.py`](./web.py) | Compatibility facade for the Web search/fetch tool classes and instances. |
+| [`web_download.py`](./web_download.py) | Fetches a URL straight into the session workspace for content `web_fetch` cannot represent as text. Two guards meet here: the URL side is `web_fetch`'s (network enabled, egress allowlist per redirect hop, SSRF refusal), and the path side is `write_file`'s (the destination is resolved against the workspace and an escape is refused **before** the request, so a rejected path does not reveal whether the URL was reachable). The byte ceiling is enforced while reading. |
 | [`web_fetch.py`](./web_fetch.py) | Normalizes a single-URL fetch and its resource identity, keeping the Host soft-fail behavior intact. |
 | [`web_search.py`](./web_search.py) | Normalizes live Web search, and likewise preserves the Host soft-fail behavior. |
 | [`write_file.py`](./write_file.py) | Creates or overwrites one UTF-8 file in the confined workspace, and marks the write so the Web control-tool boundary can capture it as an Artifact. |

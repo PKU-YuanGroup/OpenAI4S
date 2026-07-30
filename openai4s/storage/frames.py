@@ -136,6 +136,53 @@ class FrameRepository:
             ),
         }
 
+    def unpin_model(self, frame_id: str) -> None:
+        """Drop one frame's model pin so the next send re-binds.
+
+        The by-profile release above covers a deleted profile. This covers the
+        other way the pin goes dangling with no click involved: the profile is
+        still there and the bound *revision* is not — a database that predates
+        the revision history, a rebuilt profile, or seeded builtins dropped on
+        first open of an upgraded database. Same 409, same dead end.
+        """
+        with self._lock:
+            self._connection.execute(
+                "UPDATE frames SET model_profile_id=NULL, "
+                "model_profile_revision=NULL WHERE frame_id=?",
+                (str(frame_id),),
+            )
+            self._connection.commit()
+
+    def release_model_binding(self, profile_id: str) -> int:
+        """Unpin every frame bound to a model profile that no longer exists.
+
+        Without this, deleting a profile permanently bricked every session
+        pinned to it: `bind_model_revision` answers 409 "choose one to
+        continue" whenever the bound profile is missing, and returns before
+        reaching either of the two statements that write `model_profile_id` —
+        so nothing in the product could choose. `PATCH /frames/{id}` allowlists
+        name and task_summary, forking inherits the pin, and profile ids are
+        random, so re-creating the profile under the same name did not help
+        either. The session's history and artifacts stayed readable and it
+        could never be sent to again.
+
+        Clearing the pin drops the session into the path already written for
+        frames that predate the pin: recover the configuration from the
+        recorded model string, else adopt the active profile. That is a
+        supported state, reached on every daemon upgrade.
+        """
+        profile_id = str(profile_id or "").strip()
+        if not profile_id:
+            return 0
+        with self._lock:
+            cursor = self._connection.execute(
+                "UPDATE frames SET model_profile_id=NULL, "
+                "model_profile_revision=NULL WHERE model_profile_id=?",
+                (profile_id,),
+            )
+            self._connection.commit()
+            return int(cursor.rowcount or 0)
+
     def update_frame(self, frame_id: str, **fields: Any) -> None:
         if not fields:
             return
@@ -294,26 +341,54 @@ class FrameRepository:
         branch_id: str | None = None,
         start: int = 0,
         limit: int | None = 300,
+        before_seq: int | None = None,
+        newest_first: bool = False,
     ) -> list[dict]:
+        """Messages for one session, oldest-first by default.
+
+        ``newest_first`` with ``before_seq`` is the pagination a conversation
+        actually needs. Opening a 640-message session returned messages 0-299:
+        the *oldest* page, with the newest 340 simply not present. A reader
+        arriving at a long session wants the end of it, and then to walk
+        backwards.
+
+        `before_seq` is a keyset cursor, not an offset. Ordering newest-first
+        and paging by offset would skew on every arriving message, because a
+        new message shifts what "offset 50 from the newest" means — the exact
+        problem the session list solved with `(created_at, frame_id)`. `seq` is
+        already monotonic and unique per root frame, so it needs no tiebreaker.
+        """
         where = "root_frame_id=?"
         params: list[Any] = [root_frame_id]
         if branch_id is not None:
             where += " AND branch_id=?"
             params.append(branch_id)
+        if before_seq is not None:
+            where += " AND seq<?"
+            params.append(int(before_seq))
+        order = " ORDER BY seq DESC" if newest_first else " ORDER BY seq ASC"
         suffix = ""
         if limit is not None:
-            suffix = " LIMIT ? OFFSET ?"
-            params.extend((max(0, int(limit)), max(0, int(start))))
+            # OFFSET stays for the oldest-first callers that still use `start`.
+            # It is meaningless alongside a keyset cursor, so a caller passing
+            # both gets the cursor honoured and the offset ignored rather than
+            # a silently wrong page.
+            suffix = " LIMIT ?" + ("" if before_seq is not None else " OFFSET ?")
+            params.append(max(0, int(limit)))
+            if before_seq is None:
+                params.append(max(0, int(start)))
         with self._lock:
             rows = self._connection.execute(
                 "SELECT role,content,metadata,created_at,seq FROM messages WHERE "
                 + where
-                + " ORDER BY seq ASC"
+                + order
                 + suffix,
                 tuple(params),
             ).fetchall()
         values = [dict(row) for row in rows]
-        return values[start:] if limit is None and start else values
+        if limit is None and start and before_seq is None:
+            return values[start:]
+        return values
 
     def list_message_boundaries(
         self,

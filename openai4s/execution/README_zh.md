@@ -19,6 +19,7 @@ FIFO coordinator 覆盖 Agent、用户 REPL、lifecycle 和 recovery 这几类�
 | [`dependencies.py`](./dependencies.py) | 用 Python 的 `ast` 和一个刻意写得很小的 R lexer，记录每个 Cell 读了什么、写了什么、删了什么，并据此投影出哪些早先的 Cell 已经失效。`visibility` 与 `replay_policy` 的默认值也由它给出。遇到会改动命名空间却给不出稳定变量名的写法，它会标成 uncertain，而不是猜一个结果：这是一份保守投影，不是安全边界。 |
 | [`models.py`](./models.py) | 跨边界传递的三个数据类：`CellRequest`、`CaptureResult` 和 `CellExecutionResult`，里面不出现任何 provider 或 UI 类型。 |
 | [`watchdog.py`](./watchdog.py) | 针对一个冻结的内核 lease 的协议中立超时阶梯：先等待，超时后中断精确的 owner，中断不奏效就 kill，然后按策略重启或放弃。等待人工权限决策期间，超时预算会冻结，但取消仍然能穿透。 |
+| [`process_group.py`](./process_group.py) | 停止一个被派生的进程**组**并确认它真的停了：TERM、宽限、KILL，然后探测整个组而不是组长。与内核侧的 `host.bash` 执行器共用——后者此前把 `timeout=` 交给 `shell=True` 的 `subprocess.run`，只杀掉 shell，而 shell 启动的工作照常运行。两份实现会恰好在这个情形上产生分歧。 |
 
 ## 并发与恢复契约
 

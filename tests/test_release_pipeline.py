@@ -23,6 +23,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -49,12 +50,56 @@ def _completed(returncode=0, stdout=b"", stderr=b""):
     return subprocess.CompletedProcess(["fake"], returncode, stdout, stderr)
 
 
+#: The SHA the fake runner reports for `git rev-parse HEAD`.
+FAKE_HEAD = "a" * 40
+
+
+def _git_aware(extra=None):
+    """A runner that answers `git rev-parse HEAD`, as the real one does.
+
+    `step_test` binds the quality receipt to the commit being released, so a
+    runner that answers every command with empty stdout leaves the pipeline
+    unable to say what it is releasing -- which the receipt check correctly
+    refuses.
+    """
+
+    def runner(argv, cwd=None):
+        parts = [str(a) for a in argv]
+        if extra is not None:
+            extra(" ".join(parts))
+        if parts[:3] == ["git", "rev-parse", "HEAD"]:
+            return _completed(0, FAKE_HEAD.encode())
+        return _completed()
+
+    return runner
+
+
+def _write_receipt(directory, *, source_sha=FAKE_HEAD, gates=None, **overrides):
+    """The document the quality job uploads beside the distributions."""
+    document = {
+        "format": "openai4s-quality-receipt",
+        "schema_version": 1,
+        "source_sha": source_sha,
+        "gates": gates
+        if gates is not None
+        else [
+            {"name": "pytest", "command": ["pytest"], "returncode": 0},
+            {"name": "mypy", "command": ["mypy"], "returncode": 0},
+        ],
+    }
+    document.update(overrides)
+    target = directory / "quality-receipt.json"
+    target.write_text(json.dumps(document), "utf-8")
+    return target
+
+
 @pytest.fixture
 def assets(tmp_path):
     directory = tmp_path / "dist"
     directory.mkdir()
     (directory / "openai4s-0.2.0-py3-none-any.whl").write_bytes(b"wheel-bytes")
     (directory / "openai4s-0.2.0.tar.gz").write_bytes(b"sdist-bytes")
+    _write_receipt(directory)
     return directory
 
 
@@ -103,7 +148,7 @@ def _matching_pypi(assets: Path):
 
 
 def _pipeline(assets, **kw):
-    kw.setdefault("runner", lambda argv, cwd=None: _completed())
+    kw.setdefault("runner", _git_aware())
     kw.setdefault("gh", lambda argv: _completed(0, b'{"assets": [], "isDraft": true}'))
     kw.setdefault("smoke", lambda wheel: "smoke injected")
     kw.setdefault("pypi_check", lambda project, version: True)
@@ -118,8 +163,14 @@ def _pipeline(assets, **kw):
 
 
 #: Local build evidence read from disk, never uploaded as release assets — so a
-#: faithful release listing must not include them.
-_LOCAL_ONLY_SIDECARS = (".codesign.json", ".components.json")
+#: faithful release listing must not include them. The quality receipt joins
+#: them: it is an *input* to staging, proving the gates ran at this commit, not
+#: something the release publishes.
+_LOCAL_ONLY_SIDECARS = (
+    ".codesign.json",
+    ".components.json",
+    "quality-receipt.json",
+)
 
 
 def _gh_for(assets: Path, *, is_draft=True, corrupt=None, drop=None, extra=None):
@@ -213,24 +264,78 @@ def test_a_dry_run_touches_nothing_and_still_reports_every_step(assets):
 # --------------------------------------------------------------------------
 
 
-def test_a_staging_run_does_not_rebuild_or_retest(assets):
-    """Its inputs *are* an earlier verified build. Rebuilding here would put
-    different bytes on GitHub than PyPI receives for the same version."""
+def test_a_staging_run_does_not_rebuild_but_must_prove_the_suite_ran(assets):
+    """Its inputs *are* an earlier verified build, so staging does not rebuild.
+
+    But "does not re-test" used to mean "asserts the tests happened". The step
+    returned `ok` with the sentence "not run: the suite gated the build that
+    produced these artifacts" -- and the build job runs no suite at all. It
+    checks out the tag, scans for secrets, builds, and verifies the wheel's
+    metadata. That sentence was the only thing standing between a release and
+    the claim that tests gated it, and it was false.
+
+    Staging now consumes a receipt bound to the commit it is releasing.
+    """
     ran: list[str] = []
-
-    def runner(argv, cwd=None):
-        ran.append(" ".join(str(a) for a in argv))
-        return _completed()
-
-    report = _pipeline(assets, from_artifacts=True, runner=runner).run()
+    report = _pipeline(assets, from_artifacts=True, runner=_git_aware(ran.append)).run()
 
     assert report["ok"], report
     joined = " ".join(ran)
     assert "-m build" not in joined, "staging re-ran the build"
     assert "-m pytest" not in joined, "staging re-ran the suite"
+
+    step = next(s for s in report["steps"] if s["step"] == "test")
+    assert step["facts"]["source_sha"] == FAKE_HEAD
+    assert step["facts"]["gates"] == ["pytest", "mypy"]
+
     for name in STAGING_SKIPPED:
-        step = next(s for s in report["steps"] if s["step"] == name)
-        assert step["facts"].get("from_artifacts") is True
+        if name == "test":
+            continue
+        skipped = next(s for s in report["steps"] if s["step"] == name)
+        assert skipped["facts"].get("from_artifacts") is True
+
+
+def test_staging_refuses_a_receipt_that_is_not_for_these_sources(assets):
+    """The binding is the whole value of the receipt.
+
+    A document that records *a* SHA proves nothing unless the consumer
+    re-derives the SHA it is actually releasing and compares. Without that it
+    is another `identity_configured`: a field that reads as evidence and
+    decides nothing.
+    """
+    _write_receipt(assets, source_sha="b" * 40)
+    report = _pipeline(assets, from_artifacts=True).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "test"
+    failed = next(s for s in report["steps"] if s["step"] == "test")
+    assert "did not run on these sources" in failed["detail"]
+
+
+def test_staging_refuses_a_missing_receipt(assets):
+    (assets / "quality-receipt.json").unlink()
+    report = _pipeline(assets, from_artifacts=True).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "test"
+    failed = next(s for s in report["steps"] if s["step"] == "test")
+    assert "no quality receipt" in failed["detail"]
+
+
+def test_staging_refuses_a_receipt_whose_gates_failed(assets):
+    """A receipt records exit codes and makes no judgement, so the consumer
+    has to make one. Recording a failure and releasing anyway would be a more
+    elaborate way of not checking."""
+    _write_receipt(
+        assets,
+        gates=[
+            {"name": "pytest", "command": ["pytest"], "returncode": 0},
+            {"name": "harness", "command": ["harness"], "returncode": 1},
+        ],
+    )
+    report = _pipeline(assets, from_artifacts=True).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "test"
+    failed = next(s for s in report["steps"] if s["step"] == "test")
+    assert "failing gates: harness" in failed["detail"]
 
 
 def test_a_distribution_that_changed_after_collection_stops_the_run(assets):
@@ -371,6 +476,10 @@ def test_a_release_is_never_published_when_a_check_failed(assets):
 def test_missing_assets_stop_the_run_before_anything_is_staged(tmp_path):
     empty = tmp_path / "dist"
     empty.mkdir()
+    # A valid receipt, so this test still fails on the thing it names. Without
+    # one the run stops earlier, at `test` -- also before anything is staged,
+    # but that is the receipt gate's assertion, not this one's.
+    _write_receipt(empty)
     report = _pipeline(empty).run()
     assert report["stopped_at"] == "assets"
 
@@ -552,7 +661,7 @@ def test_the_provenance_points_at_the_repository_this_source_lives_in(
         runner=lambda argv, cwd=None: (
             _completed(0, b"git@github.com:PKU-YuanGroup/OpenAI4S.git\n")
             if "remote.origin.url" in " ".join(str(a) for a in argv)
-            else _completed(0, b"abc123\n")
+            else _completed(0, FAKE_HEAD.encode())
         ),
     ).run()
     document = json.loads((assets / "provenance.intoto.json").read_text())
@@ -1194,3 +1303,210 @@ def test_a_receipt_from_a_different_image_does_not_sign_this_one(tmp_path):
         "vouch for it"
     )
     assert info["image_digest_matches"] is False
+
+
+# --------------------------------------------------------------------------
+# D11: the signing state vocabulary
+# --------------------------------------------------------------------------
+
+
+def test_the_signing_state_is_read_from_evidence_and_never_from_configuration():
+    """Four scattered fields became one named state.
+
+    `developer_id`, `adhoc`, `identity_configured` and `notarized: None` each
+    said part of the answer, and a reader had to assemble it -- a reader who
+    assembles it wrongly being exactly who this is for.
+
+    Crucially it does not consult `OPENAI4S_MACOS_SIGNING_IDENTITY`. Treating a
+    configured secret as proof of a signature is the specific mistake that once
+    let an ad-hoc image pass the release gate as Developer-ID-signed.
+    """
+    from scripts.release_pipeline import SIGNING_STATES, signing_state
+
+    assert signing_state({"developer_id": True, "notarized": True}) == "verified"
+    assert signing_state({"developer_id": True, "notarized": None}) == "not_notarized"
+    assert signing_state({"developer_id": False, "adhoc": True}) == "preview"
+    assert signing_state({"developer_id": False, "adhoc": False}) == "not_configured"
+    # Unreadable evidence is not evidence.
+    assert signing_state({"error": "unreadable receipt"}) == "not_configured"
+    assert signing_state(None) == "not_configured"
+
+    for payload in ({"developer_id": True}, {"adhoc": True}, {}, None):
+        assert signing_state(payload) in SIGNING_STATES
+
+
+def test_verified_is_currently_unreachable_and_says_so(tmp_path, monkeypatch):
+    """D11 froze the policy: no loosening, vocabulary only.
+
+    So the honest statement of where that leaves the macOS asset is that it has
+    no publishable path in this version -- the build script only ad-hoc signs
+    and notarization is never attempted. That has to be *said*, in the evidence
+    a reader actually reads, rather than left looking like an untested path
+    somebody forgot to exercise.
+
+    Asserting it here also means that if notarization is ever wired up, this
+    test fails and forces the claim to be revisited deliberately.
+    """
+    from scripts.release_pipeline import signing_state
+
+    build = Path("scripts/build_macos_dmg.sh").read_text("utf-8")
+    # The build's own signature: ad-hoc, which is `preview`, never `verified`.
+    assert '--sign "-"' in build or "codesign" in build
+    assert signing_state({"developer_id": False, "adhoc": True}) != "verified"
+
+    pipeline = Path("scripts/release_pipeline.py").read_text("utf-8")
+    assert '"notarized": None' in pipeline, (
+        "notarization is now claimed somewhere; the unreachable-verified "
+        "statement must be re-checked rather than left standing"
+    )
+    assert '"macos_publishable": False' in pipeline
+    del tmp_path, monkeypatch
+
+
+# --------------------------------------------------------------------------
+# P0-0.4: the release seals its own claims where they can be checked later
+# --------------------------------------------------------------------------
+
+
+def test_the_evidence_bundle_is_read_by_the_products_own_verifier(tmp_path):
+    """A report on stdout is evidence for whoever was watching the job.
+
+    It is nothing at all to the person holding the artifacts a week later,
+    which is the person a release's claims are actually for. So the same facts
+    are sealed into the archive format this product already ships a verifier
+    for -- and checked with *that* verifier, not a second implementation that
+    could drift from it and disagree about what "verified" means.
+    """
+    from openai4s.evidence import verify_package
+    from scripts.release_pipeline import seal_evidence_bundle
+
+    extra = tmp_path / "checksums.txt"
+    extra.write_text("abc123  openai4s-0.3.0.whl\n", encoding="utf-8")
+    report = {"version": "0.3.0", "mode": "local", "ok": True, "steps": []}
+    bundle = tmp_path / "evidence.zip"
+    seal_evidence_bundle(bundle, report, files=[extra])
+
+    result = verify_package(bundle)
+    assert result["ok"], result["problems"]
+    assert result["format"] == "openai4s-release-evidence"
+    assert result["files_verified"] == [
+        "artifacts/checksums.txt",
+        "release-report.json",
+    ]
+
+
+def test_a_tampered_bundle_fails_its_own_verification(tmp_path):
+    """The only reason to seal anything. A bundle that could be edited without
+    detection is a file with a report in it, not evidence."""
+    import shutil
+    import zipfile
+
+    from openai4s.evidence import verify_package
+    from scripts.release_pipeline import seal_evidence_bundle
+
+    bundle = tmp_path / "evidence.zip"
+    seal_evidence_bundle(bundle, {"version": "0.3.0", "ok": True})
+    tampered = tmp_path / "tampered.zip"
+    shutil.copy(bundle, tampered)
+
+    with zipfile.ZipFile(tampered) as archive:
+        contents = {name: archive.read(name) for name in archive.namelist()}
+    contents["release-report.json"] = b'{"version": "9.9.9", "ok": true}'
+    with zipfile.ZipFile(tampered, "w") as archive:
+        for name, data in contents.items():
+            archive.writestr(name, data)
+
+    verdict = verify_package(tampered)
+    assert verdict["ok"] is False
+    assert any("content hash mismatch" in problem for problem in verdict["problems"])
+
+
+def test_an_added_payload_is_caught_even_though_every_listed_file_matches(tmp_path):
+    """Checking only the listed files would pass a bundle with something extra
+    in it, which is exactly how a "verified" archive smuggles a payload."""
+    import shutil
+    import zipfile
+
+    from openai4s.evidence import verify_package
+    from scripts.release_pipeline import seal_evidence_bundle
+
+    bundle = tmp_path / "evidence.zip"
+    seal_evidence_bundle(bundle, {"version": "0.3.0", "ok": True})
+    smuggled = tmp_path / "smuggled.zip"
+    shutil.copy(bundle, smuggled)
+    with zipfile.ZipFile(smuggled, "a") as archive:
+        archive.writestr("artifacts/extra.sh", "#!/bin/sh\necho surprise\n")
+
+    verdict = verify_package(smuggled)
+    assert verdict["ok"] is False
+    assert any("not in the manifest" in problem for problem in verdict["problems"])
+
+
+def test_the_manifest_vouches_for_itself(tmp_path):
+    """Without a self-hash an editor rewrites a payload and its recorded hash
+    together, and every per-file check still passes."""
+    import json
+    import shutil
+    import zipfile
+
+    from openai4s.evidence import verify_package
+    from scripts.release_pipeline import seal_evidence_bundle
+
+    bundle = tmp_path / "evidence.zip"
+    seal_evidence_bundle(bundle, {"version": "0.3.0", "ok": True})
+    forged = tmp_path / "forged.zip"
+    shutil.copy(bundle, forged)
+
+    with zipfile.ZipFile(forged) as archive:
+        contents = {name: archive.read(name) for name in archive.namelist()}
+    payload = b'{"version": "9.9.9", "ok": true}'
+    manifest = json.loads(contents["manifest.json"])
+    # The consistent forgery: rewrite the file AND its recorded digest.
+    import hashlib
+
+    for entry in manifest["files"]:
+        if entry["path"] == "release-report.json":
+            entry["sha256"] = hashlib.sha256(payload).hexdigest()
+            entry["size"] = len(payload)
+    contents["release-report.json"] = payload
+    contents["manifest.json"] = json.dumps(manifest, indent=2).encode("utf-8")
+    with zipfile.ZipFile(forged, "w") as archive:
+        for name, data in contents.items():
+            archive.writestr(name, data)
+
+    verdict = verify_package(forged)
+    assert verdict["ok"] is False
+    assert any("manifest itself was modified" in p for p in verdict["problems"])
+
+
+def test_a_failed_release_still_seals_its_record(tmp_path):
+    """A stopped run is the one somebody most wants the record of."""
+    from openai4s.evidence import verify_package
+    from scripts.release_pipeline import seal_evidence_bundle
+
+    bundle = tmp_path / "evidence.zip"
+    seal_evidence_bundle(
+        bundle,
+        {"version": "0.3.0", "ok": False, "stopped_at": "verify", "steps": []},
+    )
+    assert verify_package(bundle)["ok"] is True  # the *bundle* is intact
+
+
+def test_a_dry_run_leaves_no_evidence_bundle_on_disk(tmp_path):
+    """`--dry-run` is documented as performing no external call, and every
+    other step short-circuits to "would write ...". Sealing broke that: a dry
+    run left a real bundle behind, and the next real run would find a stale one
+    sitting beside its artifacts.
+    """
+    pipeline = Pipeline(
+        version="0.3.0",
+        mode="local",
+        dry_run=True,
+        assets_dir=tmp_path,
+        runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    report = pipeline.run()
+    assert report["ok"] is True
+    assert (
+        list(tmp_path.glob("*evidence.zip")) == []
+    ), "a dry run wrote an evidence bundle"

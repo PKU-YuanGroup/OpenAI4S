@@ -19,7 +19,7 @@ gateway.py
          `-- HostDispatcher -> 权限、工具、Artifact、数据与委派
 ```
 
-- **Gateway 组合。** [`gateway.py`](gateway.py) 建起标准库的 `ThreadingHTTPServer`，把其余部分都装配进去：路由、REST handler、WebSocket frame 的编解码与续传、会话 runner、各个 service、存储和静态资源。[`daemon.py`](daemon.py) 是另一回事：它是遗留的最小兼容服务，只暴露 `/`、`/health` 和 `/run`，不属于 Gateway 的组合。新增算法通常应该放进职责收敛的模块，而不是塞进门面。
+- **Gateway 组合。** [`gateway.py`](gateway.py) 建起标准库的 `ThreadingHTTPServer`，把其余部分都装配进去：路由、REST handler、WebSocket frame 的编解码与续传、会话 runner、各个 service、存储和静态资源。新增算法通常应该放进职责收敛的模块，而不是塞进门面。
 - **REST 与 WebSocket。** REST 负责有界的请求/响应操作，并提供会话领域的读模型。WebSocket 通道承载实时流：Agent 文本、Action 与 Cell 生命周期、审批、Notebook 更新和终止事件，并做缓冲，让重连的浏览器可以续传。
 - **会话服务与投影。** mutation service 管理计划、审阅、Artifact、分支、恢复、会话包、Skill 与删除。projection service 把规范 Ledger、执行、血缘、Context 和 Security 状态转成经脱敏、可以安全交给浏览器的 DTO。投影只是一个视图，它永远不是底层的终止信号或事务信号。
 - **内核所有权。** 每个 Web 会话通过 `SessionRunner` 拥有一个 Python slot 和一个 R slot，两者相互独立、惰性启动。[`execution_coordinator.py`](execution_coordinator.py) 发放 FIFO ticket，让 Agent、用户 REPL、恢复和生命周期这几类写入方不会互相压到一起；中断只会打到持有那把 lease 的确切 owner。Tool-only 路由不会启动前台的会话 slot，不过个别工具可以自己管理一个专用 worker。
@@ -38,10 +38,12 @@ gateway.py
 | [`__init__.py`](__init__.py) | 稳定的包门面，导出 `build_server` 与 `serve`。 |
 | [`action_timeline.py`](action_timeline.py) | 把规范的 Action Ledger 投影成 UI 真正看到的 Timeline。一条记录足以说清：跑的是什么、怎么结束的、用掉哪些权限、花了多少用量、引用了哪些 Artifact，而且这些内容都有界、都经过脱敏。供应商的 `wire_state` 和原始参数字符串被刻意省略，避免有人把一个调试端点变成凭据或协议的转储口。 |
 | [`agent_run.py`](agent_run.py) | 把 `AgentEngine` 适配到 Web 契约。它流式输出安全的文本与代码草稿，发出 Web 事件，处理取消，并通过注入的端口执行原生 Action 或 Cell。 |
+| [`artifact_refs.py`](artifact_refs.py) | 用户消息里钉住版本的 `@文件` 引用。`@name#v-<version_id>` 发送的是那个确切版本的冻结字节，而不是活文件——旧的解析读到的是后续 cell 留下的任何内容。解析不出来的引用会被**报告**而不是丢掉；二进制 Artifact 只报名字，不会被贴成一片替换字符；同 project 的跨会话引用在**发送时**物化（D3），而不是就地读取。 |
+| [`retrieval_source.py`](retrieval_source.py) | 一个版本的检索溯源信息中，可以安全交给客户端的那一部分投影。这个信封是由执行检索的那段代码（包括未经审计的 Skill）写入的自由格式 JSON，而科研 API 把 key 放进查询串是常态——所以键走白名单、值有长度上限，查询串、路径和 userinfo 三处的凭据都会被指纹化。没有溯源信息时返回 `None` 而不是一个空面板：空面板会被读成一条关于数据本身的结论。 |
 | [`artifacts.py`](artifacts.py) | Agent 写出的工作区文件在这里变成带版本的 Artifact。UI 上的编辑、重命名、上传、恢复和提升也走同一个 service，版本每动一次，快照、溯源和广播都跟着对齐。 |
 | [`cell_run.py`](cell_run.py) | 按固定顺序跑完一个 Python/R Cell：执行准入、安全检查、内核执行、实时输出、Artifact 捕获、执行日志、终止投影。这个事务跑完只是一条 observation，它不会判定 Agent 的任务已经完成。 |
 | [`completions.py`](completions.py) | 生成用户看到的那段叙述。进度和结果文字都做了本地化；结构化的 completion 是照着真实的 Artifact 版本增量渲染的，而不是照着一句声称。隐藏推理不会进到这里。 |
-| [`daemon.py`](daemon.py) | 遗留的最小线程 HTTP 服务，为兼容而保留 `/`、`/health` 和 `/run`。它不是 Gateway，也不拥有 Gateway 的 WebSocket、Origin/认证检查或单例生命周期。 |
+| [`local_auth.py`](local_auth.py) | daemon 自己的访问令牌：在数据目录下只铸一次、仅属主可读、比较用恒定时间。是文件而非 Store 行，因为 CLI 必须在任何数据库存在之前读到它，而 `openai4s doctor` 恰恰要在数据库本身坏掉时还能工作。此前它活在闭包里、每次重启都换，已发出的每个 cookie 都因此失效。|
 | [`execution_coordinator.py`](execution_coordinator.py) | 会话级 FIFO 执行所有权的 Web 适配层。ticket 状态会被投影成 WebSocket 事件；已准入的 ticket 会绑定到它的取消事件和当时那把内核 lease 上；中断只会打到由那个执行 id 精确持有的那把 lease。 |
 | [`execution_views.py`](execution_views.py) | 读不可变的 Cell 历史，回答 Notebook 想问的问题：这个 Cell 跑在哪个运行时 generation 上、依赖了什么、之后是否已经失效、重试过几次、数据从哪来。 |
 | [`gateway.py`](gateway.py) | HTTP/WebSocket 的主组合门面。协议 frame 的编解码、hub 与续传缓冲、`SessionState` 与 `SessionRunner`、REST 路由、静态资源和安全检查都落在这里，本表所列全部 service 的装配也在这里。 |
@@ -88,6 +90,7 @@ gateway.py
 
 - [`security_headers.py`](security_headers.py) —— 基于 hash 的 CSP 与加固响应头，作用于每一个响应。
 - [`contract.py`](contract.py) —— 版本化对外面的统一信封、错误码与 route/event 清单。
+- [`compute_tasks.py`](compute_tasks.py) —— 一个会话的远程计算工作的只读视图。远程任务的寿命长过发起它的那一轮、内核、乃至守护进程，而那份持久记录原先只能从 cell 里够到。这个页面不能轮询，原因是这套系统特有的：**探测即回收**——`ComputeManager.result()` 才是去联系远端的那一步，而联系远端就会把文件拉回来并结束任务，所以一个会自动刷新的页面等于在没人看着的会话里偷偷做回收。本模块只接收一个 `Store`，完全没有 import `ComputeManager`，所以这条保证是结构性的，而不是一句关于调用顺序的承诺。按 `owner_key`（会话工作区）限定范围；别的会话的任务不会被列出、不计入计数，也不会以「已隐藏」的形式被提及。
 - [`errors.py`](errors.py) —— `GatewayError` 与稳定机器错误码。独立成模块，是因为 `GatewayError` 原本位于 gateway 自身 import 区块下方约 5800 行处，兄弟模块从那里 import 它构成循环导入，会让 daemon 在**启动时**就失败。从 `Handler._api` 里切出的每个路由组都要抛这个异常，否则每抽一次就要重新踩一次这个坑。gateway 仍然再导出原来的名字。
 - [`kernel_routes.py`](kernel_routes.py) —— 十二条 kernel 路由，作为 `Handler._api` 拆解的第一刀原样搬出（2100 行 / 261 分支 → 1887 / 237）。选它是因为它是唯一**可被核对**的一组：它拥有十一个冻结响应形状，而 `memory`、`permissions`、`connectors`、`compute` 一个都没有。`handle()` 是三态返回——True 表示已发出响应，False 表示路径匹配但方法分支未触发、链条必须继续走到 404；写成 `return bool(regex_matched)` 会吞掉十二个「方法不对」的 404。两处位置依赖是承重的，并且用测试而非注释来保证：调用点必须在 `frame_mutation` 守卫之后（那是七条改写路由——含代码执行端点——唯一的写保护），以及在 `workbench` 守卫之后（`GET /frames/{id}/execution` 的 404 完全来自它）。
 - [`response_schema.py`](response_schema.py) —— 一套小而明确的形状代数（类型、必填键、元素形状），零依赖，因为 core 只用标准库。它回答的是「这个响应的形状变了吗」；它不是 JSON Schema draft-2020-12，也不假装是。

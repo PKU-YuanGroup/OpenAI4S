@@ -41,7 +41,16 @@ jobs:
     # Enforces the CONTRIBUTING.md branch-naming table on PR head branches.
     # dependabot branches (dependabot/...) are exempt. `main` is allowed so
     # casual contributors can PR from their fork's main branch.
-    if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+    #
+    # Exempt on the *branch*, not on the actor. `github.actor` is whoever
+    # triggered the latest run, so the moment a maintainer clicks "Update
+    # branch" on a Dependabot PR the actor stops being dependabot[bot], this
+    # job starts running, and it fails a branch name it was never meant to
+    # judge. Because this is a required check under a strict-up-to-date
+    # ruleset -- where every Dependabot PR after the first merge must be
+    # updated -- an actor-based exemption makes Dependabot PRs unmergeable
+    # through the front door. The head ref is the thing the policy is about.
+    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'dependabot/')
     runs-on: ubuntu-latest
     steps:
       - name: Check head branch name
@@ -62,8 +71,8 @@ jobs:
     name: Lint (pre-commit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
       - name: Install dev dependencies
@@ -77,8 +86,8 @@ jobs:
     name: Type safety (core orchestration boundary)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
       - name: Install locked development dependencies
@@ -90,8 +99,8 @@ jobs:
     name: Source credential scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Scan tracked release sources without echoing matches
@@ -101,11 +110,11 @@ jobs:
     name: Build and install wheel/sdist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Build standards-compliant release artifacts
@@ -133,10 +142,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        # 3.13 is here because the macOS .dmg embeds it: the build that
+        # reaches the most end users was, until this line, the one Python
+        # nothing tested. 3.10 is the floor from requires-python.
+        python-version: ["3.10", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: ${{ matrix.python-version }}
       # Keep one science-only job to exercise the no-RDKit fallback. Ubuntu's
@@ -147,6 +159,13 @@ jobs:
       - name: Install dev, science, and chemistry dependencies
         if: matrix.python-version == '3.12'
         run: uv sync --locked --extra science --extra chemistry
+      # The .dmg's interpreter. The science extra is not optional here even
+      # though the core is stdlib-only: a few test modules import pandas at
+      # module scope, so without it pytest fails during *collection* and the
+      # job reports an error rather than a result.
+      - name: Install dev and science dependencies
+        if: matrix.python-version == '3.13'
+        run: uv sync --locked --extra science
       - name: Byte-compile all first-party sources
         run: uv run python -m compileall -q openai4s openai4s_compute_provider harness tests
       - name: Collect tests (strict markers, default deselection)
@@ -183,11 +202,11 @@ jobs:
       matrix:
         engine: [chromium, firefox, webkit]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
       - name: Install the zero-dependency server and browser driver
@@ -239,8 +258,8 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
       - name: Install the zero-dependency runtime
@@ -258,8 +277,8 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
       - name: Install bubblewrap
@@ -279,8 +298,8 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
       - name: Install the zero-dependency runtime

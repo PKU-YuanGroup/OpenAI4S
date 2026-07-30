@@ -264,6 +264,29 @@ class ArtifactRepository:
             ).fetchone()
         return self._get_artifact(row["artifact_id"]) if row else None
 
+    def artifact_by_unique_filename(self, filename: str) -> dict | None:
+        """Resolve a filename only when exactly one artifact carries it.
+
+        The unscoped lookup above answers "the most recently created artifact
+        with this name, anywhere" -- so `GET /artifacts/report.pdf` served
+        whichever *project* last happened to make a `report.pdf`. A caller
+        asking by name got an arbitrary cross-project match, with the right
+        content-type and no indication anything was chosen.
+
+        For a tool whose artifacts are research data, quietly serving the wrong
+        file is worse than serving none. Two matches is an ambiguous question,
+        and the honest answer to an ambiguous question is not one of the
+        candidates.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT artifact_id FROM artifacts WHERE filename=? LIMIT 2",
+                (filename,),
+            ).fetchall()
+        if len(rows) != 1:
+            return None
+        return self._get_artifact(rows[0]["artifact_id"])
+
     def artifact_write_scope(
         self,
         *,
@@ -636,6 +659,158 @@ class ArtifactRepository:
             "created_at": created_at,
         }
 
+    def materialise_artifact_version(
+        self,
+        *,
+        source_version_id: str,
+        artifact_id: str,
+        version_id: str,
+        filename: str,
+        path: str,
+        snapshot_path: str,
+        frame_id: str | None,
+        root_frame_id: str,
+        project_id: str,
+    ) -> dict:
+        """Copy another session's artifact version *into* this one, atomically.
+
+        The third write beside `record_cell_artifact` and
+        `record_artifact_restore`, and it exists so that nothing ever reads
+        another session's file in place. A cross-session read leaves the
+        borrowing session with an analysis whose input has no version in its own
+        history: delete or revert the other session and the provenance of this
+        one silently becomes unresolvable. Materialising gives the target its
+        own Artifact and version, with a lineage edge back to the source, so
+        "where did this come from" keeps an answer that does not depend on the
+        other session still existing.
+
+        Scope is enforced here rather than by the caller. Same project only, and
+        a source in another project raises the same `KeyError` as a source that
+        does not exist -- a distinct "forbidden" would confirm the object is
+        there, which is the one bit a caller outside the project should not be
+        able to read.
+
+        Byte movement is the caller's: the Host service hardlinks (falling back
+        to a copy across devices) before calling, because a version snapshot is
+        immutable by contract and two rows may share the bytes safely. This
+        method owns only the transaction.
+        """
+        if not version_id or version_id == source_version_id:
+            raise ValueError("materialisation requires a fresh version id")
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                source = self._connection.execute(
+                    "SELECT v.*, a.project_id AS src_project, "
+                    "a.root_frame_id AS src_root FROM artifact_versions v "
+                    "JOIN artifacts a ON a.artifact_id=v.artifact_id "
+                    "WHERE v.version_id=?",
+                    (source_version_id,),
+                ).fetchone()
+                # One message for "absent" and for "another project's", and
+                # deliberately the SAME message the Host service raises. The
+                # two checks are independent on purpose, but if they worded the
+                # refusal differently then removing the outer one would turn
+                # the inner one into the disclosure channel both exist to
+                # close: a caller could tell "another project's" from "absent"
+                # by which sentence came back.
+                if source is None or source["src_project"] != project_id:
+                    raise KeyError(
+                        f"no artifact version {source_version_id!r} available"
+                    )
+                if source["src_root"] == root_frame_id:
+                    raise ValueError("artifact version already belongs to this session")
+
+                existing = self._connection.execute(
+                    "SELECT * FROM artifacts WHERE artifact_id=?",
+                    (artifact_id,),
+                ).fetchone()
+                if existing is None:
+                    self._connection.execute(
+                        "INSERT INTO artifacts(artifact_id,filename,content_type,"
+                        "latest_version_id,root_frame_id,project_id,created_at,"
+                        "updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            artifact_id,
+                            filename,
+                            source["content_type"],
+                            version_id,
+                            root_frame_id,
+                            project_id,
+                            now,
+                            now,
+                        ),
+                    )
+                elif (
+                    existing["root_frame_id"] != root_frame_id
+                    or existing["project_id"] != project_id
+                ):
+                    raise ValueError("target artifact belongs to a different scope")
+
+                source_envelope = None
+                try:
+                    source_envelope = source["source"]
+                except (IndexError, KeyError):
+                    source_envelope = None
+                self._connection.execute(
+                    "INSERT INTO artifact_versions(version_id,artifact_id,"
+                    "filename,content_type,size_bytes,checksum,path,"
+                    "snapshot_path,producing_cell_id,frame_id,created_at,"
+                    "env_snapshot_id,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        version_id,
+                        artifact_id,
+                        filename,
+                        source["content_type"],
+                        source["size_bytes"],
+                        source["checksum"],
+                        path,
+                        snapshot_path,
+                        None,
+                        frame_id,
+                        now,
+                        source["env_snapshot_id"],
+                        source_envelope,
+                    ),
+                )
+                self._connection.execute(
+                    "UPDATE artifacts SET latest_version_id=?,updated_at=? "
+                    "WHERE artifact_id=?",
+                    (version_id, now, artifact_id),
+                )
+                # The edge is what makes this materialisation rather than a
+                # copy: the target version knows which version it came from,
+                # and the lineage walk crosses the session boundary even though
+                # no read ever does.
+                self._connection.execute(
+                    "INSERT INTO lineage_edges(edge_id,input_version_id,"
+                    "output_version_id,producing_cell_id,frame_id,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (
+                        f"e-{uuid.uuid4().hex[:12]}",
+                        source_version_id,
+                        version_id,
+                        None,
+                        frame_id,
+                        now,
+                    ),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return {
+            "artifact_id": artifact_id,
+            "version_id": version_id,
+            "filename": filename,
+            "path": path,
+            "content_type": source["content_type"],
+            "size_bytes": source["size_bytes"],
+            "checksum": source["checksum"],
+            "created_at": now,
+            "materialised_from_version_id": source_version_id,
+        }
+
     def record_artifact_restore(
         self,
         *,
@@ -970,9 +1145,15 @@ class ArtifactRepository:
                 (artifact_id,),
             ).fetchone()
             rows = self._connection.execute(
+                # `source` is the retrieval provenance envelope. It was
+                # written on every retrieved version and selected by nothing,
+                # so a figure built on a live API fetch was indistinguishable
+                # from one computed out of thin air. The gateway projects it
+                # through an allowlist before any of it reaches a client.
                 "SELECT version_id,filename,content_type,size_bytes,checksum,"
-                "producing_cell_id,frame_id,created_at FROM artifact_versions "
-                "WHERE artifact_id=? ORDER BY created_at DESC, rowid DESC",
+                "producing_cell_id,frame_id,created_at,source FROM "
+                "artifact_versions WHERE artifact_id=? "
+                "ORDER BY created_at DESC, rowid DESC",
                 (artifact_id,),
             ).fetchall()
         latest_version_id = latest["latest_version_id"] if latest else None

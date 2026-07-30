@@ -173,6 +173,13 @@ _RISK_TOKENS = (
     "cdll",
     "windll",
     "find_library",
+    # R's dynamic loaders. This list is language-neutral by intent -- the same
+    # classifier screens Python and R cells -- but it only ever named Python's,
+    # so the identical loader-escape was UNSAFE in one language and SAFE in the
+    # other. Measured before this: `writeBin(payload, "x.so"); dyn.load("x.so")`
+    # scored SAFE while its Python twin scored UNSAFE.
+    "dyn.load",
+    "library.dynam",
     "rc.local",
     ".bashrc",
     ".zshrc",
@@ -262,9 +269,17 @@ _ATTACK_SIGNATURES: list[tuple[re.Pattern, int, str]] = [
         "obfuscated __import__('os').system call",
     ),
     # 6. multi-step: write a .so then dlopen it (loader-escape combo)
+    #
+    # Both halves accept R as well as Python. The write half now also matches
+    # `writeBin(payload, "x.so")`, which names the file without a mode string,
+    # and the load half accepts `dyn.load` / `library.dynam` alongside the
+    # Python loaders. Screening one language and not the other made the same
+    # attack safe depending on which kernel a cell asked for.
     (
         re.compile(
-            r"\.so['\"]?\s*,\s*['\"]?wb.*(?:CDLL|LoadLibrary|dlopen)", re.DOTALL
+            r"(?:\.so['\"]?\s*,\s*['\"]?wb|writeBin\s*\([^)]*\.so)"
+            r".*(?:CDLL|LoadLibrary|dlopen|dyn\.load|library\.dynam)",
+            re.DOTALL | re.IGNORECASE,
         ),
         6,
         "writes a shared object and then loads it",

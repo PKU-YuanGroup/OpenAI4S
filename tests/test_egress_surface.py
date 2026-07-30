@@ -52,10 +52,9 @@ _EGRESS_MODULES = frozenset(
 
 #: The frozen surface: module -> why it is allowed to reach the network.
 #:
-#: Note what is NOT here. `openai4s/share/relay.py` and `server/daemon.py` bind
-#: listening sockets and are out of scope (see the module docstring), and
-#: `server/gateway.py` mentions `import requests` only inside a prompt string
-#: shown to the model.
+#: Note what is NOT here. `openai4s/share/relay.py` binds a listening socket
+#: and is out of scope (see the module docstring), and `server/gateway.py`
+#: mentions `import requests` only inside a prompt string shown to the model.
 _DECLARED: dict[str, str] = {
     "openai4s/webtools.py": (
         "the agent's web fetch. Follows redirects manually so the SSRF guard "
@@ -167,9 +166,229 @@ def test_the_scan_finds_a_planted_call():
 
 
 def test_listening_sockets_are_deliberately_out_of_scope():
-    """The daemon and the relay bind sockets. That is a different risk with a
-    different answer (bind address), and folding it in here would make this
-    test about two things and good at neither."""
+    """The relay binds a socket. That is a different risk with a different
+    answer (bind address), and folding it in here would make this test about
+    two things and good at neither.
+
+    `openai4s/server/daemon.py` used to be named here too. It was deleted: an
+    unauthenticated `POST /run` onto `Agent.run` that nothing imported. An
+    assertion that a nonexistent file is absent passes for the wrong reason,
+    so it went with it.
+    """
     sites = _egress_sites()
     assert "openai4s/share/relay.py" not in sites
-    assert "openai4s/server/daemon.py" not in sites
+
+
+# --------------------------------------------------------------------------
+# the same question, asked of the bundled Skills
+# --------------------------------------------------------------------------
+
+_SKILLS = Path(__file__).resolve().parent.parent / "skills"
+
+#: Bundled skill sidecars that reach the network directly, and why each is
+#: still doing so. This table exists to *freeze* the set, not to bless it.
+#:
+#: The scanner above has only ever looked at `openai4s/`, and its own docstring
+#: names the gap: it "cannot see egress from a subprocess -- a kernel cell
+#: running `requests`". A skill sidecar is exactly that. `openai4s/egress.py`
+#: is consulted by `webtools`/`web_fetch` and the bash gate; `openai4s/kernel/`
+#: mentions egress once, to forward `OPENAI4S_EGRESS` as an environment
+#: variable. So these calls do not merely bypass the allowlist by convention --
+#: nothing in the analysis kernel enforces it on them at all.
+#:
+#: Removing an entry is the goal. Adding one needs a reason that survives
+#: someone asking why `host.web_fetch` would not do.
+#: Bundled skills allowed to reach the network directly, with why.
+#:
+#: Empty, and that is the point. Three skills were here -- `literature-review`
+#: (DOI/OpenAlex lookups), `mineral_spectra_analysis` (the RRUFF archive) and
+#: `catalyst_sar_screening` (a model-endpoint probe) -- each because
+#: `host.web_fetch` could not express what it needed: a HEAD existence probe
+#: that does not follow redirects, a contactable User-Agent, a binary download.
+#: So each used raw `urllib`, and a request made that way is subject to neither
+#: the egress allowlist nor the SSRF guard. The gap in the Host API was the
+#: reason part of the product's own traffic went around the fence built for it.
+#:
+#: The API grew those three powers (`host.web_fetch(method="HEAD")`,
+#: `user_agent=`, and `host.web_download`), all guarded, and the skills moved
+#: onto them. A new entry here is a new hole and has to argue for itself.
+_SKILL_EGRESS: dict[str, str] = {}
+
+
+def _skill_egress_sites() -> dict[str, list[tuple[int, str]]]:
+    """The same AST scan, rooted at `skills/` instead of the package."""
+    sites: dict[str, list[tuple[int, str]]] = {}
+    if not _SKILLS.is_dir():
+        return sites
+    for path in sorted(_SKILLS.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text("utf-8"))
+        except (OSError, SyntaxError):  # pragma: no cover - unreadable source
+            continue
+        rel = path.relative_to(_SKILLS.parent).as_posix()
+        for node in ast.walk(tree):
+            name = None
+            if isinstance(node, ast.ImportFrom) and node.module in _EGRESS_MODULES:
+                for alias in node.names:
+                    if alias.name in _EGRESS_NAMES:
+                        sites.setdefault(rel, []).append((node.lineno, alias.name))
+                continue
+            if isinstance(node, ast.Attribute) and node.attr in _EGRESS_NAMES:
+                name = node.attr
+            elif isinstance(node, ast.Name) and node.id in {
+                "urlopen",
+                "create_connection",
+                "build_opener",
+            }:
+                name = node.id
+            if name:
+                sites.setdefault(rel, []).append((node.lineno, name))
+    return sites
+
+
+def test_no_undeclared_skill_reaches_the_network():
+    """A bundled skill that opens a socket must be named here.
+
+    The frozen surface for `openai4s/` has existed for a while; `skills/` was
+    entirely outside it, which is where the unenforced egress actually lives.
+    This does not stop the three below from doing it -- it stops a fourth from
+    appearing without anyone deciding to allow it.
+    """
+    undeclared = {
+        module: sites
+        for module, sites in _skill_egress_sites().items()
+        if module not in _SKILL_EGRESS
+    }
+    assert undeclared == {}, (
+        "these bundled skills reach the network and are not declared in "
+        f"_SKILL_EGRESS: {undeclared}. Prefer `host.web_fetch`, which is "
+        "subject to the egress allowlist and the SSRF guard; if it genuinely "
+        "cannot serve, add an entry saying why."
+    )
+
+
+def test_every_declared_skill_egress_entry_is_still_real():
+    """A declaration for a skill that no longer reaches the network reads as a
+    standing exemption for something already fixed."""
+    sites = _skill_egress_sites()
+    stale = sorted(module for module in _SKILL_EGRESS if module not in sites)
+    assert (
+        stale == []
+    ), f"these no longer reach the network; drop their _SKILL_EGRESS entry: {stale}"
+
+
+#: The browser client's own egress surface, which the AST walk above cannot see:
+#: it reads Python, and this is JavaScript loaded into a page that holds the
+#: session cookie. Frozen the same way and for the same reason.
+_WEBUI = _PACKAGE / "server" / "webui"
+
+#: Absolute URLs the client may *name*, each with why it is not a request. A
+#: string is not egress; a string handed to something that fetches it is. Both
+#: of these are inert, so they are listed rather than removed -- and listed with
+#: a reason, so a third entry has to argue for itself.
+#:
+#: `vendor/` is excluded from the scan entirely: it is upstream minified code,
+#: and a URL inside a bundled library is not the client choosing to call it.
+_WEBUI_NAMED_HOSTS = {
+    "www.w3.org": "the SVG XML namespace passed to createElementNS -- an "
+    "identifier, never dereferenced by any browser",
+    "api.tavily.com": "displayed as the default search endpoint in Customize. "
+    "The call is made by the daemon; the client only renders the string",
+}
+
+#: Constructs that turn a URL into a request. An absolute URL on the same line
+#: as one of these fails regardless of the table above, because the question
+#: there is not which host but whether the client fetches at all.
+_WEBUI_REQUEST_SITES = (
+    "fetch(",
+    ".src",
+    ".href",
+    "import(",
+    "new Worker(",
+    "XMLHttpRequest",
+    "sendBeacon(",
+    "new EventSource(",
+    "new WebSocket(",
+)
+
+
+def _webui_sources() -> list[Path]:
+    return [
+        path
+        for path in sorted(_WEBUI.rglob("*"))
+        if path.is_file()
+        and path.suffix in {".js", ".html", ".css"}
+        and "vendor" not in path.relative_to(_WEBUI).parts
+    ]
+
+
+def _webui_absolute_urls() -> list[tuple[str, int, str, str]]:
+    """(file, line, host, text) for every absolute URL in live client code."""
+    import re
+
+    pattern = re.compile(r"""["'`](https?://[^"'`\s]+)""")
+    found: list[tuple[str, int, str, str]] = []
+    for path in _webui_sources():
+        for lineno, line in enumerate(
+            path.read_text("utf-8", errors="replace").splitlines(), 1
+        ):
+            # A URL in a comment documents what was removed; it is not code.
+            stripped = line.lstrip()
+            if stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            for match in pattern.finditer(line):
+                url = match.group(1)
+                found.append(
+                    (str(path.relative_to(_PACKAGE)), lineno, url.split("/")[2], line)
+                )
+    return found
+
+
+def test_the_browser_client_fetches_nothing_off_its_own_origin():
+    """A CDN fallback is an outbound request the user did not ask for.
+
+    `app.js` used to retry 3Dmol from `https://3Dmol.org/build/3Dmol-min.js`
+    when the vendored copy failed to load. Three things were wrong with it at
+    once: it is a real outbound request from an application whose premise is
+    that it stays on loopback; it executes third-party script in the page
+    holding the session cookie; and it is silent, so the one user who would
+    care -- an air-gapped or regulated install -- learns nothing. The degraded
+    path it was skipping (render the coordinates as text) was already written.
+
+    This asserts the sharp thing: no absolute URL is handed to anything that
+    fetches. The host table is the softer companion check below, and neither
+    subsumes the other -- an allowlisted host in a `fetch(` still fails here.
+    """
+    offenders = [
+        (path, line, host)
+        for path, line, host, text in _webui_absolute_urls()
+        if any(site in text for site in _WEBUI_REQUEST_SITES)
+    ]
+    assert (
+        not offenders
+    ), "the browser client fetches from an external origin:\n" + "\n".join(
+        f"  {path}:{line} -> {host}" for path, line, host in offenders
+    )
+
+
+def test_every_external_host_the_client_names_is_accounted_for():
+    """The softer half: a new hostname in client code has to be argued for.
+
+    Kept separate from the fetch check because it catches a different mistake --
+    a URL that is inert today and one refactor away from being passed to
+    `fetch`. Adding a row here is a decision; typing a hostname into `app.js`
+    is a Tuesday.
+    """
+    unaccounted = sorted(
+        {
+            (path, line, host)
+            for path, line, host, _ in _webui_absolute_urls()
+            if host not in _WEBUI_NAMED_HOSTS
+        }
+    )
+    assert not unaccounted, (
+        "client code names a host with no recorded reason:\n"
+        + "\n".join(f"  {path}:{line} -> {host}" for path, line, host in unaccounted)
+        + "\n\nAdd it to _WEBUI_NAMED_HOSTS with why it is not a request, or "
+        "remove it."
+    )

@@ -661,3 +661,61 @@ def test_no_frozen_route_publishes_a_dotless_filename_as_a_field(frozen):
     for route, entry in frozen["routes"].items():
         walk(entry.get("schema") or {}, route)
     assert offenders == []
+
+
+def test_the_frozen_envelope_never_declares_request_id_nullable(frozen):
+    """`request_id` is a string on the wire, always.
+
+    `_route` assigns a correlation id -- an inbound `X-Request-Id`, else
+    `new_correlation_id()` -- before any guard can answer, so no real response
+    carries a null one. But most gateway tests build a handler with
+    `object.__new__` and never set the attribute, and the first capture that
+    saw enriched bodies froze `request_id` as `["null", "string"]` on 17 routes
+    and `"null"` on one.
+
+    That is a property of the harness published as a property of the API, which
+    is worse than an absent one because a client believes it and writes
+    null-handling that can never run. The capture substitutes a fixed synthetic
+    id for a handler that has none; this asserts the substitution is still in
+    place, because losing it is silent.
+    """
+    offenders = {}
+    for route, entry in frozen["routes"].items():
+        prop = ((entry.get("schema") or {}).get("properties") or {}).get("request_id")
+        if prop is None:
+            continue
+        declared = prop.get("type")
+        if declared != "string":
+            offenders[route] = declared
+    assert offenders == {}, (
+        "request_id must be a string in every frozen shape; a null there "
+        f"describes the capture harness rather than the server: {offenders}"
+    )
+
+
+def test_the_envelope_status_is_the_http_status_except_where_a_route_owns_it(frozen):
+    """`status` is the integer HTTP status on every error shape but one.
+
+    `POST /frames/<id>/recovery/actions/restart_fresh` answers a failed action
+    with its whole domain result and HTTP 409, and that result carries its own
+    `status` string. The envelope defers rather than destroying it, so this one
+    route legitimately declares both types. Pinned by name: if a second route
+    starts colliding, that is a design question and it should have to be
+    answered, not absorbed.
+    """
+    both = {}
+    for route, entry in frozen["routes"].items():
+        if "[error]" not in route:
+            continue
+        prop = ((entry.get("schema") or {}).get("properties") or {}).get("status")
+        if prop is None:
+            continue
+        declared = prop.get("type")
+        if declared != "integer":
+            both[route] = declared
+    assert both == {
+        "POST /frames/[^/]+/recovery/actions/restart_fresh [error]": [
+            "integer",
+            "string",
+        ]
+    }, both
