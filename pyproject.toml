@@ -130,6 +130,24 @@ markers = [
     "browser: requires a real browser session",
 ]
 
+[tool.ruff.lint]
+# State the rule set instead of inheriting whatever the pinned ruff calls its
+# default. Until now there was no [tool.ruff] section at all, so the rule set
+# was whatever the hook's version happened to ship: ruff 0.0.274 defaulted to
+# E + F (59 rules), and 0.16.0 defaults to 413 — turning a version bump into
+# an unreviewed adoption of ~350 rules and 1081 findings across the tree.
+#
+# E + F reproduces the rule set this codebase was actually written against.
+# Adopting further families (S, UP, RUF, SIM, ...) is real work with real
+# value, but it is a lint-policy decision that belongs in its own PR, one
+# family at a time, where the diff can be read — not a side effect of
+# Dependabot moving a pin.
+#
+# The ignore list stays on the hook's command line so it remains visible at
+# the point of invocation; both E402 and E741 are inside the E family and so
+# are genuinely still doing work here.
+select = ["E", "F"]
+
 [tool.mypy]
 # Start with the orchestration boundary where type mistakes are most costly.
 # Imports remain opaque for now so adopting mypy does not pretend that the
