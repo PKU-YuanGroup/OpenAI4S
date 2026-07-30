@@ -1,0 +1,16 @@
+# Gitleaks configuration.
+#
+# STEP 1 OF 2 -- this commit deliberately contains NO allowlist.
+#
+# A config file that gets `[extend] useDefault` wrong replaces the default rule
+# set instead of extending it. The scan then finds nothing and passes, which
+# looks exactly like a scan that works. Publishing that as "the secret scanner
+# is green" would be a claim that is wrong rather than absent.
+#
+# So the config lands empty first, purely to prove the rule set is still
+# loaded: this commit must still report the same `leaks found: 4` that main
+# reports today. The allowlist arrives in the next commit, and the drop from 4
+# to 0 is then attributable to the allowlist rather than to a neutered scanner.
+
+[extend]
+useDefault = true
