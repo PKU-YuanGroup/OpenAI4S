@@ -9,7 +9,7 @@ repos:
       - id: check-merge-conflict
         args: ['--assume-in-merge']
   - repo: https://github.com/pycqa/isort
-    rev: 5.12.0
+    rev: 8.0.1
     hooks:
       - id: isort
         args: ["--profile", "black"]
