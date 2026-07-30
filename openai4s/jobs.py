@@ -27,12 +27,18 @@ from openai4s.execution.process_group import await_group_exit as _await_group_ex
 from openai4s.execution.process_group import group_alive as _group_alive
 from openai4s.execution.process_group import signal_group as _signal_group
 from openai4s.execution.process_group import stop_process_group as _stop_process_group
+from openai4s.kernel.environment import build_kernel_environment
 from openai4s.observability import carry_context
 
 #: Per-job captured output cap. Characters, not bytes: `append` measures
 #: `len()` on a `str`, and the comment here said bytes for long enough that
 #: the two readings of the same number stopped agreeing. The R worker gates
 #: on bytes and says bytes; this one counts characters and now says so.
+#: How many local jobs may be running or queued at once. A local job is a real
+#: process tree with no deadline; without a ceiling one loop over the route
+#: exhausts the host.
+MAX_ACTIVE_JOBS = 8
+
 _MAX_OUTPUT = 200_000
 #: Prepended, because the tail is what is kept. Without it a truncated log is
 #: indistinguishable from a job that printed less than it did.
@@ -66,9 +72,16 @@ class Job:
         # terminal result `_run` is about to publish rather than a transient
         # `running` or a mislabelled `cancelled`.
         self._thread: threading.Thread | None = None
+        #: Everything this job ever produced, whether or not it was retained.
+        #: `truncated` alone said that *something* was dropped; a reader deciding
+        #: whether the tail is enough needs to know how much.
+        self._seen_chars = 0
 
     def append(self, text: str) -> None:
         with self._lock:
+            # Counted before anything is dropped: a receipt that reports only what
+            # survived cannot say how much did not.
+            self._seen_chars += len(text)
             self._out.append(text)
             # keep bounded
             total = sum(len(x) for x in self._out)
@@ -107,6 +120,12 @@ class Job:
                 else None
             ),
         }
+        with self._lock:
+            retained = sum(len(chunk) for chunk in self._out)
+            d["truncated"] = bool(self._truncated)
+            d["seen_chars"] = self._seen_chars
+            d["retained_chars"] = retained
+            d["dropped_chars"] = max(0, self._seen_chars - retained)
         if with_output:
             d["output"] = self.output()
         return d
@@ -131,9 +150,11 @@ class JobManager:
         if not command:
             return {"error": "empty command"}
         kind = kind if kind in ("bash", "python") else "bash"
-        # Confine the working directory to the jobs root: normalize a caller-supplied
-        # cwd and require it to share the root as a common path prefix, so it cannot
-        # escape via ".." traversal or an absolute path (no path injection).
+        # Confine the working directory to the jobs root. `normpath` is lexical --
+        # it resolves ".." in the string and knows nothing about symlinks -- so a
+        # link created inside the root passed this test and the process then ran
+        # outside it. `realpath` resolves the link first, which is what the
+        # `commonpath` comparison has to be made against.
         base = os.path.realpath(str(self.root))
         if cwd:
             candidate = os.path.join(base, cwd)
@@ -157,6 +178,23 @@ class JobManager:
             return {"error": f"could not create the job working directory: {error}"}
         job = Job(kind, command, wd)
         with self._lock:
+            # Claimed inside the lock and before the Thread exists. Nothing
+            # counted running jobs at all, so a loop over `POST /compute/jobs`
+            # spawned a thread and a process per call with no ceiling. A check
+            # made after the spawn is a report, not a limit.
+            active = sum(
+                1
+                for existing in self._jobs.values()
+                if existing.status in ("queued", "running")
+            )
+            if active >= MAX_ACTIVE_JOBS:
+                return {
+                    "error": (
+                        f"{active} local jobs are already running; the limit is "
+                        f"{MAX_ACTIVE_JOBS}. Wait for one to finish or cancel it."
+                    ),
+                    "code": "job_capacity",
+                }
             self._jobs[job.id] = job
             self._order.append(job.id)
             self._prune_locked()
@@ -177,7 +215,10 @@ class JobManager:
         if job.kind == "python":
             argv = [sys.executable, "-u", "-c", job.command]
         else:
-            argv = ["bash", "-lc", job.command]
+            # `-c`, not `-lc`. A login shell sources the user's profile, so what a
+            # job does -- and what its log contains -- depended on a dotfile the
+            # daemon never saw and cannot reason about.
+            argv = ["bash", "-c", job.command]
         try:
             with job._lock:
                 # Cancelling in the window between submit() and this spawn used
@@ -193,6 +234,15 @@ class JobManager:
                 job._proc = proc = subprocess.Popen(
                     argv,
                     cwd=job.cwd,
+                    # Rebuilt from the strict allowlist, not inherited. With no
+                    # `env=` the child got the daemon's environment verbatim, so
+                    # every provider API key the daemon holds was handed to every
+                    # local job. The project already owns this function and calls
+                    # it from the kernel manager, the dynamic tools and preinstall
+                    # -- it was simply never called from here, while the
+                    # architecture doc claimed child environments are rebuilt
+                    # rather than copied.
+                    env=build_kernel_environment(cwd=job.cwd),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
