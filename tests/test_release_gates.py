@@ -347,3 +347,238 @@ def test_distribution_manifest_keeps_release_and_runtime_resources():
         "global-exclude *.py[cod]",
     ):
         assert contract in manifest
+
+
+# ---------------------------------------------------------------------------
+# Linux and Windows desktop packaging
+# ---------------------------------------------------------------------------
+
+
+def test_every_desktop_bundle_pre_bakes_the_same_science_stack():
+    """One manifest, or the two platforms quietly ship different stacks.
+
+    The macOS image used to own this list. The moment a second platform grew a
+    bundle, "what we install" and "what we check" became four things instead of
+    two, and the one that stopped matching would be the one nobody ran.
+    """
+    contract = _load_script("bundle_contract")
+    packages = contract.manifest_packages()
+    assert len(packages) >= 30
+    assert ("rdkit", "rdkit") in packages
+    assert ("scikit-learn", "sklearn") in packages
+
+    for builder in ("build_macos_dmg.sh", "build_linux_bundle.sh"):
+        text = (ROOT / "scripts" / builder).read_text("utf-8")
+        assert "scripts/bundled_packages.txt" in text, f"{builder} bundles its own list"
+
+    for verifier in ("verify_macos_bundle", "verify_linux_bundle"):
+        source = (ROOT / "scripts" / f"{verifier}.py").read_text("utf-8")
+        assert "from bundle_contract import bundled_imports" in source, (
+            f"{verifier} does not read the shared manifest, so the set it "
+            "enforces can drift from the set that was installed"
+        )
+
+
+def test_the_linux_bundle_ships_the_resources_only_a_runtime_check_would_miss():
+    build = (ROOT / "scripts" / "build_linux_bundle.sh").read_text("utf-8")
+    # Same omissions that have bitten the DMG: the benchmark manifests, the
+    # Skill catalog, and the environment specs are all resolved by path at
+    # runtime, so leaving one out fails long after the build looked green.
+    for tree in ("/workflows", "/skills", "/envs", "/openai4s_worker_runtime"):
+        assert tree in build, f"the Linux bundle does not copy {tree}"
+    # Hash-based bytecode, or the app rewrites its own tree on first import and
+    # recompiles the whole stack on every launch from a read-only unpack.
+    assert "--invalidation-mode unchecked-hash" in build
+    # A cross-build produces a real image but an unexecuted one. It has to say
+    # so: a skipped smoke that reads like a passed one is how an untested image
+    # gets released.
+    assert "cross-build" in build.lower()
+
+
+def test_the_windows_package_has_no_native_windows_execution_path():
+    """Both halves, because either alone is satisfiable by a broken package."""
+    launcher = (ROOT / "scripts" / "windows" / "openai4s.ps1").read_text("utf-8")
+    assert "wsl.exe" in launcher
+    assert "platform_support.py" in launcher, (
+        "the launcher must say why it goes through WSL2, at the place someone "
+        "would otherwise 'simplify' it into starting Python directly"
+    )
+    # WSL 1 has no user namespaces, so bubblewrap cannot start and cells would
+    # run unisolated — the silent degradation the platform tiers exist to rule
+    # out. Refusing it is not optional.
+    assert "wsl --set-version" in launcher
+    assert "wsl --install" in launcher
+
+    verifier = (ROOT / "scripts" / "verify_windows_zip.py").read_text("utf-8")
+    for suffix in ('".exe"', '".dll"', '".pyd"'):
+        assert suffix in verifier
+
+
+def test_the_wsl_bootstrap_never_acquires_carriage_returns():
+    """A CRLF shell script fails inside WSL, on the user's machine, not here."""
+    assert b"\r" not in (ROOT / "scripts" / "windows" / "bootstrap.sh").read_bytes()
+    build = (ROOT / "scripts" / "build_windows_zip.sh").read_text("utf-8")
+    assert 'to_lf "$SOURCES/bootstrap.sh"' in build
+    for windows_side in ("OpenAI4S.cmd", "openai4s.ps1"):
+        assert windows_side in build
+
+
+def _write_fake_linux_payload(path: Path, version: str, arch: str) -> str:
+    """A tarball with the shape the Windows launcher depends on, and nothing else."""
+    top = f"OpenAI4S-{version}-linux-{arch}"
+    executable = (
+        "OpenAI4S",
+        "bin/openai4s",
+        "install.sh",
+        "uninstall.sh",
+        "runtime/bin/python3",
+    )
+    plain = (
+        "VERSION",
+        "LICENSE",
+        "runtime/pip.conf",
+        "share/applications/openai4s.desktop.in",
+        "src/openai4s/__init__.py",
+    )
+    with tarfile.open(path, "w:gz") as archive:
+        for relative in executable + plain:
+            payload = b"placeholder\n"
+            info = tarfile.TarInfo(f"{top}/{relative}")
+            info.size = len(payload)
+            info.mode = 0o755 if relative in executable else 0o644
+            archive.addfile(info, io.BytesIO(payload))
+    return top
+
+
+def _stage_windows_package(root: Path, version: str = "9.9.9") -> Path:
+    """Stage a package from the real launcher sources.
+
+    Using the committed launcher rather than a stub is the point: this doubles
+    as proof that what we ship still satisfies what we check.
+    """
+    package = root / f"OpenAI4S-{version}-windows-x86_64"
+    (package / "wsl").mkdir(parents=True)
+    (package / "payload").mkdir()
+
+    def crlf(text: str) -> bytes:
+        return "\r\n".join(text.splitlines()).encode("utf-8") + b"\r\n"
+
+    sources = ROOT / "scripts" / "windows"
+    for name in ("OpenAI4S.cmd", "openai4s.ps1"):
+        (package / name).write_bytes(crlf((sources / name).read_text("utf-8")))
+    (package / "wsl" / "bootstrap.sh").write_bytes(
+        (sources / "bootstrap.sh").read_text("utf-8").encode("utf-8")
+    )
+    (package / "VERSION").write_bytes(crlf(version))
+    (package / "LICENSE").write_text("MIT\n", encoding="utf-8")
+    (package / "READ ME FIRST.txt").write_bytes(crlf("Double-click OpenAI4S.cmd."))
+
+    tarball = package / "payload" / f"OpenAI4S-{version}-linux-x86_64.tar.gz"
+    _write_fake_linux_payload(tarball, version, "x86_64")
+    import hashlib
+
+    digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
+    (package / "payload" / f"{tarball.name}.sha256").write_text(
+        f"{digest}  {tarball.name}\n", encoding="utf-8"
+    )
+    return package
+
+
+def test_the_windows_verifier_accepts_a_correctly_staged_package(tmp_path):
+    verifier = _load_script("verify_windows_zip")
+    verifier.verify(_stage_windows_package(tmp_path))
+
+
+def test_the_windows_verifier_refuses_a_crlf_wsl_bootstrap(tmp_path):
+    verifier = _load_script("verify_windows_zip")
+    package = _stage_windows_package(tmp_path)
+    bootstrap = package / "wsl" / "bootstrap.sh"
+    bootstrap.write_bytes(bootstrap.read_bytes().replace(b"\n", b"\r\n"))
+
+    with pytest.raises(verifier.BundleCheckError, match="carriage return"):
+        verifier.verify(package)
+
+
+def test_the_windows_verifier_refuses_a_payload_its_sidecar_does_not_match(tmp_path):
+    verifier = _load_script("verify_windows_zip")
+    package = _stage_windows_package(tmp_path)
+    sidecar = next((package / "payload").glob("*.sha256"))
+    sidecar.write_text("0" * 64 + "  payload.tar.gz\n", encoding="utf-8")
+
+    with pytest.raises(verifier.BundleCheckError, match="checksum sidecar"):
+        verifier.verify(package)
+
+
+def test_the_windows_verifier_refuses_a_shipped_windows_binary(tmp_path):
+    """The package has no supported way to run one, so its presence means the
+    launcher grew a second, native start that platform_support.py refuses."""
+    verifier = _load_script("verify_windows_zip")
+    package = _stage_windows_package(tmp_path)
+    (package / "python.exe").write_bytes(b"MZ")
+
+    with pytest.raises(verifier.BundleCheckError, match="native Windows binaries"):
+        verifier.verify(package)
+
+
+def test_the_linux_verifier_refuses_a_launcher_that_lost_its_executable_bit(tmp_path):
+    """An archive can carry every file and still unpack into a bundle nobody
+    can start, which no content check would notice."""
+    verifier = _load_script("verify_linux_bundle")
+    tarball = tmp_path / "bundle.tar.gz"
+    top = _write_fake_linux_payload(tarball, "9.9.9", "x86_64")
+    with tarfile.open(tarball) as archive:
+        members = {member.name: member for member in archive.getmembers()}
+
+    assert verifier.check_tar_members(dict(members)) == top
+
+    members[f"{top}/OpenAI4S"].mode = 0o644
+    with pytest.raises(verifier.BundleCheckError, match="not executable"):
+        verifier.check_tar_members(members)
+
+
+def test_the_desktop_packages_are_built_and_verified_before_anything_publishes():
+    import re
+
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+
+    linux = workflow[
+        workflow.index("  linux-app:") : workflow.index("  windows-package:")
+    ]
+    assert "scripts/build_linux_bundle.sh" in linux
+    assert "verify_linux_bundle.py" in linux
+    assert "runs-on: ubuntu-latest" in linux, (
+        "only a Linux runner can execute the bundle, and the import probe is "
+        "the check that proves the science stack imports rather than merely "
+        "being present on disk"
+    )
+
+    windows = workflow[
+        workflow.index("  windows-package:") : workflow.index("  windows-launcher:")
+    ]
+    assert "scripts/build_windows_zip.sh" in windows
+    assert "verify_windows_zip.py" in windows
+    assert "name: linux-app-bundle" in windows
+    assert "build_linux_bundle.sh" not in windows, (
+        "the Windows package must wrap the artifact this release publishes, "
+        "not a second build that merely ought to match it"
+    )
+
+    launcher = workflow[
+        workflow.index("  windows-launcher:") : workflow.index("  attach:")
+    ]
+    assert (
+        "runs-on: windows-latest" in launcher
+    ), "a syntax error in the .ps1 is invisible to every other job here"
+    assert "Parser]::ParseFile" in launcher
+
+    for job, following in (("attach", "pypi"), ("pypi", "finalize")):
+        section = workflow[
+            workflow.index(f"  {job}:") : workflow.index(f"  {following}:")
+        ]
+        needs = re.search(r"^    needs: (.+)$", section, re.MULTILINE)
+        assert needs, f"{job} must declare what it waits for"
+        for required in ("linux-app", "windows-package", "windows-launcher"):
+            assert required in needs.group(1), (
+                f"{job} must not run before {required!r}: a package that failed "
+                "to build or failed verification would only skip its own job"
+            )

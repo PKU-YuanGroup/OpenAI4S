@@ -1,17 +1,23 @@
-# The scientific stack pre-baked into the macOS .app bundle.
+# The scientific stack pre-baked into every shipped desktop bundle.
 #
-# Single source of truth, read by BOTH sides so they cannot drift:
-#   - scripts/build_macos_dmg.sh installs the pip names into the embedded runtime
-#   - scripts/verify_macos_bundle.py asserts each import name resolves from inside
-#     the signed bundle
+# Single source of truth, read by BOTH sides on BOTH platforms so they cannot
+# drift:
+#   - scripts/build_macos_dmg.sh    installs the pip names into the embedded runtime
+#   - scripts/build_linux_bundle.sh installs the same names into the Linux runtime
+#   - scripts/verify_macos_bundle.py / verify_linux_bundle.py assert each import
+#     name resolves from inside the shipped bundle
+#
+# The Windows package carries the Linux bundle as its WSL2 payload, so it
+# inherits this same set rather than declaring one of its own.
 #
 # One package per line:  <pip-name> <import-name>   (# starts a comment)
 #
 # This is the pip-installable superset of the DEFAULT python.yml kernel env plus
-# the stdlib-networking helpers, so a downloaded .app runs the common
+# the stdlib-networking helpers, so a downloaded app runs the common
 # cheminformatics / single-cell / dataframe workflows offline with no
 # `pip install` and no `openai4s setup`. Every entry here has been verified to
-# wheel on macOS arm64 CPython 3.13 and to import without pulling numpy below 2.x.
+# wheel on macOS arm64 and Linux x86_64 CPython 3.13 and to import without
+# pulling numpy below 2.x.
 #
 # Deliberately NOT here: torch + fair-esm (torch is ~200MB and belongs to the
 # GPU/struct env), and the R kernel + bioconda CLIs (mafft/iqtree/fasttree) which
