@@ -782,6 +782,10 @@ def test_submit_message_runs_turn_in_background(tmp_path):
         plan=False,
         annos=None,
         explore=False,
+        # What the item was ACCEPTED under, carried from the request thread. The
+        # freeze used to be written only to the frame, whose pin the rebind route
+        # rewrites by design -- so a queued follow-up could adopt it after 202.
+        frozen_binding=None,
     ):
         started.set()
         assert root_frame_id == "f-test"
@@ -1061,6 +1065,10 @@ def test_explore_flag_passes_through_submit_message(tmp_path):
         plan=False,
         annos=None,
         explore=False,
+        # What the item was ACCEPTED under, carried from the request thread. The
+        # freeze used to be written only to the frame, whose pin the rebind route
+        # rewrites by design -- so a queued follow-up could adopt it after 202.
+        frozen_binding=None,
     ):
         seen["explore"] = explore
         return {"status": "completed", "frame_id": root_frame_id}

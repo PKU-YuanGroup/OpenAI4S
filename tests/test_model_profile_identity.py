@@ -324,3 +324,125 @@ def test_a_session_pinned_to_a_deleted_profile_refuses_with_a_rebind(runner):
     with pytest.raises(GatewayError) as error:
         runner._llm_cfg(state)
     assert error.value.code == 409
+
+
+# --- item 13 sub-defect (5): the queued follow-up ----------------------------
+#
+# `submit_message` freezes the identity at send, and its comment says so. But it
+# freezes it onto the *frame*, and the frame's pin is mutable: `POST
+# /frames/{id}/model-binding` rewrites it by design, because that route is the
+# answer to a dangling pin. So a follow-up accepted under profile P, still sitting
+# in the FIFO, is re-resolved from the frame when `run_message` calls
+# `bind_model_revision` again at dequeue -- and by then the frame may say Q.
+#
+# The client was told 202 under P. Nothing tells it the work ran on Q.
+
+
+def test_a_queued_follow_up_records_the_binding_it_was_accepted_under(runner):
+    """The freeze has to be on the ticket, not only on the frame.
+
+    A `MessageJob` that carries no binding cannot detect that the frame moved
+    underneath it, which is the whole difference between "frozen at send" and
+    "read again at dequeue".
+    """
+    profile = _profile(
+        runner,
+        name="P",
+        provider="claude",
+        model="p-model",
+        base_url="https://p.invalid",
+        key="pk",
+    )
+    runner.store.set_setting("active_model_profile", profile["id"])
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+
+    job = runner.submit_message(frame_id, "default", "first")
+    try:
+        assert job.model_profile_id == profile["id"], (
+            "the queued job does not record which configuration it was accepted "
+            "under, so it cannot tell that the frame moved"
+        )
+        assert int(job.model_profile_revision) > 0
+    finally:
+        # The turn itself will fail (no provider is reachable); this test is about
+        # what the ticket recorded at admission, which happens before the thread.
+        job.done.wait(timeout=60)
+
+
+def test_a_rebind_while_an_item_is_queued_does_not_move_that_item(runner):
+    """The defect, as the sequence a user can actually produce.
+
+    Accept a follow-up under P, then rebind the session to Q -- which is a
+    supported, documented action -- and the queued item dispatched to Q. It was
+    accepted under P and the client was told so.
+    """
+    p = _profile(
+        runner,
+        name="P",
+        provider="claude",
+        model="p-model",
+        base_url="https://p.invalid",
+        key="pk",
+    )
+    q = _profile(
+        runner,
+        name="Q",
+        provider="gemini",
+        model="q-model",
+        base_url="https://q.invalid",
+        key="qk",
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    _pin(runner, frame_id, p)
+
+    frozen = runner.freeze_model_binding(frame_id)
+    assert frozen["model_profile_id"] == p["id"]
+
+    # The user rebinds the session to Q while the item is still queued.
+    runner.store.unpin_model(frame_id)
+    runner.store.set_setting("active_model_profile", q["id"])
+    runner.bind_model_revision(frame_id)
+    assert (runner.store.get_frame(frame_id) or {}).get("model_profile_id") == q["id"]
+
+    # The queued item still resolves to what it was accepted under.
+    state = runner._state(frame_id, "default")
+    state.frozen_model_binding = (
+        frozen["model_profile_id"],
+        int(frozen["model_profile_revision"]),
+    )
+    config = runner._pinned_llm_config(state)
+    assert (
+        config.model == "p-model"
+    ), f"the queued item followed the frame's new pin: {config.model!r}"
+    assert config.base_url == "https://p.invalid"
+
+
+def test_a_queued_item_whose_frozen_profile_died_fails_visibly(runner):
+    """It cannot run -- the credential is gone -- but it must not silently run
+    somewhere else either. The same stable code, raised where the job's error
+    surfaces rather than swallowed into a fallback."""
+    from openai4s.server.gateway import GatewayError
+
+    p = _profile(
+        runner,
+        name="P",
+        provider="claude",
+        model="p-model",
+        base_url="https://p.invalid",
+        key="pk",
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    _pin(runner, frame_id, p)
+    frozen = runner.freeze_model_binding(frame_id)
+
+    _service(runner).delete(p["id"])
+
+    state = runner._state(frame_id, "default")
+    state.frozen_model_binding = (
+        frozen["model_profile_id"],
+        int(frozen["model_profile_revision"]),
+    )
+    with pytest.raises(GatewayError) as error:
+        runner._llm_cfg(state)
+    assert error.value.code == 409
+    assert error.value.error_code == "model_revision_unavailable"

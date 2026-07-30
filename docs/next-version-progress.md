@@ -342,7 +342,7 @@ them anything else is the error this section exists to stop repeating.
 | Plan item | What changed | Status | What is missing |
 |---|---|---|---|
 | 12 — atomic boundaries | Materialisation refuses a same-name live file instead of `unlink()`ing it silently, stages the copy and `os.replace`s it, and rolls back symmetrically. The live file is a real **copy**: it was hardlinked to the source session's immutable snapshot, so one ordinary write through the borrowing session's working file rewrote another project member's frozen bytes and left that version's checksum describing bytes that no longer existed (measured, not reasoned). Snapshot-to-snapshot hardlinking is kept. Upload resolves scope and the same-name lookup before touching disk, stages, and replaces only after the version and its snapshot commit | `closed` | Nothing for item 12. `tests/test_materialisation_atomicity.py` (11 cases) covers inode sharing, refusal-before-mutation, symmetric rollback, staging debris, and "a rejected upload writes nothing to disk at all" |
-| 13 — profile identity | `_pinned_llm_config` no longer prefers the request's bare `model` (the browser sent it on every message, producing a config in no profile), no longer returns `None` on a revoked key or any exception (which silently ran the turn on the globally active profile), `models_payload` is keyed on `profile_id` rather than deduped on bare model names, `PUT /models/default` activates a profile, `app.js` stopped sending `model` per turn, and delete is a tombstone | `partial` | **Sub-defect (5) is open:** an already-queued follow-up still re-resolves its binding at dequeue inside the worker thread, after the client was told 202. Freezing the pin onto the queue ticket touches the execution queue and is not attempted here |
+| 13 — profile identity | `_pinned_llm_config` no longer prefers the request's bare `model` (the browser sent it on every message, producing a config in no profile), no longer returns `None` on a revoked key or any exception (which silently ran the turn on the globally active profile), `models_payload` is keyed on `profile_id` rather than deduped on bare model names, `PUT /models/default` activates a profile, `app.js` stopped sending `model` per turn, and delete is a tombstone | `closed` | Nothing. Sub-defect (5) closed separately below |
 | 14 — owner-scoped idempotency | `by_idempotency_key` takes an owner and scopes like `live(scoped=True)`; the UNIQUE index is `COALESCE(owner_key,'')` because SQLite treats NULLs as distinct and NULL is exactly the CLI rows; migration 11 builds the new index before dropping the old one | `closed` | Nothing. Verified on a real pre-existing v10 database, not only on a fresh one |
 | 15 — harvest capture | `compute_result` declares `writes_files`, which is the only thing the Web wrapper gates on; `refresh_compute_task` brackets the harvest with snapshot/capture | `closed` | Nothing. A live BYOC provider is still never contacted by any test — what a real provider returns is exercised by nothing here |
 
@@ -365,3 +365,37 @@ live again with an empty credential.
 If auto-release is preferred after all, it is a one-line revert in
 `ModelProfileService.delete`; the trade is stated here so it is a decision rather
 than a regression.
+
+### Item 13 sub-defect (5): the queued follow-up
+
+`submit_message` did freeze the model identity at send -- its comment says so, and
+it was true. What it froze onto was the **frame**, and the frame's pin is mutable
+*by design*: `POST /frames/{id}/model-binding` rewrites it, because that route is
+the documented answer to a dangling pin. So the sequence a user can actually
+produce was:
+
+1. a follow-up is accepted under profile P; the client is told 202;
+2. the user rebinds the session to Q, which is a supported action;
+3. the item reaches the head of the FIFO, `run_message` calls
+   `bind_model_revision` again, reads the frame, and dispatches to **Q**.
+
+Nothing told the client the work ran on something other than what it was accepted
+under -- the failure mode D2 exists to prevent, arriving through the one path that
+is allowed to change a pin.
+
+Closed by freezing the pair onto the ticket rather than only the frame:
+`MessageJob` carries `model_profile_id`/`model_profile_revision`, `submit_message`
+sets them from a named `freeze_model_binding()` seam, the worker thread passes them
+into `run_message(frozen_binding=...)`, and `_pinned_llm_config` reads the frozen
+pair **before** the frame. A direct (unqueued) turn still binds from the frame,
+which is the freshest answer there is for it.
+
+A queued item whose frozen profile was deleted or whose key was revoked in the
+meantime raises the same `409 model_revision_unavailable` where the job's error
+surfaces, rather than silently running elsewhere: it cannot run, and saying so is
+the only honest outcome once 202 has been returned.
+
+Falsified: making `_pinned_llm_config` ignore the frozen pair fails
+`test_a_rebind_while_an_item_is_queued_does_not_move_that_item` by dispatching to
+Q's model. Three cases covered -- the ticket records its binding, a mid-queue
+rebind does not move the item, and a dead frozen profile fails visibly.

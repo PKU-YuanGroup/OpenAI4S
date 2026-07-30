@@ -1268,6 +1268,12 @@ class SessionState:
         self.project_id = project_id
         self.branch_id = branch_id or root_frame_id
         self.workspace = workspace
+        #: `(profile_id, revision)` this turn was ACCEPTED under, when it came
+        #: through the queue. `_pinned_llm_config` prefers it over the frame's
+        #: current pin, because the frame's pin is mutable by design and an item
+        #: already in the FIFO must not follow it. `None` for a direct turn, where
+        #: the frame is the freshest answer there is.
+        self.frozen_model_binding: tuple[str, int] | None = None
         # One owner for both persistent execution channels.  ``Kernel`` keeps
         # sole ownership of protocol I/O; the supervisor only coordinates
         # lifecycle and exact-worker identity across cancellation/watchdogs.
@@ -1389,6 +1395,15 @@ class MessageJob:
         # failure a user reads and the log line for the work that failed have
         # to be the same id, or the id ties nothing to anything.
         self.request_id: str = correlation_id()
+        # The model configuration this job was ACCEPTED under. `submit_message`
+        # froze the identity at send, but onto the *frame* -- and the frame's pin
+        # is mutable by design, because `POST /frames/{id}/model-binding` is the
+        # answer to a dangling one. So an item accepted under P and still in the
+        # FIFO was re-resolved from the frame at dequeue and could run on Q, with
+        # the client already told 202 under P. Frozen on the ticket, the item
+        # cannot drift no matter what the frame says later.
+        self.model_profile_id: str = ""
+        self.model_profile_revision: int = 0
 
     def finish(self, result: dict | None = None, error: str | None = None) -> None:
         self.result = result
@@ -4395,9 +4410,17 @@ class SessionRunner:
         #    turn finally runs meant a follow-up sitting in the queue adopted
         #    whatever the profile said by then. `run_message` still calls this --
         #    it is idempotent, and other callers (plans) come in that way.
-        self.bind_model_revision(root_frame_id)
+        #
+        #    Frozen onto the *ticket* as well, not only onto the frame. The frame's
+        #    pin is mutable by design -- `POST /frames/{id}/model-binding` rewrites
+        #    it, which is the documented answer to a dangling pin -- so an item
+        #    accepted under P and still in the FIFO was re-resolved from the frame
+        #    at dequeue and could run on Q. The client was told 202 under P.
+        frozen = self.freeze_model_binding(root_frame_id)
 
         job = MessageJob(f"job-{uuid.uuid4().hex[:12]}", root_frame_id)
+        job.model_profile_id = frozen["model_profile_id"]
+        job.model_profile_revision = frozen["model_profile_revision"]
         ticket = self._queue_execution(
             st,
             owner="agent",
@@ -4429,6 +4452,13 @@ class SessionRunner:
                         plan,
                         annos,
                         explore,
+                        # What this item was accepted under, carried from the
+                        # request thread rather than re-read from the frame.
+                        frozen_binding=(
+                            (job.model_profile_id, job.model_profile_revision)
+                            if job.model_profile_id
+                            else None
+                        ),
                     )
                 result.setdefault("job_id", job.job_id)
                 result.setdefault("execution_id", ticket.execution_id)
@@ -4696,9 +4726,16 @@ class SessionRunner:
         if st is None or not getattr(st, "root_frame_id", ""):
             return None
         try:
-            frame = self.store.get_frame(st.root_frame_id) or {}
-            profile_id = str(frame.get("model_profile_id") or "")
-            revision = int(frame.get("model_profile_revision") or 0)
+            frozen = getattr(st, "frozen_model_binding", None)
+            if frozen:
+                # What this turn was accepted under. Read before the frame on
+                # purpose: an item that has been sitting in the queue must not
+                # adopt a pin the user changed after it was admitted.
+                profile_id, revision = str(frozen[0] or ""), int(frozen[1] or 0)
+            else:
+                frame = self.store.get_frame(st.root_frame_id) or {}
+                profile_id = str(frame.get("model_profile_id") or "")
+                revision = int(frame.get("model_profile_revision") or 0)
             if not profile_id or revision <= 0:
                 return None
             profile = next(
@@ -5066,6 +5103,20 @@ class SessionRunner:
             "bound": True,
         }
 
+    def freeze_model_binding(self, root_frame_id: str) -> dict:
+        """Bind if needed and return the exact pair to carry on a ticket.
+
+        `bind_model_revision` already returns this, but going through a named
+        method makes the freeze a thing callers ask for rather than a side effect
+        they have to remember to read -- which is how the queued case came to have
+        the binding written to the frame and nowhere the item could see it.
+        """
+        binding = self.bind_model_revision(root_frame_id)
+        return {
+            "model_profile_id": str(binding.get("model_profile_id") or ""),
+            "model_profile_revision": int(binding.get("model_profile_revision") or 0),
+        }
+
     def run_message(
         self,
         root_frame_id: str,
@@ -5075,11 +5126,22 @@ class SessionRunner:
         plan: bool = False,
         annos: list | None = None,
         explore: bool = False,
+        frozen_binding: tuple[str, int] | None = None,
     ) -> dict:
         st = self._state(root_frame_id, project_id)
-        # Before anything runs: a session continues under a configuration it
-        # names, or it stops and asks. Raises 409 for a dangling pin.
-        self.bind_model_revision(root_frame_id)
+        if frozen_binding:
+            # A queued item runs under what it was admitted with. Re-binding here
+            # is what let a follow-up adopt a pin the user changed after 202 was
+            # returned; the frame is no longer consulted for this turn.
+            st.frozen_model_binding = (
+                str(frozen_binding[0]),
+                int(frozen_binding[1]),
+            )
+        else:
+            st.frozen_model_binding = None
+            # A direct turn: the frame is the freshest answer there is. Raises 409
+            # for a dangling pin, before anything runs.
+            self.bind_model_revision(root_frame_id)
         if model:
             st.model = model
         st.plan = bool(plan)
