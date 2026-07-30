@@ -95,3 +95,26 @@ def test_dependabot_tracks_uv_hooks_and_workflow_actions():
     assert config.count("package-ecosystem:") == 3
     for ecosystem in ('"uv"', '"pre-commit"', '"github-actions"'):
         assert f"package-ecosystem: {ecosystem}" in config
+
+
+def test_branch_naming_policy_exempts_dependabot_by_ref_not_by_actor():
+    """The exemption has to key on the branch, because the actor changes.
+
+    `github.actor` is whoever triggered the *latest* run, not who opened the
+    PR. Clicking "Update branch" on a Dependabot PR — which a strict
+    up-to-date ruleset forces for every Dependabot PR after the first merge —
+    makes the maintainer the actor, so an actor-based exemption stops
+    applying and this required check fails a `dependabot/uv/...` branch name
+    it was never meant to judge. That renders Dependabot PRs unmergeable
+    without an admin bypass, which is how it went unnoticed: the exemption
+    looks correct until the day someone needs to update a branch.
+    """
+    workflow = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    condition = next(
+        line
+        for line in workflow.splitlines()
+        if line.lstrip().startswith("if: github.event_name == 'pull_request'")
+    )
+
+    assert "startsWith(github.head_ref, 'dependabot/')" in condition
+    assert "github.actor" not in condition
