@@ -367,6 +367,12 @@ def _skill_result_status(payload: object) -> int:
 MAX_ATTACHED_IMAGES = 8
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024
+#: The three budgets above bound what leaves this process. This one bounds what
+#: enters it: the pinned bytes must be read whole to be hashed against the
+#: version's recorded checksum, so without a source cap a 2 GiB file named
+#: `figure.png` is loaded into memory before any of the other limits can look
+#: at it.
+MAX_SOURCE_IMAGE_BYTES = 64 * 1024 * 1024
 
 
 def _is_navigation(path: str) -> bool:
@@ -4934,7 +4940,13 @@ class SessionRunner:
         try:
             from openai4s import llm
 
-            if not llm.supports_vision(self._llm_cfg(st).provider):
+            # The exact provider+endpoint+model triple, not the provider. A
+            # provider-level answer describes the provider's DEFAULT model, so a
+            # session pinned to a text-only model on a vision-capable provider
+            # passed this pre-flight and was then refused by chat()'s own
+            # _guard_vision -- losing the whole turn instead of falling back to
+            # the text the user actually wrote.
+            if not llm.supports_vision_for(self._llm_cfg(st)):
                 return text
         except Exception:  # noqa: BLE001 — never break a turn over the image
             return text
@@ -4953,11 +4965,16 @@ class SessionRunner:
                 )
                 continue
             try:
-                path = self.store.resolve_artifact_path(art_id)
-                if not path or not _is_raster_image(path):
+                raw, problem = _pinned_image_bytes(self.store, pins)
+                if problem:
+                    dropped.append({"name": name, **problem})
                     continue
-                data, mime = _figure_with_pins(path, pins)
+                data, mime = _figure_with_pins(raw, pins)
                 if not data:
+                    # PIL absent, or bytes that sniffed as a raster and still
+                    # would not decode. Reported rather than skipped: the pin
+                    # existed, so its absence has to be accounted for.
+                    dropped.append({"name": name, "reason": "decode_failed"})
                     continue
                 # Measured after the pin markers are drawn, because that is
                 # what actually goes on the wire -- the re-encode can be larger
@@ -4984,7 +5001,6 @@ class SessionRunner:
                     continue
                 attached += 1
                 total_bytes += size
-                name = pins[0].get("artifact_name") or "figure"
                 parts.append(
                     {
                         "type": "text",
@@ -4997,6 +5013,7 @@ class SessionRunner:
                 parts.append({"type": "image", "data": data, "mime": mime})
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
+                dropped.append({"name": name, "reason": "decode_failed"})
         if dropped:
             # Told to the user, and told to the model. The user needs to know
             # their pin was not sent; the model needs to know the picture it is
@@ -5009,14 +5026,24 @@ class SessionRunner:
                     "problems": dropped[:8],
                 }
             )
-            names = "、".join(item["name"] for item in dropped[:8])
+            # The reason travels with the name. The note used to assert a budget
+            # overrun for every case, so a figure the user had deleted, or one
+            # overwritten after it was pinned, was reported to the model as "too
+            # big" -- a wrong explanation, which is worse than none because the
+            # model then relays it to the user.
+            names = "、".join(
+                f"{item['name']}({item['reason']})" for item in dropped[:8]
+            )
             parts.append(
                 {
                     "type": "text",
                     "text": (
-                        "[System note: the following pinned figures exceeded "
-                        f"this turn's attachment budget and were NOT sent: {names}. "
-                        "Do not describe them; say they were not received.]"
+                        "[System note: the following pinned figures were NOT "
+                        f"sent, each with the reason: {names}. Do not describe "
+                        "them; say they were not received. `version_changed` "
+                        "means the file was overwritten after the user pinned "
+                        "it, so the image they annotated no longer exists; ask "
+                        "before acting on those pins.]"
                     ),
                 }
             )
@@ -5245,7 +5272,19 @@ class SessionRunner:
                 branch_id=st.branch_id,
             )
             # resolve @filename references → inject the artifact content (M4)
-            resolved = self._resolve_mentions(st, user_text)
+            resolved, message_refs = self._resolve_mentions(st, user_text)
+            if message_refs:
+                # Stamped after the row exists, not passed at INSERT: resolving
+                # can materialise a sibling session's file into this workspace,
+                # and the message plus its fork checkpoint above are the branch
+                # point that has to be durable before anything writes. Durable
+                # here is what makes the chip survive reopen, branch and export
+                # -- and what records which version the model actually read,
+                # which the `@name#v-id` text cannot say after a copy.
+                self.store.update_message_metadata(
+                    stored_user_message["message_id"],
+                    {"artifact_refs": message_refs},
+                )
             remote_ctx = _remote_gpu_runtime_context(user_text)
             if remote_ctx:
                 resolved = (
@@ -5470,7 +5509,7 @@ class SessionRunner:
         emit({"type": "frame_update", "frame_id": root_frame_id, "status": status})
         return response
 
-    def _resolve_mentions(self, st: SessionState, text: str) -> str:
+    def _resolve_mentions(self, st: SessionState, text: str) -> tuple[str, list[dict]]:
         """Append the content of any @-referenced artifact to the prompt.
 
         The resolution itself lives in `server/artifact_refs.py`. What used to
@@ -5480,7 +5519,14 @@ class SessionRunner:
         about a file the model never received.
 
         A failed reference is now surfaced to the session rather than swallowed.
+
+        The second return value is the structured record of what was actually
+        sent -- one `ArtifactRef` per reference whose bytes reached the prompt.
+        It exists because the token in the message text is not enough: it names
+        the version the *user* picked, which is not the version the model read
+        once a sibling session's file has been copied in.
         """
+        sent: list[dict] = []
         resolved, problems = artifact_refs.resolve_message_refs(
             text,
             store=self.store,
@@ -5489,6 +5535,7 @@ class SessionRunner:
             materialise=lambda version_id, name: self._materialise_for_message(
                 st, version_id, name
             ),
+            on_resolved=sent.append,
         )
         if problems:
             # Emitted, not raised: the turn should still run. A user who
@@ -5501,7 +5548,7 @@ class SessionRunner:
                     "problems": problems[:8],
                 }
             )
-        return resolved
+        return resolved, sent
 
     def _materialise_for_message(
         self, st: SessionState, version_id: str, name: str
@@ -8312,6 +8359,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "created_at": _iso(mm["created_at"]),
                             "seq": mm.get("seq"),
                             "fork_checkpoint_id": mm.get("fork_checkpoint_id"),
+                            # What this message was actually sent with. Reopen
+                            # used to hand the client the raw `@name#v-id`
+                            # text and nothing else, so the composer chip could
+                            # only be guessed at by re-parsing prose -- and a
+                            # cross-session reference could not be reconstructed
+                            # at all, because the text names the source version
+                            # and the model read the local copy.
+                            "artifact_refs": _message_artifact_refs(mm),
                         }
                         for mm in msgs
                     ]
@@ -8682,6 +8737,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if not body_text or not art_id:
                     self._json({"error": "artifact_id and body required"}, 400)
                     return
+                # Bind the pin to the version on screen right now, not to the
+                # artifact. The client is not asked for it: a version id it
+                # supplied would be a claim about what it was displaying, and
+                # the point of the binding is that it is the server's own
+                # record. See `_pinned_image_bytes` for why re-resolving the
+                # artifact at send time is the wrong answer.
+                bound = store.get_artifact(str(art_id)) or {}
                 anno = store.add_annotation(
                     root_frame_id=fid,
                     artifact_id=str(art_id),
@@ -8689,6 +8751,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     rel_x=b.get("x", b.get("rel_x", 0)),
                     rel_y=b.get("y", b.get("rel_y", 0)),
                     body=body_text,
+                    version_id=bound.get("latest_version_id"),
+                    checksum=bound.get("checksum"),
                 )
                 self._json({"annotation": _annotation_json(anno)}, 201)
                 return
@@ -10251,6 +10315,45 @@ def _project_json(p: dict) -> dict:
     }
 
 
+def _message_artifact_refs(message: dict) -> list[dict]:
+    """The structured references stored on one message, projected safely.
+
+    An allowlist rather than the raw blob: the metadata column is shared, and
+    handing a client everything anyone ever stamped on a message is how an
+    internal field becomes a published contract by accident.
+    """
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw, dict):
+        return []
+    refs = raw.get("artifact_refs")
+    if not isinstance(refs, list):
+        return []
+    projected: list[dict] = []
+    for ref in refs[:8]:
+        if not isinstance(ref, dict):
+            continue
+        projected.append(
+            {
+                "artifact_id": str(ref.get("artifact_id") or ""),
+                "version_id": str(ref.get("version_id") or ""),
+                "sha256": str(ref.get("sha256") or ""),
+                "display_name": str(ref.get("display_name") or ""),
+                "source_session": str(ref.get("source_session") or ""),
+                "materialized_target": (
+                    str(ref["materialized_target"])
+                    if ref.get("materialized_target")
+                    else None
+                ),
+            }
+        )
+    return projected
+
+
 def _artifact_json(a: dict) -> dict:
     return {
         "id": a["artifact_id"],
@@ -10294,28 +10397,108 @@ def _annotation_json(a: dict | None) -> dict | None:
         "number": a.get("number"),
         "body": a.get("body"),
         "status": a.get("status", "open"),
+        # The version this pin was taken against, so a client can tell a pin on
+        # the figure now on screen from one taken before the agent re-plotted.
+        "version_id": a.get("version_id"),
         "created_at": _iso(a.get("created_at")),
         "updated_at": _iso(a.get("updated_at") or a.get("created_at")),
     }
 
 
-_RASTER_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+#: Magic numbers, not filenames. A pinned artifact holds whatever the cell wrote
+#: to that path: `figure.png` containing a PDF used to reach PIL and be dropped
+#: with no reason given, while a genuine PNG written as `figure.dat` was skipped
+#: because its extension was not on a list. Neither the extension nor the
+#: recorded content_type is evidence about bytes -- both are declarations.
+_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
 
 
-def _is_raster_image(path: str) -> bool:
-    return str(path).lower().endswith(_RASTER_EXT)
+def _sniff_image_mime(raw: bytes) -> str | None:
+    """Return the MIME type these BYTES are, or None if they are not a raster."""
+    for magic, mime in _IMAGE_MAGIC:
+        if raw.startswith(magic):
+            return mime
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    # "BM" on its own is two bytes and matches plenty of ordinary text, so the
+    # BMP header's own total-size field is checked against the real length.
+    if raw[:2] == b"BM" and len(raw) >= 26:
+        if int.from_bytes(raw[2:6], "little") == len(raw):
+            return "image/bmp"
+    return None
 
 
-def _figure_with_pins(path: str, pins: list) -> tuple[str | None, str]:
+def _pinned_image_bytes(store, pins: list) -> tuple[bytes | None, dict | None]:
+    """Read the exact artifact VERSION a pin was taken against.
+
+    A pin is a statement about one picture: the user clicked a point on the
+    image that was in front of them. Resolving `artifact_id` at send time
+    answered "whatever that file holds now" instead, so an agent that re-plotted
+    between the pin and the send changed what the model received while the pin
+    coordinates still described the old figure -- wrong rather than absent, and
+    invisible to everyone involved.
+
+    So the annotation records `version_id` + `checksum` when it is created and
+    this reads *that* version: its immutable snapshot when one exists, otherwise
+    the live path verified against the recorded checksum. A live file that no
+    longer hashes to what was pinned is refused, never substituted.
+
+    Returns ``(raw_bytes, None)`` or ``(None, problem)`` -- exactly one is set.
+    The problem is the dict the UI card and the model note both read, so a
+    refusal carries its own numbers rather than being reconstructed by either.
+    """
+    head = pins[0] if pins else {}
+    version_id = str((head or {}).get("version_id") or "")
+    checksum = str((head or {}).get("checksum") or "")
+    # Annotations pinned before the binding columns existed carry neither, and
+    # nothing can reconstruct which version they meant. Refusing them would
+    # discard a user's pending pins on upgrade, so they keep the old
+    # artifact-latest resolution -- the only case where "whatever it holds now"
+    # is still the best available answer.
+    ident = version_id or str((head or {}).get("artifact_id") or "")
+    if not ident:
+        return None, {"reason": "not_found"}
+    path = store.resolve_artifact_path(ident)
+    if not path:
+        return None, {"reason": "not_found"}
+    try:
+        size = os.path.getsize(path)
+        if size > MAX_SOURCE_IMAGE_BYTES:
+            return None, {
+                "reason": "too_large",
+                "bytes": size,
+                "limit": MAX_SOURCE_IMAGE_BYTES,
+            }
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        # Deleted, moved, or unreadable underneath the pin.
+        return None, {"reason": "not_found"}
+    if checksum and hashlib.sha256(raw).hexdigest() != checksum:
+        return None, {"reason": "version_changed"}
+    if _sniff_image_mime(raw) is None:
+        return None, {"reason": "unsupported_type"}
+    return raw, None
+
+
+def _figure_with_pins(raw: bytes, pins: list) -> tuple[str | None, str]:
     """Composite a numbered red marker at each pin's (rel_x, rel_y) onto a COPY
     of the figure; return (base64_png, "image/png"). The original file is never
-    touched. Returns (None, "") if PIL is unavailable or the image can't open."""
+    touched -- and is never re-opened either: these are the bytes already
+    verified against the pinned version's checksum, so nothing can change
+    between the check and the draw. Returns (None, "") if PIL is unavailable or
+    the bytes will not decode."""
     try:
         from PIL import Image, ImageDraw
 
-        with Image.open(path) as _src:
+        with Image.open(io.BytesIO(raw)) as _src:
             im = _src.convert("RGB")
-    except Exception:  # noqa: BLE001 — missing PIL / unreadable → text-only
+    except Exception:  # noqa: BLE001 — missing PIL / undecodable → reported
         return None, ""
     draw = ImageDraw.Draw(im)
     w, h = im.size

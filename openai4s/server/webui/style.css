@@ -1454,6 +1454,12 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
 /* Unresolved @references. Deliberately not styled as an error: the turn ran,
    and referencing four files with one typo should answer about the other
    three. It is a note, and a note the old code never showed at all. */
+/* Chips under a restored user message: the artifact references it was sent
+   with, drawn from the stored record rather than re-parsed out of the prose. */
+.msg-refs{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;justify-content:flex-end}
+.msg-ref-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border:1px solid var(--border);border-radius:9px;background:var(--bg-2);color:var(--text-400);font-size:11px;max-width:100%}
+.msg-ref-chip.clickable{cursor:pointer}
+.msg-ref-chip.clickable:hover{color:var(--text-200)}
 .ref-problems{margin:8px 20px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-2)}
 .ref-problems-head{font-size:12px;color:var(--text-400);margin-bottom:6px}
 .ref-problem{display:flex;gap:8px;align-items:baseline;font-size:12px;line-height:1.5}

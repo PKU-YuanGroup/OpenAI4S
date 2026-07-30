@@ -27,6 +27,25 @@ def supports_vision(provider: str) -> bool:
     return get_model_capabilities(provider).vision
 
 
+def supports_vision_for(cfg: LLMConfig) -> bool:
+    """Vision for the exact provider+endpoint+model triple a call would use.
+
+    ``supports_vision(provider)`` answers for the provider's *default* model at
+    its *default* endpoint, which is not what a configured session sends. A
+    session pinned to a text-only model on a vision-capable provider therefore
+    passed a caller's pre-flight check and was then refused by ``_guard_vision``
+    below -- which does resolve the triple -- turning a graceful text fallback
+    into a failed turn. Resolved exactly as ``chat`` resolves it, so the
+    pre-flight answer and the guard cannot disagree.
+    """
+    spec = provider_spec(cfg.provider)
+    return get_model_capabilities(
+        cfg.provider,
+        cfg.model or spec["model"],
+        base_url=cfg.base_url or spec["base_url"],
+    ).vision
+
+
 def _guard_vision(provider: str, messages: list[dict], *, capabilities=None) -> None:
     """Raise a clear error if image parts are sent to a text-only provider."""
     if (capabilities or get_model_capabilities(provider)).vision:

@@ -740,6 +740,10 @@ Object.assign(I18N.zh, {
   "attach.tooLarge": "单张 {0}，超过上限 {1}；请缩小分辨率后重新钉图。",
   "attach.budget": "本轮图片总量已达上限 {0}；请减少图钉数量或分几轮发送。",
   "attach.tooMany": "本轮最多附带 {0} 张图。",
+  "attach.versionChanged": "图钉之后该图被重新绘制覆盖，你标注的那一版已不存在——请在新图上重新钉图。",
+  "attach.notFound": "该图文件已被删除或移动，无法随本轮发送。",
+  "attach.unsupported": "该文件的实际内容不是位图（按文件头判断），无法作为图片发送。",
+  "attach.decodeFailed": "该图无法解码（文件损坏，或服务端缺少 Pillow）。",
   "delegation.stop": "停止这个子代理及其下级",
   "delegation.steer": "在下一个回合边界给它一句话",
   "delegation.steerPrompt": "要在下一个回合边界告诉这个子代理什么？",
@@ -1632,6 +1636,10 @@ Object.assign(I18N.en, {
   "attach.tooLarge": "{0}, over the {1} per-image limit — downscale it and pin again.",
   "attach.budget": "this turn's {0} image budget is spent — pin fewer figures, or split across turns.",
   "attach.tooMany": "at most {0} images may be attached to one turn.",
+  "attach.versionChanged": "the figure was re-plotted over after you pinned it — the version you annotated no longer exists; pin again on the new one.",
+  "attach.notFound": "the file was deleted or moved, so it could not be sent.",
+  "attach.unsupported": "the file's actual contents are not a raster image (judged by its header), so it cannot be sent as one.",
+  "attach.decodeFailed": "the image could not be decoded (corrupt file, or Pillow missing on the server).",
   "delegation.stop": "Stop this sub-agent and everything under it",
   "delegation.steer": "Send it a message at its next turn boundary",
   "delegation.steerPrompt": "What should this sub-agent be told at its next turn boundary?",
@@ -4541,10 +4549,43 @@ function renderStored(m) {
   const text = Array.isArray(m.content) ? m.content.map(b => (b && b.text) || "").join("") : (m.content || "");
   if (!text.trim()) return;
   const w = el("div", "msg " + (m.role === "user" ? "user" : "assistant"));
-  if (m.role === "user") { const b = el("div", "bubble"); b.textContent = text; w.appendChild(b); }
+  if (m.role === "user") { const b = el("div", "bubble"); b.textContent = text; w.appendChild(b); renderMessageRefChips(w, m.artifact_refs); }
   else { const md = el("div", "md"); md.innerHTML = renderMd(text); w.appendChild(md); }
   $("#messages").appendChild(w);
   if (m.role !== "user") addMsgActions(w, text);
+}
+
+// The chips a restored message was sent with. Reopening a session used to show
+// only the words the user typed: the `@name#v-id` token is inside that prose,
+// so the reference was there to read but not to see, and after a cross-session
+// copy the token names a version this session cannot resolve — the model read
+// the local one. The server now stores the six fields and the conversation
+// route returns them, so what is drawn here is the record, not a re-parse.
+function renderMessageRefChips(host, refs) {
+  if (!Array.isArray(refs) || !refs.length) return;
+  const row = el("div", "msg-refs");
+  refs.slice(0, 8).forEach(r => {
+    const name = String((r && r.display_name) || "");
+    if (!name) return;
+    const chip = el("span", "msg-ref-chip");
+    chip.appendChild(iconEl("file-text", 11));
+    chip.appendChild(el("span", null, publicText(name, 60)));
+    // Facts, not a sentence: the version actually sent, the head of its digest,
+    // and — when the file was copied in — the session it came from. Deliberately
+    // language-neutral, so this needs no translation key and cannot drift out of
+    // step with one.
+    const parts = [String(r.version_id || "")];
+    if (r.sha256) parts.push("sha256:" + String(r.sha256).slice(0, 12));
+    if (r.materialized_target) parts.push("↗ " + String(r.source_session || "").slice(0, 12));
+    chip.title = parts.filter(Boolean).join(" · ");
+    // Only opens what this client actually has. Synthesising an artifact
+    // object out of the ref would hand the viewer a filename with no content
+    // type and let it guess at the renderer.
+    const full = (S.artifacts || []).find(x => (x.artifact_id || x.id) === r.artifact_id);
+    if (full) { chip.classList.add("clickable"); chip.onclick = () => openViewer(full); }
+    row.appendChild(chip);
+  });
+  if (row.children.length) host.appendChild(row);
 }
 
 /* ---------- session title / actions ---------- */
@@ -8121,8 +8162,20 @@ async function acProjectFiles() {
     try { const a = await api(`/projects/${pid}/artifacts`); _acFiles.list = Array.isArray(a) ? a : []; _acFiles.pid = pid; _acFiles.at = Date.now(); }
     catch (e) { /* keep last good list */ }
   }
+  // Deduped by artifact identity, not by filename. Keying on the name was
+  // right for the overlap this loop exists for (a project artifact is also a
+  // session artifact) and wrong for everything else: two DIFFERENT artifacts
+  // that happen to share a name -- `results.csv` here and `results.csv` in a
+  // sibling conversation -- collapsed into one row, so the second was
+  // unpickable and there was no way to reference it at all. `artifact_id` is
+  // what the overlap actually is.
   const seen = new Set(); const out = [];
-  for (const a of [...(pid ? _acFiles.list : []), ...(S.artifacts || [])]) { const fn = a && a.filename; if (!fn || seen.has(fn)) continue; seen.add(fn); out.push(a); }
+  for (const a of [...(pid ? _acFiles.list : []), ...(S.artifacts || [])]) {
+    if (!a || !a.filename) continue;
+    const key = a.artifact_id || a.id || a.filename;
+    if (seen.has(key)) continue;
+    seen.add(key); out.push(a);
+  }
   return out;
 }
 async function acUpdate() {
@@ -8145,7 +8198,10 @@ async function acUpdate() {
       // The provenance matters at pick time: "this comes from another session
       // and will be copied in" is the one thing a user cannot see from a
       // filename, and it is what makes the copy unsurprising afterwards.
-      sub: (elsewhere ? t("ac.fromOtherSession") + " · " : "") + (a.content_type || ""),
+      // Two rows may now carry the same label (same name, different artifact),
+      // so the short version id is the only thing that tells them apart.
+      sub: (elsewhere ? t("ac.fromOtherSession") + " · " : "")
+        + (version ? version.slice(2, 8) + " · " : "") + (a.content_type || ""),
     };
   });
   else if (d.trigger === "#") items = (S.sessions || []).map(f => ({ label: f.name || f.task_summary || "session", insert: f.name || f.task_summary || "session", sub: "" }));
@@ -8190,6 +8246,17 @@ function renderAttachmentProblems(problems) {
   // card and deliberate — these reasons are a closed set the client can
   // translate, where a ref problem's message names arbitrary files.
   if (!Array.isArray(problems) || !problems.length) return;
+  // The refusals that carry no number, so they need no format arguments. They
+  // exist because a pin can fail for reasons that are not a budget: the pinned
+  // figure was re-plotted over, deleted, or is not actually an image. Falling
+  // through to the bare reason code printed `version_changed` at the user,
+  // which is a log line rather than a sentence.
+  const ATTACH_REASONS = {
+    version_changed: "attach.versionChanged",
+    not_found: "attach.notFound",
+    unsupported_type: "attach.unsupported",
+    decode_failed: "attach.decodeFailed",
+  };
   const messages = $("#messages"); if (!messages) return;
   const card = el("div", "ref-problems");
   card.appendChild(el("div", "ref-problems-head", t("attach.problemsTitle", problems.length)));
@@ -8204,7 +8271,7 @@ function renderAttachmentProblems(problems) {
         ? t("attach.budget", bytes(limit))
         : reason === "too_many"
           ? t("attach.tooMany", limit)
-          : reason;
+          : ATTACH_REASONS[reason] ? t(ATTACH_REASONS[reason]) : reason;
     row.appendChild(el("span", "ref-problem-msg", detail));
     card.appendChild(row);
   });

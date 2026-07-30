@@ -354,7 +354,7 @@ its live path, and says in the injected block that it is unpinned.
 | Method & path | Behavior |
 | --- | --- |
 | `GET /frames/{fid}/annotations?artifact_id=` | `{"annotations":[annotation…]}`. |
-| `POST /frames/{fid}/annotations` | Body `{artifact_id,body` (or `text`)`,artifact_name?,x?,y?}` (`x`/`y` are 0–1 fractions; `rel_x`/`rel_y` accepted as aliases). Missing artifact_id/body → 400 → else `201 {"annotation":…}`. |
+| `POST /frames/{fid}/annotations` | Body `{artifact_id,body` (or `text`)`,artifact_name?,x?,y?}` (`x`/`y` are 0–1 fractions; `rel_x`/`rel_y` accepted as aliases). Missing artifact_id/body → 400 → else `201 {"annotation":…}`. The server binds the pin to the artifact's **current version id + checksum**; a client may not supply them. On send, that exact version's bytes are read (its immutable snapshot, else the live path verified against the checksum) — a file overwritten after the pin is refused as `version_changed`, never substituted. |
 | `PATCH|POST|PUT /annotations/{aid}` | Body `{body?,status?}` → `{"annotation":…}` or `404 {"annotation":null}`. |
 | `DELETE /annotations/{aid}` | `{"ok":true}`. |
 
@@ -680,7 +680,9 @@ timestamps are ISO-8601 strings (or null).
 - **Note** (`_note_json`): `{note_id, id, content, created_at, updated_at}`.
 - **Annotation** (`_annotation_json`): `{id, annotation_id, root_frame_id,
   artifact_id, artifact_name, x, y` (0–1 fractions)`, number, body,
-  status("open"|"sent"), created_at, updated_at}`.
+  status("open"|"sent"), version_id, created_at, updated_at}`. `version_id` is
+  the artifact version the pin was taken against (`null` on pins created before
+  the binding existed, which fall back to the artifact's latest version).
 
 The duplicated-key pattern (`id` + a typed id) is deliberate frontend
 compatibility; keep both when touching these serializers.

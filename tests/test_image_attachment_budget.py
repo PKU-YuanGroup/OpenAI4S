@@ -46,17 +46,23 @@ def _annotations(count):
 
 
 def _install_fakes(monkeypatch, runner, *, image_bytes):
-    """Make every artifact resolve to a raster of a chosen size."""
-    monkeypatch.setattr(gateway_mod, "_is_raster_image", lambda path: True)
+    """Make every pin resolve to a raster of a chosen size.
+
+    The seam is `_pinned_image_bytes` rather than `resolve_artifact_path`: the
+    send path now reads the pinned VERSION's bytes and verifies them against the
+    recorded checksum before anything is drawn, so a fake path pointing at no
+    file is refused long before a budget can be reached. Byte binding is covered
+    by test_annotation_version_binding.py on real files; these tests are about
+    the budgets alone.
+    """
+    monkeypatch.setattr(
+        gateway_mod, "_pinned_image_bytes", lambda store, pins: (b"pinned", None)
+    )
     monkeypatch.setattr(
         gateway_mod,
         "_figure_with_pins",
-        lambda path, pins: (b"x" * image_bytes, "image/png"),
+        lambda raw, pins: (b"x" * image_bytes, "image/png"),
     )
-    monkeypatch.setattr(
-        type(runner.store), "resolve_artifact_path", lambda self, art: "/fake.png"
-    )
-    monkeypatch.setattr(gateway_mod, "_llm_supports_vision_probe", None, raising=False)
 
 
 def _content(runner, state, annos):
@@ -67,7 +73,9 @@ def _content(runner, state, annos):
 def _vision(monkeypatch):
     from openai4s import llm
 
-    monkeypatch.setattr(llm, "supports_vision", lambda provider: True)
+    # The pre-flight resolves the exact provider+endpoint+model triple now, not
+    # the provider alone -- see test_annotation_version_binding.py.
+    monkeypatch.setattr(llm, "supports_vision_for", lambda cfg: True)
 
 
 def test_the_number_of_attached_images_is_bounded_and_the_rest_are_named(
@@ -120,14 +128,13 @@ def test_one_oversized_image_is_dropped_without_taking_the_others_with_it(
         oversized = 64 * 1024 * 1024
         assert oversized > gateway_mod.MAX_IMAGE_BYTES
         sizes = iter([oversized, 1000, 1000])
-        monkeypatch.setattr(gateway_mod, "_is_raster_image", lambda path: True)
+        monkeypatch.setattr(
+            gateway_mod, "_pinned_image_bytes", lambda store, pins: (b"pinned", None)
+        )
         monkeypatch.setattr(
             gateway_mod,
             "_figure_with_pins",
-            lambda path, pins: (b"x" * next(sizes), "image/png"),
-        )
-        monkeypatch.setattr(
-            type(runner.store), "resolve_artifact_path", lambda self, art: "/fake.png"
+            lambda raw, pins: (b"x" * next(sizes), "image/png"),
         )
         state = runner._state(runner.store.new_frame(kind="turn", project_id="p"), "p")
         parts = _content(runner, state, _annotations(3))

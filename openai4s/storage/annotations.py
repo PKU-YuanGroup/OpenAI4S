@@ -35,8 +35,17 @@ class AnnotationRepository:
         rel_x: float,
         rel_y: float,
         body: str,
+        version_id: str | None = None,
+        checksum: str | None = None,
     ) -> dict:
-        """Pin a comment to a normalized point on an image artifact."""
+        """Pin a comment to a normalized point on an image artifact.
+
+        ``version_id``/``checksum`` bind the pin to the exact bytes it was taken
+        against. Optional because a caller may have no version to name (an
+        artifact with no recorded version yet), and because rows written before
+        the binding existed must keep loading; the send path treats a missing
+        binding as the legacy artifact-latest resolution rather than refusing.
+        """
         annotation_id = f"an-{uuid.uuid4().hex[:12]}"
         now = self._clock_ms()
         rel_x = max(0.0, min(1.0, float(rel_x)))
@@ -50,8 +59,9 @@ class AnnotationRepository:
             number = int(row["n"]) + 1
             self._connection.execute(
                 "INSERT INTO annotations(annotation_id,root_frame_id,artifact_id,"
-                "artifact_name,rel_x,rel_y,number,body,status,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "artifact_name,rel_x,rel_y,number,body,status,created_at,"
+                "updated_at,version_id,checksum) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     annotation_id,
                     root_frame_id,
@@ -64,6 +74,8 @@ class AnnotationRepository:
                     "open",
                     now,
                     now,
+                    version_id or None,
+                    checksum or None,
                 ),
             )
             self._connection.commit()

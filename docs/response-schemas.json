@@ -18896,6 +18896,75 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/annotations [ok]": {
+      "schema": {
+        "properties": {
+          "annotation": {
+            "properties": {
+              "annotation_id": {
+                "type": "string"
+              },
+              "artifact_id": {
+                "type": "string"
+              },
+              "artifact_name": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "number": {
+                "type": "integer"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "version_id": {
+                "type": "string"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "annotation_id",
+              "artifact_id",
+              "artifact_name",
+              "body",
+              "created_at",
+              "id",
+              "number",
+              "root_frame_id",
+              "status",
+              "updated_at",
+              "version_id",
+              "x",
+              "y"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "annotation"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/artifacts [error]": {
       "schema": {
         "properties": {

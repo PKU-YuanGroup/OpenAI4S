@@ -112,12 +112,76 @@ class RefProblem(dict):
     """One reference that did not resolve, and why. A dict so it serialises."""
 
 
+class ArtifactRef(dict):
+    """One reference whose bytes actually reached the prompt, as a record.
+
+    The reference used to exist only as a token inside the message text, so
+    every reader -- reopen, branch, export, audit -- had to re-parse a string,
+    and even then recovered only the version id the *user* named. That is the
+    wrong one whenever a sibling session's file was brought in: the model read
+    the local copy, and nothing said so. Six fields, because six is what it
+    takes to answer "what did the model actually read":
+
+    ``artifact_id`` / ``version_id`` / ``sha256``  -- the bytes that were sent.
+    ``display_name``     -- what the user called it, which need not be the
+                            filename the copy landed under.
+    ``source_session``   -- the session the reference named.
+    ``materialized_target`` -- the local version a cross-session reference was
+                            copied into, or ``None`` when nothing was copied.
+    """
+
+
 def _problem(ref: str, code: str, message: str) -> RefProblem:
     return RefProblem(ref=ref, code=code, message=message)
 
 
+def _artifact_ref(
+    *,
+    metadata: dict,
+    display_name: str,
+    source_session: str,
+    materialized_target: str | None,
+) -> ArtifactRef:
+    return ArtifactRef(
+        artifact_id=str(metadata.get("artifact_id") or ""),
+        version_id=str(metadata.get("version_id") or ""),
+        sha256=str(metadata.get("checksum") or ""),
+        display_name=display_name,
+        source_session=source_session,
+        materialized_target=materialized_target,
+    )
+
+
 def _is_binary(filename: str) -> bool:
     return Path(str(filename or "")).suffix.lower() in BINARY_SUFFIXES
+
+
+def _existing_local_copy(
+    store: Any, source_version_id: str, source_meta: dict, root_frame_id: str
+) -> dict | None:
+    """The copy of this exact version this session already holds, if any.
+
+    Without this, the second turn that names the same sibling-session file
+    fails outright: materialisation refuses when the live filename is already
+    taken, and the first turn is what took it. The user got
+    `materialise_failed` and the model got nothing -- for a reference that had
+    worked one turn earlier.
+
+    The lineage edge is the durable record of a materialisation, so it is what
+    gets asked. The checksum equality is the other half of the question: an
+    edge out of this version also exists for anything *derived* from it, and a
+    derivative is not the file the reference names.
+    """
+    for candidate in store.lineage_edges_for(source_version_id, "down"):
+        metadata = store.version_meta(str(candidate or ""))
+        if metadata is None:
+            continue
+        if metadata.get("checksum") != source_meta.get("checksum"):
+            continue
+        parent = store.get_artifact(str(metadata.get("artifact_id") or "")) or {}
+        if parent.get("root_frame_id") == root_frame_id:
+            return metadata
+    return None
 
 
 def resolve_message_refs(
@@ -127,6 +191,7 @@ def resolve_message_refs(
     root_frame_id: str,
     project_id: str,
     materialise: Callable[[str, str], dict] | None = None,
+    on_resolved: Callable[[dict], None] | None = None,
     limit: int = MAX_REFS,
 ) -> tuple[str, list[dict]]:
     """Return the prompt with referenced content appended, plus what failed.
@@ -138,10 +203,27 @@ def resolve_message_refs(
     ``materialise`` is injected rather than imported so this module stays
     testable without a dispatcher, and so the caller decides whether a
     cross-session reference is allowed to write at all.
+
+    ``on_resolved`` receives one :class:`ArtifactRef` per reference whose bytes
+    actually entered the prompt. It is a callback rather than a third return
+    value on purpose: every caller in the tree unpacks two, and widening the
+    tuple to carry an optional record is a breaking change for a field most
+    callers do not want.
     """
     problems: list[dict] = []
     blocks: list[str] = []
     seen: set[str] = set()
+
+    def _record(ref: dict | None) -> None:
+        """Announce a reference only once its bytes are in the prompt.
+
+        Recording one that lost the budget race below would make the durable
+        record claim the model was handed a file it never saw -- provenance
+        that is wrong rather than absent, which is worse because it is
+        believed.
+        """
+        if ref is not None and on_resolved is not None:
+            on_resolved(ref)
 
     pinned = [(name, version) for name, version in PINNED_REF.findall(text or "")]
     # The legacy spelling only counts where a pinned one did not already claim
@@ -172,7 +254,7 @@ def resolve_message_refs(
         if version_id in seen:
             continue
         seen.add(version_id)
-        block, problem = _resolve_pinned(
+        block, problem, ref = _resolve_pinned(
             name,
             version_id,
             store=store,
@@ -185,6 +267,7 @@ def resolve_message_refs(
         elif block:
             if _afford(block):
                 blocks.append(block)
+                _record(ref)
             else:
                 # Named, not silently dropped. A reference the user inserted
                 # and the model never received is the failure this module was
@@ -205,12 +288,15 @@ def resolve_message_refs(
         if len(seen) >= limit:
             break
         seen.add(name)
-        block, problem = _resolve_legacy(name, store=store, root_frame_id=root_frame_id)
+        block, problem, ref = _resolve_legacy(
+            name, store=store, root_frame_id=root_frame_id
+        )
         if problem is not None:
             problems.append(problem)
         elif block:
             if _afford(block):
                 blocks.append(block)
+                _record(ref)
             else:
                 problems.append(
                     _problem(
@@ -274,44 +360,95 @@ def _resolve_pinned(
     root_frame_id: str,
     project_id: str,
     materialise: Callable[[str, str], dict] | None,
-) -> tuple[str | None, RefProblem | None]:
+) -> tuple[str | None, RefProblem | None, ArtifactRef | None]:
     ref = f"{name}#{version_id}"
     unknown = _problem(
         ref, "not_found", f"no artifact version {version_id} is available here"
     )
     metadata = store.version_meta(version_id)
     if metadata is None:
-        return None, unknown
+        return None, unknown, None
     parent = store.get_artifact(str(metadata.get("artifact_id") or "")) or {}
     # Another project's version answers exactly as an absent one does. A
     # distinct refusal would confirm it exists, and version ids are short.
     if parent.get("project_id") != project_id:
-        return None, unknown
+        return None, unknown, None
 
-    if parent.get("root_frame_id") != root_frame_id:
+    source_session = str(parent.get("root_frame_id") or "")
+    materialized_target: str | None = None
+    if source_session != root_frame_id:
         # D3: bring it in rather than reading it in place, and only now --
         # at send -- so an inserted-then-deleted chip leaves nothing behind.
         if materialise is None:
-            return None, _problem(
-                ref,
-                "cross_session_not_allowed",
-                f"{name} belongs to another session and cannot be brought in here",
+            return (
+                None,
+                _problem(
+                    ref,
+                    "cross_session_not_allowed",
+                    f"{name} belongs to another session and cannot be brought in here",
+                ),
+                None,
             )
-        try:
-            brought = materialise(version_id, name)
-        except Exception as error:  # noqa: BLE001 - reported, never raised at the user
-            return None, _problem(ref, "materialise_failed", f"{name}: {error}")
-        metadata = store.version_meta(str(brought.get("version_id") or "")) or metadata
+        # Ask first whether this session already holds this exact version.
+        # Materialisation refuses when the live filename is taken, and after
+        # one successful reference *it* is what took it -- so naming the same
+        # sibling file a second time used to come back `materialise_failed`
+        # for a reference that had worked one turn earlier.
+        local = _existing_local_copy(store, version_id, dict(metadata), root_frame_id)
+        if local is None:
+            try:
+                brought = materialise(version_id, name)
+            except FileExistsError:
+                # A *different* artifact already owns this filename here -- two
+                # files may share a name and still be different files, which is
+                # the whole reason a reference is pinned to a version. Land the
+                # copy under a version-scoped name rather than refusing the
+                # reference or overwriting the session's own file.
+                stem = Path(name)
+                alternative = f"{stem.stem} ({version_id[2:8]}){stem.suffix}"
+                try:
+                    brought = materialise(version_id, alternative)
+                except Exception as error:  # noqa: BLE001 - reported, not raised
+                    return (
+                        None,
+                        _problem(ref, "materialise_failed", f"{name}: {error}"),
+                        None,
+                    )
+            except Exception as error:  # noqa: BLE001 - reported, not raised
+                return (
+                    None,
+                    _problem(ref, "materialise_failed", f"{name}: {error}"),
+                    None,
+                )
+            local = store.version_meta(str(brought.get("version_id") or ""))
+        if local is not None:
+            metadata = local
+            materialized_target = str(local.get("version_id") or "") or None
 
     body, problem = _read_snapshot(dict(metadata), name)
     if problem is not None:
-        return None, problem
-    return f"### Referenced file: {name} (version {version_id})\n```\n{body}\n```", None
+        return None, problem, None
+    # The header names the version the user pinned *and*, when they differ, the
+    # local one the model actually read. Naming only the first was a citation
+    # to a version this session cannot resolve.
+    where = f"version {version_id}"
+    if materialized_target and materialized_target != version_id:
+        where += f", copied into this session as {materialized_target}"
+    return (
+        f"### Referenced file: {name} ({where})\n```\n{body}\n```",
+        None,
+        _artifact_ref(
+            metadata=dict(metadata),
+            display_name=name,
+            source_session=source_session,
+            materialized_target=materialized_target,
+        ),
+    )
 
 
 def _resolve_legacy(
     name: str, *, store: Any, root_frame_id: str
-) -> tuple[str | None, RefProblem | None]:
+) -> tuple[str | None, RefProblem | None, ArtifactRef | None]:
     """The unpinned spelling: this session only, and it says it is unpinned.
 
     Kept for one minor release. It resolves through the artifact's *latest*
@@ -321,28 +458,46 @@ def _resolve_legacy(
     """
     row = store.artifact_by_filename(name, root_frame_id, strict=True)
     if not row:
-        return None, _problem(
-            name,
-            "not_found",
-            f"no artifact named {name} in this session; if it belongs to "
-            "another session, insert it from the Files panel so it is pinned",
+        return (
+            None,
+            _problem(
+                name,
+                "not_found",
+                f"no artifact named {name} in this session; if it belongs to "
+                "another session, insert it from the Files panel so it is pinned",
+            ),
+            None,
         )
     artifact = store.get_artifact(str(row.get("artifact_id") or "")) or {}
     latest = str(artifact.get("latest_version_id") or "")
     metadata = store.version_meta(latest) if latest else None
     if metadata is None:
-        return None, _problem(name, "not_found", f"{name} has no readable version")
+        return (
+            None,
+            _problem(name, "not_found", f"{name} has no readable version"),
+            None,
+        )
     body, problem = _read_snapshot(dict(metadata), name)
     if problem is not None:
-        return None, problem
+        return None, problem, None
     return (
         f"### Referenced file: {name} (unpinned — latest version {latest}; "
         "insert it from the Files panel to pin it)\n```\n" + body + "\n```",
         None,
+        # Recorded even though it is unpinned: the record is what the model was
+        # given, and "the latest version at send time" is a fact worth freezing
+        # precisely because the token in the text does not carry it.
+        _artifact_ref(
+            metadata=dict(metadata),
+            display_name=name,
+            source_session=root_frame_id,
+            materialized_target=None,
+        ),
     )
 
 
 __all__ = [
+    "ArtifactRef",
     "BINARY_SUFFIXES",
     "LEGACY_REF",
     "MAX_REFS",

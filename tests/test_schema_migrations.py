@@ -90,6 +90,9 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # session's job id and status. Replacing an index is not additive, so it
         # needs a step rather than the idempotent catch-up pass.
         "compute_job_idem_owner",
+        # A pin is a statement about one picture; binding it to the artifact
+        # let a re-plot between the pin and the send change what the model saw.
+        "annotation_version_binding",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

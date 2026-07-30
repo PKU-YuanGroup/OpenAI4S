@@ -513,6 +513,13 @@ CREATE TABLE IF NOT EXISTS annotations (
     artifact_name  TEXT,
     rel_x          REAL NOT NULL,      -- 0..1 fraction of image width
     rel_y          REAL NOT NULL,      -- 0..1 fraction of image height
+    -- The artifact VERSION the pin was taken against, and the sha256 of that
+    -- version's bytes. A pin means "this point on the picture I am looking at";
+    -- without these the send path resolved the artifact's latest version, so
+    -- re-plotting between the pin and the send silently sent a different image
+    -- under the old coordinates. NULL on rows created before this existed.
+    version_id     TEXT,
+    checksum       TEXT,
     number         INTEGER NOT NULL,   -- pin ordinal within (frame,artifact)
     body           TEXT NOT NULL,      -- the comment
     status         TEXT NOT NULL DEFAULT 'open',   -- open|sent|resolved
@@ -1078,10 +1085,37 @@ class Store:
                         "compute_job_idem_owner",
                         self._apply_compute_job_idem_owner,
                     ),
+                    12: (
+                        "annotation_version_binding",
+                        self._apply_annotation_version_binding,
+                    ),
                 },
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+
+    def _apply_annotation_version_binding(self, conn: sqlite3.Connection) -> None:
+        """Version 12: bind an image annotation to the version it was pinned on.
+
+        An annotation recorded only `artifact_id`, and the send path resolved
+        that to the artifact's LATEST version -- so an agent re-plotting between
+        the pin and the send handed the model a different picture while the pin
+        coordinates still described the old one.
+
+        Existing rows stay NULL rather than being backfilled with today's
+        version: which version they were taken against is not recorded anywhere,
+        and writing the current one down would turn a guess into a fact. The
+        send path reads NULL as "unbound" and keeps the old behaviour for those
+        rows only. Runs inside the transaction owned by ``run_migrations``.
+        """
+        for column in ("version_id", "checksum"):
+            try:
+                conn.execute(f"ALTER TABLE annotations ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"annotations.{column} could not be added: {e}"
+                    ) from e
 
     def _apply_compute_job_idem_owner(self, conn: sqlite3.Connection) -> None:
         """Version 11: make the idempotency namespace per-owner.
@@ -1791,6 +1825,9 @@ class Store:
             metadata=metadata,
             created_at=created_at,
         )
+
+    def update_message_metadata(self, message_id: str, patch: dict) -> dict | None:
+        return self._frames.update_message_metadata(message_id, patch)
 
     def list_messages(
         self,
@@ -3179,6 +3216,8 @@ class Store:
         rel_x: float,
         rel_y: float,
         body: str,
+        version_id: str | None = None,
+        checksum: str | None = None,
     ) -> dict:
         return self._annotations.add(
             root_frame_id=root_frame_id,
@@ -3187,6 +3226,8 @@ class Store:
             rel_x=rel_x,
             rel_y=rel_y,
             body=body,
+            version_id=version_id,
+            checksum=checksum,
         )
 
     def get_annotation(self, annotation_id: str) -> dict | None:

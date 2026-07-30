@@ -1354,7 +1354,13 @@ def test_every_attachment_reason_the_server_sends_is_handled() -> None:
     # problems at all.
     block = gateway[gateway.index("dropped: list[dict] = []") :]
     block = block[: block.index('"type": "attachment_problems"')]
-    reasons = set(re.findall(r'"reason":\s*"([a-z_]+)"', block))
+    # `_pinned_image_bytes` refuses on the version binding before a budget is
+    # ever reached, so its reasons are attachment reasons too. Without this
+    # slice the test would keep passing while four of the seven reasons the
+    # server can send had no wording at all.
+    binding = gateway[gateway.index("def _pinned_image_bytes(") :]
+    binding = binding[: binding.index("def _figure_with_pins(")]
+    reasons = set(re.findall(r'"reason":\s*"([a-z_]+)"', block + binding))
     assert reasons, "the attachment budget no longer reports reasons"
 
     body = APP_JS[APP_JS.index("function renderAttachmentProblems(") :]
