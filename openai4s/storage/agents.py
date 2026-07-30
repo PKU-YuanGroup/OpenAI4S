@@ -42,6 +42,16 @@ class AgentProfileRepository:
                         agent[key] = json.loads(agent[key])
                     except (ValueError, TypeError):
                         agent[key] = None
+            # `unrestricted INTEGER NOT NULL` comes back as 0/1, and the two
+            # columns above were decoded while this one was not. That is not a
+            # cosmetic difference: `child_execution_policy` checks
+            # `type(unrestricted) is not bool` and refuses anything else, so
+            # EVERY stored specialist -- restricted and unrestricted alike --
+            # failed to delegate. The strict check is right and stays: a
+            # truthy string like "false" must not pass for True. The column is
+            # decoded here, next to its siblings, so one boundary owns the
+            # conversion instead of each caller remembering to coerce.
+            agent["unrestricted"] = bool(agent.get("unrestricted", 1))
             agents.append(agent)
         return agents
 
@@ -50,6 +60,48 @@ class AgentProfileRepository:
             if agent["name"] == name:
                 return agent
         return None
+
+    def update(self, name: str, **fields: Any) -> dict | None:
+        """Change only the columns supplied, leaving the rest as stored.
+
+        `upsert` writes every column unconditionally, and the specialist
+        editor sends three of them. Routing an edit through `upsert` therefore
+        wrote NULL over `skill_names` and `connectors` and reset
+        `unrestricted` to 1 -- a resource restriction silently became no
+        restriction at all, which is the failure direction that matters.
+
+        `None` cannot be the "not supplied" marker here: a NULL allowlist is a
+        real, distinct state meaning "inherit from the parent", so absent and
+        null have to stay tellable apart. Only keys actually present are
+        written.
+        """
+        if self.get(name) is None:
+            return None
+        columns: list[str] = []
+        params: list[Any] = []
+        for key in ("description", "system_prompt"):
+            if key in fields:
+                columns.append(f"{key}=?")
+                params.append(fields[key] or "")
+        for key, column in (
+            ("skill_names", "skill_names"),
+            ("connectors", "connectors"),
+        ):
+            if key in fields:
+                value = fields[key]
+                columns.append(f"{column}=?")
+                params.append(json.dumps(value) if value is not None else None)
+        if "unrestricted" in fields:
+            columns.append("unrestricted=?")
+            params.append(1 if fields["unrestricted"] else 0)
+        if columns:
+            columns.append("updated_at=?")
+            params.append(self._clock_ms())
+            params.append(name)
+            self._execute(
+                f"UPDATE agents SET {','.join(columns)} WHERE name=?", tuple(params)
+            )
+        return self.get(name)
 
     def upsert(
         self,

@@ -18,7 +18,6 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.request import urlopen
 from zipfile import ZipFile
 
 GRID_MIN = 150.0
@@ -201,9 +200,25 @@ def ensure_rruff_dataset(
         raise FileNotFoundError(
             f"RRUFF cache not found: {path}. Provide zip_path or allow download."
         )
-    with urlopen(RRUFF_URL.format(dataset=dataset)) as response:
-        data = response.read()
-    path.write_bytes(data)
+    # Through the Host, not urlopen. `web_fetch` decodes to text and is the
+    # wrong shape for a ZIP, which is why this used raw urllib and so made the
+    # one request in this skill that the egress allowlist and the SSRF guard
+    # never saw. `web_download` streams to a workspace file under a byte
+    # ceiling, and refuses a destination outside the session before it makes
+    # the request at all.
+    import host
+
+    result = host.web_download(
+        RRUFF_URL.format(dataset=dataset),
+        str(path),
+        # A RRUFF archive is a few tens of MB. The ceiling is here so an
+        # unexpected redirect to something enormous fails fast rather than
+        # filling the disk.
+        max_bytes=256 * 1024 * 1024,
+        timeout=300,
+    )
+    if result.get("error"):
+        raise RuntimeError(f"RRUFF download failed: {result['error']}")
     return str(path)
 
 

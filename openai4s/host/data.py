@@ -8,13 +8,14 @@ and routing envelope and delegates the domain behaviour here.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from openai4s.artifact_restore import ArtifactRestoreService
+from openai4s.artifact_restore import ArtifactRestoreService, trusted_snapshot_roots
 
 
 class HostDataStore(Protocol):
@@ -89,6 +90,14 @@ StoreProvider = Callable[[], HostDataStore]
 ConfigProvider = Callable[[], Any]
 FrameIdProvider = Callable[[], str | None]
 PathResolver = Callable[..., Path]
+
+#: Bounds for a lineage walk when the caller names none. They are generous
+#: enough that a real provenance chain fits, and they exist because the
+#: alternative -- omitting an optional argument -- used to mean "traverse
+#: everything reachable".
+_DEFAULT_LINEAGE_DEPTH = 32
+_DEFAULT_LINEAGE_NODES = 500
+_MAX_LINEAGE_EDGES = 5000
 
 FRAME_STATUSES = frozenset({"processing", "done", "failed", "awaiting_user_response"})
 
@@ -204,6 +213,41 @@ class HostDataService:
             )
         return artifact
 
+    def _scoped_version(self, version_id: str) -> dict:
+        """Resolve one artifact *version* inside the caller's own scope.
+
+        `_scoped_artifact` covers the reads keyed on an artifact id.
+        The version-keyed ones -- `lineage_get`, `artifact_path`, the lineage
+        walk -- went straight to the store, so a kernel cell in one project
+        could name any version id and read back another project's filename,
+        checksum, producing-cell code and input lineage.
+
+        Scope lives on the parent `artifacts` row: `artifact_versions` carries
+        no project_id or root_frame_id, so resolving the parent is not an extra
+        query for convenience, it is the only place the answer exists.
+
+        Out of scope raises the *same* KeyError as missing. A distinct refusal
+        would confirm the version exists, which is most of what an enumerator
+        wants.
+        """
+        store = self._store()
+        unknown = KeyError(f"no artifact version {version_id!r} in the current session")
+        metadata = store.version_meta(version_id)
+        if metadata is None:
+            raise unknown
+        artifact = store.get_artifact(str(metadata.get("artifact_id") or ""))
+        if artifact is None:
+            raise unknown
+        frame_id = self._frame_id()
+        scope = store.resolve_frame_scope(frame_id)
+        if (
+            frame_id is None
+            or artifact.get("root_frame_id") != scope.get("root_frame_id")
+            or artifact.get("project_id") != scope.get("project_id")
+        ):
+            raise unknown
+        return metadata
+
     @staticmethod
     def _artifact_metadata_projection(artifact: dict) -> dict:
         fields = (
@@ -297,15 +341,15 @@ class HostDataService:
         artifact = self._scoped_artifact(artifact_id)
         store = self._store()
         config = self._config()
-        legacy_versions = (
-            (Path(config.data_dir) / "artifact-versions")
+        trusted = (
+            trusted_snapshot_roots(config.data_dir)
             if getattr(config, "data_dir", None) is not None
-            else Path(config.artifacts_dir)
+            else (Path(config.artifacts_dir),)
         )
         service = ArtifactRestoreService(
             store=store,
             primary_snapshot_dir=Path(config.artifacts_dir),
-            trusted_snapshot_dirs=(legacy_versions,),
+            trusted_snapshot_dirs=trusted,
             resolve_live_path=lambda current_artifact, current: self._resolve_path(
                 str(current.get("path") or current_artifact.get("filename"))
             ),
@@ -317,10 +361,108 @@ class HostDataService:
         )
 
     def artifact_path(self, version_id: str) -> str:
+        self._scoped_version(version_id)
         path = self._store().resolve_artifact_path(version_id)
         if path is None:
             raise KeyError(f"no artifact for id={version_id!r}")
         return path
+
+    def materialise_artifact(self, spec: dict) -> dict:
+        """Bring another session's artifact version into this one.
+
+        D3: no path reads another session's file in place. A cross-session read
+        leaves the borrowing session holding an analysis whose input has no
+        version in its own history -- delete or revert the other session and
+        this one's provenance quietly becomes unresolvable. Materialising gives
+        the caller its own Artifact and version plus a lineage edge back, so
+        "where did this come from" keeps an answer that does not depend on the
+        other session still existing.
+
+        Same project only. A version in another project raises exactly the
+        `KeyError` an absent one raises: a distinct refusal would confirm the
+        object is there, which is most of what an enumerator wants and the same
+        reasoning `_scoped_version` already applies to every version-keyed read.
+
+        The bytes are hardlinked, not copied. A version snapshot is immutable by
+        contract -- `write_version_snapshot` returns early rather than rewriting
+        one -- so two rows may share an inode safely, and a materialised
+        multi-gigabyte dataset costs a directory entry. The copy fallback is for
+        a data dir spanning devices, where a hardlink cannot exist.
+        """
+        source_version_id = str(spec.get("version_id") or "").strip()
+        if not source_version_id:
+            raise ValueError("materialise_artifact requires version_id")
+
+        store = self._store()
+        frame_id = self._frame_id()
+        scope = store.resolve_frame_scope(frame_id)
+        root_frame_id = str(scope.get("root_frame_id") or "")
+        project_id = str(scope.get("project_id") or "")
+        if not root_frame_id or not project_id:
+            raise KeyError(f"no artifact version {source_version_id!r} available")
+
+        # Deliberately NOT `_scoped_version`: that one confines to the calling
+        # *session*, and the whole point here is to reach a sibling session in
+        # the same project. The project bound is enforced below, inside the
+        # transaction, where it cannot race with a project move.
+        metadata = store.version_meta(source_version_id)
+        unknown = KeyError(f"no artifact version {source_version_id!r} available")
+        if metadata is None:
+            raise unknown
+        parent = store.get_artifact(str(metadata.get("artifact_id") or ""))
+        if parent is None or parent.get("project_id") != project_id:
+            raise unknown
+
+        snapshot = metadata.get("snapshot_path") or ""
+        if not snapshot or not Path(str(snapshot)).is_file():
+            # The row exists but its immutable bytes do not, so there is
+            # nothing honest to hand over. Reported as its own failure rather
+            # than as "not found": the version is real and the caller may want
+            # to know the difference.
+            raise FileNotFoundError(
+                f"artifact version {source_version_id!r} has no frozen snapshot"
+            )
+
+        filename = str(spec.get("filename") or metadata.get("filename") or "artifact")
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "artifact"
+        version_id = f"v-{uuid.uuid4().hex[:12]}"
+        config = self._config()
+        versions_dir = Path(config.data_dir) / "artifact-versions"
+        versions_dir.mkdir(parents=True, exist_ok=True)
+        destination = versions_dir / f"{version_id}__{safe}"
+        try:
+            os.link(str(snapshot), str(destination))
+        except OSError:
+            shutil.copyfile(str(snapshot), str(destination))
+
+        # The live file too, so the cell can just open it by name.
+        live = self._resolve_path(filename, must_exist=False)
+        live.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if live.exists():
+                live.unlink()
+            os.link(str(destination), str(live))
+        except OSError:
+            shutil.copyfile(str(destination), str(live))
+
+        try:
+            return store.materialise_artifact_version(
+                source_version_id=source_version_id,
+                artifact_id=f"a-{uuid.uuid4().hex[:12]}",
+                version_id=version_id,
+                filename=filename,
+                path=str(live),
+                snapshot_path=str(destination),
+                frame_id=frame_id,
+                root_frame_id=root_frame_id,
+                project_id=project_id,
+            )
+        except Exception:
+            # The transaction rolled back, so the two links describe a version
+            # that does not exist. Removing them keeps the versions directory
+            # from accumulating files no row will ever name.
+            destination.unlink(missing_ok=True)
+            raise
 
     def save_artifact(self, spec: dict) -> dict:
         source = self._resolve_path(str(spec["path"]), must_exist=True)
@@ -376,10 +518,23 @@ class HostDataService:
         version_id = spec.get("version_id")
         path = spec.get("path")
         if version_id and not path:
-            path = self._store().resolve_artifact_path(version_id)
-        if not path or not Path(path).exists():
-            raise FileNotFoundError(f"view_image: no such image: {path!r}")
-        return {"status": "ok", "rendered": True, "path": str(path)}
+            # Store-derived: an artifact snapshot legitimately lives outside
+            # the workspace, under the data dir. Its scope check belongs with
+            # the rest of the artifact read paths, not here.
+            resolved = self._store().resolve_artifact_path(version_id)
+            if not resolved or not Path(resolved).exists():
+                raise FileNotFoundError(f"view_image: no such image: {resolved!r}")
+            return {"status": "ok", "rendered": True, "path": str(resolved)}
+        # Caller-supplied: confined, like every other file the SDK can name.
+        # This branch checked only `Path(path).exists()`, which made
+        # `host.view_image(path="/etc/passwd")` an existence oracle for any
+        # absolute path on the host -- reachable straight from a kernel cell,
+        # and the one file operation here that skipped the workspace resolver
+        # its siblings all go through.
+        if not path:
+            raise FileNotFoundError("view_image: no such image: None")
+        target = self._resolve_path(str(path), must_exist=True)
+        return {"status": "ok", "rendered": True, "path": str(target)}
 
     def artifact_marker(self, version_id: str) -> str:
         if not _VALID_MARKER_ID.match(str(version_id)):
@@ -435,9 +590,7 @@ class HostDataService:
 
     def lineage_get(self, version_id: str) -> dict:
         store = self._store()
-        metadata = store.version_meta(version_id)
-        if metadata is None:
-            raise KeyError(f"no artifact version {version_id!r}")
+        metadata = self._scoped_version(version_id)
         cell = store.producing_cell_for_version(version_id) or {}
         return {
             "version_id": version_id,
@@ -452,45 +605,121 @@ class HostDataService:
         }
 
     def lineage_graph(self, spec: dict) -> dict:
+        """Walk the lineage graph from one version, always bounded.
+
+        `max_depth` and `max_nodes` are both optional in the tool schema, and
+        with neither supplied this walked every edge reachable in the whole
+        `lineage_edges` table -- across every session and project -- while
+        `frontier` and `edges` grew without any limit of their own. A caller
+        that omits an argument should get a bounded answer, not the database.
+
+        The caps are still caller-lowerable; what changed is that omitting them
+        no longer means "no limit". `truncated` says plainly when the walk
+        stopped early, because a silently partial graph is a lineage claim that
+        is wrong rather than absent.
+        """
         start = spec["version_id"]
+        # The root must be ours; the walk then follows edges from it.
+        self._scoped_version(start)
         direction = spec.get("direction", "up")
         max_depth = spec.get("max_depth")
+        max_depth = _DEFAULT_LINEAGE_DEPTH if max_depth is None else int(max_depth)
         max_nodes = spec.get("max_nodes")
+        max_nodes = _DEFAULT_LINEAGE_NODES if max_nodes is None else int(max_nodes)
+        max_nodes = max(1, max_nodes)
         seen: set[str] = set()
         edges: list[dict] = []
         frontier = [(start, 0)]
         store = self._store()
+        truncated = False
         while frontier:
             version_id, depth = frontier.pop(0)
             if version_id in seen:
                 continue
-            seen.add(version_id)
-            if max_nodes and len(seen) > max_nodes:
+            if len(seen) >= max_nodes:
+                # Checked BEFORE adding, so the cap is the number of nodes
+                # returned rather than one more than it.
+                truncated = True
                 break
-            if max_depth is not None and depth >= max_depth:
+            seen.add(version_id)
+            if depth >= max_depth:
+                if frontier or store.lineage_edges_for(version_id, direction):
+                    truncated = True
                 continue
             for adjacent in store.lineage_edges_for(version_id, direction):
+                if len(edges) >= _MAX_LINEAGE_EDGES:
+                    truncated = True
+                    break
                 edges.append(
                     {"from": version_id, "to": adjacent, "direction": direction}
                 )
                 frontier.append((adjacent, depth + 1))
-        return {"root": start, "nodes": sorted(seen), "edges": edges}
+        result = {"root": start, "nodes": sorted(seen), "edges": edges}
+        if truncated:
+            result["truncated"] = True
+        return result
 
     def provenance_resolve_path(self, path: str) -> Any:
         return self._store().version_for_path(path)
 
+    #: How much of a file is read at a time when checksumming it.
+    _DIGEST_CHUNK = 1024 * 1024
+
     def provenance_record(self, spec: dict) -> dict:
+        """Register a file this cell produced as an artifact of this session.
+
+        The path is resolved through the workspace confinement every other
+        file capability uses. It was not: `Path(path).expanduser()` accepted
+        any absolute path on the host, so a cell could name `~/.ssh/id_rsa` or
+        the daemon's own access-token file and have it registered as a session
+        artifact -- readable, downloadable, and shareable through every surface
+        that lists artifacts. Verified before this changed: a private key
+        outside the workspace came back with a version id.
+
+        `self._resolve_path` was already injected into this service and used by
+        its siblings, which is what makes this an omission rather than a
+        missing mechanism.
+        """
         path = spec["path"]
-        output = Path(path).expanduser()
-        if not output.exists():
+        try:
+            output = self._resolve_path(path, must_exist=True)
+        except FileNotFoundError:
             return {"error": f"prov_record: no such output file: {path}"}
-        data = output.read_bytes()
+        except (ValueError, OSError) as error:
+            # Soft-fail: the worker turns a single-key error dict into a
+            # RuntimeError in the cell, which is how the agent learns it asked
+            # for something outside its workspace.
+            return {"error": f"prov_record: {error}"}
+
+        # Streamed rather than `read_bytes()`. Every other artifact path in
+        # this codebase streams; this one materialised the whole file in the
+        # daemon to checksum it, so recording a 4 GB output cost 4 GB of
+        # daemon memory in a process that also serves every other session.
+        digest = hashlib.sha256()
+        size_bytes = 0
+        try:
+            with open(output, "rb") as handle:
+                while True:
+                    chunk = handle.read(self._DIGEST_CHUNK)
+                    if not chunk:
+                        break
+                    size_bytes += len(chunk)
+                    digest.update(chunk)
+        except FileNotFoundError:
+            # Reported the same way whether the resolver enforced existence or
+            # the open did. A caller with a pass-through resolver would
+            # otherwise get "prov_record: <path>: [Errno 2]..." for the same
+            # situation the branch above calls "no such output file".
+            return {"error": f"prov_record: no such output file: {path}"}
+        except OSError as error:
+            return {"error": f"prov_record: {path}: {error}"}
+
         return self._store().record_cell_artifact(
             path=str(output),
             filename=spec.get("filename") or output.name,
             content_type=spec.get("content_type"),
-            size_bytes=len(data),
-            checksum=hashlib.sha256(data).hexdigest(),
+            size_bytes=size_bytes,
+            checksum=digest.hexdigest(),
             producing_cell_id=spec.get("producing_cell_id"),
             frame_id=self._frame_id(),
             input_version_ids=spec.get("input_version_ids") or [],

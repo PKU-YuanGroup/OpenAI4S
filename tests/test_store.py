@@ -78,11 +78,21 @@ def test_frames_row_columns_and_runtime_env_roundtrip(tmp_path):
         "input_tokens",
         "output_tokens",
         "cost_usd",
+        # D2 (migration 10). Both nullable, and NULL means *unbound* rather
+        # than "used the default": a session nobody has pinned is one whose
+        # configuration is unknown, and inventing one would be the fabricated
+        # provenance the binding exists to remove.
+        "model_profile_id",
+        "model_profile_revision",
         "created_at",
         "updated_at",
     }
     # a brand-new frame has no pinned runtime env yet
     assert row["runtime_env"] is None
+    # ...and no model binding: that happens on send, never on create, so an
+    # unbound legacy session stays readable.
+    assert row["model_profile_id"] is None
+    assert row["model_profile_revision"] is None
 
     store.update_frame(fid, runtime_env="struct")
     assert store.get_frame(fid)["runtime_env"] == "struct"
@@ -426,6 +436,14 @@ def test_list_versions_row_shape_ordering_and_latest_pointer(tmp_path):
         "producing_cell_id",
         "frame_id",
         "created_at",
+        # The retrieval provenance envelope. It was written on every retrieved
+        # version and selected by nothing, so a figure built on a live API
+        # fetch was indistinguishable from one computed out of thin air. Raw
+        # here on purpose: the gateway projects it through an allowlist, a
+        # length cap and credential redaction before any of it leaves the
+        # process (`server/retrieval_source.py`). A store row is not the place
+        # to decide what a client may see.
+        "source",
         "is_latest",
         "ordinal",
     }
@@ -620,3 +638,35 @@ def test_lineage_input_with_no_version_row_keeps_id_null_identity(tmp_path):
     assert store.lineage_inputs(rec_out["version_id"]) == [
         {"version_id": "v-ghost", "filename": None, "path": None}
     ]
+
+
+def test_host_query_cannot_read_the_sqlite_catalogue(tmp_path):
+    """The denylist protected table *contents* and handed back their schema.
+
+    `QUERY_DENYLIST` covers `permission_rules`, `settings`, `host_call_log` and
+    two dozen others, so the model cannot read what is in them. But
+    `sqlite_master` was not on the list, and `SELECT sql FROM sqlite_master
+    WHERE name='permission_rules'` returned that table's entire DDL, while
+    `SELECT name FROM sqlite_master` enumerated every denied table by name.
+
+    `schema()` has always excluded the `sqlite_` prefix. `query()` -- the one
+    surface actually exposed to the model, via `host.query` -- never did, so
+    the protection was on the door nobody was trying.
+    """
+    store = get_store(tmp_path / "catalogue.db")
+    try:
+        for hostile in (
+            "SELECT name FROM sqlite_master",
+            "SELECT sql FROM sqlite_master WHERE name='permission_rules'",
+            "SELECT name FROM sqlite_schema",
+            "SELECT name FROM sqlite_temp_master",
+        ):
+            with pytest.raises(PermissionError):
+                store.query(hostile)
+
+        # The tables the model is meant to read are untouched.
+        assert store.query("SELECT * FROM frames LIMIT 1") == []
+        # And the sanctioned schema view still answers, without the catalogue.
+        assert not [name for name in store.schema() if str(name).startswith("sqlite_")]
+    finally:
+        store.close()

@@ -65,8 +65,29 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def _url(cfg) -> str:
-    return f"http://{cfg.host}:{cfg.port}/"
+def _url(cfg, *, with_token: bool = True) -> str:
+    """The URL a person can actually open.
+
+    This returned the bare origin, and every human-facing caller used it: the
+    browser auto-open on `serve`, the `status` line, the `url` command, and the
+    macOS .app. Since the access token became required by default on loopback,
+    that URL answers 401 — and so does `/static/app.js`, so the SPA never loads
+    and cannot offer a way in. The one working URL went to stderr, which the
+    .app redirects into a log file nobody is looking at on first launch.
+
+    `with_token=False` is for anywhere the string is not being handed to a
+    person to open — a credential does not belong in a log line or a title.
+    """
+    base = f"http://{cfg.host}:{cfg.port}/"
+    if not with_token:
+        return base
+    try:
+        from openai4s.server import local_auth
+
+        token = local_auth.read_token(cfg.data_dir)
+    except Exception:  # noqa: BLE001 — never let this break `serve`
+        token = None
+    return f"{base}?token={token}" if token else base
 
 
 def cmd_serve(args) -> int:
@@ -198,7 +219,9 @@ def cmd_status(args) -> int:
         return 1
     # confirm via /health
     try:
-        with urllib.request.urlopen(_url(cfg) + "health", timeout=3) as r:
+        with urllib.request.urlopen(
+            _url(cfg, with_token=False) + "health", timeout=3
+        ) as r:
             health = json.loads(r.read().decode("utf-8"))
         print(f"daemon: running (pid {pid}) at {_url(cfg)}")
         print(f"  model    : {health.get('model')}")
@@ -772,13 +795,78 @@ def cmd_benchmark(args) -> int:
     return 1 if report["failed"] else 0
 
 
-def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
-    """Call the running daemon's REST API; returns (status, parsed_json)."""
+def _daemon_token(cfg) -> str | None:
+    """The credential this CLI presents, or None when there is none to find.
 
-    url = _url(cfg).rstrip("/") + path
+    Two sources, in this order. `OPENAI4S_TOKEN` exists because the token file
+    is owner-only: a daemon running under another account (a systemd unit, say)
+    writes a file this user cannot read, and without an override the CLI would
+    be unusable without changing permissions or switching user.
+
+    Never a query parameter. A URL carrying a credential is logged by proxies
+    and kept in history, and the daemon refuses query tokens on mutations for
+    that reason.
+    """
+    override = (os.environ.get("OPENAI4S_TOKEN") or "").strip()
+    if override:
+        return override
+    from openai4s.server import local_auth
+
+    return local_auth.read_token(cfg.data_dir)
+
+
+def _daemon_credential_hint(cfg) -> str:
+    """Why the CLI has no token, phrased so the reader can act on it."""
+    from openai4s.server import local_auth
+
+    path = local_auth.token_path(cfg.data_dir)
+    if path.exists():
+        return (
+            f"error: cannot read the daemon's access token at {path} "
+            "(it is owner-only). Run this as the user the daemon runs as, or "
+            "set OPENAI4S_TOKEN to the token that daemon printed at startup."
+        )
+    return (
+        f"error: no daemon access token at {path}. Start the daemon with "
+        "`openai4s serve`, or set OPENAI4S_TOKEN if it runs elsewhere."
+    )
+
+
+def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
+    """Call the running daemon's REST API; returns (status, parsed_json).
+
+    `path` is relative to the API root -- "/shares", not "/api/shares". Every
+    `openai4s share` subcommand passed the latter, and the daemon serves the
+    API only under `/api/v1`, so all nine answered with the daemon's own "the
+    API is versioned" 404. The whole feature had never reached a route,
+    including the `openai4s share import <url>` line the generated share page
+    tells a recipient to run.
+
+    The version is joined from `contract.API_ROOT`, the constant the gateway
+    routes on, so the two cannot drift.
+    """
+    from openai4s.server import contract
+
+    if path.startswith("/api/"):
+        # A caller supplying its own prefix is the bug this signature exists to
+        # prevent, and papering over it would be wrong: a merely-wrong path
+        # produces a 404 that nobody reads as a defect.
+        raise ValueError(
+            f"path must be relative to the API root, not {path!r} "
+            f"(it is joined with {contract.API_ROOT})"
+        )
+    url = _url(cfg, with_token=False).rstrip("/") + contract.API_ROOT + path
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
+    # The gate is required by default now, so every daemon-backed subcommand
+    # has to present a credential. Sent as a header rather than `?token=`,
+    # which the daemon refuses on mutations anyway.
+    from openai4s.server import local_auth
+
+    token = _daemon_token(cfg)
+    if token:
+        req.add_header(local_auth.TOKEN_HEADER, token)
     # The daemon's CSRF guard passes non-browser clients (no Origin header).
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:
@@ -786,6 +874,10 @@ def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
             return resp.status, (json.loads(raw) if raw else {})
     except urllib.error.HTTPError as error:
         raw = error.read().decode("utf-8", "replace")
+        if error.code == 401 and not token:
+            # A bare 401 tells the reader nothing they can act on. Say which
+            # file could not be read and what to do instead.
+            print(_daemon_credential_hint(cfg), file=sys.stderr)
         try:
             return error.code, json.loads(raw)
         except ValueError:
@@ -838,7 +930,7 @@ def cmd_share(args) -> int:
         if action == "create":
             root = args.session
             if root == "latest":
-                _, frames = _daemon_request(cfg, "GET", "/api/frames")
+                _, frames = _daemon_request(cfg, "GET", "/frames")
                 items = frames.get("frames") if isinstance(frames, dict) else frames
                 if not items:
                     print("error: no sessions found", file=sys.stderr)
@@ -849,9 +941,7 @@ def cmd_share(args) -> int:
                 body["title"] = args.title
             if args.expires:
                 body["expires_in"] = _parse_duration(args.expires)
-            status, rec = _daemon_request(
-                cfg, "POST", f"/api/frames/{root}/shares", body
-            )
+            status, rec = _daemon_request(cfg, "POST", f"/frames/{root}/shares", body)
         elif action == "update":
             ubody: dict = {}
             if getattr(args, "no_expiry", False):
@@ -859,25 +949,25 @@ def cmd_share(args) -> int:
             elif args.expires:
                 ubody["expires_in"] = _parse_duration(args.expires)
             status, rec = _daemon_request(
-                cfg, "PUT", f"/api/shares/{args.share_id}", ubody or None
+                cfg, "PUT", f"/shares/{args.share_id}", ubody or None
             )
         elif action == "list":
-            status, rec = _daemon_request(cfg, "GET", "/api/shares")
+            status, rec = _daemon_request(cfg, "GET", "/shares")
         elif action == "revoke":
-            status, rec = _daemon_request(cfg, "DELETE", f"/api/shares/{args.share_id}")
+            status, rec = _daemon_request(cfg, "DELETE", f"/shares/{args.share_id}")
         elif action == "enable":
             status, rec = _daemon_request(
-                cfg, "PUT", "/api/share/settings", {"enabled": True}
+                cfg, "PUT", "/share/settings", {"enabled": True}
             )
         elif action == "disable":
             status, rec = _daemon_request(
-                cfg, "PUT", "/api/share/settings", {"enabled": False}
+                cfg, "PUT", "/share/settings", {"enabled": False}
             )
         elif action == "status":
-            status, rec = _daemon_request(cfg, "GET", "/api/share/status")
+            status, rec = _daemon_request(cfg, "GET", "/share/status")
         elif action == "import":
             status, rec = _daemon_request(
-                cfg, "POST", "/api/sessions/import-url", {"url": args.url}
+                cfg, "POST", "/sessions/import-url", {"url": args.url}
             )
         else:  # pragma: no cover
             print("error: unknown share action", file=sys.stderr)

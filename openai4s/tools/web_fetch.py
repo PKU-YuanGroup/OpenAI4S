@@ -39,6 +39,21 @@ class WebFetchTool(Tool):
                 "maximum": 120,
                 "description": "Seconds to wait before giving up (default 30).",
             },
+            "method": {
+                "type": "string",
+                "enum": ["GET", "HEAD"],
+                "description": (
+                    "HEAD asks only whether the resource exists, without "
+                    "downloading it."
+                ),
+            },
+            "user_agent": {
+                "type": "string",
+                "description": (
+                    "Override the User-Agent. Some scholarly APIs serve their "
+                    "polite pool only to callers that send a contactable one."
+                ),
+            },
         },
         "required": ["url"],
     }
@@ -63,8 +78,15 @@ class WebFetchTool(Tool):
                 fmt=arguments.get("format", "markdown"),
                 timeout=float(arguments.get("timeout") or 30),
                 max_chars=int(arguments.get("max_chars") or 20000),
+                method=arguments.get("method") or "GET",
+                user_agent=arguments.get("user_agent") or None,
             )
-        except (webtools.NetworkDisabled, egress.EgressBlocked) as error:
+        except (
+            webtools.NetworkDisabled,
+            webtools.SSRFBlocked,
+            webtools.ResponseTooLarge,
+            egress.EgressBlocked,
+        ) as error:
             return {"error": str(error)}
         except Exception as error:  # noqa: BLE001
             return {"error": f"web_fetch: {error}"}

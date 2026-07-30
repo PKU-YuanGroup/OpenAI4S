@@ -2,18 +2,46 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from openai4s.config import Config, is_placeholder_api_key
+from openai4s.config import Config, LLMConfig, is_placeholder_api_key
 from openai4s.llm.catalog import ModelPreset, model_presets
 from openai4s.security.secret_broker import is_ref
 
 # Model profiles select a transport contract, not an arbitrary vendor name.
 # Keep the persisted ids compatible with the existing LLM registry while the
 # UI presents these as human-readable protocol choices.
-PROFILE_PROTOCOLS = ("chatgpt", "claude", "ark")
+#
+# `gemini` and `openai_responses` were missing, and not because anyone decided
+# they should be: both have complete provider specs, both are dispatched by the
+# LLM layer, and neither could be chosen. A user with a Gemini key had no way
+# to say so — the capability was built, shipped, and unreachable.
+#
+# Kept in step with the registry by `tests/test_model_catalog.py`, which fails
+# when a provider exists that is neither selectable nor listed below as
+# deliberately withheld. A provider that should not be user-selectable is a
+# decision worth writing down; silence is how the last two went unnoticed.
+PROFILE_PROTOCOLS = (
+    "chatgpt",
+    "claude",
+    "ark",
+    "gemini",
+    "openai_responses",
+)
+
+#: Registry providers deliberately not offered as a profile choice, each with a
+#: reason. Empty today.
+WITHHELD_PROTOCOLS: dict[str, str] = {}
+
+#: What each readiness problem means, in the words a user reads. The `state`
+#: code stays the thing a client branches on; this is only the sentence.
+PROBLEM_DETAIL = {
+    "needs_key": "no credential resolves for this profile",
+    "needs_model": "no model is named and this protocol has no default",
+}
 
 
 class ModelProfileError(ValueError):
@@ -62,12 +90,14 @@ class ModelProfileService:
         providers: Callable[[], Mapping[str, Mapping[str, Any]]],
         presets: Callable[[], Sequence[ModelPreset]] = model_presets,
         id_factory: Callable[[], str] | None = None,
+        clock_ms: Callable[[], int] | None = None,
     ) -> None:
         self.store = store
         self.cfg = cfg
         self._providers = providers
         self._presets = presets
         self._id_factory = id_factory or (lambda: "mp-" + uuid.uuid4().hex[:8])
+        self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
 
     def effective_model_id(self, provider: Any, model: Any) -> str:
         explicit = str(model or "").strip()
@@ -103,6 +133,132 @@ class ModelProfileService:
             except Exception:  # noqa: BLE001 - removing the row still matters
                 pass
 
+    def probe(self, profile_id: str) -> dict[str, Any]:
+        """Contact the endpoint, once, because a user asked.
+
+        Never called from a read path. `readiness` answers "is this configured"
+        from local state alone precisely so that this — the only thing here
+        that spends a request, a token allowance and a rate-limit slot — needs
+        somebody to press a button.
+
+        Reports what happened rather than a verdict. "ok" means the endpoint
+        answered a minimal request; it does not mean the model is good, the
+        quota is sufficient, or that a later call will succeed, and phrasing it
+        as `reachable` rather than `verified` keeps that difference visible.
+        """
+        profile = next(
+            (
+                item
+                for item in self.store.list_model_profiles()
+                if item.get("id") == profile_id
+            ),
+            None,
+        )
+        if profile is None:
+            raise ModelProfileError("profile not found", 404)
+
+        local = self.readiness(profile)
+        if local["state"] != "ready":
+            # No request at all: a profile with no key cannot be probed, and
+            # sending one anyway would produce a 401 that reads like an
+            # endpoint problem rather than the missing credential it is.
+            return {
+                "reachable": False,
+                "state": local["state"],
+                "detail": local["detail"],
+                "contacted": False,
+            }
+
+        provider = str(profile.get("provider") or "")
+        try:
+            from openai4s.llm import chat
+
+            chat(
+                [{"role": "user", "content": "ping"}],
+                LLMConfig(
+                    provider=provider,
+                    api_key=self.resolve_key(profile),
+                    base_url=str(profile.get("base_url") or "") or None,
+                    model=str(profile.get("model") or "") or None,
+                ),
+                max_tokens=1,
+            )
+        except Exception as error:  # noqa: BLE001 - reported, never raised
+            # The provider's own words, redacted. A rewritten message would
+            # lose the one detail that tells a user whether it is their key,
+            # their model name or their network.
+            from openai4s.observability import redact_text
+
+            return {
+                "reachable": False,
+                "state": "unreachable",
+                "detail": redact_text(f"{type(error).__name__}: {error}")[:400],
+                "contacted": True,
+            }
+        return {
+            "reachable": True,
+            "state": "reachable",
+            "detail": "the endpoint answered a minimal request",
+            "contacted": True,
+        }
+
+    def readiness(self, profile: Mapping[str, Any]) -> dict[str, Any]:
+        """What can be said about this profile *without contacting anyone*.
+
+        The distinction is the whole design. Everything here is derived from
+        local state — is there a key, is the protocol one we can dispatch, is
+        there an endpoint and a model — so opening Customize answers "is this
+        usable" for every profile at zero network cost and with no chance of a
+        page load spending someone's API quota or waking a rate limiter.
+
+        Reachability is deliberately *not* here. It cannot be known without a
+        request, and a request is a thing the user asks for (see `probe`). A
+        readiness card that quietly probed on render would be exactly the
+        implicit outbound call this version spent P0-1 removing.
+
+        `state` is one of:
+          ready        — everything local checks out; the endpoint is untested
+          needs_key    — no credential resolves
+          needs_model  — no model named and the protocol has no default
+          unsupported  — the protocol is not one the LLM layer dispatches
+        """
+        provider = str(profile.get("provider") or "").strip().lower()
+        problems: list[str] = []
+        if provider not in PROFILE_PROTOCOLS:
+            return {
+                "state": "unsupported",
+                "detail": f"{provider or 'no protocol'} is not a protocol this "
+                "build can dispatch",
+                "checked_endpoint": False,
+            }
+        if not self.resolve_key(profile):
+            problems.append("needs_key")
+        if not str(profile.get("model") or "").strip():
+            spec = self._providers().get(provider, {})
+            if not spec.get("model"):
+                problems.append("needs_model")
+        if problems:
+            # Prose, like the two states either side of this branch. `detail`
+            # was the joined problem *codes*, which was fine while nothing
+            # displayed it and became a card reading "needs_key" at a user the
+            # moment one did. `state` is still the code a client branches on.
+            return {
+                "state": problems[0],
+                "detail": "; ".join(
+                    PROBLEM_DETAIL.get(item, item) for item in problems
+                ),
+                "checked_endpoint": False,
+            }
+        return {
+            "state": "ready",
+            # Said out loud rather than implied. "Ready" here means the local
+            # configuration is complete, not that anyone answered -- and a card
+            # that let a user read the stronger claim into it would be the
+            # confident-wrong-answer shape all over again.
+            "detail": "configuration is complete; the endpoint has not been contacted",
+            "checked_endpoint": False,
+        }
+
     def public_profile(self, profile: Mapping[str, Any]) -> dict[str, Any]:
         """Return a profile projection that never includes the raw API key.
 
@@ -117,6 +273,12 @@ class ModelProfileService:
             "base_url": profile.get("base_url") or "",
             "model": profile.get("model") or "",
             "has_api_key": bool(self.resolve_key(profile)),
+            # Local-only readiness. Never a network call: see `readiness`.
+            "readiness": self.readiness(profile),
+            # The number a session binds to. Surfaced so a client can show
+            # which configuration a session is pinned at, and tell "this is the
+            # current one" from "this profile has moved on since".
+            "revision": int(profile.get("revision") or 0) or None,
         }
 
     def models_payload(self, default_model_id: str) -> dict[str, Any]:
@@ -200,6 +362,78 @@ class ModelProfileService:
             None,
         )
 
+    #: The fields whose change is a different *configuration*, and therefore a
+    #: new revision. Deliberately not `name`, and deliberately not `api_key`.
+    #:
+    #: A rename is a label change; a replayed session that reports the model it
+    #: used should not claim a different one because someone tidied the list.
+    #:
+    #: The key is the load-bearing exclusion. `make_ref` derives the broker
+    #: reference from `(scope, profile_id)` alone, so a revision that forked the
+    #: profile id would fork the credential with it: rotating a key would strand
+    #: earlier revisions on a secret nobody can read, and deleting any revision
+    #: would destroy the key every other one still points at. Revisions share
+    #: the profile id, which is also what D2 asks for -- a session binds
+    #: `profile_id + revision`.
+    REVISIONED_FIELDS = ("provider", "base_url", "model")
+
+    @classmethod
+    def _configuration(cls, profile: Mapping[str, Any]) -> tuple[str, ...]:
+        return tuple(str(profile.get(field) or "") for field in cls.REVISIONED_FIELDS)
+
+    @classmethod
+    def _seal_revision(cls, profile: dict[str, Any], *, now_ms: int) -> int:
+        """Append the profile's current configuration as a new revision.
+
+        Append-only: an existing entry is never rewritten, because the entire
+        point is that a session bound to revision 3 can still say what
+        revision 3 was after the profile has moved on.
+
+        Returns the revision number now current.
+        """
+        history = profile.get("revisions")
+        if not isinstance(history, list):
+            history = []
+        current = cls._configuration(profile)
+        if history:
+            last = history[-1]
+            if (
+                tuple(str(last.get(field) or "") for field in cls.REVISIONED_FIELDS)
+                == current
+            ):
+                # Nothing that identifies the configuration changed, so this is
+                # still the same revision. Editing a name repeatedly must not
+                # produce a history of identical entries.
+                return int(last.get("revision") or 1)
+            revision = int(last.get("revision") or 0) + 1
+        else:
+            revision = 1
+        entry = {
+            "revision": revision,
+            "created_at": now_ms,
+            **{field: str(profile.get(field) or "") for field in cls.REVISIONED_FIELDS},
+        }
+        history.append(entry)
+        profile["revisions"] = history
+        profile["revision"] = revision
+        return revision
+
+    @classmethod
+    def revision_config(
+        cls, profile: Mapping[str, Any], revision: int
+    ) -> dict[str, Any] | None:
+        """The exact configuration a given revision named, or None if unknown.
+
+        None is the 409 case: the profile exists but the revision it was bound
+        to does not, which happens when a database predates the history or when
+        a profile was rebuilt. Guessing the nearest revision would be the
+        "silently follow latest" behaviour D2 exists to remove.
+        """
+        for entry in profile.get("revisions") or []:
+            if int(entry.get("revision") or 0) == int(revision):
+                return dict(entry)
+        return None
+
     @staticmethod
     def _protocol(value: Any) -> str:
         protocol = str(value or "").strip().lower()
@@ -223,6 +457,7 @@ class ModelProfileService:
             # The blob records a reference; the key itself goes to the broker.
             "api_key": self._store_key(profile_id, clean_api_key(body.get("api_key"))),
         }
+        self._seal_revision(profile, now_ms=self._clock_ms())
         self.store.mutate_model_profiles(lambda profiles: profiles.append(profile))
         return self.public_profile(profile)
 
@@ -288,6 +523,11 @@ class ModelProfileService:
             if body.get("clear_api_key"):
                 self._forget_key(profile)
                 profile["api_key"] = ""
+            # After the field writes, before the copy is returned: a no-op for
+            # a rename or a key rotation, a new revision when the configuration
+            # actually moved. Also backfills revision 1 for a profile written
+            # before revisions existed, which is what lets an old session bind.
+            self._seal_revision(profile, now_ms=self._clock_ms())
             return dict(profile)
 
         profile = self.store.mutate_model_profiles(mutate)
@@ -324,6 +564,14 @@ class ModelProfileService:
             self._forget_key(profile)
         if self.store.get_setting("active_model_profile") == profile_id:
             self.store.set_setting("active_model_profile", "")
+        # A session pinned to this profile must not be left unsendable. The
+        # pin's whole purpose is to record what a session ran under; once the
+        # profile is gone there is nothing left to name, and refusing forever
+        # is the one outcome that helps nobody.
+        try:
+            self.store.release_model_binding(profile_id)
+        except Exception:  # noqa: BLE001 — the profile is already deleted
+            pass
 
     def migrate_profile_keys(self) -> dict:
         """Move any plaintext profile key behind a reference.

@@ -244,6 +244,34 @@ class ComputeJobRepository:
             rows = self._connection.execute(sql, params).fetchall()
         return [self._decode(row) for row in rows if row is not None]
 
+    def for_owner(self, owner_key: str | None, limit: int = 200) -> list[dict]:
+        """Every job one owner submitted, live and finished, newest first.
+
+        `live()` answers "what might still be costing money", which is what
+        rehydration and reconcile need. A person looking at their remote work
+        needs the finished ones too -- a job that failed an hour ago is the one
+        they came to look at.
+
+        Scoping is unconditional here, unlike `live(scoped=...)`. There is no
+        caller for an installation-wide *history* view, and an optional scope
+        flag on a listing is exactly the shape that leaks: it defaults to off,
+        and the one caller that forgets it enumerates every session's remote
+        work -- submitted commands, hosts, harvest manifests. `job_history`
+        had that bug and was fixed the same way.
+        """
+        sql = f"SELECT {','.join(_FIELDS)} FROM compute_jobs WHERE "
+        params: list[Any] = []
+        if owner_key is None:
+            sql += "owner_key IS NULL"
+        else:
+            sql += "owner_key=?"
+            params.append(owner_key)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._lock:
+            rows = self._connection.execute(sql, params).fetchall()
+        return [self._decode(row) for row in rows if row is not None]
+
     def list(self, limit: int = 200) -> list[dict]:
         with self._lock:
             rows = self._connection.execute(

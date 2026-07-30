@@ -16,6 +16,8 @@
 
 const REQUESTED = (process.argv.find((a) => a.startsWith("--browser=")) || "").split("=")[1];
 const ENGINES = REQUESTED ? [REQUESTED] : ["chromium", "firefox", "webkit"];
+import { authenticate } from "./browser_auth.mjs";
+
 const baseUrl = process.env.OPENAI4S_BROWSER_URL || "http://127.0.0.1:8760/";
 
 let playwright;
@@ -71,7 +73,22 @@ async function runEngine(engineName) {
   };
 
   try {
-    await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    // The gate is on by default; see browser_auth.mjs. `authenticate` performs a
+    // real top-level navigation to /?token=… and lands on / after the 303, so
+    // the app is already loaded when it returns — navigating again is not just
+    // redundant, it ABORTS the in-flight startup fetches of the page it
+    // replaces. Chromium and Firefox drop an aborted fetch quietly; WebKit
+    // surfaces it as a page-level error ("Fetch API cannot load … due to access
+    // control checks"), so this file failed its own "no uncaught page errors"
+    // check on one engine out of three, for a request the app had handled and a
+    // navigation this harness had caused. The listener above is attached before
+    // authenticate deliberately — an error during the very first load is the
+    // kind worth catching — so the fix is to stop creating the abort.
+    const bootstrapped = await authenticate(page, baseUrl);
+    if (!bootstrapped) {
+      // No token file: the daemon runs with the gate off, so nothing navigated.
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    }
 
     // ---- the shell loads and its script actually ran --------------------
     await check(engineName, "app shell boots", async () => {

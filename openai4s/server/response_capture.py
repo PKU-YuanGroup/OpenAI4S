@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import Any
 
 from openai4s.server import contract
+
+# Safe at module scope: `errors` imports nothing from this package, which is
+# the whole reason it was carved out of the gateway. The lazy import inside
+# `drive_all_routes` below is about the *gateway*, not about this.
+from openai4s.server.errors import public_failure
 from openai4s.server.response_schema import infer, merge, validate
 
 #: Where the frozen shapes live. A file in the repo, so a change to what a
@@ -334,6 +339,12 @@ def _kind_of(code: int, content_type: str, length: int) -> str:
     return BINARY
 
 
+#: The correlation id the route driver presents. Fixed rather than generated:
+#: the artifacts it produces are committed and diffed, so anything varying per
+#: run would show up as drift on every capture.
+_CAPTURE_REQUEST_ID = "contract-capture"
+
+
 def install(gateway_module, recorder: Recorder):
     """Wrap ``make_handler`` so every ``_api`` call reports its response.
 
@@ -355,7 +366,29 @@ def install(gateway_module, recorder: Recorder):
 
             def observing(value, code=200):
                 try:
-                    recorder.observe(method, sub, code, value)
+                    # The body the dispatcher SENDS, not the one it was handed.
+                    # `_json` enriches every 4xx/5xx with code/status/request_id,
+                    # and observing before that ran is why `request_id` appeared
+                    # nowhere in either frozen artifact: the published contract
+                    # described a body the server does not send. Same callable
+                    # the dispatcher uses, so the two cannot drift again.
+                    recorder.observe(
+                        method,
+                        sub,
+                        code,
+                        public_failure(
+                            value,
+                            code,
+                            # `_route` assigns a correlation id before any guard
+                            # can answer, so no real response carries a null
+                            # one. Tests that build a handler with
+                            # `object.__new__` skip that, and letting their ""
+                            # through froze `request_id` as nullable on 17
+                            # routes -- publishing a property of the harness as
+                            # a property of the API.
+                            getattr(self, "_correlation_id", "") or _CAPTURE_REQUEST_ID,
+                        ),
+                    )
                 except Exception:  # noqa: BLE001 - never break a response
                     pass
                 return reply(value, code)
@@ -487,7 +520,14 @@ def unroutable(route: str) -> bool:
         return True
 
 
-def drive_all_routes(recorder: "Recorder", make_handler, config, runner) -> None:
+def drive_all_routes(
+    recorder: "Recorder",
+    make_handler,
+    config,
+    runner,
+    *,
+    authenticated_headers: dict[str, str] | None = None,
+) -> None:
     """Ask every known route for an answer, against a real handler.
 
     One implementation, shared by the two capture scripts and the coverage
@@ -513,12 +553,28 @@ def drive_all_routes(recorder: "Recorder", make_handler, config, runner) -> None
             handler = object.__new__(handler_class)
             handler._query = lambda: {}
             handler._body = lambda: {}
-            handler.headers = {}
-            handler._correlation_id = ""
+            # The driver calls `_api` directly, so the token gate in `_route`
+            # is not on its path today. The credential is presented anyway: the
+            # gate is one refactor from moving, and a driver that only works
+            # while authentication happens to be elsewhere would fail as a wall
+            # of 401s at exactly the moment the contract mattered most.
+            handler.headers = dict(authenticated_headers or {})
+            # Deterministic and non-empty. `_route` gives every real request a
+            # correlation id (an inbound X-Request-Id, else `new_correlation_id()`),
+            # so `request_id` is a string on the wire and never null. Leaving
+            # this "" made `public_failure` emit null, and the frozen schema
+            # would then have declared the field's type as `null` -- describing
+            # the driver rather than the server. A fixed literal keeps the
+            # artifact byte-identical across runs.
+            handler._correlation_id = _CAPTURE_REQUEST_ID
             handler._last_status = 0
             handler._json = (
                 lambda value, code=200, _m=method, _p=path, _r=route: recorder.observe(
-                    _m, _p, code, value, route=_r
+                    _m,
+                    _p,
+                    code,
+                    public_failure(value, code, _CAPTURE_REQUEST_ID),
+                    route=_r,
                 )
             )
             handler._send = (
@@ -563,7 +619,13 @@ def drive_all_routes(recorder: "Recorder", make_handler, config, runner) -> None
                 # restores `_json` in its `finally`, so by this line the
                 # observing collector is already gone.
                 recorder.observe(
-                    method, path, error.code, gateway_error_payload(error), route=route
+                    method,
+                    path,
+                    error.code,
+                    public_failure(
+                        gateway_error_payload(error), error.code, _CAPTURE_REQUEST_ID
+                    ),
+                    route=route,
                 )
             except Exception as error:  # noqa: BLE001
                 # Recorded rather than merely skipped. The old comment here said

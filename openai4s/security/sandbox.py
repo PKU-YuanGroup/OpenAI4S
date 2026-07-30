@@ -154,6 +154,15 @@ def _default_secret_read_denials(
     data_env = os.environ.get("OPENAI4S_DATA_DIR")
     data_dir = Path(data_env).expanduser() if data_env else Path.home() / ".openai4s"
     entries.append(("prefix", str(data_dir / "openai4s.db")))
+    # The daemon's access token, which is a sibling of the DB rather than a
+    # prefix of it -- so the entry above never covered it. Verified under an
+    # enforced sandbox: the DB was blocked and this file was read. It is the
+    # credential that gates the whole HTTP API, so a cell holding it can drive
+    # every route the daemon serves, including the ones that execute code.
+    entries.append(("literal", str(data_dir / "access-token")))
+    # Shares carry relay credentials, and the per-share tokens are what make a
+    # read-only snapshot reachable from outside this machine.
+    entries.append(("subpath", str(data_dir / "shares")))
     # The git-ignored daemon .env, discovered the same way config._load_dotenv
     # walks for it.
     try:
@@ -232,7 +241,36 @@ def build_seatbelt_profile(
         if kind not in _DENY_READ_KINDS:
             raise SandboxConfigurationError(f"unknown deny-read kind: {kind!r}")
         lines.append(f"(deny file-read* ({kind} {_seatbelt_string(path)}))")
+    lines.extend(_KEYCHAIN_DENIES)
     return "\n".join(lines) + "\n"
+
+
+#: Cutting the cell off from the macOS keychain.
+#:
+#: `OPENAI4S_SECRET_STORE` defaults to the keychain on macOS, so the LLM API
+#: key lives there. Under an enforced sandbox a cell could still run
+#: `/usr/bin/security` and reach it: verified before this existed, with
+#: `security list-keychains` returning the user's keychain path from inside the
+#: sandbox.
+#:
+#: Denying the keychain *files* alone does not do it. `securityd` is a separate
+#: daemon that opens them on the caller's behalf, so the file rules never
+#: apply to it; the mach-lookup denies are what actually close the door. The
+#: file denies stay as well, because the keychain database is also worth
+#: something to an attacker who can read it directly and attack it offline.
+#:
+#: The obvious worry is TLS: on macOS the Security framework is what validates
+#: certificates, so cutting off securityd might break every HTTPS fetch a
+#: science cell makes. Measured rather than assumed — under exactly these
+#: rules, `security list-keychains` fails while `curl https://example.com` and
+#: `urllib.request.urlopen` both return 200. Certificate validation does not go
+#: through the paths denied here.
+_KEYCHAIN_DENIES: tuple[str, ...] = (
+    '(deny mach-lookup (global-name "com.apple.SecurityServer"))',
+    '(deny mach-lookup (global-name "com.apple.securityd.xpc"))',
+    '(deny file-read* (subpath "/Library/Keychains"))',
+    '(deny file-read* (regex #"^/Users/[^/]+/Library/Keychains"))',
+)
 
 
 def wrap_seatbelt_command(
@@ -274,6 +312,33 @@ def _bwrap_read_masks(deny_read: Sequence[tuple[str, str]]) -> list[str]:
             elif os.path.exists(target):
                 masks.extend(["--ro-bind", "/dev/null", target])
     return masks
+
+
+def _bwrap_daemon_environ_mask() -> list[str]:
+    """Hide the daemon's own environment from a cell that shares its PID namespace.
+
+    The sandbox deliberately keeps the host PID namespace: `Kernel.interrupt()`
+    targets `Popen.pid` exactly, and `--unshare-pid` makes bwrap interpose an
+    init/reaper that weakens that contract. The cost is that `/proc` still shows
+    every host process, so a Linux cell can read `/proc/<daemon>/environ` — and
+    that is where the daemon's API keys live, since the child's own environment
+    is allowlisted clean.
+
+    Closing the whole PID-namespace gap needs `--unshare-pid` plus `--info-fd`
+    child-pid parsing, and it changes the interrupt contract on a platform this
+    is not developed on. This closes the part that carries the credentials
+    without touching that contract: one file, bound over with /dev/null.
+
+    NOT VERIFIED AT RUNTIME. bubblewrap is Linux-only and development here is
+    macOS, so what is checked is that the flags are emitted in the right order.
+    Whether a Linux cell is actually refused needs a Linux run. The wider
+    exposure — that a cell can still see other processes exist — is recorded in
+    the ledger rather than fixed.
+    """
+    environ = f"/proc/{os.getpid()}/environ"
+    if not os.path.exists(environ):  # not Linux, or /proc unavailable
+        return []
+    return ["--ro-bind", "/dev/null", environ]
 
 
 def wrap_bwrap_command(
@@ -325,6 +390,9 @@ def wrap_bwrap_command(
     # Mask secret paths after the workspace/temp binds (so a denial still wins
     # when the workspace nests a secret) and before --chdir/--.
     wrapped.extend(_bwrap_read_masks(deny_read))
+    # ...and after `--proc /proc` above, which is what makes this reachable:
+    # the mount would otherwise replace whatever was bound over it.
+    wrapped.extend(_bwrap_daemon_environ_mask())
     wrapped.extend(
         [
             "--chdir",

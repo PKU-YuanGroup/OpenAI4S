@@ -1,10 +1,38 @@
-"""Long-term memory persistence on a Store-owned SQLite connection."""
+"""Long-term memory persistence on a Store-owned SQLite connection.
+
+Reads are scoped by project, and the cross-project view has to be asked for by
+name. It used to be the *fallback*: ``project_id`` of ``None`` meant "no WHERE
+clause", so a caller that did not know its scope was handed every project's
+memories. The gateway seeded system prompts with
+``list_memories(project_id=st.project_id or "all")``, so any session whose
+project was falsy silently injected the whole installation's remembered context
+-- other people's projects included -- into the model.
+
+Falling open is the wrong direction for a scope boundary: a missing memory is
+visible and reported, a leaked one is neither. ``ALL_PROJECTS`` is therefore an
+explicit token and ``None`` is refused.
+"""
 
 from __future__ import annotations
 
 import sqlite3
 import uuid
 from typing import Any, Callable
+
+#: The explicit cross-project scope. Spelled out at the call site so that
+#: reading every project's memories is always a visible decision.
+ALL_PROJECTS = "all"
+
+
+def _scope(project_id: str | None) -> str:
+    if not project_id:
+        raise ValueError(
+            "memory reads require an explicit project_id; pass "
+            f"{ALL_PROJECTS!r} for the deliberate cross-project view. "
+            "A missing scope used to mean 'every project', which is how "
+            "one session's prompt came to carry another project's memories."
+        )
+    return project_id
 
 
 class MemoryRepository:
@@ -48,12 +76,13 @@ class MemoryRepository:
         project_id: str | None = None,
         block: str | None = None,
     ) -> list[dict]:
+        project_id = _scope(project_id)
         sql = (
             "SELECT memory_id,project_id,block,content,created_at FROM memories "
             "WHERE 1=1"
         )
         params: list[Any] = []
-        if project_id and project_id != "all":
+        if project_id != ALL_PROJECTS:
             sql += " AND project_id=?"
             params.append(project_id)
         if block:
@@ -80,9 +109,10 @@ class MemoryRepository:
         )
 
     def blocks(self, project_id: str | None = None) -> list[dict]:
+        project_id = _scope(project_id)
         sql = "SELECT block, COUNT(*) n FROM memories"
         params: list[Any] = []
-        if project_id and project_id != "all":
+        if project_id != ALL_PROJECTS:
             sql += " WHERE project_id=?"
             params.append(project_id)
         sql += " GROUP BY block ORDER BY n DESC"

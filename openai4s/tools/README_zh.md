@@ -50,6 +50,7 @@ Agent 用来编排工作、申请权限的那批供应商原生 JSON 工具都�
 | [`skills.py`](./skills.py) | 渐进式的 Skill 搜索与加载，外加 status/history，以及需要审批的版本 rollback。 |
 | [`taxonomy.py`](./taxonomy.py) | 稳定的副作用类别，以及规范化的 resource-key/workspace-target。审计事件记录它们，资源冲突调度也按它们比较。 |
 | [`web.py`](./web.py) | Web 搜索/抓取工具类和实例的兼容 facade。 |
+| [`web_download.py`](./web_download.py) | 把一个 URL 直接下载进会话工作区，用于 `web_fetch` 无法表示成文本的内容。两道闸在这里汇合：URL 这一侧沿用 `web_fetch` 的（必须开启网络、每一跳都过出网允许名单、私有/元数据地址一律拒绝），路径这一侧沿用 `write_file` 的（目标路径先相对工作区解析，越界在**发起请求之前**就被拒——这样被拒的路径不会顺带泄露那个 URL 是否可达）。字节上限在读取过程中生效。 |
 | [`web_fetch.py`](./web_fetch.py) | 标准化单个 URL 的抓取与资源身份，同时保留 Host 的软失败行为。 |
 | [`web_search.py`](./web_search.py) | 标准化实时 Web 搜索，同样保留 Host 的软失败行为。 |
 | [`write_file.py`](./write_file.py) | 在受限工作区里创建或覆盖一个 UTF-8 文件，并给这次写入打上标记，让 Web 控制工具边界能把它捕获成 Artifact。 |

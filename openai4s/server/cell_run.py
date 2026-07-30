@@ -70,7 +70,11 @@ class CellExecutionPorts:
     kernel_id: Callable[[CellSession, str], str]
     snapshot: Callable[[Path], Any]
     protect_versions: Callable[[CellSession], None]
-    safety_refusal: Callable[[str, str], str | None]
+    # Takes the session as well as the cell. The biosecurity screener judges a
+    # *trajectory* -- what the user asked for across the conversation against
+    # what the agent has been doing -- so a port that only sees one cell can
+    # only ever run the static classifier, which is what the Web path did.
+    safety_refusal: Callable[[Any, str, str], str | None]
     run: Callable[
         [CellSession, CellRequest, str, ChunkSink | None, KernelLease | None],
         dict[str, Any],
@@ -170,7 +174,7 @@ class CellExecutionService:
         try:
             before = self.ports.snapshot(session.workspace)
             self.ports.protect_versions(session)
-            refusal = self.ports.safety_refusal(request.code, request.origin)
+            refusal = self.ports.safety_refusal(session, request.code, request.origin)
         except BaseException as exc:
             self._finish_attempt(attempt_id, "prepare_failed", exc)
             raise

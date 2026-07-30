@@ -19,6 +19,7 @@ The FIFO coordinator covers Agent, user REPL, lifecycle, and recovery writers. C
 | [`dependencies.py`](./dependencies.py) | Uses Python's `ast` and a deliberately small R lexer to record what each cell reads, writes, and deletes, and projects stale cells from those edges. The `visibility` and `replay_policy` defaults come from here too. A construct that can change the namespace without naming it is flagged uncertain rather than guessed at: this is a conservative projection, not a security boundary. |
 | [`models.py`](./models.py) | The three dataclasses passed across the boundary: `CellRequest`, `CaptureResult`, and `CellExecutionResult`. No provider or UI types in any of them. |
 | [`watchdog.py`](./watchdog.py) | The protocol-neutral timeout ladder for one frozen kernel lease: wait, interrupt the exact owner, kill if the interrupt does not land, then restart or abandon according to policy. A pending permission decision freezes the timeout budget, and a cancellation still cuts through it. |
+| [`process_group.py`](./process_group.py) | Stop a spawned process *group* and confirm it stopped: TERM, grace, KILL, then probe the group rather than the leader. Shared with the kernel-side `host.bash` executor, which passed `timeout=` to `subprocess.run` with `shell=True` and so killed the shell while the work it started carried on. Two implementations would have disagreed about exactly that case. |
 
 ## Concurrency and recovery contract
 

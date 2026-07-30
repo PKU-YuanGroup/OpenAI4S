@@ -1,0 +1,248 @@
+# OpenAI4S v0.3 — implementation progress and completion evidence
+
+> Plan: `OpenAI4S-next-version-integrated-report-20260725.md`
+> Decisions: [`v03-decisions.md`](v03-decisions.md)
+> Baseline: `next` @ `126ef91`
+>
+> A per-item factual record, not a plan. Every status must be supported by
+> **a real main-path wiring plus an executable verification command**.
+> The existence of a class, function or file with the right name is **not**
+> completion evidence.
+
+## Status vocabulary
+
+| Status | Meaning |
+|---|---|
+| `Completed` | Wired into the real main path, acceptance conditions met, regression test present |
+| `Partially completed` | Partly wired; the remainder is named explicitly |
+| `Implemented but unverified` | Code exists and looks correct, but the run that would prove it cannot be performed from a working copy — the missing run is named |
+| `Not started` | Not begun |
+| `Deviated` | Implemented differently from the plan; the reason is stated |
+| `Blocked` | Blocked on an external decision, credential or machine |
+| `Obsolete` | No longer applicable under the current design |
+
+## How each item below was verified
+
+Unless a row says otherwise, `Completed` means all of:
+
+1. `uv run pytest` (whole offline suite) green;
+2. `uv run mypy` green;
+3. `uv run pre-commit run --all-files` green;
+4. `uv run python scripts/capture_response_contract.py --check` green;
+5. **the new test was verified to fail when the defect is put back.** A test
+   that cannot fail measures nothing, so each row names what was neutered.
+
+---
+
+## 1. Audit-added defects
+
+Seven defects the integrated report does not mention, found by a read-only
+audit of `126ef91` and confirmed by reproduction before any fix.
+
+| # | Defect | Commit | Status | Falsification |
+|---|---|---|---|---|
+| A1 | Every UI edit of a Specialist silently NULLed both allowlists and reset `unrestricted` to true — a restriction that loosened itself | `33e649c` | `Completed` | Routing the partial update back through `upsert` fails both repository tests |
+| A2 | Web-Customize skill edit rewrote frontmatter to `name/description/origin`, destroying `requirements`/`license`/`category` | this batch | `Completed` | Measured across the 34 bundled skills: `license`+`category` on 23, nested `metadata` on 17, `requirements` on 13, `fold_cue` on 1 — all deleted by fixing a typo. Now edits raw lines rather than rebuilding. Restoring the rebuild fails 2 tests; parse-and-re-emit and a plain line filter each fail one, so both tempting wrong fixes are excluded |
+| A3 | Cross-project memory leak: `list_memories(project_id=st.project_id or "all")` with `"all"` meaning no WHERE clause | `ae53e8e` | `Completed` | Restoring `or "all"` fails the forced-degenerate-state test |
+| A4 | Imported sessions could restore no artifact version — snapshots written to a directory absent from `trusted_snapshot_dirs` | `9deac73` | `Completed` | Removing `session-imports` from the shared roots fails the test |
+| A5 | `host.view_image` read any absolute path; an existence oracle for the host | `677f3f0` | `Completed` | Removing the confinement fails the test |
+| A6 | `server/daemon.py`: a second HTTP server, `POST /run` → `Agent.run`, no Host allowlist, Origin check, token or headers | `b74372f` | `Completed` | A probe module defining a bare handler is reported by file and class |
+| A7 | Kernel worker outbound frames had no size cap; one `print` allocated ~20 MB on both sides | `92501a4` | `Completed` | With both bounds removed the test fails on `20000000 <= 64064` |
+
+## 2. P0-4 — error and state truth
+
+| # | Item | Commit | Status | Falsification |
+|---|---|---|---|---|
+| 4.1 | Error envelope extracted to one definition in `errors.py`; the test module drives the real `Handler` instead of a copy of it | `83ea03b` | `Completed` | Neutering `public_failure` fails three tests; before the change the same neutering failed none |
+| 4.2 | Both capture points observe the enriched body; artifacts regenerated | `e3bd0a4` | `Completed` | `grep -c request_id docs/response-*.json` went 0 → 1107 |
+| 4.4 | `PLAN_STATUSES` enforced in the repository; `paused` added; `_spawn_job` distinguishes cancel from failure; startup reconciles orphaned `executing` rows | `23fab8c` | `Completed` | Removing the enum check and the reconciliation fails two tests |
+| 4.3 | request-id carried into the turn/plan/REPL/local-job threads by an explicit context copy; `MessageJob` records the id it was built under so a failed job's result and its log line share one; daemon-lifetime sweepers deliberately excluded | `8a20ae6` | `Completed` | Unwiring any one spawn site fails the wiring test *by thread name*; the behavioural half asserts a bare thread still sees `""`, so the helper cannot be moot |
+| 4.5 | Plan resume: `POST /frames/{id}/plan/resume` runs only the unfinished steps, through the same FIFO-owned turn the approve path uses; refused per-status with its own reason; a paused plan with nothing left completes instead of running an empty turn | `8a20ae6` | `Completed` | Three mutations caught: treating `failed` as unfinished, treating `in_progress` as settled, and relaxing the paused-only guard |
+| 4.6 | `ApiError` keeps the whole envelope (`code`/`status`/`request_id`); 53 user-facing hints now show the id; four hand-rolled lossy conversions removed; the dead `/404/.test(e.message)` branch reads the structured status; `paused` plans render and offer a resume control | `8a20ae6` | `Completed` | Each of the three gates fails on its own reinstated defect |
+| 4.7 | Customize skill failures reach `public_failure`: every soft dictionary carries a stable `code`, and the gateway projects it to a status (**five** routes, not the six first recorded — `set_enabled` returns `{"ok": True}` unconditionally and never fails). The four sibling routes that already answered 4xx keep their statuses and gain the specific code | `585aaf4` | `Completed` | Forcing the gateway back to 200 fails three tests; removing one code from the status table names it. The test that asserted `(200, {"error": …})` and was *named* "keep soft errors" was rewritten, not deleted |
+
+## 3. P0-3 — bounded runtime and transport
+
+| # | Item | Commit | Status | Falsification |
+|---|---|---|---|---|
+| 3.1 | Process-group stop ladder extracted and shared by local jobs and `host.bash` | `2edd779` | `Completed` | — |
+| 3.3 | Worker output bounded at the producer; one truncation marker; `_cap` counts what it says | `92501a4` | `Completed` | See A7 |
+| 3.4 | Background cell peek buffer bounded | `1881eed` | `Completed` | Removing the cap fails the test |
+| 3.5 | Local job log reports its own truncation; pruning no longer promotes a running job to newest | `3e30c3e` | `Completed` | Both defects restored, both tests fail |
+| 3.6 | `host.bash` drains concurrently and times out by process group | `2edd779` | `Completed` | Killing only the shell fails the real-subprocess test |
+| 3.7 | MCP: single reader, id-keyed demux, abandoned-id set, absolute deadline, bounded frames, stderr tail, reaping close, registered probes, eviction on edit/disable | `34c8f8c` | `Completed` | Without the deadline the silent-connector test blocks past 30 s |
+| 3.8 | `glob`'s `count` means what it returns; `grep`'s `include` recurses | `dba11ac` | `Completed` | Both defects restored, both tests fail |
+| 3.9 | Per-session execution queue depth cap | `6cd5f73` | `Completed` | Removing the check fails the test |
+| — | `WorkspaceFileService.workspace()` memoised: 16.5 µs → 0.1 µs per call | `839d4e6` | `Completed` | Removing the memo fails the syscall-count test |
+
+## 4. P0-2 — identity and scope closure
+
+| # | Item | Commit | Status | Falsification |
+|---|---|---|---|---|
+| 2.x | Compute event stream owner-scoped; ssh alias cannot be read as an option | `c7b2092` | `Completed` | `ssh:-oProxyCommand=touch /tmp/pwned` refused; both checks removed, both tests fail |
+| 2.x | `sqlite_master` denied to `host.query` (it returned the full DDL of denied tables) | `dea321c` | `Completed` | Removing it from the denylist fails the test |
+| 2.x | A filename that names two artifacts names none | `a70c50f` | `Completed` | Relaxing to first-match fails the test |
+| 2.x | `default_model_id` no longer drifts to a provider default on restart | `d9c9610` | `Completed` | Restoring the process-config seed fails the test |
+| 2.5 | Upload refuses non-base64 instead of storing the text; three content fields mutually exclusive | `a4b592d` | `Completed` | Dropping `validate=True` fails the corruption test |
+| 2.x | Lineage walk bounded by default and reports truncation; `skills/` egress surface frozen | `7a21459` | `Completed` | A planted fourth networked sidecar is named by the gate |
+| 2.4 | Version-keyed reads (`lineage_get`, `artifact_path`, `lineage_graph`) confined to the calling session | `3301579` | `Completed` | Removing the scoping fails the test |
+| 2.6 | Same-project cross-session materialisation (D3): `host.materialise_artifact` gives the caller its own Artifact/version plus a source→target lineage edge, in one transaction. Bytes are shared by hardlink (snapshots are immutable by contract), so a materialised dataset costs a directory entry. Cross-project refused with the *same* message as absent — at both layers, worded identically so the depth is not itself a leak | `f078abf` | `Completed` | Removing the project bound at either layer fails; forcing the copy fallback fails the shared-inode assertion |
+| 2.10 | `ModelSelection` immutable revision (D2): append-only `revisions[]` keyed on `(provider, base_url, model)` — **not** on name or key, because the credential ref is derived from `profile_id`; migration **10** adds `frames.model_profile_id/revision`; binding happens on send only, so an unbound legacy session stays readable; `409 model_revision_unavailable` for a dangling pin and `409 model_revision_ambiguous` for a legacy session matching more than one profile | `5e56325` | `Completed` | Four mutations caught: sealing on every edit, ignoring the pin, guessing on ambiguity, and forgetting the `SCHEMA_VERSION` bump |
+| 2.17 | All three networked skill sidecars migrated off raw `urllib`; the Host network capability grew the three things that were missing — `web_fetch(method="HEAD")` (one hop, no redirect following, so doi.org's own 302/404 survives), `user_agent=`, and `web_download` (workspace-confined, byte-capped while reading). `_SKILL_EGRESS` is now **empty** | `0453bea` | `Completed` | Replanting one `urlopen` in a skill is reported by file and line; removing the path check, the byte cap or the HEAD guard each fails its own test |
+
+## 5. P0-1 — no implicit startup, local authentication
+
+| # | Item | Commit | Status | Falsification |
+|---|---|---|---|---|
+| 1.3 | Dead unauthenticated second HTTP server deleted; guard against a replacement | `b74372f` | `Completed` | See A6 |
+| 1.4 | Local auth required on loopback by default (D1): persistent owner-only token minted atomically, CLI credential + `OPENAI4S_TOKEN` escape hatch, constant-time compare, mutation query token refused, `/auth/status` reports the real mode, `OPENAI4S_REQUIRE_TOKEN=0` loopback-only for one minor release | `57d4ff7` | `Completed` | Restoring the opt-in default fails the default test; the DNS-rebinding test was deliberately made *authenticated* so it still proves the Host check rather than the gate |
+| 1.1/1.2 | Demo seed opt-in; the example moved behind `POST /example/session` with `{"confirm": true}` and a dashboard button | `57d4ff7` | `Completed` | Restoring the `"1"` default fails the behavioural test with all six cells listed — not just the flag test |
+| 1.x | The browser client's 3Dmol CDN fallback removed; frontend egress surface frozen | `57d4ff7` | `Completed` | Replanting the fallback fails both new gates by file and line |
+
+## 6. P0-0 — exact-source-SHA release evidence
+
+| # | Item | Commit | Status | Falsification / missing run |
+|---|---|---|---|---|
+| 0.x | `step_test`'s false "the suite gated the build" replaced by a receipt bound to the released SHA; three refusal paths tested | `5e32495` | `Completed` | Neutering the receipt check fails four tests |
+| 0.x | Quality job, receipt upload, release concurrency mutex, timeouts on all seven jobs, `attach` runs inside the checkout | `5e32495` | `Implemented but unverified` | **Missing run:** one real `workflow_dispatch`. Nothing in this repository executes `.github/workflows/*.yml`. |
+| 0.x | Every ci.yml action pinned to a digest; `inputs.tag` no longer inlined into `run:`; `persist-credentials: false` on the write-capable checkouts | `2eb3544` | `Implemented but unverified` | Each digest was independently re-resolved and matched. **Missing run:** one real CI run. |
+| 0.x | `docs/release-validation.md` corrected in three load-bearing places | `5e32495` | `Completed` | — |
+| 0.4 | Every run seals `openai4s-<version>-evidence.zip` in the format the product's **own** `evidence.verify_package` reads — not a second implementation that could disagree. A stopped run seals too; sealing is best-effort so it cannot fail a good release | `5e56325` | `Completed` | Dropping the manifest self-hash, or leaving a file out of the manifest, each fails; tampering and an added payload are both detected |
+| 0.5 | Python support matrix reconciled: 3.13 classified and added to the CI matrix, and the three files are compared by a test rather than restated in prose | `20b46cd` | `Completed` | Reverting the classifier, the CI matrix or the `requires-python` floor fails a different arm each time, naming the exact file conflict |
+| 0.7 | `verified / not_notarized / preview / not_configured`, computed from evidence and never from a configured secret. `verified` is **unreachable** today (ad-hoc signing, no notarization attempt), so the macOS asset has no publishable path this version — stated in `macos_publishable`, not left as an absence. Per D11 the release-mode hard failure is untouched | `5e56325` | `Completed` | Inferring the state from `OPENAI4S_MACOS_SIGNING_IDENTITY` fails; claiming notarization fails the unreachability test, forcing the claim to be revisited rather than silently outdated |
+
+| 4.x | **Found by running it, not by reading it:** the startup access-token banner used block-buffered stdout while every neighbouring notice uses stderr, so under `nohup`/systemd/Docker the credential a user needs to open their own daemon never appeared | `8a20ae6` | `Completed` | Reproduced against a real daemon with stdout redirected to a file: banner absent before, present after |
+| 4.x | Both browser harnesses navigated to `/` with no credential and would have failed every check on a 401 once the gate was on; a shared `tests/browser_auth.mjs` logs in through the `?token=` bootstrap, exercising the 303 and cookie hand-off | `8a20ae6` | `Completed` | Neutering the login makes `browser_smoke.mjs` fail at its first check with HTTP 401 |
+| 4.x | `PlanRepository.create` did not enforce `PLAN_STATUSES` while `update` did, and session import fed it a status straight from an uploaded package; an imported plan claiming `executing` now arrives `paused` | `8a20ae6` | `Completed` | Disabling either the enum check or the `executing`→`paused` mapping fails its own test |
+
+## 7. Cross-cutting engineering
+
+| Item | Commit | Status |
+|---|---|---|
+| Route-module inventory derived from the filesystem, with a convention guard | `3f4f59b` | `Completed` |
+
+## 8. P0 is closed
+
+Every P0 item in the integrated report is `Completed`, with two exceptions that
+are `Implemented but unverified` for one shared reason: **nothing in this
+repository executes `.github/workflows/*.yml`**. The release quality job, the
+receipt upload, the concurrency mutex, the seven job timeouts, the SHA-pinned
+actions and the 3.13 matrix entry are all written and reviewed; one real
+`workflow_dispatch` is the only thing that can settle them.
+
+Two further statements belong here rather than in a release note, because both
+are easy to mistake for oversights:
+
+- **macOS has no publishable path in this version.** `verified` is unreachable
+  by D11's own decision — the build ad-hoc signs and notarization is not
+  attempted. The state vocabulary describes that accurately; it does not change
+  it.
+- **Six Web Customize routes** now answer a real status, but the wider question
+  of which services may use soft dictionaries at all is untouched.
+
+## 9. P1-A — visible product closure
+
+| # | Item | Commit | Status | Falsification |
+|---|---|---|---|---|
+| A.6 | Tabular preview told the truth about neither dimension: `csv()` split on a hardcoded comma, so **every** `.tsv` reported one column with the whole header line as its name; and the renderer capped columns at 24 with a rows-only banner, so a 101-column table rendered 24 and looked complete. One `delimiterFor` now trusts the extension and sniffs the header when there is none (science writes tab-separated `.txt` constantly), and the banner names both dimensions | `54ef6e8` | `Completed` | Forcing `delimiterFor` to a comma fails the **browser** check with the defect's own signature (`expected 3 column(s), got 1`); removing the column banner fails the static gate |
+| A.1 | ArtifactRef **backend contract**: `@name#v-<id>` sends that version's frozen bytes, never the live path; an unresolvable reference is reported instead of dropped; a binary artifact is named rather than pasted as U+FFFD; a same-project cross-session reference materialises **at send** (D3, decided with the owner) so an inserted-then-deleted chip leaves nothing behind. Legacy `@name` kept one release, session-scoped, and says it is unpinned | `221ff9b` | `Completed` | Reading the live path, dropping refs silently, or widening the legacy form to the project each fail. The composer chip is wired too: the `@` menu already listed artifacts from across the *project* while the resolver looked only inside the session, so it was offering files it could not deliver — it now inserts `name#version_id`, labels a file that will be copied in, and `artifact_ref_problems` renders inline. Driven in a real browser: 2 problem rows, server message shown |
+| A.3 | Latest-first message paging. Two of this item's three parts were **already done** and are recorded as found, not as built: the session keyset cursor works (verified by paging 260 real sessions — 6 pages, no duplicates, none lost), and branch export already carries every branch's messages (`_export_messages` applies no branch filter and tags each row — read, not independently exercised). The real gap was message direction: a 640-message session returned messages 0–299, the *oldest* page | `45f7e85` | `Completed` | Forcing ascending order fails by message id; ignoring the cursor collapses 640 rows to 50 |
+| A.5 | Notebook export split menu. `notebook/export` has always accepted `python`, `r` and `bundle`; the client hardcoded `?language=bundle`, so two working formats were unreachable — wanting the Python notebook meant downloading a zip and unpacking it, and nothing said the others existed. The default action is unchanged (one click, same file) with the other two behind a chevron | `43965fc` | `Completed` | Removing either format fails by name; reordering so the bundle is not first fails the default-action assertion. Driven in a real browser: menu toggles, both new hrefs present |
+| A.7 | Retrieval-source read-only panel. The `artifact_versions.source` envelope has recorded the request URL, query and response hashes since retrieval provenance was added, and `list_versions` never selected the column — a figure built on a live API fetch was indistinguishable from one computed from nothing. Now allowlisted, bounded at 2000 chars per value, and redacted in the query string, the path and the userinfo; clipped and withheld fields are both counted rather than hidden | `3dcda11` | `Completed` | Removing the redaction, the allowlist, or the `source` column each fails — the last with "the provenance never reached the client", which is the trap my own first probe fell into |
+| A.4 | Image attachment budgets: 8 images, 4 MiB each, 12 MiB total, measured after the pin markers are drawn because that is what goes on the wire. None existed — eight pins on a 3000×2200 raster sent ~10 MiB and nothing stopped eighty. Dropped figures are named to the user *and* to the model, which is told to say they were not received rather than describe them | `7c92a0c` | `Completed` | Raising any of the three limits fails its own test — **after** a rewrite: the first version of two of those tests defined their expectation in terms of the constant under test, so removing the budget broke nothing. Mutation testing found that, not review |
+| A.2 | Readiness card (local-only: `ready`/`needs_key`/`needs_model`/`unsupported`, `checked_endpoint` always false), explicit `POST /model-profiles/{id}/probe`, and **two** providers made selectable — `gemini` *and* `openai_responses` were both dispatchable and both unreachable from the menu. Identity selection itself landed earlier in P0-2.10 | `8d715eb` | `Completed` | Making the card probe on render fails; dropping gemini fails by name; probing a keyless profile fails. **A live provider endpoint is never contacted by any test** — the success path of `probe` is `Implemented but unverified` |
+
+## 10. P1-B — Agent, Skill and Compute control
+
+| # | Item | Commit | Status | Falsification |
+|---|---|---|---|---|
+| B.4 | Specialist tri-state allowlist enforced. `None` inherits, `[]` denies all, a list is exactly those; a child may only narrow, and inheriting is not widening. Filtering covers the four surfaces the exit criterion names: catalogue, search, `load`/`get`, and `read`. **Corrected 2026-07-29** — this row previously read `Completed` / "Enforced on all four surfaces", and the filter was never armed: `set_allowed_skills` had one definition and six call sites, every one of them in `tests/test_resource_allowlist.py`. `_allowed_skills` stayed `None` — permit everything — for the life of every real dispatcher, so a specialist restricted to one Skill saw all 34 and could read any of them (measured). The tests passed because they armed the allowlist themselves. Now armed at `HostDispatcher.set_child_execution_policy`, the single choke point every child passes, and spec inheritance narrows instead of replacing so a nested child cannot widen. **The connector half remains unbuilt**: there is no `set_allowed_connectors` to call, so `connectors` is still stored, inherited and merged while enforcing nothing | `f7c108b` + this batch | `Partial — skills enforced, connectors not` | Disarming the dispatcher fails 5; the falsy collapse (`if not allowed:`) fails 1 here and 3 in the older file; letting a nested child replace its inherited list fails 1 |
+| B.2 | Subtree stop and turn-boundary steering were **already implemented** and are recorded as verified, not built: `_stop_subtree` walks `descendants`, which follows `parent_child_id`, so siblings are structurally outside the walk, and `send_message` already queues with an explicit rejection. The exit criterion — cancelling one child does not affect a sibling — now has a test against the real runner | `624eaf5` + this batch | `Verified` | Replacing the walk with "stop everything" fails the sibling test; removing the descent fails the subtree test. The 409 now has a surface: `POST /frames/{id}/delegations/{child}/stop` and `.../steer` make the already-verified runner behaviour reachable, and keep three answers apart — **404** no such child in the record, **409** the record has it but nothing live can act on it (the ordinary post-restart state, where `daemon_restart` marks every pending child stopped), **200** done. `send_message`'s `{"ok": False}` became a 409 instead of riding out as success. Five properties falsified; success-path tests included, since a file that only asserts refusals passes on a handler wired to the wrong method. |
+| B.3 | Skill `requirements` parsed and surfaced with `ready`/`needs_setup`/`unknown`. Five bundled Skills have declared `requirements: [gpu]` since they were written and **nothing read it** — not the loader, not the Skill object, not the catalogue — so a GPU-only Skill looked identical to one that runs anywhere and the agent found out at execution time. Readiness is local-only (`nvidia-smi` is looked for on PATH, never run), and sits beside `enabled` rather than inside it | `d905419` | `Completed` | Dropping the parse fails 1; guessing `ready` for an unknowable requirement fails 2; probing by running `nvidia-smi` fails 4 |
+| B.6 | Memory budgets and context projection | `openai4s/memory_budget.py`, `server/gateway.py`, `tests/test_memory_budget.py` | `Verified` | The injection was `mems[:50]` — a count, and nothing else. Measured on 60 memories of a pasted protocol: **600,647 characters** added to every system prompt, roughly 150k tokens against a 262,144-token window. Now three budgets (50 items / 2,000 chars each / 16,000 total), and the model is told when items were withheld so it can say its remembered context is incomplete. Each of the four properties falsified individually. |
+| B.1 | Follow-up FIFO while running | `server/gateway.py`, `tests/test_followup_admission.py` | `Verified` | The FIFO, the depth cap (64) and exact sibling-safe cancel already existed. Three refusals did not, or arrived wrong: a message had **no text cap** (the 128 MiB *session-archive* limit stood in for one, and an 8 MiB paste is persisted, replayed, and 8× the context window — compaction cannot rescue it because summarising means sending); a dangling model pin was refused inside the worker thread and reached HTTP as **200 + `{status: failed}`**; a full queue reached it as **500**. Now 413 / 409 / 429, all decided at admission before anything is written or queued. Model identity freezes when Send is pressed, not at dequeue. Four properties falsified individually. |
+| B.5 | Owner-scoped remote compute task centre | `server/compute_tasks.py`, `storage/compute_jobs.py`, `server/gateway.py`, `server/webui/app.js`, `tests/test_compute_task_centre.py` | `Verified (no live provider)` | Read-only listing scoped by `owner_key`, plus an explicit per-task refresh. **Opening the page cannot contact a provider, structurally**: `compute_tasks` takes a `Store` and has no import of `ComputeManager` — which matters because in this system the probe *is* the harvest. `unknown` is never rendered as failure; pids, sandbox handles and cluster paths stay out of the projection. Six properties falsified. **Unverified:** the refresh path's success case — no test contacts a real BYOC host, so what a live provider returns is exercised by nothing here. |
+
+## 11. Not started
+
+All of `P2` (design freeze and real-platform experiments). By decision D8, P2
+enters no public API, schema or definition of done in this version.
+
+`P1-B` has landed except for one half of B.4: B.1 (follow-up admission), B.2
+(delegation control and the stale-record 409), B.3 (Skill `requirements` and
+readiness), B.5 (remote compute task centre) and B.6 (memory budgets and
+context projection) are complete. B.4's Skill allowlist is now enforced — it
+was recorded here as complete for several days while nothing armed it — and its
+**connector allowlist is not built**: `connectors` is stored, inherited through
+delegation and echoed by the API while restricting nothing. What each of them
+could not verify is recorded in §12 rather than left implied.
+
+## 12. Externally unverifiable
+
+See [`v03-decisions.md`](v03-decisions.md#externally-unverifiable). Nothing in
+this file marks those `Completed`.
+
+## 13. Post-v0.3 audit remediation
+
+A two-round multi-agent audit of this repository produced 41 candidate defects;
+adversarial verification confirmed 28 and refuted 13 (8 on mechanism, 5 on
+consequence). Every fix below was reproduced before being made and falsified
+after, one property at a time.
+
+| Severity | Defect | Commit |
+| --- | --- | --- |
+| High | provenance side table keyed on `id()` — a freed object's lineage inherited by an unrelated one, on the first allocation | `5c28437` |
+| High | every saved specialist failed to delegate: SQLite's `int` met a strict `bool` check | `c8ce530` |
+| High | `web_fetch` redirects escaped the SSRF/egress guard on the stdlib path | `c8ce530` |
+| High | all nine `openai4s share` subcommands 404'd on an unversioned API root | `c8ce530` |
+| High | an oversized `error` dropped the response frame and hung the kernel | `c6fb624` |
+| High | `prov_record` published any absolute host path as a session artifact | `dce5ff4` |
+| High | an enforced sandbox exposed the daemon access token and the macOS keychain | `dce5ff4` |
+| Medium | the biosecurity trajectory screener never ran on the Web daemon | `b8dcad4` |
+| Medium | the R variable inspector reported every variable as `symbol` | `8239f1f` |
+| Medium | R read captured output whole before capping; reported a false `0` peak RSS; the loader escape was UNSAFE in Python and SAFE in R | `eb5fc53` |
+| Medium | the managed-endpoint readiness probe was an unguarded SSRF oracle | `52e2833` |
+| Medium | eight `@` references could add 1.6 MB to one prompt | `a13acce` |
+| Medium | opening a project showed a blank new session instead of its sessions | `2165438` |
+| Medium | `attachment_problems` was emitted to a client that never listened | `adfa082` |
+| Medium | a fan-out to a specialist dropped the specialist's prompt | `37d9293` |
+| Medium | a delegated child compacted against the daemon default, not its own model | `f2652bd` |
+| Medium | a remote job in a cell that wrote nothing became the next cell's provenance | `669c1e0` |
+| Medium | R cells emitted no `stdout_chunk`, so live output was dead for the R half | `2c3fae3` |
+| Medium | `stop_kernel` queued its lifecycle ticket behind the executions it was cancelling | `7322140` |
+| Medium | `generation_confidence` and `provenance` were written by a migration and read by nothing | `PENDING` |
+| Low | `Tool.dangerous` was declared on ten tools and read by no gate, audit or prompt | `PENDING` |
+| Low | `host.app_render` grew without bound (100 MB measured); a released idle session kept its history | `PENDING` |
+| Low | model-profile `readiness` and the probe route had no UI call site | `PENDING` |
+
+### Found by the pre-merge aggregate review (2026-07-29)
+
+Eighty-seven commits were each reviewed and tested individually and CI was
+green; six lenses then read the range as **one change**, and every finding was
+handed to an independent adversarial verifier. 21 raised, 15 survived
+refutation, 3 distinct blockers — each found by two lenses independently. None
+was a test failure: all eight gates were green throughout, because these are
+unreachable-code and no-recovery-path defects.
+
+| Severity | Defect | Note |
+| --- | --- | --- |
+| Blocker | Deleting a model profile permanently bricked every session pinned to it: 409 "choose one to continue" with nothing able to choose | delete now releases the bindings; `POST /frames/{id}/model-binding` answers the other trigger; the client can act on the code |
+| Blocker | The auth gate was on by default and nothing that hands a human a URL was updated — `GET /` and `/static/app.js` both 401, so the SPA could not load to offer a way in | `openai4s url` carries the token; a browser navigation gets an actionable HTML page |
+| Blocker | `set_allowed_skills` had one definition and six call sites, all in one test file — a restricted specialist saw all 34 Skills and could read any | armed at `set_child_execution_policy`; spec inheritance narrows so a nested child cannot widen. **Connector half still unbuilt** |
+| Medium | The model pin was write-only: a session pinned to A after B was activated dispatched to B's endpoint, model and credential | `_llm_cfg` honours the pin, falling back on anything unresolvable |
+| Medium | Latest-first paging had no client: a 640-message session opened on messages 0–299 | four call sites through one helper that also restores reading order |
+| Medium | An 8 MB frame backstop counted bytes against caps counted in characters — CJK output within every documented limit lost stderr, the exception text, `error_lineno`, `guards` and `usage` | derived from `MAX_OUTPUT`; the first constant (6) was itself wrong and a test caught it |
+| Medium | `web_download` was the only `writes_files` tool with no `secret_path_key`, so it could overwrite a `.env` that `write_file` refuses | declared; asserted over every file-writing tool |
+
+### Still open from the audit
+
+Nothing. Every finding from the audit round is either fixed above or recorded
+below as a decision.
+
+### Deliberately not fixed
+
+bubblewrap keeps the host PID namespace so `Kernel.interrupt()` can target
+`Popen.pid` exactly. The credential-bearing half is closed —
+`/proc/<daemon>/environ` is masked after the `--proc` mount — and the rest is
+recorded in [`v03-decisions.md`](v03-decisions.md) rather than attempted blind
+on a platform this is not developed on.

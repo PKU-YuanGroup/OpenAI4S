@@ -19,136 +19,27 @@ import time
 import uuid
 from pathlib import Path
 
-_MAX_OUTPUT = 200_000  # per-job captured output cap (bytes)
+# One implementation of "stop this job", shared with the kernel-side bash
+# executor. Two would have disagreed about the case that matters -- the shell
+# exits, the work it started does not.
+from openai4s.execution.process_group import TERM_GRACE_S as _TERM_GRACE_S
+from openai4s.execution.process_group import await_group_exit as _await_group_exit
+from openai4s.execution.process_group import group_alive as _group_alive
+from openai4s.execution.process_group import signal_group as _signal_group
+from openai4s.execution.process_group import stop_process_group as _stop_process_group
+from openai4s.observability import carry_context
+
+#: Per-job captured output cap. Characters, not bytes: `append` measures
+#: `len()` on a `str`, and the comment here said bytes for long enough that
+#: the two readings of the same number stopped agreeing. The R worker gates
+#: on bytes and says bytes; this one counts characters and now says so.
+_MAX_OUTPUT = 200_000
+#: Prepended, because the tail is what is kept. Without it a truncated log is
+#: indistinguishable from a job that printed less than it did.
+_TRUNCATION_NOTICE = (
+    f"...(earlier output dropped; showing the last {_MAX_OUTPUT} characters)\n"
+)
 _MAX_JOBS = 200  # registry cap (oldest finished pruned)
-_TERM_GRACE_S = 5.0  # how long a job may take to honour SIGTERM
-
-
-def _group_alive(pgid: int | None) -> bool:
-    """Is anything at all still in the job's process group?
-
-    ``killpg(pgid, 0)`` raises ESRCH only when the group holds no process, so
-    this answers for the whole tree rather than for the one pid we happen to
-    hold a handle to. A group we are not permitted to signal counts as alive:
-    the honest reading of "I cannot tell" is not "it is gone".
-    """
-    if pgid is None:
-        return False
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
-    return True
-
-
-def _signal_group(proc: subprocess.Popen, pgid: int | None, sig: int) -> None:
-    """Deliver one signal to the whole group, or to the leader if there is none.
-
-    A named indirection rather than an inline call so a test can simulate a
-    signal that is accepted and goes nowhere — the "no permission to signal"
-    case — without reaching into the `os` module the rest of the process
-    shares.
-    """
-    if pgid is not None:
-        os.killpg(pgid, sig)
-    else:  # no process group (Windows, or the child already reaped)
-        proc.send_signal(sig)
-
-
-def _await_group_exit(proc: subprocess.Popen, pgid: int | None, timeout: float) -> bool:
-    """Wait for the *group* to empty, not for the leader to be reaped.
-
-    ``proc.wait()`` answers about one process. A shell that honours SIGTERM
-    while the work it started ignores it satisfies ``wait()`` immediately and
-    leaves the job running, which is exactly the reproduction: the leader
-    exited on SIGTERM, the child had SIG_IGN installed, and cancel reported
-    success. The wait here is also what reaps the leader, so a zombie does not
-    keep the group looking populated.
-    """
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            proc.wait(timeout=0)
-        except subprocess.TimeoutExpired:
-            pass
-        except Exception:  # noqa: BLE001 - another waiter got there first
-            pass
-        if pgid is None:
-            if proc.poll() is not None:
-                return True
-        elif not _group_alive(pgid):
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.05)
-
-
-def _stop_process_group(
-    proc: subprocess.Popen, pgid: int | None = None
-) -> tuple[bool, str]:
-    """TERM the job's process group, escalate to KILL, then confirm.
-
-    Returns ``(stopped, detail)``. The confirmation is the point: a cancel
-    that reports success without checking is indistinguishable from one that
-    worked, and the job carries on holding whatever it holds.
-
-    The group, not the process — the job is a shell, and the work is its
-    child. Signalling only the shell leaves the work running, and so does
-    *believing* the shell: both `proc.poll()` and `proc.wait()` answer about
-    the leader alone.
-
-    ``pgid`` is passed in because it must be read at spawn time. Looking it up
-    here fails once the leader has been reaped, which is precisely the case
-    where the surviving group most needs signalling.
-
-    Stated limit: once the leader has been reaped, a pgid is a number the OS
-    may eventually reuse, so a group probe cannot be perfectly certain it is
-    asking about the same job. Nothing short of pidfd closes that window, and
-    the previous code had the same exposure through `os.getpgid`. The window is
-    the interval between reaping the leader and this call, which is short, and
-    erring toward signalling a group that may be gone is safer here than
-    reporting a cancellation that did not happen.
-    """
-    if pgid is None:
-        try:
-            pgid = os.getpgid(proc.pid)
-        except (OSError, AttributeError):
-            pgid = None
-
-    if proc.poll() is not None and not _group_alive(pgid):
-        # Leader gone *and* group empty. Checking the group as well is what
-        # stops `work & exit 0` from being reported as an exited job: the
-        # shell finished immediately, and the work it left behind held the
-        # job's stdout pipe open while nothing ever signalled it.
-        return True, "already exited"
-
-    def _signal(sig: int) -> None:
-        _signal_group(proc, pgid, sig)
-
-    try:
-        _signal(signal.SIGTERM)
-    except ProcessLookupError:
-        return True, "already exited"
-    except OSError as e:
-        return False, f"could not signal the job ({e})"
-
-    if _await_group_exit(proc, pgid, _TERM_GRACE_S):
-        return True, "exited on SIGTERM"
-
-    try:
-        _signal(signal.SIGKILL)
-    except ProcessLookupError:
-        return True, "already exited"
-    except OSError as e:
-        return False, f"ignored SIGTERM and could not be killed ({e})"
-
-    if _await_group_exit(proc, pgid, _TERM_GRACE_S):
-        return True, "killed"
-    # Unkillable means uninterruptible sleep, almost always blocked I/O.
-    # Saying so is far more useful than reporting a cancellation.
-    return False, "did not die after SIGKILL (likely blocked in the kernel)"
 
 
 class Job:
@@ -163,6 +54,7 @@ class Job:
         self.finished_at: float | None = None
         self.exit_code: int | None = None
         self._out: list[str] = []
+        self._truncated = False
         self._proc: subprocess.Popen | None = None
         # Read at spawn and kept: once the leader is reaped, `os.getpgid` on
         # its pid raises, and the surviving group becomes unreachable exactly
@@ -182,14 +74,22 @@ class Job:
             total = sum(len(x) for x in self._out)
             while total > _MAX_OUTPUT and len(self._out) > 1:
                 total -= len(self._out.pop(0))
+                self._truncated = True
             # a single line larger than the cap must still be truncated, or the
             # per-job memory bound is defeated by one giant no-newline blob
             if total > _MAX_OUTPUT and len(self._out) == 1:
                 self._out[0] = self._out[0][-_MAX_OUTPUT:]
+                self._truncated = True
 
     def output(self) -> str:
         with self._lock:
-            return "".join(self._out)
+            value = "".join(self._out)
+            if not self._truncated:
+                return value
+            # The tail is kept on purpose -- for a job log the end is what
+            # explains how it finished. But the caller has to be told, or a
+            # silently short log reads as a job that simply printed less.
+            return _TRUNCATION_NOTICE + value
 
     def to_dict(self, *, with_output: bool = False) -> dict:
         d = {
@@ -248,7 +148,13 @@ class JobManager:
             self._order.append(job.id)
             self._prune_locked()
         thread = threading.Thread(
-            target=self._run, args=(job,), daemon=True, name=f"os-job-{job.id}"
+            # Carries the caller's correlation id: a local job is started on
+            # behalf of one request or one cell, and its failures are read
+            # alongside that request's.
+            target=carry_context(self._run),
+            args=(job,),
+            daemon=True,
+            name=f"os-job-{job.id}",
         )
         job._thread = thread
         thread.start()
@@ -399,10 +305,19 @@ class JobManager:
 
     def _prune_locked(self) -> None:
         while len(self._order) > _MAX_JOBS:
-            old = self._order.pop(0)
-            j = self._jobs.get(old)
-            if j and j.status in ("done", "failed", "cancelled"):
-                self._jobs.pop(old, None)
-            elif j:  # still running — keep it, drop from prune scan
-                self._order.append(old)
-                break
+            # Evict the oldest TERMINAL job, without disturbing the order of
+            # the rest. Re-appending a live job to the end used to move it:
+            # `list()` returns `reversed(self._order)`, so a long-running job
+            # climbed to the *top* of the Jobs panel and read as the newest
+            # submission -- the one entry a user is most likely to trust as
+            # "what I just started".
+            for index, job_id in enumerate(self._order):
+                job = self._jobs.get(job_id)
+                if job is None or job.status in ("done", "failed", "cancelled"):
+                    self._order.pop(index)
+                    self._jobs.pop(job_id, None)
+                    break
+            else:
+                # Every job is live. The registry stays over its cap rather
+                # than forgetting a job that is still running.
+                return

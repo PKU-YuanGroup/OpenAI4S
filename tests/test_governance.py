@@ -41,9 +41,20 @@ def test_gitleaks_scans_history_with_a_checksum_pinned_binary():
     # encrypted wrapper around a metadata-read-only GitHub token, which
     # star-history decrypts per request and which is designed to be published in
     # a README. gitleaks flags them on entropy alone.
-    # The last four are synthetic canaries in the redaction tests — two per
+    # The next four are synthetic canaries in the redaction tests — two per
     # commit that touched those lines, since the history scan reports each
     # commit that introduces them.
+    # The final four came from the v0.3 batch and were each read at the commit
+    # that introduced them before being suppressed. Three are
+    # `abc123def456ghi789`, an obvious placeholder sitting in a model-profile
+    # dict in tests/test_model_profile_readiness.py, which the generic-api-key
+    # rule catches on the `api_key` key rather than on entropy. The fourth is
+    # the 32-character canary in tests/test_retrieval_source.py, which exists
+    # for the same reason as the two above it: `scripts/source_secret_scan.py`
+    # refused the obvious `sk-...` spelling twice, correctly, so the canary has
+    # to be opaque without being provider-shaped. The two scanners pull in
+    # opposite directions and a redaction test needs a string both of them
+    # dislike.
     # They are deliberately high-entropy because the redaction they exercise
     # keys on entropy and shape — an obviously-fake string would make those
     # tests pass for the wrong reason, which is also why the vendor-prefix
@@ -52,7 +63,7 @@ def test_gitleaks_scans_history_with_a_checksum_pinned_binary():
     # caught, and pinned by count here so a new suppression cannot be added
     # without a reviewer seeing it.
     ignored = (ROOT / ".gitleaksignore").read_text(encoding="utf-8").splitlines()
-    assert len(ignored) == 12
+    assert len(ignored) == 16
     assert all(
         re.fullmatch(r"[0-9a-f]{40}:.+:[a-z0-9-]+:\d+", item) for item in ignored
     )

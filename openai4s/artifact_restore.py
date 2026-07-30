@@ -32,6 +32,31 @@ class ArtifactRestoreStore(Protocol):
 LivePathResolver = Callable[[dict, dict], Path]
 
 
+def trusted_snapshot_roots(data_dir: Path | str) -> tuple[Path, ...]:
+    """Every directory the daemon itself writes immutable snapshots into.
+
+    Derived in one place because the two call sites had drifted into listing
+    the same two directories in opposite orders, and neither listed the third.
+    Session import writes its snapshots under ``session-imports/<root>/artifacts/``
+    and points the version rows at them, so `verified_snapshot_bytes` refused
+    every imported artifact with "artifact snapshot is outside trusted
+    storage". Two lists maintained by hand is how a directory comes to be
+    written to but not readable.
+
+    This is a containment boundary, not the integrity check. The bytes are
+    still verified against the version row's recorded sha256 and size on every
+    read, so widening the boundary to a directory the daemon owns does not
+    weaken what a restore proves -- it stops the daemon refusing to read its
+    own storage.
+    """
+    root = Path(data_dir).expanduser()
+    return (
+        root / "artifacts",
+        root / "artifact-versions",
+        root / "session-imports",
+    )
+
+
 class ArtifactRestoreService:
     """Restore immutable bytes through one append-only safety contract."""
 

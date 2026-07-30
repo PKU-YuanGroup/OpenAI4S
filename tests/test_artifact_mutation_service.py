@@ -208,7 +208,7 @@ def test_artifact_mutations_fail_closed_on_workspace_escape_metadata(tmp_path):
     assert outside.read_text("utf-8") == "sentinel"
 
 
-def test_upload_keeps_legacy_decode_versioning_and_event_contracts(tmp_path):
+def test_upload_versioning_and_event_contracts(tmp_path):
     harness = MutationHarness(tmp_path)
 
     first = harness.manager.upload(
@@ -218,10 +218,14 @@ def test_upload_keeps_legacy_decode_versioning_and_event_contracts(tmp_path):
             "frame_id": harness.frame_id,
         }
     )
+    # Line-wrapped base64 is transport formatting and still decodes. The
+    # payload here used to be "YmV0YQ==!", whose trailing "!" was silently
+    # discarded -- this test pinned that leniency, and leniency is what makes
+    # a corrupted upload undetectable.
     second = harness.manager.upload(
         {
             "filename": "result.txt",
-            "content_base64": "YmV0YQ==!",
+            "content_base64": "YmV0\nYQ==\n",
             "frame_id": harness.frame_id,
         }
     )
@@ -256,17 +260,25 @@ def test_upload_keeps_legacy_decode_versioning_and_event_contracts(tmp_path):
         },
     )
 
-    fallback = harness.manager.upload(
-        {
-            "filename": "fallback.bin",
-            "content_base64": "%%% not base64 %%%",
-            "frame_id": harness.frame_id,
-        }
-    )
-    assert (
-        Path(harness.store.resolve_artifact_path(fallback["artifact_id"])).read_bytes()
-        == b"%%% not base64 %%%"
-    )
+    # This used to succeed, storing the literal text as the file's bytes and
+    # hashing that. Upload a `.npy` whose payload lost a character in transit
+    # and the artifact carried the base64 string instead of the array --
+    # versioned, checksummed and indistinguishable from data. A caller who
+    # means to upload text says `content_text`.
+    with pytest.raises(ArtifactOperationError) as refused:
+        harness.manager.upload(
+            {
+                "filename": "fallback.bin",
+                "content_base64": "%%% not base64 %%%",
+                "frame_id": harness.frame_id,
+            }
+        )
+    assert refused.value.code == 400
+    assert "not valid base64" in refused.value.message
+    # Nothing was written: a rejected upload leaves no artifact behind.
+    assert not (
+        harness.manager.workspace_for(harness.frame_id) / "fallback.bin"
+    ).exists()
 
     event_count = len(harness.events)
     loose = harness.manager.upload(
@@ -307,3 +319,90 @@ def test_delete_reclaims_versions_and_emits_bare_refresh_event(tmp_path):
     harness.events.clear()
     assert harness.manager.delete("missing") == {"ok": True}
     assert harness.events == []
+
+
+def test_upload_refuses_corrupted_base64_instead_of_decoding_it_to_other_bytes(
+    tmp_path,
+):
+    """`b64decode` without `validate=True` silently discards stray characters.
+
+    That is the half that never raised. A payload corrupted in transit decodes
+    to *different bytes* and reports success, so the artifact carries a
+    checksum computed over content nobody sent -- provenance that is wrong
+    rather than absent, which is worse because it is believed.
+
+    Whitespace is exempt because it is transport formatting: plenty of tools
+    wrap base64 at 76 columns, and rejecting that would break honest callers
+    while catching nothing.
+    """
+    harness = MutationHarness(tmp_path)
+
+    payload = base64.b64encode(b"\x00\x01measurement\xff").decode()
+
+    clean = harness.manager.upload(
+        {
+            "filename": "clean.bin",
+            "content_base64": payload,
+            "frame_id": harness.frame_id,
+        }
+    )
+    stored = Path(
+        harness.store.resolve_artifact_path(clean["artifact_id"])
+    ).read_bytes()
+    assert stored == b"\x00\x01measurement\xff"
+
+    # Wrapped at 76 columns: still the same bytes.
+    wrapped = "\n".join(payload[i : i + 4] for i in range(0, len(payload), 4))
+    ok = harness.manager.upload(
+        {
+            "filename": "wrapped.bin",
+            "content_base64": wrapped,
+            "frame_id": harness.frame_id,
+        }
+    )
+    assert (
+        Path(harness.store.resolve_artifact_path(ok["artifact_id"])).read_bytes()
+        == b"\x00\x01measurement\xff"
+    )
+
+    # A stray non-alphabet character is corruption, not formatting.
+    for corrupt in (payload[:4] + "!" + payload[4:], payload[:4] + "*" + payload[4:]):
+        with pytest.raises(ArtifactOperationError) as refused:
+            harness.manager.upload(
+                {
+                    "filename": "corrupt.bin",
+                    "content_base64": corrupt,
+                    "frame_id": harness.frame_id,
+                }
+            )
+        assert refused.value.code == 400
+
+
+def test_upload_will_not_guess_which_content_field_is_authoritative(tmp_path):
+    """Three fields, one meaning. Two supplied is a question, not a payload."""
+    harness = MutationHarness(tmp_path)
+
+    with pytest.raises(ArtifactOperationError) as refused:
+        harness.manager.upload(
+            {
+                "filename": "both.txt",
+                "content_base64": base64.b64encode(b"a").decode(),
+                "content_text": "b",
+                "frame_id": harness.frame_id,
+            }
+        )
+    assert refused.value.code == 400
+    assert "exactly one" in refused.value.message
+
+    # And content_text is the sanctioned way to upload text.
+    text = harness.manager.upload(
+        {
+            "filename": "note.txt",
+            "content_text": "plain text, not base64",
+            "frame_id": harness.frame_id,
+        }
+    )
+    assert (
+        Path(harness.store.resolve_artifact_path(text["artifact_id"])).read_bytes()
+        == b"plain text, not base64"
+    )

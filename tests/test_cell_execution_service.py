@@ -56,7 +56,11 @@ class Harness:
     def protect_versions(self, session):
         self.order.append("protect")
 
-    def safety_refusal(self, code, origin):
+    def safety_refusal(self, session, code, origin):
+        # Takes the session as well as the cell: the biosecurity screener
+        # judges a trajectory, not one cell, and a port that saw only the cell
+        # could never run it — which is why the Web path ran the static
+        # classifier alone while the CLI ran both.
         self.order.append("safety")
         return self.refusal
 

@@ -22,26 +22,56 @@ import json
 
 import pytest
 
+from openai4s.config import Config, LLMConfig
+from openai4s.server import gateway as gateway_mod
 from openai4s.server.gateway import GatewayError, _error_code_for
 
 
-class _Recorder:
-    """Mirrors Handler._json's enrichment against a captured payload."""
+class _Hub:
+    def emitter(self, root_frame_id):
+        return lambda event: None
 
-    def __init__(self, correlation_id="req-1"):
-        self._correlation_id = correlation_id
+    def broadcast(self, root_frame_id, event):
+        return None
+
+
+class _Recorder:
+    """Drives the REAL `Handler._json` and reads back what it put on the wire.
+
+    This used to be a hand-written copy of the enrichment, which meant every
+    assertion below tested the copy. Deleting the enrichment from gateway.py
+    left the whole module green -- the exact second-copy hazard
+    `errors.py::gateway_error_payload` documents, and the reason the enrichment
+    could diverge from the captured contract without any test objecting.
+
+    So: build the real handler, stub only `_send` (the byte sink), and assert
+    on the JSON the dispatcher actually serialised.
+    """
+
+    def __init__(self, tmp_path, correlation_id="req-1"):
+        cfg = Config(
+            data_dir=tmp_path,
+            llm=LLMConfig(provider="deepseek", api_key="test-key"),
+            max_turns=3,
+        )
+        runner = gateway_mod.SessionRunner(cfg, _Hub())
+        handler_class = gateway_mod.make_handler(cfg, _Hub(), runner)
+        self._handler = object.__new__(handler_class)
+        self._handler._correlation_id = correlation_id
+        self._handler._send = self._capture
         self.sent = None
 
+    def _capture(self, code, body, ctype, extra=None):
+        self.sent = (json.loads(body.decode("utf-8")), code)
+
     def json(self, obj, code=200):
-        if code >= 400 and isinstance(obj, dict) and "error" in obj:
-            obj = {
-                **obj,
-                "code": obj.get("code") or _error_code_for(code),
-                "status": code,
-                "request_id": getattr(self, "_correlation_id", "") or None,
-            }
-        self.sent = (obj, code)
-        return obj
+        self._handler._json(obj, code)
+        return self.sent[0]
+
+
+@pytest.fixture
+def recorder(tmp_path):
+    return _Recorder(tmp_path)
 
 
 # --------------------------------------------------------------------------
@@ -80,57 +110,56 @@ def test_an_unmapped_server_status_is_still_an_internal_error():
 # --------------------------------------------------------------------------
 
 
-def test_an_error_gains_a_code_status_and_request_id():
-    out = _Recorder().json({"error": "nope"}, 404)
+def test_an_error_gains_a_code_status_and_request_id(recorder):
+    out = recorder.json({"error": "nope"}, 404)
     assert out["code"] == "not_found"
     assert out["status"] == 404
     assert out["request_id"] == "req-1"
 
 
-def test_the_human_message_is_preserved():
+def test_the_human_message_is_preserved(recorder):
     """Additive: an existing client reading `j.error` must not notice."""
-    out = _Recorder().json({"error": "connector not found"}, 404)
+    out = recorder.json({"error": "connector not found"}, 404)
     assert out["error"] == "connector not found"
 
 
-def test_an_explicit_code_wins_over_the_status_default():
+def test_an_explicit_code_wins_over_the_status_default(recorder):
     """Several distinct failures share 400; the point of a code is telling them
     apart."""
-    out = _Recorder().json({"error": "bad cursor", "code": "invalid_cursor"}, 400)
+    out = recorder.json({"error": "bad cursor", "code": "invalid_cursor"}, 400)
     assert out["code"] == "invalid_cursor"
 
 
-def test_extra_diagnostic_fields_survive():
-    out = _Recorder().json({"error": "not found", "path": "/x"}, 404)
+def test_extra_diagnostic_fields_survive(recorder):
+    out = recorder.json({"error": "not found", "path": "/x"}, 404)
     assert out["path"] == "/x"
 
 
-def test_success_responses_are_untouched():
+def test_success_responses_are_untouched(recorder):
     """Wrapping success bodies would churn every route and consumer to relocate
     information that is already unambiguous."""
     payload = {"projects": [1, 2]}
-    out = _Recorder().json(payload, 200)
+    out = recorder.json(payload, 200)
     assert out == payload
     assert "code" not in out and "request_id" not in out
 
 
-def test_a_2xx_body_that_happens_to_contain_error_is_not_rewritten():
+def test_a_2xx_body_that_happens_to_contain_error_is_not_rewritten(recorder):
     """A successful response describing a prior failure — a job result, say —
     is data, not an error envelope."""
     body = {"error": "the remote job failed", "status": "failed"}
-    out = _Recorder().json(dict(body), 200)
+    out = recorder.json(dict(body), 200)
     assert out == body
 
 
-def test_a_non_dict_error_body_is_left_alone():
-    recorder = _Recorder()
+def test_a_non_dict_error_body_is_left_alone(recorder):
     assert recorder.json(["a"], 400) == ["a"]
 
 
-def test_a_missing_correlation_id_is_null_not_empty():
+def test_a_missing_correlation_id_is_null_not_empty(tmp_path):
     """`null` says "not recorded"; "" reads as a real id that happens to be
     blank, and a log search for it silently matches nothing."""
-    out = _Recorder(correlation_id="").json({"error": "x"}, 500)
+    out = _Recorder(tmp_path, correlation_id="").json({"error": "x"}, 500)
     assert out["request_id"] is None
 
 
@@ -170,6 +199,48 @@ def test_the_four_distinct_400s_have_distinct_codes():
         assert f'"{code}"' in source, code
 
 
-def test_the_envelope_is_json_serialisable():
-    out = _Recorder().json({"error": "x"}, 500)
+def test_the_envelope_never_destroys_a_field_the_route_set(recorder):
+    """`POST /frames/<id>/recovery/actions/restart_fresh` answers a failed
+    action with its whole domain result and HTTP 409, and that result carries
+    its own `status` ("failed", "partial", ...). The envelope used to overwrite
+    it with the integer 409, destroying the only copy.
+
+    The HTTP status survives deferral -- it is on the status line and `code`
+    names it. The domain value has no second copy, so the envelope defers, the
+    way it has always deferred to a route-supplied `code`.
+    """
+    out = recorder.json({"error": "recovery failed", "status": "partial"}, 409)
+    assert out["status"] == "partial"
+    assert out["code"] == "conflict"
+    assert out["error"] == "recovery failed"
+
+
+def test_a_route_that_sets_no_status_still_gets_the_http_one(recorder):
+    out = recorder.json({"error": "nope"}, 503)
+    assert out["status"] == 503
+
+
+def test_the_envelope_is_json_serialisable(recorder):
+    out = recorder.json({"error": "x"}, 500)
     assert json.loads(json.dumps(out))["code"] == "internal_error"
+
+
+def test_the_dispatcher_itself_enriches_not_a_copy_of_it(recorder, monkeypatch):
+    """The regression that made every other test in this module vacuous.
+
+    The enrichment had two definitions: the dispatcher's, and a hand-written
+    mirror in this file. The assertions all ran against the mirror, so removing
+    the dispatcher's copy left the module green -- and that is how the
+    dispatcher's shape came to differ from the one frozen in
+    docs/response-schemas.json without any test objecting.
+
+    Stubbing the shared projection must therefore remove the envelope. If the
+    dispatcher ever grows its own inline copy again, the stub stops having any
+    effect and this test fails -- which is the only way a second definition
+    announces itself before the captured contract drifts.
+    """
+    monkeypatch.setattr(
+        gateway_mod, "_public_failure", lambda payload, status, request_id: payload
+    )
+    out = recorder.json({"error": "nope"}, 404)
+    assert "code" not in out and "request_id" not in out

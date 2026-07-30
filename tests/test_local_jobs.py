@@ -108,8 +108,14 @@ def test_a_cancel_that_cannot_stop_the_job_reports_failure(manager, monkeypatch)
     job = manager.submit("sleep 120", kind="bash")
     assert _wait_for(lambda: manager._jobs[job["id"]]._proc is not None)
 
-    monkeypatch.setattr("openai4s.jobs._signal_group", lambda proc, pgid, sig: None)
-    monkeypatch.setattr("openai4s.jobs._TERM_GRACE_S", 0.2)
+    # The seam lives with the ladder, which `jobs` and the kernel-side bash
+    # executor now share. Patching `openai4s.jobs` would silently stop
+    # reaching it -- `stop_process_group` resolves these from its own module.
+    monkeypatch.setattr(
+        "openai4s.execution.process_group.signal_group",
+        lambda proc, pgid, sig: None,
+    )
+    monkeypatch.setattr("openai4s.execution.process_group.TERM_GRACE_S", 0.2)
 
     out = manager.cancel(job["id"])
     assert out["ok"] is False
@@ -399,3 +405,74 @@ def test_cancel_does_not_mislabel_a_natural_finish_still_being_recorded(
     )
     assert job.status == "done"
     assert job.exit_code == 0
+
+
+def test_a_truncated_job_log_says_so():
+    """A job whose output outgrew the cap looked like one that printed less.
+
+    `append` drops from the front to keep the tail -- right for a job log,
+    where the end is what explains how it finished -- but it dropped silently.
+    Nothing in the result distinguished "this is the whole log" from "this is
+    the last 200k characters of it", so a user reading the top of the output
+    was reading the middle of the run.
+
+    The notice is prepended rather than appended precisely because the tail is
+    what survived: a marker at the end would sit after the last line and imply
+    the loss happened there.
+    """
+    from openai4s.jobs import _MAX_OUTPUT, Job
+
+    job = Job("bash", "echo hi", "/tmp")
+
+    job.append("short output\n")
+    assert job.output() == "short output\n"
+    assert "dropped" not in job.output()
+
+    job.append("A" * (_MAX_OUTPUT + 500))
+    seen = job.output()
+    assert seen.startswith("...(earlier output dropped")
+    assert "short output" not in seen
+    # Still bounded, and still the tail.
+    assert seen.rstrip().endswith("A")
+    assert len(seen) <= _MAX_OUTPUT + len(_TRUNCATION_NOTICE_LEN_PROBE) + 8
+
+
+_TRUNCATION_NOTICE_LEN_PROBE = (
+    "...(earlier output dropped; showing the last 200000 characters)\n"
+)
+
+
+def test_pruning_does_not_promote_a_running_job_to_newest():
+    """A long-running job climbed to the top of the Jobs panel.
+
+    `_prune_locked` re-appended a still-running oldest job to the end of
+    `_order` before breaking, and `list()` returns `reversed(_order)` -- so the
+    job that had been running longest was displayed as the most recent
+    submission. That is the one row a user is most likely to read as "the thing
+    I just started".
+    """
+    import tempfile
+    from pathlib import Path as _Path
+
+    from openai4s.jobs import _MAX_JOBS, Job, JobManager
+
+    manager = JobManager(_Path(tempfile.mkdtemp()))
+    live = Job("bash", "sleep", "/tmp")
+    live.status = "running"
+    with manager._lock:
+        manager._jobs[live.id] = live
+        manager._order.append(live.id)
+        for index in range(_MAX_JOBS + 5):
+            done = Job("bash", f"echo {index}", "/tmp")
+            done.status = "done"
+            manager._jobs[done.id] = done
+            manager._order.append(done.id)
+        manager._prune_locked()
+
+    listed = [row["id"] for row in manager.list()]
+    assert listed, "everything was pruned"
+    # The live job was submitted first, so it must be LAST in a newest-first
+    # list -- never first.
+    assert listed[0] != live.id
+    assert live.id in listed, "a running job must never be evicted"
+    assert listed[-1] == live.id

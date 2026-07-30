@@ -336,6 +336,42 @@ class WebExecutionCoordinator:
     def snapshot(self, session_id: str) -> dict[str, Any]:
         return self._coordinator.snapshot(session_id)
 
+    def drain_queued(self, session_id: str, *, reason: str) -> list[str]:
+        """Cancel every still-queued ticket for one session; return their ids.
+
+        A lifecycle Stop needs this and had no way to ask for it. `cancel` is
+        deliberately exact — one ticket, matched on id AND owner — because a
+        queued cancellation must never disturb a sibling. That is right for a
+        user cancelling one item and wrong for "stop this session's kernel",
+        where everything waiting is waiting for a kernel that is going away.
+
+        Without it, Stop submitted its own lifecycle ticket, went to the back
+        of the FIFO, and waited for work that could not finish: a queued turn
+        admitted after `stop_requested` is set blocks on `stop_finished` the
+        moment it tries to submit anything, and `stop_finished` is what Stop
+        sets when it completes. Measured: Stop had not returned after 40s with
+        three items queued behind a turn that cancelled correctly.
+
+        The running execution is not touched here — `cancel_current` owns that,
+        and it runs first.
+        """
+        cancelled: list[str] = []
+        for item in list(self.snapshot(session_id).get("queue") or []):
+            execution_id = str(item.get("execution_id") or "")
+            owner = item.get("owner") or {}
+            if not execution_id:
+                continue
+            if self._coordinator.cancel_queued(
+                session_id=session_id,
+                execution_id=execution_id,
+                owner=str(owner.get("kind") or "agent"),
+                owner_id=str(owner.get("id") or ""),
+                reason=reason,
+            ):
+                cancelled.append(execution_id)
+                self._signal_binding(execution_id)
+        return cancelled
+
     def close_session(self, session_id: str, *, reason: str) -> bool:
         active = self.snapshot(session_id).get("owner")
         changed = self._coordinator.close_session(session_id, reason=reason)

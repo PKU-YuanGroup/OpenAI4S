@@ -98,6 +98,7 @@ class SessionWorkbenchStateService:
             pass
         components = estimate.as_dict()
         component_names = (
+            "system_prompt",
             "text",
             "images",
             "tool_schemas",
@@ -133,7 +134,43 @@ class SessionWorkbenchStateService:
             "compaction_count": len(history),
             "compaction_history": history,
             "layers": layers,
+            # What the turn's budgets left out. A projection that reports only
+            # what is present reads as complete, and the one thing a user needs
+            # to know about a budget is when it fired.
+            "omitted": self._omissions(state),
         }
+
+    @staticmethod
+    def _omissions(state: Any) -> list[dict[str, Any]]:
+        """Per-kind counts of what was withheld from this turn's context.
+
+        Reasons are aggregated rather than listed one by one: the previews
+        carry user text, and a projection panel is not a place to re-render
+        memories that were deliberately not sent to the model.
+        """
+        raw = getattr(state, "context_omissions", None) or {}
+        if not isinstance(raw, Mapping):
+            return []
+        out: list[dict[str, Any]] = []
+        for kind, dropped in sorted(raw.items()):
+            items = list(dropped or ())
+            if not items:
+                continue
+            reasons: dict[str, int] = {}
+            for item in items:
+                reason = str((item or {}).get("reason") or "unknown")
+                reasons[reason] = reasons.get(reason, 0) + 1
+            out.append(
+                {
+                    "kind": str(kind),
+                    "count": len(items),
+                    "reasons": [
+                        {"reason": reason, "count": count}
+                        for reason, count in sorted(reasons.items())
+                    ],
+                }
+            )
+        return out
 
     @staticmethod
     def _compaction_history(item: Mapping[str, Any]) -> dict[str, Any]:
