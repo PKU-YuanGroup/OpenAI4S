@@ -24,7 +24,6 @@ import re
 import shlex
 import shutil
 import tempfile
-import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -1114,14 +1113,25 @@ def probe_huggingface_hub(
     last_error = ""
     for url in (f"{ep}/api/models", f"{ep}/"):
         try:
-            req = urllib.request.Request(
+            # Through the Host, not urllib -- a urllib request from a cell is
+            # subject to neither the egress allowlist nor the SSRF guard. A
+            # reachability probe is exactly what `method="HEAD"` is for: it
+            # makes one request, does not follow redirects, and reports the
+            # status without downloading a model index.
+            import host
+
+            probe = host.web_fetch(
                 url,
-                method="GET",
-                headers={"User-Agent": "openai4s-catalyst-sar-screening"},
+                method="HEAD",
+                timeout=timeout,
+                user_agent="openai4s-catalyst-sar-screening",
             )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                code = getattr(resp, "status", 200) or 200
-            if int(code) < 500:
+            if probe.get("error"):
+                raise RuntimeError(probe["error"])
+            code = int(probe.get("status") or 0)
+            # 0 means no status at all (connection refused, DNS failure), which
+            # is a failed probe rather than a reachable endpoint.
+            if code and int(code) < 500:
                 return {
                     "ok": True,
                     "endpoint": ep,

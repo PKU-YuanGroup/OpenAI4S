@@ -60,6 +60,14 @@ def test_builtin_tools_are_named_classes_with_local_execute_behavior():
         assert type(tool).execute is not Tool.execute
         with pytest.raises(FrozenInstanceError):
             tool.name = "renamed"
+    # Each module-level alias must BE the registered singleton, not merely have
+    # the same class. This was `TOOL_TYPES[5:11]`, a positional slice: it held
+    # only while nothing was inserted before index 5, so adding a tool broke it
+    # for a reason unrelated to what it checks, and the fix was to bump the
+    # numbers -- which is a test nobody reads before editing. Identity is the
+    # property that actually matters here: two instances of the same class
+    # would satisfy the old assertion while the alias pointed at a tool the
+    # registry has never seen, and therefore at one with no permission wiring.
     compatibility_aliases = (
         edit_file,
         env_list,
@@ -68,8 +76,11 @@ def test_builtin_tools_are_named_classes_with_local_execute_behavior():
         web_search,
         web_fetch,
     )
-    expected_types = TOOL_TYPES[5:11]
-    assert tuple(type(tool) for tool in compatibility_aliases) == expected_types
+    for alias in compatibility_aliases:
+        assert alias is get_tool(
+            alias.name
+        ), f"the {alias.name!r} alias is not the registered instance"
+        assert type(alias) in TOOL_TYPES
 
 
 def test_builtin_tool_modules_do_not_construct_eager_singletons():
@@ -121,6 +132,11 @@ def test_control_tool_classes_own_their_security_policy():
         "env_setup",
         "web_search",
         "web_fetch",
+        # Approval-gated for the same reason as web_fetch -- the user is asked
+        # which host is being contacted -- and additionally because it writes.
+        # The write is already fenced to the session workspace, so the question
+        # put to the user is the network one.
+        "web_download",
         "science_search",
         "save_artifact",
         "restore_artifact_version",

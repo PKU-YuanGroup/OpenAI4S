@@ -19,6 +19,60 @@ from pathlib import Path
 from typing import Any, Callable
 
 from openai4s.bash_capability import CAPABILITY_VERSION, command_digest
+from openai4s.execution.process_group import stop_process_group
+
+#: What the caller is shown, and now also what is retained. The tail is kept:
+#: for a command that failed, the end is what explains it.
+_STDOUT_BUDGET_CHARS = 30_000
+_STDERR_BUDGET_CHARS = 8_000
+
+
+class _BoundedTail:
+    """Retain the last N characters of a stream as it arrives.
+
+    Draining and *retaining* are two different requirements. The pipes must be
+    read continuously or the child blocks on a full one; only the tail needs
+    keeping.
+    """
+
+    __slots__ = ("_budget", "_parts", "_length", "truncated")
+
+    def __init__(self, budget: int) -> None:
+        self._budget = budget
+        self._parts: deque[str] = deque()
+        self._length = 0
+        self.truncated = False
+
+    def feed(self, text: str) -> None:
+        if not text:
+            return
+        self._parts.append(text)
+        self._length += len(text)
+        while self._length > self._budget and len(self._parts) > 1:
+            self._length -= len(self._parts.popleft())
+            self.truncated = True
+        if self._length > self._budget:
+            head = self._parts.popleft()
+            self._parts.append(head[-self._budget :])
+            self._length = self._budget
+            self.truncated = True
+
+    def value(self) -> str:
+        return "".join(self._parts)
+
+
+def _drain(stream: Any, sink: "_BoundedTail") -> None:
+    if stream is None:
+        return
+    try:
+        while True:
+            chunk = stream.read(8192)
+            if not chunk:
+                return
+            sink.feed(chunk)
+    except (OSError, ValueError):
+        return
+
 
 HostCall = Callable[[str, list], Any]
 _MAX_LOCAL_TOKEN_TTL_MS = 60_000
@@ -331,26 +385,58 @@ class BashExecutor:
         timeout_error: RuntimeError | None = None
         launch_error: RuntimeError | None = None
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 command,
                 shell=True,
                 cwd=str(cwd),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout_s,
+                # Its own group, so the deadline can reach what the shell
+                # started. `subprocess.run(timeout=)` kills the shell alone:
+                # `bash -c "python train.py"` lost the shell and kept the
+                # python, which is the process actually holding the resources.
+                start_new_session=True,
             )
-            exit_code = int(proc.returncode)
-            stdout = proc.stdout or ""
-            stderr = proc.stderr or ""
-        except subprocess.TimeoutExpired as exc:
-            status = "timed_out"
-            stdout = self._coerce_output(exc.stdout)
-            stderr = self._coerce_output(exc.stderr)
-            timeout_error = RuntimeError(f"bash: timed out after {timeout_s:g}s")
         except (OSError, ValueError) as exc:
             status = "launch_failed"
             stderr = str(exc)
             launch_error = RuntimeError(f"bash: failed to launch command: {exc}")
+        else:
+            try:
+                pgid: int | None = os.getpgid(proc.pid)
+            except (OSError, AttributeError):
+                pgid = None
+            # Drained as it is produced. `capture_output=True` held the whole
+            # of both streams in worker memory before the slices below ever
+            # ran, so the cap described what the caller saw and not what was
+            # allocated.
+            out_sink = _BoundedTail(_STDOUT_BUDGET_CHARS)
+            err_sink = _BoundedTail(_STDERR_BUDGET_CHARS)
+            drains = [
+                threading.Thread(
+                    target=_drain, args=(proc.stdout, out_sink), daemon=True
+                ),
+                threading.Thread(
+                    target=_drain, args=(proc.stderr, err_sink), daemon=True
+                ),
+            ]
+            for thread in drains:
+                thread.start()
+            try:
+                proc.wait(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                status = "timed_out"
+                stop_process_group(proc, pgid)
+                timeout_error = RuntimeError(f"bash: timed out after {timeout_s:g}s")
+            for thread in drains:
+                # The pipes are closed once the group is gone, so this is a
+                # join on threads that are already finishing, not a wait on
+                # the command.
+                thread.join(timeout=5.0)
+            exit_code = int(proc.returncode if proc.returncode is not None else -1)
+            stdout = out_sink.value()
+            stderr = err_sink.value()
         duration_ms = int((time.monotonic() - started) * 1000)
         after, after_truncated = _workspace_snapshot(workspace)
         result_spec = {

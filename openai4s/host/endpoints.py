@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import socket
 import threading
+import urllib.parse as urllib_parse
 from typing import Callable, Protocol
 
 
@@ -68,13 +69,70 @@ def endpoint_fingerprint(url, start, stop, live, skill, credential) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def probe_ready(url: str, live_route: str, timeout: float = 2.0) -> bool:
-    """Return whether the endpoint's live route responds with any 2xx status."""
+def _is_own_managed_endpoint(url: str, own_port: int | None) -> bool:
+    """True only for loopback on the port this daemon allocated for it.
+
+    Deliberately not "starts with http://127.0.0.1": an agent may register any
+    URL, and `127.0.0.1:<some other service>` is exactly the local port scan
+    the guard exists to stop.
+    """
+    if not own_port:
+        return False
+    try:
+        parts = urllib_parse.urlsplit(url)
+    except ValueError:
+        return False
+    if parts.hostname not in ("127.0.0.1", "::1", "localhost"):
+        return False
+    return parts.port == int(own_port)
+
+
+def probe_ready(
+    url: str, live_route: str, timeout: float = 2.0, own_port: int | None = None
+) -> bool:
+    """Return whether the endpoint's live route responds with any 2xx status.
+
+    The URL is agent-supplied: `register` takes `spec["url"]` and only falls
+    back to `http://127.0.0.1:<port>` when none was given. So this used to be a
+    blind SSRF oracle — a cell could register an endpoint pointing at
+    `169.254.169.254` or any host on the daemon's network, call probe, and read
+    existence off the boolean. It returns no body, which is why "oracle"
+    rather than "exfiltration", but a port scanner is a real capability and
+    cloud metadata endpoints are a real target.
+
+    It now goes through the same two guards every other outbound request in
+    this codebase does: the egress allowlist first (so a blocked domain
+    short-circuits with no DNS at all), then the SSRF check on the resolved
+    address. A refusal is reported as "not ready" rather than raised, because
+    that is what the caller asked -- whether the endpoint is live -- and an
+    endpoint the daemon may not reach is not live to it.
+
+    `own_port` is the exception that keeps the feature working. A managed local
+    endpoint *is* a loopback service on a port this daemon allocated, so the
+    SSRF guard would refuse the normal case along with the attack. Guarding
+    everything and then exempting the one address the daemon chose itself is
+    narrower than trusting whatever URL was registered.
+    """
     import urllib.error
+    import urllib.parse
     import urllib.request
 
     route = live_route or "/health"
     probe_url = url.rstrip("/") + "/" + route.lstrip("/")
+
+    if not _is_own_managed_endpoint(url, own_port):
+        # Anything that is not this daemon's own loopback service goes through
+        # the two guards every other outbound request here uses: the egress
+        # allowlist first, so a blocked domain short-circuits with no DNS, then
+        # the SSRF check on the resolved address.
+        from openai4s import egress
+        from openai4s.webtools import guard_url
+
+        try:
+            egress.check_url(probe_url)
+            guard_url(probe_url)
+        except Exception:  # noqa: BLE001 - a refusal is "not ready", not a raise
+            return False
     try:
         with urllib.request.urlopen(probe_url, timeout=timeout) as response:
             return 200 <= getattr(response, "status", response.getcode()) < 300
@@ -90,7 +148,7 @@ class EndpointService:
         store: EndpointStore,
         *,
         allocate_port: Callable[[], int] = free_port,
-        readiness_probe: Callable[[str, str], bool] = probe_ready,
+        readiness_probe: Callable[..., bool] = probe_ready,
         fingerprint: Callable[..., str] = endpoint_fingerprint,
     ) -> None:
         self.store = store
@@ -203,6 +261,7 @@ class EndpointService:
             ready = self.readiness_probe(
                 url,
                 endpoint.get("live_route") or "/health",
+                own_port=endpoint.get("port"),
             )
         status = "live" if ready else "starting"
         self.store.upsert_endpoint(name, status=status)

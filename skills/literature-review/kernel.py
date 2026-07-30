@@ -11,15 +11,15 @@ host runtime happens inside a function body.
 
 Ported verbatim from openai4s's bundled `literature-review/kernel.py`
 (origin=openai4s) — see /Users/.../.openai4s/skills/literature-review/.
-Only stdlib (urllib/re/json/time), so it runs unchanged in the analysis kernel.
+Network access goes through `host.web_fetch`, never `urllib.request`: a
+request made from inside a cell with urllib is subject to neither the egress
+allowlist nor the SSRF guard. `urllib.parse` is still used, for quoting only.
 """
 
 import json
 import re
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 
 DOI_PATTERN = r"10\.\d{4,9}/[^\s\"'`\]\}—–&|]+"
 
@@ -52,15 +52,23 @@ def litrev_get(url: str, timeout: float = 15) -> dict | None:
     ua = "ClaudeScience-literature-review/1.0" + (f" (mailto:{c})" if c else "")
     ua = ua.encode("ascii", "ignore").decode("ascii")
     for attempt in (0, 1):
-        req = urllib.request.Request(url, headers={"User-Agent": ua})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt == 0:
-                time.sleep(2)
-                continue
-            return None
+            # Through the Host, not urllib. A request made with urllib from
+            # inside a cell is subject to neither the egress allowlist nor the
+            # SSRF guard, so this skill's traffic used to go around the fence
+            # the product builds for exactly this. `user_agent` exists on the
+            # Host call so the polite-pool identity below survives the move.
+            response = lr_sdk().web_fetch(
+                url, format="json", timeout=timeout, user_agent=ua
+            )
+            if response.get("error"):
+                # 429 arrives as a soft error string; the one retry is still
+                # worth taking before giving up on a rate limit.
+                if "429" in str(response["error"]) and attempt == 0:
+                    time.sleep(2)
+                    continue
+                return None
+            return json.loads(response.get("content") or "null")
         except Exception:
             return None
     return None
@@ -92,21 +100,25 @@ def litrev_head(url: str, timeout: float = 10) -> int | None:
         .decode("ascii")
     )
 
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):
-            return None
-
-    opener = urllib.request.build_opener(NoRedirect)
     for attempt in (0, 1):
-        req = urllib.request.Request(url, headers={"User-Agent": ua}, method="HEAD")
         try:
-            with opener.open(req, timeout=timeout) as r:
-                return r.status
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt == 0:
+            # `host.web_fetch(method="HEAD")` deliberately does not follow
+            # redirects, which is the whole point here: doi.org's own 302 means
+            # the DOI is registered, while the publisher's status behind it may
+            # be a 403 paywall for a DOI that certainly exists.
+            probe = lr_sdk().web_fetch(
+                url, method="HEAD", timeout=timeout, user_agent=ua
+            )
+            if probe.get("error"):
+                return None
+            status = int(probe.get("status") or 0)
+            if status == 429 and attempt == 0:
                 time.sleep(2)
                 continue
-            return e.code
+            # 0 means no status could be obtained at all -- reported as None,
+            # the same "unknown" this function has always returned for a dead
+            # connection, and distinct from a 404.
+            return status or None
         except Exception:
             return None
     return None

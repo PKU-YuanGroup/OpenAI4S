@@ -119,13 +119,24 @@ def test_self_awareness_query(session):
     schema = _emit(kernel, "host.query.schema()")
     assert "frames" in schema
 
-    rows = _emit(
-        kernel,
-        'host.query("SELECT name FROM sqlite_master '
-        "WHERE type='table' ORDER BY name\", limit=100)",
+    # Schema discovery goes through the sanctioned accessor, which lists
+    # tables *and* their columns and honours the denylist.
+    assert {"frames", "execution_log", "artifacts"} <= set(schema)
+
+    # The raw catalogue is not a second route to it. The denylist protects the
+    # contents of `permission_rules`, `settings`, `host_call_log` and two dozen
+    # others; `sqlite_master` handed back their full DDL and enumerated every
+    # one of them by name, which is strictly more than `schema()` will say and
+    # was reachable from the one surface the model actually has.
+    kernel.execute(
+        "def _q_catalogue():\n"
+        "    try:\n"
+        "        host.query('SELECT name FROM sqlite_master', limit=1)\n"
+        "        return 'ALLOWED'\n"
+        "    except Exception as e:\n"
+        "        return type(e).__name__\n"
     )
-    tbls = {r["name"] for r in rows}
-    assert {"frames", "execution_log", "artifacts"} <= tbls
+    assert _emit(kernel, "_q_catalogue()") != "ALLOWED"
 
     kernel.execute(
         "def _q_denied():\n"

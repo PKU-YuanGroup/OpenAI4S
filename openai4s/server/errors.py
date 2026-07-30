@@ -62,9 +62,48 @@ def gateway_error_payload(error: GatewayError) -> dict:
     return payload
 
 
+def public_failure(payload: object, status: int, request_id: str | None) -> object:
+    """The body an error response actually carries.
+
+    Enrichment is deliberately ADDITIVE: ``error`` keeps the human message it
+    always had, so a consumer reading ``j.error`` -- including this repo's own
+    ``app.js`` -- is unaffected. Success bodies are returned untouched, and so
+    is a 2xx body that merely happens to contain an ``error`` key: a job result
+    describing a prior failure is data, not an error envelope.
+
+    This lives here rather than inline in ``Handler._json`` because the shape
+    had grown a second definition, which is precisely what
+    ``gateway_error_payload`` above warns about -- arriving by a different
+    route than a copied literal. ``response_capture`` observes the body
+    *before* the dispatcher enriches it, so the frozen artifacts recorded a
+    body the server does not send: ``request_id`` appears nowhere in either
+    ``docs/response-schemas.json`` or ``docs/response-contract.json``. One
+    callable both the dispatcher and the capture can reach is what lets those
+    two stop disagreeing.
+    """
+    if status < 400 or not isinstance(payload, dict) or "error" not in payload:
+        return payload
+    return {
+        **payload,
+        "code": payload.get("code") or error_code_for(status),
+        # Never clobber a value the route deliberately set. `code` has always
+        # deferred this way; `status` did not, and the difference was invisible
+        # because the contract capture observed bodies *before* enrichment.
+        # `POST /frames/<id>/recovery/actions/restart_fresh` returns its whole
+        # domain result with HTTP 409 when the action fails, and that result
+        # carries its own `status` ("failed", "partial", ...) -- which the
+        # envelope silently replaced with the integer 409. The HTTP status is
+        # never lost by deferring: it is on the status line, and `code` names
+        # it. A destroyed domain field has no such second copy.
+        "status": payload.get("status", status),
+        "request_id": request_id or None,
+    }
+
+
 __all__ = [
     "ERROR_CODES",
     "GatewayError",
     "error_code_for",
     "gateway_error_payload",
+    "public_failure",
 ]

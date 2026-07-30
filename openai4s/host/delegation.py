@@ -46,6 +46,31 @@ Protocol:
 }
 
 
+def _with_persona(request: Any, persona: str) -> Any:
+    """Prepend the specialist's persona to every request shape `delegate` takes.
+
+    `host.delegate` accepts a string, a dict, or a LIST of either -- the list
+    is fan-out, several children from one call. Only the first two shapes were
+    handled, so a fan-out to a named specialist silently produced generic
+    agents: the profile's system prompt was looked up, found, and then dropped
+    on the floor. The caller saw a successful delegation to `bioinfo` whose
+    children had never been told they were `bioinfo`.
+
+    Recursive rather than a third branch, because a list of dicts is a shape
+    the SDK allows and two flat branches would have missed it the same way.
+    """
+    if isinstance(request, str):
+        return persona + request
+    if isinstance(request, dict) and "request" in request:
+        return {
+            **request,
+            "request": _with_persona(request.get("request", ""), persona),
+        }
+    if isinstance(request, list):
+        return [_with_persona(item, persona) for item in request]
+    return request
+
+
 class DelegationService:
     """Inject specialist context and expose the session steering surface."""
 
@@ -123,16 +148,7 @@ class DelegationService:
                     f"You are acting as the specialist **{name}**.\n"
                     f"{system_prompt}\n\n"
                 )
-                if isinstance(request, str):
-                    spec = {**spec, "request": persona + request}
-                elif isinstance(request, dict) and "request" in request:
-                    spec = {
-                        **spec,
-                        "request": {
-                            **request,
-                            "request": persona + str(request.get("request", "")),
-                        },
-                    }
+                spec = {**spec, "request": _with_persona(request, persona)}
         return delegate(spec)
 
     def children(self) -> Any:

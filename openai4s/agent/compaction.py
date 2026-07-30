@@ -67,6 +67,13 @@ class ContextEstimate:
     tool_results: int = 0
     artifact_refs: int = 0
     wire_state: int = 0
+    #: The system prompt, kept apart from conversation text because the two
+    #: answer to different remedies. Standing context -- memory, skills,
+    #: specialists, connectors, environments -- is rebuilt from scratch every
+    #: turn and compaction never touches it. Counted inside ``text``, a large
+    #: system prompt read as "your conversation is long", and the user reached
+    #: for the one tool that cannot help.
+    system_prompt: int = 0
 
     @property
     def total(self) -> int:
@@ -78,6 +85,7 @@ class ContextEstimate:
             + self.tool_results
             + self.artifact_refs
             + self.wire_state
+            + self.system_prompt
         )
 
     def as_dict(self) -> dict[str, int]:
@@ -261,12 +269,16 @@ def estimate_context(
 ) -> ContextEstimate:
     """Estimate context by text/image/tool-call/provider-state components."""
     text = images = tool_calls = tool_results = artifact_refs = wire_state = 0
+    system_prompt = 0
     for message in messages:
         content_text, content_images = _content_estimate(message.get("content"))
         # Eight framing tokens preserves the old API's conservative per-message
         # overhead and is accounted as text rather than a fifth hidden bucket.
-        if message.get("role") == "tool":
+        role = message.get("role")
+        if role == "tool":
             tool_results += content_text + 8
+        elif role == "system":
+            system_prompt += content_text + 8
         else:
             text += content_text + 8
         images += content_images
@@ -286,6 +298,7 @@ def estimate_context(
         tool_results=tool_results,
         artifact_refs=artifact_refs,
         wire_state=wire_state,
+        system_prompt=system_prompt,
     )
 
 

@@ -32,17 +32,23 @@ not leave the process through this path at all.
 from __future__ import annotations
 
 import contextvars
+import functools
 import hashlib
 import json
 import os
 import sys
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 # The id for the unit of work currently in flight. A ContextVar rather than a
-# thread-local because the gateway hands requests to threads *and* the value has
-# to survive into anything those threads schedule.
+# thread-local because within one thread it survives into everything that thread
+# calls without any of it taking an id parameter.
+#
+# It does *not* cross a thread by itself -- a new `threading.Thread` starts with
+# an empty context -- and the comment here used to claim it did. See
+# `carry_context` below, which is what actually carries it, and which the
+# request-serving spawn sites go through.
 _correlation_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "openai4s_correlation_id", default=""
 )
@@ -79,6 +85,34 @@ def correlation_id() -> str:
 
 def set_correlation_id(value: str) -> contextvars.Token:
     return _correlation_id.set(str(value or ""))
+
+
+def carry_context(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap ``fn`` so a thread running it sees the *caller's* context.
+
+    The comment above ``_correlation_id`` used to say a ContextVar was chosen
+    "because the gateway hands requests to threads *and* the value has to
+    survive into anything those threads schedule". That is precisely what a
+    ContextVar does not do: a new ``threading.Thread`` starts with an empty
+    context, so the id set while serving the request was gone the moment the
+    work moved to a job thread -- which is where the slow, failure-prone work
+    happens and where an id is worth having. Every structured log line emitted
+    from a turn, a plan or a REPL job carried an empty ``request_id``, so the
+    id a user quotes from a failed request matched nothing in the log for the
+    work that actually failed.
+
+    Capture happens here, on the spawning thread, at spawn time. Each call
+    copies a fresh context, so two jobs started from two requests never share
+    one and neither can reset the other's.
+
+    Deliberately *not* applied to daemon-lifetime threads -- the idle sweeper,
+    the share sweeper, the WebSocket drain, the MCP readers. Those are not
+    serving the request that happened to start them, and stamping every later
+    sweep with that request's id would be a false attribution, which is worse
+    than a missing one because it gets believed.
+    """
+    context = contextvars.copy_context()
+    return functools.partial(context.run, fn)
 
 
 def reset_correlation_id(token: contextvars.Token) -> None:

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from openai4s.artifact_restore import ArtifactRestoreService
+from openai4s.artifact_restore import ArtifactRestoreService, trusted_snapshot_roots
 from openai4s.execution import CaptureResult
 
 _JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
@@ -309,7 +309,7 @@ class ArtifactManager:
             restored = ArtifactRestoreService(
                 store=self.store,
                 primary_snapshot_dir=self.versions_dir(),
-                trusted_snapshot_dirs=(self.data_dir / "artifacts",),
+                trusted_snapshot_dirs=trusted_snapshot_roots(self.data_dir),
                 resolve_live_path=self.restore_live_path,
             ).restore(
                 artifact=artifact,
@@ -452,6 +452,67 @@ class ArtifactManager:
         )
         return {"ok": True, "artifact_id": artifact_id, "filename": filename}
 
+    @staticmethod
+    def _upload_bytes(payload: dict) -> bytes:
+        """The exact bytes an upload carries, or a refusal.
+
+        Two ways this used to rewrite scientific data without saying so.
+
+        `b64decode` was called without `validate=True`, and in that mode it
+        *silently discards* characters outside the base64 alphabet -- so a
+        payload corrupted in transit decodes to different bytes and raises
+        nothing. The artifact then carries a checksum computed over the wrong
+        content, which is worse than a missing checksum because it is believed.
+
+        And when decoding did raise, the fallback stored
+        `encoded.encode("utf-8")`: the literal base64 *text* became the file.
+        Upload a `.npy` with one character lost and the artifact contains the
+        base64 string, versioned, hashed and indistinguishable from data.
+
+        A caller that wants to upload text says so with `content_text`. A
+        caller that sends base64 gets base64 or an error. The three fields are
+        mutually exclusive because "which one did you mean" has no safe
+        default.
+        """
+        fields = [
+            name
+            for name in ("content_base64", "content", "content_text")
+            if payload.get(name) not in (None, "")
+        ]
+        if len(fields) > 1:
+            raise ArtifactOperationError(
+                400,
+                "upload carries "
+                + " and ".join(sorted(fields))
+                + "; supply exactly one, because which one is authoritative "
+                "cannot be guessed",
+            )
+        if not fields:
+            return b""
+
+        field = fields[0]
+        value = payload[field]
+        if field == "content_text":
+            if not isinstance(value, str):
+                raise ArtifactOperationError(400, "content_text must be a string")
+            return value.encode("utf-8")
+        if not isinstance(value, str):
+            raise ArtifactOperationError(400, f"{field} must be a base64 string")
+        # Whitespace is transport formatting -- plenty of tools wrap base64 at
+        # 76 columns -- so it is stripped rather than rejected. Anything else
+        # outside the alphabet is corruption, and `validate=True` is what makes
+        # the difference visible: without it those characters are dropped and
+        # the payload decodes to *different bytes* with no error at all.
+        compact = re.sub(r"\s+", "", value)
+        try:
+            return base64.b64decode(compact, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ArtifactOperationError(
+                400,
+                f"{field} is not valid base64 ({error}); "
+                "send content_text to upload text",
+            ) from error
+
     def upload(
         self,
         payload: dict,
@@ -460,13 +521,9 @@ class ArtifactManager:
     ) -> dict:
         """Decode and register one JSON/base64 upload as a versioned artifact."""
         filename = payload.get("filename") or f"upload-{uuid.uuid4().hex[:8]}"
-        encoded = payload.get("content_base64") or payload.get("content") or ""
         frame_id = payload.get("frame_id")
         project_id = payload.get("project_id") or "default"
-        try:
-            raw = base64.b64decode(encoded) if encoded else b""
-        except (binascii.Error, ValueError):
-            raw = encoded.encode("utf-8") if isinstance(encoded, str) else b""
+        raw = self._upload_bytes(payload)
 
         workspace = (
             self.workspace_for(frame_id) if frame_id else self.data_dir / "uploads"
@@ -756,9 +813,38 @@ class ArtifactManager:
         # `language` and the session's frame id were already in scope here and
         # simply were not passed on, which is why every artifact was stamped
         # with the daemon's Python environment regardless of what ran.
+        # Drained on EVERY cell, not only on cells that wrote files. The
+        # buffer's own docstring says "drained per cell", and it was not: a
+        # cell that ran a remote GPU job and produced no local output left its
+        # entry sitting there, and the next cell that happened to write a file
+        # was stamped with it. A fold in cell 3 became the provenance of a
+        # figure from cell 7 — provenance that is wrong rather than absent,
+        # which is the failure this subsystem exists to prevent.
+        #
+        # `capture_environment` is what performs the drain, so it is called
+        # either way; its result is only *kept* when there is an artifact to
+        # attach it to. A remote run whose cell produced nothing has no
+        # artifact to describe, and discarding it is the honest outcome.
+        # Two different concerns, separated because they want opposite answers
+        # on a cell that wrote nothing.
+        #
+        # The DRAIN must happen every cell. The buffer's own docstring says
+        # "drained per cell" and it was not: the whole block was gated on the
+        # cell having written files, so a cell that ran a remote GPU job and
+        # produced no local output left its entry sitting there, and the next
+        # cell that happened to write something was stamped with it. A fold in
+        # cell 3 became the provenance of a figure from cell 7 — provenance
+        # that is wrong rather than absent.
+        #
+        # The environment FREEZE should not happen on such a cell: it lists
+        # packages, and there is no artifact for it to describe. Skipping it
+        # was the sound half of the old behaviour and is kept.
+        remote_entries = (
+            drain_remote_provenance() if drain_remote_provenance is not None else None
+        )
         env_snapshot_id = (
             self.capture_environment(
-                drain_remote_provenance,
+                lambda: remote_entries,
                 root_frame_id=getattr(session, "root_frame_id", None),
                 language=language,
             )

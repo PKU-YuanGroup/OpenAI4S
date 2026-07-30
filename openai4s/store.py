@@ -513,7 +513,7 @@ CREATE TABLE IF NOT EXISTS plans (
     rationale     TEXT,
     confidence    TEXT,               -- 'high'|'medium'|'low' (or a 0..1 string)
     steps         TEXT NOT NULL,      -- JSON [{id,title,detail,deliverables:[...]}]
-    status        TEXT NOT NULL DEFAULT 'draft',   -- draft|executing|completed|failed|discarded
+    status        TEXT NOT NULL DEFAULT 'draft',   -- see storage/plans.py PLAN_STATUSES
     step_status   TEXT,               -- JSON {step_id: {status, note, updated_at}}
     artifact_id   TEXT,               -- the plan_*.json artifact (so revises re-version it)
     created_at    INTEGER NOT NULL,
@@ -626,6 +626,17 @@ QUERY_DENYLIST = frozenset(
         "checkpoint_state_snapshots",
         "snapshot_operations",
         "recovery_journal",
+        # SQLite's own catalogue. The denylist above protects the *contents* of
+        # these tables and this one handed back their entire definition:
+        # `SELECT sql FROM sqlite_master WHERE name='permission_rules'` returned
+        # the full DDL of a denied table, and `SELECT name FROM sqlite_master`
+        # enumerated every one of them by name. `schema()` has always excluded
+        # the `sqlite_` prefix; `query()` never did, so the one surface actually
+        # exposed to the model was the one that leaked.
+        "sqlite_master",
+        "sqlite_schema",
+        "sqlite_temp_master",
+        "sqlite_temp_schema",
     }
 )
 
@@ -932,6 +943,7 @@ class Store:
                         self._apply_env_snapshot_provenance,
                     ),
                     9: ("compute_job_owner", self._apply_compute_job_owner),
+                    10: ("frame_model_binding", self._apply_frame_model_binding),
                 },
             )
             if report["migrated"]:
@@ -1067,6 +1079,41 @@ class Store:
                 raise MigrationError(
                     f"compute_jobs.pgid could not be added: {e}"
                 ) from e
+
+    def _apply_frame_model_binding(self, conn: sqlite3.Connection) -> None:
+        """Version 10: record which model configuration a session actually used.
+
+        A frame stored a model *string*. That answers "which model name" and
+        not "which configuration", and the two differ in exactly the case that
+        matters: two profiles can name the same model against different
+        providers or endpoints, and editing a profile rewrote it in place, so a
+        replayed session reported whatever the profile happened to say today.
+        D2's rule is that a session binds `profile_id + revision` and never
+        silently follows the latest.
+
+        Historical rows keep NULL for both, which reads as *unbound* -- not as
+        "used the default". That distinction is the point: an unbound session
+        stays fully readable, and only sending a new message asks the user to
+        rebind. Backfill happens at read time and only on a unique
+        `(provider, endpoint, model)` match, because an ambiguous one is a
+        guess and a guess here is the thing being removed.
+
+        Runs inside the transaction owned by ``run_migrations``.
+        """
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(frames)").fetchall()}
+        for column, decl in (
+            ("model_profile_id", "TEXT"),
+            ("model_profile_revision", "INTEGER"),
+        ):
+            if column in have:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE frames ADD COLUMN {column} {decl}")
+            except sqlite3.OperationalError as e:
+                if not _is_duplicate_column(e):
+                    raise MigrationError(
+                        f"frames.{column} could not be added: {e}"
+                    ) from e
 
     def _apply_compute_job_owner(self, conn: sqlite3.Connection) -> None:
         """Version 9: record which session/workspace owns each compute job.
@@ -1498,6 +1545,12 @@ class Store:
             fallback_project=fallback_project,
         )
 
+    def unpin_model(self, frame_id: str) -> None:
+        self._frames.unpin_model(frame_id)
+
+    def release_model_binding(self, profile_id: str) -> int:
+        return self._frames.release_model_binding(profile_id)
+
     def update_frame(self, frame_id: str, **fields: Any) -> None:
         self._frames.update_frame(frame_id, **fields)
 
@@ -1578,12 +1631,16 @@ class Store:
         branch_id: str | None = None,
         start: int = 0,
         limit: int | None = 300,
+        before_seq: int | None = None,
+        newest_first: bool = False,
     ) -> list[dict]:
         return self._frames.list_messages(
             root_frame_id,
             branch_id=branch_id,
             start=start,
             limit=limit,
+            before_seq=before_seq,
+            newest_first=newest_first,
         )
 
     def list_message_boundaries(
@@ -1608,6 +1665,8 @@ class Store:
         branch_id: str | None = None,
         start: int = 0,
         limit: int | None = 300,
+        before_seq: int | None = None,
+        newest_first: bool = False,
         boundaries: bool = False,
     ) -> list[dict]:
         """Project one branch's visible conversation without deleting rows."""
@@ -1630,6 +1689,30 @@ class Store:
             cursor_key="message_cursor",
             normalize_cursor=count_cursor,
         )
+        if newest_first or before_seq is not None:
+            # Latest-first, walking backwards by `seq`. Opening a 640-message
+            # session used to return messages 0-299 -- the *oldest* page, with
+            # the newest 340 absent -- because the only order was ascending and
+            # the only bound was a limit. A reader arriving at a long session
+            # wants its end.
+            #
+            # Honest about what this does NOT do: the branch projection above
+            # is whole-history by construction (it walks branch cursors to
+            # decide what is visible at all), so this pages the projected list
+            # rather than pushing a cursor into SQL. The user-visible defect --
+            # seeing the wrong end of the conversation -- is fixed; the read is
+            # still O(branch). Making the projection incremental is a larger
+            # change and is not claimed here.
+            ordered = sorted(
+                projected, key=lambda m: int(m.get("seq") or 0), reverse=True
+            )
+            if before_seq is not None:
+                ordered = [
+                    m for m in ordered if int(m.get("seq") or 0) < int(before_seq)
+                ]
+            if limit is None:
+                return ordered
+            return ordered[: max(0, int(limit))]
         start = max(0, int(start))
         if limit is None:
             return projected[start:]
@@ -1642,12 +1725,16 @@ class Store:
         branch_id: str | None = None,
         start: int = 0,
         limit: int | None = 300,
+        before_seq: int | None = None,
+        newest_first: bool = False,
     ) -> list[dict]:
         return self.list_branch_messages(
             root_frame_id,
             branch_id=branch_id,
             start=start,
             limit=limit,
+            before_seq=before_seq,
+            newest_first=newest_first,
             boundaries=True,
         )
 
@@ -2313,6 +2400,10 @@ class Store:
     def rename_artifact(self, artifact_id: str, filename: str) -> None:
         self._artifacts.rename_artifact(artifact_id, filename)
 
+    def artifact_by_unique_filename(self, filename: str) -> dict | None:
+        """A filename resolves only when it names exactly one artifact."""
+        return self._artifacts.artifact_by_unique_filename(filename)
+
     def artifact_by_filename(
         self, filename: str, root_frame_id: str | None = None, *, strict: bool = False
     ) -> dict | None:
@@ -2436,6 +2527,31 @@ class Store:
             snapshot_path=snapshot_path,
             size_bytes=size_bytes,
             checksum=checksum,
+            frame_id=frame_id,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
+        )
+
+    def materialise_artifact_version(
+        self,
+        *,
+        source_version_id: str,
+        artifact_id: str,
+        version_id: str,
+        filename: str,
+        path: str,
+        snapshot_path: str,
+        frame_id: str | None,
+        root_frame_id: str,
+        project_id: str,
+    ) -> dict:
+        return self._artifacts.materialise_artifact_version(
+            source_version_id=source_version_id,
+            artifact_id=artifact_id,
+            version_id=version_id,
+            filename=filename,
+            path=path,
+            snapshot_path=snapshot_path,
             frame_id=frame_id,
             root_frame_id=root_frame_id,
             project_id=project_id,
@@ -2778,6 +2894,10 @@ class Store:
         """The most recent (non-discarded) plan for a frame, else the newest."""
         return self._plans.get_by_frame(frame_id)
 
+    def pause_orphaned_executing_plans(self) -> int:
+        """Startup reconciliation: no turn survives the process that ran it."""
+        return self._plans.pause_orphaned_executing()
+
     def list_plans(self, frame_id: str, *, limit: int = 50) -> list[dict]:
         return self._plans.list_for_frame(frame_id, limit=limit)
 
@@ -2807,8 +2927,17 @@ class Store:
     def set_plan_step_status(
         self, plan_id: str, step_id: str, status: str, note: str | None = None
     ) -> dict | None:
-        """Merge one step's status into the plan's step_status JSON. Returns the
-        updated plan (with steps[] status folded in)."""
+        """Merge one step's status into the plan's ``step_status`` JSON.
+
+        Returns the updated plan **row**, not a folded view: ``steps[]`` still
+        carries whatever the plan was created with, and each step's live status
+        lives in the separate ``step_status`` map keyed by step id. The folding
+        is done by ``server/plans.py::public_plan`` on the way to the client.
+
+        This said "with steps[] status folded in", which is a description of a
+        different function. A caller that believed it would read `steps[i]
+        ["status"]`, find nothing, and conclude no step had progressed.
+        """
         return self._plans.set_step_status(plan_id, step_id, status, note)
 
     def delete_plans_for_frame(self, frame_id: str) -> None:
@@ -3068,6 +3197,11 @@ class Store:
             unrestricted=unrestricted,
         )
 
+    def update_agent(self, name: str, **fields: Any) -> dict | None:
+        """Partial update: only the supplied columns change. Returns None if
+        the specialist does not exist."""
+        return self._agents.update(name, **fields)
+
     def delete_agent(self, name: str) -> None:
         self._agents.delete(name)
 
@@ -3126,6 +3260,12 @@ class Store:
 
     def list_compute_jobs(self, limit: int = 200) -> list[dict]:
         return self._compute_jobs.list(limit)
+
+    def compute_jobs_for_owner(
+        self, owner_key: str | None, limit: int = 200
+    ) -> list[dict]:
+        """One owner's remote jobs, live and finished. Never installation-wide."""
+        return self._compute_jobs.for_owner(owner_key, limit)
 
     def append_compute_job_event(self, job_id: str, kind: str, payload=None) -> int:
         return self._compute_jobs.append_event(job_id, kind, payload)

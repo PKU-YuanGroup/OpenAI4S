@@ -102,7 +102,14 @@ def test_list_orders_and_preserves_json_decoding_edges(tmp_path):
     assert [agent["name"] for agent in agents] == ["A_AGENT", "Z_AGENT"]
     assert agents[0]["skill_names"] is False
     assert agents[0]["connectors"] is None
-    assert agents[0]["unrestricted"] == 2
+    # `2` is not a state this column has — it is written here to prove the
+    # decode is a decode and not a passthrough. It used to assert `== 2`, which
+    # pinned the raw SQLite int as the contract; that is what reached
+    # `child_execution_policy`'s `type(x) is not bool` check and made every
+    # stored specialist fail to delegate. A boolean column reads back as a
+    # boolean, and anything truthy in it means unrestricted.
+    assert agents[0]["unrestricted"] is True
+    assert agents[1]["unrestricted"] is False
     assert agents[1]["skill_names"] is None
     assert agents[1]["connectors"] == ""
     assert repository.get("a_agent") is None
@@ -181,3 +188,138 @@ def test_upsert_preserves_existing_read_then_write_lock_gap(tmp_path):
     # Existence read, mutation, and result read remain three independent
     # critical sections.  In particular, no outer lock encloses all three.
     assert lock.events == ["enter", "exit", "enter", "exit", "enter", "exit"]
+
+
+def test_editing_a_specialist_does_not_wipe_its_resource_restrictions(tmp_path):
+    """The privilege-escalation shape of a full-overwrite update.
+
+    `PUT /specialists/<name>` called `upsert_agent`, which writes every column,
+    while the editor in app.js posts only `{name, description, system_prompt}`.
+    Every edit therefore wrote NULL over `skill_names` and `connectors` and
+    reset `unrestricted` to True: a specialist confined to two skills came back
+    unconfined, and nothing said so. Renaming a specialist's description
+    widened what it could reach.
+
+    The direction is what makes this urgent rather than untidy. A restriction
+    that silently loosens looks exactly like one that was never set.
+    """
+    store = get_store(tmp_path / "agents.db")
+    store.upsert_agent(
+        name="confined",
+        description="original",
+        system_prompt="be careful",
+        skill_names=["literature-review"],
+        connectors=["example"],
+        unrestricted=False,
+    )
+
+    # What the editor sends: three fields, nothing about resources.
+    updated = store.update_agent(
+        "confined", description="renamed", system_prompt="be careful"
+    )
+
+    assert updated["description"] == "renamed"
+    assert updated["skill_names"] == ["literature-review"]
+    assert updated["connectors"] == ["example"]
+    assert updated["unrestricted"] in (0, False)
+    store.close()
+
+
+def test_a_specialist_allowlist_can_still_be_cleared_deliberately(tmp_path):
+    """Absent and null have to stay tellable apart.
+
+    A NULL allowlist is a real state -- "inherit" -- so "not supplied" cannot
+    be spelled `None`. Only keys actually present are written.
+    """
+    store = get_store(tmp_path / "agents2.db")
+    store.upsert_agent(
+        name="confined",
+        description="d",
+        system_prompt="p",
+        skill_names=["a"],
+        connectors=["b"],
+        unrestricted=False,
+    )
+
+    cleared = store.update_agent("confined", skill_names=None)
+    assert cleared["skill_names"] is None
+    assert cleared["connectors"] == ["b"]
+
+    emptied = store.update_agent("confined", connectors=[])
+    assert emptied["connectors"] == []
+
+    assert store.update_agent("no-such-specialist", description="x") is None
+    store.close()
+
+
+def test_the_specialist_edit_route_updates_without_widening(tmp_path):
+    """The route, not just the repository.
+
+    Driven through `Handler._api` because the defect lived at the call site:
+    the repository has always been able to store an allowlist, and the route
+    was the thing that threw it away.
+
+    This also keeps `PUT /specialists/<name> [ok]` covered. It used to be
+    pinned only by accident -- the contract driver probes every route with a
+    synthetic name, `upsert` created the specialist, and the create's 200 was
+    filed as the edit's success shape. Now that a PUT to a nonexistent
+    specialist is a 404, the success shape needs a scenario that actually
+    edits something.
+    """
+    from openai4s.config import LLMConfig
+    from openai4s.server import gateway as gateway_mod
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    runner.store.upsert_agent(
+        name="confined",
+        description="original",
+        system_prompt="p",
+        skill_names=["literature-review"],
+        connectors=["example"],
+        unrestricted=False,
+    )
+
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    replies: list = []
+    handler._query = lambda: {}
+    handler._body = lambda: {"description": "renamed", "system_prompt": "p"}
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+
+    handler._api("PUT", "/specialists/confined")
+
+    code, body = replies[-1]
+    assert code == 200
+    assert body["description"] == "renamed"
+    assert body["skill_names"] == ["literature-review"]
+    assert body["connectors"] == ["example"]
+
+    # PATCH is the same branch and must keep the same guarantee.
+    replies.clear()
+    handler._body = lambda: {"system_prompt": "revised"}
+    handler._api("PATCH", "/specialists/confined")
+    code, body = replies[-1]
+    assert code == 200
+    assert body["system_prompt"] == "revised"
+    assert body["description"] == "renamed"
+    assert body["skill_names"] == ["literature-review"]
+
+    # And an edit at a name that does not exist no longer silently creates one.
+    replies.clear()
+    handler._body = lambda: {"description": "x"}
+    with pytest.raises(gateway_mod.GatewayError) as raised:
+        handler._api("PUT", "/specialists/never-created")
+    assert raised.value.code == 404
+    assert runner.store.get_agent("never-created") is None

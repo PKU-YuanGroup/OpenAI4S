@@ -28,6 +28,7 @@ import builtins
 import functools
 import json as _json
 import os
+import sys
 from typing import Any, Callable
 
 _PROV_ATTR = "_openai4s_src"
@@ -41,8 +42,37 @@ _current_cell_id: list[str | None] = [None]
 # code may chdir later; absolute identity follows that live cwd, while logical
 # artifact names stay relative to the kernel's original execution root.
 _execution_root: list[str | None] = [None]
-# side table for objects that can't hold attributes (id(obj) -> frozenset)
-_side_tags: dict[int, frozenset] = {}
+# Side table for objects that cannot hold attributes. EVERY builtin container
+# lands here -- list and dict included, so this is the primary path for
+# `json.loads` results, not a fallback for exotic scalars.
+#
+# It used to be `id(obj) -> frozenset`, and an id is not an identity: CPython
+# reuses the address of a freed object immediately. Tag a tuple, let it go, and
+# the very next allocation of the same shape inherits its lineage -- reproduced
+# on the *first* allocation, not after a long run. The result was a fabricated
+# provenance edge: an object that had never touched an artifact reporting that
+# artifact as its source. For a system whose claim is that a result is
+# reconstructible, provenance that is wrong is worse than provenance that is
+# absent, because it is the kind that gets believed.
+#
+# So the entry holds the object itself. While an entry lives its id cannot be
+# reused, and the identity check on read states the invariant rather than
+# relying on it. The strong reference is a real cost -- a tagged list stays
+# alive -- so the table is bounded twice and evicts oldest-first. Eviction
+# loses a tag, which is the safe direction: absent, never wrong.
+_side_tags: "dict[int, tuple[Any, frozenset]]" = {}
+
+#: How many tagged objects the side table may pin, and roughly how many bytes.
+#: `getsizeof` measures the container rather than its contents, so it is a
+#: guard rather than an accounting -- the count is the real backstop.
+MAX_SIDE_TAGS = 2048
+MAX_SIDE_TAG_BYTES = 64 * 1024 * 1024
+
+#: How many tags were dropped to stay inside those bounds. Read by nothing yet;
+#: it exists so that "we do not know this object's origin" can later be
+#: distinguished from "this object has no origin", which are different claims.
+_side_tags_evicted = [0]
+_side_tags_bytes = [0]
 
 
 def _off() -> bool:
@@ -58,7 +88,13 @@ def get_tags(obj: Any) -> frozenset:
     t = getattr(obj, _PROV_ATTR, None)
     if isinstance(t, frozenset):
         return t
-    return _side_tags.get(id(obj), frozenset())
+    entry = _side_tags.get(id(obj))
+    # `entry[0] is obj` is the whole point: an id alone cannot tell you the
+    # object it named still exists, and answering from a recycled address is
+    # how an unrelated object acquires someone else's lineage.
+    if entry is not None and entry[0] is obj:
+        return entry[1]
+    return frozenset()
 
 
 def set_tags(obj: Any, tags: frozenset) -> Any:
@@ -68,8 +104,36 @@ def set_tags(obj: Any, tags: frozenset) -> Any:
     try:
         object.__setattr__(obj, _PROV_ATTR, frozenset(tags))
     except (AttributeError, TypeError):
-        _side_tags[id(obj)] = frozenset(tags)
+        _remember_side_tag(obj, frozenset(tags))
     return obj
+
+
+def _remember_side_tag(obj: Any, tags: frozenset) -> None:
+    """Pin one object and its tags, evicting oldest-first to stay bounded."""
+    key = id(obj)
+    previous = _side_tags.pop(key, None)
+    if previous is not None:
+        _side_tags_bytes[0] -= _approx_size(previous[0])
+    _side_tags[key] = (obj, tags)
+    _side_tags_bytes[0] += _approx_size(obj)
+    # Insertion-ordered eviction rather than true LRU: a read must not mutate
+    # the table, because reads happen from the cell thread and from background
+    # jobs, and a racing mutation on a read path is a worse bug than a slightly
+    # less clever eviction order.
+    while _side_tags and (
+        len(_side_tags) > MAX_SIDE_TAGS or _side_tags_bytes[0] > MAX_SIDE_TAG_BYTES
+    ):
+        _oldest, dropped = next(iter(_side_tags.items()))
+        del _side_tags[_oldest]
+        _side_tags_bytes[0] -= _approx_size(dropped[0])
+        _side_tags_evicted[0] += 1
+
+
+def _approx_size(obj: Any) -> int:
+    try:
+        return int(sys.getsizeof(obj))
+    except Exception:  # noqa: BLE001 - a size guard must never raise
+        return 0
 
 
 def merge_tags(*objs: Any) -> frozenset:

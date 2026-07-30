@@ -490,3 +490,59 @@ def test_rename_delete_cascade_and_shared_path_reclamation(tmp_path):
         shared,
         "/snap/second",
     }
+
+
+def test_the_transaction_refuses_a_cross_project_source_on_its_own(tmp_path):
+    """Defence in depth, and worded so that the depth is not itself a leak.
+
+    The Host service checks the project bound before calling, and this
+    transaction checks it again. Two independent checks is the point -- but
+    they must give the *same* refusal, because if they differed then removing
+    the outer one would turn the inner one into the disclosure channel both
+    exist to close: a caller could tell "another project's version" from "no
+    such version" by which sentence came back. That is most of what an
+    enumerator wants, and version ids are short enough to grind.
+
+    So this drives the repository directly, with no Host service in front.
+    """
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    theirs_root = store.new_frame(kind="turn", project_id="proj-theirs")
+    mine_root = store.new_frame(kind="turn", project_id="proj-mine")
+    snapshot = tmp_path / "snap.bin"
+    snapshot.write_bytes(b"secret")
+    seeded = store.record_cell_artifact(
+        path=str(snapshot),
+        filename="secret.bin",
+        content_type="application/octet-stream",
+        size_bytes=6,
+        checksum="deadbeef",
+        producing_cell_id=None,
+        frame_id=theirs_root,
+        root_frame_id=theirs_root,
+        project_id="proj-theirs",
+        snapshot_path=str(snapshot),
+    )
+
+    def _materialise(version_id):
+        return store.materialise_artifact_version(
+            source_version_id=version_id,
+            artifact_id="a-new",
+            version_id="v-new",
+            filename="copy.bin",
+            path=str(tmp_path / "copy.bin"),
+            snapshot_path=str(tmp_path / "copy.bin"),
+            frame_id=mine_root,
+            root_frame_id=mine_root,
+            project_id="proj-mine",
+        )
+
+    with pytest.raises(KeyError) as cross_project:
+        _materialise(seeded["version_id"])
+    with pytest.raises(KeyError) as absent:
+        _materialise("v-000000000000")
+
+    assert str(cross_project.value).replace(seeded["version_id"], "ID") == str(
+        absent.value
+    ).replace("v-000000000000", "ID")
+    # Nothing was written by either refusal.
+    assert store.list_artifacts({"root_frame_id": mine_root}) == []

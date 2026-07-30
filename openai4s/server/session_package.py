@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from openai4s.storage.plans import PLAN_STATUSES
 from openai4s.storage.snapshots import WorkspaceCAS
 
 PACKAGE_FORMAT = "openai4s.session"
@@ -112,6 +113,29 @@ _PRIVATE_KEY_BLOCK = re.compile(
 )
 _REDACTED = "[REDACTED]"
 IMPORT_QUARANTINE_SETTING_PREFIX = "session:import-quarantine:"
+
+
+def _imported_plan_status(raw: Any) -> str:
+    """The status an imported plan may claim.
+
+    Two things were wrong with passing it through. It was unvalidated, and the
+    repository did not check on create either, so any string in an uploaded
+    package landed in the column -- and a plan whose status is not a real
+    status shadows every new draft for that session, because `get_by_frame`
+    prefers the newest non-discarded row.
+
+    The second is a domain point rather than a validation one. `executing` is a
+    claim that a turn is running, and no turn from the exporting daemon is
+    running here. Importing it verbatim recreates exactly the stuck row that
+    the `paused` state and the startup sweep exist to eliminate -- and it stays
+    stuck until the next restart, because that sweep only runs at boot. So it
+    arrives `paused`: the steps that finished are still finished, and the user
+    can resume it.
+    """
+    value = str(raw or "draft").strip()
+    if value == "executing":
+        return "paused"
+    return value if value in PLAN_STATUSES else "draft"
 
 
 class SessionPackageError(ValueError):
@@ -2916,7 +2940,7 @@ class SessionPackageService:
                 confidence=item.get("confidence"),
                 steps=list(item.get("steps") or []),
                 artifact_id=artifact_map.get(str(item.get("artifact_id") or "")),
-                status=str(item.get("status") or "draft"),
+                status=_imported_plan_status(item.get("status")),
             )
             if item.get("step_status"):
                 self.store.update_plan(

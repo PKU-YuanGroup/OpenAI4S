@@ -40,6 +40,7 @@ def test_context_projects_components_without_message_content():
     assert result["token_count"] > 0
     assert result["handoff"] is True
     assert {item["kind"] for item in result["layers"]} == {
+        "system_prompt",
         "text",
         "images",
         "tool_schemas",
@@ -49,6 +50,13 @@ def test_context_projects_components_without_message_content():
         "wire_state",
     }
     assert "hello" not in repr(result)
+    # `system_prompt` is its own layer rather than part of `text` because the
+    # two answer to different remedies: standing context is rebuilt every turn
+    # and compaction never touches it, so a large system prompt shown as
+    # conversation sends the user to the one tool that cannot help.
+    assert (
+        "omitted" in result
+    ), "a projection that lists only what is present reads as complete"
 
 
 def test_context_projects_safe_persistent_compaction_history(tmp_path):

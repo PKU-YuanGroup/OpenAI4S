@@ -73,7 +73,7 @@ import urllib.parse
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -105,6 +105,52 @@ SIGNING_IDENTITY_VAR = "OPENAI4S_MACOS_SIGNING_IDENTITY"
 #: What a real Apple distribution signature says. An ad-hoc signature ("-")
 #: verifies happily and says nothing about who produced the image.
 DEVELOPER_ID_AUTHORITY = "Developer ID Application"
+
+#: The four states a macOS image's signing can honestly be in. Named because
+#: the evidence was previously four scattered fields -- `developer_id`,
+#: `adhoc`, `identity_configured`, `notarized: None` -- from which a reader had
+#: to infer the answer, and a reader who infers it wrongly is exactly who this
+#: is for.
+#:
+#: `verified` is currently **unreachable**, and that is the honest finding
+#: rather than a gap in the implementation. It requires a Developer ID
+#: signature *and* a completed notarization; `build_macos_dmg.sh` only ad-hoc
+#: signs, and this pipeline never attempts notarization because doing so needs
+#: a paid Apple identity nobody has configured. So the macOS asset has no
+#: publishable path in this version. Saying that plainly is the point; leaving
+#: it looking merely untested is the failure mode.
+SIGNING_STATES = {
+    # Developer ID signature, notarization confirmed. The only publishable one.
+    "verified",
+    # Developer ID signature, notarization not established. Publishable only by
+    # a decision this pipeline does not make.
+    "not_notarized",
+    # Ad-hoc signature: verifies happily, says nothing about who produced it.
+    # What the build script produces, and what a local or CI build is.
+    "preview",
+    # No signature evidence at all, or none that could be read.
+    "not_configured",
+}
+
+
+def signing_state(signature: Mapping[str, Any] | None) -> str:
+    """Name what the signature evidence actually establishes.
+
+    Reads evidence only. In particular it does not consult
+    ``OPENAI4S_MACOS_SIGNING_IDENTITY``: treating a configured secret as proof
+    of a signature is the specific mistake that once let an ad-hoc image pass
+    the release gate as Developer-ID-signed.
+    """
+    if not isinstance(signature, Mapping) or signature.get("error"):
+        return "not_configured"
+    if signature.get("developer_id"):
+        # Notarization is never attempted here, so this is as far as the
+        # evidence can currently reach.
+        return "verified" if signature.get("notarized") else "not_notarized"
+    if signature.get("adhoc"):
+        return "preview"
+    return "not_configured"
+
 
 #: Written beside the DMG by the macOS job, which is the only place a
 #: `codesign` inspection can happen. The ubuntu job that stages the release
@@ -440,6 +486,84 @@ def build_provenance(assets: list[Path], *, version: str, source: dict) -> dict:
     }
 
 
+#: Name of the receipt the quality job writes and staging verifies.
+QUALITY_RECEIPT_NAME = "quality-receipt.json"
+
+
+def build_quality_receipt(source_sha: str, gates: list[dict]) -> dict:
+    """The document a quality run leaves behind.
+
+    Deliberately boring: the SHA the gates ran against, and one row per gate
+    with its exit code. Nothing here is a judgement -- the consumer decides
+    what passing means, so a receipt cannot flatter itself.
+    """
+    return {
+        "format": "openai4s-quality-receipt",
+        "schema_version": 1,
+        "source_sha": str(source_sha),
+        "gates": [
+            {
+                "name": str(gate["name"]),
+                "command": list(gate.get("command") or []),
+                "returncode": int(gate["returncode"]),
+            }
+            for gate in gates
+        ],
+    }
+
+
+def verify_quality_receipt(path: Path, *, expected_sha: str) -> dict:
+    """Read a receipt and refuse everything about it that is not proof.
+
+    The binding is the whole value. A receipt that records *a* SHA proves
+    nothing unless the consumer re-derives the SHA it is actually releasing and
+    compares -- otherwise it degrades into another `identity_configured`: a
+    field that reads as evidence and decides nothing.
+
+    Raises ``ReleaseError`` rather than returning a verdict, because every
+    caller here treats "cannot prove it" as "do not release".
+    """
+    if not path.is_file():
+        raise ReleaseError(
+            f"no quality receipt at {path}; staging cannot claim the suite ran. "
+            "The quality job must run at this SHA and upload its receipt."
+        )
+    try:
+        document = json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ReleaseError(f"quality receipt is unreadable: {error}") from error
+    if not isinstance(document, dict):
+        raise ReleaseError("quality receipt is not an object")
+    if document.get("format") != "openai4s-quality-receipt":
+        raise ReleaseError("quality receipt has an unrecognised format")
+    recorded = str(document.get("source_sha") or "")
+    if not recorded:
+        raise ReleaseError("quality receipt names no source SHA")
+    if not expected_sha:
+        raise ReleaseError(
+            "cannot determine the source SHA being released, so a receipt "
+            "cannot be bound to it"
+        )
+    if recorded != expected_sha:
+        raise ReleaseError(
+            f"quality receipt is for {recorded[:12]} but this release is "
+            f"{expected_sha[:12]}; the gates did not run on these sources"
+        )
+    gates = document.get("gates")
+    if not isinstance(gates, list) or not gates:
+        raise ReleaseError("quality receipt records no gates")
+    failed = [
+        str(gate.get("name"))
+        for gate in gates
+        if not isinstance(gate, dict) or int(gate.get("returncode", 1)) != 0
+    ]
+    if failed:
+        raise ReleaseError(
+            "quality receipt records failing gates: " + ", ".join(sorted(failed))
+        )
+    return document
+
+
 def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, Any]:
     """What actually signed this image, from evidence rather than intent.
 
@@ -616,11 +740,25 @@ class Pipeline:
 
     def step_test(self) -> StepResult:
         if self.from_artifacts:
+            # This used to answer "not run: the suite gated the build that
+            # produced these artifacts" and pass. The build job runs no suite
+            # at all -- it checks out the tag, scans for secrets, builds, and
+            # verifies the wheel's metadata. The sentence was not a shortcut,
+            # it was false, and it was the only thing standing between a
+            # release and "tests gated this".
+            head = self._head_sha()
+            receipt = verify_quality_receipt(
+                self.assets_dir / QUALITY_RECEIPT_NAME, expected_sha=head
+            )
             return StepResult(
                 "test",
                 True,
-                "not run: the suite gated the build that produced these artifacts",
-                {"from_artifacts": True},
+                f"quality receipt verified for {head[:12]}",
+                {
+                    "from_artifacts": True,
+                    "source_sha": head,
+                    "gates": [gate["name"] for gate in receipt["gates"]],
+                },
             )
         if self.dry_run:
             return StepResult("test", True, "would run the offline suite")
@@ -628,6 +766,12 @@ class Pipeline:
         if completed.returncode != 0:
             raise ReleaseError(f"the offline suite failed ({completed.returncode})")
         return StepResult("test", True, "offline suite passed")
+
+    def _head_sha(self) -> str:
+        completed = self._run(["git", "rev-parse", "HEAD"])
+        if completed.returncode != 0:
+            return ""
+        return (completed.stdout or b"").decode().strip()
 
     def step_assets(self) -> StepResult:
         if self.dry_run:
@@ -888,6 +1032,13 @@ class Pipeline:
             f"{len(self.assets)} asset(s) verified",
             {
                 "signatures": signatures,
+                # One named state per image, so a reader does not have to infer
+                # it from four fields and get it wrong. `verified` is currently
+                # unreachable -- see SIGNING_STATES -- which is the finding, not
+                # an omission.
+                "signing_states": {
+                    name: signing_state(info) for name, info in signatures.items()
+                },
                 "identity_configured": bool(
                     os.environ.get(SIGNING_IDENTITY_VAR, "").strip()
                 ),
@@ -898,6 +1049,17 @@ class Pipeline:
                 "notarization_note": (
                     "not attempted by this pipeline; requires an Apple "
                     "Developer identity and the notary service"
+                ),
+                # Stated rather than implied. `verified` needs a Developer ID
+                # signature and a completed notarization; the build script only
+                # ad-hoc signs and notarization is never attempted, so no macOS
+                # image can reach a publishable state in this version. A reader
+                # should learn that here, not by noticing an absence.
+                "macos_publishable": False,
+                "macos_publishable_note": (
+                    "no macOS image can reach `verified` in this version: the "
+                    "build ad-hoc signs and notarization is not attempted. "
+                    "This is a stated limitation, not an untested path."
                 ),
             },
         )
@@ -1243,10 +1405,37 @@ class Pipeline:
                 result = step()
             except ReleaseError as error:
                 self.results.append(StepResult(name, False, str(error)))
-                return self.report(stopped_at=name, planned=planned)
+                failed = self.report(stopped_at=name, planned=planned)
+                # A stopped run is the one somebody most wants the record of.
+                self._seal_evidence(failed)
+                return failed
             self.performed.append(name)
             self.results.append(result)
-        return self.report(planned=planned)
+        report = self.report(planned=planned)
+        self._seal_evidence(report)
+        return report
+
+    def _seal_evidence(self, report: Mapping[str, Any]) -> None:
+        """Freeze this run's claims where someone can check them later.
+
+        Best-effort on purpose: a release that succeeded must not be reported
+        as failed because a directory was read-only. The bundle is evidence
+        *about* the release, not a step of it -- and a missing bundle is
+        visibly missing, whereas a pipeline that fails at the last moment for a
+        reason unrelated to the artifacts is a worse outcome than no bundle.
+        """
+        if self.dry_run:
+            # Every other step short-circuits here and writes nothing --
+            # `--dry-run` is documented as performing no external call and is
+            # how the *ordering* is tested. A dry run that left a real evidence
+            # bundle on disk would be a dry run with a side effect, and the
+            # next real run would find a stale one beside its artifacts.
+            return
+        try:
+            destination = self.assets_dir / f"openai4s-{self.version}-evidence.zip"
+            seal_evidence_bundle(destination, dict(report))
+        except Exception as error:  # noqa: BLE001
+            print(f"[release] could not seal the evidence bundle: {error}")
 
     def report(
         self, stopped_at: str | None = None, planned: Sequence[str] = STEPS
@@ -1264,6 +1453,67 @@ class Pipeline:
             and "publish" in planned,
             "steps": [result.public() for result in self.results],
         }
+
+
+def seal_evidence_bundle(
+    destination: Path, payload: Mapping[str, Any], *, files: Sequence[Path] = ()
+) -> dict[str, Any]:
+    """Write the release's own claims as a package `evidence.verify_package` reads.
+
+    The pipeline printed a report to stdout. A report on stdout is evidence for
+    whoever was watching the job; it is nothing at all to a person holding the
+    artifacts a week later, which is the person a release's claims are for. So
+    the same facts are sealed into the archive format this product already
+    ships a verifier for, and that verifier is the product's own -- not a
+    second implementation that could disagree with it.
+
+    What it establishes is internal consistency: the manifest vouches for
+    itself, every listed file matches its recorded hash, and nothing unlisted
+    is present. It does **not** establish who produced the bundle. Signing is a
+    separate question with a separate answer (`signing_state`), and conflating
+    the two is how a "verified" archive smuggles something.
+    """
+    import zipfile
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    entries: list[dict[str, Any]] = []
+    contents: dict[str, bytes] = {}
+
+    report_bytes = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    contents["release-report.json"] = report_bytes
+    for source in files:
+        source = Path(source)
+        if not source.is_file():
+            continue
+        contents[f"artifacts/{source.name}"] = source.read_bytes()
+
+    for name, data in sorted(contents.items()):
+        entries.append(
+            {
+                "path": name,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+            }
+        )
+
+    manifest: dict[str, Any] = {
+        "format": "openai4s-release-evidence",
+        "schema_version": 1,
+        "version": payload.get("version"),
+        "files": entries,
+    }
+    # The manifest vouches for itself last, over everything else in it. Without
+    # this an editor could rewrite a payload and its recorded hash together and
+    # every per-file check would still pass.
+    manifest["manifest_sha256"] = hashlib.sha256(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+        for name, data in sorted(contents.items()):
+            archive.writestr(name, data)
+    return manifest
 
 
 def _pypi_has_version(project: str, version: str) -> bool:

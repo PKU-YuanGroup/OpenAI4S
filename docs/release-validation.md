@@ -6,6 +6,60 @@ must contain the Web workbench, R worker, compute templates, bundled Skills,
 and conda environment specifications, and it must remain importable without
 installing optional science packages.
 
+
+## Signing state, and why macOS has no publishable path in this version
+
+The signing evidence used to be four separate fields — `developer_id`,
+`adhoc`, `identity_configured`, `notarized: null` — from which a reader had to
+assemble the answer. It is now one named state per image, computed from
+evidence and never from configuration (treating a configured
+`OPENAI4S_MACOS_SIGNING_IDENTITY` as proof of a signature is the specific
+mistake that once let an ad-hoc image pass the release gate as
+Developer-ID-signed):
+
+| State | Meaning | Publishable |
+| --- | --- | --- |
+| `verified` | Developer ID signature **and** completed notarization | yes |
+| `not_notarized` | Developer ID signature, notarization not established | by a decision this pipeline does not make |
+| `preview` | ad-hoc signature — verifies happily, says nothing about who produced it | no |
+| `not_configured` | no signature evidence, or none that could be read | no |
+
+**`verified` is currently unreachable.** `build_macos_dmg.sh` only ad-hoc
+signs, and this pipeline never attempts notarization because that needs a paid
+Apple identity nobody has configured. So no macOS image can reach a publishable
+state in this version. That is a stated limitation, not an untested path, and
+the verify step says so in `macos_publishable` rather than leaving a reader to
+infer it from an absence. Per D11 the hard failure in `--mode release` is
+unchanged: there is no loosening here, only a vocabulary for describing what is
+true.
+
+## The evidence bundle
+
+Every run seals `openai4s-<version>-evidence.zip` beside the distributions,
+in the archive format `openai4s.evidence.verify_package` already reads — the
+product's own verifier, not a second implementation that could drift from it
+and disagree about what "verified" means.
+
+```bash
+uv run openai4s verify-package dist/openai4s-0.3.0-evidence.zip
+```
+
+It establishes internal consistency: the manifest vouches for itself, every
+listed file matches its recorded hash, and anything present but unlisted is a
+problem — checking only the listed files would pass a bundle with an added
+payload, which is exactly how a "verified" archive smuggles something. It does
+**not** establish who produced the bundle; that is the signing question above,
+and conflating the two is the failure this separation exists to prevent.
+
+A run that *stopped* seals its record too. A failed release is the one somebody
+most wants the evidence for. Sealing is best-effort: a release that succeeded
+must not be reported as failed because a directory was read-only.
+
+`--dry-run` seals nothing, like every other step. A dry run that left a real
+bundle on disk would be a dry run with a side effect, and the next real run
+would find a stale one sitting beside its artifacts.
+
+
 ## Local gate
 
 Run the source scan before building. It considers Git-tracked and non-ignored
@@ -140,12 +194,16 @@ hardware and remain outside the secret-free default gate.
 
 ## Draft-first (from v0.2)
 
-The pipeline no longer starts after the release is public. `release.yml`
-triggers on `created`, which fires for a **draft**, and every step runs while
-nothing is visible:
+The pipeline no longer starts after the release is public. `release.yml` is
+`workflow_dispatch` only: a maintainer creates the draft, then runs the
+workflow against that tag, and every step runs while nothing is visible.
 
-    build → test → assets → SBOM → provenance → verify → draft → upload →
-    re-verify → publish
+It used to trigger on `release: [created]`. GitHub does not emit that event for
+a *draft*, so the intended entry point could never fire and the pipeline was
+unreachable by construction — which is why the trigger is now explicit.
+
+    build → test → assets → smoke → SBOM → provenance → checksums → verify →
+    draft → upload → re-verify → publish
 
 `publish` is last because it is the only step that cannot be undone. `verify`
 runs before the release is staged so a bad asset is caught while nothing is
@@ -167,11 +225,20 @@ published.
 
 ### What is and is not claimed about signing
 
-* `--mode release` **fails closed** when `OPENAI4S_MACOS_SIGNING_IDENTITY` is
-  unset and the release contains a `.dmg`. "The certificate was not
-  configured" is not a reason to publish unsigned.
-* `--mode local` builds the unsigned image and reports
-  `signing_identity_configured: false`. It does not pretend.
+* `--mode release` **fails closed** for a `.dmg` that is not
+  Developer-ID-signed. The judgement comes from evidence — a receipt written by
+  the macOS job, or `codesign` on the image — and the digest in that evidence
+  must bind to the image being released.
+* It deliberately does **not** consult `OPENAI4S_MACOS_SIGNING_IDENTITY`.
+  Reading a non-empty environment variable as "this is signed" is exactly what
+  let an ad-hoc image pass the gate as Developer-ID-signed, since
+  `build_macos_dmg.sh` only ever ad-hoc signs. The fact the report carries is
+  named `identity_configured`, it describes configuration rather than
+  signature, and nothing gates on it.
+* Consequence worth stating plainly: with no Developer ID certificate
+  available, **no DMG can pass `--mode release` today**. That is the intended
+  behaviour, not an oversight — but it means the macOS asset has no publishable
+  path until the certificate exists.
 * **Notarization is never reported as verified.** It requires Apple's notary
   service and a paid identity, so the pipeline reports `notarized: null` with
   the reason. A pipeline that printed `notarized: ok` without one would be

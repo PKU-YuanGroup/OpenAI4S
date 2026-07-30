@@ -681,3 +681,37 @@ def test_host_bash_static_precheck_blocks_catastrophe(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_one_print_cannot_put_an_unbounded_frame_on_the_protocol_pipe():
+    """A real subprocess, because the defect is in the pipe, not the arithmetic.
+
+    `_StreamingStdout.write` forwarded whatever string it was handed as one
+    `stdout_chunk` frame, and `_write_frame` had no size gate at all -- the
+    15MB `_HOST_CALL_WIRE_CAP` guards only the inbound direction. So
+    `print("x" * 200_000_000)` produced a single ~200MB JSON line, which the
+    host's `readline()` then materialised whole: ~200MB allocated on both sides
+    from one ordinary statement, with nothing in between to refuse it.
+
+    Driven through `Kernel` so the frames really cross a pipe and a real
+    `readline` really reads them. A `StringIO` here would prove the slicing and
+    none of the thing that broke.
+    """
+    chunks: list[str] = []
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        result = k.execute(
+            "print('x' * 20_000_000)", on_chunk=lambda text: chunks.append(text)
+        )
+
+    assert result["error"] is None
+    # Every frame that crossed the pipe is individually bounded.
+    assert chunks, "the cell streamed nothing at all"
+    assert max(len(chunk) for chunk in chunks) <= 64_000 + 64
+    # And the stream as a whole is bounded, with one marker rather than one
+    # per oversized write.
+    streamed = "".join(chunks)
+    assert len(streamed) < 20_000_000
+    assert streamed.count("...(truncated at") == 1
+    # The captured result stays bounded too, and says what it counted.
+    assert len(result["stdout"]) <= 1_000_000 + 64
+    assert "characters" in result["stdout"]

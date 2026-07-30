@@ -110,6 +110,13 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     if method == "web_fetch":
         url = a.get("url", "")
         return ("fetch", f"Reading {_domain(url) or url}", {"url": url})
+    if method == "web_download":
+        url = a.get("url", "")
+        return (
+            "fetch",
+            f"Downloading from {_domain(url) or url}",
+            {"url": url, "path": a.get("path", "")},
+        )
     if method == "science_list_dbs":
         return (
             "science",
@@ -405,7 +412,7 @@ def _gate_target(method: str, args: list) -> str:
         return a.get("path", "") or ""
     if method == "save_artifact":
         return a.get("filename") or a.get("path", "") or ""
-    if method == "web_fetch":
+    if method in ("web_fetch", "web_download"):
         return _domain(a.get("url", "")) or a.get("url", "") or ""
     if method == "web_search":
         return a.get("query", "") or ""
@@ -689,7 +696,9 @@ class HostDispatcher:
         self._endpoint_service = EndpointService(
             self.store,
             allocate_port=lambda: _free_port(),
-            readiness_probe=lambda url, route: _probe_ready(url, route),
+            readiness_probe=lambda url, route, **kwargs: _probe_ready(
+                url, route, **kwargs
+            ),
             fingerprint=lambda *fields: _endpoint_fingerprint(*fields),
         )
         self._mcp_service = MCPService(self.store)
@@ -699,8 +708,16 @@ class HostDispatcher:
         self._remote_science_service = RemoteScienceService(
             provenance_recorder=lambda *args: self._record_remote_prov(*args),
         )
-        # app tiles rendered this session
+        # App tiles rendered this session, most recent last.
+        #
+        # This was an unbounded list holding whatever a cell passed as
+        # ``payload``. Measured: 2000 ``host.app.render()`` calls carrying 50 KB
+        # of HTML each — a tile per iteration of an analysis loop, which is what
+        # the API is for — held 100 MB in the daemon for the life of the
+        # session, in a process serving every other session too. Nothing outside
+        # the cell reads them, so none of it was ever displayed.
         self._app_tiles: list[dict] = []
+        self._app_tiles_dropped = 0
         # background executor (exec_peek / exec_interrupt), built lazily.
         self._bg_executor: Any = None
         # Runtime adapter for independent background kernels. Gateway/CLI set
@@ -852,6 +869,15 @@ class HostDispatcher:
         """Bind one additional fail-closed policy for a delegated child."""
 
         self._child_execution_policy = policy
+        # Arm the Skill allowlist here rather than at the spawn site: this is
+        # already the single choke point every child passes through, and
+        # `set_allowed_skills` only ever narrows, so applying it twice — which
+        # a delegation chain does — cannot widen. `None` inherits.
+        if policy is not None:
+            try:
+                self._skill_service.set_allowed_skills(policy.skill_names)
+            except Exception:  # noqa: BLE001 - a child must not die on this
+                pass
         self._session_tool_catalog = None
         self._session_tool_scope = None
 
@@ -982,6 +1008,16 @@ class HostDispatcher:
             if control_tool is not None
             else "runtime_mutation"
         )
+        # ``dangerous`` was declared on ten control tools and asserted by the
+        # policy tests, and then read by nothing: it reached no gate, no audit
+        # record, and no prompt. So restoring an Artifact over the workspace and
+        # reading a file were presented to the user identically, and the
+        # approval card's default remember-scope granted either one for the rest
+        # of the conversation on a single click. Carry it to the broker; the
+        # prompt is where a risk declaration is worth anything.
+        audit_dangerous = bool(
+            control_tool.dangerous if control_tool is not None else False
+        )
         # Project a visible tool call into a semantic activity step (begin) so the
         # UI shows "Searching the web" / "Editing report.md" / … rather than raw
         # Python. The matching "end" is emitted in the finally with the result.
@@ -1074,6 +1110,7 @@ class HostDispatcher:
                     tool_call_id=action_context.get("tool_call_id"),
                     side_effect_class=audit_side_effect,
                     resource_keys=audit_resources,
+                    dangerous=audit_dangerous,
                 )
                 permission_decision_id = gate.get("decision_id") or gate.get(
                     "continuation_decision_id"
@@ -1150,7 +1187,9 @@ class HostDispatcher:
     # DATA, not instructions. We screen it and, when it looks like an injection
     # attempt, PREPEND a warning banner to the primary text field — never drop
     # the content (the agent may still need the legitimate part).
-    _SCREENED_METHODS = frozenset({"web_fetch", "web_search", "mcp_call"})
+    _SCREENED_METHODS = frozenset(
+        {"web_download", "web_fetch", "web_search", "mcp_call"}
+    )
 
     def _screen_tool_result(
         self, method: str, result: Any, control_tool: Any | None = None
@@ -1399,6 +1438,7 @@ class HostDispatcher:
             "todo": True,
             "web_search": webtools.network_allowed(),
             "web_fetch": webtools.network_allowed(),
+            "web_download": webtools.network_allowed(),
             "science": webtools.network_allowed(),
             "network": webtools.network_allowed(),
             "model": self.cfg.llm.model,
@@ -1424,6 +1464,7 @@ class HostDispatcher:
                 "todo": "workflow",
                 "web_search": "web",
                 "web_fetch": "web",
+                "web_download": "web",
                 "science": "science",
                 "network": "network",
             }
@@ -1512,6 +1553,9 @@ class HostDispatcher:
 
     def _m_web_fetch(self, spec: dict) -> dict:
         return self._execute_control_tool("web_fetch", spec)
+
+    def _m_web_download(self, spec: dict) -> dict:
+        return self._execute_control_tool("web_download", spec)
 
     def _m_web_search(self, spec: dict) -> dict:
         return self._execute_control_tool("web_search", spec)
@@ -1704,6 +1748,9 @@ class HostDispatcher:
     def _m_restore_artifact_version(self, spec: dict) -> dict:
         return self._data_service.restore_artifact_version(spec)
 
+    def _m_materialise_artifact(self, spec: dict) -> dict:
+        return self._data_service.materialise_artifact(spec)
+
     def _m_view_image(self, spec: dict) -> dict:
         return self._data_service.view_image(spec)
 
@@ -1869,15 +1916,46 @@ class HostDispatcher:
         return self._bg().list_jobs()
 
     # --- app tiles ------------------------------------------------
+    #: Most recent tiles kept per session. A tile is a scratch surface a cell
+    #: writes and reads back; keeping the whole history serves nothing that
+    #: keeping the recent ones does not.
+    MAX_APP_TILES = 200
+    #: A single tile's payload, serialised. Refused rather than truncated:
+    #: half a document is not a smaller document, and a cell that gets an error
+    #: can choose what to do, while one handed a silently clipped payload
+    #: cannot tell that anything happened.
+    MAX_APP_TILE_CHARS = 256_000
+
     def _m_app_render(self, spec: dict) -> dict:
+        payload = spec.get("payload")
+        try:
+            size = len(payload if isinstance(payload, str) else json.dumps(payload))
+        except (TypeError, ValueError):
+            size = len(repr(payload))
+        if size > self.MAX_APP_TILE_CHARS:
+            return {
+                "error": (
+                    f"app tile payload is {size} chars; the limit is "
+                    f"{self.MAX_APP_TILE_CHARS}. Write large output to a file "
+                    "and render a reference to it."
+                )
+            }
         tile = {
             "tile_id": f"tile-{uuid.uuid4().hex[:8]}",
             "kind": spec.get("kind", "html"),
-            "payload": spec.get("payload"),
+            "payload": payload,
             "created_at": int(time.time() * 1000),
         }
         self._app_tiles.append(tile)
-        return {"ok": True, "tile_id": tile["tile_id"]}
+        result = {"ok": True, "tile_id": tile["tile_id"]}
+        if len(self._app_tiles) > self.MAX_APP_TILES:
+            evicted = len(self._app_tiles) - self.MAX_APP_TILES
+            del self._app_tiles[:evicted]
+            self._app_tiles_dropped += evicted
+        # Say so rather than let a cell believe ``tiles()`` is the full history.
+        if self._app_tiles_dropped:
+            result["dropped"] = self._app_tiles_dropped
+        return result
 
     def _m_app_tiles(self, *_a: Any) -> list:
         return list(self._app_tiles)
