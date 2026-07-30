@@ -41,7 +41,16 @@ jobs:
     # Enforces the CONTRIBUTING.md branch-naming table on PR head branches.
     # dependabot branches (dependabot/...) are exempt. `main` is allowed so
     # casual contributors can PR from their fork's main branch.
-    if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+    #
+    # Exempt on the *branch*, not on the actor. `github.actor` is whoever
+    # triggered the latest run, so the moment a maintainer clicks "Update
+    # branch" on a Dependabot PR the actor stops being dependabot[bot], this
+    # job starts running, and it fails a branch name it was never meant to
+    # judge. Because this is a required check under a strict-up-to-date
+    # ruleset -- where every Dependabot PR after the first merge must be
+    # updated -- an actor-based exemption makes Dependabot PRs unmergeable
+    # through the front door. The head ref is the thing the policy is about.
+    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'dependabot/')
     runs-on: ubuntu-latest
     steps:
       - name: Check head branch name
