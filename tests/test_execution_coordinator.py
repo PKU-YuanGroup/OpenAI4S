@@ -379,3 +379,52 @@ def test_execution_id_is_not_reused_until_session_cleanup():
     assert coordinator.cleanup_session("s")
     replacement = coordinator.submit("s", owner="agent", execution_id="stable-id")
     coordinator.complete(replacement)
+
+
+def test_the_pending_queue_has_a_depth_cap():
+    """The FIFO's `deque` had no length check anywhere in the file.
+
+    It is the one admission path every executing writer goes through -- agent
+    turns, user REPL cells, lifecycle and recovery work. Capping the workers
+    and the output buffers while leaving this unbounded moves the growth rather
+    than stopping it: tickets accumulate instead, each holding its own metadata
+    and resource keys, and nothing refuses a submission that will never run.
+
+    The cap counts what is waiting, not what is running: one admitted execution
+    plus a full queue is the intended steady state.
+    """
+    from openai4s.execution.coordinator import (
+        QueueDepthExceeded,
+        SessionExecutionCoordinator,
+    )
+
+    coordinator = SessionExecutionCoordinator(max_queue_depth=3)
+    admitted = coordinator.submit("s-1", owner="agent", owner_id="a")
+
+    queued = [
+        coordinator.submit("s-1", owner="agent", owner_id=f"a{index}")
+        for index in range(3)
+    ]
+    assert len(queued) == 3
+
+    with pytest.raises(QueueDepthExceeded) as refused:
+        coordinator.submit("s-1", owner="agent", owner_id="over")
+    assert "cap 3" in str(refused.value)
+
+    # A refused submission registers nothing: no ticket id, no queue growth.
+    snapshot = coordinator.snapshot("s-1")
+    assert snapshot["queued_count"] == 3
+    assert snapshot["active_count"] == 1
+
+    # Another session is unaffected -- the cap is per session, not global.
+    coordinator.submit("s-2", owner="agent", owner_id="b")
+
+    # And draining one makes room again.
+    assert coordinator.cancel_queued(
+        session_id="s-1",
+        execution_id=queued[-1].execution_id,
+        owner=queued[-1].owner,
+        reason="test",
+    )
+    coordinator.submit("s-1", owner="agent", owner_id="after")
+    coordinator.complete(admitted)

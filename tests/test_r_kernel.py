@@ -272,7 +272,30 @@ def test_real_r_persistent_namespace_error_lineno_and_quit_guard(tmp_path):
 
 
 @pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
-def test_real_r_variable_inspector_does_not_force_bindings_or_object_methods(tmp_path):
+def test_real_r_variable_inspector_reports_values_without_invoking_bindings(tmp_path):
+    """What the R inspector may and may not do to a session to describe it.
+
+    It used to describe nothing. `substitute()` does not substitute bindings
+    from `.GlobalEnv` — the only environment this inspector reads — so every
+    ordinary variable came back as an opaque `symbol` with no type, length or
+    preview. The feature was a list of names, and the previous version of this
+    test wrote that outcome down as the contract ("the safe fallback is an
+    opaque symbol for every ordinary binding").
+
+    Safe it was, and the safety is real: inspection must not run user code.
+    But the two things were conflated. Reading an ordinary binding runs
+    nothing; only a promise has anything to force. So the inspector probes with
+    `substitute` first — the one tool that can see an unforced promise without
+    running it — and reads the binding for real when the probe says nothing.
+
+    The cost, stated rather than hidden: on builds where the probe cannot
+    distinguish a promise (current R, in `.GlobalEnv`), inspecting a
+    `delayedAssign` binding forces it. Only that binding, and only when
+    inspected. A promise whose body raises degrades to the same opaque answer
+    instead of failing the whole inspection — which is how this first showed
+    up, with one `stop()` in a promise turning the entire variable list into
+    "failed closed".
+    """
     kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
     try:
         setup = kernel.execute(
@@ -287,28 +310,30 @@ def test_real_r_variable_inspector_does_not_force_bindings_or_object_methods(tmp
 
         inspected = kernel.inspect_variables()
         variables = {item["name"]: item for item in inspected["variables"]}
+
+        # The hard guarantee, unchanged: an active binding is never invoked.
+        # Its accessor is arbitrary user code and calling it would be running
+        # the session rather than describing it.
         assert variables["active_trap"] == {
             "name": "active_trap",
             "type": "active_binding",
         }
-        # R versions differ in how substitute() projects an unforced global
-        # promise: some expose its language expression, newer builds retain the
-        # binding symbol.  Both are deliberately opaque and, critically, do not
-        # force the delayedAssign body.
+
+        # The fix: ordinary variables describe themselves.
+        assert variables["score"]["type"] == "double"
+        assert variables["score"]["length"] == 1
+        assert variables["samples"]["type"] == "list"
+        assert variables["samples"]["length"] == 2
+        assert variables["custom"] == {"name": "custom", "type": "list"}
+
+        # The promise stays opaque either way — exposed by the probe on builds
+        # that can, or degraded after a failed read on builds that cannot.
         assert variables["later"]["type"] in {"language", "symbol"}
         assert "preview" not in variables["later"]
-        if variables["score"]["type"] == "symbol":
-            # Base R deliberately does not substitute bindings from
-            # .GlobalEnv on builds such as R 4.5.  The safe fallback is an
-            # opaque symbol for every ordinary binding; forcing values merely
-            # to improve the preview would violate the inspector contract.
-            for name in ("score", "samples", "custom"):
-                assert variables[name] == {"name": name, "type": "symbol"}
-        else:
-            assert variables["score"]["length"] == 1
-            assert variables["samples"]["length"] == 2
-            assert variables["custom"] == {"name": "custom", "type": "list"}
-        assert kernel.execute("cat(forced)")["stdout"] == "FALSE"
+
+        # And one raising promise does not take the rest of the list with it:
+        # every variable above was still reported.
+        assert {"score", "samples", "custom", "active_trap"} <= set(variables)
     finally:
         kernel.shutdown()
 
@@ -344,3 +369,180 @@ def test_real_r_worker_survives_hostile_cells(tmp_path):
         assert "truncated" in big["stdout"]
     finally:
         k.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_bounds_captured_output_without_reading_it_whole(tmp_path):
+    """A chatty R cell must not cost its own size in worker memory.
+
+    `.oai4s_slurp` read the entire capture file and handed it to `.oai4s_cap`,
+    which threw all but the first megabyte away — so a cell printing 300 MB
+    allocated 300 MB to keep 1 MB. `worker.py` has bounded the same output at
+    write time since the streaming buffer landed; the R half never did.
+
+    The visible behaviour is unchanged by design, which is exactly why this
+    test alone cannot check the fix: reverting to the whole-file read leaves
+    every assertion below green. `test_real_r_slurp_reads_at_most_the_cap`
+    drives `.oai4s_slurp` directly and is the one that fails. Mutation testing
+    is what exposed that, and this docstring says so rather than leaving a
+    reader to assume the pair is redundant.
+    """
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        result = kernel.execute("for (i in 1:400000) cat('line', i, '\n')")
+        assert result["error"] is None
+        stdout = result["stdout"]
+        # Capped, and it says so.
+        assert 1_000_000 <= len(stdout) <= 1_000_100
+        assert "truncated" in stdout[-80:]
+
+        # Short output is untouched — no marker on something that ended.
+        short = kernel.execute("cat('brief\n')")
+        assert short["stdout"] == "brief\n"
+        assert "truncated" not in short["stdout"]
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_reports_no_peak_rss_rather_than_zero(tmp_path):
+    """`0` is a measurement this worker cannot make.
+
+    Peak RSS comes from `/proc/self/status`, which does not exist on macOS —
+    the platform this project is developed on — so every R cell reported a
+    peak RSS of zero and the usage row recorded it as fact. Absent is the true
+    answer, and the column is nullable so that it can be given.
+
+    On Linux the value is `VmHWM`, a process-lifetime high-water mark rather
+    than a per-cell peak; that is recorded in the worker rather than silently
+    presented as a per-cell number.
+    """
+    import sys
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        result = kernel.execute("x <- 1")
+        usage = result["usage"]
+        assert "wall_s" in usage and "cpu_s" in usage
+        if sys.platform == "linux":
+            assert usage["peak_rss_kb"] is None or usage["peak_rss_kb"] > 0
+        else:
+            assert usage["peak_rss_kb"] is None, (
+                f"a platform with no /proc reported {usage['peak_rss_kb']!r} "
+                "as a measured peak RSS"
+            )
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_slurp_reads_at_most_the_cap(tmp_path):
+    """Drive `.oai4s_slurp` itself, because the capped output looks the same
+    either way.
+
+    The helper is lifted out of the real worker file and evaluated on its own —
+    sourcing the whole file would start the protocol loop. Lifting keeps the
+    code under test the shipped code rather than a copy of it, which is the
+    hazard a hand-written stand-in would introduce.
+    """
+    import re
+    import subprocess
+    from pathlib import Path
+
+    worker = Path("openai4s/kernel/r_worker.R").read_text(encoding="utf-8")
+    match = re.search(r"\.oai4s_slurp <- function.*?\n\}", worker, re.S)
+    assert match, "the helper this test drives is no longer in the worker"
+
+    big = tmp_path / "big.txt"
+    big.write_bytes(b"A" * (8 * 1024 * 1024))  # 8 MiB, well past the 1 MB cap
+    script = (
+        ".oai4s_MAX_OUTPUT <- 1000000\n"
+        + match.group(0)
+        + f"\ncat(nchar(.oai4s_slurp('{big}'), type='bytes'), '\\n')\n"
+    )
+    result = subprocess.run(
+        [_REAL_R, "--vanilla", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[:300]
+    read_bytes = int(result.stdout.strip().split()[-1])
+    assert (
+        read_bytes <= 1_000_001
+    ), f"slurp read {read_bytes:,} bytes of an 8 MiB file to keep 1 MB of it"
+    # ...and it read enough to fill the cap and know it was cut.
+    assert read_bytes == 1_000_001
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_streams_stdout_while_the_cell_runs(tmp_path):
+    """Live output, which the R half of the product did not have.
+
+    The host has always accepted `stdout_chunk` frames — `manager.py` collects
+    them and the Notebook renders them — and the R worker never emitted one.
+    A long R cell showed nothing at all until it finished, while the same cell
+    in Python reported as it went.
+
+    Streaming happens between top-level expressions, which the evaluator was
+    already looping over. Mid-expression streaming would need C-level work: R
+    is single-threaded, `addTaskCallback` does not fire inside an expression,
+    and a connection callback cannot be written in R. So a chatty `for` loop
+    still arrives in one piece — that limit is real and is stated in the
+    worker rather than implied.
+    """
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        chunks: list[str] = []
+        result = kernel.execute(
+            "cat('first\n')\nSys.sleep(0.05)\ncat('second\n')\ncat('third\n')",
+            on_chunk=chunks.append,
+        )
+        assert result["error"] is None
+        assert len(chunks) >= 2, f"no live output: {chunks}"
+        assert "first" in chunks[0]
+
+        # ...and the final response is the output once, not twice. The manager
+        # falls back to the accumulated chunks only when the frame carries no
+        # stdout, so a worker that sent both would double it.
+        assert result["stdout"] == "first\nsecond\nthird\n"
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_streaming_is_bounded_like_the_capture(tmp_path):
+    """A runaway cell must not stream its whole output to the host in frames
+    and then have it capped in the response — the host paying for output it
+    will not keep."""
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        chunks: list[str] = []
+        result = kernel.execute(
+            "for (i in 1:200000) cat('line', i, '\n')\ncat('done\n')",
+            on_chunk=chunks.append,
+        )
+        assert result["error"] is None
+        streamed = sum(len(chunk) for chunk in chunks)
+        assert streamed <= 1_000_001, f"{streamed:,} characters streamed"
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_error_lineno_survives_streaming(tmp_path):
+    """The flush sits inside the loop that walks parsed expressions, next to
+    the srcref bookkeeping `error_lineno` depends on. Breaking that would trade
+    a feature for a regression in the one thing the R worker documents as hard
+    to get right."""
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        # `\\n` so the R source is three lines. Written with a bare `\n` the
+        # first time, which made the R source five lines and `error_lineno` 5 —
+        # correctly. The test was wrong, not the worker.
+        result = kernel.execute("cat('a\\n')\ncat('b\\n')\nstop('boom')")
+        assert result["error"] is not None
+        assert "boom" in result["error"]
+        assert result["trace"]["error_lineno"] == 3
+    finally:
+        kernel.shutdown()

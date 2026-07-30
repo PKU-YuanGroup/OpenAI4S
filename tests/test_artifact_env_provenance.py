@@ -511,3 +511,37 @@ def test_an_assumed_snapshot_claims_no_generation_confidence(env):
     assert snapshot["generation_id"] is None
     assert snapshot["generation_confidence"] is None
     assert "assumed" in (snapshot["provenance"] or "")
+
+
+# --------------------------------------------------------------------------
+# the remote-provenance buffer is drained per cell, as it says it is
+# --------------------------------------------------------------------------
+
+
+# The behavioural version of "the buffer does not outlive its cell" lives in
+# `test_artifact_manager.py::test_no_changes_skip_environment_and_remote_provenance`,
+# which drives the real `capture` with a cell that wrote nothing. An earlier
+# version here inspected the source for `if changed` instead, and went stale
+# the moment the fix was refined: the environment freeze is *correctly* gated
+# on a cell having written files, and only the drain must not be. A source
+# check could not tell those two apart; the behavioural one can.
+
+
+def test_the_drain_actually_empties_the_buffer(env):
+    """Behaviour, not just shape: whatever `capture_environment` is handed must
+    be consumed, or a second call would see the same entry again."""
+    manager, root, _store = env
+    drained: list[int] = []
+    buffer = [{"service": "fold", "host": "gpu-1", "engine": "af3"}]
+
+    def _drain():
+        drained.append(len(buffer))
+        taken, buffer[:] = list(buffer), []
+        return taken
+
+    manager.capture_environment(_drain, root_frame_id=root, language="python")
+    assert drained == [1]
+    assert buffer == [], "the remote entry survived the drain"
+
+    manager.capture_environment(_drain, root_frame_id=root, language="python")
+    assert drained == [1, 0], "a second cell saw the first cell's remote job"

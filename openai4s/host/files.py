@@ -51,16 +51,39 @@ class WorkspaceFileService:
         self._data_dir = data_dir
         self._frame_id = frame_id
         self._workspace = workspace
+        self._resolved_key: tuple[str | None, str | None] | None = None
+        self._resolved_path: Path | None = None
 
     def workspace(self) -> Path:
-        """Return the resolved workspace, creating it on first use."""
+        """Return the resolved workspace, creating it on first use.
+
+        On first use, not every use. This did a `resolve()` and a
+        `mkdir(parents=True, exist_ok=True)` per call, and `relative()` calls
+        it once per candidate path -- so a glob over N files paid N of each on
+        top of the globbing. Measured at ~16us per call, about half the cost of
+        `relative()` itself.
+
+        The memo is keyed on the two cheap inputs rather than on nothing,
+        because both are late-bound: the CLI assigns its root frame after the
+        dispatcher exists, and the key changing is exactly when the directory
+        must be recomputed.
+        """
         explicit = self._workspace() if self._workspace is not None else None
+        key = (
+            str(explicit) if explicit is not None else None,
+            self._frame_id(),
+        )
+        cached = self._resolved_path
+        if cached is not None and self._resolved_key == key:
+            return cached
         workspace = (
             Path(explicit)
             if explicit is not None
-            else self._data_dir / "agent-workspaces" / (self._frame_id() or "default")
+            else self._data_dir / "agent-workspaces" / (key[1] or "default")
         ).resolve()
         workspace.mkdir(parents=True, exist_ok=True)
+        self._resolved_key = key
+        self._resolved_path = workspace
         return workspace
 
     def relative(self, path: Path) -> str | None:

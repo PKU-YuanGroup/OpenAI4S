@@ -68,22 +68,33 @@ def test_create_update_read_delete_writes_exact_user_document(tmp_path):
     assert (skill_root / "resources" / "schema.json").is_file()
     assert service.delete("My Skill") == {"ok": True}
     assert not skill_root.exists()
-    assert service.get("My Skill") == {"error": "skill not found"}
-    assert service.delete("My Skill") == {"error": "skill not found"}
+    assert service.get("My Skill") == {
+        "error": "skill not found",
+        "code": "skill_not_found",
+    }
+    assert service.delete("My Skill") == {
+        "error": "skill not found",
+        "code": "skill_not_found",
+    }
 
 
 def test_validation_builtin_collision_and_read_only_delete_contract(tmp_path):
     _config, service = _service(tmp_path)
 
-    assert service.create_or_update("", "", "") == {"error": "skill name is required"}
+    assert service.create_or_update("", "", "") == {
+        "error": "skill name is required",
+        "code": "skill_name_required",
+    }
     assert service.create_or_update("Builtin", "custom", "body") == {
-        "error": "'builtin' collides with a built-in skill — pick a different name"
+        "error": "'builtin' collides with a built-in skill — pick a different name",
+        "code": "skill_name_conflict",
     }
     builtin = service.get("Builtin")
     assert builtin["origin"] == "openai4s"
     assert builtin["editable"] is False
     assert service.delete("Builtin") == {
-        "error": "only user-authored skills can be deleted"
+        "error": "only user-authored skills can be deleted",
+        "code": "skill_read_only",
     }
 
 
@@ -99,7 +110,8 @@ def test_declared_builtin_name_collision_is_rejected_when_slug_differs(tmp_path)
 
     assert service.create_or_update(" canonical  skill ", "custom", "body") == {
         "error": "'canonical-skill' collides with a built-in skill — "
-        "pick a different name"
+        "pick a different name",
+        "code": "skill_name_conflict",
     }
     assert service.get("Canonical Skill")["editable"] is False
 
@@ -171,7 +183,8 @@ def test_import_precedence_and_catalog_enablement(tmp_path):
     assert body_wins["slug"] == "body-wins"
     assert service.get("Body Wins")["body"] == "Explicit body\n"
     assert service.import_document(content=raw, body="explicit body") == {
-        "error": "skill name is required"
+        "error": "skill name is required",
+        "code": "skill_name_required",
     }
 
     assert service.set_enabled("Imported", False) == {"ok": True}
@@ -201,7 +214,20 @@ def test_import_precedence_and_catalog_enablement(tmp_path):
     assert SkillCustomizationService(BrokenLoader()).catalog() == []
 
 
-def test_gateway_skill_routes_keep_soft_errors_and_shared_enablement(tmp_path):
+def test_gateway_skill_routes_answer_a_real_status_and_share_enablement(tmp_path):
+    """This used to assert `(200, {"error": ...})` three times, and its name
+    said "keep soft errors".
+
+    The service returning soft dictionaries is a deliberate design and is kept.
+    What was not deliberate is the gateway answering 200 for them. Three
+    consequences: the body never reached `errors.public_failure`, so it carried
+    no `request_id`; a client had nothing to branch on but the prose, which the
+    contract documents as explicitly not an interface; and `api()` in the web
+    client only throws on a non-2xx, so the Customize editor reported "saved"
+    and closed the modal on a save that had not happened.
+
+    The status is read from the code, never from the message.
+    """
     config, _service_instance = _service(tmp_path)
     handler_class = gateway_mod.make_handler(
         config,
@@ -222,21 +248,32 @@ def test_gateway_skill_routes_keep_soft_errors_and_shared_enablement(tmp_path):
 
     assert gateway_mod._skill_slug("My Connector") == "my-connector"
     assert call(first, "POST", "/skills", {}) == (
-        200,
-        {"error": "skill name is required"},
+        400,
+        {"error": "skill name is required", "code": "skill_name_required"},
     )
+    # A name already taken by a bundled skill is a conflict, not a bad request:
+    # the input is well-formed and the collision is about state.
     assert call(
         first,
         "POST",
         "/skills",
         {"name": "Builtin", "body": "shadow"},
     ) == (
-        200,
-        {"error": "'builtin' collides with a built-in skill — pick a different name"},
+        409,
+        {
+            "error": "'builtin' collides with a built-in skill — pick a different name",
+            "code": "skill_name_conflict",
+        },
     )
+    # Refusing to delete a bundled skill is policy, so 403 rather than 404 --
+    # the skill plainly exists, and saying "not found" would be a lie the user
+    # can immediately disprove.
     assert call(first, "DELETE", "/skills/Builtin") == (
-        200,
-        {"error": "only user-authored skills can be deleted"},
+        403,
+        {
+            "error": "only user-authored skills can be deleted",
+            "code": "skill_read_only",
+        },
     )
 
     code, created = call(
@@ -289,8 +326,8 @@ def test_gateway_skill_routes_keep_soft_errors_and_shared_enablement(tmp_path):
     )
     assert imported[0] == 200 and imported[1]["slug"] == "route-import"
     assert call(first, "GET", "/skills/Missing") == (
-        200,
-        {"error": "skill not found"},
+        404,
+        {"error": "skill not found", "code": "skill_not_found"},
     )
     assert call(first, "DELETE", "/skills/Web%20Skill") == (200, {"ok": True})
 
@@ -310,7 +347,8 @@ def test_skill_delete_rejects_same_prefix_sibling_directory(tmp_path):
     )
 
     assert SkillCustomizationService(loader).delete("Victim") == {
-        "error": "only user-authored skills can be deleted"
+        "error": "only user-authored skills can be deleted",
+        "code": "skill_read_only",
     }
     assert marker.read_text("utf-8") == "keep\n"
 
@@ -328,7 +366,8 @@ def test_skill_write_rejects_directory_and_document_symlink_escape(tmp_path):
         pytest.skip(f"symlinks unavailable: {error}")
 
     assert service.create_or_update("Escape", "", "outside write") == {
-        "error": "unsafe user skill path"
+        "error": "unsafe user skill path",
+        "code": "skill_name_unsafe",
     }
     assert not (outside_directory / "SKILL.md").exists()
 
@@ -343,7 +382,7 @@ def test_skill_write_rejects_directory_and_document_symlink_escape(tmp_path):
         "",
         "replacement",
         existing=True,
-    ) == {"error": "unsafe user skill path"}
+    ) == {"error": "unsafe user skill path", "code": "skill_name_unsafe"}
     assert outside_document.read_text("utf-8") == "sentinel\n"
 
     service.create_or_update("Real Skill", "", "real body")
@@ -354,6 +393,94 @@ def test_skill_write_rejects_directory_and_document_symlink_escape(tmp_path):
     alias.symlink_to(real_root, target_is_directory=True)
     service.loader.discover()
 
-    assert service.delete("alias") == {"error": "unsafe user skill path"}
+    assert service.delete("alias") == {
+        "error": "unsafe user skill path",
+        "code": "skill_name_unsafe",
+    }
     assert alias.is_symlink()
     assert sentinel.read_text("utf-8") == "keep real skill\n"
+
+
+def test_every_declared_failure_code_has_a_status_and_vice_versa(tmp_path):
+    """The code is the contract; the status is a projection of it.
+
+    Two ways that drifts. A new `_fail("skill_whatever", ...)` with no entry in
+    the table answers 400 by default -- safe, but it means a route quietly
+    stopped distinguishing a conflict from a bad request. And an entry left in
+    the table after its code is gone reads as surface that exists.
+    """
+    import pathlib
+    import re
+
+    from openai4s.server import skills as skills_module
+
+    source = pathlib.Path(skills_module.__file__).read_text("utf-8")
+    used = set(re.findall(r'_fail\(\s*"([a-z_]+)"', source))
+    declared = set(skills_module.SKILL_FAILURE_STATUS)
+
+    assert not (used - declared), (
+        "these failure codes are returned but have no HTTP status, so they "
+        f"fall back to 400: {sorted(used - declared)}"
+    )
+    assert not (declared - used), (
+        f"these statuses are declared for codes nothing returns: "
+        f"{sorted(declared - used)}"
+    )
+
+
+def test_the_status_is_read_from_the_code_never_from_the_message(tmp_path):
+    """Mapping prose to a status is the thing this change removed.
+
+    A payload whose code is unrecognised answers 400, not 200: a failure whose
+    *kind* is unknown is still a failure, and answering 200 is what let a
+    failed save be reported to the user as a successful one.
+    """
+    assert gateway_mod._skill_result_status({"ok": True}) == 200
+    assert gateway_mod._skill_result_status({"slug": "x", "name": "y"}) == 200
+    # No error key -> success, even if other fields look alarming.
+    assert gateway_mod._skill_result_status({"error": ""}) == 200
+
+    assert (
+        gateway_mod._skill_result_status(
+            {"error": "skill not found", "code": "skill_not_found"}
+        )
+        == 404
+    )
+    # The message says "not found"; the code says otherwise. The code wins.
+    assert (
+        gateway_mod._skill_result_status(
+            {"error": "skill not found", "code": "skill_name_conflict"}
+        )
+        == 409
+    )
+    assert gateway_mod._skill_result_status({"error": "boom", "code": "made_up"}) == 400
+    assert gateway_mod._skill_result_status({"error": "boom"}) == 400
+
+
+def test_a_failed_skill_save_is_not_reported_to_the_user_as_a_success(tmp_path):
+    """The consequence that made this worth changing.
+
+    `api()` in the web client throws only on a non-2xx. The Customize editor's
+    save handler does not inspect the body, so while these routes answered 200
+    with an error, a rejected save closed the modal and showed "saved" -- and
+    the skill was not written. Asserting the status here is asserting that the
+    client's success path can no longer be reached by a failure.
+    """
+    config, service = _service(tmp_path)
+    handler_class = gateway_mod.make_handler(
+        config, gateway_mod.WSHub(), SimpleNamespace()
+    )
+    handler = object.__new__(handler_class)
+    replies = []
+    handler._query = lambda: {}
+    handler._json = lambda value, code=200: replies.append((code, value))
+
+    handler._body = lambda: {"name": "", "body": "x"}
+    handler._api("POST", "/skills")
+    status, body = replies[-1]
+    assert status >= 400, "a rejected save still answers 2xx; api() will not throw"
+    assert body["error"] and body["code"]
+
+    # And the skill really was not written, which is what the user was being
+    # told had happened.
+    assert service.get("").get("error")

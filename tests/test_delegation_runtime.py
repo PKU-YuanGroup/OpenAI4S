@@ -19,6 +19,18 @@ from openai4s.agent.models import RunState
 from openai4s.config import get_config
 from openai4s.store import get_store
 
+#: How long to wait for a worker thread to reach its rendezvous.
+#:
+#: These are handshakes, not latency assertions — the claims around them
+#: are about which child stops, which model a child compacts against, and
+#: whether a grandchild is reachable. It was 2 seconds, which is plenty on
+#: an idle laptop and not plenty on a loaded CI runner with the
+#: frozen-shape recorder installed: that is where it failed, having passed
+#: locally three times in a row and in the CI run before it. A longer wait
+#: weakens nothing, because an event that never fires still fails the
+#: test — it just stops failing when the machine is busy.
+_RENDEZVOUS_TIMEOUT = 30
+
 
 def _submitted(output=None):
     return {
@@ -216,7 +228,7 @@ class _FakeKernel:
         self.action_codes.append(code)
         type(self).action_started.set()
         if type(self).block_actions:
-            assert type(self).release_action.wait(2)
+            assert type(self).release_action.wait(_RENDEZVOUS_TIMEOUT)
         return {
             "stdout": "",
             "stderr": "",
@@ -259,7 +271,7 @@ def test_stop_child_interrupts_exact_foreground_kernel_and_engine_cancels(monkey
     runner = DelegationRunner(get_config(), child_max_turns=2)
     handle = runner({"request": "run a long cell", "wait": False})
 
-    assert _FakeKernel.action_started.wait(2)
+    assert _FakeKernel.action_started.wait(_RENDEZVOUS_TIMEOUT)
     stopped = runner.stop_child(handle["child_id"])
     result = runner.collect({"child_ids": [handle["child_id"]]})[0]
 
@@ -294,7 +306,7 @@ def test_late_model_reply_after_stop_cannot_execute_or_submit(monkeypatch):
         del messages, cfg, kwargs
         model_calls.append("started")
         model_started.set()
-        assert release_model.wait(2)
+        assert release_model.wait(_RENDEZVOUS_TIMEOUT)
         return {
             "content": (
                 "```python\n"
@@ -310,7 +322,7 @@ def test_late_model_reply_after_stop_cannot_execute_or_submit(monkeypatch):
     runner = DelegationRunner(get_config(), child_max_turns=2)
     handle = runner({"request": "wait for the model", "wait": False})
 
-    assert model_started.wait(2)
+    assert model_started.wait(_RENDEZVOUS_TIMEOUT)
     runner.stop_child(handle["child_id"])
     release_model.set()
     result = runner.collect({"child_ids": [handle["child_id"]]})[0]
@@ -338,10 +350,10 @@ def test_parent_stop_propagates_to_running_descendants(monkeypatch):
                 self.dispatcher._delegate_fn({"request": "grandchild", "wait": False})
             )
             child_ready.set()
-            assert grandchild_ready.wait(2)
+            assert grandchild_ready.wait(_RENDEZVOUS_TIMEOUT)
         elif self.delegate_depth == 1:
             sibling_ready.set()
-            assert release_sibling.wait(2)
+            assert release_sibling.wait(_RENDEZVOUS_TIMEOUT)
             assert not self.cancellation.cancelled()
             return _submitted({"sibling": "unharmed"})
         else:
@@ -357,9 +369,9 @@ def test_parent_stop_propagates_to_running_descendants(monkeypatch):
     runner = DelegationRunner(get_config())
     parent = runner({"request": "parent child", "wait": False})
     sibling = runner({"request": "sibling child", "wait": False})
-    assert child_ready.wait(2)
-    assert grandchild_ready.wait(2)
-    assert sibling_ready.wait(2)
+    assert child_ready.wait(_RENDEZVOUS_TIMEOUT)
+    assert grandchild_ready.wait(_RENDEZVOUS_TIMEOUT)
+    assert sibling_ready.wait(_RENDEZVOUS_TIMEOUT)
 
     runner.stop_child(parent["child_id"])
     runner.collect({"child_ids": [parent["child_id"]]})
@@ -394,7 +406,7 @@ def test_live_steering_is_delivered_at_next_turn_boundary(monkeypatch):
         )
         self.context_policy.prepare(state)
         first_boundary.set()
-        assert continue_turn.wait(2)
+        assert continue_turn.wait(_RENDEZVOUS_TIMEOUT)
         state.turn = 1
         self.context_policy.prepare(state)
         observed_messages.extend(state.messages)
@@ -403,7 +415,7 @@ def test_live_steering_is_delivered_at_next_turn_boundary(monkeypatch):
     monkeypatch.setattr(loop_mod.Agent, "run", boundary_run)
     runner = DelegationRunner(get_config(), event_sink=events.append)
     handle = runner({"request": "initial task", "wait": False})
-    assert first_boundary.wait(2)
+    assert first_boundary.wait(_RENDEZVOUS_TIMEOUT)
 
     queued = runner.send_message(
         {"child_id": handle["child_id"], "message": "Use the newer dataset"}
@@ -479,3 +491,144 @@ def test_child_model_steps_and_policy_overrides_remain_visible(monkeypatch):
     assert child["depth"] == 1
     assert child["parent_child_id"] is None
     assert child["progress"]["max_turns"] == 3
+
+
+def test_stopping_one_child_leaves_its_siblings_running(monkeypatch):
+    """P1-B's exit criterion, stated directly: cancelling one child or queued
+    item must not affect its siblings.
+
+    `_stop_subtree` walks `descendants`, which follows `parent_child_id` links,
+    so siblings are structurally outside the walk. That is the right design and
+    it is exactly the kind of thing that survives a refactor into "stop
+    everything under the parent" without anybody noticing, because the common
+    case — one child — behaves identically either way.
+    """
+    _reset_fake_kernel(block_actions=True)
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        return {"content": "```python\nprint('long cell')\n```", "tool_calls": []}
+
+    monkeypatch.setattr(loop_mod, "Kernel", _FakeKernel)
+    monkeypatch.setattr(loop_mod, "chat", fake_chat)
+    runner = DelegationRunner(get_config(), child_max_turns=2)
+
+    doomed = runner({"request": "child A", "wait": False})
+    spared = runner({"request": "child B", "wait": False})
+    assert _FakeKernel.action_started.wait(_RENDEZVOUS_TIMEOUT)
+
+    stopped = runner.stop_child(doomed["child_id"])
+    assert stopped["status"] == "stopped"
+
+    # The sibling is untouched: not stopped, and still collectable on its own
+    # terms rather than reporting someone else's cancellation.
+    states = {item["child_id"]: item for item in runner.children()}
+    assert states[spared["child_id"]]["status"] != "stopped"
+
+    runner.stop_child(spared["child_id"])  # clean up the second kernel
+
+
+def test_stopping_a_parent_stops_its_descendants_but_not_a_cousin(monkeypatch):
+    """The other half. A subtree stop must reach grandchildren — otherwise a
+    stopped branch keeps burning budget underneath — while still not touching a
+    branch that merely shares a root.
+    """
+    from types import SimpleNamespace
+
+    from openai4s.agent.delegation import _DelegationTree
+
+    # `descendants` reads exactly two attributes — `child_id` and
+    # `parent_child_id` — so a minimal stand-in is faithful *for this
+    # function*, and building six real `_Child` objects (each needing a store,
+    # a budget and a clock) would test the constructor rather than the walk.
+    tree = _DelegationTree(clock=lambda: 0.0)
+    for child_id, parent in (
+        ("a", None),
+        ("a1", "a"),
+        ("a2", "a"),
+        ("a1x", "a1"),
+        ("b", None),
+        ("b1", "b"),
+    ):
+        tree.children[child_id] = SimpleNamespace(
+            child_id=child_id, parent_child_id=parent
+        )
+
+    reached = {child.child_id for child in tree.descendants("a")}
+    assert reached == {"a", "a1", "a2", "a1x"}, "the subtree walk is wrong"
+    assert "b" not in reached and "b1" not in reached
+
+    # And a leaf stop reaches only itself.
+    assert {child.child_id for child in tree.descendants("a1x")} == {"a1x"}
+
+
+# --------------------------------------------------------------------------
+# a child compacts against its own model's window
+# --------------------------------------------------------------------------
+
+
+def test_a_child_compacts_against_its_own_models_window():
+    """The defect. `_SteeringContextPolicy` built a bare `CompactionPolicy`,
+    which falls back to `cfg.context_window_tokens` — the daemon default of
+    262,144 — while the Web session path has always derived the budget from the
+    model's declared capability.
+
+    A child may run a different model than its parent, which is exactly when
+    the two numbers diverge: a model whose usable window is 136,000 tokens
+    would compact against 262,144 and sail past its real limit, learning about
+    it as a provider rejection rather than as a compaction.
+
+    Asserted against the real capability rather than a literal, since the
+    number belongs to the model and not to this test — but the *inequality*
+    with the daemon default is the point and is checked explicitly.
+    """
+    import dataclasses
+
+    from openai4s.agent.delegation import _child_context_budget
+    from openai4s.config import get_config
+    from openai4s.llm import get_model_capabilities
+
+    base = get_config()
+    cfg = dataclasses.replace(
+        base,
+        llm=dataclasses.replace(
+            base.llm, provider="claude", model="claude-opus-4-20250514"
+        ),
+    )
+    expected = get_model_capabilities("claude", "claude-opus-4-20250514")
+    budget = _child_context_budget(cfg)(None)
+
+    assert budget == expected.usable_context_tokens
+    assert (
+        budget != base.context_window_tokens
+    ), "this model's window matches the daemon default, so the test proves nothing"
+
+
+def test_an_unknown_model_falls_back_rather_than_guessing():
+    """Returning None restores the previous behaviour on purpose: a model
+    nobody has capabilities for uses the configured default, and a capability
+    lookup that raises must not take the child down with it."""
+    import dataclasses
+
+    from openai4s.agent.delegation import _child_context_budget
+    from openai4s.config import get_config
+
+    base = get_config()
+    cfg = dataclasses.replace(
+        base,
+        llm=dataclasses.replace(
+            base.llm, provider="not-a-provider", model="not-a-model"
+        ),
+    )
+    assert _child_context_budget(cfg)(None) is None
+
+
+def test_the_policy_actually_installs_the_provider():
+    """A budget function nothing calls is the shape of the bug it replaces."""
+    import inspect
+
+    from openai4s.agent import delegation
+
+    source = inspect.getsource(delegation._SteeringContextPolicy.__init__)
+    assert "context_budget_provider=" in source
+    assert "_child_context_budget" in source

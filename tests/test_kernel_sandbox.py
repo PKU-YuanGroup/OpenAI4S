@@ -137,7 +137,14 @@ def test_seatbelt_profile_appends_targeted_read_denies():
     plain = build_seatbelt_profile(workspace, temp_dir)
     guarded = build_seatbelt_profile(workspace, temp_dir, deny_read=deny)
 
-    assert "file-read*" not in plain  # no read denies without deny_read
+    # The profile now carries a baseline of its own: the macOS keychain is
+    # denied unconditionally, because that is where `OPENAI4S_SECRET_STORE`
+    # puts the LLM API key and a cell could otherwise run `/usr/bin/security`
+    # and read it. So the claim is no longer "no denies at all" but "no denies
+    # for paths nobody asked about".
+    assert "/data/openai4s.db" not in plain
+    assert "/home/u/.ssh" not in plain
+    assert "Keychains" in plain  # the baseline is there even with no deny_read
     assert '(deny file-read* (prefix "/data/openai4s.db"))' in guarded
     assert '(deny file-read* (subpath "/home/u/.ssh"))' in guarded
     # last-match-wins: the read denies must follow the leading (allow default)

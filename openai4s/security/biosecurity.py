@@ -163,3 +163,29 @@ def _parse_screen(text: str) -> ScreenVerdict:
             return ScreenVerdict(d, reason="parsed from unstructured response")
     # Ambiguous -> ESCALATE (surface to a human) rather than silently allowing.
     return ScreenVerdict("ESCALATE", reason="screener response was unparseable")
+
+
+def gather_trajectory(messages: list[dict], current_code: str) -> tuple[str, str]:
+    """Split the running conversation into (user_text, agent_actions).
+
+    Lives here rather than in the CLI loop because both surfaces screen: the
+    CLI's pre-exec gate and the Web daemon's. Two copies of "what counts as the
+    trajectory" would be two safety policies wearing one name, drifting
+    quietly apart -- and importing the loop's private helper into the gateway
+    is exactly the shape `test_backend_import_contract` refuses.
+
+    All user turns against all assistant turns plus the cell about to run.
+    """
+    user_parts: list[str] = []
+    action_parts: list[str] = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if not isinstance(content, str):
+            continue
+        if role == "user":
+            user_parts.append(content)
+        elif role == "assistant":
+            action_parts.append(content)
+    action_parts.append(current_code)
+    return ("\n\n".join(user_parts[-6:]), "\n\n".join(action_parts[-8:]))

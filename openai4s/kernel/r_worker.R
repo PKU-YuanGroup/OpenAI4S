@@ -101,7 +101,8 @@
     ',"error_call":', if (is.null(callname)) "null" else .oai4s_esc(callname),
     '},"guards":{},"usage":{"wall_s":', .oai4s_num(wall),
     ',"cpu_s":', .oai4s_num(cpu),
-    ',"peak_rss_kb":', sprintf("%d", as.integer(.oai4s_or(rss, 0L))),
+    ',"peak_rss_kb":',
+    if (is.null(rss)) "null" else sprintf("%d", as.integer(rss)),
     "}}"
   )
   .oai4s_responded <<- TRUE
@@ -111,10 +112,19 @@
 # --- capture helpers ---------------------------------------------------------
 
 .oai4s_slurp <- function(path) {
+  # Reads at most one byte past the cap, never the whole file. It used to read
+  # `sz` -- the entire capture -- and hand it to .oai4s_cap, which threw all
+  # but the first megabyte away. A cell printing 300 MB therefore allocated
+  # 300 MB in this worker to keep 1 MB of it, while worker.py has bounded the
+  # same output *at write time* since the streaming buffer landed.
+  #
+  # The extra byte is what tells a file that ended exactly at the cap from one
+  # that was cut, so the truncation marker is not attached to complete output.
   if (!file.exists(path)) return("")
   sz <- file.info(path)$size
   if (is.na(sz) || sz <= 0) return("")
-  tryCatch(readChar(path, sz, useBytes = TRUE), error = function(e) "")
+  want <- min(sz, .oai4s_MAX_OUTPUT + 1)
+  tryCatch(readChar(path, want, useBytes = TRUE), error = function(e) "")
 }
 
 .oai4s_cap <- function(s) {
@@ -140,7 +150,18 @@
       if (!is.na(kb)) return(kb)
     }
   }
-  0L  # non-Linux; best-effort like worker.py
+  # NULL, not 0L. `0` is a measurement -- "this cell used no memory" -- and it
+  # is one this worker cannot make: there is no /proc on macOS, which is the
+  # platform this project is developed on, so every R cell reported a peak RSS
+  # of zero and the usage row said so. Absent is the true answer, and the
+  # column is nullable precisely so it can be given.
+  #
+  # The Linux value is left as VmHWM deliberately, and it is worth naming what
+  # that is: a process-lifetime high-water mark, not a per-cell peak. One
+  # memory-hungry cell raises the number every later cell reports. Resetting it
+  # per cell needs /proc/self/clear_refs and a Linux run to verify, so it is
+  # recorded rather than guessed at from here.
+  NULL
 }
 
 .oai4s_unwind_sinks <- function() {
@@ -150,6 +171,45 @@
   tryCatch({
     while (sink.number(type = "message") != 2L) sink(type = "message")
   }, error = function(e) NULL)
+}
+
+.oai4s_stream_stdout <- function(out_con, out_file, id, sent) {
+  # Emit whatever landed on stdout since the last call as a `stdout_chunk`
+  # frame, and return the new offset.
+  #
+  # The R worker never emitted these at all, so live output — the Notebook's
+  # running-cell view and `exec_peek` on a background job — was dead for the R
+  # half of the product while the host side has always accepted the frames.
+  # A long R cell showed nothing until it finished.
+  #
+  # This runs between top-level expressions, which the evaluator was already
+  # looping over. Mid-expression streaming would need C-level work: R is
+  # single-threaded, `addTaskCallback` does not fire inside an expression, and
+  # a connection callback cannot be written in R. So a chatty `for` loop still
+  # arrives in one piece, and a multi-statement cell now reports as it goes.
+  #
+  # Bounded the same way the final capture is. Without a cap a runaway cell
+  # would stream its whole output to the host in frames *and* have it capped
+  # in the response — the host paying for output it will not keep.
+  if (sent >= .oai4s_MAX_OUTPUT) return(sent)
+  ok <- tryCatch({ flush(out_con); TRUE }, error = function(e) FALSE)
+  if (!ok) return(sent)
+  size <- file.info(out_file)$size
+  if (is.na(size) || size <= sent) return(sent)
+  want <- min(size, .oai4s_MAX_OUTPUT) - sent
+  if (want <= 0) return(sent)
+  text <- tryCatch({
+    con <- file(out_file, open = "rb")
+    on.exit(close(con), add = TRUE)
+    seek(con, where = sent)
+    rawToChar(readBin(con, "raw", n = want))
+  }, error = function(e) NULL)
+  if (is.null(text) || !nzchar(text)) return(sent)
+  .oai4s_write_frame(paste0(
+    '{"type":"stdout_chunk","id":', .oai4s_esc(id),
+    ',"text":', .oai4s_esc(text), '}'
+  ))
+  sent + want
 }
 
 # --- one cell ----------------------------------------------------------------
@@ -163,6 +223,7 @@
   sink(msg_con, type = "message")
 
   err <- NULL; lineno <- NULL; callname <- NULL; interrupted <- FALSE
+  streamed <- 0
   t0 <- Sys.time(); p0 <- proc.time()
 
   parsed <- tryCatch(parse(text = code, keep.source = TRUE), error = function(e) e)
@@ -212,6 +273,7 @@
           message("print failed: ", conditionMessage(e))
         })
       }
+      streamed <- .oai4s_stream_stdout(out_con, out_file, id, streamed)
     }
   }
 
@@ -310,18 +372,52 @@ evalq({
   binding_value <- function(name) {
     env <- globalenv()
     if (bindingIsActive(name, env)) {
-      return(list(active = TRUE, value = NULL))
+      return(list(active = TRUE, value = NULL, lazy = FALSE))
     }
-    # substitute() reads an ordinary binding without invoking repr/print and
-    # returns a delayedAssign promise's expression without forcing it.
+    # substitute() is tried first because it is the only thing here that can
+    # see an unforced promise without running it.  On builds where it exposes
+    # a promise's body we get a language object back and stop right there.
     symbol <- as.name(name)
     call <- as.call(list(as.name("substitute"), symbol, env))
-    list(active = FALSE, value = eval(call, baseenv()))
+    probed <- eval(call, baseenv())
+    if (is.language(probed) && !is.symbol(probed)) {
+      return(list(active = FALSE, value = probed, lazy = TRUE))
+    }
+    # Otherwise substitute told us nothing.  It does not substitute bindings
+    # from .GlobalEnv -- which is the only environment this inspector reads --
+    # so it returned the bare symbol, and using that as the answer reported
+    # EVERY ordinary variable as an opaque `symbol` with no type, length or
+    # preview.  The inspector was, in effect, a list of names.
+    #
+    # get0() reads the binding for real.  The cost, stated plainly: a
+    # `delayedAssign` binding that substitute did not expose is forced here,
+    # which runs user code during inspection.  Only the binding being
+    # inspected, and only on builds where the probe above cannot tell -- but
+    # it is a real side effect and it is the reason the old code chose the
+    # safe, useless answer.
+    #
+    # And it is wrapped, because forcing is not merely a side effect: a promise
+    # whose body raises turns one variable's read into a failure of the WHOLE
+    # inspection, which is how this change first showed up -- the entire
+    # variable list came back "failed closed" because one `delayedAssign` in
+    # the session called stop(). A binding that cannot be read safely degrades
+    # to the same opaque answer an unforced promise gets.
+    tryCatch(
+      list(active = FALSE, value = get0(name, envir = env, inherits = FALSE),
+           lazy = FALSE),
+      error = function(e) list(active = FALSE, value = NULL, lazy = TRUE),
+      condition = function(e) list(active = FALSE, value = NULL, lazy = TRUE)
+    )
   }
 
   inspect_one <- function(name) {
     binding <- binding_value(name)
     if (isTRUE(binding$active)) return(list(name = name, type = "active_binding"))
+    if (isTRUE(binding$lazy)) {
+      # An unforced promise stays opaque on purpose: reporting its body would
+      # be reporting code the user has not run.
+      return(list(name = name, type = "language"))
+    }
     value <- binding$value
     kind <- typeof(value)
     entry <- list(name = name, type = kind)

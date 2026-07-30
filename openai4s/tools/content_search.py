@@ -29,7 +29,10 @@ class ContentSearchTool(Tool):
             "include": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Glob limiting which files are searched, e.g. '*.py'.",
+                "description": (
+                    "Glob limiting which files are searched, e.g. '*.py'. "
+                    "Applied recursively, like the unfiltered search."
+                ),
             },
         },
         "required": ["pattern"],
@@ -54,7 +57,13 @@ class ContentSearchTool(Tool):
             else workspace.workspace()
         )
         hits: list[dict] = []
-        paths = base.glob(include) if include else base.rglob("*")
+        # `rglob`, not `glob`. `Path.glob("*.py")` matches only direct
+        # children, so passing the schema's own example made the search
+        # NARROWER than the unfiltered default -- one directory level instead
+        # of the whole tree -- and said nothing about it. A model that followed
+        # the documentation got a confident empty or partial answer, which is
+        # the worst shape a search result can have.
+        paths = base.rglob(include) if include else base.rglob("*")
         for path in sorted(paths):
             if not path.is_file():
                 continue

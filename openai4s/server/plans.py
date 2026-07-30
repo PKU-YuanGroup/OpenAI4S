@@ -245,6 +245,160 @@ class PlanService:
             "5. 全部完成后写一段简洁的最终总结，并调用 host.submit_output(...)。"
         )
 
+    #: A step the agent explicitly gave up on. `failed` is a decision, not an
+    #: interruption: the execution seed tells the agent to mark a step failed
+    #: with a reason *and carry on*, so re-running it on resume would redo work
+    #: someone already concluded cannot be done.
+    _SETTLED_STEP_STATUSES = frozenset({"completed", "failed"})
+
+    def unfinished_steps(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
+        """The steps a resume still has to run.
+
+        `in_progress` counts as unfinished. A step in that state when the plan
+        paused was interrupted part-way -- the pause is usually a cancel or a
+        daemon that went away -- and there is no record of how far it got, so
+        the honest thing is to run it again rather than assume it landed.
+        """
+        step_status = plan.get("step_status") or {}
+        remaining = []
+        for index, step in enumerate(plan.get("steps") or []):
+            step_id = step.get("id") or f"s{index + 1}"
+            status = (step_status.get(step_id) or {}).get("status") or step.get(
+                "status"
+            )
+            if status not in self._SETTLED_STEP_STATUSES:
+                remaining.append(step)
+        return remaining
+
+    def resume_seed(self, plan: dict[str, Any], remaining: list[dict[str, Any]]) -> str:
+        """The execution seed for a resume: only what is left, and a standing
+        instruction not to redo the rest.
+
+        Listing the finished steps by name is deliberate. Sending only the
+        remainder would leave the agent to infer that earlier work exists, and
+        a plan whose first three steps produced files is one where "start from
+        the top" quietly overwrites them.
+        """
+        settled = []
+        step_status = plan.get("step_status") or {}
+        for index, step in enumerate(plan.get("steps") or []):
+            step_id = step.get("id") or f"s{index + 1}"
+            status = (step_status.get(step_id) or {}).get("status") or step.get(
+                "status"
+            )
+            if status in self._SETTLED_STEP_STATUSES:
+                settled.append(f"- [{step_id}] {step.get('title', '')}（{status}）")
+        lines = []
+        for index, step in enumerate(remaining):
+            deliverables = "、".join(step.get("deliverables") or []) or "（无指定文件）"
+            lines.append(
+                f"- [{step.get('id') or ('s' + str(index + 1))}] "
+                f"{step.get('title', '')}：{step.get('detail', '')}  "
+                f"→ 产出：{deliverables}"
+            )
+        settled_text = (
+            "以下步骤在上一次执行中已经有结论，**不要重做、不要覆盖它们的产物**：\n" + "\n".join(settled) + "\n\n"
+            if settled
+            else ""
+        )
+        return (
+            f"继续执行计划「{plan.get('title', '')}」（上一次执行被中断）。\n\n"
+            + settled_text
+            + "还需要完成的步骤：\n"
+            + "\n".join(lines)
+            + "\n\n"
+            "执行规则：\n"
+            '1. 每开始一个步骤前，先调用 host.plan_update("<step_id>", '
+            '"in_progress")。\n'
+            "2. 该步骤列出的产物文件全部写好后，调用 "
+            'host.plan_update("<step_id>", "completed")。若某步确实无法完成，'
+            '调用 host.plan_update("<step_id>", "failed", note="原因") 后继续下一步。\n'
+            "3. 只推进上面列出的步骤；已有结论的步骤不要重跑。\n"
+            "4. 严格遵守我在原始任务中提出的所有约束。\n"
+            "5. 全部完成后写一段简洁的最终总结，并调用 host.submit_output(...)。"
+        )
+
+    def resume_execution(
+        self,
+        root_frame_id: str,
+        project_id: str,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Run the steps a paused plan has left, and nothing else.
+
+        Only `paused` resumes. A `draft` has not been approved, an `executing`
+        one is already running somewhere -- resuming it would put two turns on
+        the same plan -- and `completed`/`failed`/`discarded` are over. Each is
+        refused with its own reason rather than a single "cannot resume",
+        because the caller's next move differs: approve it, wait, or nothing.
+
+        Goes through the same `run_message` the approve path uses, so the
+        resumed turn is an ordinary FIFO-owned execution with its own owner and
+        lease, and cancelling it pauses the plan again exactly as before.
+        """
+        plan = self.store.get_plan_by_frame(root_frame_id)
+        if not plan:
+            return {
+                "status": "failed",
+                "frame_id": root_frame_id,
+                "error": "no plan to resume",
+            }
+        if plan.get("status") != "paused":
+            return {
+                "status": "failed",
+                "frame_id": root_frame_id,
+                "plan_id": plan.get("plan_id"),
+                "plan_status": plan.get("status"),
+                "error": f"only a paused plan can resume; this one is "
+                f"{plan.get('status')}",
+            }
+
+        remaining = self.unfinished_steps(plan)
+        if not remaining:
+            # Every step settled while the plan sat paused. Completing it is
+            # the truthful end state, and it also clears the row -- a paused
+            # plan keeps shadowing new drafts, because `get_by_frame` prefers
+            # the newest non-discarded one.
+            self.store.update_plan(plan["plan_id"], status="completed")
+            refreshed = self.store.get_plan(plan["plan_id"])
+            self.emit_ready(self.emitter_for(root_frame_id), root_frame_id, refreshed)
+            return {
+                "status": "completed",
+                "frame_id": root_frame_id,
+                "plan_id": plan["plan_id"],
+                "plan_status": "completed",
+                "resumed_steps": 0,
+            }
+
+        emit = self.emitter_for(root_frame_id)
+        self.store.update_plan(plan["plan_id"], status="executing")
+        self.emit_ready(emit, root_frame_id, self.store.get_plan(plan["plan_id"]))
+        result = self.run_message(
+            root_frame_id,
+            project_id,
+            self.resume_seed(plan, remaining),
+            model,
+            plan=False,
+        )
+        turn_status = result.get("status")
+        if turn_status == "completed":
+            final_status = "completed"
+        elif turn_status == "failed":
+            final_status = "failed"
+        elif turn_status == "cancelled":
+            final_status = "paused"  # same reasoning as run_execution
+        else:
+            final_status = (
+                self.store.get_plan(plan["plan_id"]).get("status") or "completed"
+            )
+        if final_status in ("completed", "failed", "paused"):
+            self.store.update_plan(plan["plan_id"], status=final_status)
+        self.emit_ready(emit, root_frame_id, self.store.get_plan(plan["plan_id"]))
+        result["plan_id"] = plan["plan_id"]
+        result["plan_status"] = final_status
+        result["resumed_steps"] = len(remaining)
+        return result
+
     def run_execution(
         self,
         root_frame_id: str,
@@ -280,16 +434,23 @@ class PlanService:
             model,
             plan=False,
         )
-        final_status = (
-            "completed"
-            if result.get("status") == "completed"
-            else (
-                "failed"
-                if result.get("status") == "failed"
-                else self.store.get_plan(plan["plan_id"]).get("status") or "completed"
+        turn_status = result.get("status")
+        if turn_status == "completed":
+            final_status = "completed"
+        elif turn_status == "failed":
+            final_status = "failed"
+        elif turn_status == "cancelled":
+            # Cancelling leaves work to finish, so the plan is paused, not
+            # over. It used to fall through to "keep whatever is stored",
+            # which was `executing` -- and since `get_by_frame` prefers the
+            # newest non-discarded plan, that row then shadowed every new
+            # draft for the session, permanently.
+            final_status = "paused"
+        else:
+            final_status = (
+                self.store.get_plan(plan["plan_id"]).get("status") or "completed"
             )
-        )
-        if final_status in ("completed", "failed"):
+        if final_status in ("completed", "failed", "paused"):
             self.store.update_plan(plan["plan_id"], status=final_status)
         self.emit_ready(
             emit,

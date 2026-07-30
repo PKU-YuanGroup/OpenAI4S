@@ -80,3 +80,53 @@ def test_an_unmapped_status_degrades_by_class_not_to_a_single_default():
     the split exists to prevent."""
     assert error_code_for(418) == "error"
     assert error_code_for(507) == "internal_error"
+
+
+def test_the_server_package_serves_exactly_one_http_surface():
+    """`openai4s/server/` must define one HTTP handler, and it must be the
+    gateway's.
+
+    `daemon.py` was a second one: `POST /run` straight onto `Agent.run`, with
+    no Host allowlist, no Origin check, no token gate and no security headers.
+    Nothing imported it, so it was invisible to every test in this repo -- and
+    `server/__init__.py`'s docstring kept it alive by advertising it under two
+    names (`serve_minimal` / `build_minimal_server`) the file never defined. It
+    was one stray import from being reachable.
+
+    Deleting it fixes today. This stops it, or anything like it, from coming
+    back unnoticed: an undefended handler beside a defended one is worth
+    failing a build over, because the defended one is what every reviewer will
+    look at.
+
+    Deliberately scoped to `openai4s/server/`. `share/relay.py` and
+    `telemetry/collector.py` also bind sockets, but they are separate,
+    documented surfaces with their own auth and their own tests.
+    """
+    import ast
+    from pathlib import Path
+
+    package = Path(__file__).resolve().parents[1] / "openai4s" / "server"
+    offenders = {}
+    for path in sorted(package.glob("*.py")):
+        tree = ast.parse(path.read_text("utf-8"))
+        handlers = [
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+            and any(
+                (isinstance(base, ast.Name) and base.id == "BaseHTTPRequestHandler")
+                or (
+                    isinstance(base, ast.Attribute)
+                    and base.attr == "BaseHTTPRequestHandler"
+                )
+                for base in node.bases
+            )
+        ]
+        if handlers and path.name != "gateway.py":
+            offenders[path.name] = handlers
+
+    assert offenders == {}, (
+        "only gateway.py may define an HTTP request handler in openai4s/server/; "
+        f"these define their own and do not inherit its Host/Origin/token/header "
+        f"defences: {offenders}"
+    )

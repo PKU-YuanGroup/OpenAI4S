@@ -9,8 +9,10 @@ workbench-state, and permission services). If you change that public surface,
 update this document.
 
 Scope note: this covers the **gateway** started by `openai4s serve` /
-`./start.sh`. The minimal `openai4s/server/daemon.py` single-page UI and its
-`/run` endpoint are a separate, smaller surface and are not documented here.
+`./start.sh`, which is the only HTTP surface the package serves. A second,
+minimal server (`openai4s/server/daemon.py`, `POST /run`) was removed rather
+than documented: nothing imported it and it had none of the gateway's Host,
+Origin, token or header defences.
 
 ## 1. Transport and general behavior
 
@@ -35,12 +37,28 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
   `code` is the machine-readable contract; `error` remains the human message and
   is unchanged, so the enrichment is additive. Match on `code`, never on prose —
   the message wording is not an interface and will be improved.
+  The enrichment never overwrites a field the route itself set, so on the few
+  routes that return a domain result under an error code — `POST
+  /frames/<id>/recovery/actions/<id>` answers a failed action with its whole
+  result and `409` — `status` stays that route's own value. Read the HTTP
+  status line, or `code`, when you need the transport status specifically;
+  those are always present, whereas a clobbered domain field has no second
+  copy.
   Status is too coarse to branch on alone: four distinct 400s
   (`malformed_json`, `invalid_body_type`, `invalid_cursor`, `invalid_limit`)
   need telling apart, and a client retrying `invalid_cursor` the way it retries
   a transient failure would loop on a request that can never succeed.
   `request_id` matches the `X-Request-Id` response header and the correlation id
   in the structured log line, so one id ties a user report to a server event.
+  A **background job that fails** carries the same field on its *success-path*
+  body (`200 {"status":"failed", …}` from a waited turn, plan or cell), holding
+  the id of the request that started it. It used to be absent there, and worse,
+  the log lines from inside those job threads carried an empty id: a new thread
+  starts with an empty `contextvars` context, so the id was lost at exactly the
+  boundary where the slow, failure-prone work begins. The field is **omitted,
+  never null**, when a job was built outside any request — a daemon-lifetime
+  sweep or a recovery pass — because `null` would read as "this request had no
+  id" rather than "there was no request".
 - **Success bodies are not wrapped in a `{data: …}` envelope.** Considered and
   declined: it would churn every route and every consumer to relocate
   information that is already unambiguous, and a half-finished reshape presents
@@ -92,19 +110,46 @@ Scope note: this covers the **gateway** started by `openai4s serve` /
   the `Host` header is rejected with `403 {"error": "cross-origin request
   refused"}`. Requests without an `Origin` header (curl, same-origin fetches)
   pass.
-- **Token gate** (only active when bound to a non-loopback address or
-  `OPENAI4S_REQUIRE_TOKEN=1`): all paths except `/health` require either the
-  `os_token` cookie or `?token=<hex>`. A `GET` carrying a valid `?token=`
-  responds `303 Location: /` and sets the cookie; a valid non-GET proceeds.
-  Anything else gets `401 {"error": "unauthorized — append ?token=… to the
-  URL"}`. On the default loopback bind there is **no authentication at all**.
+- **Token gate — on by default, including on loopback.** All paths except
+  `/health` and `/api/v1/auth/status` require a credential, in either spelling:
+  the `os_token` cookie, `Authorization: Bearer <token>` (what a generic client
+  or `curl -H` reaches for), or `X-OpenAI4S-Token` (for when something upstream
+  already owns `Authorization`). Neither header is preferred; the scheme is
+  compared caselessly per RFC 7235 and the value in constant time.
+- **`?token=` bootstraps a navigation only.** A `GET` for a path that serves
+  the SPA shell responds `303` with the cookie set, redirecting to the *same*
+  path with only the token stripped — so deep links survive. It is refused on
+  `/api/v1/*`, on `/static/*`, and on every non-GET. A URL carrying a
+  credential is a shareable credential: pasted into chat, logged by proxies,
+  kept in history, leaked by `Referer`. On a navigation the link buys only the
+  bootstrap it was minted for; on a data path the response *is* the payload,
+  delivered to whoever holds the link with no cookie hand-off in between.
+- The token is minted once under the data dir (`access-token`, owner-only) and
+  survives restarts; it used to be per-boot, which invalidated every cookie
+  already issued. The CLI reads the same file, or `OPENAI4S_TOKEN` when the
+  daemon runs under another account.
+- `OPENAI4S_REQUIRE_TOKEN=0` disables the gate **on loopback only**, for one
+  minor release. It is the same variable that used to opt *in*, with its sense
+  reversed. Off loopback it is ignored: a bind anything can route to has no
+  configuration under which it should answer without a credential.
+- `GET /api/v1/auth/status` is reachable unauthenticated so a client can
+  discover it needs a credential, and answers
+  `{authenticated, auth_mode: "token"|"none", token_header}` — a mode string
+  only, never any part of the token. It previously reported `"none"`
+  unconditionally, so a daemon running with the gate on told every caller there
+  was no gate.
 
 ### Error envelope
 
-- The backend error shape is always **`{"error": "<message>"}`** with an HTTP
-  status code: raised `GatewayError(code, message)` → `{"error": message}`
-  with that code; any unhandled exception → `500 {"error": str(e)}`; the
-  `_api` catch-all → `404 {"error": "not found", "path": sub, "method": …}`.
+- The backend error shape is the enriched envelope described in §2 —
+  `{"error", "code", "status", "request_id"}` plus route-specific diagnostic
+  fields. The unenriched `{"error": "<message>"}` shape this section used to
+  describe has not been the wire format since the envelope landed; the two
+  sections contradicted each other, and the frozen artifacts agreed with the
+  wrong one because the contract capture observed bodies before enrichment ran.
+  The sources are unchanged: raised `GatewayError(code, message)`; any
+  unhandled exception → `500`; the `_api` catch-all → `404` carrying `path`
+  and `method`.
 - The frontend `api()` helper reads `j.error || j.detail`, so the Gateway's
   error text is shown. `detail` remains accepted for compatibility with
   external adapters.
@@ -161,6 +206,52 @@ success response body. Serializer shapes are in §4.
 
 ### Models and model profiles
 
+**Readiness is local; reachability is asked for.** Every profile carries a
+`readiness` object — `ready` / `needs_key` / `needs_model` / `unsupported` —
+derived entirely from stored state, so listing profiles costs no network at
+all. `checked_endpoint` is always `false` there, and `ready` means *the
+configuration is complete*, not that anyone answered; the detail line says so,
+because a user who read it as "verified" would be reading a stronger claim than
+the data supports.
+
+`POST /model-profiles/{id}/probe` is the only thing that contacts a provider.
+POST rather than GET because it spends the user's own quota and rate limit, and
+a GET invites a prefetch or a refresh loop to spend it for them. It refuses
+without contacting anything when readiness is not `ready` — a keyless profile's
+401 reads like an endpoint fault rather than the missing credential it is. A
+failure reports the provider's own message, redacted, because a rewritten one
+loses the detail that distinguishes a bad key from a bad model name.
+
+`gemini` and `openai_responses` are selectable protocols. Both were dispatchable
+by the LLM layer and absent from the profile menu, so a user holding a Gemini
+key had no way to say so.
+
+
+**A session binds `profile_id + revision`.** A frame used to store a model
+*string*, which answers "which model name" and not "which configuration" — and
+the two come apart in exactly the case that matters, because two profiles can
+name the same model against different providers or endpoints, and editing a
+profile rewrote it in place. A replayed session therefore reported whatever its
+profile says today.
+
+- Each profile carries `revision` and an append-only `revisions[]`. A new
+  revision is minted only when `(provider, base_url, model)` changes. A rename
+  does not, and neither does a key rotation — the credential reference is
+  derived from `(scope, profile_id)`, so revisions must share the profile id or
+  rotating a key would strand earlier revisions on an unreadable secret and
+  deleting any revision would destroy the key the others point at.
+- Binding happens on **send only**. Reading a session never binds it, so an
+  unbound legacy session stays fully readable — history, artifacts, Notebook.
+- `409 model_revision_unavailable` — the session is pinned to a revision that
+  no longer exists. Resolving to the nearest one would be the silent
+  follow-latest behaviour this replaces, wearing a number.
+- `409 model_revision_ambiguous` — a legacy session whose recorded model
+  matches more than one profile. Backfill happens only on a **unique** match;
+  an ambiguous one stays unbound and asks, because picking either would be a
+  guess presented as a fact.
+- An install with no profiles at all (driven by `.env`) binds nothing and runs.
+  An absent profile is an absent binding, not an error.
+
 | Method & path | Behavior |
 | --- | --- |
 | `GET /models` | `{"models":{"default":[{id,name,description}…]},"default_model_id"}` — the live model first, then the saved profiles' models, deduped. Built-in provider defaults are not listed: an endpoint the user never configured must not be selectable. A profile that leaves `model` blank is resolved through its protocol's default. |
@@ -173,7 +264,7 @@ success response body. Serializer shapes are in §4.
 | `PUT|PATCH /model-profiles/{id}` | Partial edit; `api_key` only overwrites when non-empty; `clear_api_key:true` clears. Editing the active profile also syncs the live settings → masked profile; unknown id → 404. |
 | `DELETE /model-profiles/{id}` | Removes it (clears `active_model_profile` if it was active) → `{"ok":true}`. Deleting a nonexistent id still returns `{"ok":true}`. |
 
-### Projects, notes, folders
+### Projects, notes, folders, example session
 
 | Method & path | Behavior |
 | --- | --- |
@@ -192,8 +283,23 @@ success response body. Serializer shapes are in §4.
 | `PUT|PATCH /folders/{fid}` | Rename → `{"ok":true}`. |
 | `DELETE /folders/{fid}` | `{"ok":true}`. |
 | `POST|PUT|PATCH /frames/{fid}/folder` | Body `{folder_id}` (or null) → `{"ok":true}`. |
+| `GET /example/session` | `{seeded,frame_id,project_id,started,running,seeds_at_startup,error}` — state of the bundled example analysis. `started` is always `false` on a GET. |
+| `POST /example/session` | Body **must** be `{"confirm": true}`; anything else is `400 confirmation_required` and seeds nothing. Idempotent: already seeded → `{"seeded": true, "started": false}`; already running → `{"started": false, "running": true}`, which is distinguishable from a refusal. Seeding happens on a background thread, so this returns immediately and the client polls the `GET`. |
 
 ### Frames (sessions) and turns
+
+**`@file` references are version-pinned.** `@name#v-<version_id>` sends the
+frozen bytes of that exact version; it used to read the artifact's *live path*,
+so the same reference meant different bytes once a later cell overwrote the
+file. A same-project reference belonging to another session is **materialised**
+into this one (D3) when the turn is sent — not when the reference is typed, so
+an inserted-then-deleted reference leaves no Artifact and no lineage edge
+behind. Cross-project is refused with the same answer as absent.
+
+The bare `@name` spelling still works for one minor release. It resolves inside
+the calling session only, through the artifact's latest *version* rather than
+its live path, and says in the injected block that it is unpinned.
+
 
 | Method & path | Behavior |
 | --- | --- |
@@ -202,7 +308,7 @@ success response body. Serializer shapes are in §4.
 | `GET /frames/{fid}` | Frame JSON, or `{}` when not found. |
 | `PATCH /frames/{fid}` | Updates `name`/`task_summary`, broadcasts `frame_update` → frame JSON. |
 | `DELETE /frames/{fid}` | `{"ok":true}`. |
-| `GET /frames/{fid}/messages?from=&limit=&branch_id=` | Branch-projected `{"messages":[{message_id,role,content,created_at,fork_checkpoint_id}…]}`. Omitted `branch_id` selects the durable active branch; its inherited prefix and post-Revert continuation are included, while sibling/abandoned rows remain only in the audit source. `from` (default 0) and `limit` (default 300) are real slice parameters. |
+| `GET /frames/{fid}/messages?from=&limit=&branch_id=` | Branch-projected `{"messages":[{message_id,role,content,created_at,fork_checkpoint_id}…]}`. Omitted `branch_id` selects the durable active branch; its inherited prefix and post-Revert continuation are included, while sibling/abandoned rows remain only in the audit source. `from` (default 0) and `limit` (default 300) are real slice parameters. **Latest-first paging:** `?newest_first=1` returns the newest page and adds `next_before_seq` + `has_earlier`; `?before_seq=<seq>` walks backwards. Without either, the response is exactly what it always was — oldest-first from `from`, and no cursor keys. It mattered because a 640-message session returned messages 0–299: the *oldest* page, with the newest 340 absent. The cursor is a `seq` bound rather than an offset, because newest-first plus OFFSET shifts on every arriving message. `has_earlier` is observed, not inferred from a short page — the branch projection can hide rows, which a client cannot tell from the end of history. `before_seq` that is not an integer is `400 invalid_cursor`. |
 | `GET /frames/{fid}/steps` | `{"steps":[…]}` (persisted semantic steps). |
 | `POST /frames/{fid}/message` | Starts a turn. Body `{request}` (or `{input_data:{request}}`), optional `model`, `plan`, `explore`, `annotation_ids`. With `wait:false` → `202 {"status":"accepted","frame_id","job_id","execution_id","owner":{"kind","id"},"queue_position"}`; default (`wait` omitted/true) blocks for the turn result. A valid sole `finalize_response` is an Engine completion (even if an earlier step ran a Cell); `host.submit_output(...)` is the only completion emitted from inside a Python Cell. Ordinary prose/results and max-turn exhaustion are not success. |
 | `GET /frames/{fid}/execution` | Authoritative FIFO snapshot: `{root_frame_id,owner,queue,queued_count,active_count,closed,close_reason}`. Owner/queue entries include `execution_id`, `{kind,id}` owner, status, position, branch/language/generation and resource keys when known. |
@@ -220,6 +326,7 @@ success response body. Serializer shapes are in §4.
 | --- | --- |
 | `GET /frames/{fid}/plan` | `{"frame_id","plan_id","status","plan"}` (nulls when no plan). |
 | `POST /frames/{fid}/plan/approve` | `202 {"status":"accepted","frame_id","job_id"}` — auto-execution runs in the background. |
+| `POST /frames/{fid}/plan/resume` | `202 {"status":"accepted","frame_id","job_id"}` — runs only the plan's **unfinished** steps. `409 plan_not_paused` when the plan is any other status, refused synchronously so the caller is not handed a job that accepts and then reports a failure. A step counts as settled when it is `completed` or `failed`: `failed` is a decision the agent made and moved on from, while `in_progress` was interrupted with no record of how far it got, so it is re-run. The resume seed names the settled steps and instructs the agent not to redo them. A paused plan with nothing unfinished is marked `completed` without running a turn. |
 | `POST /frames/{fid}/plan/revise` | Body `{changes}` (or `{feedback}`); empty → `400 {"error":"changes required"}`; else `202` accepted. |
 | `POST /frames/{fid}/plan/discard` | Result of `runner.discard_plan` (synchronous). |
 
@@ -337,9 +444,41 @@ available through the query parameter.
 | `POST|PUT|PATCH /artifacts/{aid}/rename` | Body `{filename}`; missing → `400`; unknown → `404` → `{"ok":true,"artifact_id","filename"}`. |
 | `DELETE /artifacts/{aid}` | Deletes rows + snapshot files → `{"ok":true}`; broadcasts a *bare* `artifact_created`. |
 | `GET /artifacts/{ident}` | **Raw bytes** (see §1). |
-| `POST /uploads` | **Base64 JSON upload — not multipart.** Body `{filename?,content_base64` (or `content`)`,frame_id?,project_id?}`. Invalid base64 does not error (wart, two-tier): decoding uses `base64.b64decode` without `validate=True`, so **non-alphabet characters are silently discarded** before decoding; only when the result still has a bad length/padding (`binascii.Error`/`ValueError`) does it fall back to storing the raw string's UTF-8 bytes as-is. File lands in the session workspace (or `data_dir/uploads` without `frame_id`), is registered as a versioned artifact (`is_user_upload`), re-upload of the same name in the same frame creates a new version → `{"artifact_id","id","filename"}`. |
+| `POST /uploads` | **Base64 JSON upload — not multipart.** Body `{filename?, content_base64` (or `content`, or `content_text`)`, frame_id?, project_id?}`. Supply **exactly one** content field; two is a `400`, because which one is authoritative cannot be guessed. `content_base64`/`content` are strict base64 — whitespace is stripped (line wrapping is transport formatting) and anything else outside the alphabet is a `400`. `content_text` uploads text as UTF-8. A rejected upload writes nothing. This used to decode without `validate=True`, silently discarding stray characters so a corrupted payload decoded to different bytes with no error, and to fall back to storing the raw string's UTF-8 bytes — so a `.npy` that lost one character became an artifact containing base64 text, versioned and checksummed. File lands in the session workspace (or `data_dir/uploads` without `frame_id`), is registered as a versioned artifact (`is_user_upload`), re-upload of the same name in the same frame creates a new version → `{"artifact_id","id","filename"}`. |
 
 ### Skills / agents / specialists / connectors
+
+**Customize skill failures are real failures.** `POST /skills`,
+`PUT|PATCH /skills/{name}`, `GET /skills/{name}`, `DELETE /skills/{name}` and
+`POST /skills/import` used to answer `200` with `{"error": …}` in the body. The
+service returns soft dictionaries by design (`server/skills.py`) and still
+does; what changed is that the gateway now projects them to a status. Each
+failure carries a stable `code` — the status is derived from the code, never
+from the message:
+
+| `code` | Status | When |
+| --- | --- | --- |
+| `skill_name_required` | `400` | empty name, including an import whose frontmatter has none |
+| `skill_name_unsafe` | `400` | the name resolves outside the user skills directory (symlink or traversal). Not `403`: nothing was denied by policy, the name is unusable |
+| `skill_name_conflict` | `409` | collides with a bundled skill, which discovery would shadow anyway |
+| `skill_not_found` | `404` | no such user skill |
+| `skill_read_only` | `403` | a bundled skill cannot be edited or deleted. Not `404` — it plainly exists, and saying otherwise is a lie the user can disprove |
+| `skill_no_version_history` | `404` | version history requested for a skill with none |
+| `skill_version_storage_unavailable` | `503` | the version store is absent — a missing dependency, not a bad request |
+| `skill_write_failed` | `500` | the write itself failed (`OSError`, permissions) |
+
+Why it mattered beyond tidiness: `api()` in the web client throws only on a
+non-2xx, and the Customize editor's save handler does not inspect the body — so
+a rejected save closed the modal and told the user "saved" while nothing was
+written. These bodies also never reached `public_failure`, so they carried no
+`request_id`.
+
+The four sibling routes that already answered a real status —
+`GET /skills/{name}/versions` and `POST /skills/{name}/rollback`, plus their
+`/projects/{pid}/…` twins — keep the statuses they had (`404` and `409`
+respectively, chosen per route) and now carry the specific `code` too. Their
+statuses are deliberately **not** re-derived from the code table: that would
+change published behaviour for no stated benefit. Branch on `code`.
 
 | Method & path | Behavior |
 | --- | --- |
@@ -478,6 +617,8 @@ m.frame_id`.
 | `branch_projection_restored` | `frame_id`, `branch_id`, `checkpoint_id` | The branch-scoped projection was rebuilt (for example after a Revert); clients holding a stale message/Notebook view must refetch it rather than patch. |
 | `branch_activation_state` | `frame_id`, `root_frame_id`, `branch_id`, `checkpoint_id`, `status`/`state` | Activation of a branch runtime progressed. `status` and `state` carry the same value — a compatibility duplication kept because both spellings are already consumed. |
 | `artifact_created` | **non-uniform — see below** | An artifact was produced, edited, renamed, uploaded, restored, or deleted. |
+| `artifact_ref_problems` | `frame_id`, `problems[]` of `{ref, code, message}` (max 8) | One or more `@file` references in the user's message did not resolve. Emitted rather than raised: a user who referenced four files and mistyped one wants an answer about the other three plus a note, not a refusal. Codes: `not_found` (absent, or in another project — deliberately the same answer), `no_frozen_bytes`, `not_text` (a binary artifact, which used to be pasted in as replacement characters), `cross_session_not_allowed`, `materialise_failed`, `too_many_refs`. The previous behaviour was to drop an unresolvable reference silently, so the user asked about a file the model never received. |
+| `attachment_problems` | `frame_id`, `problems[]` of `{name, reason, limit?, bytes?}` (max 8) | Pinned figures that exceeded this turn's image budget and were not sent. Reasons: `too_many` (more than 8 images), `too_large` (one image over 4 MiB after the pin markers are drawn), `budget_exhausted` (12 MiB total). None of these limits existed: every pinned figure was attached at full size, so eight pins on a large raster sent ~10 MiB and eighty sent ten times that. The model is told as well as the user — a system note names the missing figures and instructs it to say they were not received, rather than describe a picture it never got. |
 | `pong` | — | Reply to JSON ping. |
 
 ### `artifact_created` payload non-uniformity (wart, load-bearing)
@@ -542,9 +683,10 @@ compatibility; keep both when touching these serializers.
   `limit` on frames, and the Timeline's `before_ordinal`/`after_ordinal` +
   `limit` windows (§2).
 - `artifact_created` has four payload shapes; every field is optional (§3).
-- Uploads are JSON/base64, not multipart; non-alphabet characters in the
-  base64 are silently discarded, and input that still fails to decode is
-  silently stored as raw UTF-8 text (§2).
+- Uploads are JSON/base64, not multipart, and are strict: exactly one content
+  field, whitespace tolerated, anything else outside the base64 alphabet
+  refused with `400` rather than decoded to other bytes or stored as text
+  (§2).
 - Missing resources are inconsistently signaled: some routes 404 with
   `{error}`, others return `{}` (frame/project GET), `{"ok":true}`
   (idempotent deletes), a nulls-filled 200 (`/artifacts/{aid}/lineage`), or a

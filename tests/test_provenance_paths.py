@@ -162,7 +162,14 @@ def test_real_kernel_tracks_relative_read_to_nested_relative_write(tmp_path):
         frame_id=frame_id,
         project_id="default",
     )
-    dispatcher = HostDispatcher(cfg=cfg, frame_id=frame_id)
+    # The dispatcher's workspace and the kernel's cwd must be the same
+    # directory, which is how the gateway wires them (`build_dispatcher(...,
+    # workspace=st.workspace)` beside `Kernel(cwd=st.workspace)`). Left
+    # unset, the dispatcher falls back to `data_dir/agent-workspaces/<frame>`
+    # while the kernel runs in this tmp dir — a mismatch production never has,
+    # and one that only became visible when `prov_record` started confining
+    # paths to the workspace.
+    dispatcher = HostDispatcher(cfg=cfg, frame_id=frame_id, workspace=workspace)
 
     with Kernel(dispatcher=dispatcher, cwd=str(workspace)) as kernel:
         result = kernel.execute(

@@ -8,6 +8,7 @@ import pytest
 
 from openai4s import llm
 from openai4s.config import Config, LLMConfig
+from openai4s.server import gateway as gateway_mod
 from openai4s.server.model_profiles import (
     PROFILE_PROTOCOLS,
     ModelProfileError,
@@ -246,8 +247,12 @@ def test_profile_service_crud_activation_and_header_projection(tmp_path):
     store, service = _service(tmp_path)
     with pytest.raises(ModelProfileError, match="name required"):
         service.create({})
+    # Not `gemini` any more. It was the example of an unsupported protocol
+    # here, which quietly recorded an oversight as intended behaviour: the LLM
+    # layer has always been able to dispatch Gemini, and the profile menu just
+    # never listed it. A test asserting the gap is how the gap survives.
     with pytest.raises(ModelProfileError, match="protocol must be one of"):
-        service.create({"name": "Unsupported", "provider": "gemini"})
+        service.create({"name": "Unsupported", "provider": "not-a-protocol"})
     created = service.create(
         {
             "name": "Local",
@@ -298,3 +303,53 @@ def test_provider_alias_migration_is_idempotent(tmp_path):
             "base_url": llm.PROVIDERS["ark"]["base_url"],
         }
     ]
+
+
+def test_the_default_model_survives_a_daemon_restart(tmp_path):
+    """`default_model_id` named a model the selector did not offer.
+
+    It was seeded from `cfg.llm.model` -- the *process* config, whose
+    `__post_init__` fills a concrete provider default when the field is blank.
+    A daemon whose model was configured through the UI (the documented path)
+    came back after a restart offering only the stored model in `GET /models`,
+    while reporting a `default_model_id` that appeared in none of them.
+
+    That is not cosmetic: `app.js` assigns the id to `S.defaultModel`, no
+    `<option>` matches so the dropdown keeps showing the stored model, and the
+    next `POST /frames/{id}/message` sends the *other* id -- to the provider,
+    endpoint and key the user did configure. A wrong model, quietly, against
+    the right account.
+
+    The repair that was supposed to catch this could not: `profiles_payload`
+    returns `(payload, None)` unconditionally, so the branch reading its second
+    value never ran.
+    """
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+    cfg = Config(data_dir=tmp_path, llm=LLMConfig(provider="ark", api_key="k"))
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    try:
+        runner.store.set_setting("llm_model", "my-configured-model")
+
+        # A fresh handler factory is what a daemon restart builds.
+        handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+        replies: list = []
+        handler._query = lambda: {}
+        handler._body = lambda: {}
+        handler._json = lambda obj, code=200: replies.append(obj)
+        handler._api("GET", "/models")
+
+        payload = replies[-1]
+        offered = [m["id"] for m in payload["models"]["default"]]
+        assert offered == ["my-configured-model"]
+        assert payload["default_model_id"] == "my-configured-model"
+        # The invariant, stated directly: the default must be selectable.
+        assert payload["default_model_id"] in offered
+    finally:
+        runner.close()

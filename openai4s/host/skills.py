@@ -25,6 +25,13 @@ class SkillService:
         self.versions = SkillVersionService(cfg)
         self.project_id: str | None = None
         self.session_id: str | None = None
+        #: Tri-state: None inherits, [] denies everything, a list is exactly
+        #: those. Enforced on every read path below, because until now it was
+        #: stored on the specialist, inherited through delegation, merged into
+        #: the spec — and never consulted by anything. D5 deferred exactly this
+        #: to P1-B and hid the UI meanwhile, so that no lock was displayed that
+        #: was not enforced.
+        self._allowed_skills: object = None
 
     def set_scope(
         self,
@@ -40,6 +47,46 @@ class SkillService:
         )
         self.project_id = str(project_id or "").strip() or None
         self.session_id = str(session_id or "").strip() or None
+
+    def set_allowed_skills(self, allowed: object) -> None:
+        """Restrict every read path to these skills. Only narrows.
+
+        Composed through `resource_allowlist.narrow`, so calling this twice --
+        which is what a delegation chain does -- can never widen. A child that
+        passes `None` inherits the parent's restriction rather than clearing
+        it; otherwise delegating would be the way out of every allowlist.
+        """
+        from openai4s.host import resource_allowlist
+
+        self._allowed_skills = resource_allowlist.narrow(self._allowed_skills, allowed)
+
+    def _permits(self, name: str) -> bool:
+        from openai4s.host import resource_allowlist
+
+        return resource_allowlist.permits(self._allowed_skills, name)
+
+    def _filter(self, rows: list) -> list:
+        """Drop rows naming a skill this specialist may not reach.
+
+        Applied to the catalogue and to search, not only to load: a name the
+        agent can see is a name it will ask for, and listing something it
+        cannot open is both a leak and a dead end. The report's exit criterion
+        is that an unlisted resource is unavailable in the UI, the prompt, the
+        catalogue *and* direct Host RPC -- four surfaces, and the catalogue is
+        the one that feeds the prompt.
+        """
+        from openai4s.host import resource_allowlist
+
+        if resource_allowlist.normalise(self._allowed_skills) is None:
+            return rows
+        out = []
+        for row in rows:
+            name = (
+                row.get("name") if isinstance(row, dict) else getattr(row, "name", "")
+            )
+            if self._permits(str(name or "")):
+                out.append(row)
+        return out
 
     def _writable_scope(self, skill: Any) -> tuple[str, str | None]:
         """Return the (scope, project_id) that owns a discovered skill on disk.
@@ -64,7 +111,10 @@ class SkillService:
             hits = self.loader.search(name, limit=1)
             if hits:
                 skill = self.loader.get(hits[0]["name"])
-        if skill is None:
+        if skill is None or not self._permits(getattr(skill, "name", "")):
+            # Same answer for "does not exist" and "not yours". A distinct
+            # refusal would confirm the skill is there, which is most of what
+            # an enumerator wants from a name it guessed.
             return {"error": f"no such skill: {name!r}"}
         try:
             content = (skill.root / "SKILL.md").read_text("utf-8")
@@ -79,18 +129,22 @@ class SkillService:
 
     def search(self, spec: dict) -> list:
         self.loader.discover()
-        return self.loader.search(
-            spec.get("query", ""), limit=int(spec.get("limit", 5))
+        # Filtered after the search rather than before: the loader ranks over
+        # the whole corpus, and pre-filtering would change the ranking of what
+        # remains. Asking for 5 and getting 3 is honest; getting 5 that were
+        # scored against a different corpus is not.
+        return self._filter(
+            self.loader.search(spec.get("query", ""), limit=int(spec.get("limit", 5)))
         )
 
     def list(self) -> list:
         self.loader.discover()
-        return self.loader.catalog()
+        return self._filter(self.loader.catalog())
 
     def get(self, name: str) -> dict:
         self.loader.discover()
         skill = self.loader.get(name)
-        if skill is None:
+        if skill is None or not self._permits(getattr(skill, "name", "")):
             raise KeyError(f"no such skill: {name!r}")
         return {
             "name": skill.name,
@@ -103,6 +157,13 @@ class SkillService:
 
     def read(self, spec: dict) -> str:
         self.loader.discover()
+        # The one that actually hands back file contents, so it is the one an
+        # allowlist most has to cover. Gated on the requested name rather than
+        # on a resolved skill: `loader.read` does its own lookup, and checking
+        # a name the loader might resolve differently is how a gate ends up
+        # guarding a different object from the one that gets returned.
+        if not self._permits(str(spec.get("name") or "")):
+            raise KeyError(f"no such skill: {spec.get('name')!r}")
         return self.loader.read(spec["name"], spec.get("path", "SKILL.md"))
 
     def edit(self, spec: dict) -> dict:

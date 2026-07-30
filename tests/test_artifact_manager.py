@@ -6,6 +6,8 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from openai4s.config import Config, LLMConfig
 from openai4s.host_dispatch import HostDispatcher
 from openai4s.kernel import Kernel
@@ -613,13 +615,17 @@ def test_r_capture_never_runs_python_figure_probe(tmp_path):
 
 def test_no_changes_skip_environment_and_remote_provenance(tmp_path):
     harness = ArtifactHarness(tmp_path)
+    # Without this the counter is never wrapped, so `environment_calls` stays 0
+    # whatever the code does — the assertion below asserted nothing at all.
+    # Found by mutating the gate away and watching the test stay green.
+    harness.count_environment_captures()
     before = harness.manager.snapshot(harness.workspace)
     remote_calls = 0
 
     def drain_remote():
         nonlocal remote_calls
         remote_calls += 1
-        return [{"job_id": "should-remain-buffered"}]
+        return [{"job_id": "must-not-outlive-this-cell"}]
 
     captured = harness.manager.capture(
         harness.session,
@@ -632,7 +638,16 @@ def test_no_changes_skip_environment_and_remote_provenance(tmp_path):
     )
 
     assert captured.artifacts == []
-    assert harness.environment_calls == remote_calls == 0
+    # The environment freeze is still skipped: it lists packages, and there is
+    # no artifact here for it to describe.
+    assert harness.environment_calls == 0
+    # The drain is NOT skipped, and this is the assertion that changed. The
+    # fixture above still calls its entry "should-remain-buffered", which is
+    # what the old contract wanted — and what made a remote job in a cell that
+    # wrote nothing reappear as the provenance of the next cell's artifact.
+    # A buffer that survives its own cell is how provenance becomes wrong
+    # rather than absent.
+    assert remote_calls == 1
 
 
 def test_snapshot_ignores_hidden_junk_and_nested_git_repositories(tmp_path):
@@ -799,3 +814,61 @@ def test_promote_cell_embeds_workspace_figures_as_safe_data_urls(tmp_path):
     text = next((harness.workspace / "promoted").glob("*.md")).read_text("utf-8")
     assert f"![{figure.name}](data:image/png;base64," in text
     assert f"]({figure.name})" not in text
+
+
+def test_imported_session_snapshots_are_inside_trusted_storage(tmp_path):
+    """The daemon refused to read a directory it writes itself.
+
+    Session import writes each version's immutable bytes to
+    ``<data_dir>/session-imports/<root>/artifacts/`` and points the version row
+    at them. Both `ArtifactRestoreService` construction sites listed only
+    ``artifacts/`` and ``artifact-versions/`` -- the same two directories, in
+    opposite orders -- so `verified_snapshot_bytes` answered every imported
+    artifact with "artifact snapshot is outside trusted storage".
+
+    The boundary is containment, not integrity: the bytes are still checked
+    against the version row's recorded sha256 and size on every read. Widening
+    it to a directory the daemon owns does not weaken what a restore proves.
+
+    Pinned as one shared derivation rather than two lists, because two lists
+    maintained by hand is how the third directory came to be written to and not
+    readable.
+    """
+    import hashlib as _hashlib
+
+    from openai4s.artifact_restore import ArtifactRestoreService, trusted_snapshot_roots
+
+    data_dir = tmp_path / "data"
+    snapshot = (
+        data_dir / "session-imports" / "f-imported" / "artifacts" / "000000-abc.bin"
+    )
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    payload = b"imported bytes\n"
+    snapshot.write_bytes(payload)
+    version = {
+        "version_id": "v-1",
+        "snapshot_path": str(snapshot),
+        "checksum": _hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+    }
+
+    service = ArtifactRestoreService(
+        store=None,
+        primary_snapshot_dir=data_dir / "artifact-versions",
+        trusted_snapshot_dirs=trusted_snapshot_roots(data_dir),
+        resolve_live_path=lambda artifact, current: tmp_path / "live",
+    )
+    path, data = service.verified_snapshot_bytes(version)
+    assert data == payload
+    assert path == snapshot.resolve()
+
+    # The integrity check is untouched by the wider boundary.
+    tampered = dict(version, checksum="0" * 64)
+    with pytest.raises(RuntimeError, match="checksum verification failed"):
+        service.verified_snapshot_bytes(tampered)
+
+    # And the boundary still is one: an arbitrary path stays refused.
+    outside = tmp_path / "elsewhere.bin"
+    outside.write_bytes(payload)
+    with pytest.raises(PermissionError, match="outside trusted storage"):
+        service.verified_snapshot_bytes(dict(version, snapshot_path=str(outside)))

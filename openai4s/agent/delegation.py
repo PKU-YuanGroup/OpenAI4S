@@ -670,11 +670,50 @@ class _ChildCancellation:
         return self._child.stop_event.is_set()
 
 
+def _child_context_budget(cfg: Config):
+    """A budget provider for one child's model, or None if it cannot be known.
+
+    Returning None restores the previous behaviour deliberately: an unknown
+    model falls back to the configured default rather than to a guess, and a
+    capability lookup that raises must not take the child down with it.
+    """
+
+    def _budget(_state: Any) -> int | None:
+        try:
+            from openai4s.llm import get_model_capabilities
+
+            capabilities = get_model_capabilities(
+                str(getattr(cfg.llm, "provider", "") or ""),
+                str(getattr(cfg.llm, "model", "") or ""),
+                base_url=str(getattr(cfg.llm, "base_url", "") or ""),
+            )
+            return (
+                capabilities.usable_context_tokens
+                or capabilities.context_window_tokens
+                or None
+            )
+        except Exception:  # noqa: BLE001 - an unknown model is not a failure
+            return None
+
+    return _budget
+
+
 class _SteeringContextPolicy:
     """Inject newly delivered parent messages before each child model turn."""
 
     def __init__(self, cfg: Config, child: _Child, tree: _DelegationTree) -> None:
-        self._base = CompactionPolicy(cfg)
+        # The child's OWN model decides when the child compacts. This was a
+        # bare `CompactionPolicy(cfg)`, which falls back to
+        # `cfg.context_window_tokens` -- the daemon default, 262,144 -- while
+        # the Web session path has always derived the budget from the model's
+        # declared capability. A child may run a different model than its
+        # parent (`overrides["model"]`), which is exactly when the two numbers
+        # diverge: a child on a model whose usable window is 136,000 tokens
+        # would compact against 262,144 and sail past its real limit, learning
+        # about it as a provider rejection rather than as a compaction.
+        self._base = CompactionPolicy(
+            cfg, context_budget_provider=_child_context_budget(cfg)
+        )
         self._child = child
         self._tree = tree
 
@@ -1190,6 +1229,20 @@ def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
     if isinstance(item, dict):
         normalized = dict(inherited)
         normalized.update(item)
+        # `update` lets a child REPLACE what it inherited, which for a resource
+        # allowlist means delegating is the way out of it: a child restricted
+        # to one Skill could name three and get three. Narrow instead, so the
+        # child's own list can only ever be a subset of its parent's. `None`
+        # on either side inherits the other, which is what the tri-state means.
+        from openai4s.host import resource_allowlist
+
+        for key in ("skill_names", "connectors"):
+            if key in inherited or key in item:
+                narrowed = resource_allowlist.narrow(inherited.get(key), item.get(key))
+                if narrowed is None:
+                    normalized.pop(key, None)
+                else:
+                    normalized[key] = sorted(narrowed)
         return normalized
     raise DelegationError(
         f"delegate: each request item must be str or dict, got {type(item).__name__}"
