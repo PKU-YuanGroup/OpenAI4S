@@ -4,7 +4,7 @@ Three defects, all on complete production call chains, all reachable from one
 line of agent code in a kernel cell.
 
 **Agent SQL reads every project.** `QUERY_DENYLIST` does not contain `artifacts`,
-`artifact_versions`, `lineage_edges`, `environment_snapshots` or `frames` — so
+`artifact_versions`, `lineage_edges` or `env_snapshots` — so
 `host.query("SELECT * FROM artifacts")` returns every session's and every
 project's artifacts with their filenames, checksums and absolute snapshot paths.
 The scoped helpers next door go to some trouble to prevent exactly that, one
@@ -120,7 +120,7 @@ def test_agent_sql_cannot_read_the_artifacts_table(two_projects):
 
 @pytest.mark.parametrize(
     "table",
-    ["artifacts", "artifact_versions", "lineage_edges", "frames"],
+    ["artifacts", "artifact_versions", "lineage_edges", "env_snapshots"],
 )
 def test_agent_sql_cannot_read_any_internal_artifact_table(two_projects, table):
     _cfg, _store, service, _ours, _foreign = two_projects
@@ -382,3 +382,89 @@ def test_save_artifact_still_accepts_our_own_lineage_input(two_projects):
     assert [row.get("version_id") or row.get("input_version_id") for row in edges] == [
         ours["version_id"]
     ]
+
+
+# --- the cost of the fix, which is part of whether it is a fix --------------
+
+
+def test_the_scoped_views_are_published_once_per_scope_not_once_per_query(tmp_path):
+    """The views are published once per scope, not once per statement.
+
+    The first version rebuilt all five on every `host.query`. Measured, that is
+    0.090 ms -> 0.005 ms per query, 17x on this path: worth having, and honestly
+    not more than that. (An earlier version of this docstring blamed a slow test
+    suite on it. That was wrong -- 0.09 ms per query cannot do that -- and the
+    real reason to avoid the old shape is the implicit COMMIT, which the next test
+    covers.)
+
+    Asserted by counting the DDL SQLite actually ran, not by timing, so it cannot
+    go green on a fast machine.
+    """
+    cfg = _config(tmp_path)
+    store = get_store(cfg.db_path)
+    try:
+        frame = store.new_frame(kind="turn", project_id="p1")
+        scope = {"root_frame_id": frame, "project_id": "p1"}
+
+        created: list[str] = []
+
+        # `sqlite3.Connection.execute` is read-only and cannot be wrapped, so the
+        # instrument is SQLite's own statement trace -- which also means the count
+        # is of statements the engine really ran, not of calls this test intercepted.
+        def trace(statement):
+            if statement and "CREATE TEMP VIEW" in statement.upper():
+                created.append(statement)
+
+        store._conn.set_trace_callback(trace)
+        try:
+            for _ in range(5):
+                store.query("SELECT 1 AS one", scope=scope)
+            first_round = len(created)
+            # A different scope must republish, or the views would describe the
+            # wrong session -- which is worse than slow.
+            other = store.new_frame(kind="turn", project_id="p2")
+            store.query(
+                "SELECT 1 AS one",
+                scope={"root_frame_id": other, "project_id": "p2"},
+            )
+            after_switch = len(created)
+        finally:
+            store._conn.set_trace_callback(None)
+
+        assert first_round == 5, (
+            f"five identical-scope queries published {first_round} views; the "
+            f"definitions must be cached against the scope that produced them"
+        )
+        assert (
+            after_switch == first_round + 5
+        ), "a scope change must republish the views"
+    finally:
+        store.close()
+
+
+def test_agent_sql_does_not_commit_the_callers_transaction(tmp_path):
+    """`executescript` would. An implicit COMMIT inside a read is a side effect
+    on a database whose whole point is an audit ledger."""
+    cfg = _config(tmp_path)
+    store = get_store(cfg.db_path)
+    try:
+        frame = store.new_frame(kind="turn", project_id="p1")
+        store._conn.execute("BEGIN")
+        store._conn.execute(
+            "INSERT INTO settings (key, value, updated_at) "
+            "VALUES ('probe', 'uncommitted', 0)"
+        )
+        store.query(
+            "SELECT 1 AS one",
+            scope={"root_frame_id": frame, "project_id": "p1"},
+        )
+        store._conn.execute("ROLLBACK")
+        rows = store._conn.execute(
+            "SELECT value FROM settings WHERE key = 'probe'"
+        ).fetchall()
+        assert rows == [], (
+            "the agent query committed the caller's open transaction, so a "
+            "rollback could not undo it"
+        )
+    finally:
+        store.close()

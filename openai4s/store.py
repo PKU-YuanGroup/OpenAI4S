@@ -22,15 +22,17 @@ as turns/cells/artifacts/compactions happen. Schema and write paths:
   host_call_log     RPC audit (DERIVABLE_HOST_CALLS are NOT logged; the args of
                     SECRET_ARG_HOST_CALLS are redacted before write)
 
-Agent SQL (`host.query`) runs on a separate `mode=ro` connection under a real
-SQLite authorizer, not on the daemon's read-write handle behind a substring
-filter. Secret-bearing tables (`settings` holds the LLM API key + model profiles,
+Agent SQL (`host.query`) runs under a real SQLite authorizer installed for the
+duration of each statement, not behind a substring filter on the statement text.
+Secret-bearing tables (`settings` holds the LLM API key + model profiles,
 `connectors` holds MCP server env/command) and the internal audit/memory tables
 are refused outright; the SQLite catalog and the `pragma_*` table-valued
 functions are refused by prefix. The artifact family -- `artifacts`,
-`artifact_versions`, `lineage_edges`, `frames`, `env_snapshots` -- is reachable
-only through the session-scoped `my_*` views, because a bundled Skill has a real
-reason to read `artifact_versions.source` and no reason to read another project's.
+`artifact_versions`, `lineage_edges`, `env_snapshots` -- is reachable only through
+the session-scoped `my_*` views, because a bundled Skill has a real reason to read
+`artifact_versions.source` and no reason to read another project's. `frames` stays
+directly readable: cross-session frame enumeration is a real leak, but closing it
+is a separate decision (see `_VIEW_ONLY_TABLES`).
 An authorizer sees resolved table names, so identifier quoting, a schema
 qualifier, an alias, a CTE and a name arriving in a bound parameter are all the
 same thing to it; a text filter had to enumerate spellings and could not see the
@@ -711,13 +713,15 @@ _VIEW_ONLY_TABLES = frozenset(
         "artifacts",
         "artifact_versions",
         "lineage_edges",
-        # Session metadata across every project: names, models, project ids. A
-        # cross-project session listing is an enumeration of what other work
-        # exists, which is most of what a prompt-injected cell would want.
-        "frames",
         # Interpreter, prefix and the complete installed-package manifest of
         # every kernel generation in the database.
         "env_snapshots",
+        # `frames` is deliberately NOT here. Cross-session frame enumeration is a
+        # real leak, but the plan does not list it and `tests/test_store.py`
+        # documents direct `SELECT * FROM frames` as allowed -- so closing it is a
+        # separate decision with its own migration for anything reading it, not a
+        # side effect of this change. `my_frames` exists for callers that want the
+        # scoped form.
     }
 )
 
@@ -757,9 +761,12 @@ class _QueryAuthorizer:
         dbname: str | None,
         source: str | None,
     ) -> int:
-        # Anything that is not a read or a plain SELECT is refused outright. The
-        # connection is already `mode=ro`, so this is defence in depth against
-        # temp-table writes, ATTACH, and function-driven side effects.
+        # Anything that is not a read or a plain SELECT is refused outright.
+        # This runs on the daemon's read-write connection, so it is the *only*
+        # thing standing between agent SQL and an UPDATE -- and it refuses by
+        # action code rather than by keyword, which is what makes a statement
+        # like `SELECT 1; DROP TABLE artifacts` or a temp-table write, an ATTACH,
+        # or a function-driven side effect unreachable rather than merely unspelled.
         if action not in (sqlite3.SQLITE_READ, sqlite3.SQLITE_SELECT):
             if action == sqlite3.SQLITE_FUNCTION:
                 # Scalar/aggregate functions are fine; the table-valued pragma
@@ -1627,15 +1634,6 @@ class Store:
         with self._lock:
             if self._closed:
                 return
-            # The agent-SQL connection is lazily created and separate, so it has
-            # to be closed here too or a closed Store leaves a live read handle
-            # (and, on Windows, a locked file) behind.
-            query_conn = getattr(self, "_query_conn", None)
-            if query_conn is not None:
-                try:
-                    query_conn.close()
-                finally:
-                    self._query_conn = None
             self._conn.close()
             self._closed = True
         _discard_store(self)
@@ -3472,33 +3470,10 @@ class Store:
         )
 
     # --- generic read-only query (host.query backing) -------------------
-    def _query_connection(self) -> sqlite3.Connection:
-        """A separate, read-only connection for agent SQL.
-
-        Agent SQL used to run on `self._conn` -- the one read-write connection
-        the whole daemon writes through -- guarded only by substring matching on
-        the statement text. Two things follow from that. A read-write handle means
-        the only thing between a cell and an UPDATE is the text filter, and a text
-        filter is defeated by anything that keeps the name out of the text: a
-        bound parameter (`pragma_table_info(?)`), an identifier quote, a schema
-        qualifier. `mode=ro` makes the write case structural rather than textual.
-        """
-        conn = getattr(self, "_query_conn", None)
-        if conn is None:
-            conn = sqlite3.connect(
-                f"file:{self.db_path}?mode=ro",
-                uri=True,
-                check_same_thread=False,
-                timeout=_BUSY_TIMEOUT_S,
-            )
-            conn.row_factory = sqlite3.Row
-            self._query_conn = conn
-        return conn
-
     def _refresh_scoped_views(
         self, conn: sqlite3.Connection, scope: Mapping[str, Any]
     ) -> None:
-        """Rebuild the `my_*` views for one caller's scope.
+        """Publish the `my_*` views for one caller's scope, at most once per scope.
 
         The internal artifact tables cannot simply be denied: a bundled Skill
         legitimately reads `artifact_versions.source` to confirm the retrieval
@@ -3506,41 +3481,62 @@ class Store:
         access and reachable only through these views, which carry the caller's
         `root_frame_id`/`project_id` baked in as literals.
 
+        Two things here are load-bearing, and the first version of this method got
+        both wrong.
+
+        `executescript` is not used, and this is a correctness point rather than a
+        performance one: it issues an implicit COMMIT before running its script, so
+        every `host.query` ended whatever transaction the caller had open. On a
+        database that holds an audit ledger, a read that commits someone else's
+        half-finished write is not a read. `test_agent_sql_does_not_commit_the_
+        callers_transaction` is the check.
+
+        The definitions are also cached against the scope that produced them,
+        rather than rebuilt per query. Measured on this machine that is 0.090 ms
+        -> 0.005 ms per query, 17x on this path -- worth having and not more than
+        that. It is recorded because the number is small: an earlier note here
+        blamed a slow test suite on it, which was wrong, and 0.09 ms per query
+        could not have done that.
+
         The scope values are internal ids the caller never supplies -- they come
-        from `resolve_frame_scope` -- and they are quoted here anyway, because a
-        value interpolated into DDL is worth quoting whatever its provenance.
+        from `resolve_frame_scope` -- and they are quoted anyway, because a value
+        interpolated into DDL is worth quoting whatever its provenance.
         """
-        root = _sql_quote(str(scope.get("root_frame_id") or ""))
-        project = _sql_quote(str(scope.get("project_id") or ""))
-        conn.executescript(
-            f"""
-            DROP VIEW IF EXISTS temp.my_artifacts;
-            DROP VIEW IF EXISTS temp.my_artifact_versions;
-            DROP VIEW IF EXISTS temp.my_lineage_edges;
-            DROP VIEW IF EXISTS temp.my_frames;
-            DROP VIEW IF EXISTS temp.my_env_snapshots;
-            CREATE TEMP VIEW my_artifacts AS
+        root = str(scope.get("root_frame_id") or "")
+        project = str(scope.get("project_id") or "")
+        if getattr(self, "_view_scope", None) == (root, project):
+            return
+        root_sql = _sql_quote(root)
+        project_sql = _sql_quote(project)
+        statements = (
+            f"""CREATE TEMP VIEW my_artifacts AS
                 SELECT * FROM main.artifacts
-                 WHERE root_frame_id = {root} AND project_id = {project};
-            CREATE TEMP VIEW my_artifact_versions AS
+                 WHERE root_frame_id = {root_sql} AND project_id = {project_sql}""",
+            f"""CREATE TEMP VIEW my_artifact_versions AS
                 SELECT v.* FROM main.artifact_versions v
                   JOIN main.artifacts a ON a.artifact_id = v.artifact_id
-                 WHERE a.root_frame_id = {root} AND a.project_id = {project};
-            CREATE TEMP VIEW my_lineage_edges AS
+                 WHERE a.root_frame_id = {root_sql}
+                   AND a.project_id = {project_sql}""",
+            f"""CREATE TEMP VIEW my_lineage_edges AS
                 SELECT e.* FROM main.lineage_edges e
                   JOIN main.artifact_versions v
                     ON v.version_id = e.output_version_id
                   JOIN main.artifacts a ON a.artifact_id = v.artifact_id
-                 WHERE a.root_frame_id = {root} AND a.project_id = {project};
-            CREATE TEMP VIEW my_frames AS
+                 WHERE a.root_frame_id = {root_sql}
+                   AND a.project_id = {project_sql}""",
+            f"""CREATE TEMP VIEW my_frames AS
                 SELECT * FROM main.frames
-                 WHERE frame_id = {root} OR root_frame_id = {root};
-            CREATE TEMP VIEW my_env_snapshots AS
+                 WHERE frame_id = {root_sql} OR root_frame_id = {root_sql}""",
+            f"""CREATE TEMP VIEW my_env_snapshots AS
                 SELECT s.* FROM main.env_snapshots s
                   JOIN main.frames f ON f.frame_id = s.frame_id
-                 WHERE f.frame_id = {root} OR f.root_frame_id = {root};
-            """
+                 WHERE f.frame_id = {root_sql} OR f.root_frame_id = {root_sql}""",
         )
+        for name in _SCOPED_VIEWS:
+            conn.execute(f"DROP VIEW IF EXISTS temp.{name}")
+        for statement in statements:
+            conn.execute(statement)
+        self._view_scope = (root, project)
 
     def query(
         self,
@@ -3572,7 +3568,17 @@ class Store:
         if not (stripped.startswith("select") or stripped.startswith("with")):
             raise ValueError("host.query only allows read-only SELECT/CTE")
 
-        conn = self._query_connection()
+        # The daemon's one connection, with the authorizer installed for exactly
+        # the duration of this statement and removed in `finally` -- the same
+        # shape as the existing `set_progress_handler` bracket directly below.
+        #
+        # A separate `mode=ro` connection was tried first and reverted: it would
+        # add a second connection lifetime, a second lock discipline and
+        # multi-process interaction to a compatibility facade, for defence in
+        # depth the authorizer already provides. The authorizer denies every
+        # action code that is not a read or a plain SELECT, so writes are refused
+        # by rule and not by keyword.
+        conn = self._conn
         with self._lock:
             guard = _QueryAuthorizer()
             try:

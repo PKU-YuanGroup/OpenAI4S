@@ -145,10 +145,21 @@ def test_metadata_and_version_list_are_exact_scoped_and_path_free(tmp_path):
 
     other = harness.store.new_frame(kind="turn", project_id="other", status="ready")
     foreign_service = harness.service_for(other)
-    with pytest.raises(PermissionError, match="outside the current session"):
-        foreign_service.artifact_metadata({"artifact_id": first["artifact_id"]})
-    with pytest.raises(PermissionError, match="outside the current session"):
-        foreign_service.artifact_versions({"artifact_id": first["artifact_id"]})
+    # A foreign artifact is reported exactly as an absent one. This asserted
+    # `PermissionError, match="outside the current session"` -- a distinct type
+    # *and* a message saying the object exists somewhere, which is a working
+    # existence oracle and most of what an enumerator wants. `_scoped_version`
+    # already collapsed the two and its docstring explains why; `_scoped_artifact`
+    # did not, so the two helpers disagreed twelve lines apart. See
+    # `tests/test_artifact_scope_closure.py` for the indistinguishability pair.
+    for call in (
+        foreign_service.artifact_metadata,
+        foreign_service.artifact_versions,
+    ):
+        with pytest.raises(KeyError, match="in the current session"):
+            call({"artifact_id": first["artifact_id"]})
+        with pytest.raises(KeyError, match="in the current session"):
+            call({"artifact_id": "a-does-not-exist"})
 
 
 def test_restore_copies_verified_snapshot_to_fresh_version_and_lineage(tmp_path):

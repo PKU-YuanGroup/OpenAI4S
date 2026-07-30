@@ -121,14 +121,44 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 |---|---|---|
 | Route-module inventory derived from the filesystem, with a convention guard | `3f4f59b` | `Completed` |
 
-## 8. P0 is closed
+## 8. P0 is **not** closed — corrected 2026-07-29
 
-Every P0 item in the integrated report is `Completed`, with two exceptions that
-are `Implemented but unverified` for one shared reason: **nothing in this
-repository executes `.github/workflows/*.yml`**. The release quality job, the
-receipt upload, the concurrency mutex, the seven job timeouts, the SHA-pinned
-actions and the 3.13 matrix entry are all written and reviewed; one real
-`workflow_dispatch` is the only thing that can settle them.
+This section read "P0 is closed. Every P0 item in the integrated report is
+`Completed`" until a read-only production call-chain audit of `120af6a` went
+through fourteen areas and came back with **no area fully wired**. The heading
+was the most load-bearing claim in this file and it was false.
+
+What the audit found, and where it now lives: every one of the 56 proposals has a
+row in [`plan-crosswalk.json`](plan-crosswalk.json) with a status from a declared
+vocabulary, checked by `tests/test_plan_crosswalk.py`. 47 rows are `open`. That
+file, not this section, is the per-item record from here on — a table in prose can
+gain a duplicate, lose a row, or say `Completed` about something no call chain
+reaches, which is what happened.
+
+Two examples of the shape of the error, because it recurs and is worth
+recognising:
+
+- **§6 recorded the quality receipt as `Completed`.** The receipt existed and was
+  bound to the released SHA, which is what was checked. What nobody checked is
+  that the consumer read only `format`, `source_sha` and a list of exit codes —
+  never the gate names, the commands or the count. A two-row document naming
+  `pytest` with the argv `["pytest"]` staged a release, and that document is
+  verbatim what this repository's own test fixture wrote. The suite demonstrated
+  the hole rather than closing it.
+- **§6/0.7 stated that `verified` is "unreachable today" so the macOS asset has
+  "no publishable path this version".** The stated reason was that the pipeline
+  hardcoded `"notarized": None` — a fact about the pipeline, not about the image.
+  Meanwhile the gate passed on the Developer ID signature alone, so the moment
+  the signing-certificate secret exists (the workflow already imports it into a
+  keychain) an un-notarized image publishes. "Unreachable" was documenting the
+  absence of a check as if it were the absence of a capability.
+
+The one shared reason that remains genuinely external is unchanged: **nothing in
+this repository executes `.github/workflows/*.yml`**. Every workflow-level change
+— the `freeze` job, the frozen-SHA checkouts, the build receipts, the platform
+checks, the evidence and attestation uploads, the ci.yml timeouts — is written,
+structurally tested against the parsed workflow graph, and settled only by one
+real `workflow_dispatch`.
 
 Two further statements belong here rather than in a release note, because both
 are easy to mistake for oversights:
@@ -236,8 +266,17 @@ unreachable-code and no-recovery-path defects.
 
 ### Still open from the audit
 
-Nothing. Every finding from the audit round is either fixed above or recorded
-below as a decision.
+**Four.** The table above carries four rows whose commit column reads `PENDING`,
+and this section previously read "Nothing. Every finding from the audit round is
+either fixed above or recorded below as a decision." Both statements were in the
+file at the same time, and the second one was wrong:
+
+| Severity | Defect | Status |
+| --- | --- | --- |
+| Medium | `generation_confidence` and `provenance` were written by a migration and read by nothing | open |
+| Low | `Tool.dangerous` was declared on ten tools and read by no gate, audit or prompt | open |
+| Low | `host.app_render` grew without bound (100 MB measured); a released idle session kept its history | open |
+| Low | model-profile `readiness` and the probe route had no UI call site | partly addressed by P1-A A.2; the probe success path is still unverified |
 
 ### Deliberately not fixed
 
@@ -246,3 +285,54 @@ bubblewrap keeps the host PID namespace so `Kernel.interrupt()` can target
 `/proc/<daemon>/environ` is masked after the `--proc` mount — and the rest is
 recorded in [`v03-decisions.md`](v03-decisions.md) rather than attempted blind
 on a platform this is not developed on.
+
+## 14. This batch (2026-07-29)
+
+Two findings landed, both on complete production call chains, both previously
+recorded above as `Completed`. Full detail is in the commit message; what belongs
+here is the status vocabulary applied honestly.
+
+| Plan item | What changed | Status | What is missing |
+|---|---|---|---|
+| P0-0 items 1-8 | Canonical gate manifest shared by producer and consumer with exact-match verification; `freeze` job peels the tag once and every job checks out that output; `--source-sha` checked against the checkout; per-artifact build receipts binding bytes to the frozen commit with builder OS/arch/interpreter; evidence bundle promoted to a mandatory step before `checksums` and `upload`, carrying the receipts, artifact digests, sandbox posture and builder, re-verified with the product's own `evidence.verify_package`; out-of-band stage attestation so `finalize` no longer trusts the draft's own `SHA256SUMS`; notarization read from `xcrun stapler validate` and required for a public release; `timeout-minutes` on all ten ci.yml jobs; browser and Python-matrix gates bound to the release SHA by check-run attestation with run ids recorded; platform sandbox checks executed at the frozen SHA | `implemented_unverified` | One real `workflow_dispatch`. The script-level logic is falsified offline (`tests/test_release_gate_manifest.py`, 42 cases including retag-between-jobs, missing/duplicate/unknown/substituted gate, seal failure, Developer-ID-without-notary, and asset+manifest replaced together); the YAML is asserted against the parsed workflow graph, not executed |
+| P0-2 items 9-11 | Agent SQL moved to a separate `mode=ro` connection under a real SQLite authorizer; artifact family reachable only through session-scoped `my_*` views; foreign and absent artifact refusals made indistinguishable; `view_image` scope-checked; `input_version_ids` validated before any copy or row | `closed` | Nothing for these three. `tests/test_artifact_scope_closure.py` (29 cases) covers direct SQL, CTE, five quotings, bound-parameter and `pragma_*` bypasses, the catalog by rule, and both refusal-indistinguishability directions |
+| Plan section 14 | The 56-item matrix became [`plan-crosswalk.json`](plan-crosswalk.json) | `closed` | Nothing. `tests/test_plan_crosswalk.py` enforces 56 unique keys each appearing once, eight per source report, `closed` naming an existing test file, and `implemented_unverified` naming its missing run |
+
+### The offline suite is not green at HEAD, and was not before this batch
+
+`uv run pytest` fails one test at `120af6a`, the commit this batch started from:
+
+    tests/test_r_kernel.py::test_interrupt_returns_interrupted_result_and_keeps_worker
+
+It passes in isolation and in any small combination, and fails in a full run —
+`RuntimeError: kernel worker exited unexpectedly`, the `fake_rscript` stand-in
+dying, at around thread #1045. Measured both ways in matched, isolated
+environments (Python 3.12.13, `--extra science`, each tree importing its own
+source): `120af6a` fails it in 817 s, this batch's tree fails the same single
+test in 800 s. **This batch introduces no new failures**, and the failure is not
+one it caused.
+
+Recording it here because §13 above states "all eight gates were green
+throughout", and that is not true of this gate. Two things made it easy to miss,
+and both are worth naming:
+
+- Every early full-suite invocation in this work was written as
+  `uv run pytest -q 2>&1 | tail -6`. In a pipeline the shell reports the *last*
+  command's status, so the exit code observed was `tail`'s — always 0. A red
+  suite and a green one produced the same signal.
+- The failure needs the whole suite. Any per-module or per-directory run passes,
+  which is the same trap `tests/README.md` already documents for global `Popen`
+  patches.
+
+Not fixed here: it is a cross-test resource or patch interaction in the R kernel
+harness, unrelated to identity, scope or release evidence, and diagnosing it
+means bisecting ~7000 tests. It belongs in its own change.
+
+### Deliberately not claimed
+
+P0-2 item 12 (materialisation/upload atomic boundaries), item 13 (immutable model
+profile revision), items 14-15 (compute owner scope and result harvest), all of
+P0-3 (items 19-22), all of P0-4 (items 16-18) and all of P1-A/P1-B (items 23-31)
+were audited on their production call chains and are recorded `open` in the
+crosswalk with the located defect. They are not started in this batch. Marking
+them anything else is the error this section exists to stop repeating.

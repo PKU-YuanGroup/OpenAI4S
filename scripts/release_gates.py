@@ -179,14 +179,6 @@ PLATFORM_CHECK_COMMANDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def local_gates() -> tuple[Gate, ...]:
-    return LOCAL_GATES
-
-
-def check_suite_gates() -> tuple[Gate, ...]:
-    return CHECK_SUITE_GATES
-
-
 def manifest() -> dict[str, Any]:
     """The manifest itself, as the receipt records it."""
     return {

@@ -756,12 +756,23 @@ def test_the_release_binds_the_platform_checks_to_the_frozen_sha():
     """
     jobs = _workflow("release.yml")["jobs"]
     assert "platform-checks" in jobs
+    from scripts import release_gates
+
     modules = {
         entry["module"]
         for entry in jobs["platform-checks"]["strategy"]["matrix"]["include"]
     }
-    assert modules == {"harness.smoke.macos_sandbox", "harness.smoke.linux_sandbox"}
-    from scripts import release_gates
+    # Against the manifest constant, not a hardcoded pair: a declaration nothing
+    # reads is how `Tool.dangerous` came to be set on ten tools and consulted by
+    # no gate. Comparing here makes the constant load-bearing, so the workflow and
+    # the manifest cannot drift.
+    declared = {
+        command[-1] for command in release_gates.PLATFORM_CHECK_COMMANDS.values()
+    }
+    assert modules == declared, (
+        f"release.yml runs {sorted(modules)} but the manifest declares "
+        f"{sorted(declared)}"
+    )
 
     attested = {gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
     assert not any("sandbox" in name.lower() for name in attested), (

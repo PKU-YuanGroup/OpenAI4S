@@ -45,6 +45,11 @@ class FakeStore:
             "root_frame_id": "frame-1",
             "project_id": "default",
         }
+        #: A lineage input this session really owns. `save_artifact` now resolves
+        #: every declared `input_version_ids` entry through the scope check before
+        #: it copies anything, so a fake that cannot answer `version_meta` for one
+        #: is a fake that cannot stand in for the call at all.
+        self.metadata.setdefault("v-input", {"artifact_id": "a-1"})
 
     def get_artifact(self, artifact_id):
         self.calls.append(("get_artifact", artifact_id))
@@ -54,8 +59,11 @@ class FakeStore:
         self.calls.append(("resolve_frame_scope", frame_id))
         return dict(self.scope)
 
-    def query(self, sql, *, params=None, limit=None, timeout_s=5.0):
-        self.calls.append(("query", sql, params, limit, timeout_s))
+    def query(self, sql, *, params=None, limit=None, timeout_s=5.0, scope=None):
+        # `scope` is what publishes the session-scoped `my_*` views on the real
+        # store. It used to be accepted by the SDK and dropped, so the base
+        # artifact tables were readable directly across every project.
+        self.calls.append(("query", sql, params, limit, timeout_s, scope))
         return self.query_rows
 
     def schema(self):
@@ -136,8 +144,42 @@ def test_query_projection_and_schema_keep_store_contract(tmp_path):
     assert service.query(
         {"sql": "SELECT a,b", "params": [1], "limit": 9, "df": True}
     ) == {"columns": ["a", "b"], "rows": [[1, 2], [3, 4]]}
-    assert store.calls == [("query", "SELECT a,b", [1], 9, 5.0)]
+    # The scope reaches the store, and it is the session's own rather than
+    # anything the caller sent: `spec["scope"]` is deliberately not read, because
+    # a value the caller chooses cannot be what confines the caller. It used to be
+    # dropped entirely here, so the `my_*` views did not exist and the base
+    # artifact tables were readable directly, across every project.
+    scope = {
+        "frame_id": "frame-1",
+        "root_frame_id": "frame-1",
+        "project_id": "default",
+    }
+    assert store.calls == [
+        ("resolve_frame_scope", "frame-1"),
+        ("query", "SELECT a,b", [1], 9, 5.0, scope),
+    ]
     assert service.query_schema() == {"frames": ["frame_id"]}
+
+
+def test_a_caller_supplied_scope_is_ignored(tmp_path):
+    """The SDK accepts `scope=` and it must not be load-bearing.
+
+    If the value the caller passes decided which rows the views expose, the
+    confinement would be advisory.
+    """
+    service, store, _workspace, _config = _service(tmp_path)
+    store.query_rows = []
+
+    service.query(
+        {"sql": "SELECT 1", "scope": {"root_frame_id": "frame-999", "project_id": "x"}}
+    )
+
+    call = next(c for c in store.calls if c[0] == "query")
+    assert call[5] == {
+        "frame_id": "frame-1",
+        "root_frame_id": "frame-1",
+        "project_id": "default",
+    }
 
 
 def test_artifact_search_keeps_filter_mutation_and_ranking(tmp_path):

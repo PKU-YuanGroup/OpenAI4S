@@ -21,7 +21,7 @@
       "integrated": "P0-2、P1-A",
       "plan_conclusion": "分拆：Profile 身份/入口 P0；就绪 UI P1",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -34,7 +34,7 @@
       "integrated": "P0-2、P1-A",
       "plan_conclusion": "身份合同 P0；Composer/历史 UI P1",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -47,7 +47,7 @@
       "integrated": "P1-B",
       "plan_conclusion": "降为 P1；依赖稳定异步 identity 与 capacity",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -60,7 +60,7 @@
       "integrated": "P1-B",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -73,7 +73,7 @@
       "integrated": "P1-B",
       "plan_conclusion": "纳入；不自动 poll、cancel 或重提",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -86,7 +86,7 @@
       "integrated": "P1-B",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -125,7 +125,7 @@
       "integrated": "P0-2、P1-A",
       "plan_conclusion": "身份 P0；显式 probe/UI P1",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -138,7 +138,7 @@
       "integrated": "P0-2",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15)",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -151,7 +151,7 @@
       "integrated": "P0-2",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15)",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -164,7 +164,7 @@
       "integrated": "P1-B",
       "plan_conclusion": "纳入，保留独特项",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -177,7 +177,7 @@
       "integrated": "P1-A",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -190,7 +190,7 @@
       "integrated": "P0-3",
       "plan_conclusion": "晋升",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "bounded runtime: MCP has no fault-driven eviction of any kind, so no CAS question arises and the next call never gets a new pid; an initialize failure leaks the subprocess and both reader threads; stderr is read unbounded and truncated after two full copies; `_abandoned` is an uncapped server-influenced set. Local jobs claim no active capacity at all, use `bash -lc` (a login shell), and inherit the daemon environ verbatim so provider API keys reach every job. Kernel stderr, the traceback string and the whole R payload are accumulated in full and capped at response-build time. read_file/edit_file/save_artifact allocate O(file) in the daemon with no byte budget",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -216,7 +216,7 @@
       "integrated": "P1-A",
       "plan_conclusion": "提前为只读 P1，依赖 scoped source",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -229,7 +229,7 @@
       "integrated": "P0-1",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "not re-audited in this batch; P0-1's own rows in this file were recorded Completed before the audit and carry no fresh production-chain evidence",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -242,7 +242,7 @@
       "integrated": "P0-1、P0-2",
       "plan_conclusion": "分拆",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "not re-audited in this batch; P0-1's own rows in this file were recorded Completed before the audit and carry no fresh production-chain evidence || identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15)",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -268,7 +268,7 @@
       "integrated": "P1-A",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -281,7 +281,7 @@
       "integrated": "P0-2、P1-A",
       "plan_conclusion": "身份晋升 P0；UI P1",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -294,7 +294,7 @@
       "integrated": "P0-2、P0-3、P1-B",
       "plan_conclusion": "分拆并晋升安全部分",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || bounded runtime: MCP has no fault-driven eviction of any kind, so no CAS question arises and the next call never gets a new pid; an initialize failure leaks the subprocess and both reader threads; stderr is read unbounded and truncated after two full copies; `_abandoned` is an uncapped server-influenced set. Local jobs claim no active capacity at all, use `bash -lc` (a login shell), and inherit the daemon environ verbatim so provider API keys reach every job. Kernel stderr, the traceback string and the whole R payload are accumulated in full and capped at response-build time. read_file/edit_file/save_artifact allocate O(file) in the daemon with no byte budget || agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -307,7 +307,7 @@
       "integrated": "P1-B",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -333,7 +333,7 @@
       "integrated": "P0-4",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "error/state truth: one envelope chokepoint exists, a safe *projector* does not -- `public_failure` never replaces `payload['error']`, so an unknown exception's raw text ships with a `code` bolted on. The first-run token mint is check-then-act plus an unconditional os.replace, so there is no single atomic winner and the loser's re-read is outside any exclusion. Plan resume is a read-then-write, not a CAS or lease: two concurrent POSTs can both return 202 and both execute",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -346,7 +346,7 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "bounded runtime: MCP has no fault-driven eviction of any kind, so no CAS question arises and the next call never gets a new pid; an initialize failure leaks the subprocess and both reader threads; stderr is read unbounded and truncated after two full copies; `_abandoned` is an uncapped server-influenced set. Local jobs claim no active capacity at all, use `bash -lc` (a login shell), and inherit the daemon environ verbatim so provider API keys reach every job. Kernel stderr, the traceback string and the whole R payload are accumulated in full and capped at response-build time. read_file/edit_file/save_artifact allocate O(file) in the daemon with no byte budget",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -359,7 +359,7 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "bounded runtime: MCP has no fault-driven eviction of any kind, so no CAS question arises and the next call never gets a new pid; an initialize failure leaks the subprocess and both reader threads; stderr is read unbounded and truncated after two full copies; `_abandoned` is an uncapped server-influenced set. Local jobs claim no active capacity at all, use `bash -lc` (a login shell), and inherit the daemon environ verbatim so provider API keys reach every job. Kernel stderr, the traceback string and the whole R payload are accumulated in full and capped at response-build time. read_file/edit_file/save_artifact allocate O(file) in the daemon with no byte budget",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -372,7 +372,7 @@
       "integrated": "P0-2、P1-A",
       "plan_conclusion": "身份晋升 P0；物化 UI P1",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -385,7 +385,7 @@
       "integrated": "P0-2、P1-A",
       "plan_conclusion": "本地合同 P0；UI P1",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -398,7 +398,7 @@
       "integrated": "P1-B",
       "plan_conclusion": "纳入；若 UI 已承诺 exact，必须先隐藏或实现",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -411,7 +411,7 @@
       "integrated": "P0-1",
       "plan_conclusion": "晋升",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "not re-audited in this batch; P0-1's own rows in this file were recorded Completed before the audit and carry no fresh production-chain evidence",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -424,7 +424,7 @@
       "integrated": "P2、P1-B",
       "plan_conclusion": "owner-scoped 只读面板可进 P1；完整合同 P2",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "out of scope this version by decision D8 || agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -437,7 +437,7 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "bounded runtime: MCP has no fault-driven eviction of any kind, so no CAS question arises and the next call never gets a new pid; an initialize failure leaks the subprocess and both reader threads; stderr is read unbounded and truncated after two full copies; `_abandoned` is an uncapped server-influenced set. Local jobs claim no active capacity at all, use `bash -lc` (a login shell), and inherit the daemon environ verbatim so provider API keys reach every job. Kernel stderr, the traceback string and the whole R payload are accumulated in full and capped at response-build time. read_file/edit_file/save_artifact allocate O(file) in the daemon with no byte budget",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -450,7 +450,7 @@
       "integrated": "P0-2",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15)",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -463,7 +463,7 @@
       "integrated": "P0-2、P1-A",
       "plan_conclusion": "分拆",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -476,7 +476,7 @@
       "integrated": "P0-3",
       "plan_conclusion": "晋升",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "bounded runtime: MCP has no fault-driven eviction of any kind, so no CAS question arises and the next call never gets a new pid; an initialize failure leaks the subprocess and both reader threads; stderr is read unbounded and truncated after two full copies; `_abandoned` is an uncapped server-influenced set. Local jobs claim no active capacity at all, use `bash -lc` (a login shell), and inherit the daemon environ verbatim so provider API keys reach every job. Kernel stderr, the traceback string and the whole R payload are accumulated in full and capped at response-build time. read_file/edit_file/save_artifact allocate O(file) in the daemon with no byte budget",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -489,7 +489,7 @@
       "integrated": "P0-4",
       "plan_conclusion": "晋升",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "error/state truth: one envelope chokepoint exists, a safe *projector* does not -- `public_failure` never replaces `payload['error']`, so an unknown exception's raw text ships with a `code` bolted on. The first-run token mint is check-then-act plus an unconditional os.replace, so there is no single atomic winner and the loser's re-read is outside any exclusion. Plan resume is a read-then-write, not a CAS or lease: two concurrent POSTs can both return 202 and both execute",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -502,7 +502,7 @@
       "integrated": "P0-2",
       "plan_conclusion": "晋升",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15)",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -528,7 +528,7 @@
       "integrated": "P2、P1-B",
       "plan_conclusion": "只读入口 P1；完整控制 P2",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "out of scope this version by decision D8 || agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -541,7 +541,7 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "bounded runtime: MCP has no fault-driven eviction of any kind, so no CAS question arises and the next call never gets a new pid; an initialize failure leaks the subprocess and both reader threads; stderr is read unbounded and truncated after two full copies; `_abandoned` is an uncapped server-influenced set. Local jobs claim no active capacity at all, use `bash -lc` (a login shell), and inherit the daemon environ verbatim so provider API keys reach every job. Kernel stderr, the traceback string and the whole R payload are accumulated in full and capped at response-build time. read_file/edit_file/save_artifact allocate O(file) in the daemon with no byte budget",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -567,7 +567,7 @@
       "integrated": "P0-2",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15)",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -580,7 +580,7 @@
       "integrated": "P0-2、P1-A",
       "plan_conclusion": "身份晋升 P0；UI P1",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -593,7 +593,7 @@
       "integrated": "P0-2、P1-A",
       "plan_conclusion": "身份晋升 P0；物化 P1",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -606,7 +606,7 @@
       "integrated": "P1-B",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "agent/skill/compute control: the composer is disabled during a run and there is no Queue-follow-up UI at all, though the server-side FIFO, admission refusals and sibling-safe cancel are real. The Specialist connector allowlist does not exist -- no set_allowed_connectors, no field on ChildExecutionPolicy, no filter in host/mcp.py -- so a specialist restricted to one connector can still call every enabled one through direct Host RPC. The Web skill catalog projection drops `requirements` and `readiness`, so needs_setup/unknown cannot render. Memory has one flat project_id column, no global tier and no merge, and the UI writes to \"default\" while injection reads the session's project",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -619,7 +619,7 @@
       "integrated": "P1-A",
       "plan_conclusion": "纳入，保留独特项",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -645,7 +645,7 @@
       "integrated": "P0-1",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "not re-audited in this batch; P0-1's own rows in this file were recorded Completed before the audit and carry no fresh production-chain evidence",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -658,7 +658,7 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "bounded runtime: MCP has no fault-driven eviction of any kind, so no CAS question arises and the next call never gets a new pid; an initialize failure leaks the subprocess and both reader threads; stderr is read unbounded and truncated after two full copies; `_abandoned` is an uncapped server-influenced set. Local jobs claim no active capacity at all, use `bash -lc` (a login shell), and inherit the daemon environ verbatim so provider API keys reach every job. Kernel stderr, the traceback string and the whole R payload are accumulated in full and capped at response-build time. read_file/edit_file/save_artifact allocate O(file) in the daemon with no byte budget",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -671,7 +671,7 @@
       "integrated": "P0-4",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "error/state truth: one envelope chokepoint exists, a safe *projector* does not -- `public_failure` never replaces `payload['error']`, so an unknown exception's raw text ships with a `code` bolted on. The first-run token mint is check-then-act plus an unconditional os.replace, so there is no single atomic winner and the loser's re-read is outside any exclusion. Plan resume is a read-then-write, not a CAS or lease: two concurrent POSTs can both return 202 and both execute",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -684,7 +684,7 @@
       "integrated": "P0-2、P1-A",
       "plan_conclusion": "身份晋升 P0；probe/UI P1",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "identity/scope: agent-SQL authorizer, indistinguishable refusals, view_image and lineage-input validation are closed. Still open: materialisation and upload perform the destructive filesystem step before checks that can still refuse (item 12); /models still dedupes and selects by bare model string and a bare `model` in a request overrides a pinned profile (item 13); compute idempotency is installation-global so a refusal hands another owner's job_id and status back (item 14); GetRemoteComputeJobResultTool does not declare writes_files=True, so a native harvest of N files produces ZERO Artifact versions (item 15) || visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -697,7 +697,7 @@
       "integrated": "P1-A",
       "plan_conclusion": "纳入，依赖精确视觉 Profile",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -710,7 +710,7 @@
       "integrated": "P1-A",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -723,7 +723,7 @@
       "integrated": "P1-A",
       "plan_conclusion": "纳入，保留独特项",
       "status": "open",
-      "status_note": "audited on the production call chain at 120af6a; a defect was located and is not fixed in this batch",
+      "status_note": "visible product closure: the ArtifactRef is a text token re-parsed on every send, with none of artifact_id/sha256/display_name/source_session/materialized_target persisted. Image attachments record no version_id or checksum and resolve to the artifact's *latest* version. The session keyset cursor is real server-side and has no browser consumer -- loadSessions is hard-capped at limit=100 with no load-more control. The Viewer's table renderer silently truncates a 5001x101 TSV to 5000x100 and reports neither the totals nor the hidden counts",
       "tests": "",
       "browser_evidence": "",
       "external_evidence": ""
@@ -741,5 +741,9 @@
       "browser_evidence": "",
       "external_evidence": ""
     }
-  ]
+  ],
+  "audit": {
+    "method": "read-only production call-chain audit; 14 areas; no area came back fully wired",
+    "rule": "a capability counts only when an unbroken chain runs from the externally reachable entry point to the enforcing code. An enforcement function whose every call site is a test is not implemented, and a check that fires after the side effect is not a check."
+  }
 }
