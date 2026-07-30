@@ -39,6 +39,31 @@ def test_gitleaks_scans_history_with_a_checksum_pinned_binary():
     assert "--config .gitleaks.toml" in workflow
 
 
+def _allowlisted_regexes(config: str) -> list[str]:
+    """Every string literal in the allowlist's ``regexes`` list, any TOML style.
+
+    Deliberately not a pattern over one quoting style. The first version of
+    this helper matched only ``'''^…$'''`` on its own line, and an adversarial
+    review showed that adding ``".*",`` in ordinary double quotes left all
+    three assertions below passing while gitleaks permitted everything — a real
+    ``sk-live-…`` went from ``leaks found: 1`` to ``no leaks found`` under that
+    config. A pin that only sees the spelling it expects is not a pin.
+    """
+    block = re.search(r"regexes\s*=\s*\[(.*?)^\]", config, re.DOTALL | re.MULTILINE)
+    assert block, "no `regexes = [...]` list found in .gitleaks.toml"
+    body = "\n".join(
+        line
+        for line in block.group(1).splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    literal = re.compile(
+        r"'''(.*?)'''|\"\"\"(.*?)\"\"\"|'([^']*)'|\"([^\"]*)\"", re.DOTALL
+    )
+    return [
+        next(g for g in m.groups() if g is not None) for m in literal.finditer(body)
+    ]
+
+
 def test_gitleaks_config_extends_the_default_rules_rather_than_replacing_them():
     """The one mistake in this file that would look exactly like success.
 
@@ -54,11 +79,11 @@ def test_gitleaks_config_extends_the_default_rules_rather_than_replacing_them():
     assert "[extend]" in config
     assert re.search(r"^useDefault\s*=\s*true$", config, re.MULTILINE)
 
-    # Every permitted value has to be argued for in review, so the count is
-    # pinned: adding one means editing this test. Both are synthetic fixtures
-    # that exist in order to be *found* by the code under test — a redaction
-    # that keys on entropy cannot be exercised by an obviously-fake string, so
-    # these have to look real enough to trip the scanner.
+    # Every permitted value has to be argued for in review, so the set is
+    # pinned exactly: adding one means editing this test. Both are synthetic
+    # fixtures that exist in order to be *found* by the code under test — a
+    # redaction that keys on entropy cannot be exercised by an obviously-fake
+    # string, so these have to look real enough to trip the scanner.
     #
     # `regexTarget = "secret"` with anchored patterns is what keeps this from
     # becoming a path rule: only these literal values are permitted, so a real
@@ -67,35 +92,47 @@ def test_gitleaks_config_extends_the_default_rules_rather_than_replacing_them():
     # exception for test files would be a scanner with a hole exactly where
     # people paste real keys "just to check".
     assert 'regexTarget = "secret"' in config
-    permitted = re.findall(r"^\s*'''\^(.+)\$'''\s*,\s*$", config, re.MULTILINE)
-    assert permitted == ["abc123def456ghi789", "Zx9Qw3Er7Ty1Ui5Op2As6Df4Gh8Jk0Lm"]
+    assert config.count("[[allowlists]]") == 1
+    permitted = _allowlisted_regexes(config)
+    assert permitted == [
+        "^abc123def456ghi789$",
+        "^Zx9Qw3Er7Ty1Ui5Op2As6Df4Gh8Jk0Lm$",
+    ]
+    # Anchored on both ends, so a permitted value cannot become a prefix rule
+    # that admits `abc123def456ghi789<real-key>`.
+    assert all(p.startswith("^") and p.endswith("$") for p in permitted)
     # No path/file/commit widening: those keys would suppress findings this
     # allowlist has not individually accounted for.
     for widening in ("paths", "files", "commits", "stopwords"):
         assert not re.search(rf"^\s*{widening}\s*=", config, re.MULTILINE)
 
 
-def test_gitleaksignore_holds_only_fingerprints_whose_commits_are_immutable():
+def test_gitleaksignore_holds_only_fingerprints_that_squashing_cannot_duplicate():
     """Fingerprint suppression and squash-only merging do not compose.
 
     A `.gitleaksignore` entry names `<commit>:<file>:<rule>:<line>`, and
-    `protect-main` permits only squash and rebase merges — so a suppression
-    added on a branch names a commit that stops existing the moment it lands.
-    Four v0.3 entries expired exactly that way when #52 squashed, turning
-    `main` red on a tree nobody had changed; they now live in `.gitleaks.toml`
-    as values instead, which no rewrite can stale.
+    `protect-main` permits only squash and rebase merges. Squashing does not
+    destroy the branch commits — they stay reachable on `next` — it *copies*
+    their findings under a new SHA on `main`. The old fingerprint keeps
+    suppressing the old commit and nothing suppresses the new one, so `main`
+    goes red on a tree nobody changed. That is what happened when #52 landed:
+    four v0.3 findings reappeared under `f2d8adb…` while their originals stayed
+    suppressed under `8d715ebe…` and `3dcda11f…`.
 
-    What remains here are older findings whose introducing commits are already
-    immutable in main's history. The count stays pinned so a new fingerprint —
-    which would be a new instance of the same expiring bug — cannot be added
-    without a reviewer seeing it.
+    Suppressing by value in `.gitleaks.toml` covers original and copy at once,
+    which is why those four rows could be dropped from here — not because they
+    were dead. They were live; they were merely insufficient.
 
-    The six README rows are star-history.com `sealed_token` values (three
-    English, three Chinese): an encrypted wrapper around a metadata-read-only
-    GitHub token, designed to be published in a README, which gitleaks flags on
-    entropy alone. The remaining six are synthetic canaries in the redaction
-    tests — reported once per commit that touched those lines, since the
-    history scan reports every commit that introduces them.
+    The count stays pinned so a new fingerprint — which would be a fresh
+    instance of the same duplicating bug — cannot be added without a reviewer
+    seeing it. Of the twelve: six are star-history.com `sealed_token` values in
+    the two READMEs (three English, three Chinese), an encrypted wrapper around
+    a metadata-read-only GitHub token that is designed to be published and that
+    gitleaks flags on entropy alone. Four are synthetic canaries in the
+    redaction tests (`test_diagnostics.py`, `test_observability.py`), reported
+    once per commit that touched those lines. The last two are a planning
+    document (`docs/refactor-plan.md`) and an `NGC_API_KEY` fixture in
+    `test_compute_nvidia.py`.
     """
     ignored = (ROOT / ".gitleaksignore").read_text(encoding="utf-8").splitlines()
     assert len(ignored) == 12

@@ -8,13 +8,17 @@
 # file detectable, which a path rule would not.
 #
 # The problem is the `<commit-sha>`. `protect-main` allows only squash and
-# rebase merges, so every branch that adds a suppression has its commits
-# rewritten on the way into main -- and the fingerprint that was correct on the
-# branch names a commit that no longer exists. The finding comes back, on a
-# tree nobody changed. That is what happened when #52 landed: four v0.3
-# fixtures were triaged and suppressed, the squash rewrote their introducing
-# SHA, and the history scan went red on main itself. It is structural, not a
-# one-off -- it will recur on every future suppression.
+# rebase merges, and squashing does not destroy the branch commits -- they stay
+# reachable on `next`, and `gitleaks git` scans every ref the checkout fetched
+# (`fetch-depth: 0`). What squashing does is *copy* the finding under a new SHA
+# on main. The old fingerprint keeps suppressing the old commit; nothing
+# suppresses the copy. The finding comes back, on a tree nobody changed.
+#
+# That is what happened when #52 landed: four v0.3 fixtures reappeared under
+# `f2d8adb...` while their originals stayed suppressed under `8d715ebe...` and
+# `3dcda11f...`, and the history scan went red on main itself. It is
+# structural, not a one-off -- every future suppression gets duplicated the
+# same way, so the fingerprint list can only ever grow by one row per merge.
 #
 # So the suppression moves from "this finding, in this commit" to "this exact
 # string, which is not a secret". That survives any rewrite of history, and it
@@ -25,8 +29,12 @@
 # made an exception for test files would be a scanner with a hole exactly where
 # people paste real keys "just to check".
 #
-# `.gitleaksignore` is kept for the older findings whose introducing commits
-# are already immutable in main's history and therefore cannot re-stale.
+# `.gitleaksignore` is kept for the older findings that are already in main's
+# history: those were copied by their own merges long ago and both copies are
+# suppressed, so they are stable. The four v0.3 rows were removed from it not
+# because they were dead -- they were live, suppressing the originals on
+# `next` -- but because suppressing by value covers original and copy at once,
+# which is the thing a fingerprint cannot do.
 
 [extend]
 # Without this, a config file REPLACES the default rule set rather than
