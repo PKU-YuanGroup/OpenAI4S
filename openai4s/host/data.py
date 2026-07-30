@@ -161,11 +161,19 @@ class HostDataService:
         return source() if callable(source) else source
 
     def query(self, spec: dict) -> Any:
-        rows = self._store().query(
+        store = self._store()
+        # The caller's own scope, so the `my_*` views resolve to this session's
+        # rows. `spec["scope"]` -- what the SDK sends -- is deliberately *not*
+        # read: it is caller-supplied, and a value the caller chooses cannot be
+        # what confines the caller. The scope is derived from the frame instead.
+        # It used to be dropped entirely, so the views did not exist and the base
+        # tables were readable directly, across every project.
+        rows = store.query(
             spec.get("sql", ""),
             params=spec.get("params"),
             limit=spec.get("limit"),
             timeout_s=5.0,
+            scope=store.resolve_frame_scope(self._frame_id()),
         )
         if spec.get("df"):
             columns = list(rows[0].keys()) if rows else []
@@ -196,11 +204,20 @@ class HostDataService:
         return {"count": len(items), "artifacts": items}
 
     def _scoped_artifact(self, artifact_id: str) -> dict:
-        """Resolve one Artifact without allowing cross-session enumeration."""
+        """Resolve one Artifact without allowing cross-session enumeration.
+
+        Out of scope raises the *same* KeyError as missing, for the reason
+        `_scoped_version` states below. This used to raise `PermissionError` for
+        a foreign artifact and `KeyError` for an absent one -- two helpers twelve
+        lines apart implementing contradictory rules, and the difference in
+        exception type alone is a working existence oracle: a cell that guesses
+        an id learns whether it names a real artifact in someone else's project.
+        """
         store = self._store()
+        unknown = KeyError(f"no artifact {artifact_id!r} in the current session")
         artifact = store.get_artifact(artifact_id)
         if artifact is None:
-            raise KeyError(f"no artifact {artifact_id!r} in the current session")
+            raise unknown
         frame_id = self._frame_id()
         scope = store.resolve_frame_scope(frame_id)
         if (
@@ -208,9 +225,7 @@ class HostDataService:
             or artifact.get("root_frame_id") != scope.get("root_frame_id")
             or artifact.get("project_id") != scope.get("project_id")
         ):
-            raise PermissionError(
-                f"artifact {artifact_id!r} is outside the current session scope"
-            )
+            raise unknown
         return artifact
 
     def _scoped_version(self, version_id: str) -> dict:
@@ -464,7 +479,40 @@ class HostDataService:
             destination.unlink(missing_ok=True)
             raise
 
+    def _scoped_lineage_inputs(self, raw: Any) -> list[str]:
+        """Validate declared lineage inputs before anything is written.
+
+        `record_cell_artifact` skips only empty, self and duplicate ids and then
+        INSERTs the edge; `lineage_edges` declares no foreign key, so an id from
+        another project -- or one that never existed -- was accepted. One
+        `save_artifact` call therefore wrote an edge the scoping model says cannot
+        exist, and the properly scoped readers then walked it and republished the
+        other project's filename and absolute path through it.
+
+        Validation happens here, before the copy and before the row, so a refused
+        call leaves no artifact, no version and no orphan file behind. Foreign and
+        absent raise the same KeyError as everywhere else on these paths.
+        """
+        if not raw:
+            return []
+        if isinstance(raw, str):
+            raw = [raw]
+        inputs: list[str] = []
+        for candidate in raw:
+            version_id = str(candidate or "").strip()
+            if not version_id:
+                continue
+            # Raises the shared unknown-version KeyError for foreign, dangling
+            # and malformed alike.
+            self._scoped_version(version_id)
+            if version_id not in inputs:
+                inputs.append(version_id)
+        return inputs
+
     def save_artifact(self, spec: dict) -> dict:
+        # Before the copy: a refused lineage declaration must not leave a file in
+        # the artifacts directory that no row will ever name.
+        input_version_ids = self._scoped_lineage_inputs(spec.get("input_version_ids"))
         source = self._resolve_path(str(spec["path"]), must_exist=True)
         if not source.is_file():
             raise FileNotFoundError(f"save_artifact: no such file: {source}")
@@ -491,7 +539,7 @@ class HostDataService:
                 producing_cell_id=execution_cell_id,
                 frame_id=self._frame_id(),
                 snapshot_path=str(destination),
-                input_version_ids=spec.get("input_version_ids") or [],
+                input_version_ids=input_version_ids,
                 source=spec.get("source"),
                 reuse_policy="provisional",
             )
@@ -518,9 +566,16 @@ class HostDataService:
         version_id = spec.get("version_id")
         path = spec.get("path")
         if version_id and not path:
-            # Store-derived: an artifact snapshot legitimately lives outside
-            # the workspace, under the data dir. Its scope check belongs with
-            # the rest of the artifact read paths, not here.
+            # Store-derived: an artifact snapshot legitimately lives outside the
+            # workspace, under the data dir -- so the workspace resolver cannot
+            # be the check here, and scope has to be.
+            #
+            # This used to say the scope check "belongs with the rest of the
+            # artifact read paths, not here" and pass the id straight to
+            # `resolve_artifact_path`. No artifact read path performed it, so the
+            # check was deferred to nowhere: any version id from any project
+            # rendered, and the reply carried the resolved absolute path.
+            self._scoped_version(str(version_id))
             resolved = self._store().resolve_artifact_path(version_id)
             if not resolved or not Path(resolved).exists():
                 raise FileNotFoundError(f"view_image: no such image: {resolved!r}")

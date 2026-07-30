@@ -22,10 +22,19 @@ as turns/cells/artifacts/compactions happen. Schema and write paths:
   host_call_log     RPC audit (DERIVABLE_HOST_CALLS are NOT logged; the args of
                     SECRET_ARG_HOST_CALLS are redacted before write)
 
-Secret-bearing tables (`settings` holds the LLM API key + model profiles,
-`connectors` holds MCP server env/command) plus the internal audit/memory tables
-are on QUERY_DENYLIST, so `host.query` refuses to read them and `host.query`'s
-schema view hides them.
+Agent SQL (`host.query`) runs on a separate `mode=ro` connection under a real
+SQLite authorizer, not on the daemon's read-write handle behind a substring
+filter. Secret-bearing tables (`settings` holds the LLM API key + model profiles,
+`connectors` holds MCP server env/command) and the internal audit/memory tables
+are refused outright; the SQLite catalog and the `pragma_*` table-valued
+functions are refused by prefix. The artifact family -- `artifacts`,
+`artifact_versions`, `lineage_edges`, `frames`, `env_snapshots` -- is reachable
+only through the session-scoped `my_*` views, because a bundled Skill has a real
+reason to read `artifact_versions.source` and no reason to read another project's.
+An authorizer sees resolved table names, so identifier quoting, a schema
+qualifier, an alias, a CTE and a name arriving in a bound parameter are all the
+same thing to it; a text filter had to enumerate spellings and could not see the
+last of those at all.
 
 All timestamps are epoch-ms. Booleans are 0/1. One DB per data_dir.
 """
@@ -37,7 +46,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from openai4s.capabilities import CapabilityStateService, SpecialistProfileService
 from openai4s.execution.dependencies import (
@@ -671,6 +680,114 @@ def _now_ms() -> int:
 # multi-process case (openai4s run / init alongside a live daemon) one place to
 # tune.
 _BUSY_TIMEOUT_S = 5.0
+
+
+def _sql_quote(value: str) -> str:
+    """Single-quote a literal for interpolation into DDL."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+#: The views `host.query` may read the artifact family through. Reads of the base
+#: tables are permitted only when SQLite reports one of these as the view
+#: responsible for the access -- which is what the authorizer's fifth argument is
+#: for. A direct `SELECT * FROM artifacts` names no view and is refused.
+_SCOPED_VIEWS = frozenset(
+    {
+        "my_artifacts",
+        "my_artifact_versions",
+        "my_lineage_edges",
+        "my_frames",
+        "my_env_snapshots",
+    }
+)
+
+#: Base tables reachable only through `_SCOPED_VIEWS`. These were readable
+#: directly and were not on `QUERY_DENYLIST` at all, so one `SELECT` returned
+#: every project's artifacts with their filenames, checksums and absolute
+#: snapshot paths -- the exact information the scoped host helpers refuse one
+#: version id at a time.
+_VIEW_ONLY_TABLES = frozenset(
+    {
+        "artifacts",
+        "artifact_versions",
+        "lineage_edges",
+        # Session metadata across every project: names, models, project ids. A
+        # cross-project session listing is an enumeration of what other work
+        # exists, which is most of what a prompt-injected cell would want.
+        "frames",
+        # Interpreter, prefix and the complete installed-package manifest of
+        # every kernel generation in the database.
+        "env_snapshots",
+    }
+)
+
+
+class _QueryAuthorizer:
+    """SQLite's own answer to "may this statement touch that table?".
+
+    An authorizer is called after parsing with *resolved* names, so quoting, a
+    schema qualifier, an alias, a CTE wrapper and a table name arriving in a bound
+    parameter are all the same thing to it. That is the whole reason for replacing
+    the substring filter: the filter had to enumerate spellings and could not see
+    a name that never appeared in the text.
+
+    Deny rather than ignore. `SQLITE_IGNORE` on a read substitutes NULL and the
+    query succeeds looking like an empty result, which is a worse answer than a
+    refusal -- an agent would conclude the artifact does not exist.
+
+    What was refused is recorded on the instance rather than recovered from
+    SQLite's error text. The message differs by operation ("access to X.Y is
+    prohibited" for a read, "not authorized" for others) and is not a documented
+    interface, so matching on it would work until it did not.
+    """
+
+    def __init__(self) -> None:
+        self.denied: list[str] = []
+
+    def _deny(self, what: str) -> int:
+        if what not in self.denied:
+            self.denied.append(what)
+        return sqlite3.SQLITE_DENY
+
+    def __call__(
+        self,
+        action: int,
+        arg1: str | None,
+        arg2: str | None,
+        dbname: str | None,
+        source: str | None,
+    ) -> int:
+        # Anything that is not a read or a plain SELECT is refused outright. The
+        # connection is already `mode=ro`, so this is defence in depth against
+        # temp-table writes, ATTACH, and function-driven side effects.
+        if action not in (sqlite3.SQLITE_READ, sqlite3.SQLITE_SELECT):
+            if action == sqlite3.SQLITE_FUNCTION:
+                # Scalar/aggregate functions are fine; the table-valued pragma
+                # functions arrive as reads of a `pragma_*` table below.
+                return sqlite3.SQLITE_OK
+            return self._deny(f"operation {action}")
+
+        table = (arg1 or "").lower()
+        if not table:
+            return sqlite3.SQLITE_OK
+
+        # The catalog, in all its spellings: sqlite_master, sqlite_schema,
+        # sqlite_temp_master, sqlite_sequence, sqlite_stat1. Denying four names
+        # by hand left the others open.
+        if table.startswith("sqlite_"):
+            return self._deny(table)
+        # Table-valued pragma functions answer the same questions as the catalog
+        # and slipped the ` pragma ` keyword check, which required spaces.
+        if table.startswith("pragma_"):
+            return self._deny(table)
+        if table in QUERY_DENYLIST:
+            return self._deny(table)
+        if table in _VIEW_ONLY_TABLES:
+            # Permitted only as the underlying read of a trusted scoped view.
+            if (source or "").lower() in _SCOPED_VIEWS:
+                return sqlite3.SQLITE_OK
+            return self._deny(table)
+        return sqlite3.SQLITE_OK
 
 
 class Store:
@@ -1510,6 +1627,15 @@ class Store:
         with self._lock:
             if self._closed:
                 return
+            # The agent-SQL connection is lazily created and separate, so it has
+            # to be closed here too or a closed Store leaves a live read handle
+            # (and, on Windows, a locked file) behind.
+            query_conn = getattr(self, "_query_conn", None)
+            if query_conn is not None:
+                try:
+                    query_conn.close()
+                finally:
+                    self._query_conn = None
             self._conn.close()
             self._closed = True
         _discard_store(self)
@@ -3346,18 +3472,98 @@ class Store:
         )
 
     # --- generic read-only query (host.query backing) -------------------
+    def _query_connection(self) -> sqlite3.Connection:
+        """A separate, read-only connection for agent SQL.
+
+        Agent SQL used to run on `self._conn` -- the one read-write connection
+        the whole daemon writes through -- guarded only by substring matching on
+        the statement text. Two things follow from that. A read-write handle means
+        the only thing between a cell and an UPDATE is the text filter, and a text
+        filter is defeated by anything that keeps the name out of the text: a
+        bound parameter (`pragma_table_info(?)`), an identifier quote, a schema
+        qualifier. `mode=ro` makes the write case structural rather than textual.
+        """
+        conn = getattr(self, "_query_conn", None)
+        if conn is None:
+            conn = sqlite3.connect(
+                f"file:{self.db_path}?mode=ro",
+                uri=True,
+                check_same_thread=False,
+                timeout=_BUSY_TIMEOUT_S,
+            )
+            conn.row_factory = sqlite3.Row
+            self._query_conn = conn
+        return conn
+
+    def _refresh_scoped_views(
+        self, conn: sqlite3.Connection, scope: Mapping[str, Any]
+    ) -> None:
+        """Rebuild the `my_*` views for one caller's scope.
+
+        The internal artifact tables cannot simply be denied: a bundled Skill
+        legitimately reads `artifact_versions.source` to confirm the retrieval
+        provenance it just attached. So the base tables are closed to direct
+        access and reachable only through these views, which carry the caller's
+        `root_frame_id`/`project_id` baked in as literals.
+
+        The scope values are internal ids the caller never supplies -- they come
+        from `resolve_frame_scope` -- and they are quoted here anyway, because a
+        value interpolated into DDL is worth quoting whatever its provenance.
+        """
+        root = _sql_quote(str(scope.get("root_frame_id") or ""))
+        project = _sql_quote(str(scope.get("project_id") or ""))
+        conn.executescript(
+            f"""
+            DROP VIEW IF EXISTS temp.my_artifacts;
+            DROP VIEW IF EXISTS temp.my_artifact_versions;
+            DROP VIEW IF EXISTS temp.my_lineage_edges;
+            DROP VIEW IF EXISTS temp.my_frames;
+            DROP VIEW IF EXISTS temp.my_env_snapshots;
+            CREATE TEMP VIEW my_artifacts AS
+                SELECT * FROM main.artifacts
+                 WHERE root_frame_id = {root} AND project_id = {project};
+            CREATE TEMP VIEW my_artifact_versions AS
+                SELECT v.* FROM main.artifact_versions v
+                  JOIN main.artifacts a ON a.artifact_id = v.artifact_id
+                 WHERE a.root_frame_id = {root} AND a.project_id = {project};
+            CREATE TEMP VIEW my_lineage_edges AS
+                SELECT e.* FROM main.lineage_edges e
+                  JOIN main.artifact_versions v
+                    ON v.version_id = e.output_version_id
+                  JOIN main.artifacts a ON a.artifact_id = v.artifact_id
+                 WHERE a.root_frame_id = {root} AND a.project_id = {project};
+            CREATE TEMP VIEW my_frames AS
+                SELECT * FROM main.frames
+                 WHERE frame_id = {root} OR root_frame_id = {root};
+            CREATE TEMP VIEW my_env_snapshots AS
+                SELECT s.* FROM main.env_snapshots s
+                  JOIN main.frames f ON f.frame_id = s.frame_id
+                 WHERE f.frame_id = {root} OR f.root_frame_id = {root};
+            """
+        )
+
     def query(
         self,
         sql: str,
         params: list | None = None,
         limit: int | None = None,
         timeout_s: float = 5.0,
+        scope: Mapping[str, Any] | None = None,
     ) -> list[dict]:
-        """Run a read-only SELECT/CTE. Enforces denylist + timeout."""
+        """Run a read-only SELECT/CTE under a real SQLite authorizer.
+
+        The authorizer is the enforcement; the text checks below are kept as a
+        cheap first refusal with a clearer message. That ordering matters: the
+        text checks were previously the *only* enforcement, and they cannot see a
+        table named in a bound parameter, spelled `"artifacts"`, `[artifacts]` or
+        `main.artifacts`, or reached through `pragma_table_list`. SQLite hands the
+        authorizer the resolved table name after parsing, so none of those
+        spellings are different to it.
+
+        `scope`, when supplied, publishes the `my_*` views for that caller. It
+        used to be accepted by the SDK and dropped on the floor here.
+        """
         lowered = sql.lower()
-        # Denylist check runs against a literal-stripped copy so a denied name
-        # inside a string literal/comment is not a false positive, while a real
-        # (possibly identifier-quoted) table reference still trips it.
         deny_scan = _strip_sql_literals(lowered)
         for bad in QUERY_DENYLIST:
             if bad in deny_scan:
@@ -3365,26 +3571,32 @@ class Store:
         stripped = lowered.lstrip()
         if not (stripped.startswith("select") or stripped.startswith("with")):
             raise ValueError("host.query only allows read-only SELECT/CTE")
-        for kw in (
-            " insert ",
-            " update ",
-            " delete ",
-            " drop ",
-            " alter ",
-            " create ",
-            " attach ",
-            " pragma ",
-        ):
-            if kw in f" {lowered} ":
-                raise ValueError(f"host.query: forbidden keyword {kw.strip()!r}")
-        # per-statement timeout via a busy interrupt handler
+
+        conn = self._query_connection()
         with self._lock:
-            self._conn.set_progress_handler(_TimeoutGuard(timeout_s), 10000)
+            guard = _QueryAuthorizer()
             try:
-                cur = self._conn.execute(sql, tuple(params or ()))
+                # Views first, with the guard off: creating them is a privileged
+                # setup step, not part of the caller's statement.
+                conn.set_authorizer(None)
+                if scope:
+                    self._refresh_scoped_views(conn, scope)
+                conn.set_authorizer(guard)
+                conn.set_progress_handler(_TimeoutGuard(timeout_s), 10000)
+                cur = conn.execute(sql, tuple(params or ()))
                 rows = cur.fetchmany(limit) if limit else cur.fetchall()
+            except sqlite3.DatabaseError as error:
+                if guard.denied:
+                    raise PermissionError(
+                        f"host.query: {', '.join(guard.denied)} is not readable "
+                        f"from agent SQL. Artifact rows are available through the "
+                        f"session-scoped views my_artifacts, my_artifact_versions "
+                        f"and my_lineage_edges."
+                    ) from error
+                raise
             finally:
-                self._conn.set_progress_handler(None, 10000)
+                conn.set_progress_handler(None, 10000)
+                conn.set_authorizer(None)
         return [dict(r) for r in rows]
 
     def schema(self) -> dict[str, list[str]]:

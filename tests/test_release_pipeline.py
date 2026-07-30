@@ -74,23 +74,71 @@ def _git_aware(extra=None):
     return runner
 
 
-def _write_receipt(directory, *, source_sha=FAKE_HEAD, gates=None, **overrides):
-    """The document the quality job uploads beside the distributions."""
-    document = {
-        "format": "openai4s-quality-receipt",
-        "schema_version": 1,
-        "source_sha": source_sha,
-        "gates": gates
-        if gates is not None
-        else [
-            {"name": "pytest", "command": ["pytest"], "returncode": 0},
-            {"name": "mypy", "command": ["mypy"], "returncode": 0},
+def _write_receipt(directory, *, source_sha=FAKE_HEAD, failing=(), **overrides):
+    """The document the quality job uploads beside the distributions.
+
+    Built from the canonical manifest in `scripts/release_gates.py` rather than
+    hand-listed. It used to be two rows -- `pytest` with the argv `["pytest"]`,
+    `mypy` with `["mypy"]` -- and the consumer accepted it, so this fixture was
+    itself a demonstration that the receipt proved nothing. Deriving it from the
+    manifest means a gate added later cannot leave this describing the old set.
+
+    `failing` names gates whose exit code should be non-zero, which is how the
+    refusal tests stay refusal tests.
+    """
+    from scripts import release_gates
+
+    document = release_gates.build_receipt(
+        source_sha,
+        [
+            {
+                "name": gate.name,
+                "command": list(gate.command),
+                "returncode": 1 if gate.name in failing else 0,
+            }
+            for gate in release_gates.LOCAL_GATES
         ],
-    }
+        [
+            {
+                "name": gate.name,
+                "check_name": gate.check_name,
+                "check_run_id": f"{7000 + index}",
+                "run_id": "7100",
+                "url": "https://example.invalid/check",
+                "conclusion": "success",
+                "head_sha": source_sha,
+            }
+            for index, gate in enumerate(release_gates.CHECK_SUITE_GATES)
+        ],
+    )
     document.update(overrides)
-    target = directory / "quality-receipt.json"
+    target = directory / release_gates.RECEIPT_NAME
     target.write_text(json.dumps(document), "utf-8")
     return target
+
+
+def _write_build_receipt(directory, kind, artifacts, *, source_sha=FAKE_HEAD):
+    """The receipt the job that built those bytes writes beside them.
+
+    Staging verifies one per artifact group against the frozen SHA, which is how
+    "the wheel and the DMG are the same commit" becomes checkable. Each build job
+    used to check out the mutable tag independently with nothing comparing them.
+    """
+    from scripts import release_receipts
+
+    document = release_receipts.build_build_receipt(kind, source_sha, artifacts)
+    target = directory / release_receipts.build_receipt_name(kind)
+    target.write_text(json.dumps(document, indent=2), "utf-8")
+    return target
+
+
+def _receipt_dist(directory, *, source_sha=FAKE_HEAD):
+    return _write_build_receipt(
+        directory,
+        "dist",
+        [p for p in directory.glob("*") if p.suffix in (".whl", ".gz")],
+        source_sha=source_sha,
+    )
 
 
 @pytest.fixture
@@ -100,11 +148,24 @@ def assets(tmp_path):
     (directory / "openai4s-0.2.0-py3-none-any.whl").write_bytes(b"wheel-bytes")
     (directory / "openai4s-0.2.0.tar.gz").write_bytes(b"sdist-bytes")
     _write_receipt(directory)
+    _receipt_dist(directory)
     return directory
 
 
-def _signed_dmg(assets: Path, name: str = "OpenAI4S-0.2.0-arm64.dmg") -> Path:
-    """A disk image with the receipt a macOS build job would have written."""
+def _signed_dmg(
+    assets: Path,
+    name: str = "OpenAI4S-0.2.0-arm64.dmg",
+    *,
+    notarized: bool = True,
+    receipt: bool = True,
+) -> Path:
+    """A disk image with the receipt a macOS build job would have written.
+
+    `notarized` is what the release gate now turns on. It defaults to true
+    because a *publishable* image is the normal fixture; the tests that care
+    about the un-notarized case set it false explicitly rather than relying on
+    an omission, which is how the old gate came to check nothing.
+    """
     dmg = assets / name
     dmg.write_bytes(b"dmg-bytes")
     dmg.with_name(dmg.name + ".codesign.json").write_text(
@@ -122,10 +183,16 @@ def _signed_dmg(assets: Path, name: str = "OpenAI4S-0.2.0-arm64.dmg") -> Path:
                 "verify_returncode": 0,
                 # ...and the digest of the exact image it describes.
                 "image_sha256": sha256_file(dmg),
+                # Notarization, read from `xcrun stapler validate` by the macOS
+                # job. Was hardcoded `None` and gated nothing.
+                "notarized": notarized,
+                "stapler_returncode": 0 if notarized else 1,
             }
         ),
         encoding="utf-8",
     )
+    if receipt:
+        _write_build_receipt(assets, "macos", [dmg])
     return dmg
 
 
@@ -170,6 +237,12 @@ _LOCAL_ONLY_SIDECARS = (
     ".codesign.json",
     ".components.json",
     "quality-receipt.json",
+    # Build receipts and the stage attestation are staging-side evidence. The
+    # attestation in particular must NOT be a release asset: its whole purpose is
+    # to reach the finalize job through a channel the draft cannot rewrite.
+    "build-receipt-dist.json",
+    "build-receipt-macos.json",
+    "stage-attestation.json",
 )
 
 
@@ -286,7 +359,13 @@ def test_a_staging_run_does_not_rebuild_but_must_prove_the_suite_ran(assets):
 
     step = next(s for s in report["steps"] if s["step"] == "test")
     assert step["facts"]["source_sha"] == FAKE_HEAD
-    assert step["facts"]["gates"] == ["pytest", "mypy"]
+
+    from scripts import release_gates
+
+    assert step["facts"]["gates"] == [g.name for g in release_gates.LOCAL_GATES]
+    # The attested half has to survive too: without the check-run ids the
+    # evidence bundle carries no pointer to the browser and Python matrices.
+    assert len(step["facts"]["checks"]) == len(release_gates.CHECK_SUITE_GATES)
 
     for name in STAGING_SKIPPED:
         if name == "test":
@@ -324,18 +403,12 @@ def test_staging_refuses_a_receipt_whose_gates_failed(assets):
     """A receipt records exit codes and makes no judgement, so the consumer
     has to make one. Recording a failure and releasing anyway would be a more
     elaborate way of not checking."""
-    _write_receipt(
-        assets,
-        gates=[
-            {"name": "pytest", "command": ["pytest"], "returncode": 0},
-            {"name": "harness", "command": ["harness"], "returncode": 1},
-        ],
-    )
+    _write_receipt(assets, failing=("harness-pr",))
     report = _pipeline(assets, from_artifacts=True).run()
     assert report["ok"] is False
     assert report["stopped_at"] == "test"
     failed = next(s for s in report["steps"] if s["step"] == "test")
-    assert "failing gates: harness" in failed["detail"]
+    assert "harness-pr" in failed["detail"]
 
 
 def test_a_distribution_that_changed_after_collection_stops_the_run(assets):
@@ -501,6 +574,9 @@ def test_release_mode_refuses_an_image_with_no_developer_id_signature(
         json.dumps({"authorities": [], "adhoc": True, "developer_id": False}),
         encoding="utf-8",
     )
+    # A receipt, so this test still fails on the thing it names rather than on
+    # the provenance gate that now runs first.
+    _write_build_receipt(assets, "macos", [dmg])
     monkeypatch.setenv("OPENAI4S_MACOS_SIGNING_IDENTITY", "Developer ID: Example")
 
     report = _pipeline(assets, mode="release").run()
@@ -532,6 +608,7 @@ def test_local_mode_builds_an_unsigned_image_without_pretending(assets, monkeypa
         json.dumps({"authorities": [], "adhoc": True, "developer_id": False}),
         encoding="utf-8",
     )
+    _write_build_receipt(assets, "macos", [dmg])
     monkeypatch.delenv("OPENAI4S_MACOS_SIGNING_IDENTITY", raising=False)
 
     report = _pipeline(assets, mode="local").run()
@@ -547,14 +624,72 @@ def test_a_missing_receipt_is_not_read_as_a_signature(tmp_path):
     assert info.get("developer_id") is not True
 
 
-def test_notarization_is_never_reported_as_verified(assets, monkeypatch):
-    _signed_dmg(assets)
+def test_a_developer_id_image_with_no_notarization_cannot_be_published(
+    assets, monkeypatch
+):
+    """The gap the old gate left open, and the reason it was invisible.
+
+    `step_verify` refused an ad-hoc image and passed anything carrying a
+    Developer ID authority. `notarized` was hardcoded `None` and read by nothing.
+    The release workflow already imports a signing certificate into a keychain
+    when `MACOS_SIGNING_CERTIFICATE` is set, so the moment that secret exists a
+    correctly signed, un-notarized DMG publishes — and Gatekeeper refuses it on
+    a user's machine, which is the outcome a release gate is for.
+
+    The remedy is notarize-or-omit; there is deliberately no downgrade label.
+    """
+    _signed_dmg(assets, notarized=False)
     report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    detail = report["steps"][-1]["detail"]
+    assert "notarization" in detail
+    assert "omit the macOS asset" in detail
+
+
+def test_a_notarized_developer_id_image_is_publishable(assets, monkeypatch):
+    """The success path, so the gate cannot pass by refusing everything.
+
+    `verified` is reachable: it needs a stapled ticket bound to this image's
+    digest. It used to be documented as unreachable, but the reason given was
+    that this file hardcoded `None` — a statement about the pipeline, not about
+    the image.
+    """
+    _signed_dmg(assets, notarized=True)
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+
+    assert report["ok"], report
     verify = next(s for s in report["steps"] if s["step"] == "verify")
-    assert verify["facts"]["notarized"] is None
-    assert (
-        "requires an Apple Developer identity" in verify["facts"]["notarization_note"]
-    )
+    assert verify["facts"]["signing_states"]["OpenAI4S-0.2.0-arm64.dmg"] == "verified"
+    assert verify["facts"]["notarized"]["OpenAI4S-0.2.0-arm64.dmg"] is True
+    assert verify["facts"]["macos_publishable"] is True
+
+
+def test_a_stapler_result_from_another_image_does_not_notarize_this_one(assets):
+    """The receipt is bound to a digest, so a copied stapler result proves
+    nothing — the same trap the signature half already closed."""
+    dmg = _signed_dmg(assets, notarized=True)
+    payload = json.loads(dmg.with_name(dmg.name + ".codesign.json").read_text())
+    payload["image_sha256"] = "0" * 64
+    dmg.with_name(dmg.name + ".codesign.json").write_text(json.dumps(payload), "utf-8")
+
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+
+
+def test_omitting_the_macos_asset_is_a_supported_release_shape(assets):
+    """Without notary credentials the honest release carries no DMG at all.
+
+    Recorded as `macos_asset: omitted` rather than left as an absence, and it
+    must not require a `macos` build receipt for an image that is not there.
+    """
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+    assert report["ok"], report
+    verify = next(s for s in report["steps"] if s["step"] == "verify")
+    assert verify["facts"]["macos_asset"] == "omitted"
+    assert verify["facts"]["macos_publishable"] is False
 
 
 # --------------------------------------------------------------------------
@@ -1335,32 +1470,35 @@ def test_the_signing_state_is_read_from_evidence_and_never_from_configuration():
         assert signing_state(payload) in SIGNING_STATES
 
 
-def test_verified_is_currently_unreachable_and_says_so(tmp_path, monkeypatch):
-    """D11 froze the policy: no loosening, vocabulary only.
+def test_verified_requires_a_ticket_and_the_build_script_alone_cannot_reach_it():
+    """D11 froze the policy: no loosening. This states what that policy *is*.
 
-    So the honest statement of where that leaves the macOS asset is that it has
-    no publishable path in this version -- the build script only ad-hoc signs
-    and notarization is never attempted. That has to be *said*, in the evidence
-    a reader actually reads, rather than left looking like an untested path
-    somebody forgot to exercise.
+    The previous version of this test asserted `'"notarized": None' in pipeline`
+    -- a substring of the source, checking that the gate did not exist. Its own
+    docstring said it would fail once notarization was wired up so the claim
+    would be revisited; that is what happened, so the claim is revised here
+    rather than the assertion relaxed.
 
-    Asserting it here also means that if notarization is ever wired up, this
-    test fails and forces the claim to be revisited deliberately.
+    What is true now: `verified` needs a stapled ticket, `build_macos_dmg.sh`
+    ad-hoc signs and cannot produce one, so an image from the build script alone
+    is `preview` and a release carrying it is refused. What changed is that a
+    *Developer-ID-signed* image is now refused too unless it is notarized --
+    previously it passed.
     """
     from scripts.release_pipeline import signing_state
 
     build = Path("scripts/build_macos_dmg.sh").read_text("utf-8")
-    # The build's own signature: ad-hoc, which is `preview`, never `verified`.
-    assert '--sign "-"' in build or "codesign" in build
-    assert signing_state({"developer_id": False, "adhoc": True}) != "verified"
+    assert "codesign" in build
+    # No notarization submission in the build script: `verified` cannot be
+    # reached by building alone, which is the honest limit.
+    assert "notarytool" not in build
 
-    pipeline = Path("scripts/release_pipeline.py").read_text("utf-8")
-    assert '"notarized": None' in pipeline, (
-        "notarization is now claimed somewhere; the unreachable-verified "
-        "statement must be re-checked rather than left standing"
-    )
-    assert '"macos_publishable": False' in pipeline
-    del tmp_path, monkeypatch
+    # Ad-hoc: preview, never publishable.
+    assert signing_state({"developer_id": False, "adhoc": True}) == "preview"
+    # Developer ID with no ticket: refused rather than published with a label.
+    assert signing_state({"developer_id": True, "notarized": False}) == "not_notarized"
+    # Developer ID with a ticket: the one publishable state.
+    assert signing_state({"developer_id": True, "notarized": True}) == "verified"
 
 
 # --------------------------------------------------------------------------

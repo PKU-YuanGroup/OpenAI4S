@@ -51,6 +51,7 @@ jobs:
     # updated -- an actor-based exemption makes Dependabot PRs unmergeable
     # through the front door. The head ref is the thing the policy is about.
     if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'dependabot/')
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     steps:
       - name: Check head branch name
@@ -69,6 +70,7 @@ jobs:
 
   lint:
     name: Lint (pre-commit)
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -84,6 +86,7 @@ jobs:
 
   type-check:
     name: Type safety (core orchestration boundary)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,6 +100,7 @@ jobs:
 
   source-security:
     name: Source credential scan
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,6 +112,7 @@ jobs:
 
   release-artifacts:
     name: Build and install wheel/sdist
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -138,6 +143,7 @@ jobs:
 
   test:
     name: Offline tests (py${{ matrix.python-version }})
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -190,6 +196,7 @@ jobs:
 
   browser-smoke:
     name: Browser workbench E2E (${{ matrix.engine }})
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     # Chromium is the engine the app is developed against, so it is the one
     # least likely to surprise anyone. The defects a matrix catches are the
@@ -256,6 +263,7 @@ jobs:
   macos-sandbox-smoke:
     name: macOS sandbox enforcement (nightly)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 25
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -275,6 +283,7 @@ jobs:
     # E2E", gated on a real enforced sandbox rather than a probe that degrades.
     # macOS had this proof; Linux did not, so its tier rested on nothing.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -296,6 +305,7 @@ jobs:
     # contributor's PR, and the script exits non-zero only on real schema drift,
     # never on an upstream being unreachable. See scripts/connector_canary.py.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
