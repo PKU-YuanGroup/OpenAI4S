@@ -26,6 +26,19 @@ on a helper that has the network by design. The profile therefore denies the
 keychain services explicitly, and the self-test probes that separately from the
 filesystem invariant, because neither implies the other.
 
+The same shape a second time, and closer to home: a file's contents are not
+only in its data fork. Extended attributes are a separate Seatbelt class,
+`file-read-xattr`, and on macOS an xattr routinely *is* the file --
+`com.apple.ResourceFork` holds the resource fork, and
+`com.apple.metadata:kMDItemWhereFroms` holds the whole document, base64-encoded,
+for anything saved from a `data:` URL. Denying `file-read-data` alone therefore
+refused a file through `open()` and served the same bytes through `getxattr()`.
+The helper's own probe could not have caught this: `listdir` is a data read, so
+the invariant it verifies from inside was satisfied the entire time. That is the
+recurring lesson of this module -- a check that answers an easier question than
+the one it stands in for -- and it is why the profile now denies xattrs under
+the home too, and why the host-side test asserts it separately.
+
 ## Why the profile is shaped the way it is
 
 The helper is not a kernel cell, and the kernel's profile is wrong for it in
@@ -188,7 +201,47 @@ def build_profile(
         # runs and `os.listdir($HOME)` still raises PermissionError, which is
         # exactly the invariant the helper probes for. Metadata is what the
         # loader needs; contents are what a credential is.
+        #
+        # That is the shipped trade-off, but it is *not* forced, and the
+        # difference matters to anyone who reads the paragraph above as a dead
+        # end. Re-measured on macOS 26.5 with this venv's interpreter: a
+        # `file-read*` home denial does start, and closes `stat()` as well,
+        # once every ancestor path component of the interpreter carries an
+        # explicit `(allow file-read-metadata (literal …))` — 16 of them here,
+        # including the *unresolved* symlink hops (`.venv/bin/python`, and uv's
+        # un-versioned `cpython-3.13-…` alias). Re-allowing the resolved
+        # `sys.base_prefix` by `subpath` is not enough; the loader walks the
+        # alias, and `_canonical()` resolves precisely that name out of the
+        # allow-list. So the blocker is an enumeration problem, not a kernel
+        # one — and an incomplete enumeration fails by the helper not starting
+        # on a user's machine, which is why lifting this belongs in a change
+        # that can be tested across venv/uv/Homebrew/conda/system layouts
+        # rather than assumed from one.
         f"(deny file-read-data (subpath {_quote(home_dir)}))",
+        # ...and "contents" is not only the data fork. Extended attributes are
+        # governed by their own class, `file-read-xattr`, which the line above
+        # does not touch — and on macOS an xattr routinely *is* the file:
+        # `com.apple.ResourceFork` holds the resource fork, and
+        # `com.apple.metadata:kMDItemWhereFroms` holds the originating URL,
+        # which for anything saved from a `data:` URL is the whole document
+        # base64-encoded.
+        #
+        # Verified by execution on macOS 26.5, one file under a denied home
+        # carrying its own bytes in an xattr:
+        #     open(path)                            -> EPERM
+        #     open(path + "/..namedfork/rsrc")      -> EPERM
+        #     getxattr(path, "com.apple.ResourceFork") -> the bytes, allowed
+        # The same content refused on one path and served on another, to a
+        # helper that has the network by design.
+        #
+        # This is a separate class from `file-read-metadata`, which stays
+        # allowed for the reason above: denying *that* is what breaks execvp
+        # and dyld. Denying xattrs costs nothing — re-verified that the helper
+        # still starts and still reaches its own argv error with this line in
+        # place. `listxattr` (attribute *names*, not values) remains readable,
+        # because closing it needs `file-read-metadata`; names are not
+        # contents, and that residual is accepted deliberately.
+        f"(deny file-read-xattr (subpath {_quote(home_dir)}))",
         # The keychain is not a file the home denial covers, and this is the
         # hole that denial looked like it closed.
         #

@@ -15,7 +15,16 @@ one it was standing in for:
     remote operation rather than a host that cannot sandbox;
   * ``doctor`` had its own opinion and contradicted the runtime's, reporting
     unconditionally that no OS boundary existed and advising the user to weaken
-    ``enforce`` to ``auto``.
+    ``enforce`` to ``auto``;
+  * and the profile itself, in the same shape. It denied ``file-read-data``
+    under ``$HOME``, which is not all of a file's contents on macOS: extended
+    attributes are a separate Seatbelt class, ``com.apple.ResourceFork`` holds
+    the resource fork, and ``com.apple.metadata:kMDItemWhereFroms`` holds the
+    whole document base64-encoded for anything saved from a ``data:`` URL. The
+    same bytes were refused through ``open()`` and served through
+    ``getxattr()``. The helper's own in-sandbox probe could not have caught it:
+    ``listdir`` is a data read, so the invariant it verifies from inside held
+    the entire time.
 
 The macOS tests below establish a real boundary with ``sandbox-exec`` and try
 to read real files through it. A profile-string assertion would have passed
@@ -23,6 +32,8 @@ against the broken code — the string was right, and it allowed the repository.
 """
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import json
 import subprocess
 import sys
@@ -88,6 +99,136 @@ def _git_metadata_dir(repo: Path) -> Path:
     return dot_git
 
 
+#: Reports the raw errno for each read class, so the data/metadata split the
+#: profile deliberately makes is measured rather than described.
+_CLASS_PROBE = r"""
+import ctypes, ctypes.util, errno, json, os, sys
+
+# macOS CPython exposes no os.getxattr, which is precisely why this channel
+# went unnoticed: a stdlib-only probe cannot see it.
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+
+def _xattr_value(path, name):
+    buf = ctypes.create_string_buffer(65536)
+    size = _libc.getxattr(
+        path.encode(), name.encode(), buf, ctypes.c_size_t(len(buf)),
+        ctypes.c_uint32(0), ctypes.c_int(0),
+    )
+    if size < 0:
+        raise OSError(ctypes.get_errno(), "getxattr")
+    return buf.raw[:size]
+
+
+def _xattr_names(path):
+    buf = ctypes.create_string_buffer(65536)
+    size = _libc.listxattr(
+        path.encode(), buf, ctypes.c_size_t(len(buf)), ctypes.c_int(0)
+    )
+    if size < 0:
+        raise OSError(ctypes.get_errno(), "listxattr")
+    return buf.raw[:size]
+
+
+def outcome(fn):
+    try:
+        fn()
+        return "ALLOWED"
+    except OSError as exc:
+        return errno.errorcode.get(exc.errno, str(exc.errno))
+
+
+target_file, target_dir, xattr_name = sys.argv[1], sys.argv[2], sys.argv[3]
+print(json.dumps({
+    "stat_file": outcome(lambda: os.stat(target_file)),
+    "stat_dir": outcome(lambda: os.stat(target_dir)),
+    "read_file": outcome(lambda: open(target_file, "rb").read(1)),
+    "list_dir": outcome(lambda: os.listdir(target_dir)),
+    "list_file": outcome(lambda: os.listdir(target_file)),
+    "xattr_value": outcome(lambda: _xattr_value(target_file, xattr_name)),
+    "xattr_names": outcome(lambda: _xattr_names(target_file)),
+}))
+"""
+
+#: An xattr macOS itself uses to carry a file's own bytes: anything saved from
+#: a `data:` URL gets the whole document base64-encoded in here.
+_WHERE_FROMS = "com.apple.metadata:kMDItemWhereFroms"
+
+
+def _set_xattr(path: Path, name: str, value: bytes) -> None:
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    if (
+        libc.setxattr(
+            str(path).encode(),
+            name.encode(),
+            value,
+            ctypes.c_size_t(len(value)),
+            ctypes.c_uint32(0),
+            ctypes.c_int(0),
+        )
+        < 0
+    ):
+        raise OSError(ctypes.get_errno(), f"setxattr {name}")
+
+
+def _probe(argv: list[str]) -> dict:
+    """Run a probe -- confined or not -- and return the JSON report it printed.
+
+    One place that builds the argv and parses the answer, so a second copy
+    cannot drift away from the first and start asking a different question.
+    """
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def _read_probe_argv(
+    repo: Path, git_dir: Path, profile: str | None = None
+) -> list[str]:
+    """`_READ_PROBE`'s argv, optionally wrapped in a Seatbelt profile.
+
+    Unconfined it is the control: the same probe against the same paths with
+    nothing denying it must report READABLE, or a DENIED from the confined run
+    would be proving something about the probe rather than about the boundary.
+    """
+    inner = [
+        sys.executable,
+        "-I",
+        "-c",
+        _READ_PROBE,
+        str(repo),
+        bc.helper_package_dir(),
+        str(git_dir),
+    ]
+    if profile is None:
+        return inner
+    return ["sandbox-exec", "-p", profile, *inner]
+
+
+def _write_git(repo: Path, shape: str) -> Path:
+    """Build one of the two real shapes of `.git`, and return the metadata dir.
+
+    A linked worktree's `.git` is a regular file holding `gitdir: <path>`; every
+    ordinary checkout's is a directory. Both are produced by git itself, so a
+    boundary that only refuses one of them refuses nothing in half the installs.
+    The pointer target is a real directory *inside the same tree*, because that
+    is what git does and what `_git_metadata_dir` has to resolve to something
+    the boundary then covers.
+    """
+    git = repo / ".git"
+    if shape == "directory":
+        git.mkdir()
+        (git / "config").write_text("[core]\n\tbare = false\n", encoding="utf-8")
+        return git
+    if shape == "file":
+        real = repo.parent / "main-repo" / ".git" / "worktrees" / repo.name
+        real.mkdir(parents=True)
+        (real / "gitdir").write_text(f"{repo}/.git\n", encoding="utf-8")
+        git.write_text(f"gitdir: {real}\n", encoding="utf-8")
+        return real
+    raise ValueError(f"unknown .git shape: {shape!r}")  # pragma: no cover
+
+
 @pytest.fixture(autouse=True)
 def _fresh_self_test():
     bc.reset_self_test_cache()
@@ -123,28 +264,144 @@ def test_a_confined_process_cannot_read_the_repository(tmp_path):
         pytest.skip("this checkout's git metadata is not under the user's home")
     stage = tmp_path / "stage"
     stage.mkdir()
-    profile = bc.build_profile(stage)
-    argv = [
-        "sandbox-exec",
-        "-p",
-        profile,
-        sys.executable,
-        "-I",
-        "-c",
-        _READ_PROBE,
-        str(_REPO),
-        bc.helper_package_dir(),
-        str(git_dir),
-    ]
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=120)
-    assert proc.returncode == 0, proc.stderr
-    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    result = _probe(_read_probe_argv(_REPO, git_dir, bc.build_profile(stage)))
 
     assert result["repo_list"] == "DENIED", result
     assert result["repo_file"] == "DENIED", result
     assert result["git_dir"] in ("DENIED", "ABSENT"), result
     # ...and the one thing it does need is still there.
     assert result["helper_pkg"] == "READABLE", result
+
+
+@macos_only
+@pytest.mark.parametrize("git_shape", ("directory", "file"))
+def test_neither_shape_of_git_metadata_survives_the_boundary(tmp_path, git_shape):
+    """Both shapes, on every machine, rather than whichever one is on this one.
+
+    The test above can only exercise the layout the developer running it happens
+    to have — a clone or a linked worktree, never both — so for most of this
+    suite's life one of the two was never checked at all, and the worktree shape
+    is the one that turned out to be broken.
+
+    `build_profile(home=...)` is what makes this hermetic: the denial covers a
+    synthetic tree under tmp_path instead of the real `$HOME`, so the
+    interpreter and the helper package stay readable and the only variable is
+    the shape of `.git`.
+    """
+    home = tmp_path / "home"
+    repo = home / "repo"
+    repo.mkdir(parents=True)
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname = 'decoy'\n", encoding="utf-8"
+    )
+    git_dir = _write_git(repo, git_shape)
+    assert _git_metadata_dir(repo) == git_dir, "the host-side resolver disagrees"
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    result = _probe(_read_probe_argv(repo, git_dir, bc.build_profile(stage, home=home)))
+
+    assert result["repo_list"] == "DENIED", result
+    assert result["repo_file"] == "DENIED", result
+    # Exactly DENIED, not "DENIED or ABSENT": this metadata directory was
+    # created two lines up, so ABSENT here would mean the probe looked
+    # somewhere else.
+    assert result["git_dir"] == "DENIED", result
+    assert result["helper_pkg"] == "READABLE", result
+
+
+@pytest.mark.parametrize("git_shape", ("directory", "file"))
+def test_the_probe_reads_both_shapes_of_git_when_nothing_denies_it(tmp_path, git_shape):
+    """The unconfined control, and the check that would have caught the bug.
+
+    A probe that errors before reading anything reports the same thing whether
+    the boundary holds or leaks — which is exactly how listing a worktree's
+    file-shaped `.git` used to behave, and nothing asserted that the probe had
+    to actually succeed at something first. Runs on every platform, because it
+    needs no sandbox: with nothing denying it, both shapes must come back
+    READABLE.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname = 'decoy'\n", encoding="utf-8"
+    )
+    git_dir = _write_git(repo, git_shape)
+
+    result = _probe(_read_probe_argv(repo, git_dir))
+
+    assert result["git_dir"] == "READABLE", result
+    assert result["repo_file"] == "READABLE", result
+
+
+@macos_only
+def test_metadata_is_readable_under_home_on_purpose_and_contents_are_not(tmp_path):
+    """The data/metadata split, pinned as a fact rather than left as a comment.
+
+    `build_profile` denies `file-read-data`, not `file-read*`, and the reason is
+    load-bearing: denying the whole read class also denies the metadata reads
+    `execvp` and dyld perform on the interpreter itself, so `sandbox-exec` dies
+    before the helper starts. The consequence is that `stat()` succeeds under
+    the denied home while reading contents and listing directories do not.
+
+    Extended attributes are the third class, and the one that was missed: they
+    carry contents, not metadata, whatever their name suggests. Both halves are
+    pinned here so they cannot drift apart silently — tightening to
+    `file-read*` fails the `stat` assertions and points at the exec breakage
+    that motivated the split, and loosening the data or xattr denial fails the
+    assertions that are the boundary itself.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    secret = home / "credentials.txt"
+    body = b"sk-not-a-real-key-" + b"x" * 512 + b"\n"
+    secret.write_bytes(body)
+    # The same bytes on the side channel, the way macOS itself stores them.
+    _set_xattr(secret, _WHERE_FROMS, body)
+    listing = home / "subdir"
+    listing.mkdir()
+    (listing / "entry-name-worth-hiding").write_text("x", encoding="utf-8")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    result = _probe(
+        [
+            "sandbox-exec",
+            "-p",
+            bc.build_profile(stage, home=home),
+            sys.executable,
+            "-I",
+            "-c",
+            _CLASS_PROBE,
+            str(secret),
+            str(listing),
+            _WHERE_FROMS,
+        ]
+    )
+
+    # Metadata: allowed, deliberately. If this ever starts failing, read the
+    # comment in build_profile before "fixing" it — the boundary stops starting.
+    assert result["stat_file"] == "ALLOWED", result
+    assert result["stat_dir"] == "ALLOWED", result
+    # Contents and directory entries: refused. These are the boundary, and
+    # `list_dir` is the one that keeps file *names* from being enumerated,
+    # which matters far more than sizes for a helper that also has the network.
+    assert result["read_file"] == "EPERM", result
+    assert result["list_dir"] == "EPERM", result
+    # An extended attribute is a second place a file's own bytes live. Denying
+    # `file-read-data` alone left `getxattr` open, so the same content was
+    # refused through open() and served through here.
+    assert result["xattr_value"] == "EPERM", result
+    # Attribute *names* are still readable, deliberately: closing them needs
+    # `file-read-metadata`, which is the denial that breaks execvp and dyld.
+    # Names are not contents. Tolerant of either answer so a future tightening
+    # is not a failure.
+    assert result["xattr_names"] in ("ALLOWED", "EPERM"), result
+    # Listing a non-directory: never allowed, and never informative. Measured
+    # identical under `deny file-read*`, where `stat()` is already EPERM, so the
+    # errno says nothing about the policy — which is why a probe must never be
+    # allowed to stop there.
+    assert result["list_file"] in ("ENOTDIR", "EPERM"), result
 
 
 @macos_only
