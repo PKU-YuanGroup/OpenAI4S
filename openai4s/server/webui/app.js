@@ -3535,7 +3535,7 @@ function updatePlanProgress(m) {
 }
 async function approvePlan() {
   if (!S.currentId) return;
-  try { await api(`/frames/${S.currentId}/plan/approve`, { method: "POST", body: JSON.stringify({ model: S.defaultModel }) }); }
+  try { await api(`/frames/${S.currentId}/plan/approve`, { method: "POST", body: JSON.stringify({ model: S.defaultModelName }) }); }
   catch (e) { hint(t("plan.approveFailed", apiErrorText(e)), true); return; }
   S.planMode = false; const pt = $("#plan-toggle"); if (pt) pt.classList.remove("on");
   S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("plan.autoExecuting"), false, true);
@@ -3543,7 +3543,7 @@ async function approvePlan() {
 }
 async function resumePlan() {
   if (!S.currentId) return;
-  try { await api(`/frames/${S.currentId}/plan/resume`, { method: "POST", body: JSON.stringify({ model: S.defaultModel }) }); }
+  try { await api(`/frames/${S.currentId}/plan/resume`, { method: "POST", body: JSON.stringify({ model: S.defaultModelName }) }); }
   catch (e) { hint(t("plan.resumeFailed", apiErrorText(e)), true); return; }
   S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("plan.resuming"), false, true);
   resumeWatch(S.currentId, S._openGen);  // 202 immediately, same as approve — only the WS unlocks us
@@ -3557,7 +3557,7 @@ async function discardPlan() {
 async function revisePlan(changes) {
   if (!S.currentId) return;
   S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.planRevising"), false, true);
-  try { await api(`/frames/${S.currentId}/plan/revise`, { method: "POST", body: JSON.stringify({ changes, model: S.defaultModel }) }); resumeWatch(S.currentId, S._openGen); }
+  try { await api(`/frames/${S.currentId}/plan/revise`, { method: "POST", body: JSON.stringify({ changes, model: S.defaultModelName }) }); resumeWatch(S.currentId, S._openGen); }
   catch (e) { hint(t("toast.reviseFailed", apiErrorText(e)), true); if (S.running) turnDone("failed"); }
 }
 
@@ -4419,7 +4419,7 @@ function folderMenu(anchor, fold) {
 }
 async function assignFolder(fid, folder_id) { try { await api(`/frames/${fid}/folder`, { method: "POST", body: JSON.stringify({ folder_id }) }); await loadSessions(); hint(folder_id ? t("folder.assigned.in") : t("folder.assigned.out")); } catch (e) { hint(t("folder.move.failed", apiErrorText(e)), true); } }
 async function newSession() {
-  try { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModel }) });
+  try { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModelName }) });
     await loadSessions(); openConversation(f.id, S.project); $("#composer").focus();
   } catch (e) { hint(t("folder.create.failed", apiErrorText(e)), true); }
 }
@@ -4870,7 +4870,7 @@ async function deleteSession(fid) {
 async function duplicateSession(fid) {
   const f = S.sessions.find(x => x.id === fid) || {};
   try {
-    const nf = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: f.project_id || S.project || undefined, model: S.defaultModel }) });
+    const nf = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: f.project_id || S.project || undefined, model: S.defaultModelName }) });
     const nm = (f.name || f.task_summary || t("conv.title.default")) + t("session.duplicateSuffix");
     try { await api("/frames/" + nf.id, { method: "PATCH", body: JSON.stringify({ name: nm }) }); } catch {}
     await loadSessions(); openConversation(nf.id, f.project_id);
@@ -4955,7 +4955,7 @@ async function send(text, opts) {
       if (hits.length) skillDirective = "\n\n" + hits.map(n => t("skill.invokeDirective", n)).join("\n");
     } catch {}
   }
-  if (!S.currentId) { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModel }) }); S.currentId = f.id; sub(f.id); await loadSessions(); }
+  if (!S.currentId) { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModelName }) }); S.currentId = f.id; sub(f.id); await loadSessions(); }
   const g = $(".generated"); if (g) g.remove();
   const es = $(".empty-session"); if (es) es.remove();
   const w = el("div", "msg user"); const b = el("div", "bubble"); b.textContent = text || t("send.imageAnnotationFallback"); w.appendChild(b);
@@ -4983,7 +4983,12 @@ async function send(text, opts) {
                      // drops them (server replay is gated on is_running, which is already
                      // false once the blocking POST returns). Idempotent set add.
   try {
-    await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, model: S.defaultModel, plan: planNow, explore: exploreNow, annotation_ids: annIds, wait: false }) });
+    // No `model:` field. It carried the header selector's value on every single
+    // message, and the server preferred it over the session's pinned revision --
+    // so provider, endpoint and credential came from the pin while the model name
+    // came from here, a configuration that exists in no profile. Changing model is
+    // now activating a profile (PUT /models/default), which the session then binds.
+    await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, plan: planNow, explore: exploreNow, annotation_ids: annIds, wait: false }) });
     // The optimistic status above clears the badge immediately; reload once the turn POST finishes to reconcile with the server.
     if (annIds.length) { try { await loadAnnotations(S.currentId); } catch {} refreshAllStages(); updateAnnotBadge(); }
   }
@@ -5049,10 +5054,15 @@ async function refreshKeyBanner() {
 /* ---------- models ---------- */
 async function loadModels() {
   try { const m = await api("/models"); const groups = (m && m.models) || {}; S.models = Object.values(groups).flat(); S.defaultModel = m.default_model_id || (S.models[0] && S.models[0].id);
+    // The option value is a profile_id now, so the model *name* has to be carried
+    // separately for the display-only `model` field on session creation. Sending
+    // the id there would store a profile id in `frames.model`.
+    const nameFor = id => { const e = S.models.find(x => x.id === id); return (e && (e.model || e.name)) || id; };
+    S.defaultModelName = nameFor(S.defaultModel);
     const sel = $("#model-select"); sel.innerHTML = "";
     if (!S.models.length) { const o = el("option", null, t("models.none")); o.value = ""; sel.appendChild(o); }
     S.models.forEach(md => { const o = el("option", null, md.name || md.id); o.value = md.id; if (md.id === S.defaultModel) o.selected = true; sel.appendChild(o); });
-    sel.onchange = async () => { S.defaultModel = sel.value; try { await api("/models/default", { method: "PUT", body: JSON.stringify({ model_id: sel.value }) }); } catch {} };
+    sel.onchange = async () => { S.defaultModel = sel.value; S.defaultModelName = nameFor(sel.value); try { await api("/models/default", { method: "PUT", body: JSON.stringify({ model_id: sel.value }) }); } catch {} };
   } catch { $("#model-select").innerHTML = "<option>" + t("models.none") + "</option>"; }
 }
 
@@ -7068,7 +7078,7 @@ function openKetcher() { $("#modal-title").textContent = t("ketcher.modalTitle")
 /* ---------- upload ---------- */
 function uploadFiles(files) {
   [...files].forEach(file => { const rd = new FileReader(); rd.onload = async () => { const b64 = (rd.result.split(",")[1]) || "";
-    try { if (!S.currentId) { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModel }) }); S.currentId = f.id; sub(f.id); await loadSessions(); await openConversation(f.id, S.project); }
+    try { if (!S.currentId) { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModelName }) }); S.currentId = f.id; sub(f.id); await loadSessions(); await openConversation(f.id, S.project); }
       await api("/uploads", { method: "POST", body: JSON.stringify({ filename: file.name, content_base64: b64, project_id: S.project || undefined, frame_id: S.currentId }) });
       loadArtifacts(S.currentId); hint(t("upload.uploaded", file.name));
     } catch (e) { hint(t("upload.failed", apiErrorText(e)), true); } }; rd.readAsDataURL(file); });

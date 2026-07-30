@@ -474,8 +474,12 @@ CREATE TABLE IF NOT EXISTS compute_jobs (
     terminal_at     INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_compute_jobs_status ON compute_jobs(status);
-CREATE UNIQUE INDEX IF NOT EXISTS ix_compute_jobs_idem
-    ON compute_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+-- The per-owner idempotency index is deliberately NOT here. It references
+-- `owner_key`, which migration 9 adds -- and this script runs on every open,
+-- *before* migrations, so on a pre-9 database `CREATE INDEX` would fail on a
+-- column that does not exist yet and take startup with it. Migration 11 creates
+-- it (and drops the old installation-wide one) for new and upgraded databases
+-- alike, which is the one place both paths pass through.
 -- Append-only, monotonically sequenced per job. A status column alone says
 -- where a job is; this says how it got there, which is what a restart needs to
 -- tell "we never submitted" from "we submitted and lost the response".
@@ -1070,10 +1074,48 @@ class Store:
                     ),
                     9: ("compute_job_owner", self._apply_compute_job_owner),
                     10: ("frame_model_binding", self._apply_frame_model_binding),
+                    11: (
+                        "compute_job_idem_owner",
+                        self._apply_compute_job_idem_owner,
+                    ),
                 },
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+
+    def _apply_compute_job_idem_owner(self, conn: sqlite3.Connection) -> None:
+        """Version 11: make the idempotency namespace per-owner.
+
+        The old index was `UNIQUE(idempotency_key)` — installation-wide, while
+        every other view of `compute_jobs` is per-owner. One session's key
+        therefore blocked every other session's, and the duplicate refusal handed
+        back the other session's `job_id` and status.
+
+        Replacing an index is not additive, so it needs a real step rather than
+        the idempotent catch-up pass. Order matters: build the new index first, so
+        a database that already contains a cross-owner duplicate fails here — with
+        the old index still in place — rather than losing the constraint and then
+        failing. `COALESCE(owner_key,'')` because SQLite treats NULLs as distinct
+        in a UNIQUE index, and NULL is exactly the CLI context this must keep
+        protecting. Runs inside the transaction owned by ``run_migrations``.
+        """
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_compute_jobs_idem_owner "
+                "ON compute_jobs(COALESCE(owner_key,''), idempotency_key) "
+                "WHERE idempotency_key IS NOT NULL"
+            )
+        except sqlite3.IntegrityError as e:
+            raise MigrationError(
+                "compute_jobs holds rows that would violate a per-owner "
+                f"idempotency index: {e}. Two jobs for one owner share a key; "
+                "reconcile or remove one before upgrading."
+            ) from e
+        except sqlite3.OperationalError as e:
+            raise MigrationError(
+                f"the per-owner idempotency index could not be created: {e}"
+            ) from e
+        conn.execute("DROP INDEX IF EXISTS ix_compute_jobs_idem")
 
     def _apply_compute_job_states(self, conn: sqlite3.Connection) -> None:
         """Version 2: one enforced compute-job state vocabulary.
@@ -3376,8 +3418,29 @@ class Store:
     def get_compute_job(self, job_id: str) -> dict | None:
         return self._compute_jobs.get(job_id)
 
-    def compute_job_by_idempotency_key(self, key: str) -> dict | None:
-        return self._compute_jobs.by_idempotency_key(key)
+    def artifact_write_scope(
+        self,
+        *,
+        frame_id: str | None = None,
+        root_frame_id: str | None = None,
+        project_id: str | None = None,
+    ) -> tuple[bool, str | None, str]:
+        """The scope a write *would* land in, resolved without writing.
+
+        The repository has always had this and `save_artifact` calls it -- but by
+        the time `save_artifact` runs, `ArtifactManager.upload` has already
+        rewritten the live file, so a conflicting `project_id` refused *after* the
+        previous version's bytes were gone. Nothing needed to be built; the
+        resolution needed to be asked for first. Public so the upload path can.
+        """
+        return self._artifacts.artifact_write_scope(
+            frame_id=frame_id, root_frame_id=root_frame_id, project_id=project_id
+        )
+
+    def compute_job_by_idempotency_key(
+        self, key: str, owner_key: str | None = None, *, scoped: bool = True
+    ) -> dict | None:
+        return self._compute_jobs.by_idempotency_key(key, owner_key, scoped=scoped)
 
     def live_compute_jobs(
         self, owner_key: str | None = None, scoped: bool = False

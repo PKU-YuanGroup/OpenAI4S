@@ -519,7 +519,24 @@ class ArtifactManager:
         *,
         broadcast: Broadcast | None = None,
     ) -> dict:
-        """Decode and register one JSON/base64 upload as a versioned artifact."""
+        """Decode and register one JSON/base64 upload as a versioned artifact.
+
+        The ordering is the contract. This used to be
+        `target.write_bytes(raw)` followed by the same-name lookup and then
+        `save_artifact`, whose scope resolution can still refuse -- so a
+        `project_id` that did not match the frame's left the previous version's
+        row naming a path whose bytes were now the *rejected* upload's. That is
+        client-reachable rather than theoretical: `app.js` sends
+        `S.project || undefined` and this method defaults the field to
+        `"default"`, so an upload into a non-default-project session with the
+        field omitted takes exactly that branch.
+
+        Now every refusal happens first, the bytes are staged beside the target,
+        and the live file is replaced only once the version is committed and its
+        immutable snapshot written. A failure anywhere leaves the previous live
+        bytes, the Artifact head, the checksum, the version count and the event
+        count all unchanged.
+        """
         filename = payload.get("filename") or f"upload-{uuid.uuid4().hex[:8]}"
         frame_id = payload.get("frame_id")
         project_id = payload.get("project_id") or "default"
@@ -530,24 +547,38 @@ class ArtifactManager:
         )
         workspace.mkdir(parents=True, exist_ok=True)
         target = workspace / Path(filename).name
-        target.write_bytes(raw)
+
+        # Both of these can refuse, and neither touches disk.
+        self.store.artifact_write_scope(frame_id=frame_id, project_id=project_id)
         existing = (
             self.store.artifact_by_filename(target.name, frame_id, strict=True)
             if frame_id
             else None
         )
-        record = self.store.save_artifact(
-            path=str(target),
-            filename=target.name,
-            content_type=self.guess_content_type(target.name),
-            size_bytes=len(raw),
-            checksum=hashlib.sha256(raw).hexdigest(),
-            frame_id=frame_id,
-            project_id=project_id,
-            is_user_upload=True,
-            artifact_id=(existing["artifact_id"] if existing else None),
-        )
-        self.write_version_snapshot(record["version_id"], target.name, data=raw)
+
+        staged = target.with_name(f"{target.name}.{uuid.uuid4().hex[:8]}.part")
+        staged.write_bytes(raw)
+        try:
+            record = self.store.save_artifact(
+                path=str(target),
+                filename=target.name,
+                content_type=self.guess_content_type(target.name),
+                size_bytes=len(raw),
+                checksum=hashlib.sha256(raw).hexdigest(),
+                frame_id=frame_id,
+                project_id=project_id,
+                is_user_upload=True,
+                artifact_id=(existing["artifact_id"] if existing else None),
+            )
+            # From `raw`, before the live file moves: a committed version must
+            # never lack the frozen bytes its checksum describes.
+            self.write_version_snapshot(record["version_id"], target.name, data=raw)
+            os.replace(str(staged), str(target))
+        except Exception:
+            # The live file was never touched, so there is nothing to restore --
+            # only the stage to remove.
+            staged.unlink(missing_ok=True)
+            raise
         self._notify(
             frame_id,
             {

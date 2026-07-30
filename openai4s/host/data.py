@@ -438,27 +438,61 @@ class HostDataService:
                 f"artifact version {source_version_id!r} has no frozen snapshot"
             )
 
+        # Every refusal ahead of every mutation. Two of these used to live only
+        # inside the transaction, which ran *after* the live file had already been
+        # unlinked -- so a call that was going to be refused destroyed the
+        # caller's working file on its way to refusing.
+        if str(parent.get("root_frame_id") or "") == root_frame_id:
+            raise ValueError("artifact version already belongs to this session")
+
         filename = str(spec.get("filename") or metadata.get("filename") or "artifact")
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "artifact"
+        live = self._resolve_path(filename, must_exist=False)
+        if live.exists() or live.is_symlink():
+            # This used to be `live.unlink()`: a silent, unlogged deletion of
+            # whatever the session already had under that name, on the *success*
+            # path, with no snapshot backfill -- so unsaved work disappeared
+            # without a word. Refusing and naming the remedy is the only version
+            # of this that does not lose data the caller did not offer up.
+            raise FileExistsError(
+                f"{filename!r} already exists in this session's workspace; "
+                f"materialising would overwrite it. Pass filename= to choose "
+                f"another name."
+            )
+
         version_id = f"v-{uuid.uuid4().hex[:12]}"
         config = self._config()
         versions_dir = Path(config.data_dir) / "artifact-versions"
         versions_dir.mkdir(parents=True, exist_ok=True)
         destination = versions_dir / f"{version_id}__{safe}"
+        # Snapshot to snapshot: a hardlink is safe here and is the optimisation
+        # worth having -- both names are immutable by contract, so a materialised
+        # multi-gigabyte dataset costs a directory entry.
         try:
             os.link(str(snapshot), str(destination))
         except OSError:
             shutil.copyfile(str(snapshot), str(destination))
 
-        # The live file too, so the cell can just open it by name.
-        live = self._resolve_path(filename, must_exist=False)
+        # The live file is a real COPY, never a link. Hardlinking it made the
+        # borrowing session's *writable* working file share an inode with two
+        # immutable snapshots, so one ordinary truncating write through the live
+        # name rewrote the source session's frozen bytes -- and
+        # `write_version_snapshot` returns early when the file exists, so nothing
+        # would ever re-freeze them. The source row's checksum then described
+        # bytes that no longer existed. The old docstring's "immutable by
+        # contract" is true of the snapshot names and false of the live one.
+        #
+        # Staged, then moved: `os.replace` onto a name proven absent above is
+        # atomic, so a cell never observes a half-written deliverable.
         live.parent.mkdir(parents=True, exist_ok=True)
+        staged = live.with_name(f"{live.name}.{version_id}.part")
         try:
-            if live.exists():
-                live.unlink()
-            os.link(str(destination), str(live))
-        except OSError:
-            shutil.copyfile(str(destination), str(live))
+            shutil.copyfile(str(destination), str(staged))
+            os.replace(str(staged), str(live))
+        except Exception:
+            staged.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            raise
 
         try:
             return store.materialise_artifact_version(
@@ -473,9 +507,13 @@ class HostDataService:
                 project_id=project_id,
             )
         except Exception:
-            # The transaction rolled back, so the two links describe a version
-            # that does not exist. Removing them keeps the versions directory
-            # from accumulating files no row will ever name.
+            # The transaction rolled back, so both files describe a version that
+            # does not exist. Removing them is safe precisely because the live
+            # name was proven absent before anything was written: there is no
+            # pre-existing file here to lose, which is what made the old
+            # one-sided rollback (snapshot only) destructive.
+            staged.unlink(missing_ok=True)
+            live.unlink(missing_ok=True)
             destination.unlink(missing_ok=True)
             raise
 

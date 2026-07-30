@@ -84,6 +84,12 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # D2: a session binds `profile_id + revision` rather than storing a
         # model string that says which name, not which configuration.
         "frame_model_binding",
+        # The idempotency namespace was installation-wide while every other view
+        # of `compute_jobs` is per-owner, so one session's key blocked every
+        # other session's and the duplicate refusal handed back the other
+        # session's job id and status. Replacing an index is not additive, so it
+        # needs a step rather than the idempotent catch-up pass.
+        "compute_job_idem_owner",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

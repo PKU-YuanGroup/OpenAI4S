@@ -2114,10 +2114,17 @@ class SessionRunner:
         """Contact the remote for ONE job, because a person asked.
 
         `ComputeManager.result()` is the probe, and in this system the probe is
-        also the harvest: it pulls output files back into the workspace,
-        registers artifacts, and closes the job. There is no read-only way to
-        ask a provider how a job is doing, which is the whole reason the
-        listing beside this does not poll.
+        also the harvest: it pulls output files back into the workspace and
+        closes the job. There is no read-only way to ask a provider how a job is
+        doing, which is the whole reason the listing beside this does not poll.
+
+        The manager does **not** register artifacts -- this docstring used to say
+        it did, and nothing on this route took a snapshot, so a person clicking
+        Refresh got the bytes published into `hpc/<job_id>/` and no Artifact
+        version, no Timeline entry and no lineage. Capture is bracketed around the
+        harvest here, the same way the native control-tool wrapper does it for
+        `compute_result`; the mtime diff needs a `before` taken while the files do
+        not exist yet, so it cannot be added after the fact.
 
         The manager is built with this session's workspace, so its owner scope
         is the same one the listing reads. A job id belonging to another
@@ -2135,6 +2142,10 @@ class SessionRunner:
             raise GatewayError(
                 503, f"remote compute is not available here: {error}", "no_provider"
             ) from error
+        st = self._state(root_frame_id, "default")
+        emit = self.hub.emitter(root_frame_id)
+        before = self.artifacts.snapshot(workspace)
+        self.artifacts.protect_latest(st)
         try:
             outcome = manager.result({"job_id": job_id})
         except Exception as error:  # noqa: BLE001
@@ -2144,6 +2155,18 @@ class SessionRunner:
             if str(code) == "not_found":
                 raise GatewayError(404, f"no such job {job_id}", "not_found") from error
             raise GatewayError(502, str(error), "refresh_failed") from error
+        finally:
+            # In `finally`, not after: a harvest that extracted some outputs and
+            # then failed has still written real bytes into the workspace, and
+            # leaving those unregistered is the same gap on a narrower path.
+            try:
+                self.artifacts.capture(
+                    st, st.cell_index, None, before, emit, language="native"
+                )
+            except Exception:  # noqa: BLE001
+                # Capture must not convert a successful harvest into an error;
+                # the files remain on disk and the next capture will see them.
+                pass
         # Project the durable record rather than the call's return value, so
         # the refreshed row and the listing beside it are the same shape from
         # the same source. `hasattr`-guarding this would have hidden the fact
@@ -4655,14 +4678,20 @@ class SessionRunner:
         )
 
     def _pinned_llm_config(self, st: "SessionState | None"):
-        """The configuration this session named, or None to use the active one.
+        """The configuration this session named, or None when it named none.
 
-        Conservative on purpose: anything unresolvable — no binding, a profile
-        that went away, a revision that is not in the history, a missing
-        credential — returns None and leaves the previous behaviour in place.
-        A pin that cannot be honoured must not become a turn that cannot run,
-        and `bind_model_revision` already refuses the cases a user should be
-        asked about.
+        `None` now means exactly one thing: there is no pin, so the active
+        profile is the right answer. It used to also mean "there is a pin and it
+        cannot be honoured", and the caller could not tell the two apart -- so a
+        profile that went away, a revision missing from the history or a revoked
+        credential silently ran the turn on whichever profile happens to be
+        active, while the frame went on recording the pinned one. Recorded as A,
+        executed as B. That is precisely what D2 exists to prevent, and being
+        "conservative" about it meant preferring a wrong answer to a refusal.
+
+        A pin that cannot be honoured now raises `GatewayError(409,
+        model_revision_unavailable)`, which `POST /frames/{id}/model-binding`
+        already answers.
         """
         if st is None or not getattr(st, "root_frame_id", ""):
             return None
@@ -4680,30 +4709,52 @@ class SessionRunner:
                 ),
                 None,
             )
+            unavailable = GatewayError(
+                409,
+                "this session is pinned to a model configuration that is no "
+                "longer usable; rebind it to continue",
+                "model_revision_unavailable",
+            )
             if profile is None:
-                return None
+                raise unavailable
             recorded = ModelProfileService.revision_config(profile, revision)
             if not recorded:
-                return None
+                raise unavailable
             service = ModelProfileService(
                 self.store, self.cfg, providers=lambda: PROVIDERS
             )
             api_key = service.resolve_key(profile)
             if not api_key:
-                return None
+                # A revoked or cleared key. Falling through to the active profile
+                # here is the substitution this method exists to stop.
+                raise unavailable
             from dataclasses import replace
 
             return replace(
                 self.cfg.llm,
                 provider=str(recorded.get("provider") or "") or self.cfg.llm.provider,
                 base_url=str(recorded.get("base_url") or "") or None,
-                # The composer's per-session choice is an explicit act by the
-                # user and still wins over the recorded model name.
-                model=str(st.model or recorded.get("model") or ""),
+                # The recorded model, not `st.model`. This used to prefer
+                # `st.model` -- the request's bare `model` string, which the
+                # browser sends on *every* message -- so provider, endpoint and
+                # credential came from the pin while the model name came from the
+                # header selector: a configuration that exists in no profile.
+                # Changing model is a rebind, not a field on a message.
+                model=str(recorded.get("model") or ""),
                 api_key=api_key,
             )
-        except Exception:  # noqa: BLE001 — never let provenance break a turn
-            return None
+        except GatewayError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            # Not swallowed: an unreadable pin is a pin that cannot be honoured,
+            # and the previous blanket `return None` turned every one of those
+            # into a silent dispatch somewhere else.
+            raise GatewayError(
+                409,
+                "this session's pinned model configuration could not be read; "
+                "rebind it to continue",
+                "model_revision_unavailable",
+            ) from error
 
     @staticmethod
     def _friendly_error(exc: Exception) -> str:
@@ -4913,13 +4964,26 @@ class SessionRunner:
             profile = next(
                 (item for item in profiles if item.get("id") == bound_id), None
             )
-            usable = (
-                profile is not None
-                and ModelProfileService.revision_config(
-                    profile, int(bound_revision or 0)
-                )
-                is not None
+            recorded = (
+                ModelProfileService.revision_config(profile, int(bound_revision or 0))
+                if profile is not None
+                else None
             )
+            usable = profile is not None and recorded is not None
+            if usable and not profile.get("deleted_at"):
+                # The credential too, not just the revision's existence. Without
+                # this a revoked key passed the bind and was only discovered at
+                # dispatch, where the old code answered by silently using the
+                # active profile instead.
+                service = ModelProfileService(
+                    self.store, self.cfg, providers=lambda: PROVIDERS
+                )
+                if not service.resolve_key(profile):
+                    usable = False
+            elif usable:
+                # A tombstoned profile keeps its revisions so history stays
+                # readable, but it may not be bound to going forward.
+                usable = False
             if not usable:
                 raise GatewayError(
                     409,
@@ -7691,11 +7755,35 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if method == "GET":
                     self._json({"default_model_id": _default_model["id"]})
                 else:
-                    _default_model["id"] = (
-                        self._body().get("model_id") or _default_model["id"]
-                    )
-                    # persist so the override actually applies to LLM calls (C1)
-                    store.set_setting("llm_model", _default_model["id"])
+                    chosen = str(self._body().get("model_id") or "").strip()
+                    if chosen:
+                        _default_model["id"] = chosen
+                    # The selector's option value is now a `profile_id`, because
+                    # deduping the list by bare model name made two profiles
+                    # sharing a model against different providers indistinguishable
+                    # -- and unreachable, since only one survived. Choosing an
+                    # entry therefore activates a *configuration*, which is what
+                    # the header control has always meant.
+                    #
+                    # A value that is not a known profile id is still written to
+                    # `llm_model`: `.env`-configured installs and older clients
+                    # name a model directly and must keep working.
+                    known = {
+                        str(p.get("id") or ""): p
+                        for p in store.list_model_profiles()
+                        if not p.get("deleted_at")
+                    }
+                    if chosen in known:
+                        try:
+                            _payload, effective = model_profiles.activate(chosen)
+                        except ModelProfileError as exc:
+                            self._json({"error": str(exc)}, exc.status_code)
+                            return
+                        _default_model["id"] = chosen
+                        if effective:
+                            store.set_setting("llm_model", effective)
+                    elif chosen:
+                        store.set_setting("llm_model", chosen)
                     self._json({"default_model_id": _default_model["id"]})
                 return
 

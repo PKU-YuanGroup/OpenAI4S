@@ -129,6 +129,20 @@ class GetRemoteComputeJobResultTool(Tool):
     read_only = False
     requires_approval = False
     needs_network = True
+    # The Web control-tool wrapper gates artifact capture on exactly this
+    # attribute, so without it a native harvest of N files produced ZERO Artifact
+    # versions: the bytes landed in `<workspace>/hpc/<job_id>/` invisible to the
+    # Timeline, the artifact list, lineage and the completion projection. The
+    # in-kernel SDK path captured them correctly through the cell transaction,
+    # which is why the two paths disagreed for as long as they did.
+    #
+    # The double-capture hazard the wrapper warns about does not apply: the
+    # manager registers nothing itself, and an in-kernel call never routes
+    # through this wrapper.
+    writes_files = True
+    # ...and the harvest destination is host-derived, not caller-named. See
+    # `Tool.derived_write_path`.
+    derived_write_path = True
     screen_untrusted_output = True
     side_effect_class = RUNTIME_MUTATION
     resource_key_prefix = "remote_compute_job"

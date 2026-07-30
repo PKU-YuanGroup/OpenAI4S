@@ -47,8 +47,20 @@ def _setup(tmp_path):
 
 
 def _profile(store, service, name, provider, base_url, model, *, activate=False):
+    # With a key. Every protocol in `PROFILE_PROTOCOLS` is a hosted provider that
+    # needs one -- `readiness` already reports a keyless profile as `needs_key` --
+    # and `bind_model_revision` now refuses to pin a session to a configuration
+    # whose credential does not resolve, rather than discovering that at dispatch
+    # and silently using the active profile instead. Omitting it here was a
+    # fixture shortcut, not a keyless case: these tests are about revisions.
     service.create(
-        {"name": name, "provider": provider, "base_url": base_url, "model": model}
+        {
+            "name": name,
+            "provider": provider,
+            "base_url": base_url,
+            "model": model,
+            "api_key": "test-key",
+        }
     )
     row = next(item for item in store.list_model_profiles() if item.get("name") == name)
     if activate:
@@ -274,7 +286,12 @@ def test_migration_ten_upgrades_a_populated_database_without_defaulting(tmp_path
         assert row["frame_id"] == frame_id and row["model"] == "claude-x"
         assert row["model_profile_id"] is None
         assert row["model_profile_revision"] is None
-        assert upgraded.schema_state()["version"] == 10
+        # Against the constant, not a literal: what this asserts is "the upgrade
+        # reached the current version". A hardcoded 10 turns every future
+        # migration into a failure of this test rather than of the migration.
+        from openai4s.storage.migrations import SCHEMA_VERSION
+
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION
     finally:
         upgraded.close()
 

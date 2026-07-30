@@ -278,11 +278,14 @@ def test_a_concurrent_same_key_submit_is_refused_not_duplicated(cfg, monkeypatch
     real_lookup = manager._store.compute_job_by_idempotency_key
     calls = {"n": 0}
 
-    def racing_lookup(key):
+    def racing_lookup(key, owner_key=None, *, scoped=True):
+        # The lookup is owner-scoped now: the idempotency namespace was
+        # installation-wide while every other view of `compute_jobs` is
+        # per-owner, so one session's key blocked every other session's.
         calls["n"] += 1
         if calls["n"] == 1:
             return None
-        return real_lookup(key)
+        return real_lookup(key, owner_key, scoped=scoped)
 
     monkeypatch.setattr(manager._store, "compute_job_by_idempotency_key", racing_lookup)
 

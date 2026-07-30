@@ -336,3 +336,32 @@ P0-3 (items 19-22), all of P0-4 (items 16-18) and all of P1-A/P1-B (items 23-31)
 were audited on their production call chains and are recorded `open` in the
 crosswalk with the located defect. They are not started in this batch. Marking
 them anything else is the error this section exists to stop repeating.
+
+## 15. P0-2 items 12-15 (2026-07-30)
+
+| Plan item | What changed | Status | What is missing |
+|---|---|---|---|
+| 12 — atomic boundaries | Materialisation refuses a same-name live file instead of `unlink()`ing it silently, stages the copy and `os.replace`s it, and rolls back symmetrically. The live file is a real **copy**: it was hardlinked to the source session's immutable snapshot, so one ordinary write through the borrowing session's working file rewrote another project member's frozen bytes and left that version's checksum describing bytes that no longer existed (measured, not reasoned). Snapshot-to-snapshot hardlinking is kept. Upload resolves scope and the same-name lookup before touching disk, stages, and replaces only after the version and its snapshot commit | `closed` | Nothing for item 12. `tests/test_materialisation_atomicity.py` (11 cases) covers inode sharing, refusal-before-mutation, symmetric rollback, staging debris, and "a rejected upload writes nothing to disk at all" |
+| 13 — profile identity | `_pinned_llm_config` no longer prefers the request's bare `model` (the browser sent it on every message, producing a config in no profile), no longer returns `None` on a revoked key or any exception (which silently ran the turn on the globally active profile), `models_payload` is keyed on `profile_id` rather than deduped on bare model names, `PUT /models/default` activates a profile, `app.js` stopped sending `model` per turn, and delete is a tombstone | `partial` | **Sub-defect (5) is open:** an already-queued follow-up still re-resolves its binding at dequeue inside the worker thread, after the client was told 202. Freezing the pin onto the queue ticket touches the execution queue and is not attempted here |
+| 14 — owner-scoped idempotency | `by_idempotency_key` takes an owner and scopes like `live(scoped=True)`; the UNIQUE index is `COALESCE(owner_key,'')` because SQLite treats NULLs as distinct and NULL is exactly the CLI rows; migration 11 builds the new index before dropping the old one | `closed` | Nothing. Verified on a real pre-existing v10 database, not only on a fresh one |
+| 15 — harvest capture | `compute_result` declares `writes_files`, which is the only thing the Web wrapper gates on; `refresh_compute_task` brackets the harvest with snapshot/capture | `closed` | Nothing. A live BYOC provider is still never contacted by any test — what a real provider returns is exercised by nothing here |
+
+### A prior decision reversed, deliberately
+
+§13 above records a Blocker fix: "Deleting a model profile permanently bricked
+every session pinned to it ... delete now releases the bindings". Item 13 requires
+the opposite mechanism — a tombstone that preserves the revision history — because
+releasing the pin destroys the audit answer to "what configuration did this session
+run under", and makes the next send re-pin somewhere else silently, which is what
+D2 exists to prevent.
+
+The anti-brick requirement is **not** dropped. It is now met by the route that was
+added alongside that fix: `409 model_revision_unavailable` followed by
+`POST /frames/{id}/model-binding`. The test that guarded the brick asserts the
+whole path — refused, then explicitly rebindable, then sendable — rather than being
+deleted. `activate` also refuses a tombstone, so a deleted profile cannot be made
+live again with an empty credential.
+
+If auto-release is preferred after all, it is a one-line revert in
+`ModelProfileService.delete`; the trade is stated here so it is a decision rather
+than a regression.

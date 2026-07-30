@@ -290,31 +290,55 @@ class ModelProfileService:
         appears, resolved through its protocol's default.
         """
         live = self.store.get_setting("llm_model") or self.cfg.llm.model or "default"
-        seen: set[str] = set()
         models: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
 
-        def add(model_id: Any, name: Any, description: Any) -> None:
-            normalized = str(model_id or "").strip()
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                models.append(
-                    {
-                        "id": normalized,
-                        "name": str(name or normalized),
-                        "description": str(description or ""),
-                    }
-                )
+        def add(entry_id: Any, name: Any, description: Any, **extra: Any) -> None:
+            normalized = str(entry_id or "").strip()
+            if not normalized or normalized in seen_ids:
+                return
+            seen_ids.add(normalized)
+            models.append(
+                {
+                    "id": normalized,
+                    "name": str(name or normalized),
+                    "description": str(description or ""),
+                    **extra,
+                }
+            )
 
         add(
             live,
             live,
             f"{self.store.get_setting('llm_provider') or self.cfg.llm.provider} (当前)",
         )
+        # One entry per profile, keyed on `profile_id`. This deduped on a
+        # `seen: set[str]` of bare model *names*, so two profiles naming the same
+        # model against different providers collapsed to one and the second
+        # endpoint was simply unreachable from the selector -- and the value the
+        # browser persisted was that bare name, which cannot say which profile
+        # was meant. The model name is a display field; the identity is the id.
         for profile in self.store.list_model_profiles():
+            if profile.get("deleted_at"):
+                continue
+            profile_id = str(profile.get("id") or "").strip()
+            if not profile_id:
+                continue
             model_id = self.effective_model_id(
                 profile.get("provider"), profile.get("model")
             )
-            add(model_id, model_id, profile.get("name") or "profile")
+            provider = str(profile.get("provider") or "")
+            base_url = str(profile.get("base_url") or "")
+            add(
+                profile_id,
+                profile.get("name") or model_id or "profile",
+                # Enough for a human to tell two same-named models apart.
+                " · ".join(part for part in (provider, model_id, base_url) if part),
+                profile_id=profile_id,
+                model=model_id,
+                provider=provider,
+                base_url=base_url,
+            )
         return {"models": {"default": models}, "default_model_id": default_model_id}
 
     def profiles_payload(self) -> tuple[dict[str, Any], str | None]:
@@ -352,7 +376,13 @@ class ModelProfileService:
                 self.store.set_setting("active_model_profile", "")
             self.store.set_setting("builtin_profiles_removed", "1")
 
-        profiles = self.store.list_model_profiles()
+        # Tombstoned profiles stay in the store so a session pinned to one keeps
+        # its audit answer, but they are not offered anywhere a user chooses from.
+        profiles = [
+            profile
+            for profile in self.store.list_model_profiles()
+            if not profile.get("deleted_at")
+        ]
         return (
             {
                 "profiles": [self.public_profile(profile) for profile in profiles],
@@ -466,11 +496,15 @@ class ModelProfileService:
             (
                 item
                 for item in self.store.list_model_profiles()
-                if item.get("id") == profile_id
+                if item.get("id") == profile_id and not item.get("deleted_at")
             ),
             None,
         )
         if profile is None:
+            # A tombstoned profile is `not found` here on purpose. Its row stays so
+            # sessions pinned to it keep their audit answer, and its credential is
+            # already gone -- activating it would copy an empty key into the live
+            # settings and read as a working configuration.
             raise ModelProfileError("profile not found", 404)
         for field, setting in (
             ("provider", "llm_provider"),
@@ -550,28 +584,43 @@ class ModelProfileService:
         return self.public_profile(profile), selected_model
 
     def delete(self, profile_id: str) -> None:
-        removed: list[dict[str, Any]] = []
+        """Tombstone the profile, keeping the revisions history depends on.
 
-        def drop(profiles: list[dict[str, Any]]) -> None:
-            removed.extend(p for p in profiles if p.get("id") == profile_id)
-            profiles[:] = [p for p in profiles if p.get("id") != profile_id]
+        This used to remove the row outright and then NULL the pin on every
+        frame that named it. Both halves lost information that cannot be
+        recovered: a pin is the audit answer to "what configuration did this
+        session run under", and the revisions live in the row's own JSON blob, so
+        deleting the row deleted the history of every session that ran on it. The
+        justification given was that a session pinned to a deleted profile "must
+        not be left unsendable" -- but the remedy for that already exists and is
+        explicit: 409 `model_revision_unavailable` plus
+        `POST /frames/{id}/model-binding`. Clearing the pin instead made the next
+        send silently re-pin somewhere else, which is the silent substitution D2
+        is about.
 
-        self.store.mutate_model_profiles(drop)
-        # Deleting the row must delete the credential. Otherwise a profile the
-        # user removed leaves its key sitting in the keychain forever, with
-        # nothing left in the app that refers to it.
-        for profile in removed:
+        The credential is still destroyed: a profile the user removed must not
+        leave its key in the keychain. That makes the tombstone unbindable by
+        construction as well as by the `deleted_at` check, since `bind_model_revision`
+        now requires the key to resolve.
+        """
+        tombstoned: list[dict[str, Any]] = []
+        now = int(time.time() * 1000)
+
+        def mark(profiles: list[dict[str, Any]]) -> None:
+            for profile in profiles:
+                if profile.get("id") != profile_id or profile.get("deleted_at"):
+                    continue
+                tombstoned.append(dict(profile))
+                profile["deleted_at"] = now
+                # The key goes; the identity, the revisions and the non-secret
+                # provider/endpoint/model fields stay so history reads correctly.
+                profile["api_key"] = ""
+
+        self.store.mutate_model_profiles(mark)
+        for profile in tombstoned:
             self._forget_key(profile)
         if self.store.get_setting("active_model_profile") == profile_id:
             self.store.set_setting("active_model_profile", "")
-        # A session pinned to this profile must not be left unsendable. The
-        # pin's whole purpose is to record what a session ran under; once the
-        # profile is gone there is nothing left to name, and refusing forever
-        # is the one outcome that helps nobody.
-        try:
-            self.store.release_model_binding(profile_id)
-        except Exception:  # noqa: BLE001 — the profile is already deleted
-            pass
 
     def migrate_profile_keys(self) -> dict:
         """Move any plaintext profile key behind a reference.

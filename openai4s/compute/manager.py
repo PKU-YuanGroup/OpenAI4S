@@ -1423,7 +1423,9 @@ class ComputeManager:
         if self._store is None:
             return job_id
         if idempotency_key:
-            existing = self._store.compute_job_by_idempotency_key(idempotency_key)
+            existing = self._store.compute_job_by_idempotency_key(
+                idempotency_key, self._owner_key
+            )
             if existing is not None:
                 raise ComputeError(
                     f"a job for idempotency key {idempotency_key!r} already "
@@ -1449,7 +1451,12 @@ class ComputeManager:
             # duplicate job with no durable row (unrecoverable after restart).
             # A UNIQUE violation must REFUSE, naming the winner — not degrade.
             if idempotency_key:
-                winner = self._store.compute_job_by_idempotency_key(idempotency_key)
+                # Scoped: the raced winner under a per-owner index is by
+                # construction this owner's own row, and naming another owner's
+                # job here would reintroduce the leak the scoping closed.
+                winner = self._store.compute_job_by_idempotency_key(
+                    idempotency_key, self._owner_key
+                )
                 if winner is not None:
                     raise ComputeError(
                         f"a job for idempotency key {idempotency_key!r} already "
