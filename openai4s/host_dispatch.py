@@ -40,7 +40,9 @@ from openai4s.host.files import is_secret_path as _is_secret_path
 from openai4s.host.llm import LLMService
 from openai4s.host.mcp import MCPService
 from openai4s.host.progress import PLAN_STEP_STATUSES, ProgressService
-from openai4s.host.remote_capabilities import RemoteCapabilityService
+from openai4s.host.remote_capabilities import (
+    RemoteCapabilityService,
+)
 from openai4s.host.remote_capabilities import (
     normalize_remote_capability_probe as _normalize_remote_capability_probe,
 )
