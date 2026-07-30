@@ -141,6 +141,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_marker_policy.py`](test_marker_policy.py) | 两个测试守着离线契约。external、network、live-LLM、GPU、SSH、Docker、browser、lab 这些需要显式开启的标记，默认全部排除在外；改动默认的排除表达式，也没法悄悄把真实测试放回来。 |
 | [`test_mcp_client.py`](test_mcp_client.py) | 离线的 MCP：JSON-RPC 分帧、stdio 生命周期、请求配对、超时。真正要紧的边界是子进程环境——它按严格的允许名单重建，所以连一个 connector 也没法把 daemon 环境里的秘密顺手交给子进程。 |
 | [`test_mcp_control_tools.py`](test_mcp_control_tools.py) | MCP 的原生 Tool。列目录和读内容是两套策略；prompt 参数会被重新校验成字符串；从 connector 回来的内容在给 Agent 看之前先过注入筛查。 |
+| [`test_mcp_lifecycle.py`](test_mcp_lifecycle.py) | MCP 的生命周期与各种上限，全部用真实子进程 connector 来驱动，所以断言的是 pid 和进程本身，而不是「某个函数被调用了」。握手失败之后不留进程也不留读取线程；每一类故障只淘汰缓存里的那一个实例，下一次调用会以新的 pid 重连，而 JSON-RPC 错误不会；在途请求和已放弃 id 两个队列都有上限；8 MB 的 stderr 单行在读的过程中就被截断；终止能打到被包装的真实 server，而且不会把调用方挂死。 |
 | [`test_memory_repository.py`](test_memory_repository.py) | 长期记忆：过滤条件跨 `Store` 边界保持不变、遗留的默认分类，以及删除 project 时级联删掉它的记忆。 |
 | [`test_metadata_repositories.py`](test_metadata_repositories.py) | 那几个小仓储——笔记、文件夹、动态 endpoint、compaction 归档。真正有牙的是 host call 日志：它在提交之前会做清洗、跳过和截断。 |
 | [`test_methodology_skills.py`](test_methodology_skills.py) | 关于纯方法学内置 Skill 的三个测试：以只读方式被发现、能被取回，其中一个还在 Agent 循环里被真正用了一次。 |
@@ -235,6 +236,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_ws_frames.py`](test_ws_frames.py) | 加固过的 RFC 6455 编解码：长度阶梯、客户端掩码往返、掩码方向强制、截断/RSV/分片/未知 opcode/超大控制帧/非 canonical 长度的拒绝、载荷上限、严格模式 UTF-8，以及 RFC 的 accept 示例。 |
 | [`test_workbench_state_service.py`](test_workbench_state_service.py) | Context 与 Security 两个面板。安全投影是刻意往小了说的：worker 还没启动时，它绝不宣称沙箱是生效的；Python 与 R 的说法不一致时，它报两者中更弱的那个。 |
 | [`test_worker_runtime_alias.py`](test_worker_runtime_alias.py) | 六个测试，证明 `openai4s_worker_runtime` 只是一次 re-export：`__all__` 相同、两个名字下是同一批对象、没有影子子模块，也没有自己的入口点。 |
+| [`test_workspace_streaming_budgets.py`](test_workspace_streaming_budgets.py) | 工作区文件工具与 `save_artifact` 背后的内存预算。每个用例都造一个整读必死的稀疏文件，并在调用前后盯住 `tracemalloc`——因为只检查返回窗口的测试，对着「先把整个文件读进来」的实现一样会通过。修复前在测试进程里实测：返回 256 MiB 文件的两行要 768 MiB，grep 一个 64 MiB 文件要 192 MiB，改 32 MiB 文件里的七个字符要 64 MiB，登记一个 64 MiB 产物要 64 MiB。 |
 
 ## 子目录
 
@@ -278,6 +280,9 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_compute_task_centre.py`](test_compute_task_centre.py) | 在不额外花钱的前提下查看远程任务。远程任务的寿命长过发起它的那一轮、内核和守护进程，但那份持久记录原先只能从 cell 里够到——一个 GPU 任务跑了两小时的人根本没地方看。这个页面不能轮询，因为**探测即回收**：`result()` 会去联系远端，而联系远端就会把文件拉回来并结束任务，于是自动刷新的页面等于在没人看着的会话里做回收。验证这一点的用例读的是模块的 `ast` **导入**，而不是它的文本——第一版直接 grep "ComputeManager"，结果被那段专门解释「为什么不用它」的 docstring 判了失败。此外还覆盖跨会话不可枚举（不列出、不计数、也不说「已隐藏」）、重启后仍可读、`unknown` 绝不渲染成失败（任务可能还在跑、还在计费），以及 pid、sandbox 句柄和集群路径不会出现在投影里。 |
 | [`test_compute_owner_and_harvest.py`](test_compute_owner_and_harvest.py) | 两个 compute 缺陷。幂等键命名空间是全安装级的，而 `compute_jobs` 的其他所有视图都按 owner 隔离，因此一个 session 的 key 会阻塞所有其他 session，并且重复提交的拒绝信息把对方 session 的 `job_id` 与状态直接交回——正是 `for_owner` 自己的 docstring 点名的泄漏形状。索引现在按 owner 隔离并使用 `COALESCE(owner_key,'')`，因为 SQLite 把 NULL 视为互不相同，而 NULL 恰好就是 CLI 行。另外 `compute_result` 没有声明 `writes_files`——而这正是 Web wrapper 唯一判断的属性——因此原生路径收割 N 个文件产生**零**个 Artifact version，而内核内路径却是正确的。 |
 | [`test_materialisation_atomicity.py`](test_materialisation_atomicity.py) | 两条写入路径都在已经销毁字节之后才执行仍可能拒绝的检查。物化把借用方 session 的**可写** live 文件硬链接到源 session 的不可变快照，因此一次普通写入就改写了另一位项目成员被冻结的 provenance，并让其校验和描述一份已不存在的字节——这是实测的，不是推理的。它还会在成功路径上静默 `unlink()` 任何同名 live 文件，而回滚只删除快照。上传则在解析数据库作用域之前就截断了 live 文件，而 `app.js` 通过发送 `S.project || undefined` 恰好能触达这一分支。现在的顺序是：先拒绝、再暂存、最后原子替换。 |
+| [`test_mcp_lifecycle.py`](test_mcp_lifecycle.py) | 每一类 MCP 故障都会把子进程留在原地。initialize 失败会从构造函数中逃逸，因此该对象在缓存中不可达，每点击一次「Test」就泄漏一个进程和两个 reader 线程。没有任何故障会触发驱逐，因此关闭 stdout 的服务器会永久污染其 connector id——五次调用、只有一个 pid。`_abandoned` 每收到一个未被应答的请求就增长一条，而只有服务器愿意应答时才会被清理。stderr 使用无界 readline，因此一行 20 MB 且不含换行的内容会被完整保留，并在有人截断它之前再复制一份。而当孙进程持有 stdout 写端时，`close()` 会永远挂起。 |
+| [`test_producer_output_budgets.py`](test_producer_output_budgets.py) | stdout 在生产端有界；stderr 与 traceback 却是先完整累积、再在构造响应时截断，因此界限约束的是返回内容而不是分配量。在打了补丁的 worker 上实测：stderr 峰值 452 MB → 3.3 MB，traceback 122 MB → 4.3 MB。R 的错误字符串则完全没有上限。 |
+| [`test_workspace_streaming_budgets.py`](test_workspace_streaming_budgets.py) | `save_artifact` 仅仅为了计算哈希就把整个 artifact 读进守护进程，因此注册一个大型科研输出会让守护进程 OOM；`read_file` 与 `edit_file` 以 O(file) 分配且没有字节预算；list/glob 会先对整棵树排序再截断。现在改为带真实预算的流式处理，并返回结构化计数。 |
 | [`test_local_job_envelope.py`](test_local_job_envelope.py) | 本地 job 直接继承了守护进程的完整环境——`Popen` 上没有 `env=`——因此守护进程持有的每一个 provider API key 都会进入每一个 job，而 `build_kernel_environment`（内核管理器、动态工具与 preinstall 都在调用它）却闲置未用，并且架构文档还声称子进程环境是重建而非复制的。它还使用 `bash -lc` 这一会 source 守护进程从未见过的 dotfile 的登录 shell；在创建线程与进程之前不统计活动 job 数量；并且用 `normpath` 限制 cwd，而这是词法层面的，因此 jobs 根目录内的符号链接可以逃逸出去。断言的是子进程实际能读到什么，而不是调用了哪个函数。 |
 | [`test_model_profile_identity.py`](test_model_profile_identity.py) | 被 pin 的 session 仍有三条途径会派发到 pin 未指定的地方。`_pinned_llm_config` 优先使用 `st.model`——即请求里的裸 `model` 字符串，而浏览器在**每一条**消息里都会发送它——因此 provider、endpoint 与凭据来自 pin，而模型名来自顶部选择器：这是一个在任何 profile 中都不存在的配置。它还会在密钥被吊销时、以及任何异常时返回 `None`，随后调用方就使用当前处于激活状态的那个 profile：记录为 A，实际执行为 B。而删除会硬删除该行以及历史所依赖的 revisions，然后把每个 frame 上的 pin 置空，于是下一次发送就静默地重新 pin 到别处。 |
 | [`test_contract_inventory.py`](test_contract_inventory.py) | 每个对外 route 与 event 都被契约清单覆盖。 |

@@ -25,6 +25,15 @@
 
 .oai4s_MAX_OUTPUT <- 1000000L  # 1MB head cap per captured stream (worker.py parity)
 
+# Hard backstop for one outbound frame, whatever it carries — the sibling of
+# worker.py's `_MAX_FRAME_BYTES`, which this side simply did not have, so an
+# oversized response was written and the manager's readline() materialised it
+# whole. Derived from the SAME numbers rather than hand-picked, so the two
+# workers cannot drift into different contracts: worst-case JSON expansion
+# (12 bytes — an astral character costs a `\uXXXX` surrogate PAIR) times the
+# two capped streams, plus room for the rest of the frame.
+.oai4s_MAX_FRAME_BYTES <- 12L * 2L * .oai4s_MAX_OUTPUT + 2000000L
+
 .oai4s_or <- function(a, b) if (is.null(a) || length(a) == 0L) b else a
 
 # --- outbound JSON (dependency-free) ----------------------------------------
@@ -105,11 +114,69 @@
     if (is.null(rss)) "null" else sprintf("%d", as.integer(rss)),
     "}}"
   )
+  if (nchar(json, type = "bytes") > .oai4s_MAX_FRAME_BYTES) {
+    # worker.py's contract, kept here too: a DROPPED response leaves the
+    # manager blocked on an id that never arrives, which reads to the user as a
+    # hang rather than as a refusal. So the replacement keeps the type and the
+    # id, drops the payload, and says what happened. The caps above are what
+    # stop this being reached; this is what stops the next unbounded field
+    # being a hang instead of a message.
+    json <- paste0(
+      '{"type":"response","id":', .oai4s_esc(id),
+      ',"stdout":"","stderr":"","error":',
+      .oai4s_esc(sprintf(
+        "R kernel dropped an oversized response frame (>%d bytes)",
+        .oai4s_MAX_FRAME_BYTES
+      )),
+      ',"interrupted":', if (isTRUE(interrupted)) "true" else "false",
+      ',"trace":{"error_lineno":null,"error_call":null},"guards":{}',
+      ',"usage":{"wall_s":', .oai4s_num(wall),
+      ',"cpu_s":', .oai4s_num(cpu),
+      ',"peak_rss_kb":',
+      if (is.null(rss)) "null" else sprintf("%d", as.integer(rss)),
+      "}}"
+    )
+  }
   .oai4s_responded <<- TRUE
   .oai4s_write_frame(json)
 }
 
 # --- capture helpers ---------------------------------------------------------
+
+.oai4s_cap_message <- function(s) {
+  # Bound a string R ITSELF produced — an error message — before it is pasted
+  # into anything larger.
+  #
+  # The two captured streams have been producer-bounded since .oai4s_slurp
+  # stopped reading past the cap, but the error string never was: a cell doing
+  # stop(strrep("x", 2e8)) built a 200 MB message, pasted it into a bigger one,
+  # escaped it character by character in .oai4s_esc, and put the result on the
+  # wire. worker.py caps its error; this did not.
+  #
+  # Cut in CHARACTERS, and the marker says so rather than borrowing the byte
+  # wording the stream caps use. charToRaw() — what .oai4s_cap reaches for —
+  # allocates a raw vector as large as the whole string, which is precisely the
+  # allocation being avoided here; substr() is safe on a string R constructed
+  # because R made it valid, and the raw path stays as the fallback for one it
+  # did not.
+  if (is.null(s) || length(s) == 0L) return("")
+  s <- paste(as.character(s), collapse = "\n")
+  n <- tryCatch(nchar(s, type = "chars"), error = function(e) NA_integer_)
+  if (is.na(n)) n <- nchar(s, type = "bytes")
+  if (n <= .oai4s_MAX_OUTPUT) return(s)
+  head <- tryCatch(substr(s, 1L, .oai4s_MAX_OUTPUT), error = function(e) NULL)
+  if (is.null(head)) head <- rawToChar(charToRaw(s)[seq_len(.oai4s_MAX_OUTPUT)])
+  paste0(head, sprintf("\n...(truncated at %d characters)", .oai4s_MAX_OUTPUT))
+}
+
+.oai4s_deparse1 <- function(cl) {
+  # deparse() renders the WHOLE call before anything looks at the result, so
+  # `deparse(cl)[1]` threw away every line but the first only after paying for
+  # all of them — a call quoting a large literal cost its own size right here.
+  # nlines stops the deparser after one line and width.cutoff bounds that line.
+  tryCatch(deparse(cl, nlines = 1L, width.cutoff = 500L)[1],
+           error = function(e) "<call>")
+}
 
 .oai4s_slurp <- function(path) {
   # Reads at most one byte past the cap, never the whole file. It used to read
@@ -229,7 +296,7 @@
   parsed <- tryCatch(parse(text = code, keep.source = TRUE), error = function(e) e)
   if (inherits(parsed, "error")) {
     msg <- conditionMessage(parsed)
-    err <- paste0("ParseError: ", msg)
+    err <- paste0("ParseError: ", .oai4s_cap_message(msg))
     m <- regmatches(msg, regexec("<text>:([0-9]+):", msg))[[1]]
     if (length(m) == 2L) lineno <- suppressWarnings(as.integer(m[2]))
   } else {
@@ -257,8 +324,8 @@
         cl <- conditionCall(e)
         err <- paste0(
           "Error",
-          if (!is.null(cl)) paste0(" in ", deparse(cl)[1]) else "",
-          ": ", conditionMessage(e)
+          if (!is.null(cl)) paste0(" in ", .oai4s_deparse1(cl)) else "",
+          ": ", .oai4s_cap_message(conditionMessage(e))
         )
         if (!is.null(srcrefs) && length(srcrefs) >= i && !is.null(srcrefs[[i]])) {
           lineno <- suppressWarnings(as.integer(srcrefs[[i]][1]))

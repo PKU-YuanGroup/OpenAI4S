@@ -12,13 +12,14 @@ from __future__ import annotations
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
 import time
 from collections import deque
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Callable
 
 PROTOCOL_VERSION = "2024-11-05"
 _DEFAULT_TIMEOUT = 30.0
@@ -37,14 +38,39 @@ _STDERR_TAIL_LINES = 200
 #: How many replies to ids nobody asked for before treating the channel as
 #: desynchronised. Staying attached to such a server only defers the failure.
 _MAX_INVALID_IDS = 64
+#: Longest stderr line retained, applied *while* the line is being read. Only
+#: the line COUNT was bounded before, so one connector writing a 20 MB
+#: newline-free diagnostic materialised all 20 MB inside the daemon -- and
+#: `stderr_tail()` then built a second full copy before anyone truncated it.
+#: Bounding at the source is the only place the large allocation never happens.
+_MAX_STDERR_LINE_CHARS = 4096
+#: What `stderr_tail()` hands out; callers used to slice this themselves.
+_STDERR_TAIL_CHARS = 500
+#: Requests allowed in flight at once. A connector that answers nothing still
+#: accepts work, and each caller leaves a waiter here and later an id in
+#: `_abandoned` -- growth the agent drives and the server decides never to undo.
+_MAX_PENDING = 256
+#: Timed-out ids remembered, oldest evicted first.
+_MAX_ABANDONED = 1024
+#: Per-signal grace before escalating TERM -> KILL, and how long `close()` then
+#: waits for each reader thread.
+_TERMINATE_WAIT_S = 3.0
+_READER_JOIN_S = 5.0
 
 
-def _read_bounded_line(stream: Any) -> str | None:
+def _read_bounded_line(
+    stream: Any,
+    *,
+    limit: int = _MAX_FRAME_BYTES,
+    keep_partial: bool = False,
+) -> str | None:
     """Read one line, refusing to materialise an unbounded one.
 
-    Returns ``None`` at EOF. A line over the budget is consumed and dropped
+    Returns ``None`` at EOF. An over-budget frame line is consumed and dropped
     rather than truncated: half a JSON object is not a frame, and returning it
-    would desynchronise the reader on the next line.
+    would desynchronise the reader on the next line. ``keep_partial`` is for
+    stderr, where there is no frame to desynchronise and a truncated prefix is
+    still the diagnostic the user needs.
     """
     if stream is None:
         return None
@@ -57,13 +83,13 @@ def _read_bounded_line(stream: Any) -> str | None:
         if char == "\n":
             return "".join(chunks)
         size += 1
-        if size > _MAX_FRAME_BYTES:
+        if size > limit:
             # Drain to the newline so the next read starts on a frame boundary.
             while True:
                 skip = stream.read(1)
                 if not skip or skip == "\n":
                     break
-            return ""
+            return "".join(chunks) if keep_partial else ""
         chunks.append(char)
 
 
@@ -169,7 +195,12 @@ class MCPConnection:
         #: pipe for the NEXT request to read as its own -- which is why adding a
         #: timeout to the old per-call `readline` would have been a correctness
         #: regression rather than a fix.
-        self._abandoned: set[int] = set()
+        #: A dict, not a set, because it has to be evictable in insertion
+        #: order: as a set it grew by one entry per unanswered request and was
+        #: pruned only when the server chose to answer late, so the connector
+        #: that answers nothing -- the one case this exists for -- grew it
+        #: without bound.
+        self._abandoned: dict[int, None] = {}
         self._closed = threading.Event()
         self._failure: str | None = None
         self._stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
@@ -186,6 +217,13 @@ class MCPConnection:
             bufsize=1,
             env=env,
             cwd=cwd,
+            # Its own session, so the child leads a process group we can signal
+            # as a unit. Connectors are routinely launched through a wrapper
+            # (`npx`, `uv run`, `sh -c`); signalling the leader alone left the
+            # real server running and still holding the stdio pipes, so the
+            # reader never saw EOF and "closed" meant "the wrapper is gone".
+            # Ignored on Windows, where there is no process group to signal.
+            start_new_session=True,
         )
         self._reader = threading.Thread(
             target=self._read_loop, name="mcp-reader", daemon=True
@@ -195,7 +233,23 @@ class MCPConnection:
             target=self._drain_stderr, name="mcp-stderr", daemon=True
         )
         self._stderr_thread.start()
-        self._init()
+        try:
+            self._init()
+        except BaseException as exc:
+            # A failed handshake used to leave the child and both reader threads
+            # running with nothing referencing them: the constructor raised, so
+            # no MCPConnection existed for `_conns`, `_probes`, `disconnect` or
+            # `shutdown` to reach afterwards. Every "Test" click on a connector
+            # that hangs, or that answers `initialize` with an error, leaked a
+            # process and two threads for the life of the daemon. `close()` is
+            # the same teardown a live connection gets; the only extra work is
+            # carrying the stderr tail out with the error, because after the
+            # close the caller has no object left to ask.
+            detail = self.stderr_tail()
+            self.close()
+            if detail and isinstance(exc, MCPError):
+                raise type(exc)(f"{exc} (connector stderr: {detail})") from None
+            raise
 
     # -- wire ----------------------------------------------------------------
     def _send(self, obj: dict) -> None:
@@ -208,13 +262,32 @@ class MCPConnection:
         if stream is None:
             return
         try:
-            for line in stream:
+            while True:
+                line = _read_bounded_line(
+                    stream, limit=_MAX_STDERR_LINE_CHARS, keep_partial=True
+                )
+                if line is None:
+                    break
                 self._stderr_tail.append(line.rstrip("\n"))
         except (OSError, ValueError):
             pass
 
     def stderr_tail(self) -> str:
-        return "\n".join(self._stderr_tail)
+        """The end of the connector's diagnostics, already bounded.
+
+        Callers used to be handed the whole retained blob and slice it
+        themselves, so the oversized string existed before anyone decided it was
+        too big. Assembled from the newest line backwards for the same reason.
+        """
+        parts: list[str] = []
+        size = 0
+        for line in reversed(self._stderr_tail):
+            parts.append(line)
+            size += len(line) + 1
+            if size >= _STDERR_TAIL_CHARS:
+                break
+        parts.reverse()
+        return "\n".join(parts)[-_STDERR_TAIL_CHARS:]
 
     def _fail_all(self, reason: str) -> None:
         """Wake every waiter once the channel can no longer answer them."""
@@ -257,7 +330,7 @@ class MCPConnection:
                             # Exactly what this set exists for: discard the
                             # late answer instead of letting it be mistaken
                             # for the next request's.
-                            self._abandoned.discard(mid)
+                            self._abandoned.pop(mid, None)
                             continue
                         invalid_ids += 1
                 if waiter is not None:
@@ -268,17 +341,37 @@ class MCPConnection:
                 elif invalid_ids > _MAX_INVALID_IDS:
                     # A server answering ids nobody asked for is desynchronised,
                     # and staying attached to it only defers the failure.
+                    self._failure = (
+                        f"MCP server answered {invalid_ids} unrequested ids; "
+                        "the channel is desynchronised"
+                    )
                     break
         except (OSError, ValueError):
             pass
         finally:
             self._fail_all(self._failure or "MCP server closed the connection")
+            # Detaching used to be the entire response: this loop returned and
+            # the child kept running, holding its pipes, while the manager went
+            # on handing the same dead connection to every caller. Nothing on
+            # this channel can be answered once the loop ends, so the process
+            # ends with it and the next call reconnects on a new pid.
+            self._terminate()
 
     def _request(self, method: str, params: dict | None = None) -> dict:
         deadline = time.monotonic() + self._timeout
         with self._lock:
             if self._closed.is_set():
                 raise MCPError(self._failure or "MCP server closed the connection")
+            if len(self._pending) >= _MAX_PENDING:
+                # Refusing at the door is what keeps one wedged connector from
+                # becoming an unbounded, agent-driven allocation: every caller
+                # that gets in leaves a waiter here and, on timeout, an id in
+                # `_abandoned`, and the server has already shown it will free
+                # neither.
+                raise MCPError(
+                    f"MCP connector has {_MAX_PENDING} requests in flight; "
+                    f"refusing {method!r}"
+                )
             self._id += 1
             mid = self._id
             waiter: "queue.Queue[dict]" = queue.Queue(maxsize=1)
@@ -300,7 +393,12 @@ class MCPConnection:
         except queue.Empty:
             with self._lock:
                 self._pending.pop(mid, None)
-                self._abandoned.add(mid)
+                self._abandoned[mid] = None
+                while len(self._abandoned) > _MAX_ABANDONED:
+                    # Oldest first. Forgetting an id only risks mistaking a very
+                    # late reply for a live one, and an id this old stopped
+                    # being plausible thousands of requests ago.
+                    self._abandoned.pop(next(iter(self._abandoned)), None)
             raise MCPTimeout(
                 f"MCP request {method!r} exceeded {self._timeout:g}s"
             ) from None
@@ -334,35 +432,121 @@ class MCPConnection:
     def alive(self) -> bool:
         return self._proc.poll() is None
 
-    def close(self) -> None:
+    def faulted(self) -> bool:
+        """True once this connection can never answer another request.
+
+        `alive()` was the only health question the manager asked, and a process
+        can be perfectly alive while its channel is dead -- a server that closed
+        stdout, or one this client gave up on as desynchronised. The cached
+        entry then answered every later call with the same stored failure, so
+        one bad minute poisoned the connector id until the daemon restarted.
+        """
+        return self._closed.is_set() or not self.alive()
+
+    def failure(self) -> str | None:
+        """Why this connection stopped, if it has. Read by `MCPManager` to
+        report children it could not kill."""
+        return self._failure
+
+    def _signal_tree(self, sig: int, fallback: Callable[[], None]) -> None:
+        """Signal the child's whole process group, or failing that the child.
+
+        Only when the child actually leads a group of its own:
+        ``start_new_session`` can fail, and Windows has no ``killpg`` at all.
+        Signalling a group we merely belong to would take the daemon down with
+        the connector.
+        """
+        killpg = getattr(os, "killpg", None)
+        if killpg is not None:
+            try:
+                if os.getpgid(self._proc.pid) == self._proc.pid:
+                    killpg(self._proc.pid, sig)
+                    return
+            except Exception:  # noqa: BLE001 - already exited, or no groups here
+                pass
+        try:
+            fallback()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _terminate(self) -> bool:
+        """TERM then KILL the child's process group, and reap it. Idempotent.
+
+        Returns whether the child is actually gone. `terminate()` alone reached
+        only the leader, so a connector launched through a wrapper left its real
+        worker alive and holding the stdio pipes -- the reason a "closed"
+        connection could still block this process's reader forever.
+        """
+        proc = self._proc
+        if proc.poll() is not None:
+            return True
+        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+        for sig, fallback in (
+            (signal.SIGTERM, proc.terminate),
+            (kill_signal, proc.kill),
+        ):
+            self._signal_tree(sig, fallback)
+            try:
+                # `kill()` only delivers the signal; without the wait the child
+                # stays a zombie, and a connector that has to be killed is
+                # exactly the one that gets closed repeatedly.
+                proc.wait(timeout=_TERMINATE_WAIT_S)
+                return True
+            except Exception:  # noqa: BLE001 - TimeoutExpired: escalate
+                continue
+        if proc.poll() is None:
+            self._failure = (
+                f"MCP connector {self.command[0]!r} (pid {proc.pid}) "
+                "survived SIGKILL"
+            )
+            return False
+        return True
+
+    def _join_readers(self, timeout: float) -> None:
+        """Wait for the reader threads -- never for the calling one.
+
+        `_read_loop`'s own `finally` terminates the child, so teardown has to
+        tolerate being reached from inside a reader.
+        """
+        current = threading.current_thread()
+        for thread in (self._reader, self._stderr_thread):
+            if thread is not None and thread is not current:
+                thread.join(timeout=timeout)
+
+    def close(self) -> bool:
+        """Stop the child and its reader threads. Returns whether it is gone.
+
+        The order matters and is not the obvious one. Closing `stdout` first to
+        unblock the reader is the natural first attempt, and it deadlocks: the
+        reader holds the buffered stream's lock while parked in `read`, so this
+        thread blocks acquiring that lock and never returns -- reproducibly,
+        whenever a grandchild kept the write end open so no EOF ever arrived.
+        Killing the process group is what actually produces the EOF, after which
+        the readers exit and the streams close uneventfully. The threads were
+        never joined at all before, so `close()` returned while they were still
+        running against a half-dismantled connection.
+        """
         self._fail_all("MCP connection closed")
         try:
             if self._proc.stdin:
                 self._proc.stdin.close()
         except Exception:  # noqa: BLE001
             pass
-        try:
-            self._proc.terminate()
-            self._proc.wait(timeout=3)
-        except Exception:  # noqa: BLE001
+        reaped = self._terminate()
+        self._join_readers(_READER_JOIN_S)
+        for thread, stream in (
+            (self._reader, self._proc.stdout),
+            (self._stderr_thread, self._proc.stderr),
+        ):
+            if stream is None or (thread is not None and thread.is_alive()):
+                # Still parked in `read`: see above. That thread holds the fd
+                # either way, so closing here buys nothing and risks the hang.
+                continue
             try:
-                self._proc.kill()
+                stream.close()
             except Exception:  # noqa: BLE001
                 pass
-            else:
-                # Reap it. `kill()` only delivers the signal; without the wait
-                # the child stays a zombie, and a connector that has to be
-                # killed is exactly the one that gets closed repeatedly.
-                try:
-                    self._proc.wait(timeout=3)
-                except Exception:  # noqa: BLE001
-                    pass
-        for stream in (self._proc.stdout, self._proc.stderr):
-            try:
-                if stream is not None:
-                    stream.close()
-            except Exception:  # noqa: BLE001
-                pass
+        return reaped
 
     # -- tools ---------------------------------------------------------------
     def list_tools(self) -> list[dict]:
@@ -441,22 +625,81 @@ class MCPManager:
         env = _connector_environment(config.get("env"))
         return MCPConnection(self._argv(config), env=env, cwd=config.get("cwd"))
 
-    def get(self, connector_id: str, config: dict) -> MCPConnection:
+    def _evict(self, connector_id: str, conn: MCPConnection) -> bool:
+        """Drop `conn` from the cache -- but only if it is still the cached one.
+
+        A compare-and-swap, not a `pop` by id: between the fault and this call
+        another thread may already have replaced the entry with a freshly
+        connected child, and evicting by id alone would close that healthy
+        newcomer, turning one bad request into a respawn loop for every caller.
+        """
         with self._lock:
-            conn = self._conns.get(connector_id)
-            if conn is not None and conn.alive():
-                return conn
-            if conn is not None:
-                conn.close()
-            conn = self._connect(config)
-            self._conns[connector_id] = conn
-            return conn
+            if self._conns.get(connector_id) is not conn:
+                return False
+            del self._conns[connector_id]
+        # Outside the lock: `close()` waits on a TERM->KILL and joins two reader
+        # threads, and every other connector queues behind this same lock.
+        conn.close()
+        return True
+
+    def _invoke(
+        self,
+        connector_id: str,
+        config: dict,
+        call: Callable[[MCPConnection], Any],
+    ) -> Any:
+        """Run one operation, evicting the connection if the fault was the
+        connection's.
+
+        Nothing evicted on a fault before this: a connector whose stdout closed
+        kept its cache entry, `alive()` stayed true because the process was
+        still running, and every later call was handed the same stored failure.
+        The connector id stayed poisoned until the daemon restarted.
+
+        A JSON-RPC error result is deliberately not a fault. An unknown tool
+        name or bad arguments must not restart the server the agent is talking
+        to -- that is the connector working, not failing.
+        """
+        conn = self.get(connector_id, config)
+        try:
+            return call(conn)
+        except MCPTimeout as exc:
+            # Nothing will ever consume the reply this request may still get,
+            # and a server that missed its deadline is not one the next caller
+            # should inherit mid-conversation.
+            if self._evict(connector_id, conn):
+                raise MCPTimeout(
+                    f"{exc}; connector dropped, the next call reconnects"
+                ) from None
+            raise
+        except MCPError:
+            if conn.faulted():
+                self._evict(connector_id, conn)
+            raise
+
+    def get(self, connector_id: str, config: dict) -> MCPConnection:
+        while True:
+            with self._lock:
+                conn = self._conns.get(connector_id)
+                if conn is None:
+                    conn = self._connect(config)
+                    self._conns[connector_id] = conn
+                    return conn
+                if not conn.faulted():
+                    return conn
+                del self._conns[connector_id]
+            # Closed outside the lock -- see `_evict` -- then round again to
+            # reconnect, or to adopt whatever another thread put there meanwhile.
+            conn.close()
 
     def probe(self, config: dict) -> dict:
         """Connect fresh, list tools, close. Returns {ok, tools|error}."""
         try:
             conn = self._connect(config)
         except Exception as e:  # noqa: BLE001
+            # No `conn` to read a stderr tail off any more: a failed handshake
+            # now closes its own process, so it carries the tail out in the
+            # error instead of leaving one running for this line to interrogate.
             return {"ok": False, "error": str(e)}
         # Registered while it lives, so `shutdown` can reach it. A probe used
         # to connect without registering anywhere: if it hung, its `finally`
@@ -472,7 +715,7 @@ class MCPManager:
             detail = str(e)
             tail = conn.stderr_tail()
             if tail:
-                detail = f"{detail} (connector stderr: {tail[-500:]})"
+                detail = f"{detail} (connector stderr: {tail})"
             return {"ok": False, "error": detail}
         finally:
             with self._lock:
@@ -480,12 +723,14 @@ class MCPManager:
             conn.close()
 
     def list_tools(self, connector_id: str, config: dict) -> list[dict]:
-        return self.get(connector_id, config).list_tools()
+        return self._invoke(connector_id, config, lambda c: c.list_tools())
 
     def call_tool(
         self, connector_id: str, config: dict, tool: str, arguments: dict | None = None
     ) -> dict:
-        return self.get(connector_id, config).call_tool(tool, arguments)
+        return self._invoke(
+            connector_id, config, lambda c: c.call_tool(tool, arguments)
+        )
 
     def list_resources(
         self,
@@ -493,10 +738,10 @@ class MCPManager:
         config: dict,
         cursor: str | None = None,
     ) -> dict:
-        return self.get(connector_id, config).list_resources(cursor)
+        return self._invoke(connector_id, config, lambda c: c.list_resources(cursor))
 
     def read_resource(self, connector_id: str, config: dict, uri: str) -> dict:
-        return self.get(connector_id, config).read_resource(uri)
+        return self._invoke(connector_id, config, lambda c: c.read_resource(uri))
 
     def list_prompts(
         self,
@@ -504,7 +749,7 @@ class MCPManager:
         config: dict,
         cursor: str | None = None,
     ) -> dict:
-        return self.get(connector_id, config).list_prompts(cursor)
+        return self._invoke(connector_id, config, lambda c: c.list_prompts(cursor))
 
     def get_prompt(
         self,
@@ -513,7 +758,9 @@ class MCPManager:
         name: str,
         arguments: dict | None = None,
     ) -> dict:
-        return self.get(connector_id, config).get_prompt(name, arguments)
+        return self._invoke(
+            connector_id, config, lambda c: c.get_prompt(name, arguments)
+        )
 
     def disconnect(self, connector_id: str) -> None:
         with self._lock:
@@ -521,13 +768,22 @@ class MCPManager:
         if conn is not None:
             conn.close()
 
-    def shutdown(self) -> None:
+    def shutdown(self) -> list[str]:
+        """Close every child. Returns a line per child that would not die.
+
+        Teardown used to report success unconditionally, so a connector that
+        ignored SIGKILL was indistinguishable from one that exited -- and the
+        next `serve` started against orphans still holding whatever they held.
+        """
         with self._lock:
             conns = list(self._conns.values()) + list(self._probes)
             self._conns.clear()
             self._probes.clear()
+        survivors: list[str] = []
         for c in conns:
-            c.close()
+            if not c.close():
+                survivors.append(c.failure() or f"{c.command[0]!r} survived close()")
+        return survivors
 
 
 # a process-wide manager (the daemon is single-process)

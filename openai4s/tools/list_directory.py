@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
+
+#: How many entries one listing returns. `list_dir` had no cap at all: it
+#: sorted every entry and built a dict and a `stat()` per entry, so listing a
+#: results directory with a million files built a million dicts in the daemon
+#: to produce a reply nothing could read. The number is `glob`'s, so the two
+#: tools truncate at the same place and report it the same way.
+_MAX_ENTRIES = 1000
 
 
 class ListDirectoryTool(Tool):
@@ -30,21 +40,43 @@ class ListDirectoryTool(Tool):
     resource_target_default = "."
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
+        from openai4s.host.files import MAX_SCAN_ENTRIES, BoundedSelection
+
         relative = arguments.get("path") or "."
         base = workspace.resolve(relative) if relative != "." else workspace.workspace()
         if not base.exists():
             return {"error": f"list_dir: no such directory: {relative}"}
+        selection = BoundedSelection(_MAX_ENTRIES)
+        scan_truncated = False
+        try:
+            with os.scandir(base) as scan:
+                for entry in scan:
+                    if selection.seen >= MAX_SCAN_ENTRIES:
+                        scan_truncated = True
+                        break
+                    selection.offer(entry.name, entry)
+        except OSError as error:
+            # Was an unhandled `NotADirectoryError` when the path named a file.
+            # Soft-failing keeps it in the same shape as the missing-directory
+            # answer just above, which is the same mistake by the agent.
+            return {"error": f"list_dir: {error}"}
         entries = []
-        for path in sorted(base.iterdir()):
+        # A `stat()` only for what survived the bound. It used to be paid for
+        # every entry in the directory, including the ones no reply mentioned.
+        for entry in selection.values():
+            path = Path(entry.path)
             entries.append(
                 {
-                    "name": path.name,
-                    "path": workspace.relative(path) or path.name,
-                    "is_dir": path.is_dir(),
-                    "size_bytes": path.stat().st_size if path.is_file() else None,
+                    "name": entry.name,
+                    "path": workspace.relative(path) or entry.name,
+                    "is_dir": entry.is_dir(),
+                    "size_bytes": entry.stat().st_size if entry.is_file() else None,
                 }
             )
-        return {"path": relative, "count": len(entries), "entries": entries}
+        result = {"path": relative}
+        result.update(selection.counters(scan_truncated=scan_truncated))
+        result["entries"] = entries
+        return result
 
 
 __all__ = ["ListDirectoryTool"]

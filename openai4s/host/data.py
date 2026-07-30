@@ -555,8 +555,15 @@ class HostDataService:
         if not source.is_file():
             raise FileNotFoundError(f"save_artifact: no such file: {source}")
         filename = str(spec.get("filename") or source.name)
-        data = source.read_bytes()
-        checksum = hashlib.sha256(data).hexdigest()
+        # Streamed, exactly like `provenance_record` below. This was
+        # `source.read_bytes()` purely to checksum: registering a 64 MB output
+        # measured a 64 MB peak in the daemon that also serves every other
+        # session, and a real trajectory or alignment is orders of magnitude
+        # past that -- the copy underneath never needed the bytes in Python at
+        # all. Two passes beat one pass that has to hold the file: `copy2`
+        # takes the kernel's copy fast path, so the second read costs I/O, not
+        # memory.
+        checksum, size_bytes = self._digest_file(source)
         version_stub = uuid.uuid4().hex[:12]
         safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
         config = self._config()
@@ -572,7 +579,7 @@ class HostDataService:
                 path=str(source),
                 filename=filename,
                 content_type=spec.get("content_type"),
-                size_bytes=len(data),
+                size_bytes=size_bytes,
                 checksum=checksum,
                 producing_cell_id=execution_cell_id,
                 frame_id=self._frame_id(),
@@ -758,6 +765,26 @@ class HostDataService:
     #: How much of a file is read at a time when checksumming it.
     _DIGEST_CHUNK = 1024 * 1024
 
+    def _digest_file(self, path: Path) -> tuple[str, int]:
+        """Return ``(sha256, size)`` for a file, one chunk at a time.
+
+        Shared by `save_artifact` and `provenance_record` so the two cannot
+        drift apart again: both register a file the agent produced, and the
+        files worth registering are exactly the ones too large to hold. It
+        raises `OSError` -- each caller reports an unreadable path in its own
+        established shape.
+        """
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(self._DIGEST_CHUNK)
+                if not chunk:
+                    break
+                size_bytes += len(chunk)
+                digest.update(chunk)
+        return digest.hexdigest(), size_bytes
+
     def provenance_record(self, spec: dict) -> dict:
         """Register a file this cell produced as an artifact of this session.
 
@@ -784,20 +811,14 @@ class HostDataService:
             # for something outside its workspace.
             return {"error": f"prov_record: {error}"}
 
-        # Streamed rather than `read_bytes()`. Every other artifact path in
-        # this codebase streams; this one materialised the whole file in the
-        # daemon to checksum it, so recording a 4 GB output cost 4 GB of
-        # daemon memory in a process that also serves every other session.
-        digest = hashlib.sha256()
-        size_bytes = 0
+        # Streamed rather than `read_bytes()`, through the helper `save_artifact`
+        # also uses. This one materialised the whole file in the daemon to
+        # checksum it, so recording a 4 GB output cost 4 GB of daemon memory in
+        # a process that also serves every other session; `save_artifact` was
+        # still doing exactly that, which is why the loop now lives in one
+        # place instead of two.
         try:
-            with open(output, "rb") as handle:
-                while True:
-                    chunk = handle.read(self._DIGEST_CHUNK)
-                    if not chunk:
-                        break
-                    size_bytes += len(chunk)
-                    digest.update(chunk)
+            checksum, size_bytes = self._digest_file(output)
         except FileNotFoundError:
             # Reported the same way whether the resolver enforced existence or
             # the open did. A caller with a pass-through resolver would
@@ -812,7 +833,7 @@ class HostDataService:
             filename=spec.get("filename") or output.name,
             content_type=spec.get("content_type"),
             size_bytes=size_bytes,
-            checksum=digest.hexdigest(),
+            checksum=checksum,
             producing_cell_id=spec.get("producing_cell_id"),
             frame_id=self._frame_id(),
             input_version_ids=spec.get("input_version_ids") or [],
