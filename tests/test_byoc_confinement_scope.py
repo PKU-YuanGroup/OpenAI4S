@@ -336,20 +336,31 @@ def test_the_probe_reads_both_shapes_of_git_when_nothing_denies_it(tmp_path, git
 
 @macos_only
 def test_metadata_is_readable_under_home_on_purpose_and_contents_are_not(tmp_path):
-    """The data/metadata split, pinned as a fact rather than left as a comment.
+    """Every read class under the denied home, pinned as a fact rather than a comment.
 
-    `build_profile` denies `file-read-data`, not `file-read*`, and the reason is
-    load-bearing: denying the whole read class also denies the metadata reads
-    `execvp` and dyld perform on the interpreter itself, so `sandbox-exec` dies
-    before the helper starts. The consequence is that `stat()` succeeds under
-    the denied home while reading contents and listing directories do not.
+    This test used to assert `stat_file == "ALLOWED"`, and that was not an
+    oversight being corrected here — it deliberately pinned the trade-off the
+    profile had made. `build_profile` denied `file-read-data`, because denying
+    the whole read class also denies the metadata reads `execvp` and dyld perform
+    on the interpreter, and `sandbox-exec` then dies before the helper starts.
+    `stat()` therefore answered under a denied home, by design.
 
-    Extended attributes are the third class, and the one that was missed: they
-    carry contents, not metadata, whatever their name suggests. Both halves are
-    pinned here so they cannot drift apart silently — tightening to
-    `file-read*` fails the `stat` assertions and points at the exec breakage
-    that motivated the split, and loosening the data or xattr denial fails the
-    assertions that are the boundary itself.
+    The symptom was real and the conclusion was not: the loader needs metadata on
+    the *specific components it walks*, and `traversal_metadata_paths` enumerates
+    them, so the denial is now `file-read*` and `stat()` is refused with
+    everything else. The home here is synthetic and holds no interpreter, so no
+    component of it is on any traversal route and the denial applies whole —
+    which is exactly the shape a credential path has.
+
+    Extended attributes were the class that was missed once already: they carry
+    contents, not metadata, whatever their name suggests. `getxattr` stays
+    refused, now by the whole-class denial rather than by a dedicated
+    `file-read-xattr` line, which measured as a no-op beside it and was dropped.
+    Attribute *names* are the residual and are still tolerated either way — see
+    the note in `build_profile` for why closing them is not available without
+    breaking the loader.
+
+    All four classes are pinned together so they cannot drift apart silently.
     """
     home = tmp_path / "home"
     home.mkdir()
@@ -379,10 +390,13 @@ def test_metadata_is_readable_under_home_on_purpose_and_contents_are_not(tmp_pat
         ]
     )
 
-    # Metadata: allowed, deliberately. If this ever starts failing, read the
-    # comment in build_profile before "fixing" it — the boundary stops starting.
-    assert result["stat_file"] == "ALLOWED", result
-    assert result["stat_dir"] == "ALLOWED", result
+    # Metadata: refused, and this is the assertion that changed. Under
+    # `file-read-data` a shim could walk a list of guesses and collect the size,
+    # mtime, mode and owner of `~/.ssh/id_ed25519` over the network it is allowed
+    # by design. If this starts failing, the denial has been narrowed back — read
+    # the comment in `build_profile` before "fixing" it.
+    assert result["stat_file"] == "EPERM", result
+    assert result["stat_dir"] == "EPERM", result
     # Contents and directory entries: refused. These are the boundary, and
     # `list_dir` is the one that keeps file *names* from being enumerated,
     # which matters far more than sizes for a helper that also has the network.
@@ -423,6 +437,239 @@ def test_the_helper_still_loads_its_own_package_under_the_boundary(tmp_path):
     assert (
         "ValueError" in proc.stderr
     ), f"the entrypoint did not get past its own import: {proc.stderr}"
+
+
+# --------------------------------------------------------------------------
+# the home denial covers metadata, and the loader still gets through
+# --------------------------------------------------------------------------
+
+_METADATA_PROBE = r"""
+import ctypes, ctypes.util, errno, json, os
+
+out = {}
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+
+def t(key, fn):
+    try:
+        out[key] = fn() or "OK"
+    except OSError as exc:
+        out[key] = errno.errorcode.get(exc.errno, str(exc.errno))
+
+
+def listxattr(path):
+    # os.listxattr is Linux-only; this test's whole subject is macOS.
+    n = _libc.listxattr(path.encode(), None, ctypes.c_size_t(0), 0)
+    if n < 0:
+        raise OSError(ctypes.get_errno(), "listxattr")
+    return "ALLOWED"
+
+
+home = os.path.expanduser("~")
+probe = os.path.join(home, ".openai4s-confinement-probe")
+t("list_home", lambda: os.listdir(home) and "ALLOWED")
+t("stat_file", lambda: os.stat(probe) and "ALLOWED")
+t("read_file", lambda: open(probe, "rb").read() and "ALLOWED")
+t("xattr_file", lambda: listxattr(probe))
+t("stat_absent", lambda: os.stat(probe + "-not-here") and "ALLOWED")
+t("import_ssl", lambda: __import__("ssl") and "OK")
+print("PROBE" + json.dumps(out))
+"""
+
+
+@macos_only
+def test_metadata_under_home_is_denied_and_only_existence_survives(tmp_path):
+    """The home denial is `file-read*`, and this pins what that does and does not buy.
+
+    It replaces a test that asserted ``stat_file == "ALLOWED"``. That was not an
+    oversight being corrected — it deliberately pinned the trade-off the profile
+    had made: the denial was `file-read-data`, because denying the whole read
+    class also denies the metadata reads `execvp` and dyld perform on the
+    interpreter, and `sandbox-exec` then dies before the helper starts. The
+    symptom was real; the conclusion that `file-read*` was therefore unusable was
+    not. Naming the loader's own path components as `file-read-metadata`
+    literals buys the whole class, so `stat()` on a guessed path under $HOME no
+    longer hands a networked provider shim the size, mtime, mode and owner of
+    `~/.ssh/id_ed25519`.
+
+    Three things are asserted rather than one, because the interesting part of
+    this boundary is where it stops:
+
+      * contents and metadata are both denied — the change itself;
+      * *existence* is not, and cannot be: Seatbelt answers a denied path EPERM
+        and a missing one ENOENT. A test that skipped this would let the docstring
+        claim be read as total;
+      * TLS still works, since the helper's entire job is calling a provider API.
+    """
+    probe_file = Path.home() / ".openai4s-confinement-probe"
+    if probe_file.exists():
+        pytest.skip("a real file is already at the probe path")
+    probe_file.write_text("not a credential, but shaped like one\n", encoding="utf-8")
+    try:
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        argv = [
+            "sandbox-exec",
+            "-p",
+            bc.build_profile(stage),
+            sys.executable,
+            "-I",
+            "-c",
+            _METADATA_PROBE,
+        ]
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    finally:
+        probe_file.unlink()
+
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(
+        [ln for ln in proc.stdout.splitlines() if ln.startswith("PROBE")][0][5:]
+    )
+
+    assert result["list_home"] == "EPERM", result
+    assert result["read_file"] == "EPERM", result
+    assert result["stat_file"] == "EPERM", (
+        "a stat() on a guessed path under $HOME still answered, so a provider "
+        "shim with the network could fingerprint the user's home",
+        result,
+    )
+    assert result["xattr_file"] == "EPERM", result
+    # Not a wish — a limit. ENOENT and EPERM are distinguishable, so existence
+    # leaks whatever the profile says. Pinned so the claim stays honest.
+    assert result["stat_absent"] == "ENOENT", result
+    assert result["import_ssl"] == "OK", result
+
+
+def test_the_walk_names_the_symlink_hops_a_resolved_prefix_cannot(tmp_path):
+    """The load-bearing entries are the *unresolved* hops, which is the whole bug.
+
+    `runtime_read_paths` reports `sys.base_prefix` and `_canonical` realpaths
+    everything, so a uv-managed venv's alias directory — the one the loader
+    actually traverses — appears nowhere in the profile. Allowing `file-read*`
+    on the resolved prefix is not enough; verified by execution before this was
+    written, and reproduced in miniature here.
+    """
+    home = tmp_path / "home"
+    real = home / "pythons" / "cpython-3.13.13" / "bin"
+    real.mkdir(parents=True)
+    (real / "python3.13").write_text("#!/bin/sh\n", encoding="utf-8")
+    alias = home / "pythons" / "cpython-3.13"
+    alias.symlink_to(real.parent)  # the version alias, as uv lays it out
+    venv_bin = home / "project" / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(alias / "bin" / "python3.13")
+
+    found = bc.traversal_metadata_paths(
+        (str(real.parent),), home=home, executable=str(venv_bin / "python")
+    )
+
+    assert str(alias) in found, (
+        "the alias directory the loader walks is missing, so execvp's metadata "
+        "read on it is denied and the helper never starts"
+    )
+    assert str(alias / "bin" / "python3.13") in found, found
+    assert str(home / "project") in found, "an ancestor of the venv is missing"
+    assert str(home) in found
+    # A component outside the route is not named, or the deny means nothing.
+    assert str(home / "Documents") not in found
+
+
+def test_the_walk_covers_every_read_root_not_just_the_interpreter(tmp_path):
+    """A system interpreter lives outside $HOME; the helper's package does not.
+
+    Seeding the walk from `sys.executable` alone would leave the components
+    leading to the helper's own package unnamed on exactly that layout, and the
+    failure is the helper not starting on a user's machine.
+    """
+    home = tmp_path / "home"
+    pkg = home / "src" / "checkout" / "openai4s_compute_provider"
+    pkg.mkdir(parents=True)
+
+    found = bc.traversal_metadata_paths(
+        (str(pkg),), home=home, executable="/usr/bin/python3"
+    )
+
+    assert str(home / "src") in found, found
+    assert str(home / "src" / "checkout") in found, found
+
+
+def test_the_walk_terminates_on_a_symlink_loop(tmp_path):
+    """An incomplete enumeration fails a user's helper; a hanging one fails the
+    daemon building the profile. Bounded, and asserted rather than assumed."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "a").symlink_to(home / "b")
+    (home / "b").symlink_to(home / "a")
+
+    found = bc.traversal_metadata_paths(
+        (str(home),), home=home, executable=str(home / "a" / "bin" / "python")
+    )
+    assert str(home) in found
+
+
+@macos_only
+def test_the_profile_denies_the_read_class_over_the_home(tmp_path):
+    """The string, as a guard on the one line whose subtype is the whole point."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    profile = bc.build_profile(stage, home="/Users/someone")
+
+    assert '(deny file-read* (subpath "/Users/someone"))' in profile
+    assert "(deny file-read-data" not in profile, (
+        "the home denial narrowed back to contents-only, so stat() on a guessed "
+        "path under $HOME answers again"
+    )
+
+
+def test_the_metadata_allowance_is_literal_not_subpath(tmp_path):
+    """`subpath` on $HOME's components would hand back everything beneath them,
+    which is the disclosure the deny exists to end."""
+    home = tmp_path / "home"
+    (home / "project" / ".venv" / "bin").mkdir(parents=True)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    profile = bc.build_profile(
+        stage, home=home, read_paths=(str(home / "project" / ".venv"),)
+    )
+    block = profile.split("(allow file-read-metadata", 1)[1].split("(allow file-read*")[
+        0
+    ]
+    assert "(literal " in block
+    assert "(subpath " not in block, block
+
+
+def test_the_self_test_probe_execs_the_interpreter_not_a_shell(monkeypatch):
+    """`/bin/sh` lives outside $HOME and starts under any profile this module can
+    emit, so a shell probe passed on hosts where the interpreter could not start —
+    which is the single failure mode of the metadata enumeration. The self-test
+    has to exercise what the helper is actually launched with."""
+    monkeypatch.setattr(bc.sys, "platform", "darwin")
+    argv = bc._probe_argv("/usr/bin/sandbox-exec", "/tmp/stage", str(Path.home()))
+    assert sys.executable in argv, argv
+    assert "/bin/sh" not in argv, argv
+
+
+def test_a_profile_that_blocks_the_interpreter_is_named_as_such(monkeypatch):
+    """Not "no boundary" — that sends someone to look at sandbox-exec when the
+    fault is a path this host's layout needed and the walk did not produce."""
+
+    def blocked(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv,
+            71,
+            b"",
+            b"sandbox-exec: execvp() of '/x/python' failed: Operation not permitted",
+        )
+
+    monkeypatch.setattr(bc.sys, "platform", "darwin")
+    monkeypatch.setattr(bc.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(bc.subprocess, "run", blocked)
+
+    ok, reason = bc.available()
+    assert ok is False
+    assert "denies the interpreter itself" in reason, reason
+    assert "every path component the loader walks" in reason, reason
 
 
 def test_the_entrypoint_does_not_put_its_parent_on_the_path():
