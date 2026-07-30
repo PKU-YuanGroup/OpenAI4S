@@ -49,7 +49,7 @@ chemistry = [
 [dependency-groups]
 # Dev/test tooling (uv installs these by default with `uv sync`).
 dev = [
-    "mypy>=1.14,<2",
+    "mypy>=1.14,<3",
     "pytest>=7.4",
     "pre-commit>=3.0",
 ]

@@ -17186,7 +17186,10 @@
       "schema": {
         "properties": {
           "error": {
-            "type": "string"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "frame_id": {
             "type": "null"

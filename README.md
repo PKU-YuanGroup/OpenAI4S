@@ -9,6 +9,9 @@
 **An open-source hybrid scientific research agent.**<br/>
 <sub>JSON tools orchestrate; persistent Python/R kernels do the science.</sub>
 
+**Launched by the Peking University Shenzhen Graduate School–YuanKong Intelligence AI Agent Joint Research Laboratory.**<br/>
+<sub>由北京大学深圳研究生院—元空智能 AI Agent 联合研究实验室推出。</sub>
+
 <p>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-d97706.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3fb950.svg">
