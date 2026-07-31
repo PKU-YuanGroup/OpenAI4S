@@ -59,10 +59,33 @@ def t(key, fn):
 repo = sys.argv[1]
 t("repo_list", lambda: os.listdir(repo) and "READABLE")
 t("repo_file", lambda: open(os.path.join(repo, "pyproject.toml"), "rb").read() and "READABLE")
-t("git_dir", lambda: os.listdir(os.path.join(repo, ".git")) and "READABLE")
+# argv[3] rather than repo/.git: in a linked worktree `.git` is a regular file
+# pointing elsewhere, and listing it raises NotADirectoryError whether or not
+# the boundary holds — a verdict about the path's type, not about the sandbox.
+# The host resolves the pointer and names the directory that must stay unread.
+t("git_dir", lambda: os.listdir(sys.argv[3]) and "READABLE")
 t("helper_pkg", lambda: os.listdir(sys.argv[2]) and "READABLE")
 print(json.dumps(out))
 """
+
+
+def _git_metadata_dir(repo: Path) -> Path:
+    """The directory this checkout's git metadata actually lives in.
+
+    In a clone that is ``<repo>/.git``. In a linked worktree — ``git worktree
+    add``, which is how an agent session checks this tree out — ``.git`` is a
+    regular file holding ``gitdir: <path>`` and the metadata sits under the main
+    repository's ``.git/worktrees/<name>``. Resolved here, outside the boundary,
+    because a probe handed the pointer file asks a question about file types and
+    gets an answer that looks like a denial without being one.
+    """
+    dot_git = repo / ".git"
+    if dot_git.is_file():
+        pointer = dot_git.read_text("utf-8").strip()
+        if pointer.startswith("gitdir:"):
+            target = Path(pointer.split(":", 1)[1].strip())
+            return target if target.is_absolute() else (repo / target).resolve()
+    return dot_git
 
 
 @pytest.fixture(autouse=True)
@@ -92,6 +115,12 @@ def test_a_confined_process_cannot_read_the_repository(tmp_path):
     """The leak, tried for real, in the install this test is running from."""
     if not str(_REPO).startswith(str(Path.home())):
         pytest.skip("this install is not under the user's home")
+    git_dir = _git_metadata_dir(_REPO)
+    if not str(git_dir).startswith(str(Path.home())):
+        # A worktree whose main repository lives outside the home directory: the
+        # denial under test does not cover that path, so a read there would be
+        # expected rather than a leak.
+        pytest.skip("this checkout's git metadata is not under the user's home")
     stage = tmp_path / "stage"
     stage.mkdir()
     profile = bc.build_profile(stage)
@@ -105,6 +134,7 @@ def test_a_confined_process_cannot_read_the_repository(tmp_path):
         _READ_PROBE,
         str(_REPO),
         bc.helper_package_dir(),
+        str(git_dir),
     ]
     proc = subprocess.run(argv, capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr
