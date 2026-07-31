@@ -14,6 +14,7 @@ that grows with the fixtures rather than with the surface.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -520,6 +521,155 @@ def unroutable(route: str) -> bool:
         return True
 
 
+def _probe_handler(
+    recorder: "Recorder",
+    handler_class,
+    method: str,
+    path: str,
+    route: str,
+    headers: dict[str, str] | None = None,
+    query: dict[str, list[str]] | None = None,
+):
+    """A handler whose three response writers report into ``recorder``.
+
+    Shared by the parameterless sweep and the seeded pass below, because a
+    second copy of "how a probe answers" is how one of them comes to record a
+    route the other cannot.
+    """
+    handler = object.__new__(handler_class)
+    handler._query = lambda: dict(query or {})
+    handler._body = lambda: {}
+    # The driver calls `_api` directly, so the token gate in `_route`
+    # is not on its path today. The credential is presented anyway: the
+    # gate is one refactor from moving, and a driver that only works
+    # while authentication happens to be elsewhere would fail as a wall
+    # of 401s at exactly the moment the contract mattered most.
+    handler.headers = dict(headers or {})
+    # Deterministic and non-empty. `_route` gives every real request a
+    # correlation id (an inbound X-Request-Id, else `new_correlation_id()`),
+    # so `request_id` is a string on the wire and never null. Leaving
+    # this "" made `public_failure` emit null, and the frozen schema
+    # would then have declared the field's type as `null` -- describing
+    # the driver rather than the server. A fixed literal keeps the
+    # artifact byte-identical across runs.
+    handler._correlation_id = _CAPTURE_REQUEST_ID
+    handler._last_status = 0
+    handler._json = lambda value, code=200: recorder.observe(
+        method,
+        path,
+        code,
+        public_failure(value, code, _CAPTURE_REQUEST_ID),
+        route=route,
+    )
+    handler._send = lambda code, body, ctype, extra=None: recorder.observe_raw(
+        method, path, code, ctype, len(body or b""), route=route
+    )
+
+    # The third writer, and the one whose absence published a lie.
+    # `_stream_file` builds its own headers straight on the
+    # BaseHTTPRequestHandler instead of going through `_json`/`_send`,
+    # so on the synthetic handler built here it raised inside
+    # `send_response` (no `requestline`) and the caller's `except Exception`
+    # swallowed it. The route was not left blank, though: the four
+    # *unimplemented* verbs still produced the dispatcher's 404, so both
+    # `artifacts.zip` routes were published as `kinds: ["json"],
+    # statuses: [404]` — a download endpoint documented as a JSON error,
+    # with the coverage gate reporting it as covered. It is also why no
+    # route ever recorded STREAM or BINARY despite the module deriving
+    # both kinds.
+    #
+    # Mirrors the real method exactly, including its own 404: a file it
+    # cannot open is a JSON error there too, not a stream.
+    def _stub_stream(file_path, ctype, extra=None):
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            recorder.observe(method, path, 404, {"error": "not found"}, route=route)
+            return
+        recorder.observe_raw(method, path, 200, ctype, size, route=route)
+
+    handler._stream_file = _stub_stream
+    return handler
+
+
+#: What a seeded capture writes. Fixed rather than generated: the artifacts it
+#: feeds are committed and diffed, so anything varying per run is drift.
+_CAPTURE_PROJECT = "contract-capture"
+_CAPTURE_FILENAME = "capture.bin"
+_CAPTURE_BYTES = b"contract-capture\n"
+
+
+def _drive_seeded_downloads(
+    recorder: "Recorder",
+    handler_class,
+    runner,
+    headers: dict[str, str] | None = None,
+) -> None:
+    """Record the 200 of the routes whose success is bytes, not JSON.
+
+    The parameterless sweep cannot reach these: a notebook export, a Session
+    package and an artifact download each need something to serve, so against a
+    probe id every one of them 404s. That left them worse than uncovered. The
+    four unimplemented verbs still recorded the dispatcher's 404, so a download
+    endpoint was published as `kinds: ["json"], statuses: [404]` — a contract
+    that describes only how the route refuses — and the coverage gate counted
+    it. Nothing a client of a download depends on was written down anywhere.
+
+    One frame and one file is the whole fixture, created *after* the sweep so
+    the unknown-resource 404s it froze are unchanged. Both callers hand this a
+    Store in a temp directory that is removed on the way out.
+
+    A failure here is recorded, never swallowed: the seeded pass exists because
+    a silently skipped success republishes the 404-only contract it was written
+    to replace.
+    """
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id=_CAPTURE_PROJECT, status="ready")
+    blob = runner.workspace_for(frame_id) / _CAPTURE_FILENAME
+    blob.write_bytes(_CAPTURE_BYTES)
+    artifact = store.save_artifact(
+        path=str(blob),
+        filename=_CAPTURE_FILENAME,
+        # Opaque bytes on purpose. This route echoes the stored artifact's own
+        # content type, so seeding a `text/plain` would freeze a fact about the
+        # fixture; `application/octet-stream` is what the route promises when it
+        # knows nothing about the file, which is the honest general case.
+        content_type="application/octet-stream",
+        size_bytes=len(_CAPTURE_BYTES),
+        checksum=hashlib.sha256(_CAPTURE_BYTES).hexdigest(),
+        frame_id=frame_id,
+        root_frame_id=frame_id,
+        project_id=_CAPTURE_PROJECT,
+    )
+    probes: tuple[tuple[str, str, dict[str, list[str]]], ...] = (
+        # Both notebook forms. The default is a zip *bundle* and a named
+        # language is an `.ipynb`; a contract saying only "binary" cannot tell a
+        # client which of the two it asked for.
+        (
+            r"/frames/([^/]+)/notebook/export",
+            f"/frames/{frame_id}/notebook/export",
+            {},
+        ),
+        (
+            r"/frames/([^/]+)/notebook/export",
+            f"/frames/{frame_id}/notebook/export",
+            {"language": ["python"]},
+        ),
+        (r"/frames/([^/]+)/session/export", f"/frames/{frame_id}/session/export", {}),
+        (r"/artifacts/(.+)", f"/artifacts/{artifact['artifact_id']}", {}),
+    )
+    for route, path, query in probes:
+        handler = _probe_handler(
+            recorder, handler_class, "GET", path, route, headers, query
+        )
+        try:
+            handler._api("GET", path)
+        except Exception as error:  # noqa: BLE001
+            recorder.drive_failures[
+                f"GET {route} (seeded)"
+            ] = f"{type(error).__name__}: {error}"
+
+
 def drive_all_routes(
     recorder: "Recorder",
     make_handler,
@@ -550,67 +700,9 @@ def drive_all_routes(
     for route in sorted(contract.http_routes()):
         path = concrete_path(route)
         for method in PROBE_METHODS:
-            handler = object.__new__(handler_class)
-            handler._query = lambda: {}
-            handler._body = lambda: {}
-            # The driver calls `_api` directly, so the token gate in `_route`
-            # is not on its path today. The credential is presented anyway: the
-            # gate is one refactor from moving, and a driver that only works
-            # while authentication happens to be elsewhere would fail as a wall
-            # of 401s at exactly the moment the contract mattered most.
-            handler.headers = dict(authenticated_headers or {})
-            # Deterministic and non-empty. `_route` gives every real request a
-            # correlation id (an inbound X-Request-Id, else `new_correlation_id()`),
-            # so `request_id` is a string on the wire and never null. Leaving
-            # this "" made `public_failure` emit null, and the frozen schema
-            # would then have declared the field's type as `null` -- describing
-            # the driver rather than the server. A fixed literal keeps the
-            # artifact byte-identical across runs.
-            handler._correlation_id = _CAPTURE_REQUEST_ID
-            handler._last_status = 0
-            handler._json = (
-                lambda value, code=200, _m=method, _p=path, _r=route: recorder.observe(
-                    _m,
-                    _p,
-                    code,
-                    public_failure(value, code, _CAPTURE_REQUEST_ID),
-                    route=_r,
-                )
+            handler = _probe_handler(
+                recorder, handler_class, method, path, route, authenticated_headers
             )
-            handler._send = (
-                lambda code, body, ctype, extra=None, _m=method, _p=path, _r=route: (
-                    recorder.observe_raw(
-                        _m, _p, code, ctype, len(body or b""), route=_r
-                    )
-                )
-            )
-
-            # The third writer, and the one whose absence published a lie.
-            # `_stream_file` builds its own headers straight on the
-            # BaseHTTPRequestHandler instead of going through `_json`/`_send`,
-            # so on the synthetic handler built here it raised inside
-            # `send_response` (no `requestline`) and the `except Exception`
-            # below swallowed it. The route was not left blank, though: the four
-            # *unimplemented* verbs still produced the dispatcher's 404, so both
-            # `artifacts.zip` routes were published as `kinds: ["json"],
-            # statuses: [404]` — a download endpoint documented as a JSON error,
-            # with the coverage gate reporting it as covered. It is also why no
-            # route ever recorded STREAM or BINARY despite the module deriving
-            # both kinds.
-            #
-            # Mirrors the real method exactly, including its own 404: a file it
-            # cannot open is a JSON error there too, not a stream.
-            def _stub_stream(
-                file_path, ctype, extra=None, _m=method, _p=path, _r=route
-            ):
-                try:
-                    size = file_path.stat().st_size
-                except OSError:
-                    recorder.observe(_m, _p, 404, {"error": "not found"}, route=_r)
-                    return
-                recorder.observe_raw(_m, _p, 200, ctype, size, route=_r)
-
-            handler._stream_file = _stub_stream
             try:
                 handler._api(method, path)
             except GatewayError as error:
@@ -639,6 +731,7 @@ def drive_all_routes(
                     f"{method} {route}"
                 ] = f"{type(error).__name__}: {error}"
                 continue
+    _drive_seeded_downloads(recorder, handler_class, runner, authenticated_headers)
 
 
 def load(path: Path | None = None) -> dict[str, Any]:

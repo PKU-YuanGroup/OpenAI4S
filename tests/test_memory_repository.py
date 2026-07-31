@@ -65,8 +65,8 @@ def test_memory_categories_legacy_default_delete_and_project_cascade(tmp_path):
     with pytest.raises(ValueError):
         store.memory_blocks(None)
 
-    store.delete_memory("missing-memory")
-    store.delete_memory("legacy-memory")
+    assert store.delete_memory("missing-memory", project_id="project-a") is False
+    assert store.delete_memory("legacy-memory", project_id="project-a") is True
     assert all(
         item["memory_id"] != "legacy-memory"
         for item in store.list_memories(project_id="project-a")

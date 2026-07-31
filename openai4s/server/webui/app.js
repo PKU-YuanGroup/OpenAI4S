@@ -419,6 +419,10 @@ Object.assign(I18N.zh, {
   "cust.memory.empty": "还没有记忆。添加后会在启用时注入每次会话。",
   "cust.memory.enableName": "启用记忆",
   "cust.memory.enabledDesc": "已启用 — 保存的记忆会注入每次会话",
+  "cust.memory.injectedCounts": "已注入 {0} 条 · 省略 {1} 条 · 继承自全局 {2} 条 · 被本项目同类记忆覆盖 {3} 条",
+  "cust.memory.injectedInto": "注入到 {0}",
+  "cust.memory.scope.global": "全局（所有项目）",
+  "cust.memory.scopeName": "范围",
   "cust.memory.title": "记忆",
   "cust.models.activePill": "当前",
   "cust.models.addBtn": "新增",
@@ -1153,6 +1157,7 @@ Object.assign(I18N.zh, {
   "viewer.renderer.version": "版本 {0}",
   "viewer.sequence.omitted": "为保持界面流畅，其余 {0} 个残基未展开。",
   "viewer.sequence.summary": "{0} 条序列 · {1} 个残基 · {2}",
+  "viewer.table.shape": "共 {0} 行 × {1} 列",
   "ws.nav.files": "文件",
   "ws.nav.new": "新建",
   "ws.sidebar.collapse": "收起侧栏 (⌘B)",
@@ -1334,6 +1339,10 @@ Object.assign(I18N.en, {
   "cust.memory.empty": "No memories yet. Once added, they are injected into each session when enabled.",
   "cust.memory.enableName": "Enable memory",
   "cust.memory.enabledDesc": "Enabled — saved memories are injected into every session",
+  "cust.memory.injectedCounts": "{0} injected · {1} omitted · {2} inherited from global · {3} hidden by this project's own blocks",
+  "cust.memory.injectedInto": "Injected into {0}",
+  "cust.memory.scope.global": "Global (all projects)",
+  "cust.memory.scopeName": "Scope",
   "cust.memory.title": "Memory",
   "cust.models.activePill": "Active",
   "cust.models.addBtn": "Add",
@@ -2068,6 +2077,7 @@ Object.assign(I18N.en, {
   "viewer.renderer.version": "Version {0}",
   "viewer.sequence.omitted": "{0} additional residues are collapsed to keep the viewer responsive.",
   "viewer.sequence.summary": "{0} sequences · {1} residues · {2}",
+  "viewer.table.shape": "{0} rows × {1} columns",
   "ws.nav.files": "Files",
   "ws.nav.new": "New",
   "ws.sidebar.collapse": "Collapse sidebar (⌘B)",
@@ -5747,8 +5757,39 @@ function renderTableArtifact(container, a, url) {
     else { const pre = el("pre", "renderer-source"); pre.textContent = text.slice(0, 300000); container.appendChild(pre); }
   }).catch(() => rendererFailure(container, a, url));
 }
+// The true shape of a parsed table: rows, and the union of every row's keys.
+// Not `rows[0]`'s keys, which is what decides the drawn columns -- records
+// parsed from JSON are ragged, so a field appearing only in later rows is
+// invisible in the table and would be uncounted here too.
+function sheetShape(rows) {
+  const keys = new Set();
+  for (const row of rows) { for (const key in row) keys.add(key); }
+  return { rows: rows.length, columns: keys.size };
+}
+// Say the shape out loud, and name whatever the cap dropped.
+//
+// `renderSheet` caps at 5000x100 and used to say nothing at all, so a 5001x101
+// matrix rendered as a table that looked complete: a reader counting 100
+// columns had no way to learn a 101st existed. The Notebook's table path
+// already carries this banner; the Viewer's did not, so the two disagreed
+// about the same file. The `nb.table.*` sentences are reused deliberately
+// rather than translated a second time -- two table paths wording the same
+// fact differently is how they drifted apart to begin with.
+function appendSheetShape(container, rows, shownRows, shownColumns) {
+  const shape = sheetShape(rows);
+  const note = el("div", "renderer-note", t("viewer.table.shape", shape.rows.toLocaleString(), shape.columns.toLocaleString()));
+  const hiddenRows = Math.max(0, shape.rows - shownRows);
+  const hiddenColumns = Math.max(0, shape.columns - shownColumns);
+  let hidden = "";
+  if (hiddenRows && hiddenColumns) hidden = t("nb.table.bothHidden", hiddenRows.toLocaleString(), hiddenColumns.toLocaleString());
+  else if (hiddenRows) hidden = t("nb.table.rowsHidden", hiddenRows.toLocaleString());
+  else if (hiddenColumns) hidden = t("nb.table.colsHidden", hiddenColumns.toLocaleString());
+  if (hidden) note.appendChild(document.createTextNode(" " + hidden));
+  container.appendChild(note);
+}
 function renderSheet(container, rows) {
   const safeRows = rows.slice(0, 5000); const columns = Object.keys(safeRows[0] || {}).slice(0, 100);
+  appendSheetShape(container, rows, safeRows.length, columns.length);
   const table = el("table", "sheet"); const head = el("tr"); columns.forEach(key => head.appendChild(el("th", null, key))); table.appendChild(head);
   safeRows.forEach(row => { const tr = el("tr"); columns.forEach(key => tr.appendChild(el("td", null, String(row[key] ?? "")))); table.appendChild(tr); });
   container.appendChild(table);
@@ -7999,18 +8040,45 @@ async function telemetryRow(c) {
   }
   row.appendChild(tg); c.appendChild(row);
 }
+// Memory has two tiers: "global", which every project inherits, and one
+// project. The Save button used to send neither, so the server stored the
+// literal "default" — a project nothing here creates — while injection reads
+// the session's real project id. Saves listed fine and reached no prompt ever.
+// So the scope is chosen here and always sent, and a row says which tier it is
+// in. Unknown ids (rows left by that older write) render as the raw id rather
+// than as the generic project fallback, so an orphan looks like one.
+function memScopes() {
+  const pid = effProject();
+  const out = [{ id: "global", label: t("cust.memory.scope.global") }];
+  if (pid) out.push({ id: pid, label: memScopeLabel(pid) });
+  return out;
+}
+function memScopeLabel(pid) {
+  if (!pid || pid === "global") return t("cust.memory.scope.global");
+  const p = S.projects.find(x => (x.project_id || x.id) === pid);
+  return (p && p.name) || pid;
+}
 async function custMemory(c) { try {
   const m = await api("/memory/enabled");
   const mem = await api("/memory?project_id=all").catch(() => ({ memories: [] }));
   const cats = await api("/memory/categories?project_id=all").catch(() => ({ categories: [] }));
+  // What the active scope would actually inject, not merely what is stored:
+  // this pane listed every scope's rows and said nothing about which of them
+  // reach a prompt, which is how a write to a dead scope looked healthy.
+  const scopes = memScopes(); const active = scopes[scopes.length - 1].id;
+  const ctx = await api(`/memory/context?project_id=${encodeURIComponent(active)}`).catch(() => null);
   c.innerHTML = ""; c.appendChild(hdr(t("cust.memory.title"), t("cust.memory.desc")));
   const master = el("div", "cust-row"); const mi = el("div", "info"); mi.appendChild(el("div", "nm", t("cust.memory.enableName"))); mi.appendChild(el("div", "ds", m.enabled ? t("cust.memory.enabledDesc") : t("cust.memory.disabledDesc"))); master.appendChild(mi); const tg = el("button", "toggle" + (m.enabled ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { await api("/memory/enabled", { method: "PUT", body: JSON.stringify({ enabled: on }) }); hint(on ? t("toast.memory.enabled") : t("toast.memory.disabled")); } catch {} }; master.appendChild(tg); c.appendChild(master);
   // add with category
   const add = el("div", "cust-row"); const ai = el("div", "info"); ai.appendChild(el("div", "nm", t("cust.memory.addName"))); const ad = el("div", "job-submit");
   const catSel = el("select", "cust-input"); catSel.style.flex = "0 0 120px"; ["user", "project", "preference", "fact", "general"].forEach(k => { const o = el("option", null, k); o.value = k; catSel.appendChild(o); });
+  const scopeSel = el("select", "cust-input"); scopeSel.style.flex = "0 0 150px"; scopeSel.title = t("cust.memory.scopeName"); scopes.forEach(s => { const o = el("option", null, s.label); o.value = s.id; scopeSel.appendChild(o); }); scopeSel.value = active;
   const inp = el("input", "cust-input"); inp.placeholder = t("cust.memory.contentPlaceholder");
-  const btn = el("button", "solid-btn small", t("common.save")); btn.onclick = async () => { const v = inp.value.trim(); if (!v) return; try { await api("/memory", { method: "POST", body: JSON.stringify({ content: v, block: catSel.value }) }); inp.value = ""; custTab("memory"); } catch (e) { hint(t("artifact.save.err", apiErrorText(e)), true); } };
-  ad.appendChild(catSel); ad.appendChild(inp); ad.appendChild(btn); ai.appendChild(ad); add.appendChild(ai); c.appendChild(add);
+  const btn = el("button", "solid-btn small", t("common.save")); btn.onclick = async () => { const v = inp.value.trim(); if (!v) return; try { await api("/memory", { method: "POST", body: JSON.stringify({ content: v, block: catSel.value, project_id: scopeSel.value }) }); inp.value = ""; custTab("memory"); } catch (e) { hint(t("artifact.save.err", apiErrorText(e)), true); } };
+  ad.appendChild(scopeSel); ad.appendChild(catSel); ad.appendChild(inp); ad.appendChild(btn); ai.appendChild(ad); add.appendChild(ai); c.appendChild(add);
+  // What this scope injects, said out loud. The budgets already report what
+  // they withheld; nothing showed it to the person who saved the item.
+  if (ctx) { const sr = el("div", "cust-row"); const si = el("div", "info"); si.appendChild(el("div", "nm", t("cust.memory.injectedInto", memScopeLabel(active)))); si.appendChild(el("div", "ds", t("cust.memory.injectedCounts", String(ctx.included_count || 0), String((ctx.omitted || []).length), String(ctx.inherited_count || 0), String(ctx.overridden_count || 0)))); sr.appendChild(si); c.appendChild(sr); }
   // category chips
   const catList = (cats.categories || []);
   if (catList.length) { const cr = el("div", "cust-row"); const ci = el("div", "info"); ci.appendChild(el("div", "nm", t("cust.memory.categories"))); const box = el("div", "ds"); catList.forEach(k => box.appendChild(el("span", "pill", (k.block || "general") + " · " + k.count))); ci.appendChild(box); cr.appendChild(ci); c.appendChild(cr); }
@@ -8018,7 +8086,7 @@ async function custMemory(c) { try {
   const groups = {}; (mem.memories || []).forEach(x => { const b = x.block || "general"; (groups[b] = groups[b] || []).push(x); });
   Object.keys(groups).sort().forEach(block => {
     c.appendChild(el("div", "cust-subhead", block));
-    groups[block].forEach(x => { const row = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "ds", x.content || "")); row.appendChild(info); const del = el("button", "icon-ghost"); del.appendChild(iconEl("trash-2", 14)); del.onclick = async () => { try { await api(`/memory/${x.memory_id}`, { method: "DELETE" }); custTab("memory"); } catch {} }; row.appendChild(del); c.appendChild(row); });
+    groups[block].forEach(x => { const row = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "ds", x.content || "")); const sc = el("div", "ds"); sc.appendChild(el("span", "pill", memScopeLabel(x.project_id))); info.appendChild(sc); row.appendChild(info); const del = el("button", "icon-ghost"); del.appendChild(iconEl("trash-2", 14)); del.onclick = async () => { try { await api(`/memory/${x.memory_id}?project_id=${encodeURIComponent(x.project_id || "global")}`, { method: "DELETE" }); custTab("memory"); } catch (e) { hint(apiErrorText(e), true); } }; row.appendChild(del); c.appendChild(row); });
   });
   if (!(mem.memories || []).length) c.appendChild(el("div", "dock-empty", t("cust.memory.empty")));
 } catch (e) { c.textContent = t("versions.load.err", e.message); } }

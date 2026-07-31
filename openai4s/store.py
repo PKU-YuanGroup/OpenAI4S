@@ -3193,8 +3193,16 @@ class Store:
     ) -> list[dict]:
         return self._memories.list(project_id=project_id, block=block)
 
-    def delete_memory(self, memory_id: str) -> None:
-        self._memories.delete(memory_id)
+    def resolve_memories(
+        self, project_id: str | None = None, block: str | None = None
+    ) -> dict:
+        """`list_memories` plus how many items inheritance added or hid."""
+        return self._memories.resolve(project_id=project_id, block=block)
+
+    def delete_memory(self, memory_id: str, project_id: str | None = None) -> bool:
+        """Delete within one scope; True when a row went. The scope is required
+        because an id-only delete crosses project boundaries silently."""
+        return self._memories.delete(memory_id, project_id=project_id)
 
     def memory_blocks(self, project_id: str | None = None) -> list[dict]:
         return self._memories.blocks(project_id)

@@ -156,6 +156,9 @@ from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
 from openai4s.storage.connectors import public_connector
+from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
+from openai4s.storage.memories import GLOBAL_SCOPE as MEMORY_GLOBAL_SCOPE
+from openai4s.storage.memories import MemoryLimitError
 from openai4s.store import Store, get_store
 from openai4s.tools import control_tool_specs, get_tool
 
@@ -3306,10 +3309,10 @@ class SessionRunner:
         # long-term memory: inject saved memory blocks when the feature is on
         try:
             if self.store.get_setting("memory_enabled", "0") == "1":
-                # This session's project, never every project. `or "all"` here
-                # meant a session with a falsy project_id seeded its system
-                # prompt with the whole installation's remembered context.
-                # "default" matches where an unscoped write lands and what
+                # This session's project plus the global tier it inherits, and
+                # never every project. `or "all"` here meant a session with a
+                # falsy project_id seeded its system prompt with the whole
+                # installation's remembered context; "default" matches what
                 # `resolve_frame_scope` falls back to, so the two agree.
                 mems = self.store.list_memories(project_id=st.project_id or "default")
                 if mems:
@@ -6718,6 +6721,39 @@ def _memory_enabled(store) -> bool:
     return store.get_setting("memory_enabled", "0") == "1"
 
 
+def _memory_scope(store, raw: Any) -> str:
+    """Where a memory write lands, named by the caller and never guessed.
+
+    The default used to be the literal string ``"default"``. Nothing on this
+    installation creates a project by that name -- every Web session belongs to
+    a real ``proj_*`` -- and injection reads *the session's* project. So a save
+    from the Memory pane went to a scope no session has ever read: the pane
+    listed it, the toggle said Enabled, and not one turn ever saw it. Refusing
+    an unnamed scope is the only version of this that cannot come back, because
+    a default is exactly what was wrong.
+    """
+    scope = str(raw or "").strip()
+    if not scope:
+        raise GatewayError(
+            400,
+            f"memory writes require project_id: {MEMORY_GLOBAL_SCOPE!r} for "
+            "every project, or one project id",
+            "memory_scope_required",
+        )
+    if scope == MEMORY_ALL_PROJECTS:
+        raise GatewayError(
+            400,
+            f"{MEMORY_ALL_PROJECTS!r} is a read-only view; write to "
+            f"{MEMORY_GLOBAL_SCOPE!r} or to one project",
+            "memory_scope_invalid",
+        )
+    if scope != MEMORY_GLOBAL_SCOPE and store.get_project(scope) is None:
+        # A memory addressed to a project that does not exist is the original
+        # defect with a different spelling: accepted, stored, never read.
+        raise GatewayError(400, f"unknown project {scope!r}", "memory_scope_unknown")
+    return scope
+
+
 # --- user skill authoring helpers ------------------------------------------
 def _skill_slug(name: str) -> str:
     return SkillCustomizationService.slug(name)
@@ -8824,10 +8860,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 anno = store.update_annotation(
                     m.group(1), body=b.get("body"), status=b.get("status")
                 )
-                self._json(
-                    {"annotation": _annotation_json(anno) if anno else None},
-                    200 if anno else 404,
-                )
+                if anno is None:
+                    # The one refusal on this surface that did not carry the
+                    # PublicFailure envelope: `{"annotation": null}` with a 404
+                    # has no `error`, no stable `code`, no `request_id`. The
+                    # UI's own `api()` builds an ApiError out of `j.error` for
+                    # every non-2xx, so this arrived as a failure with nothing
+                    # in it -- and the frozen contract published that as the
+                    # route's error shape. Raising is what the rest of the
+                    # gateway does, and the dispatcher enriches it.
+                    raise GatewayError(404, "annotation not found")
+                self._json({"annotation": _annotation_json(anno)})
                 return
             if m and method == "DELETE":
                 current_annotation = store.get_annotation(m.group(1))
@@ -9919,13 +9962,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
             if sub == "/memory" and method == "POST":
                 b = self._body()
-                self._json(
-                    store.add_memory(
+                scope = _memory_scope(store, b.get("project_id"))
+                try:
+                    # Refused before the row exists, not trimmed after: see
+                    # MemoryRepository.add. The code travels so a client can
+                    # tell "too long" from "this scope is full" without
+                    # matching on English.
+                    saved = store.add_memory(
                         content=b.get("content") or "",
                         block=b.get("block") or "general",
-                        project_id=b.get("project_id") or "default",
+                        project_id=scope,
                     )
-                )
+                except MemoryLimitError as error:
+                    raise GatewayError(400, str(error), error.code) from error
+                self._json(saved)
                 return
             if sub in ("/memory/categories", "/memory/context") and method == "GET":
                 # Explicit or scoped: the cross-project view is a real
@@ -9940,8 +9990,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # never receives -- a preview that is wrong in the one
                     # direction that matters, since it is the surface a user
                     # checks precisely when they suspect something was lost.
-                    mems = store.list_memories(project_id=pid)
-                    kept, dropped = memory_budget.select(mems)
+                    resolved = store.resolve_memories(pid)
+                    kept, dropped = memory_budget.select(resolved["memories"])
                     self._json(
                         {
                             "context": memory_budget.render(kept, dropped),
@@ -9954,12 +10004,38 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 }
                                 for item in dropped
                             ],
+                            # Which scope this preview is for, and what the
+                            # global tier contributed to it. A pane that shows
+                            # only the merged text cannot distinguish "no such
+                            # memory" from "this project overrode that block",
+                            # and those call for opposite actions.
+                            "project_id": pid,
+                            "inherited_count": resolved["inherited"],
+                            "overridden_count": resolved["overridden"],
                         }
                     )
                 return
             m = re.fullmatch(r"/memory/([^/]+)", sub)
             if m and method == "DELETE":
-                store.delete_memory(m.group(1))
+                # Scoped, and the scope is the caller's to state. An id-only
+                # delete removes a memory from whichever project happens to own
+                # it, so a stale tab listing another project's rows could delete
+                # across the boundary and be answered {"ok": true} either way.
+                scope = (q.get("project_id") or [""])[0].strip()
+                if not scope:
+                    raise GatewayError(
+                        400,
+                        "memory deletes require a project_id query parameter "
+                        f"({MEMORY_GLOBAL_SCOPE!r}, a project id, or "
+                        f"{MEMORY_ALL_PROJECTS!r} for the cross-project view)",
+                        "memory_scope_required",
+                    )
+                if not store.delete_memory(m.group(1), project_id=scope):
+                    raise GatewayError(
+                        404,
+                        f"no memory {m.group(1)!r} in scope {scope!r}",
+                        "memory_not_found",
+                    )
                 self._json({"ok": True})
                 return
 

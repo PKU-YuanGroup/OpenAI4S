@@ -191,7 +191,7 @@ def test_revert_restart_and_undo_restore_plan_review_and_memory(tmp_path):
         status="completed",
         step_status={"s2": {"status": "completed", "note": "second"}},
     )
-    store.delete_memory(first_memory["memory_id"])
+    store.delete_memory(first_memory["memory_id"], project_id="science")
     second_memory = store.add_memory(
         project_id="science", block="facts", content="second memory"
     )

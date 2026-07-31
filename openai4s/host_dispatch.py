@@ -50,6 +50,7 @@ from openai4s.host.remote_science import RemoteScienceService
 from openai4s.host.session import SessionControlService
 from openai4s.host.skills import SkillService
 from openai4s.llm import chat
+from openai4s.storage.memories import MemoryLimitError
 from openai4s.storage.metadata import DERIVABLE_HOST_CALLS
 from openai4s.store import SECRET_ARG_HOST_CALLS, get_store
 from openai4s.tools.catalog import SessionToolCatalog
@@ -1668,9 +1669,15 @@ class HostDispatcher:
             pid = (fr or {}).get("project_id") or "default"
         except Exception:  # noqa: BLE001
             pass
-        rec = self.store.add_memory(
-            content=content, block=spec.get("block") or "general", project_id=pid
-        )
+        try:
+            rec = self.store.add_memory(
+                content=content, block=spec.get("block") or "general", project_id=pid
+            )
+        except MemoryLimitError as error:
+            # Soft-fail, so the cell gets a RuntimeError it can act on. Letting
+            # this escape would kill the cell over a refused *side effect*,
+            # losing the analysis the agent was in the middle of.
+            return {"error": f"remember: {error}"}
         return {"ok": True, "memory_id": rec["memory_id"]}
 
     def _compute_available(self) -> bool:

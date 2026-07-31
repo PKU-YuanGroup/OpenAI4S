@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from openai4s.storage.memories import MemoryLimitError
 from openai4s.storage.plans import PLAN_STATUSES
 from openai4s.storage.snapshots import WorkspaceCAS
 
@@ -724,7 +725,17 @@ class SessionPackageService:
             if str(item.get("artifact_id") or "") in safe_artifact_ids
         ]
         memories = self._bounded_records(
-            "memories", self.store.list_memories(project_id=project_id)
+            "memories",
+            # What this project owns, not what it inherits. A scoped read now
+            # merges the global tier in, and packaging those would hand the
+            # recipient the exporting installation's cross-project background
+            # re-scoped as this session's own -- a promotion nobody asked for,
+            # and a duplicate on every re-import.
+            [
+                item
+                for item in self.store.list_memories(project_id=project_id)
+                if item.get("project_id") == project_id
+            ],
         )
         step_count = int(self.store.step_count(root_frame_id) or 0)
         review_steps = self._bounded_records(
@@ -2947,11 +2958,19 @@ class SessionPackageService:
                     plan["plan_id"], step_status=dict(item["step_status"])
                 )
         for item in memories.get("memories") or []:
-            self.store.add_memory(
-                project_id=new_project,
-                block=str(item.get("block") or "general"),
-                content=str(item.get("content") or ""),
-            )
+            try:
+                self.store.add_memory(
+                    project_id=new_project,
+                    block=str(item.get("block") or "general"),
+                    content=str(item.get("content") or ""),
+                )
+            except MemoryLimitError:
+                # An imported package is someone else's data and may carry rows
+                # this installation's write limits refuse. Skip that row rather
+                # than abort the import: one over-long memory would otherwise
+                # make a whole session permanently unimportable, and accepting
+                # it would let an import plant an item no live write could.
+                continue
         for item in review.get("annotations") or []:
             artifact_id = artifact_map.get(str(item.get("artifact_id") or ""))
             if not artifact_id:

@@ -663,6 +663,38 @@ try {
     }
   }
 
+  // ---- the artifact table viewer must state its own truncation -----------
+  // `renderSheet` caps at 5000x100 and used to append the capped table and
+  // nothing else, so a 5001x101 matrix rendered as a table that looked
+  // complete. Only the loaded page can prove the banner: the function needs a
+  // real DOM, and the pre-fix baseline is no banner element at all.
+  const sheetNotes = await page.evaluate(() => {
+    const noteFor = (rows) => {
+      const box = document.createElement("div");
+      renderSheet(box, rows);
+      const note = box.querySelector(".renderer-note");
+      return note ? note.textContent : "";
+    };
+    const wideRow = () => { const o = {}; for (let c = 0; c < 101; c++) o["c" + c] = c; return o; };
+    const tall = [];
+    for (let r = 0; r < 5001; r++) tall.push({ a: r, b: r, c: r });
+    return {
+      tall: noteFor(tall),
+      wide: noteFor([wideRow(), wideRow()]),
+      // A field present only in a later record is invisible in the drawn
+      // table, so the count has to come from the union of every row's keys.
+      ragged: noteFor([{ a: 1 }, { a: 2, late: 3 }]),
+      totalRows: (5001).toLocaleString(),
+    };
+  });
+  for (const [label, needle] of [["tall", sheetNotes.totalRows], ["wide", "101"], ["ragged", "2"]]) {
+    if (!String(sheetNotes[label]).includes(needle)) {
+      throw new Error(
+        `table viewer shape banner (${label}): expected it to state ${needle}, got "${sheetNotes[label]}"`
+      );
+    }
+  }
+
   if (pageErrors.length) {
     throw new Error(`browser page errors: ${pageErrors.join(" | ")}`);
   }
