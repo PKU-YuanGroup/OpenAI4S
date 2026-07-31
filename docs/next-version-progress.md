@@ -401,3 +401,48 @@ Falsified: making `_pinned_llm_config` ignore the frozen pair fails
 `test_a_rebind_while_an_item_is_queued_does_not_move_that_item` by dispatching to
 Q's model. Three cases covered -- the ticket records its binding, a mid-queue
 rebind does not move the item, and a dead frozen profile fails visibly.
+
+## 16. Browser evidence (2026-07-31)
+
+Run against a real daemon at `60298b719cb87f3610fdd667bb8a6ce06a039542`, on an
+isolated `OPENAI4S_DATA_DIR`, with the auth gate on (the daemon answered `401` to
+an unauthenticated `GET /`, and the harness logged in through the `?token=`
+bootstrap):
+
+| Check | Engine | Result |
+|---|---|---|
+| `tests/browser_smoke.mjs` (full workbench walk) | chromium | passed |
+| `tests/browser_matrix.mjs` | chromium | 9/9 |
+| `tests/browser_matrix.mjs` | firefox | 9/9 |
+| `tests/browser_matrix.mjs` | webkit | 9/9 |
+
+Playwright 1.54.1; chromium 139.0.7258.5. The matrix covers app-shell boot,
+session create, WebSocket connect/receive, artifact projection, consent
+serialise-and-reconcile, consent rollback on a failed write, cancel, the recovery
+projection, and **no uncaught page errors** — the last is what makes this
+meaningful for nine commits' worth of `app.js` change, because a JavaScript
+exception on load would surface there rather than as a silently dead control.
+
+Two entries in the daemon log, neither a defect: `LLMError: no API key configured
+for provider 'ark'` (correct — the isolated data dir has no credential, and a turn
+that cannot dispatch says so) and a `ConnectionResetError` from a browser closing
+its connection.
+
+### What this does NOT establish
+
+The smoke and the matrix exercise the shell and the transport. They do not click
+through the specific controls this batch added, and no test here does:
+
+- the load-more control firing with more than 100 sessions, and the scroll anchor
+  holding when an older page is inserted above (item 25);
+- the `@` menu offering two artifacts that share a filename (item 23);
+- the `attachment_problems` card rendering its four reasons (item 24);
+- the composer staying usable mid-run, and a queued item showing its execution id,
+  preview, position and frozen branch/profile (item 26);
+- the protocol dropdown offering `gemini` and `openai_responses` (item 27);
+- the Skills list rendering `needs_setup`/`unknown` (item 28).
+
+Each is named in its commit. "No uncaught page errors across three engines" is a
+real and previously missing floor -- it rules out the whole class of failure where
+a change to `app.js` breaks the page on load -- but it is a floor, not a
+demonstration that these controls do what they say.
