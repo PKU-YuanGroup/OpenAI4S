@@ -104,14 +104,15 @@ echo "   runtime python: $("$RUNPY" -c 'import sys;print(sys.version.split()[0])
 # 3) pre-bake the science stack into the runtime so the app runs the default
 #    kernel env's workflows offline with no task-time install. The package set
 #    is the pip-installable superset of envs/python.yml, kept in one manifest
-#    (scripts/dmg_bundled_packages.txt) that the bundle verifier reads too, so
+#    (scripts/bundled_packages.txt) that the bundle verifier — and the Linux
+#    builder, which pre-bakes the same set — read too, so
 #    "what we install" and "what we check" cannot drift.
 # --------------------------------------------------------------------------- #
 echo "-- [3/10] installing the science stack into the runtime (this is the slow step) --"
 # python-build-standalone ships a PEP 668 marker; drop it on our private copy so
 # pip may install into the bundled interpreter's own site-packages.
 rm -f "$RUNTIME"/lib/python*/EXTERNALLY-MANAGED 2>/dev/null || true
-MANIFEST="$REPO_ROOT/scripts/dmg_bundled_packages.txt"
+MANIFEST="$REPO_ROOT/scripts/bundled_packages.txt"
 if [ ! -f "$MANIFEST" ]; then
   echo "error: missing package manifest $MANIFEST" >&2
   exit 1

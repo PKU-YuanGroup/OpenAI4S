@@ -141,7 +141,25 @@ sudo ln -sf /Applications/OpenAI4S.app/Contents/Resources/runtime/bin/openai4s /
 openai4s setup        # 仅当你需要 R 内核：需要先装 micromamba/mamba/conda
 ```
 
-R 内核未被打包（它需要一个 conda 环境）。Intel Mac 与 Linux 请改用 PyPI 安装（`pip install openai4s`）。
+R 内核未被打包（它需要一个 conda 环境）。Intel Mac 请改用 PyPI 安装（`pip install openai4s`）。
+
+### Linux 应用（无需任何工具链）
+
+从 [最新 Release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest) 下载 `OpenAI4S-<version>-linux-x86_64.tar.gz`，解包到任意位置直接运行。内嵌的 Python 和预装科学栈与 macOS 镜像完全一致，只是形态换成了一个可任意移动的目录：
+
+```bash
+tar -xzf OpenAI4S-*-linux-x86_64.tar.gz && cd OpenAI4S-*-linux-x86_64
+./OpenAI4S          # 启动守护进程并打开 http://127.0.0.1:8760/
+./install.sh        # 可选：把 `openai4s` 挂到 PATH，并注册应用菜单项
+```
+
+`install.sh` 是单用户级的、不需要 root——它只往 `$HOME` 里写；`./uninstall.sh` 会撤销这些改动，而 `~/.openai4s` 里的数据原样保留。建议装上 `bubblewrap`（`apt install bubblewrap`）让 cell 在沙箱里跑；没有它，默认的 `OPENAI4S_KERNEL_SANDBOX=auto` 会明确报告内核处于降级、未隔离状态。目前只发布 `x86_64`——arm64 Linux 请改用 PyPI 安装（`pip install openai4s`）。
+
+### Windows（经由 WSL2）
+
+下载 `OpenAI4S-<version>-windows-x86_64.zip`，解压后双击 `OpenAI4S.cmd`。首次运行会把随包携带的 Linux 应用装进你的 WSL2 发行版、在里面启动守护进程，然后用 Windows 浏览器打开 `http://127.0.0.1:8760/`。不下载、不 `pip`、不装工具链。
+
+**原生 Windows 不受支持，而且程序会直接拒绝在那里启动内核**，不是「先警告再照跑」——内核要拉起 POSIX 子进程，R 通道靠 shell 重定向走文件描述符 3 和 4，沙箱也没有 Windows 后端。WSL2 报告自己是 Linux，所以这个包跑的就是其他平台跑的同一个构建。如果你还没有 WSL2，启动器会停下来并给出那条确切的命令（管理员 PowerShell 里的 `wsl --install`）。详见：**[平台支持矩阵](docs/platforms.md)**。
 
 ---
 

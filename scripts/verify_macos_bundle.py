@@ -3,11 +3,15 @@
 
 ``verify_release_artifacts.py`` guards the wheel and sdist. The DMG is a
 different contract: it ships an *embedded, relocatable* CPython plus the whole
-science stack from ``scripts/dmg_bundled_packages.txt`` and the loose source
-tree, so the failures worth catching are ones no wheel check can see — a runtime
+science stack from ``scripts/bundled_packages.txt`` and the loose source tree,
+so the failures worth catching are ones no wheel check can see — a runtime
 that does not relocate, a science stack that silently did not install (rdkit,
 scanpy, numba …), a source tree missing the Web UI or the R worker, a broken
 ad-hoc signature, or a developer's ``.env`` swept into the image.
+
+The half of that contract every platform shares lives in ``bundle_contract.py``;
+what stays here is what is genuinely Mac-specific — the ``.app`` layout, the
+``Info.plist``, the ``.icns`` ladder, and ``codesign``.
 
     python scripts/verify_macos_bundle.py dist/OpenAI4S-0.1.0-macos-arm64.dmg
     python scripts/verify_macos_bundle.py .build/dmg/stage/OpenAI4S.app
@@ -18,10 +22,8 @@ A ``.dmg`` argument is attached read-only, verified, and detached.
 from __future__ import annotations
 
 import argparse
-import ast
 import contextlib
 import plistlib
-import re
 import subprocess
 import sys
 import tempfile
@@ -30,36 +32,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from source_secret_scan import candidate_files as secret_scan_candidates  # noqa: E402
-from source_secret_scan import scan as secret_scan  # noqa: E402
-
-# Resources whose absence only shows up at runtime — a missing app.js is a blank
-# browser tab, a missing r_worker.R is a dead R channel — long after release.
-_REQUIRED_SOURCES = (
-    "openai4s/__init__.py",
-    "openai4s/cli/main.py",
-    "openai4s/kernel/worker.py",
-    "openai4s/kernel/r_worker.R",
-    "openai4s/compute/templates/run.sh.tmpl",
-    "openai4s/compute/templates/wrapper.sh.tmpl",
-    "openai4s/server/webui/index.html",
-    "openai4s/server/webui/app.js",
-    "openai4s/server/webui/style.css",
-    "openai4s/server/webui/vendor/3Dmol-min.js",
-    "openai4s_compute_provider/__init__.py",
-    "openai4s_worker_runtime/__init__.py",
-    "envs/python.yml",
-    "envs/r.yml",
-)
-# Only ever checked against the top of our own source tree: `tests/` and
-# `.git/` are perfectly legitimate *inside* third-party site-packages.
-_FORBIDDEN_SOURCES = (".git", ".venv", ".build", "tests", ".claude")
-_ENV_TEMPLATES = frozenset({".env.example", ".env.sample", ".env.template"})
-_MIN_SKILLS = 20
-
-
-class BundleCheckError(RuntimeError):
-    pass
+from bundle_contract import BundleCheckError  # noqa: E402
+from bundle_contract import bundled_imports  # noqa: E402
+from bundle_contract import check_bytecode  # noqa: E402
+from bundle_contract import check_no_secrets  # noqa: E402
+from bundle_contract import check_sources  # noqa: E402
+from bundle_contract import declared_version  # noqa: E402
 
 
 @contextlib.contextmanager
@@ -100,46 +78,6 @@ def _bundle(target: Path) -> Iterator[Path]:
 
 def _run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, capture_output=True, text=True, **kwargs)  # type: ignore[arg-type]
-
-
-def _declared_version(src: Path) -> str:
-    tree = ast.parse((src / "openai4s" / "__init__.py").read_text("utf-8"))
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
-            if isinstance(target, ast.Name) and target.id == "__version__":
-                if isinstance(node.value, ast.Constant) and isinstance(
-                    node.value.value, str
-                ):
-                    return node.value.value
-    raise BundleCheckError("bundled openai4s.__version__ is not a literal string")
-
-
-_MANIFEST = Path(__file__).resolve().parent / "dmg_bundled_packages.txt"
-
-
-def _bundled_imports() -> list[str]:
-    """The import names the build script pre-baked into the bundle.
-
-    Read from the same manifest scripts/build_macos_dmg.sh installs from, so the
-    package set the verifier enforces is exactly the one that was bundled — the
-    two can never drift. Second column of each non-comment line is the import
-    name.
-    """
-    if not _MANIFEST.is_file():
-        raise BundleCheckError(f"missing package manifest {_MANIFEST}")
-    imports: list[str] = []
-    for raw in _MANIFEST.read_text("utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split()
-        if len(parts) < 2:
-            raise BundleCheckError(f"manifest line missing import name: {raw!r}")
-        imports.append(parts[1])
-    if not imports:
-        raise BundleCheckError("package manifest lists no packages")
-    return imports
 
 
 def _check_layout(app: Path) -> tuple[Path, Path, Path]:
@@ -276,85 +214,6 @@ def _check_icon(app: Path) -> str:
     return f"{len(payload) / 1024:.0f} KB, Retina ladder complete"
 
 
-def _check_bytecode(src: Path, runtime: Path) -> int:
-    """Every .py in the image must ship never-revalidated hash-based bytecode.
-
-    If it does not, the app compiles on first import and writes __pycache__ into
-    its own bundle — which invalidates the code signature the moment anyone uses
-    the app, and, wherever the bundle is read-only (straight from the DMG, or
-    /Applications for a non-admin user), silently recompiles the entire stdlib
-    and science stack on *every* launch. Timestamp bytecode is no better: copying
-    the app out of the image rewrites the .py mtimes, so all of it reads stale.
-    """
-    lib = runtime.parents[1] / "lib"
-    compiled = list(src.rglob("__pycache__/*.pyc")) + list(
-        lib.rglob("__pycache__/*.pyc")
-    )
-    if len(compiled) < 500:
-        raise BundleCheckError(
-            f"bundle ships only {len(compiled)} .pyc files — it was not precompiled, "
-            "so it will write bytecode into its own signed bundle on first run"
-        )
-    for path in compiled[:40]:
-        flags = int.from_bytes(path.read_bytes()[4:8], "little")
-        # bit0 = hash-based, bit1 = check_source. We require hash-based with
-        # revalidation OFF, i.e. exactly 0b01.
-        if flags & 0b11 != 0b01:
-            kind = "timestamp" if not flags & 0b01 else "checked-hash"
-            raise BundleCheckError(
-                f"{path.name} carries {kind} bytecode; the build must use "
-                "--invalidation-mode unchecked-hash or the app will rewrite it in place"
-            )
-    return len(compiled)
-
-
-def _check_sources(src: Path) -> int:
-    missing = [name for name in _REQUIRED_SOURCES if not (src / name).is_file()]
-    if missing:
-        raise BundleCheckError("source tree is missing: " + ", ".join(missing))
-    skills = sorted(src.glob("skills/*/SKILL.md"))
-    if len(skills) < _MIN_SKILLS:
-        raise BundleCheckError(
-            f"bundle ships only {len(skills)} Skills; expected at least {_MIN_SKILLS}"
-        )
-    return len(skills)
-
-
-def _check_no_secrets(app: Path, src: Path) -> None:
-    shipped = [name for name in _FORBIDDEN_SOURCES if (src / name).exists()]
-    if shipped:
-        raise BundleCheckError("source tree ships: " + ", ".join(shipped))
-    # A dotenv anywhere in the image is the one way a maintainer's provider key
-    # can actually reach a user, so this walk covers the whole bundle.
-    dotenvs = [
-        path.relative_to(app).as_posix()
-        for path in app.rglob(".env*")
-        if path.is_file() and path.name.casefold() not in _ENV_TEMPLATES
-    ]
-    if dotenvs:
-        raise BundleCheckError("bundle ships dotenv files: " + ", ".join(dotenvs[:5]))
-    # A scanner that silently enumerated nothing reports the same "clean" as one
-    # that actually looked, so make the sample size part of the assertion.
-    scanned = len(secret_scan_candidates(src))
-    if scanned < 200:
-        raise BundleCheckError(
-            f"the credential scan only enumerated {scanned} files in the source tree — "
-            "it is not actually inspecting the bundle"
-        )
-    findings = secret_scan(src)
-    if findings:
-        located = ", ".join(
-            f"{finding.path}:{finding.line}:{finding.detector}"
-            for finding in findings[:5]
-        )
-        raise BundleCheckError(
-            f"credential-shaped material inside the bundle ({len(findings)} finding(s)): {located}"
-        )
-    launcher_text = (app / "Contents" / "MacOS" / "OpenAI4S").read_text("utf-8")
-    if re.search(r"(?i)(api[_-]?key|secret|token)\s*=\s*[\"']?\S", launcher_text):
-        raise BundleCheckError("the launcher assigns a credential-shaped value")
-
-
 def _check_signature(app: Path) -> str:
     result = _run(["codesign", "--verify", "--deep", "--strict", str(app)])
     if result.returncode != 0:
@@ -372,15 +231,15 @@ def _check_signature(app: Path) -> str:
 def verify(target: Path) -> None:
     with _bundle(target) as app:
         launcher, runtime, src = _check_layout(app)
-        version = _declared_version(src)
+        version = declared_version(src)
         _check_plist(app, version)
-        skills = _check_sources(src)
-        bundled = _bundled_imports()
+        skills = check_sources(src)
+        bundled = bundled_imports()
         python_version = _check_runtime(runtime, app, bundled)
-        compiled = _check_bytecode(src, runtime)
+        compiled = check_bytecode([src, runtime.parents[1] / "lib"])
         icon = _check_icon(app)
         _check_cli(runtime, src)
-        _check_no_secrets(app, src)
+        check_no_secrets(app, src, [launcher])
         signature = _check_signature(app)
         print(f"bundle    : {app.name}  (v{version})")
         print(

@@ -152,7 +152,25 @@ sudo ln -sf /Applications/OpenAI4S.app/Contents/Resources/runtime/bin/openai4s /
 openai4s setup        # only if you want the R kernel: needs micromamba/mamba/conda
 ```
 
-The R kernel is not bundled (it needs a conda environment). On Intel Macs and Linux, install from PyPI (`pip install openai4s`) instead.
+The R kernel is not bundled (it needs a conda environment). On Intel Macs, install from PyPI (`pip install openai4s`) instead.
+
+### Linux app (no toolchain required)
+
+Download `OpenAI4S-<version>-linux-x86_64.tar.gz` from the [latest release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest), unpack it anywhere, and run it. Same embedded Python and same bundled science stack as the macOS image, as a relocatable directory:
+
+```bash
+tar -xzf OpenAI4S-*-linux-x86_64.tar.gz && cd OpenAI4S-*-linux-x86_64
+./OpenAI4S          # starts the daemon and opens http://127.0.0.1:8760/
+./install.sh        # optional: `openai4s` on your PATH + an application-menu entry
+```
+
+`install.sh` is per-user and needs no root — it only writes into `$HOME`, and `./uninstall.sh` undoes it while leaving your data in `~/.openai4s` alone. Install `bubblewrap` (`apt install bubblewrap`) so cells run sandboxed; without it the default `OPENAI4S_KERNEL_SANDBOX=auto` reports a visibly degraded, unisolated kernel. Only `x86_64` is published — on arm64 Linux, install from PyPI (`pip install openai4s`).
+
+### Windows (via WSL2)
+
+Download `OpenAI4S-<version>-windows-x86_64.zip`, unzip it, and double-click `OpenAI4S.cmd`. The first run installs the bundled Linux app into your WSL2 distribution, starts the daemon there, and opens your Windows browser at `http://127.0.0.1:8760/`. No download, no `pip`, no toolchain.
+
+**Native Windows is not supported, and the program refuses to start a kernel there** rather than warning and proceeding — it spawns POSIX subprocesses, the R channel rides file descriptors 3 and 4 through a shell redirection, and the sandbox has no Windows backend. WSL2 reports as Linux, so this package runs the same build every other platform runs. If you do not have WSL2 yet, the launcher stops and tells you the exact command (`wsl --install`, from an Administrator PowerShell). Details: **[Supported platforms](docs/platforms.md)**.
 
 ---
 
