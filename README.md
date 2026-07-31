@@ -243,11 +243,12 @@ Released under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ```bibtex
 @software{openai4s2026,
-  title  = {OpenAI4S: An Open-Source Code-as-Action Scientific Research Agent},
-  author = {OpenAI4S contributors},
-  year   = {2026},
-  url    = {https://github.com/PKU-YuanGroup/OpenAI4S},
-  note   = {Open AI for Scientist — a pure-stdlib reproduction of the Code-as-Action paradigm}
+  title        = {OpenAI4S: An Open-Source Code-as-Action Scientific Research Agent},
+  author       = {OpenAI4S contributors},
+  organization = {Peking University Shenzhen Graduate School--YuanKong Intelligence AI Agent Joint Research Laboratory},
+  year         = {2026},
+  url          = {https://github.com/PKU-YuanGroup/OpenAI4S},
+  note         = {Open AI for Scientist — a pure-stdlib reproduction of the Code-as-Action paradigm}
 }
 ```
 
