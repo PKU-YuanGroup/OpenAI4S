@@ -269,26 +269,16 @@ jobs:
           OPENAI4S_KERNEL_SANDBOX: enforce
         run: uv run python -m harness.smoke.macos_sandbox
 
-  linux-sandbox-smoke:
-    name: Linux bubblewrap enforcement (nightly)
-    # The frozen platform matrix puts Linux at beta "after enforced bubblewrap
-    # E2E", gated on a real enforced sandbox rather than a probe that degrades.
-    # macOS had this proof; Linux did not, so its tier rested on nothing.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          python-version: "3.12"
-      - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
-      - name: Install the zero-dependency runtime
-        run: uv sync --locked
-      - name: Require real bubblewrap isolation and child-env scrubbing
-        env:
-          OPENAI4S_KERNEL_SANDBOX: enforce
-        run: uv run python -m harness.smoke.linux_sandbox
+  # There is deliberately no Linux bubblewrap job here. `harness.smoke.linux_sandbox`
+  # still exists and still passes on a Linux host that permits unprivileged user
+  # namespaces -- but not on a GitHub-hosted runner, where bwrap cannot bring up
+  # the loopback interface inside its new network namespace
+  # (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). That is the
+  # runner's confinement, not a defect in the sandbox, so the job failed every
+  # single night while telling us nothing about the code. A check that cannot
+  # pass is not evidence; docs/platforms.md now states what is and is not proven
+  # rather than pointing at a job that was always red. Run the smoke by hand on a
+  # permissive Linux host to re-establish the claim.
 
   connector-canary:
     name: Science connector canary (nightly)

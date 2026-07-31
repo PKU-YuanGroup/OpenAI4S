@@ -6,11 +6,21 @@ the tier is gated on a real enforced-sandbox smoke test, **not on a probe that
 degrades**. macOS had one; Linux did not, so the tier it was being given rested
 on nothing.
 
-Runs on a scheduled CI Linux runner with ``OPENAI4S_KERNEL_SANDBOX=enforce``,
-so a missing or degraded bubblewrap is a hard failure rather than the warning a
-developer install prints. It asserts the backend really is bubblewrap: a run
-that fell back to something else and still passed would be reporting on a
-boundary it never tested.
+Run with ``OPENAI4S_KERNEL_SANDBOX=enforce``, so a missing or degraded
+bubblewrap is a hard failure rather than the warning a developer install
+prints. It asserts the backend really is bubblewrap: a run that fell back to
+something else and still passed would be reporting on a boundary it never
+tested.
+
+**This is a manual smoke, not a CI job.** It was scheduled nightly and failed
+every night: a GitHub-hosted runner confines unprivileged user namespaces, so
+bwrap creates its network namespace and then cannot bring up loopback inside it
+(``bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted``). Nothing in
+this repository can fix that from inside the runner, and a check that cannot
+pass is not evidence -- it just trains people to ignore red. docs/platforms.md
+now states the Linux tier as verified-by-hand rather than pointing at a job
+that was always failing. Restoring it to CI needs a host that permits those
+namespaces (self-hosted runner, or a suitably privileged container).
 
 Deliberately not in default pytest collection -- it requires `bwrap`, which a
 laptop may not have, and a check that quietly skips is the thing the frozen
