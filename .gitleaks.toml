@@ -69,4 +69,12 @@ regexes = [
   # scripts/source_secret_scan.py refuses that, correctly. The two scanners
   # pull in opposite directions, and this is a string both of them dislike.
   '''^Zx9Qw3Er7Ty1Ui5Op2As6Df4Gh8Jk0Lm$''',
+  # tests/test_share_projection.py -- the string a share-package redaction test
+  # feeds through `_safe_text`. The working tree carries `# gitleaks:allow` on
+  # that line, which is why `main` scans clean; but an inline comment only
+  # suppresses the revision that contains it, and the commit that introduced
+  # the line without one is still reachable and still flagged. Same failure as
+  # the fingerprints above, in a different disguise: a suppression that
+  # describes the present cannot cover history.
+  '''^sk-ABCDEFGH1234567890$''',
 ]

@@ -97,6 +97,7 @@ def test_gitleaks_config_extends_the_default_rules_rather_than_replacing_them():
     assert permitted == [
         "^abc123def456ghi789$",
         "^Zx9Qw3Er7Ty1Ui5Op2As6Df4Gh8Jk0Lm$",
+        "^sk-ABCDEFGH1234567890$",
     ]
     # Anchored on both ends, so a permitted value cannot become a prefix rule
     # that admits `abc123def456ghi789<real-key>`.
