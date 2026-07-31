@@ -17,10 +17,14 @@ repos:
     rev: 23.3.0
     hooks:
       - id: black
-  - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: 'v0.0.274'
+  # astral-sh is the canonical home; charliermarsh/ruff-pre-commit is a
+  # redirect. The hook id moved from `ruff` to `ruff-check` when `ruff format`
+  # arrived and a bare `ruff` became ambiguous. The rule set is pinned in
+  # pyproject.toml's [tool.ruff.lint]; see the comment there for why.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 'v0.16.0'
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix, "--ignore=E501,F401,E722,E402,E741"]
   - repo: local
     hooks:
