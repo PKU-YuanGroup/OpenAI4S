@@ -25,121 +25,41 @@ def test_security_scanners_pin_every_action_to_a_commit(name):
     assert all("pull_request_target" not in line for line in lines)
 
 
-def test_gitleaks_scans_history_with_a_checksum_pinned_binary():
-    workflow = (WORKFLOWS / "secret-scan.yml").read_text(encoding="utf-8")
+def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():
+    """The Gitleaks history scan is gone; this pins what carries the load now.
 
-    assert "fetch-depth: 0" in workflow
-    assert 'GITLEAKS_VERSION: "8.30.1"' in workflow
-    assert re.search(r'GITLEAKS_SHA256: "[0-9a-f]{64}"', workflow)
-    assert "sha256sum --check --strict" in workflow
-    assert "gitleaks git --redact --verbose" in workflow
-    assert "pull_request_target" not in workflow
-    # Passed explicitly, so a renamed or missing config is a loud error rather
-    # than a silent fallback to gitleaks' built-in defaults.
-    assert "--config .gitleaks.toml" in workflow
+    Not removed for being red. #57 had made it pass, moving suppression off
+    `<commit>:<file>:<rule>:<line>` fingerprints -- which squash-only merging
+    duplicates out from under you -- and onto anchored `regexTarget = "secret"`
+    values that survive a rewrite. That fix worked.
 
+    It was removed because of the cost that fix could not touch. A generic
+    entropy rule over *all history* fires on synthetic fixtures, and a fixture
+    that has to look real in order to be found by the code under test is
+    exactly the kind this repository keeps needing. Each one becomes another
+    allowlist row a reviewer must argue for, and the list only grows: #57
+    curated two values, then #63 added a third within the day -- for a string
+    that the working tree already suppressed inline, because an inline comment
+    cannot cover the commit that introduced the line before the comment
+    existed. Every such suppression is correct and none of them is free.
 
-def _allowlisted_regexes(config: str) -> list[str]:
-    """Every string literal in the allowlist's ``regexes`` list, any TOML style.
+    `scripts/source_secret_scan.py` keeps the property that mattered: named
+    provider detectors (AWS, GitHub, OpenAI, Google, Slack, Stripe, private
+    keys) instead of an entropy heuristic, so a placeholder in a fixture is not
+    a finding while a real key pasted into that same file still is -- with no
+    list to curate. It reads the working tree, which is where a leak has to be
+    fixed regardless of which commit introduced it. CodeQL is untouched.
 
-    Deliberately not a pattern over one quoting style. The first version of
-    this helper matched only ``'''^…$'''`` on its own line, and an adversarial
-    review showed that adding ``".*",`` in ordinary double quotes left all
-    three assertions below passing while gitleaks permitted everything — a real
-    ``sk-live-…`` went from ``leaks found: 1`` to ``no leaks found`` under that
-    config. A pin that only sees the spelling it expects is not a pin.
+    What is given up, stated plainly rather than left implicit: a credential
+    that was committed and later removed is no longer detected. If that matters
+    again, run gitleaks over history once by hand -- do not reinstate a
+    scheduled job with an allowlist to feed.
     """
-    block = re.search(r"regexes\s*=\s*\[(.*?)^\]", config, re.DOTALL | re.MULTILINE)
-    assert block, "no `regexes = [...]` list found in .gitleaks.toml"
-    body = "\n".join(
-        line
-        for line in block.group(1).splitlines()
-        if not line.lstrip().startswith("#")
-    )
-    literal = re.compile(
-        r"'''(.*?)'''|\"\"\"(.*?)\"\"\"|'([^']*)'|\"([^\"]*)\"", re.DOTALL
-    )
-    return [
-        next(g for g in m.groups() if g is not None) for m in literal.finditer(body)
-    ]
+    workflow = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
 
-
-def test_gitleaks_config_extends_the_default_rules_rather_than_replacing_them():
-    """The one mistake in this file that would look exactly like success.
-
-    A config without ``[extend] useDefault = true`` REPLACES the default rule
-    set instead of extending it. The scan then finds nothing and exits 0 —
-    which is indistinguishable from a scan that works, so it would be believed.
-    Hence this assertion, and hence the config landed in its own commit with no
-    allowlist first (run 30568183935: ``535 commits scanned``, ``leaks found:
-    4``) to prove the rules were still loaded before anything was permitted.
-    """
-    config = (ROOT / ".gitleaks.toml").read_text(encoding="utf-8")
-
-    assert "[extend]" in config
-    assert re.search(r"^useDefault\s*=\s*true$", config, re.MULTILINE)
-
-    # Every permitted value has to be argued for in review, so the set is
-    # pinned exactly: adding one means editing this test. Both are synthetic
-    # fixtures that exist in order to be *found* by the code under test — a
-    # redaction that keys on entropy cannot be exercised by an obviously-fake
-    # string, so these have to look real enough to trip the scanner.
-    #
-    # `regexTarget = "secret"` with anchored patterns is what keeps this from
-    # becoming a path rule: only these literal values are permitted, so a real
-    # credential in the same files still fails the scan. tests/
-    # test_retrieval_source.py states the reason — a scanner that made an
-    # exception for test files would be a scanner with a hole exactly where
-    # people paste real keys "just to check".
-    assert 'regexTarget = "secret"' in config
-    assert config.count("[[allowlists]]") == 1
-    permitted = _allowlisted_regexes(config)
-    assert permitted == [
-        "^abc123def456ghi789$",
-        "^Zx9Qw3Er7Ty1Ui5Op2As6Df4Gh8Jk0Lm$",
-        "^sk-ABCDEFGH1234567890$",
-    ]
-    # Anchored on both ends, so a permitted value cannot become a prefix rule
-    # that admits `abc123def456ghi789<real-key>`.
-    assert all(p.startswith("^") and p.endswith("$") for p in permitted)
-    # No path/file/commit widening: those keys would suppress findings this
-    # allowlist has not individually accounted for.
-    for widening in ("paths", "files", "commits", "stopwords"):
-        assert not re.search(rf"^\s*{widening}\s*=", config, re.MULTILINE)
-
-
-def test_gitleaksignore_holds_only_fingerprints_that_squashing_cannot_duplicate():
-    """Fingerprint suppression and squash-only merging do not compose.
-
-    A `.gitleaksignore` entry names `<commit>:<file>:<rule>:<line>`, and
-    `protect-main` permits only squash and rebase merges. Squashing does not
-    destroy the branch commits — they stay reachable on `next` — it *copies*
-    their findings under a new SHA on `main`. The old fingerprint keeps
-    suppressing the old commit and nothing suppresses the new one, so `main`
-    goes red on a tree nobody changed. That is what happened when #52 landed:
-    four v0.3 findings reappeared under `f2d8adb…` while their originals stayed
-    suppressed under `8d715ebe…` and `3dcda11f…`.
-
-    Suppressing by value in `.gitleaks.toml` covers original and copy at once,
-    which is why those four rows could be dropped from here — not because they
-    were dead. They were live; they were merely insufficient.
-
-    The count stays pinned so a new fingerprint — which would be a fresh
-    instance of the same duplicating bug — cannot be added without a reviewer
-    seeing it. Of the twelve: six are star-history.com `sealed_token` values in
-    the two READMEs (three English, three Chinese), an encrypted wrapper around
-    a metadata-read-only GitHub token that is designed to be published and that
-    gitleaks flags on entropy alone. Four are synthetic canaries in the
-    redaction tests (`test_diagnostics.py`, `test_observability.py`), reported
-    once per commit that touched those lines. The last two are a planning
-    document (`docs/refactor-plan.md`) and an `NGC_API_KEY` fixture in
-    `test_compute_nvidia.py`.
-    """
-    ignored = (ROOT / ".gitleaksignore").read_text(encoding="utf-8").splitlines()
-    assert len(ignored) == 12
-    assert all(
-        re.fullmatch(r"[0-9a-f]{40}:.+:[a-z0-9-]+:\d+", item) for item in ignored
-    )
+    assert "python scripts/source_secret_scan.py" in workflow
+    for gone in ("secret-scan.yml", ".gitleaksignore", ".gitleaks.toml"):
+        assert not (ROOT / gone).exists() and not (WORKFLOWS / gone).exists()
 
 
 def test_release_workflow_pins_every_action_to_a_commit():

@@ -8,7 +8,7 @@ a support claim nobody has to take on faith is the only kind worth publishing.
 | --- | --- | --- | --- | --- |
 | macOS (Apple Silicon) | **stable** | runs | Seatbelt, enforced and smoke-tested nightly | Developer ID signing + notarization — **not yet done** |
 | macOS (Intel) | stable | runs | Seatbelt | the `.dmg` is Apple Silicon only; install from PyPI |
-| Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced and smoke-tested nightly | enforced-bubblewrap E2E — **met** (`harness/smoke/linux_sandbox.py`) |
+| Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced | enforced-bubblewrap E2E — **written, not continuously verified** (`harness/smoke/linux_sandbox.py`; see below) |
 | Windows (native) | **unsupported** | **refused** | none exists | not planned; use WSL2, which reports as Linux |
 | Anything else | unsupported | **refused** | — | — |
 
@@ -71,9 +71,10 @@ both. The tiers differ in what has been *proven*:
   top of a technical one. **That signing and notarization has not happened
   yet**, so the stable tier is the target, not the current state.
 - Linux is gated on a real enforced-bubblewrap end-to-end test rather than on a
-  probe that degrades. That test now exists and runs nightly; it asserts the
-  backend really is bubblewrap, so a runner that silently fell back cannot
-  report a pass for a boundary it never tested.
+  probe that degrades. That test exists and asserts the backend really is
+  bubblewrap, so a host that silently fell back cannot report a pass for a
+  boundary it never tested. **It is not running in CI**, for the reason below,
+  so the Linux tier currently rests on manual runs.
 
 Both smokes check the same four boundaries, from one shared implementation
 ([`harness/smoke/sandbox_boundary.py`](../harness/smoke/sandbox_boundary.py)):
@@ -82,10 +83,38 @@ inside its workspace, and cannot leak the daemon's credentials into a
 subprocess it spawns. They are shared rather than copied because two copies
 drift until one platform quietly stops checking what the other still does.
 
+## Why the Linux smoke is not in CI
+
+A GitHub-hosted runner cannot run it. `bwrap` creates its network namespace and
+then fails to bring up the loopback interface inside it:
+
+```
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+```
+
+That is the runner's own confinement of unprivileged user namespaces, not a
+defect in the sandbox and not something the code under test can influence. The
+job was therefore red every night from the day it was added, and a check that
+cannot pass is not evidence of anything — it is a signal everyone learns to
+scroll past, which costs more than the absent check does.
+
+So the claim is downgraded here instead of being propped up by a job that never
+went green. To re-establish it, run the smoke on a Linux host that permits
+unprivileged user namespaces:
+
+```bash
+OPENAI4S_KERNEL_SANDBOX=enforce uv run python -m harness.smoke.linux_sandbox
+```
+
+Restoring it to CI needs a runner where that is possible — a self-hosted Linux
+runner, or a container with the namespace permissions bwrap needs. Until one
+exists, "beta" here means the boundary is implemented and asserted by a test
+someone has to run, not one that runs itself.
+
 ## Degraded sandboxes
 
 `OPENAI4S_KERNEL_SANDBOX` takes `auto` (default), `enforce`, or `off`. On
 `auto`, a missing backend degrades **visibly** — a runtime warning and a
 machine-readable degraded status — rather than silently. `enforce` fails closed
-before a worker starts. The nightly smokes run under `enforce`, which is why a
-missing bubblewrap is a CI failure rather than a shrug.
+before a worker starts. The macOS nightly smoke runs under `enforce`, which is
+why a missing Seatbelt is a CI failure rather than a shrug.
