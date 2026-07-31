@@ -129,13 +129,15 @@ survives a restart, which is precisely when a client retries.
 
 ### Confinement status (Prototype)
 
-`openai4s_compute_provider` ships a confinement probe and an `expect_confined` mode, but **nothing on the host currently wraps the helper in an OS sandbox** or supplies the probe's netns anchor — so confinement is a designed boundary, not a built one, and `host.compute` remains Prototype. Do not read "the helper ran" as "the helper was confined".
+`openai4s_compute_provider` ships a confinement probe and an `expect_confined` mode, and the host now supplies the boundary that probe looks for: [`security/byoc_confinement.py`](../openai4s/security/byoc_confinement.py) builds a Seatbelt profile on macOS and a bubblewrap invocation on Linux, and [`compute/manager.py`](../openai4s/compute/manager.py) wraps the helper in it. The two travel together — whenever the host wraps, it also passes `expect_confined=1` and the anchor the probe compares against (`OPENAI4S_HOST_HOME_DEV`, the real home's device id; the netns anchor this replaces is now only a fallback for a host a release behind). Still do not read "the helper ran" as "the helper was confined" — read `confinement_status()`, which answers from the same self-test every other surface uses.
+
+The boundary is the **filesystem** one: `$HOME` is replaced, writes are confined to the job's stage directory, and on macOS the keychain services are denied as well, since `security find-generic-password` asks securityd rather than reading a file. **Network isolation is a separate capability and is not enabled** (`network_isolated: false`): a helper whose job is calling a provider's REST API cannot live in an empty netns without a host egress proxy. `host.compute` remains **Prototype** — but for the reason in [`docs/v02-decisions.md`](v02-decisions.md), that no specific cloud GPU provider has been named production-grade, not because the boundary is unbuilt.
 
 `OPENAI4S_COMPUTE_CONFINEMENT` mirrors `OPENAI4S_KERNEL_SANDBOX`'s vocabulary:
 
-- `auto` (default) — run unconfined; the posture is reported, never implied.
-- `enforce` — refuse `byoc:*` ops outright, since a verified boundary cannot be established on this host. Fail closed rather than pretend.
-- `off` — same as `auto` today; reserved for when a real boundary exists.
+- `auto` (default) — wrap the helper wherever a boundary can be established; where none can, run unconfined and report that degradation rather than implying a boundary.
+- `enforce` — refuse `byoc:*` ops on a host that cannot establish a verified boundary (no `bwrap`/`sandbox-exec`, a failing self-test, or an unsupported platform), and refuse on every op rather than only at submit. Fail closed rather than pretend.
+- `off` — skip the wrapping entirely, by explicit configuration. This is **no longer the same as `auto`**: `auto` confines wherever it can.
 
 The confined helper that stages, runs, and harvests each job is the **worker runtime** package [`openai4s_compute_provider`](../openai4s_compute_provider) — shared by every `byoc:*` provider. Despite its name it is a worker runtime, not a provider registry; it is kept under that legacy name for import compatibility (see [`docs/package-architecture.md`](package-architecture.md)). Its import-time secret-scrubbing guarantees are documented in [`docs/security.md`](security.md).
 

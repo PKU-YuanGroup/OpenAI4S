@@ -949,8 +949,11 @@ class ComputeManager:
         self._hpc_stage_root.mkdir(parents=True, exist_ok=True)
         self._rehydrate()
         self._confinement_mode = _confinement_mode()
-        # See _confinement_gate: no host-side byoc boundary exists yet, so the
-        # helper is never asked to assert one it cannot have.
+        # The default for the *unconfined* helper form only. `_run_helper`
+        # passes `expect_confined=1` whenever it actually wraps, so the boundary
+        # and the check that verifies it always travel together; this default is
+        # what the degraded `auto` fallback uses, where asking for the check
+        # would only make the helper exit 71 while proving nothing.
         self._require_confinement = False
 
     def _safe_harvest_dest(self, job_id: str) -> Path:

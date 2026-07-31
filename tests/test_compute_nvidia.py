@@ -437,12 +437,21 @@ def test_scrub_preserves_operational_env():
     """Vars the endpoint kernel and confinement probe depend on must survive
     scrub_secret_env — so a future BASELINE_SECRET_PREFIXES addition (or an
     over-broad CRED_KEY_RE change) cannot silently break endpoint kernels
-    running behind a proxy or the netns confinement check."""
+    running behind a proxy or the netns confinement check.
+
+    ``OPENAI4S_HOST_HOME_DEV`` is the confinement probe's *live* anchor and was
+    the one this test did not cover: only the legacy netns var was pinned. A
+    `HOST_`-shaped addition to the baseline prefixes would have scrubbed the
+    live anchor while every assertion here still passed, dropping the probe
+    into its no-anchor fallback — which is why that fallback now fails closed
+    rather than assuming the boundary held.
+    """
     from openai4s_compute_provider import scrub_secret_env
 
     keep = {
         "HTTP_PROXY": "http://127.0.0.1:3128",
         "HTTPS_PROXY": "http://127.0.0.1:3128",
+        "OPENAI4S_HOST_HOME_DEV": "16777232",
         "OPENAI4S_HOST_NETNS_INO": "424242",
     }
     # scrub_secret_env mutates os.environ in place and removes vars beyond the

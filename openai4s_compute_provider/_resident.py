@@ -65,8 +65,12 @@ def scrub_secret_env(extra_prefixes: tuple[str, ...] = ()) -> None:
     ``*_TOKEN``, ``*_SECRET`` …) OR starts with a baseline / provider secret
     prefix. This is a name-based heuristic: a secret stored under a name that
     matches neither rule is NOT scrubbed. Everything else survives — e.g.
-    ``OPENAI4S_HOST_NETNS_INO`` (the confinement probe's anchor) and
-    ``HTTP_PROXY``/``HTTPS_PROXY``. Note ``NVIDIA_VISIBLE_DEVICES`` IS removed
+    ``OPENAI4S_HOST_HOME_DEV`` (the confinement probe's live anchor; the older
+    ``OPENAI4S_HOST_NETNS_INO`` is now only a fallback for a host a release
+    behind) and ``HTTP_PROXY``/``HTTPS_PROXY``. Both anchors must keep
+    surviving: scrubbing one is not a broken variable but a probe that cannot
+    verify the boundary, which ``_probe_confined`` answers by failing closed.
+    Note ``NVIDIA_VISIBLE_DEVICES`` IS removed
     (the ``NVIDIA_`` prefix catches it, deliberately — the confined helper
     does no GPU work of its own).
     """
@@ -211,17 +215,39 @@ class ByocResident:
                 return False
         # No anchor supplied: fall back to the netns comparison a host a
         # release behind may still be establishing.
+        #
+        # Every failure below is fail-*closed*, and that is a correction. Each
+        # of these paths reports on a check that could not be performed, and
+        # they used to answer "I could not verify the boundary" with `True` —
+        # the boundary is there. `run_oneshot` only asks when the caller passed
+        # `expect_confined`, so a `True` here lets an unconfined helper go on to
+        # read the credential and call the provider having proven nothing:
+        # exactly the confinement theatre the anchor exists to prevent, arrived
+        # at by the one route that never trips a test.
+        #
+        # Neither OSError is evidence of confinement. Under the real bwrap
+        # boundary `/proc` is mounted (`--proc /proc`), so a *missing* `/proc`
+        # says the process is somewhere unexpected, not somewhere confined. And
+        # `/proc/1/ns/net` is routinely unreadable to an unprivileged process
+        # whose PID 1 is root's — the most reachable way into this branch, and
+        # the one where "assume confined" is least defensible.
         try:
             mine = os.stat("/proc/self/ns/net").st_ino
         except OSError:
-            return True
+            return False
         host = os.environ.get("OPENAI4S_HOST_NETNS_INO")
         if host:
-            return mine != int(host)
+            # A malformed anchor is a host that cannot answer the question
+            # either; it must not crash the helper *or* pass it. The
+            # `OPENAI4S_HOST_HOME_DEV` branch above already catches ValueError.
+            try:
+                return mine != int(host)
+            except ValueError:
+                return False
         try:
             return mine != os.stat("/proc/1/ns/net").st_ino
         except OSError:
-            return True
+            return False
 
     def _handshake(self) -> None:
         write_ready(confined=self._probe_confined())
