@@ -451,3 +451,83 @@ def test_the_helper_probe_reads_that_anchor(monkeypatch, tmp_path):
 
     monkeypatch.setenv("OPENAI4S_HOST_HOME_DEV", "999999")
     assert probe(object()) is True, "a different device means the tmpfs is in place"
+
+
+class _FakeStat:
+    def __init__(self, ino: int) -> None:
+        self.st_ino = ino
+
+
+def _stat_seeing(present: dict, real=os.stat):
+    """`os.stat` that knows only `present` under /proc, and defers elsewhere.
+
+    macOS has no /proc, so the netns fallback cannot be reached here without
+    standing one up; deferring every other path keeps pytest's own stat calls
+    working while the patch is installed.
+    """
+
+    def fake(path, *a, **kw):
+        key = str(path)
+        if key in present:
+            return _FakeStat(present[key])
+        if key.startswith("/proc/"):
+            raise PermissionError(13, "Permission denied", key)
+        return real(path, *a, **kw)
+
+    return fake
+
+
+def test_the_probe_fails_closed_when_it_cannot_verify_the_boundary(monkeypatch):
+    """A check that could not run must not answer "the boundary is there".
+
+    Both OSError paths in the no-anchor netns fallback used to `return True`.
+    `run_oneshot` only calls this when the caller passed `expect_confined`, so
+    that True let an unconfined helper go on to read the credential and call
+    the provider having verified nothing — the confinement theatre the anchor
+    exists to prevent, reached by the one route no test covered.
+
+    The `/proc/1/ns/net` case is not hypothetical: an unprivileged helper whose
+    PID 1 belongs to root routinely cannot stat it.
+    """
+    import openai4s_compute_provider._resident as resident
+
+    probe = resident.ByocResident.__dict__["_probe_confined"]
+    monkeypatch.setattr(resident.sys, "platform", "linux")
+    monkeypatch.delenv("OPENAI4S_HOST_HOME_DEV", raising=False)
+    monkeypatch.delenv("OPENAI4S_HOST_NETNS_INO", raising=False)
+
+    # No /proc/self/ns/net: somewhere unexpected, not somewhere confined.
+    monkeypatch.setattr(resident.os, "stat", _stat_seeing({}))
+    assert probe(object()) is False, "unverifiable must not report confined"
+
+    # Our own netns readable, PID 1's not.
+    monkeypatch.setattr(resident.os, "stat", _stat_seeing({"/proc/self/ns/net": 111}))
+    assert probe(object()) is False, "an unreadable PID 1 netns verifies nothing"
+
+    # A malformed anchor must fail closed rather than crash the helper.
+    monkeypatch.setenv("OPENAI4S_HOST_NETNS_INO", "not-a-number")
+    assert probe(object()) is False, "a garbage anchor is not a passed check"
+
+    # Positive control: a real, differing netns anchor still reports confined,
+    # so the assertions above are not passing on a probe that only says False.
+    monkeypatch.setenv("OPENAI4S_HOST_NETNS_INO", "222")
+    assert probe(object()) is True, "a differing netns is a genuine boundary"
+
+
+def test_the_macos_probe_is_already_fail_closed(monkeypatch, tmp_path):
+    """The darwin branch returns early and never reaches the netns fallback.
+
+    Worth pinning rather than assuming: it is the branch that actually runs on
+    the platform whose boundary is proven here, and its `except Exception` must
+    keep meaning "not confined" rather than "could not tell, assume yes".
+    """
+    import openai4s_compute_provider._resident as resident
+
+    probe = resident.ByocResident.__dict__["_probe_confined"]
+    monkeypatch.setattr(resident.sys, "platform", "darwin")
+    # A home that cannot be listed for a reason that is *not* the sandbox.
+    monkeypatch.setenv("HOME", str(tmp_path / "absent"))
+    assert probe(object()) is False, "a failed listdir is not evidence of a sandbox"
+    # And a readable home is plainly unconfined.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert probe(object()) is False
