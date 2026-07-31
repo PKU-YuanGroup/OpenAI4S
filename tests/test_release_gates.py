@@ -414,6 +414,29 @@ def test_the_windows_package_has_no_native_windows_execution_path():
         assert suffix in verifier
 
 
+def test_the_windows_launcher_sources_stay_pure_ascii():
+    """Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI, not UTF-8.
+
+    A UTF-8 em dash decodes under cp1252 to three characters ending in 0x94 =
+    U+201D, which PowerShell accepts as a *closing double quote* -- so a dash
+    inside a string literal ends the string and the parse collapses far below
+    it. Found on a real windows-latest runner: pwsh 7 parsed the file happily
+    while `powershell.exe`, the one `OpenAI4S.cmd` actually invokes, failed 200
+    lines away from the cause. Asserted here as well as in the packaged
+    verifier so it is caught before anything is built.
+    """
+    for name in ("openai4s.ps1", "OpenAI4S.cmd", "bootstrap.sh"):
+        body = (ROOT / "scripts" / "windows" / name).read_bytes()
+        try:
+            body.decode("ascii")
+        except UnicodeDecodeError as error:
+            line = body[: error.start].count(b"\n") + 1
+            pytest.fail(
+                f"scripts/windows/{name} line {line} is not ASCII: "
+                f"{body[error.start:error.start + 1]!r}"
+            )
+
+
 def test_the_wsl_bootstrap_never_acquires_carriage_returns():
     """A CRLF shell script fails inside WSL, on the user's machine, not here."""
     assert b"\r" not in (ROOT / "scripts" / "windows" / "bootstrap.sh").read_bytes()

@@ -2,10 +2,20 @@
 <#
   OpenAI4S launcher for Windows.
 
+  ASCII ONLY, and not as a style preference. `OpenAI4S.cmd` invokes
+  `powershell.exe` -- Windows PowerShell 5.1, which is what a user actually
+  double-clicks -- and 5.1 reads a .ps1 without a BOM as ANSI, not UTF-8. A
+  UTF-8 em dash decodes under cp1252 to three characters ending in 0x94, which
+  is U+201D, which PowerShell accepts as a closing double quote: a dash inside
+  a string literal silently ends the string and the parse collapses far below
+  it. This file had exactly that, and pwsh 7 parsed it happily while 5.1 failed
+  at `if (Test-Serving) {`, 200 lines away from the real cause.
+  `verify_windows_zip.py` fails the build on any non-ASCII byte here.
+
   This package does NOT run OpenAI4S on native Windows, and that is deliberate
   rather than a limitation of the packaging. The kernel spawns POSIX
   subprocesses, the R channel rides file descriptors 3 and 4 through a shell
-  redirection, and the OS sandbox has no Windows backend — so
+  redirection, and the OS sandbox has no Windows backend -- so
   openai4s/platform_support.py refuses to start a kernel on win32 instead of
   warning and proceeding. A Windows build that started anyway would leave a
   scientist to discover the problem from a half-working analysis, which is
@@ -15,7 +25,7 @@
   double-clickable: the package carries the Linux bundle, installs it into your
   WSL2 distribution on first launch, starts the daemon there, and opens the
   Windows browser at the forwarded localhost port. WSL2 reports as Linux, which
-  is a supported platform, so nothing is being worked around — the app runs on
+  is a supported platform, so nothing is being worked around -- the app runs on
   the platform it says it runs on.
 
   Usage:
@@ -60,7 +70,7 @@ function Stop-WithGuidance([string] $Problem, [string[]] $Steps) {
     }
     # Double-clicked from Explorer, the console window closes the instant this
     # returns and the user sees the guidance for about a frame. The pause is
-    # skipped when something is driving the launcher — CI, or a script — where
+    # skipped when something is driving the launcher -- CI, or a script -- where
     # there is nobody to press a key and blocking would look like a hang.
     if (-not $env:OPENAI4S_NONINTERACTIVE) {
         Write-Host ''
@@ -83,7 +93,7 @@ function Get-PackageFacts {
         Select-Object -First 1
     if (-not $payload) {
         Stop-WithGuidance 'this package carries no Linux payload.' @(
-            'Re-download the release archive and unzip the whole thing —',
+            'Re-download the release archive and unzip the whole thing --',
             'the payload folder is not optional.'
         )
     }
@@ -93,7 +103,7 @@ function Get-PackageFacts {
             'Re-download the release archive and unzip it again.'
         )
     }
-    # `<digest>  <name>` — the same one-line format both build scripts publish.
+    # `<digest>  <name>` -- the same one-line format both build scripts publish.
     $digest = ((Get-Content $digestFile -Raw).Trim() -split '\s+')[0]
 
     [pscustomobject]@{
@@ -240,7 +250,7 @@ function Test-Serving {
 # ---------------------------------------------------------------------------
 
 # WSL first, package second. Both are fatal, but "you have no WSL2" is the one
-# a user has to fix before anything else in this package means anything — and
+# a user has to fix before anything else in this package means anything -- and
 # checking it first is also what lets the refusal be exercised against a bare
 # checkout, on a runner that has no WSL, without staging a package.
 $distro = Select-Distro
@@ -259,12 +269,12 @@ if ($Arguments -and $Arguments.Count -gt 0) {
 }
 
 if (Test-Serving) {
-    Write-Host "OpenAI4S is already serving at $Url — opening it." -ForegroundColor Green
+    Write-Host "OpenAI4S is already serving at $Url -- opening it." -ForegroundColor Green
     Start-Process $Url
     exit 0
 }
 
-Write-Section "OpenAI4S $($facts.Version) — starting in WSL2 ($distro)"
+Write-Section "OpenAI4S $($facts.Version) -- starting in WSL2 ($distro)"
 
 Write-Host '  [1/3] installing the Linux bundle (first run only, ~1 GB unpacked)...'
 $code = Invoke-Bootstrap $distro $bootstrap (@('install', $payloadLinux, $facts.Digest, $facts.BundleDir))

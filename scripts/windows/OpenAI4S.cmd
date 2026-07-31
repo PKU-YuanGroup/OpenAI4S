@@ -1,5 +1,5 @@
 @echo off
-rem OpenAI4S — double-clickable entry point.
+rem OpenAI4S -- double-clickable entry point.
 rem
 rem All of the work is in openai4s.ps1, next to this file. This wrapper exists
 rem because a .ps1 is not double-clickable: Explorer opens it in an editor, and

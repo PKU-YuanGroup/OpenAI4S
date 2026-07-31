@@ -196,6 +196,31 @@ def _check_no_native_windows_path(package: _Package) -> None:
         )
 
 
+def _check_ascii(package: _Package) -> None:
+    """The launcher must be pure ASCII, and this is not a style rule.
+
+    `OpenAI4S.cmd` invokes `powershell.exe` -- Windows PowerShell 5.1, the one a
+    user double-clicks -- and 5.1 reads a `.ps1` without a BOM as ANSI rather
+    than UTF-8. A UTF-8 em dash decodes under cp1252 to three characters ending
+    in 0x94 = U+201D, which PowerShell accepts as a closing double quote, so a
+    dash inside a string literal ends the string and the parse collapses far
+    below it. Caught on a real windows-latest runner: pwsh 7 parsed the same
+    file happily and 5.1 failed 200 lines from the cause.
+    """
+    for name in _CRLF_FILES + _LF_FILES:
+        body = package.read(name)
+        try:
+            body.decode("ascii")
+        except UnicodeDecodeError as error:
+            offending = body[error.start : error.start + 1]
+            line = body[: error.start].count(b"\n") + 1
+            raise BundleCheckError(
+                f"{name} line {line} contains the non-ASCII byte {offending!r}; "
+                "Windows PowerShell 5.1 decodes this file as ANSI and a stray "
+                "0x94 becomes a closing quote that silently truncates a string"
+            ) from None
+
+
 def _check_line_endings(package: _Package) -> None:
     for name in _CRLF_FILES:
         body = package.read(name)
@@ -293,6 +318,7 @@ def verify(target: Path) -> None:
         raise BundleCheckError(
             f"VERSION says {stamped!r} but the package is named for {version!r}"
         )
+    _check_ascii(package)
     _check_line_endings(package)
     _check_no_native_windows_path(package)
     _check_no_secrets(package)

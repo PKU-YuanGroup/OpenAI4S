@@ -1,8 +1,8 @@
 #!/bin/sh
-# OpenAI4S · the half of the Windows launcher that runs INSIDE the WSL2 distro.
+# OpenAI4S - the half of the Windows launcher that runs INSIDE the WSL2 distro.
 #
-# openai4s.ps1 does the Windows-side work — finding a WSL2 distro, translating
-# paths, opening the browser — and hands everything that touches the Linux
+# openai4s.ps1 does the Windows-side work -- finding a WSL2 distro, translating
+# paths, opening the browser -- and hands everything that touches the Linux
 # filesystem to this script. That split is not cosmetic: composing a POSIX
 # command line inside PowerShell means two layers of quoting over paths that
 # routinely contain spaces (`C:\Users\Some Name\Downloads\...`), and the failure
@@ -60,7 +60,7 @@ install)
 
   # The payload crosses the 9p/DrvFs boundary between the Windows filesystem and
   # the distro. A short read there produces a truncated archive rather than an
-  # error, so the digest is checked before anything is unpacked — an app that
+  # error, so the digest is checked before anything is unpacked -- an app that
   # half-installed is far harder to diagnose than one that refused to.
   ACTUAL="$(digest_of "$TARBALL")"
   if [ "$ACTUAL" = "NO-DIGEST-TOOL" ]; then
@@ -104,7 +104,7 @@ serve)
 
   # Every descriptor is redirected and the job is fully detached. wsl.exe waits
   # for the handles it inherited, so a background process that still holds this
-  # shell's stdout keeps the Windows-side launcher blocked forever — the daemon
+  # shell's stdout keeps the Windows-side launcher blocked forever -- the daemon
   # would be running and the app would look hung. setsid where it exists, plain
   # nohup where util-linux is absent.
   if command -v setsid >/dev/null 2>&1; then
