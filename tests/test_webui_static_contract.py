@@ -954,11 +954,18 @@ def test_local_model_discovery_is_loopback_only_and_requires_explicit_add() -> N
     assert "endpoint.base_url" in renderer and "endpoint.provider" in renderer
     assert "loopbackModelBase(profile.base_url)" in renderer
     assert 'api("/model-endpoints/discover"' in models
-    assert "runLocalScan(false)" in models
+    # Not on render. The pane used to run the scan when it opened -- on first
+    # visit and on every re-render after a save, activate or delete -- which is
+    # the implicit outbound call readiness was made local-only to avoid.
+    # tests/test_model_protocol_menu.py opens the pane and asserts what it did
+    # and did not contact.
+    assert "runLocalScan(false)" not in models
     assert 'const provIn = el("select", "cust-input")' in models
-    assert '["chatgpt", "cust.models.protocol.openai"]' in models
-    assert '["claude", "cust.models.protocol.anthropic"]' in models
-    assert '["ark", "cust.models.protocol.ark"]' in models
+    # Pinning the three hardcoded protocol pairs here is what kept `gemini` and
+    # `openai_responses` unreachable: both were accepted by the daemon and
+    # served in `protocols`, and this file asserted the client's stale copy.
+    # The menu is generated now, and its contents are asserted by running it.
+    assert "modelProtocolOptions(data.protocols)" in models
     assert "datalist" not in models
     assert "known_providers" not in models
     # Discovery itself is GET-only; profile mutation exists solely behind the

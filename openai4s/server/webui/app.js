@@ -319,6 +319,15 @@ Object.assign(I18N.zh, {
   "composer.option.specialist": "专家",
   "composer.model": "模型",
   "composer.placeholder": "输入任何内容 — @ 引用制品，# 引用会话，/ 使用技能，⌘K 搜索…",
+  "composer.placeholderQueue": "当前任务运行中 — 现在发送将排入队列…",
+  "queue.accepted": "已排入队列，将在当前任务之后运行",
+  "queue.waiting": "{0} 条排队中",
+  "queue.noPreview": "（无文本）",
+  "queue.underProfile": "配置 {0} · 版本 {1}",
+  "queue.onBranch": "分支 {0}",
+  "queue.cancelOne": "取消这一条（不影响正在运行的任务）",
+  "queue.cancelled": "已取消该排队消息",
+  "queue.cancelFailed": "取消排队消息失败：{0}",
   "composer.planMode": "计划模式",
   "composer.exploreMode": "自主探索",
   "composer.voice": "语音输入",
@@ -441,8 +450,9 @@ Object.assign(I18N.zh, {
   "cust.models.modelPlaceholder2": "模型 id（留空用该协议默认）",
   "cust.models.namePlaceholder": "名称（如 DeepSeek 生产 / 本地 vLLM）",
   "cust.models.local.title": "本地推理服务",
-  "cust.models.local.desc": "自动扫描本机固定端口上的 Ollama、LM Studio、vLLM 与 llama.cpp；扫描不会修改当前模型，未知能力默认走保守的 Code-as-Action。",
-  "cust.models.local.scan": "重新扫描",
+  "cust.models.local.desc": "点击下方按钮扫描本机固定端口上的 Ollama、LM Studio、vLLM 与 llama.cpp；扫描不会修改当前模型，未知能力默认走保守的 Code-as-Action。",
+  "cust.models.local.scan": "扫描本机",
+  "cust.models.local.idle": "尚未扫描。点击上方按钮检测本机的 Ollama、LM Studio、vLLM 与 llama.cpp。",
   "cust.models.local.scanning": "正在扫描本机…",
   "cust.models.local.none": "没有发现可用的本地 OpenAI-compatible endpoint。",
   "cust.models.local.models": "{0} 个模型",
@@ -455,6 +465,8 @@ Object.assign(I18N.zh, {
   "cust.models.protocol.openai": "OpenAI 兼容协议",
   "cust.models.protocol.anthropic": "Anthropic 兼容协议",
   "cust.models.protocol.ark": "ark 兼容协议",
+  "cust.models.protocol.gemini": "Gemini 兼容协议",
+  "cust.models.protocol.openaiResponses": "OpenAI Responses 协议",
   "cust.search.name": "搜索 API Key（Tavily）",
   "cust.search.desc": "用于联网搜索的 Tavily 密钥；接入点固定为 api.tavily.com。",
   "cust.search.set": "已配置",
@@ -1008,6 +1020,8 @@ Object.assign(I18N.zh, {
   "skill.label.name": "名称",
   "skill.namePlaceholder": "技能名（英文短横线，如 my-analysis）",
   "skill.newTitle": "新建技能",
+  "skill.readiness.needsSetup": "本机缺少：{0}",
+  "skill.readiness.unknown": "本机无法确认：{0}",
   "skill.saveBtn": "保存技能",
   "skill.historyBtn": "版本历史",
   "skill.historyTitle": "技能版本 — {0}",
@@ -1220,6 +1234,15 @@ Object.assign(I18N.en, {
   "composer.option.specialist": "Specialist",
   "composer.model": "Model",
   "composer.placeholder": "Ask anything — @ for artifacts, # for sessions, / for skills, ⌘K to search…",
+  "composer.placeholderQueue": "A turn is running — sending now queues this behind it…",
+  "queue.accepted": "Queued — it will run after the current turn",
+  "queue.waiting": "{0} queued",
+  "queue.noPreview": "(no text)",
+  "queue.underProfile": "profile {0} · rev {1}",
+  "queue.onBranch": "branch {0}",
+  "queue.cancelOne": "Drop this queued message (the running turn keeps going)",
+  "queue.cancelled": "Queued message dropped",
+  "queue.cancelFailed": "Could not drop the queued message: {0}",
   "composer.planMode": "Plan mode",
   "composer.exploreMode": "Explore mode",
   "composer.voice": "Voice input",
@@ -1342,8 +1365,9 @@ Object.assign(I18N.en, {
   "cust.models.modelPlaceholder2": "Model id (leave blank for the protocol default)",
   "cust.models.namePlaceholder": "Name (e.g. DeepSeek Prod / Local vLLM)",
   "cust.models.local.title": "Local inference servers",
-  "cust.models.local.desc": "Automatically scans fixed loopback ports for Ollama, LM Studio, vLLM, and llama.cpp. Scanning never changes the active model; unknown capabilities default to conservative Code-as-Action.",
-  "cust.models.local.scan": "Scan again",
+  "cust.models.local.desc": "Press the button below to scan fixed loopback ports for Ollama, LM Studio, vLLM, and llama.cpp. Scanning never changes the active model; unknown capabilities default to conservative Code-as-Action.",
+  "cust.models.local.scan": "Scan this machine",
+  "cust.models.local.idle": "Not scanned yet. Press the button above to look for Ollama, LM Studio, vLLM, and llama.cpp on this machine.",
   "cust.models.local.scanning": "Scanning this machine…",
   "cust.models.local.none": "No local OpenAI-compatible endpoint was detected.",
   "cust.models.local.models": "{0} models",
@@ -1356,6 +1380,8 @@ Object.assign(I18N.en, {
   "cust.models.protocol.openai": "OpenAI-compatible protocol",
   "cust.models.protocol.anthropic": "Anthropic-compatible protocol",
   "cust.models.protocol.ark": "Ark-compatible protocol",
+  "cust.models.protocol.gemini": "Gemini-compatible protocol",
+  "cust.models.protocol.openaiResponses": "OpenAI Responses protocol",
   "cust.search.name": "Search API key (Tavily)",
   "cust.search.desc": "Tavily key for web search; the endpoint is fixed to api.tavily.com.",
   "cust.search.set": "Configured",
@@ -1909,6 +1935,8 @@ Object.assign(I18N.en, {
   "skill.label.name": "Name",
   "skill.namePlaceholder": "Skill name (lowercase-hyphenated, e.g. my-analysis)",
   "skill.newTitle": "New skill",
+  "skill.readiness.needsSetup": "Not available on this machine: {0}",
+  "skill.readiness.unknown": "Cannot be verified on this machine: {0}",
   "skill.saveBtn": "Save skill",
   "skill.historyBtn": "Version history",
   "skill.historyTitle": "Skill versions — {0}",
@@ -2261,6 +2289,14 @@ function mergeActionTimelines(current, incoming, direction = "latest") {
     running: direction === "before" ? !!current.running : !!incoming.running
   };
 }
+function queueMetadata(raw) {
+  const m = raw || {};
+  const rev = +m.model_profile_revision;
+  return {
+    preview: publicText(m.preview, 160), model_profile_id: publicText(m.model_profile_id, 96),
+    model_profile_revision: Number.isFinite(rev) && rev > 0 ? rev : null
+  };
+}
 function sanitizeExecutionQueue(payload) {
   const source = payload && (payload.execution || payload.payload || payload) || {};
   const ticket = item => item ? {
@@ -2269,7 +2305,12 @@ function sanitizeExecutionQueue(payload) {
     branch_id: publicText(item.branch_id, 96), language: publicText(item.language, 24),
     generation_id: publicText(item.generation_id, 96), resource_keys: publicList(item.resource_keys),
     queue_position: Number.isFinite(+item.queue_position) ? +item.queue_position : null,
-    queued_at: item.queued_at, started_at: item.started_at, cancel_requested: !!item.cancel_requested
+    queued_at: item.queued_at, started_at: item.started_at, cancel_requested: !!item.cancel_requested,
+    // The ticket's own frozen description of the work. A queued item has no
+    // frame row and no message row yet, so this is the only thing that can say
+    // what the item is — and it is frozen at admission, so it keeps saying the
+    // same thing while the frame's model pin is rewritten underneath it.
+    metadata: queueMetadata(item.metadata)
   } : null;
   return {
     owner: ticket(source.owner), queue: (source.queue || []).slice(0, 100).map(ticket).filter(Boolean),
@@ -2284,7 +2325,63 @@ function rememberExecutionQueue(payload) {
   S.executionIdentity = ticket && ticket.execution_id && ticket.owner && ticket.owner.kind && ticket.owner.id ? {
     execution_id: ticket.execution_id, owner: { kind: ticket.owner.kind, id: ticket.owner.id }
   } : null;
+  renderQueueStrip();
   return S.executionQueue;
+}
+// ---- queued follow-ups -----------------------------------------------------
+// The composer stays usable while a turn runs, so the FIFO queue is now
+// something the user can see rather than an internal detail. Every row is drawn
+// from the server projection alone: position, preview and the frozen
+// profile/branch all come off the ticket, so a repaint after any queue change
+// cannot disagree with what the server will actually run.
+function queueRowLabel(item) {
+  const meta = item.metadata || {};
+  const bits = [];
+  if (meta.model_profile_id) bits.push(t("queue.underProfile", meta.model_profile_id, meta.model_profile_revision == null ? "?" : meta.model_profile_revision));
+  if (item.branch_id) bits.push(t("queue.onBranch", item.branch_id));
+  bits.push(item.execution_id);
+  return bits.join(" · ");
+}
+function renderQueueStrip() {
+  const box = $("#queue-strip"); if (!box) return;
+  const queue = ((S.executionQueue || {}).queue || []).filter(item => (item.owner || {}).kind === "agent");
+  box.innerHTML = "";
+  box.classList.toggle("hidden", !queue.length);
+  if (!queue.length) return;
+  box.appendChild(el("div", "queue-head", t("queue.waiting", queue.length)));
+  queue.forEach(item => {
+    const row = el("div", "queue-row");
+    row.appendChild(el("span", "queue-pos", "#" + (item.queue_position == null ? "?" : item.queue_position)));
+    row.appendChild(el("span", "queue-preview", item.metadata.preview || t("queue.noPreview")));
+    const meta = el("span", "queue-meta", queueRowLabel(item));
+    meta.title = queueRowLabel(item);
+    row.appendChild(meta);
+    const drop = el("button", "icon-ghost queue-cancel");
+    drop.title = t("queue.cancelOne");
+    drop.appendChild(iconEl("x", 13));
+    // One item, by its own id AND its own owner. The server refuses a
+    // half-matching pair, which is what keeps this from ever reaching the
+    // running turn or a sibling that happens to sit at the same position.
+    drop.onclick = () => cancelQueuedExecution(item);
+    row.appendChild(drop);
+    box.appendChild(row);
+  });
+}
+async function cancelQueuedExecution(item) {
+  const fid = S.currentId;
+  if (!fid || !item || !item.execution_id || !(item.owner || {}).id) return;
+  try {
+    const r = await api(`/frames/${fid}/cancel`, { method: "POST", body: JSON.stringify({
+      execution_id: item.execution_id, owner: { kind: item.owner.kind, id: item.owner.id }, reason: "queued follow-up dropped by user"
+    }) });
+    if (!r || r.ok !== true) { hint(t("queue.cancelFailed", (r && r.reason) || ""), true); return; }
+    // Mark the optimistic bubble this item was sent as, rather than removing
+    // it: a message the user typed and can still see is easier to re-send than
+    // one that vanished, and the transcript should not silently lose a turn.
+    const bubble = [...document.querySelectorAll(".msg.user")].find(n => n.dataset.executionId === item.execution_id);
+    if (bubble) bubble.classList.add("cancelled");
+    hint(t("queue.cancelled"));
+  } catch (e) { hint(t("queue.cancelFailed", apiErrorText(e)), true); }
 }
 function rememberExecutionState(event) {
   const status = String(event && event.status || "").toLowerCase();
@@ -5130,7 +5227,11 @@ async function cancelTurn() {
 /* ---------- send ---------- */
 async function send(text, opts) {
   text = (text || "").trim(); opts = opts || {};
-  if (S.running) return;
+  // Sending mid-turn queues instead of being dropped on the floor. The old
+  // `if (S.running) return;` silently discarded the message — no error, no
+  // hint, just a composer that had already been cleared — even though the
+  // server's FIFO admission has always accepted a follow-up here.
+  const queueing = S.running;
   const runtime = runtimeSummary();
   if (S.currentId && runtime.viewOnly && runtime.trustState === "quarantined") {
     hint(t("runtime.quarantineHint"), true);
@@ -5159,6 +5260,7 @@ async function send(text, opts) {
   const es = $(".empty-session"); if (es) es.remove();
   const w = el("div", "msg user"); const b = el("div", "bubble"); b.textContent = text || t("send.imageAnnotationFallback"); w.appendChild(b);
   if (anns.length) w.appendChild(annotAttachment(anns));
+  if (queueing) w.classList.add("queued");
   $("#messages").appendChild(w); down(true);
   let payload = text;
   if (planNow) {
@@ -5171,7 +5273,12 @@ async function send(text, opts) {
     S.planPending = true;
   }
   if (skillDirective) payload += skillDirective;
-  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true);
+  // Queueing must not restate the turn banner: the running turn owns the hint
+  // and the Stop button, and re-announcing "Running…" here would make the Stop
+  // control read as belonging to the item just typed rather than to the one it
+  // would actually interrupt.
+  if (queueing) hint(t("queue.accepted"));
+  else { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true); }
   $("#composer").value = ""; grow(); const annIds = anns.map(x => x.id);
   if (annIds.length) { setLocalAnnotationStatus(annIds, "sent"); refreshAllStages(); updateAnnotBadge(); }
   sub(S.currentId);  // guarantee this client is subscribed BEFORE the POST spawns the
@@ -5187,7 +5294,11 @@ async function send(text, opts) {
     // so provider, endpoint and credential came from the pin while the model name
     // came from here, a configuration that exists in no profile. Changing model is
     // now activating a profile (PUT /models/default), which the session then binds.
-    await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, plan: planNow, explore: exploreNow, annotation_ids: annIds, wait: false }) });
+    const accepted = await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, plan: planNow, explore: exploreNow, annotation_ids: annIds, wait: false }) });
+    // Tie the optimistic bubble to the ticket the 202 named, so cancelling that
+    // exact queued item can mark the message the user is looking at. Nothing
+    // else in the transcript carries an execution id.
+    if (accepted && accepted.execution_id) w.dataset.executionId = accepted.execution_id;
     // The optimistic status above clears the badge immediately; reload once the turn POST finishes to reconcile with the server.
     if (annIds.length) { try { await loadAnnotations(S.currentId); } catch {} refreshAllStages(); updateAnnotBadge(); }
   }
@@ -5210,14 +5321,19 @@ async function send(text, opts) {
         try {
           await api(`/frames/${encodeURIComponent(S.currentId)}/model-binding`, { method: "POST" });
           hint(t("model.rebind.done"));
-          if (S.running) turnDone("failed");
+          if (S.running && !queueing) turnDone("failed");
           loadSessions();
           return;
         } catch (rebindError) { hint(apiErrorText(rebindError), true); }
       }
     }
     hint(t("toast.sendFailed", apiErrorText(e)), true);
-    if (S.running) turnDone("failed");
+    // A follow-up that was refused (413/409/429) says nothing about the turn
+    // already running. Tearing the turn state down here would report the
+    // running turn as failed because a *different*, never-admitted message was
+    // rejected — and would re-enable Stop against a turn nobody stopped.
+    if (queueing) w.classList.add("cancelled");
+    else if (S.running) turnDone("failed");
     loadSessions();
     return;
   }
@@ -7552,6 +7668,21 @@ async function custGeneral(c) {
   const kr = el("div", "cust-row"); const ki = el("div", "info"); ki.appendChild(el("div", "nm", t("cust.general.modelKeyName"))); ki.appendChild(el("div", "ds", conf.has_api_key ? (t("cust.general.apiKeyConfigured") + (conf.model ? "（" + conf.model + "）" : "")) : t("cust.models.key.missing"))); kr.appendChild(ki); const go = el("button", "outline-btn small", t("cust.general.configureBtn")); go.onclick = () => custTab("models"); kr.appendChild(go); c.appendChild(kr);
 }
 function setLayout(name) { localStorage.setItem("os-layout", name); applyLayout(name); hint(t("toast.layout", ({ comfortable: t("cust.general.layout.comfortable"), compact: t("cust.general.layout.compact"), wide: t("cust.general.layout.wide") }[name] || name))); }
+// Readiness is computed server-side from local state alone (`nvidia-smi` is
+// looked for on PATH, never run) and the catalogue row had no reader, so a
+// GPU-only Skill rendered identically to one that runs anywhere and the user
+// met the difference mid-task. `ready` adds nothing to a row, so only the two
+// states that cost the user something are drawn.
+function skillReadinessNote(s) {
+  const rd = (s && s.readiness) || {};
+  if (!rd.state || rd.state === "ready") return null;
+  const named = publicList(rd.state === "needs_setup" ? rd.missing : rd.unverifiable, 8);
+  // Falls back to the declared requirements rather than to an empty sentence:
+  // "needs setup" that names nothing is not actionable.
+  const listed = (named.length ? named : publicList(s.requirements, 8)).join(", ");
+  if (!listed) return null;
+  return el("div", "ds prof-warn", t(rd.state === "needs_setup" ? "skill.readiness.needsSetup" : "skill.readiness.unknown", listed));
+}
 async function custSkills(c) {
   try {
     const pid = (typeof effProject === "function" ? effProject() : S.project) || null;
@@ -7571,7 +7702,7 @@ async function custSkills(c) {
       const scope = s.scope === "project" ? "project" : (s.scope === "bundled" ? "bundled" : "personal");
       const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm");
       nm.appendChild(el("span", null, s.displayName || s.name)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", t(`skill.scope.${scope}`)));
-      info.appendChild(nm); info.appendChild(el("div", "ds", s.description || "")); row.appendChild(info);
+      info.appendChild(nm); info.appendChild(el("div", "ds", s.description || "")); const rn = skillReadinessNote(s); if (rn) info.appendChild(rn); row.appendChild(info);
       const useBtn = el("button", "icon-ghost"); useBtn.title = t("skill.useInChat"); useBtn.innerHTML = icon("message-square", 15); useBtn.onclick = () => insertSkillMention(s.name); row.appendChild(useBtn);
       if (s.versioned) { const vb = el("button", "icon-ghost"); vb.title = t("skill.historyBtn"); vb.innerHTML = icon("clock", 15); vb.onclick = () => skillVersionHistory(s.name, scope, scope === "project" ? pid : null); row.appendChild(vb); }
       if (s.editable && scope === "personal") { const eb = el("button", "icon-ghost"); eb.title = t("common.edit"); eb.innerHTML = icon("pencil", 15); eb.onclick = () => skillEditor(s.name); row.appendChild(eb); const db = el("button", "icon-ghost"); db.title = t("common.delete"); db.innerHTML = icon("trash-2", 15); db.onclick = async () => { if (!confirm(t("cust.skills.deleteConfirm", s.name))) return; try { await api(`/skills/${encodeURIComponent(s.name)}`, { method: "DELETE" }); S.skillsCatalog = null; custTab("skills"); } catch (e) { hint(t("toast.deleteFailed", apiErrorText(e)), true); } }; row.appendChild(db); }
@@ -7952,20 +8083,42 @@ function renderLocalModelEndpoints(root, discovery, profiles) {
     row.appendChild(add); root.appendChild(row);
   });
 }
+// Which protocols a user may pick is the daemon's answer, not a copy of it kept
+// here. `gemini` and `openai_responses` are both in PROFILE_PROTOCOLS and both
+// accepted by POST/PATCH, while this pane offered a fixed three -- so a user
+// holding a Gemini key had no way to say so. The list has to be *generated* from
+// the served catalogue or the next protocol added server-side is unreachable the
+// same way. Only the label stays client-side: a protocol nobody has translated
+// yet shows its id, which is a usable option rather than a missing one.
+function modelProtocolOptions(served) {
+  const labelKeys = {
+    chatgpt: "cust.models.protocol.openai",
+    claude: "cust.models.protocol.anthropic",
+    ark: "cust.models.protocol.ark",
+    gemini: "cust.models.protocol.gemini",
+    openai_responses: "cust.models.protocol.openaiResponses",
+  };
+  const ids = [];
+  (Array.isArray(served) ? served : []).forEach(value => {
+    const id = typeof value === "string" ? value.trim().slice(0, 64) : "";
+    if (id && !ids.includes(id)) ids.push(id);
+  });
+  // A daemon too old to serve the catalogue still has to leave the form usable;
+  // these three are what shipped before `protocols` was part of the payload.
+  const list = ids.length ? ids : ["chatgpt", "claude", "ark"];
+  // tOptional, not t: a missing translation must not put a dot-key in a menu.
+  return list.map(id => ({ value: id, label: tOptional(labelKeys[id] || "") || id }));
+}
 async function custModels(c) {
   c.innerHTML = ""; c.appendChild(hdr(t("cust.tab.models"), t("cust.models.subtitle2")));
   let data = { profiles: [], active_id: "", protocols: [] };
   try { data = await api("/model-profiles"); } catch (e) { c.appendChild(el("div", "dock-empty", t("versions.load.err", e.message))); return; }
   let editing = null;  // set to a profile object when editing that row
-  const protocols = [
-    ["chatgpt", "cust.models.protocol.openai"],
-    ["claude", "cust.models.protocol.anthropic"],
-    ["ark", "cust.models.protocol.ark"],
-  ];
-  const protocolIds = new Set(protocols.map(item => item[0]));
+  const protocols = modelProtocolOptions(data.protocols);
+  const protocolIds = new Set(protocols.map(item => item.value));
   const protocolLabel = provider => {
-    const match = protocols.find(item => item[0] === provider);
-    return match ? t(match[1]) : provider;
+    const match = protocols.find(item => item.value === provider);
+    return match ? match.label : provider;
   };
 
   // Local discovery is a read-only, fixed-loopback scan. The endpoint must be
@@ -7984,7 +8137,13 @@ async function custModels(c) {
     } finally { scanLocal.disabled = false; scanLocal.textContent = t("cust.models.local.scan"); }
   };
   scanLocal.onclick = () => runLocalScan(true); localActions.appendChild(scanLocal);
-  c.appendChild(localInfo); c.appendChild(localActions); c.appendChild(localResults); runLocalScan(false);
+  c.appendChild(localInfo); c.appendChild(localActions); c.appendChild(localResults);
+  // Opening this pane used to run the scan itself, so every visit -- including
+  // the re-render after every save, activate and delete -- probed four loopback
+  // ports nobody asked it to. Readiness is answered from local state precisely
+  // so that opening Customize costs nothing; the one control here that touches a
+  // socket waits for the button, like the per-profile probe beside it.
+  localResults.appendChild(el("div", "dock-empty", t("cust.models.local.idle")));
 
   // --- add / edit form ---
   const head = el("div", "cust-subhead", t("cust.models.addHeading"));
@@ -7992,7 +8151,7 @@ async function custModels(c) {
   const form = el("div", "skill-form");
   const nameIn = el("input", "cust-input"); nameIn.placeholder = t("cust.models.namePlaceholder");
   const provIn = el("select", "cust-input");
-  protocols.forEach(([value, labelKey]) => { const option = el("option"); option.value = value; option.textContent = t(labelKey); provIn.appendChild(option); });
+  protocols.forEach(({ value, label }) => { const option = el("option"); option.value = value; option.textContent = label; provIn.appendChild(option); });
   const baseIn = el("input", "cust-input"); baseIn.placeholder = t("cust.models.baseUrlPlaceholder");
   const modelIn = el("input", "cust-input"); modelIn.placeholder = t("cust.models.modelPlaceholder2");
   const keyIn = el("input", "cust-input"); keyIn.type = "password"; keyIn.placeholder = "API Key"; keyIn.autocomplete = "off";
@@ -8289,8 +8448,18 @@ function csv(line, sep) { return csvFields(line, sep); }
 function ago(iso) { if (!iso) return ""; const t = new Date(iso).getTime(); if (isNaN(t)) return ""; const d = (Date.now() - t) / 1000; if (d < 60) return "just now"; if (d < 3600) return (d / 60 | 0) + "m"; if (d < 86400) return (d / 3600 | 0) + "h"; return (d / 86400 | 0) + "d"; }
 function bytes(b) { b = b || 0; if (b < 1024) return b + " B"; if (b < 1048576) return (b / 1024).toFixed(1) + " KB"; return (b / 1048576).toFixed(1) + " MB"; }
 function hint(t, err, spin) { const h = $("#composer-hint"); h.innerHTML = ""; if (!t) return; if (spin) { h.appendChild(iconEl("loader", 13, "spin")); h.appendChild(document.createTextNode(" ")); } const s = el("span", null, t); if (err) s.style.color = "var(--danger)"; h.appendChild(s); }
+// `on` no longer means "typable" — it means "the next Enter starts a turn
+// rather than queueing one". The textarea itself is never disabled: the server
+// admits a follow-up sent mid-turn into its FIFO queue and always did, so
+// disabling the box withheld a capability the backend already had. A disabled
+// textarea also drops focus and throws away a half-typed @-mention, which made
+// "wait for the turn to finish" cost the user their draft as well.
 function enableComposer(on) {
-  const c = $("#composer"); if (c) c.disabled = !on;
+  const c = $("#composer"); if (!c) return;
+  c.disabled = false;
+  c.classList.toggle("queueing", !on);
+  c.placeholder = t(on ? "composer.placeholder" : "composer.placeholderQueue");
+  renderQueueStrip();
 }
 function messagesAtBottom(m, pad) { return !m || (m.scrollHeight - m.scrollTop - m.clientHeight) < (pad || 80); }
 function paintJumpPill() { const m = $("#messages"), pill = $("#jump-pill"); if (!m || !pill) return; pill.classList.toggle("hidden", messagesAtBottom(m, 60)); }

@@ -25,10 +25,10 @@ REPLACE the list it inherited: restricted to one Skill, ask for three, get
 three. Arming a lock that delegation walks around is the same defect wearing a
 fix. Inheritance now narrows.
 
-Not fixed here, and recorded rather than implied: there is no connector
-allowlist mechanism at all — no `set_allowed_connectors`, nothing to arm. That
-is a build, not a wiring gap, and `docs/next-version-progress.md` is corrected
-to stop claiming otherwise.
+The connector half was a build, not a wiring gap: there was no
+`set_allowed_connectors` and nothing to arm. It is built now and armed at the
+same call site, so the two halves cannot drift apart again — its contract lives
+in `test_specialist_connector_allowlist.py`.
 """
 
 from __future__ import annotations
@@ -223,15 +223,26 @@ def test_an_empty_child_list_survives_the_merge():
 # --------------------------------------------------------------------------
 
 
-def test_the_connector_allowlist_has_no_mechanism_to_arm():
-    """Recorded, not implied. `connectors` is stored, inherited and merged the
-    same way `skill_names` is, and there is no `set_allowed_connectors` for a
-    caller to reach — so the skills fix does not silently imply this half
-    works. The day someone adds the setter, this test tells them to wire it.
+def test_the_connector_half_is_armed_at_the_same_choke_point(dispatcher):
+    """This used to assert the opposite — that `connectors` had no mechanism to
+    arm — because it did not: stored, inherited and merged exactly like
+    `skill_names`, and enforced nowhere. Both halves now hang off the one call,
+    which is what keeps a future reader from re-splitting them. The connector
+    contract itself is in `test_specialist_connector_allowlist.py`.
     """
-    from openai4s.host import skills as skills_mod
+    dispatcher.store.upsert_connector(
+        connector_id="keep", name="Keep", command=["python", "-c", "pass"]
+    )
+    dispatcher.store.upsert_connector(
+        connector_id="drop", name="Drop", command=["python", "-c", "pass"]
+    )
+    assert sorted(row["id"] for row in dispatcher._m_mcp_list()) == ["drop", "keep"]
 
-    assert not hasattr(skills_mod.SkillService, "set_allowed_connectors")
+    _apply(
+        dispatcher,
+        {"unrestricted": False, "capabilities": ["mcp"], "connectors": ["keep"]},
+    )
+    assert [row["id"] for row in dispatcher._m_mcp_list()] == ["keep"]
 
 
 def test_the_dispatcher_is_where_the_arming_happens():

@@ -338,6 +338,22 @@ _MAX_JSON_BODY_BYTES = MAX_ARCHIVE_BYTES
 #: the part it needs instead of carrying all of it in every later prompt.
 MAX_MESSAGE_CHARS = 200_000
 
+#: How much of a queued message the FIFO projection repeats back. A queue entry
+#: has to be recognisable -- "which of the three did I want to drop" is the only
+#: question a cancel control ever answers -- but the queue snapshot is broadcast
+#: to every subscriber of the session on every queue change, so carrying the
+#: whole 200,000-character message there would multiply it across the wire.
+QUEUE_PREVIEW_CHARS = 160
+
+
+def queue_preview(text: str) -> str:
+    """One line of a queued message, short enough to broadcast repeatedly."""
+
+    collapsed = " ".join(str(text or "").split())
+    if len(collapsed) <= QUEUE_PREVIEW_CHARS:
+        return collapsed
+    return collapsed[: QUEUE_PREVIEW_CHARS - 1] + "…"
+
 
 def _skill_result_status(payload: object) -> int:
     """The status a Customize skill result should be answered with.
@@ -3160,8 +3176,16 @@ class SessionRunner:
         execution_id: str | None = None,
         language: str | None = None,
         reason: str,
+        metadata: Mapping[str, Any] | None = None,
     ):
-        """Submit after any already-reserved Stop, without holding a long lock."""
+        """Submit after any already-reserved Stop, without holding a long lock.
+
+        ``metadata`` rides on the ticket and therefore appears in every queue
+        snapshot and ``execution_queue`` broadcast. It is the only place a
+        *queued* item can describe itself: the ticket is all that exists until
+        the item is admitted, so anything the client needs in order to name the
+        item it wants cancelled has to be frozen here, at submit.
+        """
 
         while True:
             st.stop_finished.wait()
@@ -3180,7 +3204,7 @@ class SessionRunner:
                             "workspace",
                             f"kernel:{language or 'control'}",
                         ),
-                        metadata={"reason": reason},
+                        metadata={"reason": reason, **dict(metadata or {})},
                     )
                 except QueueDepthExceeded as error:
                     # A full queue surfaced as HTTP 500 `internal_error`, which
@@ -4486,6 +4510,17 @@ class SessionRunner:
             owner="agent",
             owner_id=job.job_id,
             reason="user message",
+            # What the browser needs to show a queued follow-up and to name the
+            # one it wants dropped. Read off the ticket rather than re-derived:
+            # the profile pair below is the one this item was *accepted* under,
+            # and the frame's pin -- the only other place it is written -- is
+            # rewritable while the item waits, so re-reading it at render time
+            # would show a queued item running under a configuration it is not.
+            metadata={
+                "preview": queue_preview(text),
+                "model_profile_id": job.model_profile_id,
+                "model_profile_revision": job.model_profile_revision,
+            },
         )
         job.execution_id = ticket.execution_id
         job.execution_owner = ticket.owner.as_dict()

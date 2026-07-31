@@ -876,10 +876,13 @@ class HostDispatcher:
         # `set_allowed_skills` only ever narrows, so applying it twice — which
         # a delegation chain does — cannot widen. `None` inherits.
         if policy is not None:
-            try:
-                self._skill_service.set_allowed_skills(policy.skill_names)
-            except Exception:  # noqa: BLE001 - a child must not die on this
-                pass
+            # Deliberately not wrapped in `except Exception: pass` any more.
+            # Both setters are pure set arithmetic over an already-validated
+            # policy, and a swallowed failure here is an allowlist that looks
+            # applied and is not — the exact shape of the defect this arming
+            # exists to close.
+            self._skill_service.set_allowed_skills(policy.skill_names)
+            self._mcp_service.set_allowed_connectors(policy.connector_names)
         self._session_tool_catalog = None
         self._session_tool_scope = None
 

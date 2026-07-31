@@ -1473,3 +1473,22 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
 .ver-src-k{color:var(--text-400);min-width:130px;flex:none}
 .ver-src-v{color:var(--text-200);word-break:break-all}
 .ver-src-note{color:var(--text-400);margin-top:5px;font-style:italic}
+
+/* ---- queued follow-ups ----------------------------------------------------
+   The composer stays usable while a turn runs, so what is waiting behind that
+   turn has to be visible. Sits between the composer card and the hint line, so
+   it reads as "what your next Enter joins" rather than as transcript. */
+.queue-strip{margin:6px auto 0;width:min(var(--col),calc(100% - 48px));border:.5px solid var(--border-btn);border-radius:var(--radius-card);background:var(--bg-000);padding:6px 8px}
+.queue-head{font-size:11px;color:var(--text-400);margin:0 2px 4px}
+.queue-row{display:flex;align-items:baseline;gap:8px;padding:3px 2px;font-size:12px;min-width:0}
+.queue-pos{color:var(--text-400);flex:none;font-variant-numeric:tabular-nums}
+.queue-preview{color:var(--text-200);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.queue-meta{color:var(--text-400);font-size:11px;flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.queue-cancel{flex:none}
+/* A message typed while a turn was running: shown in the transcript in the
+   order it will run, but visibly not yet the live one. */
+.msg.user.queued .bubble{opacity:.72}
+/* A message that was queued and then dropped stays legible on purpose: the
+   user can re-send it, which they cannot do with a bubble that vanished. */
+.msg.user.cancelled .bubble{opacity:.5;text-decoration:line-through}
+#composer.queueing::placeholder{font-style:italic}
