@@ -247,6 +247,12 @@ _ERROR_CODES = ERROR_CODES
 _error_code_for = error_code_for
 _public_failure = public_failure
 
+#: Hard ceiling on one message page. The route is walked page by page by a
+#: client now, so an unbounded ``limit`` is an invitation to project an entire
+#: branch -- the whole conversation, in one response -- from a query string.
+#: 1000 is well past any page the UI asks for and is still a bound.
+MAX_MESSAGE_PAGE = 1000
+
 
 def _encode_frame_cursor(created_at: int, frame_id: str) -> str:
     """Opaque cursor. Opaque on purpose: a client that parses it becomes
@@ -8322,8 +8328,23 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/frames/([^/]+)/messages", sub)
             if m and method == "GET":
                 fid = m.group(1)
-                start = int((q.get("from") or ["0"])[0])
-                limit = int((q.get("limit") or ["300"])[0])
+                # Validated like the session list's, and for the same reason:
+                # both ends of this were wrong once a client walked it page by
+                # page. `?limit=banana` raised ValueError out of the route and
+                # reached the browser as a 500 `internal_error`, which a paging
+                # client cannot tell from a broken server -- while the sibling
+                # `before_seq=banana` on this very route already answered 400.
+                # `?limit=-5` was worse: 200, an empty page, and
+                # `has_earlier: false`, which reads as "this is the start of
+                # history" and silently ends the walk.
+                try:
+                    start = max(0, int((q.get("from") or ["0"])[0]))
+                    limit = int((q.get("limit") or ["300"])[0])
+                except (TypeError, ValueError):
+                    raise GatewayError(
+                        400, "from and limit must be integers", "invalid_limit"
+                    )
+                limit = max(1, min(MAX_MESSAGE_PAGE, limit))
                 branch_id = (q.get("branch_id") or [None])[0]
                 # `before_seq` opts into latest-first. Absent, the response is
                 # exactly what it always was: oldest-first from `from`. A long

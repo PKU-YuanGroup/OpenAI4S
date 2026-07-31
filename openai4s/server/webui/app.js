@@ -326,6 +326,9 @@ Object.assign(I18N.zh, {
   "conv.dockToggle": "侧栏面板",
   "conv.jumpLast": "跳到最后一条",
   "conv.jumpLastLabel": "最新",
+  "conv.loadEarlier": "加载更早的消息",
+  "conv.loadEarlierFailed": "加载更早的消息失败：{0}",
+  "conv.exportTruncated": "（导出被长度上限截断：更早的消息未包含在内）",
   "output.binaryElided": "已省略二进制输出（{0}）",
   "skill.invokeDirective": "请使用技能「{0}」：先调用 host.load_skill(\"{0}\") 载入其完整协议，然后严格按照该协议完成任务。",
   "skill.useInChat": "在对话中使用",
@@ -982,6 +985,8 @@ Object.assign(I18N.zh, {
   "session.badge.runningTip": "任务仍在后台运行 — 点击恢复",
   "session.duplicateSuffix": "（副本）",
   "session.empty.label": "还没有会话",
+  "session.loadMore": "加载更多会话",
+  "session.loadMoreLimit": "已达列表上限，更早的会话请用搜索查找",
   "session.menu.tip": "会话操作",
   "session.newFolder": "＋ 文件夹",
   "session.untitled": "未命名会话",
@@ -1222,6 +1227,9 @@ Object.assign(I18N.en, {
   "conv.dockToggle": "Side panel",
   "conv.jumpLast": "Jump to latest",
   "conv.jumpLastLabel": "Latest",
+  "conv.loadEarlier": "Load earlier messages",
+  "conv.loadEarlierFailed": "Could not load earlier messages: {0}",
+  "conv.exportTruncated": "(Export stopped at the walk limit; earlier messages are not included.)",
   "output.binaryElided": "Binary output elided ({0})",
   "skill.invokeDirective": "Use the \"{0}\" skill: call host.load_skill(\"{0}\") to load its full protocol, then follow it exactly.",
   "skill.useInChat": "Use in chat",
@@ -1878,6 +1886,8 @@ Object.assign(I18N.en, {
   "session.badge.runningTip": "Task still running in the background — click to resume",
   "session.duplicateSuffix": "(Copy)",
   "session.empty.label": "No sessions yet",
+  "session.loadMore": "Load more sessions",
+  "session.loadMoreLimit": "List limit reached — search for older sessions",
   "session.menu.tip": "Session actions",
   "session.newFolder": "＋ Folder",
   "session.untitled": "Untitled session",
@@ -3897,6 +3907,10 @@ function updateLiveStep(m) {
 function renderStoredStep(s) {
   const handle = buildStepCard(s);
   if (s.step_id) (S.stepEls = S.stepEls || {})[s.step_id] = handle;
+  // Same stamp as a stored message: steps are fetched whole while messages are
+  // paged, so a later page of older messages has to be able to sort against
+  // the step cards already on screen.
+  handle.card.dataset.ts = String(s.created_at || 0);
   $("#messages").appendChild(handle.card);
 }
 
@@ -4342,27 +4356,90 @@ async function deleteProject(id) {
 //
 // The rows come back descending, so they are sorted back into reading order
 // here rather than at each call site.
+const MESSAGE_PAGE_SIZE = 300;       // one page of history per request
+const MESSAGE_WALK_MAX_PAGES = 200;  // 60k messages: a bound on a pathological session, not a feature cap
 async function fetchRecentMessages(fid, limit) {
   const data = await api(`/frames/${encodeURIComponent(fid)}/messages?newest_first=1&limit=${limit}`);
   const rows = (data && data.messages) || [];
   rows.sort((a, b) => (a.seq || 0) - (b.seq || 0));
   return { ...data, messages: rows };
 }
+// One page OLDER than `beforeSeq`, sorted back into reading order.
+//
+// `before_seq` is a keyset bound on a monotonic `seq`, not an offset, so a
+// message arriving while the reader walks back cannot shift the page under
+// them — with an offset, every arrival would repeat or skip a row.
+async function fetchOlderMessages(fid, beforeSeq, limit) {
+  const data = await api(`/frames/${encodeURIComponent(fid)}/messages?limit=${limit}&before_seq=${encodeURIComponent(beforeSeq)}`);
+  const rows = (data && data.messages) || [];
+  rows.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+  return { ...data, messages: rows };
+}
+// The WHOLE conversation, walked newest page first and returned oldest-first.
+//
+// The Markdown export asked the newest-page helper for 500 messages and wrote
+// the result under a heading naming the session: a 640-message session exported
+// its last 500 messages and said nothing about the first 140. `complete` is
+// reported so the caller can say so when the walk hits its bound, rather than
+// producing a short export that looks whole.
+async function fetchAllMessages(fid) {
+  const first = await fetchRecentMessages(fid, MESSAGE_PAGE_SIZE);
+  let rows = first.messages || [];
+  let cursor = first.next_before_seq, earlier = !!first.has_earlier, pages = 1;
+  while (earlier && cursor != null && pages < MESSAGE_WALK_MAX_PAGES) {
+    const older = await fetchOlderMessages(fid, cursor, MESSAGE_PAGE_SIZE);
+    rows = (older.messages || []).concat(rows);
+    cursor = older.next_before_seq; earlier = !!older.has_earlier; pages += 1;
+  }
+  return { messages: rows, complete: !earlier };
+}
 
+const SESSION_PAGE_SIZE = 100;   // the route's own page cap is 200; this leaves headroom
+const SESSION_MAX_PAGES = 50;    // 5000 sessions held in the sidebar at once
 async function loadSessions() {
-  // Scoped to the open project. This fetched the 100 most recent sessions
-  // across ALL projects and filtered by project in the browser, so a project
-  // whose sessions sat outside that global page appeared to have none — and
-  // `openProject` reads "none" as a reason to call `newSession()`. Switching
-  // to a quiet project therefore created a blank session instead of showing
-  // the work that was sitting in SQLite the whole time.
+  // Scoped to the open project, and paged with the cursor the route has always
+  // returned. This fetched the 100 most recent sessions across ALL projects and
+  // filtered by project in the browser, so a project whose sessions sat outside
+  // that global page appeared to have none — and `openProject` reads "none" as
+  // a reason to call `newSession()`. Switching to a quiet project therefore
+  // created a blank session instead of showing the work sitting in SQLite.
   //
-  // The server has supported `project_id` (and cursor paging) all along; this
-  // was one unused query parameter.
+  // It was also a hard stop at 100: `next_cursor` and `has_more` had no
+  // consumer anywhere in this file, so session 101 of 260 was unreachable by
+  // any control the UI offered.
+  //
+  // A refresh re-walks from the newest page instead of appending, because
+  // `loadSessions()` runs on every `frame_update`. Re-walking is exact:
+  // `(created_at, frame_id)` is a value bound, so a session created — or
+  // deleted — between two page requests cannot make the walk repeat or skip a
+  // row. That is the property an offset does not have, and it is why a live
+  // arrival does not disturb a reader who has paged several pages deep.
   const scope = S.project ? `&project_id=${encodeURIComponent(S.project)}` : "";
-  try { const f = await api(`/frames?limit=100${scope}`); S.sessions = (f.frames || []).filter(x => !x.parent_frame_id); } catch { S.sessions = []; }
+  if (S._sessionScope !== (S.project || "")) { S._sessionScope = S.project || ""; S.sessionPages = 1; }
+  const want = Math.min(SESSION_MAX_PAGES, Math.max(1, S.sessionPages || 1));
+  const rows = []; const seen = new Set();
+  let cursor = null, hasMore = false, walked = 0;
+  try {
+    while (walked < want) {
+      const f = await api(`/frames?limit=${SESSION_PAGE_SIZE}${scope}` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""));
+      walked += 1;
+      ((f && f.frames) || []).forEach(x => { if (!x.parent_frame_id && !seen.has(x.id)) { seen.add(x.id); rows.push(x); } });
+      hasMore = !!(f && f.has_more); cursor = (f && f.next_cursor) || null;
+      if (!hasMore || !cursor) break;
+    }
+    S.sessions = rows; S.sessionPages = Math.max(1, walked); S.sessionsHasMore = hasMore;
+  } catch { S.sessions = []; S.sessionPages = 1; S.sessionsHasMore = false; }
   await loadFolders();
   renderSessions(); syncCurrentTitle(); if (!$("#dashboard").classList.contains("hidden")) loadDashboard();
+}
+// One more page, by re-walking one page deeper. Guarded because `loadSessions`
+// is also fired by `frame_update`, and two overlapping walks would render the
+// shorter one's result last.
+async function loadMoreSessions() {
+  if (S._sessionsLoadingMore || !S.sessionsHasMore) return;
+  if ((S.sessionPages || 1) >= SESSION_MAX_PAGES) return;
+  S._sessionsLoadingMore = true; S.sessionPages = (S.sessionPages || 1) + 1; renderSessions();
+  try { await loadSessions(); } finally { S._sessionsLoadingMore = false; renderSessions(); }
 }
 // Keep the open conversation's header in sync with the server title (e.g. the
 // background-generated summary that replaces the first-message placeholder).
@@ -4413,6 +4490,20 @@ function renderSessions() {
   const ungrouped = ss.filter(f => !f.folder_id || !(S.folders || []).some(x => x.folder_id === f.folder_id));
   let lastBucket = null;
   ungrouped.forEach(f => { const b = dateBucket(f.updated_at); if (b !== lastBucket) { lastBucket = b; frag.appendChild(el("div", "side-label", b)); } frag.appendChild(sessionRow(f)); });
+  // The control that makes the cursor reachable. Without it `has_more` is a
+  // field nothing acts on, and the list simply ends at the first page with no
+  // sign that it was cut rather than finished.
+  if (S.sessionsHasMore && (S.sessionPages || 1) >= SESSION_MAX_PAGES) {
+    // Say the walk stopped, rather than offer a button that cannot go deeper.
+    // The bound exists because a refresh re-walks every held page, and a dead
+    // control is worse than a sentence — it looks like the feature is broken.
+    frag.appendChild(el("div", "side-label", t("session.loadMoreLimit")));
+  } else if (S.sessionsHasMore) {
+    const more = el("button", "outline-btn small", S._sessionsLoadingMore ? t("common.loading") : t("session.loadMore"));
+    more.id = "session-more"; more.disabled = !!S._sessionsLoadingMore;
+    more.style.margin = "10px 8px"; more.onclick = loadMoreSessions;
+    frag.appendChild(more);
+  }
   list.appendChild(frag);
 }
 async function newFolder() {
@@ -4472,6 +4563,7 @@ async function openConversation(fid, pid) {
   showWorkspace(); showConv(); renderProjMenu();
   if (mqMobile.matches) setSidebar(true);  // collapse the mobile drawer so the conversation is visible
   S.currentId = fid; $("#messages").innerHTML = ""; S.stream = null;
+  S.msgCursor = null; S.msgHasEarlier = false; S._msgEarlierLoading = false;  // the history window restarts at the newest page
   S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");
   clearTimeout(S._resumeTimer);  // stop any resume-watchdog from the previously open session
   const gen = S._openGen = (S._openGen || 0) + 1;  // guard async continuations against fast session-switching
@@ -4498,11 +4590,13 @@ async function openConversation(fid, pid) {
   let msgCount = 0;
   try {
     const [d, sd] = await Promise.all([
-      fetchRecentMessages(fid, 300),
+      fetchRecentMessages(fid, MESSAGE_PAGE_SIZE),
       api(`/frames/${fid}/steps`).catch(() => ({ steps: [] })),
     ]);
     if (gen !== S._openGen) return;
     const msgs = (d && d.messages) || []; msgCount = msgs.length;
+    S.msgCursor = (d && d.next_before_seq != null) ? d.next_before_seq : null;
+    S.msgHasEarlier = !!(d && d.has_earlier);
     const steps = (sd && sd.steps) || [];
     // interleave stored messages + activity steps by timestamp (steps carry seq
     // for a stable tie-break) so a reopened session re-renders the full activity.
@@ -4511,6 +4605,7 @@ async function openConversation(fid, pid) {
     steps.forEach(s => items.push({ t: s.created_at || 0, seq: s.seq || 0, kind: "step", v: s }));
     items.sort((a, b) => (a.t - b.t) || (a.seq - b.seq));
     items.forEach(it => { if (it.kind === "msg") renderStored(it.v); else renderStoredStep(it.v); });
+    paintEarlierControl();
   } catch {}
   if (gen !== S._openGen) return;
   if (!msgCount) renderEmptySession();
@@ -4545,14 +4640,76 @@ function renderEmptySession() {
   STARTERS.forEach(s => { const chip = el("button", "es-chip"); chip.appendChild(el("div", "es-chip-t", s.t)); chip.appendChild(el("div", "es-chip-p", s.p)); chip.onclick = () => { const c = $("#composer"); c.value = s.p; grow(); c.focus(); }; chips.appendChild(chip); });
   wrap.appendChild(chips); m.appendChild(wrap);
 }
-function renderStored(m) {
+function renderStored(m, target) {
   const text = Array.isArray(m.content) ? m.content.map(b => (b && b.text) || "").join("") : (m.content || "");
-  if (!text.trim()) return;
+  if (!text.trim()) return null;
   const w = el("div", "msg " + (m.role === "user" ? "user" : "assistant"));
   if (m.role === "user") { const b = el("div", "bubble"); b.textContent = text; w.appendChild(b); renderMessageRefChips(w, m.artifact_refs); }
   else { const md = el("div", "md"); md.innerHTML = renderMd(text); w.appendChild(md); }
-  $("#messages").appendChild(w);
+  // Stamped with its own time so a page of OLDER messages can be put where it
+  // belongs. Activity steps are fetched whole while messages are paged, so the
+  // column already holds step cards older than the newest message page;
+  // prepending an older page at the very top would put message 0 above a step
+  // from the turn that produced it.
+  w.dataset.ts = String(new Date(m.created_at).getTime() || 0);
+  (target || $("#messages")).appendChild(w);
   if (m.role !== "user") addMsgActions(w, text);
+  return w;
+}
+// Put one restored message in time order among what is already rendered.
+function insertMessageByTime(node) {
+  const host = $("#messages"); if (!host || !node) return;
+  const ts = Number(node.dataset.ts || 0);
+  const kids = host.children;
+  for (let i = 0; i < kids.length; i++) {
+    const kid = kids[i];
+    if (kid.id === "msgs-earlier") continue;  // the control stays pinned to the top
+    const kidTs = Number(kid.dataset && kid.dataset.ts);
+    if (Number.isFinite(kidTs) && kidTs > ts) { host.insertBefore(node, kid); return; }
+  }
+  host.appendChild(node);
+}
+// Reaching the part of a long conversation that is not on screen.
+//
+// `fetchRecentMessages` asks for the NEWEST page and the route answers with
+// `next_before_seq` / `has_earlier` beside it. Nothing in this file read
+// either, so in a 640-message session messages 0-339 existed, were paged for,
+// and could not be reached by scrolling or by any control. This is the half
+// that was missing.
+function paintEarlierControl() {
+  const host = $("#messages"); if (!host) return;
+  let bar = document.getElementById("msgs-earlier");
+  if (!S.msgHasEarlier) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = el("div", "msgs-earlier"); bar.id = "msgs-earlier";
+    bar.style.textAlign = "center"; bar.style.padding = "8px 0";
+    const btn = el("button", "outline-btn small", t("conv.loadEarlier"));
+    btn.onclick = loadEarlierMessages; bar.appendChild(btn);
+  }
+  const btn = bar.querySelector("button");
+  if (btn) { btn.disabled = !!S._msgEarlierLoading; btn.textContent = S._msgEarlierLoading ? t("common.loading") : t("conv.loadEarlier"); }
+  if (host.firstChild !== bar) host.insertBefore(bar, host.firstChild);
+}
+async function loadEarlierMessages() {
+  if (!S.currentId || !S.msgHasEarlier || S.msgCursor == null || S._msgEarlierLoading) return;
+  const host = $("#messages"); if (!host) return;
+  const fid = S.currentId, gen = S._openGen;
+  S._msgEarlierLoading = true; paintEarlierControl();
+  try {
+    const data = await fetchOlderMessages(fid, S.msgCursor, MESSAGE_PAGE_SIZE);
+    if (gen !== S._openGen) return;  // the reader switched sessions mid-request
+    // Hold the reading position. Leaving `scrollTop` alone moves the page by
+    // exactly the height of what was inserted above it, and scrolling to the
+    // top loses the message the reader was on; adding back the height the
+    // prepend introduced keeps the same message under the same pixel.
+    const beforeHeight = host.scrollHeight, beforeTop = host.scrollTop;
+    const holder = document.createDocumentFragment();
+    (data.messages || []).forEach(mm => insertMessageByTime(renderStored(mm, holder)));
+    host.scrollTop = beforeTop + (host.scrollHeight - beforeHeight);
+    S.msgCursor = data.next_before_seq != null ? data.next_before_seq : null;
+    S.msgHasEarlier = !!data.has_earlier;
+  } catch (e) { hint(t("conv.loadEarlierFailed", apiErrorText(e)), true); }
+  finally { S._msgEarlierLoading = false; paintEarlierControl(); }
 }
 
 // The chips a restored message was sent with. Reopening a session used to show
@@ -4886,11 +5043,12 @@ function moveToFolderAt(anchor, fid) {
 async function exportSession(fid) {
   try {
     const [d, arts] = await Promise.all([
-      fetchRecentMessages(fid, 500),
+      fetchAllMessages(fid),
       api(`/frames/${fid}/artifacts`).catch(() => []),
     ]);
     const f = S.sessions.find(x => x.id === fid) || {};
     let md = "# " + (f.name || f.task_summary || t("conv.title.default")) + "\n\n";
+    if (d.complete === false) md += "> " + t("conv.exportTruncated") + "\n\n";
     (d.messages || []).forEach(m => { const who = m.role === "user" ? "🧑 User" : "🤖 Assistant"; const txt = Array.isArray(m.content) ? m.content.map(b => b.text || "").join("") : (m.content || ""); md += `## ${who}\n\n${txt}\n\n`; });
     if ((arts || []).length) { md += "## 产物 Artifacts\n\n"; arts.forEach(a => md += `- ${a.filename} (${a.content_type || ""})\n`); }
     const blob = new Blob([md], { type: "text/markdown" }); const url = URL.createObjectURL(blob); const link = document.createElement("a");
