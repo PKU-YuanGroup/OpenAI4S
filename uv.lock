@@ -1070,8 +1070,8 @@ provides-extras = ["science", "chemistry"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mypy", specifier = ">=1.14,<3" },
-    { name = "pre-commit", specifier = ">=3.0" },
+    { name = "mypy", specifier = ">=2.3,<3" },
+    { name = "pre-commit", specifier = ">=3.2" },
     { name = "pytest", specifier = ">=7.4" },
 ]
 
