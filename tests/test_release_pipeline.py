@@ -1188,6 +1188,72 @@ def test_finalize_refuses_a_draft_that_dropped_only_the_wheel(assets):
     assert wheel.name in report["steps"][-1]["detail"]
 
 
+def test_finalize_anchors_only_python_distributions_not_every_tarball(assets):
+    """The desktop bundles ride on the draft; PyPI can never hold them.
+
+    The anchor set was `endswith((".whl", ".tar.gz"))`, written when the sdist
+    was the only tarball a draft carried. The Linux desktop bundle is
+    `OpenAI4S-<version>-linux-<arch>.tar.gz`, so suffix-matching swept it into
+    a set every member of which must be present on PyPI — a condition it can
+    never satisfy.
+
+    The ordering is what made that fatal rather than annoying: `finalize`
+    `needs: [attach, pypi]`, and `--only publish` runs nowhere else. The
+    immutable PyPI version is consumed first, and only then does the flip
+    refuse, leaving the GitHub release a permanent draft that re-staging
+    reproduces exactly.
+
+    Note the Linux bundle differs from the sdist only in case
+    (`OpenAI4S-` vs PEP 625's `openai4s-`), which is why the fix compares the
+    sdist name exactly instead of case-folding a prefix.
+    """
+    _signed_dmg(assets)
+    (assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz").write_bytes(b"linux-bundle")
+    (assets / "OpenAI4S-0.2.0-windows-x86_64.zip").write_bytes(b"windows-zip")
+    _write_checksums(assets)
+    wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
+    sdist = assets / "openai4s-0.2.0.tar.gz"
+
+    report = _pipeline(
+        assets,
+        mode="release",
+        only="publish",
+        gh=_gh_for(assets),
+        # PyPI holds exactly what PyPI can hold: the wheel and the sdist.
+        pypi_digests=lambda project, version: {
+            wheel.name: sha256_file(wheel),
+            sdist.name: sha256_file(sdist),
+        },
+    ).run()
+
+    assert report["ok"] is True, report["steps"][-1]
+    assert report["published"] is True
+
+
+def test_finalize_still_refuses_when_the_sdist_itself_is_missing_from_pypi(assets):
+    """The narrowed anchor must not become a hole.
+
+    Matching the sdist by exact name rather than by suffix is only safe if the
+    sdist is still anchored. A bundle beside it must not make the check lenient.
+    """
+    _signed_dmg(assets)
+    (assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz").write_bytes(b"linux-bundle")
+    _write_checksums(assets)
+    wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
+
+    report = _pipeline(
+        assets,
+        mode="release",
+        only="publish",
+        gh=_gh_for(assets),
+        pypi_digests=lambda project, version: {wheel.name: sha256_file(wheel)},
+    ).run()
+
+    assert report["ok"] is False
+    assert report["published"] is False
+    assert "openai4s-0.2.0.tar.gz" in report["steps"][-1]["detail"]
+
+
 def test_finalize_refuses_a_draft_missing_its_checksum_manifest(assets):
     """Without SHA256SUMS there is nothing to re-validate against; publishing
     then would be a blind flip."""
