@@ -48,10 +48,22 @@ chemistry = [
 
 [dependency-groups]
 # Dev/test tooling (uv installs these by default with `uv sync`).
+#
+# Floors state what the gate was actually verified against, not merely what
+# once resolved. Every in-repo path goes through `uv sync --locked`, so a loose
+# floor breaks nothing in CI -- it misleads the contributor who installs from
+# this file directly and gets a weaker check than CI runs.
 dev = [
-    "mypy>=1.14,<3",
+    # >=2.3 because mypy 2.0 flipped `local_partial_types` on by default, and
+    # the strict boundary below is only ever checked under 2.x. A range that
+    # still admitted 1.x would make the boundary's semantics depend on which
+    # major the resolver happened to pick.
+    "mypy>=2.3,<3",
     "pytest>=7.4",
-    "pre-commit>=3.0",
+    # >=3.2 because the pre-commit-hooks and isort hooks pinned in
+    # .pre-commit-config.yaml declare `minimum_pre_commit_version: 3.2.0`,
+    # which pre-commit validates at manifest load -- a hard error, not a skip.
+    "pre-commit>=3.2",
 ]
 
 [project.scripts]
@@ -169,6 +181,11 @@ check_untyped_defs = true
 disallow_untyped_defs = true
 no_implicit_optional = true
 strict_equality = true
+# Both of these are mypy 2.x defaults, stated rather than inherited. What the
+# boundary checks should be readable here, not a function of which mypy major
+# the resolver produced -- `local_partial_types` in particular is off under
+# 1.x, so leaving it implicit made the strictness silently version-dependent.
+local_partial_types = true
 strict_bytes = true
 warn_redundant_casts = true
 warn_unused_configs = true
