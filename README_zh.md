@@ -9,6 +9,9 @@
 **一个开源的混合式科研智能体。**<br/>
 <sub>原生 JSON 工具负责编排与权限；持久 Python/R 内核负责科学执行。</sub>
 
+**由北京大学深圳研究生院—元空智能 AI Agent 联合研究实验室推出。**<br/>
+<sub>Launched by the Peking University Shenzhen Graduate School–YuanKong Intelligence AI Agent Joint Research Laboratory.</sub>
+
 <p>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-d97706.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3fb950.svg">
@@ -224,11 +227,12 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 
 ```bibtex
 @software{openai4s2026,
-  title  = {OpenAI4S: An Open-Source Code-as-Action Scientific Research Agent},
-  author = {OpenAI4S contributors},
-  year   = {2026},
-  url    = {https://github.com/PKU-YuanGroup/OpenAI4S},
-  note   = {Open AI for Scientist —— 对 Code-as-Action 范式的纯标准库开源复现}
+  title        = {OpenAI4S: An Open-Source Code-as-Action Scientific Research Agent},
+  author       = {OpenAI4S contributors},
+  organization = {Peking University Shenzhen Graduate School--YuanKong Intelligence AI Agent Joint Research Laboratory},
+  year         = {2026},
+  url          = {https://github.com/PKU-YuanGroup/OpenAI4S},
+  note         = {Open AI for Scientist —— 对 Code-as-Action 范式的纯标准库开源复现}
 }
 ```
 

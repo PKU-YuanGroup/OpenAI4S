@@ -1,0 +1,80 @@
+# Gitleaks configuration.
+#
+# Why this file exists
+# --------------------
+# Suppressions used to live only in `.gitleaksignore`, as fingerprints of the
+# form `<commit-sha>:<file>:<rule>:<line>`. That was a deliberate choice, and a
+# good one: suppressing one specific finding leaves a *real* leak in the same
+# file detectable, which a path rule would not.
+#
+# The problem is the `<commit-sha>`. `protect-main` allows only squash and
+# rebase merges, and squashing does not destroy the branch commits -- they stay
+# reachable on `next`, and `gitleaks git` scans every ref the checkout fetched
+# (`fetch-depth: 0`). What squashing does is *copy* the finding under a new SHA
+# on main. The old fingerprint keeps suppressing the old commit; nothing
+# suppresses the copy. The finding comes back, on a tree nobody changed.
+#
+# That is what happened when #52 landed: four v0.3 fixtures reappeared under
+# `f2d8adb...` while their originals stayed suppressed under `8d715ebe...` and
+# `3dcda11f...`, and the history scan went red on main itself. It is
+# structural, not a one-off -- every future suppression gets duplicated the
+# same way, so the fingerprint list can only ever grow by one row per merge.
+#
+# So the suppression moves from "this finding, in this commit" to "this exact
+# string, which is not a secret". That survives any rewrite of history, and it
+# gives up strictly less than a path rule: `regexTarget = "secret"` with
+# anchored patterns permits these literal values and nothing else, so a real
+# credential in these same files still fails the scan. tests/
+# test_retrieval_source.py puts the reason for that plainly -- a scanner that
+# made an exception for test files would be a scanner with a hole exactly where
+# people paste real keys "just to check".
+#
+# `.gitleaksignore` is kept for the older findings that are already in main's
+# history: those were copied by their own merges long ago and both copies are
+# suppressed, so they are stable. The four v0.3 rows were removed from it not
+# because they were dead -- they were live, suppressing the originals on
+# `next` -- but because suppressing by value covers original and copy at once,
+# which is the thing a fingerprint cannot do.
+
+[extend]
+# Without this, a config file REPLACES the default rule set rather than
+# extending it -- the scan would find nothing and exit 0, which is
+# indistinguishable from a scan that works.
+#
+# That is not taken on faith here. This file landed in a first commit with no
+# allowlist at all, purely to prove the rule set was still loaded: run
+# 30568183935 reported `535 commits scanned` and `leaks found: 4`, exactly what
+# main reports. Only then was the allowlist below added, so the drop from 4 to
+# 0 is attributable to the allowlist and not to a neutered scanner.
+#
+# The workflow passes `--config .gitleaks.toml` explicitly rather than relying
+# on auto-discovery, so a renamed or missing file is a loud error rather than a
+# silent fallback to the built-in defaults.
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic fixtures that exist in order to be detected by the code under test"
+# Match the captured secret, not the surrounding line, and anchor it. No path,
+# file, or rule is widened -- only these exact values are permitted.
+regexTarget = "secret"
+regexes = [
+  # tests/test_model_profile_readiness.py -- an obvious placeholder in a model
+  # profile dict. `generic-api-key` catches it on the `api_key` key rather than
+  # on entropy, so renaming it to something less key-shaped would not help.
+  '''^abc123def456ghi789$''',
+  # tests/test_retrieval_source.py -- the canary a redaction test needs. It has
+  # to be high-entropy, because the redaction under test keys on entropy and
+  # shape: an obviously-fake string would make that test pass for the wrong
+  # reason. It also cannot be spelled `sk-...`, because
+  # scripts/source_secret_scan.py refuses that, correctly. The two scanners
+  # pull in opposite directions, and this is a string both of them dislike.
+  '''^Zx9Qw3Er7Ty1Ui5Op2As6Df4Gh8Jk0Lm$''',
+  # tests/test_share_projection.py -- the string a share-package redaction test
+  # feeds through `_safe_text`. The working tree carries `# gitleaks:allow` on
+  # that line, which is why `main` scans clean; but an inline comment only
+  # suppresses the revision that contains it, and the commit that introduced
+  # the line without one is still reachable and still flagged. Same failure as
+  # the fingerprints above, in a different disguise: a suppression that
+  # describes the present cannot cover history.
+  '''^sk-ABCDEFGH1234567890$''',
+]
