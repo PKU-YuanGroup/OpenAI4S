@@ -229,7 +229,21 @@ function Invoke-Bootstrap([string] $Distro, [string] $BootstrapLinux, [string[]]
     # re-splits it and breaks on the spaces an unzipped Downloads path is full
     # of. `sh <script>` rather than `./<script>` because the package sits on a
     # DrvFs mount, where the executable bit is not reliably honoured.
-    & wsl.exe -d $Distro --exec sh $BootstrapLinux @BootstrapArgs
+    #
+    # `| Out-Host` is load-bearing, not cosmetic. A native command's stdout
+    # goes to the *success stream*, which in PowerShell is the function's
+    # return value -- so without the pipe, `return $LASTEXITCODE` appends to
+    # bootstrap.sh's own output instead of replacing it, and the caller gets
+    # @('installed /home/.../OpenAI4S-...', 0) rather than 0. bootstrap.sh
+    # prints on bare stdout in every success path ("already-installed",
+    # "installed", "serving http://...") and sends failures to stderr, so this
+    # bites precisely when the install *worked*: `$code -ne 0` filters the
+    # array to one non-zero element, `if` reads a non-empty array as true, and
+    # the launcher reports "the Linux bundle could not be installed" after
+    # installing it. `exit $code` then fails to convert Object[] to Int32.
+    # Out-Host keeps $LASTEXITCODE intact and restores the console message the
+    # failure guidance promises the reader.
+    & wsl.exe -d $Distro --exec sh $BootstrapLinux @BootstrapArgs | Out-Host
     return $LASTEXITCODE
 }
 
