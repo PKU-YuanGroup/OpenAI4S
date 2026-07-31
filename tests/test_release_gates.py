@@ -414,6 +414,38 @@ def test_the_windows_package_has_no_native_windows_execution_path():
         assert suffix in verifier
 
 
+def test_the_windows_launcher_does_not_leak_native_stdout_into_its_return_value():
+    """A native command's stdout IS the function's return value in PowerShell.
+
+    `& wsl.exe ...` writes to the success stream, so a bare call followed by
+    `return $LASTEXITCODE` returns @('installed /home/.../OpenAI4S-...', 0),
+    not 0. bootstrap.sh prints on stdout in every *success* path
+    ("already-installed", "installed", "serving http://...") and sends
+    failures to stderr, so the defect fires precisely when the install
+    worked: `$code -ne 0` filters the array to its one non-zero element,
+    `if` reads a non-empty array as true, and the launcher reports "the
+    Linux bundle could not be installed" after installing it. `exit $code`
+    then cannot convert Object[] to Int32.
+
+    Pinned statically because nothing executes this: no CI runner has WSL,
+    so `Invoke-Bootstrap` is unreachable even on the windows-latest job,
+    which parses the file and stops.
+    """
+    launcher = (ROOT / "scripts" / "windows" / "openai4s.ps1").read_text("utf-8")
+    calls = [
+        line.strip()
+        for line in launcher.splitlines()
+        if line.lstrip().startswith("& wsl.exe")
+    ]
+
+    assert calls, "the launcher must still go through wsl.exe"
+    for call in calls:
+        assert call.endswith("| Out-Host"), (
+            "a wsl.exe invocation whose value is not captured must pipe to "
+            f"Out-Host, or its stdout becomes part of the return value: {call}"
+        )
+
+
 def test_the_windows_launcher_sources_stay_pure_ascii():
     """Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI, not UTF-8.
 
