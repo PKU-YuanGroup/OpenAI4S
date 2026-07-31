@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.2.0
+    rev: v6.0.0
     hooks:
       - id: end-of-file-fixer
       - id: mixed-line-ending
@@ -9,7 +9,7 @@ repos:
       - id: check-merge-conflict
         args: ['--assume-in-merge']
   - repo: https://github.com/pycqa/isort
-    rev: 5.12.0
+    rev: 8.0.1
     hooks:
       - id: isort
         args: ["--profile", "black"]
@@ -17,10 +17,14 @@ repos:
     rev: 23.3.0
     hooks:
       - id: black
-  - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: 'v0.0.274'
+  # astral-sh is the canonical home; charliermarsh/ruff-pre-commit is a
+  # redirect. The hook id moved from `ruff` to `ruff-check` when `ruff format`
+  # arrived and a bare `ruff` became ambiguous. The rule set is pinned in
+  # pyproject.toml's [tool.ruff.lint]; see the comment there for why.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 'v0.16.0'
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix, "--ignore=E501,F401,E722,E402,E741"]
   - repo: local
     hooks:
