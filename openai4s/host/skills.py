@@ -168,6 +168,16 @@ class SkillService:
 
     def edit(self, spec: dict) -> dict:
         name = spec["name"]
+        # The allowlist gated the three READ paths and none of the three write
+        # paths, so a child restricted to `["a"]` could not read skill `b` and
+        # could overwrite, publish or delete it. That is the worse half: the
+        # parent goes on to *execute* the recipe a restricted child rewrote, so
+        # an unreadable Skill was a writable one. A name that is not permitted
+        # does not exist for this caller, and it must not be creatable either —
+        # authoring a new name outside the allowlist would be the same escape
+        # with an extra step.
+        if not self._permits(str(name or "")):
+            raise KeyError(f"no such skill: {name!r}")
         relative = spec.get("path", "SKILL.md")
         content = spec.get("content", "")
         old_string = spec.get("old_string")
@@ -247,6 +257,8 @@ class SkillService:
         return result
 
     def publish(self, name: str) -> dict:
+        if not self._permits(str(name or "")):
+            raise KeyError(f"no such skill: {name!r}")
         self.loader.discover()
         skill = self.loader.get(name, include_disabled=True)
         if skill is None:
@@ -257,6 +269,8 @@ class SkillService:
         return {"ok": True, "origin": "personal"}
 
     def delete(self, name: str) -> dict:
+        if not self._permits(str(name or "")):
+            raise KeyError(f"no such skill: {name!r}")
         self.loader.discover()
         skill = self.loader.get(name, include_disabled=True)
         if skill is None:

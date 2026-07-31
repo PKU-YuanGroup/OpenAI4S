@@ -7164,7 +7164,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         # the link buys is the bootstrap it was minted for.
                         scrubbed = _strip_token_from_url(path, parsed.query)
                         self.send_response(303)
-                        self.send_header("Location", scrubbed)
+                        # The one `send_header` in this file that did not go
+                        # through the sanitiser its five siblings use. It is
+                        # safe today because CPython's `urlsplit` strips
+                        # \t\r\n (`_UNSAFE_URL_BYTES_TO_REMOVE`, guaranteed by
+                        # `requires-python >= 3.10`) before the path reaches
+                        # here — but that is a property of the stdlib two
+                        # layers away, and `_strip_token_from_url` returns the
+                        # path completely raw when `token` is the only query
+                        # parameter, which is exactly the bootstrap URL. Making
+                        # the guarantee local costs nothing and stops the next
+                        # reader having to rediscover the stdlib detail.
+                        self.send_header("Location", _sanitize_header_value(scrubbed))
                         self.send_header(
                             "Set-Cookie",
                             f"os_token={_auth_token}; Path=/; HttpOnly; "

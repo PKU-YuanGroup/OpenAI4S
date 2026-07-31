@@ -136,12 +136,25 @@ class JobManager:
         # escape via ".." traversal or an absolute path (no path injection).
         base = os.path.realpath(str(self.root))
         if cwd:
-            wd = os.path.normpath(os.path.join(base, cwd))
-            if os.path.commonpath((base, wd)) != base:
+            candidate = os.path.join(base, cwd)
+            # Resolve and check BEFORE creating anything. This used to
+            # `mkdir(parents=True)` on the candidate's parent first, so a cwd
+            # that was then correctly refused had already created directories
+            # wherever it pointed: the refusal was real and the side effect
+            # happened anyway. `realpath` does not need the path to exist, so
+            # nothing was gained by making it first.
+            wd = os.path.realpath(candidate)
+            if wd != base and os.path.commonpath((base, wd)) != base:
                 return {"error": "cwd escapes the jobs root"}
         else:
             wd = base
-        Path(wd).mkdir(parents=True, exist_ok=True)
+        try:
+            Path(wd).mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            # An unwritable target used to raise straight out of `submit`,
+            # which reaches the caller as a crash rather than as the error
+            # dict every other refusal here returns.
+            return {"error": f"could not create the job working directory: {error}"}
         job = Job(kind, command, wd)
         with self._lock:
             self._jobs[job.id] = job
