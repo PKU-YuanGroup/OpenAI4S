@@ -365,13 +365,20 @@ jobs:
             Select-Object -First 1
           if (-not $cmd) { throw 'the package ships no OpenAI4S.cmd' }
           $out = & $cmd.FullName 2>&1 | Out-String
+          # Captured immediately, and the step ends with an explicit `exit 0`.
+          # A refusal is a NON-ZERO exit -- that is the thing being asserted --
+          # and the pwsh shell appends `exit $LASTEXITCODE`, so leaving it set
+          # fails the step for the launcher behaving correctly.
+          $code = $LASTEXITCODE
           Write-Host $out
-          if ($LASTEXITCODE -eq 0) {
+          if ($code -eq 0) {
             throw 'the launcher succeeded on a machine with no WSL'
           }
           if ($out -notmatch 'wsl --install') {
             throw 'the refusal does not tell the user how to install WSL'
           }
+          Write-Host "refused with exit $code and named the way out"
+          exit 0
 
   attach:
     name: Stage assets onto the draft
