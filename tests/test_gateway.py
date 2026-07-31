@@ -186,6 +186,88 @@ def test_the_example_seed_route_reports_state_and_surfaces_its_error(
         runner.close()
 
 
+def test_the_example_seed_route_reports_the_already_seeded_state(tmp_path, monkeypatch):
+    """The idempotent path the API docs describe and nothing exercised.
+
+    `POST /example/session` on an install that already has the example must not
+    start anything: `existing is not None` skips `start()` entirely, so the
+    response reports the frame that is there and whatever error the last attempt
+    left behind. Worth a test on its own -- it is the difference between a
+    second click costing nothing and a second click running six cells.
+
+    It also closes a hole that surfaced somewhere unexpected. The frozen
+    `POST /example/session [ok]` shape in `docs/response-schemas.json` was built
+    from the single observation the suite happened to make, and that observation
+    sits immediately after `start()` has cleared `_last_error` and spawned a
+    thread that may or may not have failed yet. Both threads then contend for
+    the same lock, so `error` was captured as `string` on Linux/CI and `null` on
+    macOS -- a scheduler outcome published as a contract, in a file whose whole
+    claim is that it describes the API. The field is `str | None` on both verbs
+    (one dict literal, fed by `last_error()`), and so is `frame_id`
+    (`str` once seeded, `null` before). The two observations below pin both
+    halves of each, deterministically, without depending on which thread wins.
+    """
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    seen: list[tuple[dict, int]] = []
+
+    def _handler_for(active_runner):
+        handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), active_runner))
+        handler.path = "/api/v1/example/session"
+        handler._json = lambda obj, code=200: seen.append((obj, code))
+        handler._body = lambda: {"confirm": True}
+        return handler
+
+    try:
+        # A real error, recorded through the real state object.
+        def _boom(_cfg, _runner):
+            raise RuntimeError("uniprot unreachable")
+
+        monkeypatch.setattr(gateway_mod, "_seed_demo_session", _boom)
+        handler = _handler_for(runner)
+        handler._api("POST", "/example/session")
+        for _ in range(200):
+            if runner.example_seed.last_error():
+                break
+            time.sleep(0.01)
+        assert runner.example_seed.last_error()
+
+        # The example exists now. Written the way the seeder writes it -- a real
+        # store row, not a patched lookup, so the response is still the real
+        # handler's answer and the shape it publishes stays honest.
+        store = get_store(cfg.db_path)
+        fid = store.new_frame(
+            kind="turn", project_id="proj_example", status="done", model=cfg.llm.model
+        )
+        store.update_frame(fid, name=gateway_mod._DEMO_SESSION_NAME)
+
+        handler._api("POST", "/example/session")
+        body, code = seen[-1]
+        assert code == 200
+        assert body["seeded"] is True
+        assert body["started"] is False, "a POST on a seeded install started a run"
+        assert body["frame_id"] == fid
+        assert "uniprot unreachable" in (body["error"] or "")
+
+        # Same seeded install, a runner that has never failed: the null half of
+        # the same contract, and the one CI could not observe.
+        fresh = gateway_mod.SessionRunner(cfg, _Hub())
+        try:
+            for verb in ("GET", "POST"):
+                _handler_for(fresh)._api(verb, "/example/session")
+                body, code = seen[-1]
+                assert code == 200
+                assert body["seeded"] is True
+                assert body["started"] is False
+                assert body["frame_id"] == fid
+                assert body["error"] is None
+        finally:
+            fresh.close()
+    finally:
+        runner.close()
+
+
 def test_ws_resume_buffer_replaces_notebook_drafts_and_keeps_live_cell_events():
     hub = gateway_mod.WSHub()
     root = "root-draft-replay"
