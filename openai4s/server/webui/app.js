@@ -1131,6 +1131,7 @@ Object.assign(I18N.zh, {
   "toolLabel.writeFile": "写入文件中",
   "turn.failed": "这一轮失败了，请重试。",
   "turn.failedCommitted": "这一轮失败了，但它已经产出了输出或执行过工具——直接重试会重复已经发生的操作。请先检查结果再决定。",
+  "turn.supportId": "支持 ID：{0}",
   "upload.dropping": "正在上传拖入的文件…",
   "upload.failed": "上传失败：{0}",
   "upload.pasting": "正在上传粘贴的文件…",
@@ -2056,6 +2057,7 @@ Object.assign(I18N.en, {
   "toolLabel.writeFile": "Writing file",
   "turn.failed": "This turn failed. Please try again.",
   "turn.failedCommitted": "This turn failed after it had already produced output or run a tool — retrying would repeat work that already happened. Check the result before deciding.",
+  "turn.supportId": "Support ID: {0}",
   "upload.dropping": "Uploading dropped files…",
   "upload.failed": "Upload failed: {0}",
   "upload.pasting": "Uploading pasted files…",
@@ -3539,6 +3541,44 @@ function feed(kind, chunk, event) {
   } else { st.text += chunk; st.full += chunk; st.md.classList.add("cursor"); scheduleRender(st); return; }
   down();
 }
+// The sentence a failed turn shows, from whichever source has the facts.
+//
+// Two of them exist and they have to agree: the `frame_update` a live client
+// receives, and the `failure` metadata `GET /frames/{id}/messages` projects
+// when the same client reopens the session later. Before this, reopening lost
+// both the support id and the retry veto -- the socket event was gone and the
+// stored row was a sentence, so the user most likely to need them (the one who
+// closed the tab on a failure) was the one who could not get them.
+// The stored failure, shown on its own message. Text only -- these three
+// fields are what the projector already published, and nothing here is derived
+// from the exception.
+// The failure on the LAST message, or null if the transcript does not end in
+// one. Read from the DOM the render just produced rather than from a second
+// fetch, so the two cannot disagree about what the newest message is.
+function lastTerminalFailure() {
+  const rows = [...document.querySelectorAll("#messages .msg")];
+  const last = rows[rows.length - 1];
+  if (!last) return null;
+  const box = last.querySelector(".msg-failure-meta");
+  return box ? { request_id: box.dataset.requestId || "", output_committed: box.dataset.committed === "1" } : null;
+}
+function failureMeta(failure) {
+  const box = el("div", "msg-failure-meta");
+  const bits = [];
+  if (failure.output_committed) bits.push(t("turn.failedCommitted"));
+  if (failure.request_id) bits.push(t("turn.supportId", String(failure.request_id).slice(0, 96)));
+  box.textContent = bits.join(" ");
+  box.dataset.requestId = failure.request_id ? String(failure.request_id).slice(0, 96) : "";
+  if (failure.output_committed) box.dataset.committed = "1";
+  return box;
+}
+function failureHint(detail) {
+  const committed = !!(detail && detail.output_committed);
+  const base = t(committed ? "turn.failedCommitted" : "turn.failed");
+  const raw = (detail && detail.request_id) || S.pendingRequestId || "";
+  const id = raw ? String(raw).slice(0, 96) : "";
+  return id ? base + " " + t("turn.supportId", id) : base;
+}
 function turnDone(status, detail) {
   S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");  clearTimeout(S._resumeTimer); S._resumeTok = (S._resumeTok || 0) + 1;  // retire the resume-watchdog (incl. any in-flight tick) so it can't bleed into the next turn
   if (S.stream) { flushRender(S.stream, true); S.stream.md.classList.remove("cursor"); addMsgActions(S.stream.wrap, S.stream.full || S.stream.text); }
@@ -3551,11 +3591,11 @@ function turnDone(status, detail) {
   // transparent retry there duplicates visible output or re-fires a side
   // effect, however retryable the status looks. Saying "retry" anyway is how a
   // UI turns one failed turn into two executions of the same tool.
-  const committed = !!(detail && detail.output_committed);
-  hint(
-    status === "failed" ? t(committed ? "turn.failedCommitted" : "turn.failed") : "",
-    status === "failed"
-  );
+  hint(status === "failed" ? failureHint(detail) : "", status === "failed");
+  // Retired with the turn it belonged to. Kept only as the fallback above, for
+  // a terminal event that arrives without an id; carrying it further would
+  // let one turn's id be quoted on the next turn's failure.
+  S.pendingRequestId = null;
   invalidateKernelCache();  // the kernel just went turn_running → idle; re-read promptly
   if (S.currentId) { loadArtifacts(S.currentId); loadExecutionLog(S.currentId); }
   S.stream = null; S.liveCells = []; S._liveCell = null;
@@ -4690,6 +4730,7 @@ async function openConversation(fid, pid) {
   showWorkspace(); showConv(); renderProjMenu();
   if (mqMobile.matches) setSidebar(true);  // collapse the mobile drawer so the conversation is visible
   S.currentId = fid; $("#messages").innerHTML = ""; S.stream = null;
+  S.pendingRequestId = null;  // a ticket belongs to the session that issued it
   S.msgCursor = null; S.msgHasEarlier = false; S._msgEarlierLoading = false;  // the history window restarts at the newest page
   S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");
   clearTimeout(S._resumeTimer);  // stop any resume-watchdog from the previously open session
@@ -4744,6 +4785,15 @@ async function openConversation(fid, pid) {
     const stt = await api(`/frames/${fid}/status`);
     if (gen !== S._openGen) return;
     if (stt && stt.running) { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("conv.resuming.hint"), false, true); resumeWatch(fid, gen); }
+    // The global hint is restored ONCE, and only when the session's current
+    // state is a failure -- the frame says so, and the failure is the last
+    // thing in the transcript. Any other reading (any stored failure anywhere,
+    // as an earlier draft had it) would let a turn that has since been
+    // succeeded by three good ones present itself as the state of the session.
+    else if (stt && stt.status === "failed") {
+      const last = lastTerminalFailure();
+      if (last) hint(failureHint(last), true);
+    }
   } catch {}
   // Resume a pending/executing/completed plan review card (drafts survive a reopen).
   try {
@@ -4772,7 +4822,15 @@ function renderStored(m, target) {
   if (!text.trim()) return null;
   const w = el("div", "msg " + (m.role === "user" ? "user" : "assistant"));
   if (m.role === "user") { const b = el("div", "bubble"); b.textContent = text; w.appendChild(b); renderMessageRefChips(w, m.artifact_refs); }
-  else { const md = el("div", "md"); md.innerHTML = renderMd(text); w.appendChild(md); }
+  else {
+    const md = el("div", "md"); md.innerHTML = renderMd(text); w.appendChild(md);
+    // Inline on the message it belongs to, never the global hint. A session
+    // is rendered oldest-first and older pages are prepended later, so calling
+    // hint() here would let any past failure -- including one several
+    // successful turns ago, or one on a page the reader scrolled back to --
+    // become the current state of the whole UI.
+    if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
+  }
   // Stamped with its own time so a page of OLDER messages can be put where it
   // belongs. Activity steps are fetched whole while messages are paged, so the
   // column already holds step cards older than the newest message page;
@@ -5390,6 +5448,10 @@ async function send(text, opts) {
     // exact queued item can mark the message the user is looking at. Nothing
     // else in the transcript carries an execution id.
     if (accepted && accepted.execution_id) w.dataset.executionId = accepted.execution_id;
+    // The id this turn will be blamed under. `wait:false` means the 202 is the
+    // only synchronous thing the client gets, so this is where the correlation
+    // starts -- the socket event and the job query name the same one.
+    if (accepted && accepted.request_id) S.pendingRequestId = String(accepted.request_id);
     // The optimistic status above clears the badge immediately; reload once the turn POST finishes to reconcile with the server.
     if (annIds.length) { try { await loadAnnotations(S.currentId); } catch {} refreshAllStages(); updateAnnotBadge(); }
   }

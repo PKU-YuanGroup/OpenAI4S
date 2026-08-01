@@ -207,6 +207,46 @@
   )
 }
 
+.oai4s_nullfile <- function() {
+  tryCatch(nullfile(), error = function(e) {
+    if (identical(.Platform$OS.type, "windows")) "nul" else "/dev/null"
+  })
+}
+
+.oai4s_cap_sink <- function(con, path, type) {
+  # Stop capturing a stream that has already exceeded the cap.
+  #
+  # `.oai4s_slurp` bounds the *read*; this bounds the *write*. Without it a
+  # runaway cell still sends every byte to a tempfile -- on much of Linux a
+  # tmpfs, so the disk it fills is RAM -- and `.oai4s_cap` then throws all but
+  # the first megabyte away. worker.py's buffer has dropped those bytes at
+  # `write` time since the streaming buffer landed; this side kept them and
+  # then ignored them.
+  #
+  # Returns the replacement connection so the caller can close it, or NULL if
+  # the stream is still under the cap (or the null device would not open, in
+  # which case capturing continues -- degraded, never broken).
+  #
+  # The diversion is popped and re-pushed rather than the connection being
+  # closed: `.oai4s_run` closes `con` in its own teardown, and the file has to
+  # stay readable for the final slurp.
+  sz <- tryCatch(file.info(path)$size, error = function(e) NA_real_)
+  if (is.na(sz) || sz <= .oai4s_MAX_OUTPUT) return(NULL)
+  null_con <- tryCatch(file(.oai4s_nullfile(), open = "wt"), error = function(e) NULL)
+  if (is.null(null_con)) return(NULL)
+  ok <- tryCatch({
+    flush(con)
+    sink(type = type)
+    sink(null_con, type = type)
+    TRUE
+  }, error = function(e) FALSE)
+  if (!ok) {
+    tryCatch(close(null_con), error = function(e) NULL)
+    return(NULL)
+  }
+  null_con
+}
+
 .oai4s_rss_kb <- function() {
   status <- "/proc/self/status"
   if (file.exists(status)) {
@@ -291,6 +331,7 @@
 
   err <- NULL; lineno <- NULL; callname <- NULL; interrupted <- FALSE
   streamed <- 0
+  null_out <- NULL; null_msg <- NULL
   t0 <- Sys.time(); p0 <- proc.time()
 
   parsed <- tryCatch(parse(text = code, keep.source = TRUE), error = function(e) e)
@@ -341,12 +382,25 @@
         })
       }
       streamed <- .oai4s_stream_stdout(out_con, out_file, id, streamed)
+      # Between top-level expressions is the only hook R gives us -- the same
+      # cadence, and for the same reason, as the streaming above: R is
+      # single-threaded and no callback fires inside an expression. So a single
+      # expression printing 300 MB still writes it, and the expressions after
+      # it write nothing.
+      if (is.null(null_out)) null_out <- .oai4s_cap_sink(out_con, out_file, "output")
+      if (is.null(null_msg)) null_msg <- .oai4s_cap_sink(msg_con, msg_file, "message")
     }
   }
 
   .oai4s_unwind_sinks()
   tryCatch(close(out_con), error = function(e) NULL)
   tryCatch(close(msg_con), error = function(e) NULL)
+  # The null devices, if a stream overflowed. R allows ~128 connections at
+  # once, so leaking one per overflowing cell is a kernel that stops working
+  # after a hundred of them.
+  for (con in list(null_out, null_msg)) {
+    if (!is.null(con)) tryCatch(close(con), error = function(e) NULL)
+  }
 
   wall <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
   dp <- proc.time() - p0

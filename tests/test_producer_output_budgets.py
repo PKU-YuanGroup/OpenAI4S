@@ -402,3 +402,115 @@ def test_real_r_caps_a_giant_error_instead_of_wiring_it(tmp_path):
         assert "nope" in small["error"] and "truncated" not in small["error"]
     finally:
         kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_the_r_capture_file_stops_growing_once_the_cap_is_passed(tmp_path):
+    """The R side bounded the *read* and left the *write* unbounded.
+
+    `.oai4s_slurp` reads at most one byte past the cap and says why: reading the
+    whole file "allocated 300 MB in this worker to keep 1 MB of it". But the
+    file it declines to read is still written in full — `sink()` sends every
+    byte the cell prints to a tempfile, so a runaway cell fills the disk (a
+    tmpfs `/tmp`, on much of Linux, meaning RAM) with output that has already
+    been decided against. worker.py's equivalent buffer drops those bytes at
+    `write` time; this one kept them and then ignored them.
+
+    Probed from inside the cell rather than by sampling from the test thread,
+    because a sampler races the writer and would pass or fail on scheduling.
+    The cell finds its own sink file through `showConnections`, records the
+    size after an expression that crosses the cap, prints 20 MB more, and
+    records the size again. The second number is the whole test: frozen means
+    the producer stopped, and growing means it did not.
+    """
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    probe = tmp_path / "probe"
+    code = "\n".join(
+        (
+            "cons <- showConnections(all = TRUE)",
+            'hit <- grepl("oai4s-out-", cons[, "description"], fixed = TRUE)',
+            'path <- cons[hit, "description"][1]',
+            f'writeLines(path, {str(probe) + ".path"!r})',
+            "cat(strrep('a', 1200000L))",
+            f'writeLines(as.character(file.info(path)$size), {str(probe) + ".1"!r})',
+            "cat(strrep('b', 20000000L))",
+            f'writeLines(as.character(file.info(path)$size), {str(probe) + ".2"!r})',
+        )
+    )
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        result = kernel.execute(code)
+    finally:
+        kernel.shutdown()
+
+    assert result.get("error") is None, result.get("error")
+    assert (
+        probe.parent / "probe.path"
+    ).exists(), "the cell could not find its own capture file; the probe proves nothing"
+    crossed = int(float((probe.parent / "probe.1").read_text().strip()))
+    after = int(float((probe.parent / "probe.2").read_text().strip()))
+
+    assert crossed > worker.MAX_OUTPUT, (
+        "the first expression did not cross the cap, so the test never reached "
+        f"the condition it is about: {crossed}"
+    )
+    # 20 MB was printed after the cap was already passed. Every one of those
+    # bytes is discarded by `.oai4s_cap` later, so none of them should have
+    # reached the disk.
+    assert after <= 4 * worker.MAX_OUTPUT, (
+        f"the capture file grew from {crossed} to {after} bytes writing output "
+        "that was already destined to be thrown away"
+    )
+
+    # And the answer is still correct: head retained, cut announced once.
+    assert result["stdout"].startswith("a")
+    assert result["stdout"].count("...(truncated at") == 1
+    # The retained part is the head, not a window that slid into the second
+    # expression's output. Sliced before the marker because the marker's own
+    # wording contains a "b".
+    kept = result["stdout"].split("\n...(truncated at")[0]
+    assert set(kept) == {"a"}, sorted(set(kept))[:5]
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_the_r_message_capture_file_stops_growing_too(tmp_path):
+    """The same bound on the other stream.
+
+    `message()` has its own sink and its own tempfile, and a cell that warns in
+    a loop reaches the cap the same way a chatty one does. Asserted separately
+    rather than assumed from the stdout test: the two are one helper called
+    with different arguments, and "called with the wrong connection" is a defect
+    that looks identical to "not called".
+    """
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    probe = tmp_path / "msg"
+    code = "\n".join(
+        (
+            "cons <- showConnections(all = TRUE)",
+            'hit <- grepl("oai4s-msg-", cons[, "description"], fixed = TRUE)',
+            'path <- cons[hit, "description"][1]',
+            "message(strrep('a', 1200000L))",
+            f'writeLines(as.character(file.info(path)$size), {str(probe) + ".1"!r})',
+            "message(strrep('b', 20000000L))",
+            f'writeLines(as.character(file.info(path)$size), {str(probe) + ".2"!r})',
+        )
+    )
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        result = kernel.execute(code)
+    finally:
+        kernel.shutdown()
+
+    assert result.get("error") is None, result.get("error")
+    crossed = int(float((probe.parent / "msg.1").read_text().strip()))
+    after = int(float((probe.parent / "msg.2").read_text().strip()))
+
+    assert crossed > worker.MAX_OUTPUT, crossed
+    assert (
+        after <= 4 * worker.MAX_OUTPUT
+    ), f"the message capture file grew from {crossed} to {after} bytes"
+    assert result["stderr"].count("...(truncated at") == 1

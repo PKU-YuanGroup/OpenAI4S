@@ -692,33 +692,34 @@ def test_an_execution_attempt_hides_a_foreign_path_and_a_command(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# one local id across the surfaces that actually exist
+# one local id across every terminal surface
 # --------------------------------------------------------------------------
 #
-# Three, not four. The Plan names "message metadata" as a fourth, and there is
-# no such surface: `git grep request_id -- openai4s/storage/ openai4s/store.py`
-# is empty, so nothing persists it and no route can project it. Claiming four
-# would be claiming a surface that does not exist; the ledger records the gap
-# instead.
+# Five, and the fifth was the one I said did not exist. `storage/frames.py`
+# has `update_message_metadata` and `list_message_boundaries`, and
+# `GET /frames/{fid}/messages` projects the row -- I had grepped for the
+# literal string `request_id` under `storage/`, which searches for a field name
+# inside a generic JSON blob and therefore proves nothing.
+#
+# The injection point matters more than the surfaces. `SessionRunner.run_message`
+# catches its own exceptions and *returns* a failed dict, so a test that
+# replaces the whole method reaches an outer handler that production never
+# reaches. These drive `_loop` -- inside the try, where a real LLM or tool
+# failure lands.
 
 
-def _accepted(runner, path, body):
-    """POST through the real handler and return (body, status).
-
-    Not `runner.submit_*` directly: the claim is about what a *client* receives
-    from the 202, and a direct call skips the route that builds it -- which is
-    exactly where the id was missing.
-    """
+def _api(runner, method, path, body=None):
+    """Drive the real route and return (body, status)."""
     handler = object.__new__(gateway_mod.make_handler(runner.cfg, runner.hub, runner))
     handler._correlation_id = "req-canary"
     handler._last_status = 0
     handler.headers = {}
     handler._query = lambda: {}
-    handler._body = lambda: body
+    handler._body = lambda: (body or {})
     seen: list[tuple] = []
     handler._json = lambda value, code=200: seen.append((value, code))
-    handler._api("POST", path)
-    assert seen, f"{path} answered nothing"
+    handler._api(method, path)
+    assert seen, f"{method} {path} answered nothing"
     return seen[-1]
 
 
@@ -730,51 +731,213 @@ def _failed_frame_updates(runner):
     ]
 
 
-def test_a_message_submit_names_the_request_the_socket_will_blame(runner, monkeypatch):
-    """`wait:false` is what the UI posts, and its 202 carried no id.
-
-    A 202 means "accepted, watch elsewhere", so it is the one place a client can
-    learn which request a later failure belongs to. It answered with
-    job/execution/owner/queue_position and nothing to correlate on, while the
-    socket event and the job query each named an id the client had never been
-    given.
-    """
+def _run_failing_turn(runner, monkeypatch, exc):
+    """POST a real `wait:false` turn whose *inner* loop raises."""
     frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
-    monkeypatch.setattr(
-        runner, "run_message", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
-    )
 
-    accepted, status = _accepted(
-        runner, f"/frames/{frame_id}/message", {"request": "go", "wait": False}
-    )
+    def boom(*_a, **_k):
+        raise exc
 
+    monkeypatch.setattr(runner, "_loop", boom)
+    accepted, status = _api(
+        runner, "POST", f"/frames/{frame_id}/message", {"request": "go", "wait": False}
+    )
     assert status == 202, (status, accepted)
-    assert accepted.get("request_id"), f"the 202 named no request: {accepted}"
-
     job = next(iter(runner._jobs.values()))
     result = job.wait_result()
-    updates = _failed_frame_updates(runner)
-    assert updates, f"no failure reached the socket: {runner.hub.events}"
-
-    assert (
-        accepted["request_id"] == updates[-1]["request_id"] == result["request_id"]
-    ), (
-        "the 202, the socket and the job query name different requests for one "
-        "failure"
-    )
-    blob = json.dumps([accepted, updates[-1], result], ensure_ascii=False, default=str)
-    for canary in CANARIES:
-        assert canary not in blob, blob
+    messages, _ = _api(runner, "GET", f"/frames/{frame_id}/messages")
+    return frame_id, accepted, result, messages
 
 
-def test_a_plan_approve_failure_names_the_same_request_on_the_socket(
+@pytest.mark.stubbed_backend
+def test_one_id_reaches_all_five_surfaces_for_a_real_internal_failure(
     runner, monkeypatch
 ):
-    """The plan spawner is a separate site and needs its own evidence.
+    """The id a user can quote, on every surface that reports the failure.
 
-    The message-turn test above passes with the plan site's fields deleted --
-    different `_target`, different emitter call -- so mutating one and watching
-    the other is how a half-fixed pair looks fixed.
+    Reopening is the surface that had nothing at all: the socket event is gone
+    once the tab closes and the stored row is a sentence, so the person most
+    likely to need a support id -- the one who closed the tab on a failure --
+    was the one who could not get one.
+    """
+    _fid, accepted, result, messages = _run_failing_turn(
+        runner, monkeypatch, CanaryFailure()
+    )
+    updates = _failed_frame_updates(runner)
+    assert updates, f"no failure reached the socket: {runner.hub.events}"
+    stored = [m for m in messages["messages"] if m.get("failure")]
+    assert stored, f"the failure was persisted without an identity: {messages}"
+
+    # The persisted row, read from the store rather than through the route --
+    # a projection that invented the field would otherwise look like storage
+    # that kept it.
+    raw = [
+        m
+        for m in runner.store.list_messages(_fid)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+    assert raw, f"nothing was persisted with a failure identity: {raw}"
+    persisted = json.loads(raw[-1]["metadata"])["failure"]
+
+    ids = {
+        "202": accepted.get("request_id"),
+        "ws": updates[-1].get("request_id"),
+        "job": result.get("request_id"),
+        "persisted": persisted.get("request_id"),
+        "projected": stored[-1]["failure"].get("request_id"),
+    }
+    assert all(ids.values()), ids
+    assert (
+        len(set(ids.values())) == 1
+    ), f"five surfaces, {len(set(ids.values()))} ids: {ids}"
+    assert persisted.get("code") == stored[-1]["failure"].get("code")
+    assert updates[-1].get("code")
+
+
+@pytest.mark.stubbed_backend
+def test_a_max_turns_failure_is_named_too(runner, monkeypatch):
+    """The most ordinary failure in the product raises nothing at all.
+
+    `loop_reason == "max_turns"` sets `status = "failed"` with no exception, so
+    an identity derived from an `except` clause would leave it with nothing to
+    quote. It gets a stable code rather than an error one.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    monkeypatch.setattr(runner, "_loop", lambda *a, **k: "max_turns")
+
+    accepted, _ = _api(
+        runner, "POST", f"/frames/{frame_id}/message", {"request": "go", "wait": False}
+    )
+    job = next(iter(runner._jobs.values()))
+    result = job.wait_result()
+    messages, _ = _api(runner, "GET", f"/frames/{frame_id}/messages")
+    updates = _failed_frame_updates(runner)
+
+    assert updates, runner.hub.events
+    stored = [m for m in messages["messages"] if m.get("failure")]
+    raw = [
+        m
+        for m in runner.store.list_messages(frame_id)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+    assert stored and raw, messages
+    persisted = json.loads(raw[-1]["metadata"])["failure"]
+    ids = {
+        "202": accepted.get("request_id"),
+        "ws": updates[-1].get("request_id"),
+        "job": result.get("request_id"),
+        "persisted": persisted.get("request_id"),
+        "projected": stored[-1]["failure"].get("request_id"),
+    }
+    assert all(ids.values()) and len(set(ids.values())) == 1, ids
+    for where in (updates[-1], result, persisted, stored[-1]["failure"]):
+        assert where.get("code") == "max_turns", where
+
+
+@pytest.mark.stubbed_backend
+def test_the_retry_veto_reaches_the_surface_that_offers_the_retry(runner, monkeypatch):
+    """A 502 looks retryable; a 502 after a tool has run is not.
+
+    `TransportError.output_committed` decides, and it was read only inside the
+    LLM layer -- so the browser met every failure with "please try again",
+    including the ones where trying again re-runs the tool.
+    """
+    exc = TransportError(
+        "upstream 502 after streaming 4 tool calls",
+        provider="deepseek",
+        status=502,
+        retryable=True,
+        output_committed=True,
+    )
+    _fid, accepted, result, messages = _run_failing_turn(runner, monkeypatch, exc)
+    updates = _failed_frame_updates(runner)
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert updates[-1].get("output_committed") is True, updates[-1]
+    assert result.get("output_committed") is True, result
+    assert stored and stored[-1]["failure"].get("output_committed") is True, messages
+    assert accepted["request_id"] == updates[-1]["request_id"]
+
+
+@pytest.mark.stubbed_backend
+def test_an_ordinary_failure_makes_no_claim_about_committed_output(runner, monkeypatch):
+    """Absent, never `False` -- a `False` asserts a safety nothing here knows."""
+    _fid, _accepted, result, messages = _run_failing_turn(
+        runner, monkeypatch, CanaryFailure()
+    )
+    updates = _failed_frame_updates(runner)
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert "output_committed" not in updates[-1], updates[-1]
+    assert "output_committed" not in result, result
+    assert "output_committed" not in stored[-1]["failure"], stored[-1]
+
+
+@pytest.mark.stubbed_backend
+def test_no_canary_survives_on_any_of_the_five_surfaces(runner, monkeypatch):
+    """Plan item 16, against a failure that carries all three.
+
+    `_friendly_error` used to end in `f"... {str(exc)[:300]}"` and to pick its
+    branch by substring-matching that same string, so a provider error echoing
+    a credential, a `PermissionError` naming an absolute path, or a subprocess
+    failure carrying an argv was published as prose -- and is now *stored*,
+    which is worse, because the row outlives the session.
+    """
+    exc = TransportError(
+        f"POST failed for {CANARIES[0]} reading {CANARIES[1]} via {CANARIES[2]}",
+        provider="deepseek",
+        status=502,
+    )
+    _fid, accepted, result, messages = _run_failing_turn(runner, monkeypatch, exc)
+    chunks = [e for e in runner.hub.events if e.get("type") == "text_chunk"]
+    blob = json.dumps(
+        [accepted, result, messages, _failed_frame_updates(runner), chunks],
+        ensure_ascii=False,
+        default=str,
+    )
+    for canary in CANARIES:
+        assert canary not in blob, f"{canary!r} survived: {blob[:600]}"
+
+
+@pytest.mark.stubbed_backend
+def test_the_operator_diagnostic_is_written_exactly_once(runner, monkeypatch):
+    """One failure, one record, naming the same request as the public body.
+
+    Two would mean two places decided what the public body says, which is how
+    they drift; zero would mean the generic sentence the client receives is the
+    only account of the failure anywhere.
+
+    Patched on `openai4s.server.errors`, which is where `public_exception`
+    resolves it -- patching the gateway's own module name catches nothing,
+    because the gateway does not call it on this path at all.
+    """
+    from openai4s.server import errors as errors_mod
+
+    real = errors_mod.record_diagnostic
+    seen: list[dict] = []
+
+    def recording(exc, *, surface, request_id=None):
+        seen.append({"surface": surface, "request_id": request_id})
+        return real(exc, surface=surface, request_id=request_id)
+
+    monkeypatch.setattr(errors_mod, "record_diagnostic", recording)
+    _fid, accepted, _result, _messages = _run_failing_turn(
+        runner, monkeypatch, CanaryFailure()
+    )
+
+    assert len(seen) == 1, f"{len(seen)} diagnostics for one failure: {seen}"
+    assert seen[0]["surface"] == "web:turn", seen[0]
+    assert seen[0]["request_id"] == accepted["request_id"], (seen[0], accepted)
+
+
+@pytest.mark.stubbed_backend
+def test_a_plan_approval_failure_is_named_on_its_own_route(runner, monkeypatch):
+    """The plan spawner is a separate 202 and a separate emitter.
+
+    A message-turn test stays green with the plan route's fields deleted, so
+    the two need separate evidence. Injected at the same `_loop` seam: the plan
+    path reaches it through `plans.run_execution` -> `run_message`, which is
+    how a real plan step fails.
     """
     frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
     runner.store.create_plan(
@@ -786,88 +949,22 @@ def test_a_plan_approve_failure_names_the_same_request_on_the_socket(
         steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
         status="draft",
     )
-    monkeypatch.setattr(
-        runner.plans,
-        "run_message",
-        lambda *a, **k: (_ for _ in ()).throw(CanaryFailure()),
-    )
 
-    accepted, status = _accepted(runner, f"/frames/{frame_id}/plan/approve", {})
+    def boom(*_a, **_k):
+        raise CanaryFailure()
+
+    monkeypatch.setattr(runner, "_loop", boom)
+    accepted, status = _api(runner, "POST", f"/frames/{frame_id}/plan/approve", {})
 
     assert status == 202, (status, accepted)
-    assert accepted.get("request_id"), f"the 202 named no request: {accepted}"
-
-    job = next(job for job in runner._jobs.values() if job.job_id == accepted["job_id"])
+    assert accepted.get("request_id"), f"the plan 202 named no request: {accepted}"
+    job = next(j for j in runner._jobs.values() if j.job_id == accepted["job_id"])
     result = job.wait_result()
     updates = _failed_frame_updates(runner)
-    assert updates, f"the plan failure never reached the socket: {runner.hub.events}"
 
-    assert accepted["request_id"] == updates[-1]["request_id"] == result["request_id"]
+    assert updates, f"the plan failure never reached the socket: {runner.hub.events}"
+    assert accepted["request_id"] == updates[-1]["request_id"]
+    assert result.get("request_id") == accepted["request_id"], result
     blob = json.dumps([accepted, updates[-1], result], ensure_ascii=False, default=str)
     for canary in CANARIES:
         assert canary not in blob, blob
-
-
-# --------------------------------------------------------------------------
-# the retry veto has to reach whoever offers the retry
-# --------------------------------------------------------------------------
-
-
-def test_a_failure_after_committed_output_says_so_on_the_socket(runner, monkeypatch):
-    """A 502 looks retryable; a 502 after a tool has run is not.
-
-    `TransportError.output_committed` is the field that decides, and it was read
-    only inside the LLM layer -- so the surface that actually offers the user a
-    retry never learned that retrying would duplicate visible output or re-fire
-    a side effect. Asserted through the socket rather than the projector,
-    because the projector already had the fact and the stream is where the
-    button is.
-    """
-    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
-
-    def committed(*_a, **_k):
-        raise TransportError(
-            "upstream said 502 after streaming 4 tool calls",
-            provider="deepseek",
-            status=502,
-            retryable=True,
-            output_committed=True,
-        )
-
-    monkeypatch.setattr(runner, "run_message", committed)
-
-    accepted, _ = _accepted(
-        runner, f"/frames/{frame_id}/message", {"request": "go", "wait": False}
-    )
-    job = next(iter(runner._jobs.values()))
-    result = job.wait_result()
-    updates = _failed_frame_updates(runner)
-
-    assert updates, runner.hub.events
-    assert updates[-1].get("output_committed") is True, (
-        "the stream offered a retry without saying output was already committed: "
-        f"{updates[-1]}"
-    )
-    assert result.get("output_committed") is True, result
-    assert accepted["request_id"] == updates[-1]["request_id"]
-
-
-def test_an_ordinary_failure_makes_no_claim_about_committed_output(runner, monkeypatch):
-    """Absent, never `False`.
-
-    A projector that emitted `False` for every exception that has never heard of
-    the field would be asserting a safety it cannot know -- which is worse than
-    silence, because a client would act on it.
-    """
-    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
-    monkeypatch.setattr(
-        runner, "run_message", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
-    )
-
-    _accepted(runner, f"/frames/{frame_id}/message", {"request": "go", "wait": False})
-    job = next(iter(runner._jobs.values()))
-    result = job.wait_result()
-    updates = _failed_frame_updates(runner)
-
-    assert "output_committed" not in updates[-1], updates[-1]
-    assert "output_committed" not in result, result

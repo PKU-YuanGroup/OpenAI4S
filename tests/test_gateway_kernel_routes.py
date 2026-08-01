@@ -136,6 +136,10 @@ def test_status_combines_the_turn_and_the_kernel(tmp_path):
     assert payload == {
         "frame_id": fid,
         "running": True,
+        # The frame's own state, which `running` cannot express: `false` covers
+        # completed, cancelled and failed alike, and a client reopening a
+        # session needs to know which before it can restore anything.
+        "status": "ready",
         "kernel": {"state": "busy"},
     }
 

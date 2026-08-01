@@ -4980,43 +4980,48 @@ class SessionRunner:
             ) from error
 
     @staticmethod
-    def _friendly_error(exc: Exception) -> str:
-        """Turn a raw LLM/tool exception into human-readable text + next step."""
-        msg = str(exc)
-        low = msg.lower()
-        if (
-            "401" in msg
-            or "invalid_api_key" in low
-            or "unauthorized" in low
-            or "invalid api key" in low
-        ):
+    def _friendly_error(exc: Exception, safe: dict | None = None) -> str:
+        """The next step to offer, chosen from CONTROLLED signals only.
+
+        This used to classify by substring-matching `str(exc)` and to end with
+        `f"**这一轮出错了。** {msg[:300]}"`. Both halves are the leak Plan item
+        16 is about, and the tail is the worse one: it reaches a `text_chunk`,
+        the persisted assistant message, and `GET /frames/{id}/messages`, so a
+        provider error echoing a credential, a `PermissionError` naming an
+        absolute path, or a subprocess failure carrying an argv was published
+        on three surfaces and then kept forever.
+
+        Branches now read the exception's type and its `status`/`error_code` --
+        fields this codebase sets deliberately. The fallback is the projector's
+        own sentence, which is author-written (a `GatewayError`) or generic by
+        construction, never the exception's text.
+        """
+        from openai4s.llm.models import LLMError, TransportError
+
+        status = getattr(exc, "status", None)
+        code = str(getattr(exc, "error_code", "") or "")
+        if status == 401 or code in ("invalid_api_key", "unauthorized"):
             return (
                 "**LLM 认证失败(API Key 无效或缺失)。** 请在 Customize → Models "
                 "填写有效的 API Key,或在 `.env` 设置 `OPENAI4S_LLM_API_KEY` 后重启。"
             )
-        if "timed out" in low or "timeout" in low:
+        if status == 429 or code == "rate_limit":
+            return "**触发限流(429)。** 请稍后重试或更换模型。"
+        if status == 408:
             return (
                 "**LLM 请求超时。** 可能是网络不稳或模型响应慢——请重试;必要时在 "
                 "`.env` 调大 `OPENAI4S_LLM_TIMEOUT`。"
             )
-        if (
-            "connection" in low
-            or "failed to establish" in low
-            or "getaddrinfo" in low
-            or "name or service not known" in low
-        ):
+        if isinstance(exc, TransportError) and status is None:
+            # A transport error with no HTTP status never reached the service:
+            # it is a connect, DNS, or read failure by construction.
             return (
-                "**无法连接到 LLM 服务。** 请检查网络与 `OPENAI4S_LLM_BASE_URL` "
-                "(Customize → Network 可确认联网是否开启)。"
+                "**无法连接到 LLM 服务(或请求中断)。** 请检查网络与 "
+                "`OPENAI4S_LLM_BASE_URL`(Customize → Network 可确认联网是否开启)。"
             )
-        if "429" in msg or "rate limit" in low:
-            return "**触发限流(429)。** 请稍后重试或更换模型。"
-        if "no api key" in low or "api key" in low:
-            return (
-                "**未配置 API Key。** 请在 Customize → Models 填写,或设置 "
-                "`OPENAI4S_LLM_API_KEY`。"
-            )
-        return f"**这一轮出错了。** {msg[:300]}"
+        if isinstance(exc, LLMError):
+            return "**LLM 调用失败。** 请在 Customize → Models 确认模型与 API Key " "配置后重试。"
+        return "**这一轮出错了。** " + str((safe or {}).get("error") or INTERNAL_ERROR_MESSAGE)
 
     def _auto_review_enabled(self, root_frame_id: str) -> bool:
         return self.reviews.auto_enabled(root_frame_id)
@@ -5461,6 +5466,23 @@ class SessionRunner:
             assistant_visible: list[dict] = []
             status = "completed"
             err_text: str | None = None
+            # What a client needs to act on a failure, captured where the
+            # failure actually lands. `run_message` catches its own exceptions
+            # and *returns* a failed dict, so `MessageJob.project` -- which is
+            # where these three were being filled in -- never runs for any
+            # failure a user can reach. Only a fault outside this try reached
+            # it, which is to say almost none of them.
+            # Frozen at the top of the turn, not inside a handler. The Plan
+            # asks every HTTP/WS/job/message response to carry a local request
+            # id, and a turn can end `failed` with no exception at all --
+            # `max_turns` is the common one -- so deriving the id from an
+            # `except` clause would leave the most ordinary failure in the
+            # product with nothing to quote on any of its three surfaces.
+            turn_request_id = correlation_id()
+            # Filled only by the exception path: a code the projector chose,
+            # and the retry veto if it read one. The id above is not in here,
+            # because it exists whether or not anything was raised.
+            failure_meta: dict[str, object] = {}
             loop_reason: str | None = None
             try:
                 st.dispatcher.last_output = None
@@ -5481,6 +5503,9 @@ class SessionRunner:
                 )
                 if loop_reason == "max_turns":
                     status = "failed"
+                    # A stable, non-exception code: this failure is a product
+                    # outcome, not an error, and it must still be nameable.
+                    failure_meta["code"] = "max_turns"
                     err_text = (
                         "Agent reached its configured turn limit without calling "
                         "host.submit_output(...)."
@@ -5501,7 +5526,25 @@ class SessionRunner:
                     )
             except Exception as e:  # noqa: BLE001
                 status = "failed"
-                err_text = self._friendly_error(e)
+                # Projected ONCE, before anything is shown or stored, and every
+                # public field below is built from what it returned. The
+                # projector is the only place that decides a code, reads the
+                # retry veto, and writes the operator diagnostic -- calling it
+                # after composing the prose would mean the prose came from
+                # somewhere else, which is exactly how `str(exc)` got onto
+                # three surfaces.
+                safe, _status_code = public_exception(
+                    e, surface="web:turn", request_id=correlation_id()
+                )
+                err_text = self._friendly_error(e, safe)
+                failure_meta = {
+                    "request_id": str(safe.get("request_id") or correlation_id()),
+                    "code": str(safe.get("code") or "internal_error"),
+                }
+                if safe.get("output_committed"):
+                    # Only when true. Absent is "no claim"; `False` would
+                    # assert a safety nothing here can know.
+                    failure_meta["output_committed"] = True
                 try:
                     action_ledger.append_terminal(
                         "runtime_error",
@@ -5580,6 +5623,14 @@ class SessionRunner:
             # one of the prose blocks — persist it as a trailing assistant message
             # (stamped now, so it lands after the last step) so it survives reload.
             # C2: an error must never be silent on reload.
+            # One id on every terminal surface, a code whenever this turn
+            # failed for any reason. `output_committed` only ever appears when
+            # the projector actually read it -- absent is "no claim".
+            turn_identity: dict[str, object] = {"request_id": turn_request_id}
+            if status == "failed":
+                turn_identity["code"] = str(failure_meta.get("code") or "turn_failed")
+                if failure_meta.get("output_committed"):
+                    turn_identity["output_committed"] = True
             tail = ""
             if status == "failed" and err_text:
                 tail = err_text
@@ -5594,6 +5645,16 @@ class SessionRunner:
                     role="assistant",
                     content=tail,
                     frame_id=root_frame_id,
+                    # Reopening a session rebuilt the failure from this row's
+                    # prose alone, so the support id and the retry veto were
+                    # lost the moment the socket event scrolled away -- and a
+                    # user who closes a tab after a failure is the likeliest
+                    # person to need both. Three scalar fields the projector
+                    # already decided are safe to publish; nothing derived from
+                    # the exception itself goes in here.
+                    metadata=(
+                        {"failure": dict(turn_identity)} if status == "failed" else None
+                    ),
                 )
             if (
                 auto_review
@@ -5633,11 +5694,21 @@ class SessionRunner:
                 "execution_id": execution.execution_id,
                 "owner": execution.owner.as_dict(),
                 "error": err_text if status == "failed" else None,
+                **turn_identity,
             }
         # For direct (non-MessageJob) calls the coordinator completes while the
         # context exits. Keep the historical terminal frame event last; queued
         # MessageJobs still complete their outer ticket immediately afterward.
-        emit({"type": "frame_update", "frame_id": root_frame_id, "status": status})
+        emit(
+            {
+                "type": "frame_update",
+                "frame_id": root_frame_id,
+                "status": status,
+                # The stream is the surface the user is watching, and it is the
+                # one that said only "failed".
+                **turn_identity,
+            }
+        )
         return response
 
     def _resolve_mentions(self, st: SessionState, text: str) -> tuple[str, list[dict]]:
@@ -8603,6 +8674,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             # at all, because the text names the source version
                             # and the model read the local copy.
                             "artifact_refs": _message_artifact_refs(mm),
+                            # Absent unless the turn failed, so an ordinary
+                            # message is not given a null field to interpret.
+                            **(
+                                {"failure": _message_failure(mm)}
+                                if _message_failure(mm)
+                                else {}
+                            ),
                         }
                         for mm in msgs
                     ]
@@ -10727,6 +10805,43 @@ def _project_json(p: dict) -> dict:
         "updated_at": _iso(p.get("updated_at")),
         "is_example": bool(p.get("is_example")),
     }
+
+
+def _message_failure(message: dict) -> dict | None:
+    """The failure identity stored on one message, projected safely.
+
+    Same allowlist discipline as `_message_artifact_refs`, and for the same
+    reason -- but this one exists because a reopened session had no way to
+    recover either fact. The socket event that carried them is gone once the
+    tab closes, and the row's prose is a sentence, not an id. So a user coming
+    back to a failed turn could neither quote a support id nor learn that
+    retrying would re-run a tool that already ran.
+
+    Three scalars, each already published on the live surfaces. Never the
+    exception, never a path.
+    """
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(raw, dict):
+        return None
+    failure = raw.get("failure")
+    if not isinstance(failure, dict):
+        return None
+    out: dict = {}
+    request_id = failure.get("request_id")
+    if isinstance(request_id, str) and request_id:
+        out["request_id"] = request_id
+    code = failure.get("code")
+    if isinstance(code, str) and code:
+        out["code"] = code
+    # Only ever True, the same contract the wire carries.
+    if failure.get("output_committed") is True:
+        out["output_committed"] = True
+    return out or None
 
 
 def _message_artifact_refs(message: dict) -> list[dict]:

@@ -1498,3 +1498,8 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
    user can re-send it, which they cannot do with a bubble that vanished. */
 .msg.user.cancelled .bubble{opacity:.5;text-decoration:line-through}
 #composer.queueing::placeholder{font-style:italic}
+
+/* The stored identity of a failed turn, inline on the message it belongs to.
+   Muted: it is a support id and a warning, not part of the conversation. */
+.msg-failure-meta { margin-top: 6px; font-size: 12px; opacity: .72; line-height: 1.5; }
+.msg-failure-meta:empty { display: none; }
