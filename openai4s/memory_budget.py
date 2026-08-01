@@ -37,6 +37,16 @@ MAX_TOTAL_CHARS = 16_000
 #: room for the ones a project rotates through, not room for a filing cabinet.
 MAX_MEMORIES_PER_SCOPE = 200
 
+#: And how many rows one scope may *store*, live or expired. The cap above
+#: counts only memories still inside the retention window, because expiry
+#: withholds without deleting and a scope full of withheld rows would otherwise
+#: refuse every new write about memories the pane already reports as omitted.
+#: That alone leaves the table unbounded, so this is the second half of the
+#: rule: room to accumulate a year's worth of superseded context, and a
+#: distinct refusal when it is reached -- one whose remedy is deleting rows that
+#: are not being injected anyway.
+MAX_STORED_PER_SCOPE = 2 * MAX_MEMORIES_PER_SCOPE
+
 #: How long a memory stays eligible for injection. Standing context that has not
 #: been touched in a year is more likely to be a stale instruction than a
 #: durable fact, and a stale instruction is followed silently.
@@ -82,7 +92,14 @@ def select(
         if not text:
             continue
         label = text[:60]
-        created = memory.get("created_at") if isinstance(memory, dict) else None
+        # The last touch, not the first write. An edit is a touch: correcting a
+        # stale instruction must reset its retention clock, or the correction
+        # expires on the schedule of the thing it replaced.
+        created = (
+            (memory.get("updated_at") or memory.get("created_at"))
+            if isinstance(memory, dict)
+            else None
+        )
         try:
             age = now - int(created or 0)
         except (TypeError, ValueError):

@@ -36,7 +36,12 @@ import sqlite3
 import uuid
 from typing import Any, Callable
 
-from openai4s.memory_budget import MAX_MEMORIES_PER_SCOPE, MAX_MEMORY_CHARS
+from openai4s.memory_budget import (
+    MAX_MEMORIES_PER_SCOPE,
+    MAX_MEMORY_CHARS,
+    MAX_STORED_PER_SCOPE,
+    RETENTION_MS,
+)
 
 #: The explicit cross-project scope. Spelled out at the call site so that
 #: reading every project's memories is always a visible decision.
@@ -129,16 +134,40 @@ class MemoryRepository:
             )
         now = self._clock_ms()
         memory_id = f"mem_{uuid.uuid4().hex[:12]}"
+        cutoff = now - RETENTION_MS
         with self._lock:
-            existing = self._connection.execute(
-                "SELECT COUNT(*) n FROM memories WHERE project_id=?",
-                (scope,),
-            ).fetchone()["n"]
-            if existing >= MAX_MEMORIES_PER_SCOPE:
+            counts = self._connection.execute(
+                "SELECT COUNT(*) total, "
+                "  SUM(CASE WHEN COALESCE(updated_at, created_at) >= ? "
+                "      THEN 1 ELSE 0 END) live "
+                "FROM memories WHERE project_id=?",
+                (cutoff, scope),
+            ).fetchone()
+            stored = int(counts["total"] or 0)
+            live = int(counts["live"] or 0)
+            # Live rows, not every row. Expiry withholds a memory from injection
+            # and deliberately never deletes it, so a scope whose two hundred
+            # entries are all older than the retention window occupied its
+            # entire quota with rows that are never used -- every new write
+            # refused with "delete one first", about memories the pane already
+            # marks as omitted. Withholding has to release the slot too, or the
+            # two halves of retention disagree.
+            if live >= MAX_MEMORIES_PER_SCOPE:
                 raise MemoryLimitError(
-                    f"scope {scope!r} already holds {existing} memories "
+                    f"scope {scope!r} already holds {live} live memories "
                     f"(limit {MAX_MEMORIES_PER_SCOPE}); delete one first",
                     code="memory_scope_full",
+                )
+            # And a ceiling on what is *stored*, because the rule above alone
+            # would let an expired scope grow without bound. Its own code, and
+            # its own remedy: these rows can be deleted without losing anything
+            # that is still being injected.
+            if stored >= MAX_STORED_PER_SCOPE:
+                raise MemoryLimitError(
+                    f"scope {scope!r} stores {stored} memories, "
+                    f"{stored - live} of them expired (ceiling "
+                    f"{MAX_STORED_PER_SCOPE}); delete the expired ones first",
+                    code="memory_scope_full_expired",
                 )
             self._connection.execute(
                 "INSERT INTO memories(memory_id,project_id,block,content,created_at) "
@@ -152,6 +181,7 @@ class MemoryRepository:
             "block": block,
             "content": text,
             "created_at": now,
+            "updated_at": None,
         }
 
     def list(
@@ -203,6 +233,95 @@ class MemoryRepository:
             "overridden": len(shared) - len(inherited),
         }
 
+    def update(
+        self,
+        memory_id: str,
+        *,
+        content: str | None = None,
+        block: str | None = None,
+        project_id: str | None = None,
+    ) -> dict | None:
+        """Correct one memory in a named scope; ``None`` when no row matched.
+
+        A memory could be written and deleted but never corrected. Fixing a typo
+        in standing context therefore meant delete-and-rewrite, which loses the
+        row's place in the newest-first order both the pane and the injection
+        use, and which is two round trips through a scope that may be at its cap
+        -- so the second one can fail and leave the user with neither version.
+
+        Scoped exactly like `delete`, and for the same reason: anything holding
+        an id could otherwise rewrite a memory belonging to a project it is not
+        in. The same length and emptiness refusals as `add`, checked before the
+        UPDATE, because a correction that silently clipped its own text would be
+        a worse instruction than the one it replaced.
+
+        `updated_at` moves; `created_at` does not. Retention asks when a memory
+        was last *touched*, and an edit is a touch -- without this, correcting a
+        stale instruction left it expiring on the original clock.
+        """
+        scope = _scope(project_id)
+        if scope == ALL_PROJECTS:
+            raise MemoryLimitError(
+                f"{ALL_PROJECTS!r} is a read-only view; name the project that "
+                "owns this memory",
+                code="memory_scope_invalid",
+            )
+        text: str | None = None
+        if content is not None:
+            text = str(content).strip()
+            if not text:
+                raise MemoryLimitError("memory content is empty", code="memory_empty")
+            if len(text) > MAX_MEMORY_CHARS:
+                raise MemoryLimitError(
+                    f"a memory may be at most {MAX_MEMORY_CHARS} characters "
+                    f"(this one is {len(text)}); keep the document as a file "
+                    "and remember where it is",
+                    code="memory_too_long",
+                )
+        new_block = str(block).strip() if block is not None else None
+        if new_block == "":
+            raise MemoryLimitError("memory block is empty", code="memory_empty")
+        if text is None and new_block is None:
+            raise MemoryLimitError(
+                "nothing to update: send content, block, or both",
+                code="memory_no_change",
+            )
+        now = self._clock_ms()
+        assignments = ["updated_at=?"]
+        params: list[Any] = [now]
+        if text is not None:
+            assignments.append("content=?")
+            params.append(text)
+        if new_block is not None:
+            assignments.append("block=?")
+            params.append(new_block)
+        params.extend([memory_id, scope])
+        with self._lock:
+            cursor = self._connection.execute(
+                f"UPDATE memories SET {', '.join(assignments)} "
+                "WHERE memory_id=? AND project_id=?",
+                params,
+            )
+            if not cursor.rowcount:
+                self._connection.rollback()
+                return None
+            self._connection.commit()
+            row = self._connection.execute(
+                "SELECT memory_id,project_id,block,content,created_at,updated_at "
+                "FROM memories WHERE memory_id=?",
+                (memory_id,),
+            ).fetchone()
+        if row is None:  # pragma: no cover - deleted between UPDATE and SELECT
+            return None
+        return {
+            "memory_id": row["memory_id"],
+            "project_id": row["project_id"],
+            "block": row["block"],
+            "content": row["content"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
     def delete(self, memory_id: str, project_id: str | None = None) -> bool:
         """Delete one memory *from a named scope*; True when a row went.
 
@@ -246,8 +365,8 @@ class MemoryRepository:
 
     def _rows(self, scopes: list[str] | None, block: str | None) -> list[dict]:
         sql = (
-            "SELECT memory_id,project_id,block,content,created_at FROM memories "
-            "WHERE 1=1"
+            "SELECT memory_id,project_id,block,content,created_at,updated_at "
+            "FROM memories WHERE 1=1"
         )
         params: list[Any] = []
         if scopes is not None:
@@ -257,7 +376,9 @@ class MemoryRepository:
         if block:
             sql += " AND block=?"
             params.append(block)
-        sql += " ORDER BY created_at DESC"
+        # By the last touch, not by creation: an edited memory is current
+        # standing context, and `memory_budget.select` truncates from the end.
+        sql += " ORDER BY COALESCE(updated_at, created_at) DESC"
         with self._lock:
             rows = self._connection.execute(sql, params).fetchall()
         return [
@@ -267,6 +388,7 @@ class MemoryRepository:
                 "block": row["block"],
                 "content": row["content"],
                 "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
             }
             for row in rows
         ]

@@ -10103,6 +10103,39 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                 return
             m = re.fullmatch(r"/memory/([^/]+)", sub)
+            if m and method == "PATCH":
+                # Scoped exactly like the DELETE below, and for the same
+                # reason: an id-only edit would rewrite a memory belonging to
+                # whichever project happens to own it. Correcting standing
+                # context used to mean delete-and-rewrite, which loses the
+                # row's place in the newest-first order and can leave the user
+                # with neither version if the second call hits the scope cap.
+                b = self._body()
+                scope = (q.get("project_id") or [""])[0].strip()
+                if not scope:
+                    raise GatewayError(
+                        400,
+                        "memory edits require a project_id query parameter "
+                        f"({MEMORY_GLOBAL_SCOPE!r} or a project id)",
+                        "memory_scope_required",
+                    )
+                try:
+                    edited = store.update_memory(
+                        m.group(1),
+                        content=b.get("content"),
+                        block=b.get("block"),
+                        project_id=scope,
+                    )
+                except MemoryLimitError as error:
+                    raise GatewayError(400, str(error), error.code) from error
+                if edited is None:
+                    raise GatewayError(
+                        404,
+                        f"no memory {m.group(1)!r} in scope {scope!r}",
+                        "memory_not_found",
+                    )
+                self._json(edited)
+                return
             if m and method == "DELETE":
                 # Scoped, and the scope is the caller's to state. An id-only
                 # delete removes a memory from whichever project happens to own

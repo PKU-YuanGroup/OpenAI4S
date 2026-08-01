@@ -93,6 +93,11 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # A pin is a statement about one picture; binding it to the artifact
         # let a re-plot between the pin and the send change what the model saw.
         "annotation_version_binding",
+        # Retention asks when a memory was last *touched*, and until there was
+        # an edit path there was nothing to record but the first write. With
+        # only `created_at`, correcting a stale instruction left the correction
+        # expiring on the original's clock.
+        "memory_updated_at",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

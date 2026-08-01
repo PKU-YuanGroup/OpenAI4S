@@ -31,6 +31,10 @@ def test_memory_repository_shares_store_boundary_and_preserves_filters(tmp_path)
         "block": "general",
         "content": "general memory",
         "created_at": 100,
+        # Present and null on a fresh row rather than absent: the field means
+        # "never edited", and a caller that has to tell a missing key from a
+        # null one is a caller that will get it wrong.
+        "updated_at": None,
     }
     assert [item["memory_id"] for item in store.list_memories(project_id="all")] == [
         other["memory_id"],

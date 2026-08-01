@@ -350,7 +350,8 @@ CREATE TABLE IF NOT EXISTS memories (
     project_id    TEXT NOT NULL DEFAULT 'default',
     block         TEXT,               -- memory block name
     content       TEXT,
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER             -- last edit; NULL means never edited
 );
 
 CREATE TABLE IF NOT EXISTS managed_endpoints (
@@ -1089,10 +1090,37 @@ class Store:
                         "annotation_version_binding",
                         self._apply_annotation_version_binding,
                     ),
+                    13: ("memory_updated_at", self._apply_memory_updated_at),
                 },
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+
+    def _apply_memory_updated_at(self, conn: sqlite3.Connection) -> None:
+        """Version 13: record when a memory was last edited.
+
+        A memory could be written and deleted but never corrected, so fixing a
+        typo in standing context meant deleting it and writing it again -- which
+        loses its place in the newest-first order the pane and the injection
+        both use, and which is a two-step round trip through a scope that may be
+        at its cap.
+
+        The column exists because retention needs it. `RETENTION_DAYS` withholds
+        a memory that "has not been touched in a year", and with only
+        `created_at` an edit was not a touch: correcting a stale instruction
+        left it expiring on the original clock. Existing rows stay NULL, which
+        reads as "never edited" and falls back to `created_at` -- no backfill,
+        because when those rows were last edited is not recorded anywhere and
+        writing today's date down would turn a guess into a fact. Runs inside
+        the transaction owned by ``run_migrations``.
+        """
+        try:
+            conn.execute("ALTER TABLE memories ADD COLUMN updated_at INTEGER")
+        except sqlite3.OperationalError as e:
+            if not _is_duplicate_column(e):
+                raise MigrationError(
+                    f"memories.updated_at could not be added: {e}"
+                ) from e
 
     def _apply_annotation_version_binding(self, conn: sqlite3.Connection) -> None:
         """Version 12: bind an image annotation to the version it was pinned on.
@@ -3183,6 +3211,21 @@ class Store:
         self, *, content: str, block: str = "general", project_id: str = "default"
     ) -> dict:
         return self._memories.add(
+            content=content,
+            block=block,
+            project_id=project_id,
+        )
+
+    def update_memory(
+        self,
+        memory_id: str,
+        *,
+        content: str | None = None,
+        block: str | None = None,
+        project_id: str | None = None,
+    ) -> dict | None:
+        return self._memories.update(
+            memory_id,
             content=content,
             block=block,
             project_id=project_id,
