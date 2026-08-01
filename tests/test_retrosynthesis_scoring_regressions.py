@@ -16,6 +16,12 @@ def kernel():
     return importlib.import_module("retrosynthesis_planning.kernel")
 
 
+@pytest.fixture(scope="module")
+def workflow():
+    sys.path.insert(0, str(get_config().skills_dir))
+    return importlib.import_module("retrosynthesis_planning.workflow")
+
+
 def _direct_purchase_route(*, rank=1, score=1.0, stock=True):
     return {
         "rank": rank,
@@ -53,6 +59,35 @@ def _one_step_route(*, rank=1, score=1.0, solved=True, leaf_stock=True):
                             "in_stock": leaf_stock,
                             "children": [],
                         }
+                    ],
+                }
+            ],
+        },
+    }
+
+
+def _workflow_route(rank, product, template, *precursors):
+    return {
+        "rank": rank,
+        "score": 1 - rank / 100,
+        "solved": True,
+        "steps": 1,
+        "starting_materials": list(precursors),
+        "tree": {
+            "type": "mol",
+            "smiles": product,
+            "children": [
+                {
+                    "type": "reaction",
+                    "template": template,
+                    "children": [
+                        {
+                            "type": "mol",
+                            "smiles": precursor,
+                            "in_stock": True,
+                            "children": [],
+                        }
+                        for precursor in precursors
                     ],
                 }
             ],
@@ -254,3 +289,141 @@ def test_execution_ranking_totally_orders_mixed_step_values(kernel):
 
     constrained = kernel.rank_routes(routes, constraints={"max_steps": 3})
     assert len(constrained) == len(routes)
+
+
+def test_search_spec_builds_documented_cli_options_in_stable_order(
+    workflow, tmp_path
+):
+    checkpoint = tmp_path / "checkpoint.json.gz"
+    command = workflow.build_aizynth_search_command(
+        "CCO",
+        "config.yml",
+        output_path="routes.json",
+        conda_env="retro",
+        search=workflow.AiZynthSearchSpec(
+            policies=("uspto", "ringbreaker"),
+            filters=("quick",),
+            stocks=("zinc", "internal"),
+            cluster=True,
+            nproc=4,
+            checkpoint_path=checkpoint,
+            log_to_file=True,
+            post_processing=("my.post",),
+            pre_processing="my.pre",
+        ),
+    )
+
+    assert command == [
+        "conda",
+        "run",
+        "-n",
+        "retro",
+        "aizynthcli",
+        "--config",
+        "config.yml",
+        "--smiles",
+        "CCO",
+        "--output",
+        "routes.json",
+        "--policy",
+        "uspto",
+        "ringbreaker",
+        "--filter",
+        "quick",
+        "--stocks",
+        "zinc",
+        "internal",
+        "--cluster",
+        "--nproc",
+        "4",
+        "--checkpoint",
+        str(checkpoint),
+        "--log_to_file",
+        "--post_processing",
+        "my.post",
+        "--pre_processing",
+        "my.pre",
+    ]
+
+
+@pytest.mark.parametrize("nproc", [0, -1])
+def test_search_spec_rejects_non_positive_worker_counts(workflow, nproc):
+    with pytest.raises(ValueError, match="nproc"):
+        workflow.AiZynthSearchSpec(nproc=nproc)
+
+
+def test_route_deduplication_preserves_best_route_and_source_ranks(workflow):
+    best = _workflow_route(1, "CCOC(=O)N", "amide", "CCO", "NC=O")
+    duplicate = _workflow_route(4, "CCOC(=O)N", "amide", "NC=O", "CCO")
+
+    unique = workflow.deduplicate_routes([best, duplicate])
+
+    assert len(unique) == 1
+    assert unique[0]["rank"] == 1
+    assert unique[0]["duplicate_count"] == 2
+    assert unique[0]["source_ranks"] == [1, 4]
+    assert unique[0]["route_signature"] == workflow.route_signature(best)
+
+
+def test_diversity_selection_prefers_distinct_route_before_near_duplicate(workflow):
+    first = _workflow_route(1, "CCOC(=O)N", "amide", "CCO", "NC=O")
+    near_duplicate = _workflow_route(2, "CCOC(=O)N", "amide", "CCO", "NC=O")
+    distinct = _workflow_route(3, "CCOC(=O)N", "carbamate", "CCN", "O=C=O")
+
+    selected = workflow.select_diverse_routes(
+        [first, near_duplicate, distinct],
+        max_routes=2,
+        similarity_threshold=0.8,
+    )
+
+    assert [route["source_rank"] for route in selected] == [1, 3]
+    assert all(route["diversity_relaxed"] is False for route in selected)
+
+
+def test_prepare_routes_normalizes_deduplicates_and_limits_output(workflow):
+    payload = {
+        "routes": [
+            {
+                "score": 0.9,
+                "solved": True,
+                "tree": _workflow_route(
+                    1, "CCOC(=O)N", "amide", "CCO", "NC=O"
+                )["tree"],
+            },
+            {
+                "score": 0.8,
+                "solved": True,
+                "tree": _workflow_route(
+                    2, "CCOC(=O)N", "amide", "NC=O", "CCO"
+                )["tree"],
+            },
+        ]
+    }
+
+    prepared = workflow.prepare_routes(payload, max_routes=10)
+
+    assert len(prepared) == 1
+    assert prepared[0]["duplicate_count"] == 2
+    assert prepared[0]["rank"] == 1
+
+
+def test_structural_audit_reports_missing_precursors_without_external_services(
+    workflow,
+):
+    route = {
+        "rank": 7,
+        "tree": {
+            "type": "mol",
+            "smiles": "CCO",
+            "children": [{"type": "reaction", "children": []}],
+        },
+    }
+
+    audit = workflow.audit_routes([route])
+
+    assert audit["route_count"] == 1
+    assert audit["severity_counts"]["error"] == 1
+    assert any(
+        issue["code"] == "reaction_without_precursors" for issue in audit["issues"]
+    )
+    assert "does not validate reaction feasibility" in audit["disclaimer"]
