@@ -295,3 +295,64 @@ class _NullHub:
 
     def drop_frame(self, root_frame_id):
         del root_frame_id
+
+
+# --- the sub-resources are not memory ids ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "verb,name",
+    [
+        # `categories` and `context` are read-only projections: no verb but GET
+        # belongs to them, so everything else is a 404.
+        ("PATCH", "categories"),
+        ("DELETE", "categories"),
+        ("PATCH", "context"),
+        ("DELETE", "context"),
+        # `enabled` is a real toggle -- PUT/PATCH/POST are its own and answer
+        # 200 above this route. Only DELETE has no meaning for it.
+        ("DELETE", "enabled"),
+    ],
+)
+def test_a_memory_sub_resource_is_not_treated_as_a_memory_id(tmp_path, verb, name):
+    """`/memory/([^/]+)` matches `categories` too, and it is not an id.
+
+    Their GET handlers run before the id route, so a read was always answered
+    correctly. Every other verb fell through and was interpreted as an operation
+    on a memory called "categories" -- so `DELETE /memory/categories` came back
+    "memory deletes require a project_id", which reads as "supply one and this
+    will work". It would not have. A reply whose shape promises a retry that
+    cannot succeed is worse than a refusal.
+
+    Found by the response-schema gate: adding the PATCH verb made three frozen
+    route shapes change in a way it called breaking, and it was right.
+    """
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        host="127.0.0.1",
+        port=_free_port(),
+    )
+    runner = gateway_mod.SessionRunner(cfg, _NullHub(), start_idle_sweeper=False)
+    handler_class = gateway_mod.make_handler(cfg, runner.hub, runner)
+    handler = object.__new__(handler_class)
+    handler._correlation_id = "req-sub"
+    handler._last_status = 0
+    handler.headers = {}
+    handler._query = lambda: {}
+    handler._body = lambda: {"content": "x"}
+    seen: list[tuple[object, int]] = []
+    handler._json = lambda value, code=200: seen.append((value, code))
+    from openai4s.server.errors import GatewayError, gateway_error_payload
+
+    try:
+        handler._api(verb, f"/memory/{name}")
+    except GatewayError as error:
+        seen.append((gateway_error_payload(error), error.code))
+    finally:
+        runner.close()
+
+    assert seen, f"{verb} /memory/{name} answered nothing"
+    body, status = seen[-1]
+    assert status == 404, (status, body)
+    assert "project_id" not in json.dumps(body, default=str)

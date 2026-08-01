@@ -2955,6 +2955,31 @@
         "type": "object"
       }
     },
+    "DELETE /memory/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /memory/([^/]+) [ok]": {
       "schema": {
         "properties": {
@@ -2968,41 +2993,101 @@
         "type": "object"
       }
     },
-    "DELETE /memory/categories [ok]": {
+    "DELETE /memory/categories [error]": {
       "schema": {
         "properties": {
-          "ok": {
-            "type": "boolean"
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
           }
         },
         "required": [
-          "ok"
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
     },
-    "DELETE /memory/context [ok]": {
+    "DELETE /memory/context [error]": {
       "schema": {
         "properties": {
-          "ok": {
-            "type": "boolean"
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
           }
         },
         "required": [
-          "ok"
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
     },
-    "DELETE /memory/enabled [ok]": {
+    "DELETE /memory/enabled [error]": {
       "schema": {
         "properties": {
-          "ok": {
-            "type": "boolean"
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
           }
         },
         "required": [
-          "ok"
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -5917,7 +6002,10 @@
                   "type": "string"
                 },
                 "task_summary": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "updated_at": {
                   "type": "string"
@@ -8241,6 +8329,40 @@
           "messages": {
             "items": {
               "properties": {
+                "artifact_refs": {
+                  "items": {
+                    "properties": {
+                      "artifact_id": {
+                        "type": "string"
+                      },
+                      "display_name": {
+                        "type": "string"
+                      },
+                      "materialized_target": {
+                        "type": "null"
+                      },
+                      "sha256": {
+                        "type": "string"
+                      },
+                      "source_session": {
+                        "type": "string"
+                      },
+                      "version_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "artifact_id",
+                      "display_name",
+                      "materialized_target",
+                      "sha256",
+                      "source_session",
+                      "version_id"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
                 "content": {
                   "type": "string"
                 },
@@ -8264,6 +8386,7 @@
                 }
               },
               "required": [
+                "artifact_refs",
                 "content",
                 "created_at",
                 "fork_checkpoint_id",
@@ -9324,6 +9447,12 @@
                 },
                 "project_id": {
                   "type": "string"
+                },
+                "updated_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -9331,7 +9460,8 @@
                 "content",
                 "created_at",
                 "memory_id",
-                "project_id"
+                "project_id",
+                "updated_at"
               ],
               "type": "object"
             },
@@ -9415,14 +9545,45 @@
           "included_count": {
             "type": "integer"
           },
+          "inherited_count": {
+            "type": "integer"
+          },
           "omitted": {
+            "items": {
+              "properties": {
+                "chars": {
+                  "type": "null"
+                },
+                "limit": {
+                  "type": "integer"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "chars",
+                "limit",
+                "reason"
+              ],
+              "type": "object"
+            },
             "type": "array"
+          },
+          "overridden_count": {
+            "type": "integer"
+          },
+          "project_id": {
+            "type": "string"
           }
         },
         "required": [
           "context",
           "included_count",
-          "omitted"
+          "inherited_count",
+          "omitted",
+          "overridden_count",
+          "project_id"
         ],
         "type": "object"
       }
@@ -10540,6 +10701,32 @@
                 "origin": {
                   "type": "string"
                 },
+                "readiness": {
+                  "properties": {
+                    "checked_locally": {
+                      "type": "boolean"
+                    },
+                    "missing": {
+                      "type": "array"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "unverifiable": {
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "checked_locally",
+                    "missing",
+                    "state",
+                    "unverifiable"
+                  ],
+                  "type": "object"
+                },
+                "requirements": {
+                  "type": "array"
+                },
                 "scope": {
                   "type": "string"
                 },
@@ -10555,6 +10742,8 @@
                 "enabled",
                 "name",
                 "origin",
+                "readiness",
+                "requirements",
                 "scope",
                 "versioned"
               ],
@@ -11381,6 +11570,41 @@
                 "origin": {
                   "type": "string"
                 },
+                "readiness": {
+                  "properties": {
+                    "checked_locally": {
+                      "type": "boolean"
+                    },
+                    "missing": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "unverifiable": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "checked_locally",
+                    "missing",
+                    "state",
+                    "unverifiable"
+                  ],
+                  "type": "object"
+                },
+                "requirements": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
                 "scope": {
                   "type": "string"
                 },
@@ -11396,6 +11620,8 @@
                 "enabled",
                 "name",
                 "origin",
+                "readiness",
+                "requirements",
                 "scope",
                 "versioned"
               ],
@@ -14660,12 +14886,6 @@
           "error": {
             "type": "string"
           },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
           "request_id": {
             "type": "string"
           },
@@ -14676,10 +14896,41 @@
         "required": [
           "code",
           "error",
-          "method",
-          "path",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /memory/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "block": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "memory_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "block",
+          "content",
+          "created_at",
+          "memory_id",
+          "project_id",
+          "updated_at"
         ],
         "type": "object"
       }
@@ -20506,6 +20757,31 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/plan/(approve|resume|revise|discard) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/plan/(approve|resume|revise|discard) [ok]": {
       "schema": {
         "properties": {
@@ -22275,6 +22551,31 @@
         "type": "object"
       }
     },
+    "POST /memory [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /memory [ok]": {
       "schema": {
         "properties": {
@@ -22292,6 +22593,9 @@
           },
           "project_id": {
             "type": "string"
+          },
+          "updated_at": {
+            "type": "null"
           }
         },
         "required": [
@@ -22299,7 +22603,8 @@
           "content",
           "created_at",
           "memory_id",
-          "project_id"
+          "project_id",
+          "updated_at"
         ],
         "type": "object"
       }

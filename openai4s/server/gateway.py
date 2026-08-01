@@ -10124,7 +10124,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         }
                     )
                 return
+            # `[^/]+` matches `categories`, `context` and `enabled` too, and
+            # those are sub-resources of `/memory`, not memory ids. Their GET
+            # handlers run above, so a GET was always answered correctly -- but
+            # every other verb fell through to here and was interpreted as an
+            # operation on a memory called "categories". A `DELETE
+            # /memory/categories` was answered "memory deletes require a
+            # project_id" rather than 404, which reads as "supply one and this
+            # will work"; it would not have, and the shape of the reply said it
+            # would. Reserved names 404 like any unknown path.
             m = re.fullmatch(r"/memory/([^/]+)", sub)
+            if m and m.group(1) in ("categories", "context", "enabled"):
+                m = None
             if m and method == "PATCH":
                 # Scoped exactly like the DELETE below, and for the same
                 # reason: an id-only edit would rewrite a memory belonging to

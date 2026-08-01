@@ -710,6 +710,17 @@ def _drive_seeded_downloads(
         (r"/frames/([^/]+)/session/export", f"/frames/{frame_id}/session/export", {}),
         (r"/artifacts/(.+)", f"/artifacts/{artifact['artifact_id']}", {}),
     )
+    # Re-driven with a row present. The parameterless sweep runs before this
+    # fixture exists, so it observes `memories: []` -- and an empty array
+    # teaches the recorder nothing about what an element looks like, so the
+    # published contract for a *populated* list was silently no contract at
+    # all. `merge` widens across observations, so driving them again here adds
+    # the element shape rather than replacing anything.
+    probes = probes + (
+        (r"/memory", "/memory", {"project_id": ["all"]}),
+        (r"/memory/categories", "/memory/categories", {"project_id": ["all"]}),
+        (r"/memory/context", "/memory/context", {"project_id": [_CAPTURE_PROJECT]}),
+    )
     for route, path, query in probes:
         handler = _probe_handler(
             recorder, handler_class, "GET", path, route, headers, query
