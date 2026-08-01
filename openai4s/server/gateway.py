@@ -6321,9 +6321,16 @@ class SessionRunner:
         return self.plans.execution_seed(plan)
 
     def run_plan_execution(
-        self, root_frame_id: str, project_id: str, model: str | None = None
+        self,
+        root_frame_id: str,
+        project_id: str,
+        model: str | None = None,
+        *,
+        claimed_plan_id: str | None = None,
     ) -> dict:
-        return self.plans.run_execution(root_frame_id, project_id, model)
+        return self.plans.run_execution(
+            root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
+        )
 
     def run_plan_revision(
         self,
@@ -6335,12 +6342,23 @@ class SessionRunner:
         return self.plans.run_revision(root_frame_id, project_id, changes, model)
 
     def submit_plan_approval(
-        self, root_frame_id: str, project_id: str, model: str | None = None
+        self,
+        root_frame_id: str,
+        project_id: str,
+        model: str | None = None,
+        *,
+        claimed_plan_id: str | None = None,
     ) -> "MessageJob":
         return self._spawn_job(
             root_frame_id,
-            lambda: self.run_plan_execution(root_frame_id, project_id, model),
+            lambda: self.run_plan_execution(
+                root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
+            ),
         )
+
+    def claim_plan_approval(self, root_frame_id: str) -> dict:
+        """Compare-and-swap the draft into `executing` for exactly one caller."""
+        return self.plans.claim_approval(root_frame_id)
 
     def claim_plan_resume(self, root_frame_id: str) -> dict:
         """Compare-and-swap the plan into `executing` for exactly one caller."""
@@ -8829,7 +8847,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 pid = f.get("project_id") or "default"
                 model = b.get("model")
                 if action == "approve":
-                    job = runner.submit_plan_approval(fid, pid, model)
+                    # Claimed here, synchronously, for the same reason `resume`
+                    # below is: this route answers 202 and then runs the plan on
+                    # a background thread, so a status check made inside that
+                    # thread cannot decide who owns the execution. Two POSTs
+                    # both read `draft`, both were accepted, and both turns ran
+                    # the same steps against the same session.
+                    claim = runner.claim_plan_approval(fid)
+                    if not claim.get("ok"):
+                        raise GatewayError(409, claim["error"], "plan_not_draft")
+                    job = runner.submit_plan_approval(
+                        fid, pid, model, claimed_plan_id=claim["plan_id"]
+                    )
                     self._json(
                         {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
                         202,

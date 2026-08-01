@@ -264,9 +264,15 @@ def test_execution_guards_and_revision_prompt(tmp_path):
 
     store, _events, service = _service(tmp_path, run_message)
     session = _session(tmp_path, store)
+    # Approve now refuses through `claim_approval`, the same compare-and-swap
+    # resume has used since two POSTs were found both executing the same steps.
+    # So the refusal carries the plan it lost to, exactly as resume's does --
+    # `plan_id`/`plan_status` are `None` here because there is no plan at all.
     assert service.run_execution(session.root_frame_id, "science") == {
         "status": "failed",
         "frame_id": session.root_frame_id,
+        "plan_id": None,
+        "plan_status": None,
         "error": "no plan to approve",
     }
     assert calls == []
@@ -298,14 +304,21 @@ def test_execution_guards_and_revision_prompt(tmp_path):
         steps=[{"id": "s1", "title": "Step"}],
         status="executing",
     )
+    # Per-status, not one flat "cannot approve": the caller's next move differs
+    # between "somebody else is already running it" and "this one is finished".
     assert service.run_execution(session.root_frame_id, "science") == {
         "status": "failed",
         "frame_id": session.root_frame_id,
-        "error": "plan already executing",
+        "plan_id": plan["plan_id"],
+        "plan_status": "executing",
+        "error": "only a draft plan can be approved; this one is executing",
     }
+    # And the losing claim leaves the row where it was rather than writing over
+    # a plan another turn owns -- the whole point of the swap.
+    assert store.get_plan(plan["plan_id"])["status"] == "executing"
     store.update_plan(plan["plan_id"], status="completed")
     assert service.run_execution(session.root_frame_id, "science")["error"] == (
-        "plan already completed"
+        "only a draft plan can be approved; this one is completed"
     )
     assert store.get_plan(plan["plan_id"])["status"] == "completed"
     assert calls == []

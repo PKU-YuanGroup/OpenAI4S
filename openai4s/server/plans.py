@@ -318,6 +318,49 @@ class PlanService:
             "5. 全部完成后写一段简洁的最终总结，并调用 host.submit_output(...)。"
         )
 
+    def claim_approval(self, root_frame_id: str) -> dict[str, Any]:
+        """Take this frame's plan from `draft` to `executing`, or say why not.
+
+        `claim_resume` below has done this for the resume path since the race it
+        documents was found; approve had the same shape and none of the fix. It
+        read the status inside `run_execution`, which the web route reaches only
+        *after* answering 202 on a background thread -- so two POSTs both read
+        `draft`, both were accepted, and both turns executed the same steps
+        against the same session. A read followed by an unconditional write is
+        not a claim no matter which thread it runs on.
+
+        Refused per-status for the same reason: the caller's next move differs
+        between "somebody else is already running it" and "this one is
+        finished", and one flat "cannot approve" tells them neither.
+        """
+        plan = self.store.get_plan_by_frame(root_frame_id)
+        if not plan:
+            return {
+                "ok": False,
+                "plan_id": None,
+                "plan_status": None,
+                "error": "no plan to approve",
+            }
+        plan_id = str(plan["plan_id"])
+        if self.store.compare_and_set_plan_status(
+            plan_id, expected="draft", new_status="executing"
+        ):
+            return {
+                "ok": True,
+                "plan_id": plan_id,
+                "plan_status": "executing",
+                "plan": self.store.get_plan(plan_id),
+            }
+        current = self.store.get_plan(plan_id) or {}
+        status = current.get("status")
+        return {
+            "ok": False,
+            "plan_id": plan_id,
+            "plan_status": status,
+            "error": f"only a draft plan can be approved; this one is "
+            f"{status or 'absent'}",
+        }
+
     def claim_resume(self, root_frame_id: str) -> dict[str, Any]:
         """Take this frame's plan from `paused` to `executing`, or say why not.
 
@@ -456,24 +499,46 @@ class PlanService:
         root_frame_id: str,
         project_id: str,
         model: str | None = None,
+        *,
+        claimed_plan_id: str | None = None,
     ) -> dict[str, Any]:
-        """Approve a draft and execute it through the normal agent turn."""
-        plan = self.store.get_plan_by_frame(root_frame_id)
+        """Approve a draft and execute it through the normal agent turn.
+
+        `claimed_plan_id` is passed by the web route, which claims synchronously
+        so its 202 means something; claiming again here would look for a `draft`
+        row the route already moved and refuse its own turn. The same contract
+        `resume_execution` has, for the same reason.
+        """
+        if claimed_plan_id is not None:
+            # Claimed by the route; the row is already `executing`.
+            plan = self.store.get_plan(claimed_plan_id)
+            if not plan:
+                return {
+                    "status": "failed",
+                    "frame_id": root_frame_id,
+                    "error": "no plan to approve",
+                }
+        else:
+            claim = self.claim_approval(root_frame_id)
+            if not claim["ok"]:
+                return {
+                    "status": "failed",
+                    "frame_id": root_frame_id,
+                    "plan_id": claim["plan_id"],
+                    "plan_status": claim["plan_status"],
+                    "error": claim["error"],
+                }
+            plan = claim["plan"]
         if not plan:
             return {
                 "status": "failed",
                 "frame_id": root_frame_id,
                 "error": "no plan to approve",
             }
-        if plan.get("status") in ("executing", "completed"):
-            return {
-                "status": "failed",
-                "frame_id": root_frame_id,
-                "error": f"plan already {plan['status']}",
-            }
 
         emit = self.emitter_for(root_frame_id)
-        self.store.update_plan(plan["plan_id"], status="executing")
+        # The swap above already wrote `executing`; this is where the
+        # unconditional write used to be, and it is gone rather than moved.
         self.emit_ready(
             emit,
             root_frame_id,
