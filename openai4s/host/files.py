@@ -63,6 +63,18 @@ MAX_LINE_CHARS = 1024 * 1024
 #: walk is unbounded work, not just unbounded memory: bounding what is kept
 #: does nothing about a tree that takes a minute to enumerate.
 MAX_SCAN_ENTRIES = 100_000
+#: How long one scan may spend walking before it stops and says so.
+#:
+#: The entry cap above bounds syscalls, not seconds, and its own comment makes
+#: the point it does not finish: "the walk is unbounded work". How long 100,000
+#: entries take is a property of the filesystem, not of this process -- on a
+#: network mount or a directory whose entries are cold, a scan well under the
+#: entry cap outlives any request timeout the caller set, and the caller has no
+#: way to bound it because the walk is inside a single tool call.
+#:
+#: Reported through the same `scan_truncated` flag the entry cap uses, so a
+#: partial answer never looks exhaustive whichever budget ran out.
+MAX_SCAN_SECONDS = 10.0
 
 
 def _is_terminated(piece: str) -> bool:
@@ -341,6 +353,7 @@ __all__ = [
     "MAX_LINE_CHARS",
     "MAX_READ_BYTES",
     "MAX_SCAN_ENTRIES",
+    "MAX_SCAN_SECONDS",
     "READ_CHUNK_BYTES",
     "BoundedSelection",
     "BoundedTextReader",

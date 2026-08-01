@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
@@ -53,6 +54,7 @@ class ContentSearchTool(Tool):
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
         from openai4s.host.files import (
             MAX_SCAN_ENTRIES,
+            MAX_SCAN_SECONDS,
             BoundedSelection,
             BoundedTextReader,
         )
@@ -85,9 +87,13 @@ class ContentSearchTool(Tool):
         candidates = BoundedSelection(_MAX_FILES)
         scanned = 0
         scan_truncated = False
+        deadline = time.monotonic() + MAX_SCAN_SECONDS
         for path in paths:
             scanned += 1
-            if scanned > MAX_SCAN_ENTRIES:
+            # Two budgets, one flag. The entry cap bounds syscalls; this bounds
+            # the seconds they take, which the entry cap cannot -- how long
+            # 100,000 entries need is the filesystem's property, not ours.
+            if scanned > MAX_SCAN_ENTRIES or time.monotonic() > deadline:
                 scan_truncated = True
                 break
             if not path.is_file():

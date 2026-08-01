@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
 
@@ -37,7 +39,11 @@ class GlobFilesTool(Tool):
     resource_target_default = "."
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
-        from openai4s.host.files import MAX_SCAN_ENTRIES, BoundedSelection
+        from openai4s.host.files import (
+            MAX_SCAN_ENTRIES,
+            MAX_SCAN_SECONDS,
+            BoundedSelection,
+        )
 
         pattern = arguments.get("pattern") or "**/*"
         base = (
@@ -54,9 +60,11 @@ class GlobFilesTool(Tool):
         matches = BoundedSelection(_MAX_MATCHES)
         scanned = 0
         scan_truncated = False
+        deadline = time.monotonic() + MAX_SCAN_SECONDS
         for path in base.glob(pattern):
             scanned += 1
-            if scanned > MAX_SCAN_ENTRIES:
+            # Seconds as well as entries: see `MAX_SCAN_SECONDS`.
+            if scanned > MAX_SCAN_ENTRIES or time.monotonic() > deadline:
                 # Walking the tree is unbounded work, not merely unbounded
                 # memory; stopping silently would make a partial answer look
                 # exhaustive, so the receipt below says the walk was cut.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 from openai4s.tools.base import Tool
@@ -40,7 +41,11 @@ class ListDirectoryTool(Tool):
     resource_target_default = "."
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
-        from openai4s.host.files import MAX_SCAN_ENTRIES, BoundedSelection
+        from openai4s.host.files import (
+            MAX_SCAN_ENTRIES,
+            MAX_SCAN_SECONDS,
+            BoundedSelection,
+        )
 
         relative = arguments.get("path") or "."
         base = workspace.resolve(relative) if relative != "." else workspace.workspace()
@@ -49,9 +54,16 @@ class ListDirectoryTool(Tool):
         selection = BoundedSelection(_MAX_ENTRIES)
         scan_truncated = False
         try:
+            deadline = time.monotonic() + MAX_SCAN_SECONDS
             with os.scandir(base) as scan:
                 for entry in scan:
-                    if selection.seen >= MAX_SCAN_ENTRIES:
+                    # Seconds as well as entries: see `MAX_SCAN_SECONDS`. One
+                    # directory can hold enough cold entries that `scandir`
+                    # outlives the caller's timeout well under the entry cap.
+                    if (
+                        selection.seen >= MAX_SCAN_ENTRIES
+                        or time.monotonic() > deadline
+                    ):
                         scan_truncated = True
                         break
                     selection.offer(entry.name, entry)
