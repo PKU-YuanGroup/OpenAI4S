@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import os
 
-from openai4s.observability import correlation_id, log_event, redact_text
+from openai4s.observability import (
+    correlation_id,
+    log_event,
+    redact_identities,
+    redact_text,
+)
 
 # Stable, machine-readable error codes. A client that has to match on English
 # prose is coupled to wording nobody thinks of as an interface, so it breaks the
@@ -124,8 +129,8 @@ INTERNAL_ERROR_MESSAGE = "internal error"
 _DIAGNOSTIC_CHARS = 600
 
 
-def _redacted_detail(exc: BaseException | str) -> str:
-    """What the operator-side record holds instead of the raw exception.
+def redacted_detail(exc: BaseException | str) -> str:
+    """A failure rendered for somewhere it will outlive the request.
 
     ``redact_text`` fingerprints credential-shaped tokens but deliberately
     leaves paths alone -- it is written for a log a human has to be able to
@@ -133,13 +138,28 @@ def _redacted_detail(exc: BaseException | str) -> str:
     A diagnostic outlives the request and is shipped in the support bundle, so
     on top of that the home directory is collapsed to ``~``: of an absolute
     path, the username is the part that identifies a person rather than a file.
+
+    ``redact_identities`` extends that same trade to a home this process does
+    not own and to a ``user@host``; the explicit ``$HOME`` replacement stays
+    beside it, because a home directory that is not home-*shaped* -- a service
+    account at ``/opt/app``, anything a test sets -- is invisible to a pattern
+    and visible to ``os.path.expanduser``.
+
+    Public because the agent's observation needs it too. An environment switch
+    that fails has to tell the model *what* failed so it can react, and the
+    exception it has to say that with came from ``subprocess.Popen``.
     """
     subject = exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}"
     text = redact_text(subject)
     home = os.path.expanduser("~")
     if home and home not in ("", "/"):
         text = text.replace(home, "~")
-    return text[:_DIAGNOSTIC_CHARS]
+    return redact_identities(text)[:_DIAGNOSTIC_CHARS]
+
+
+#: Kept so the module's own history reads straight; the name was private when
+#: only the diagnostic used it.
+_redacted_detail = redacted_detail
 
 
 def record_diagnostic(
@@ -259,4 +279,5 @@ __all__ = [
     "public_exception",
     "public_failure",
     "record_diagnostic",
+    "redacted_detail",
 ]

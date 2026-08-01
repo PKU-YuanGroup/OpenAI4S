@@ -47,6 +47,37 @@ def _never_cancelled() -> bool:
     return False
 
 
+def _env_switch_notice(exc: BaseException) -> str:
+    """What the model is told when a pending environment switch failed.
+
+    This used to interpolate ``{exc}`` and the raiser is not an author writing
+    for a reader: ``apply_pending`` reaches ``_apply_pending_env`` and on to
+    ``_spawn_kernel`` -> ``subprocess.Popen``, so the text is whatever the OS
+    produced -- an interpreter path under someone's home, the argv of a failed
+    spawn, and, when the failure came from a broker or a provider probe, a
+    token. Two sinks carry it out of this process: it is appended to the
+    model's message history, which goes to the provider on the next turn and
+    into the exported session package, and to the observation the Timeline
+    renders.
+
+    Blanking it the way ``cell_run`` blanks an attempt row is the wrong move
+    here, because the sink is the *agent*: it has to know whether the
+    environment is missing or the kernel would not start in order to do
+    anything sensible next. So the exception is reported rather than quoted --
+    class name, redacted detail, bounded length -- which is what
+    ``redacted_detail`` already produced for the operator diagnostic. The
+    original still goes to ``record_diagnostic``, so nothing is lost, only
+    moved to a surface that does not leave.
+    """
+    from openai4s.server.errors import record_diagnostic, redacted_detail
+
+    try:
+        record_diagnostic(exc, surface="agent:pending_env")
+    except Exception:  # noqa: BLE001 — a diagnostic must not break the turn
+        pass
+    return f"pending environment switch failed: {redacted_detail(exc)}"
+
+
 def _is_action_fence(fence_char: str, info: str) -> bool:
     """Match the fence kinds understood by the action/legacy routers."""
     return fence_char == "`" and info in {"", "python", "py", "r", "tool"}
@@ -524,7 +555,7 @@ class WebActionExecutor:
             self.apply_pending()
             return outcome
         except Exception as exc:  # noqa: BLE001 — keep native history replayable
-            notice = f"[Tool error] pending environment switch failed: {exc}"
+            notice = f"[Tool error] {_env_switch_notice(exc)}"
             history = [dict(message) for message in outcome.history_messages]
             if history:
                 target = next(
@@ -554,14 +585,14 @@ class WebActionExecutor:
                 try:
                     text, _ok = self._invoke_native(call)
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"pending environment switch failed: {exc}")
+                    errors.append(_env_switch_notice(exc))
                     break
                 parts.append(text)
             if not self.cancelled():
                 try:
                     self.apply_pending()
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"pending environment switch failed: {exc}")
+                    errors.append(_env_switch_notice(exc))
             observation = finalize_tool_batch(parts, len(calls), errors)
         elif has_incomplete_code_block(reply.content):
             observation = INCOMPLETE_CELL_NUDGE

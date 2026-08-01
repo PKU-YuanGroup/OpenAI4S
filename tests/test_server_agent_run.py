@@ -647,3 +647,89 @@ def test_cancelled_run_stops_before_plan_or_action(monkeypatch):
     assert outcome.history_messages[0]["tool_call_id"] == "call-0"
     assert outcome.history_messages[0]["is_error"] is True
     assert "cancelled before execution" in outcome.history_messages[0]["content"]
+
+
+# --------------------------------------------------------------------------
+# a failed environment switch is not a channel for what raised it
+# --------------------------------------------------------------------------
+
+# Same three canaries plan item 16 plants. Built here so no substring of this
+# source is itself credential-shaped.
+_ENV_KEY = "canary-live-" + "2b9e07f4a6c8d135e2f9b04a"
+_ENV_HOME = "/Users/canary/miniconda3/envs/proteomics/bin/python"
+
+
+class _EnvSwitchExploded(FileNotFoundError):
+    """What `apply_pending` really raises.
+
+    `_apply_pending_env` reaches `_spawn_kernel` -> `subprocess.Popen`, so the
+    exception is whatever the OS produced: an interpreter path under someone's
+    home, and, when the failure came from a broker or a provider probe, a
+    token. Nothing authored it for a reader.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"[Errno 2] No such file or directory: {_ENV_HOME!r} " f"(token {_ENV_KEY})"
+        )
+
+
+def _assert_env_failure_is_reported_but_not_quoted(text: str) -> None:
+    blob = str(text)
+    assert "pending environment switch failed" in blob, blob
+    # The agent still learns the shape of the failure, so it can react.
+    assert "FileNotFoundError" in blob or "_EnvSwitchExploded" in blob, blob
+    assert _ENV_KEY not in blob, blob
+    assert "/Users/canary" not in blob, blob
+
+
+def test_a_trailing_env_switch_failure_does_not_quote_the_exception(monkeypatch):
+    """The notice is appended to the model's history AND to the observation.
+
+    Both leave this process: the history is sent to the provider on the next
+    turn and persisted into the session package the user exports. `{exc}` here
+    is unknown provenance -- the raiser is `subprocess.Popen` by way of
+    `_spawn_kernel`, not an author writing for a reader.
+    """
+    dispatcher = SimpleNamespace(last_output=None)
+    monkeypatch.setattr(
+        agent_run, "execute_tool_call", lambda *a, **k: ("tool ok", True)
+    )
+    calls = (_native_call(0, wire_id=None, arguments={"path": "."}),)
+    seen: list[int] = []
+
+    def apply_pending() -> None:
+        # `prepare_group` calls this before the batch; the trailing call is the
+        # one under test, so only the second raises.
+        seen.append(1)
+        if len(seen) > 1:
+            raise _EnvSwitchExploded()
+
+    executor = _executor(dispatcher, apply_pending=apply_pending)
+    outcome = executor.execute(
+        NativeToolBatch(calls), ModelReply(tool_calls=calls), RunState([])
+    )
+
+    _assert_env_failure_is_reported_but_not_quoted(outcome.observation)
+    _assert_env_failure_is_reported_but_not_quoted(
+        "\n".join(str(m.get("content", "")) for m in outcome.history_messages)
+    )
+
+
+def test_a_legacy_env_switch_failure_does_not_quote_the_exception(monkeypatch):
+    """The other two sites, on the legacy path, reached the same way."""
+    dispatcher = SimpleNamespace(last_output=None)
+    monkeypatch.setattr(
+        agent_run, "execute_tool_call", lambda *a, **k: ("legacy result", True)
+    )
+
+    def apply_pending() -> None:
+        raise _EnvSwitchExploded()
+
+    executor = _executor(dispatcher, apply_pending=apply_pending)
+    reply = ModelReply(
+        content=("```tool\n" '{"name":"list_dir","arguments":{"path":"."}}\n' "```")
+    )
+    outcome = executor.execute(None, reply, RunState([]))
+
+    _assert_env_failure_is_reported_but_not_quoted(outcome.observation)
