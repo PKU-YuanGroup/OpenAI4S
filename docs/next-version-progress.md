@@ -130,10 +130,28 @@ was the most load-bearing claim in this file and it was false.
 
 What the audit found, and where it now lives: every one of the 56 proposals has a
 row in [`plan-crosswalk.json`](plan-crosswalk.json) with a status from a declared
-vocabulary, checked by `tests/test_plan_crosswalk.py`. 47 rows are `open`. That
-file, not this section, is the per-item record from here on — a table in prose can
-gain a duplicate, lose a row, or say `Completed` about something no call chain
-reaches, which is what happened.
+vocabulary, checked by `tests/test_plan_crosswalk.py`. That file, not this
+section, is the per-item record from here on — a table in prose can gain a
+duplicate, lose a row, or say `Completed` about something no call chain reaches,
+which is what happened.
+
+**Re-audited at `408098f`.** The count that used to sit in this paragraph — "47
+rows are `open`" — was itself a stale claim by the time anyone read it, which is
+the failure this section is about, repeated. The re-audit went row by row against
+the production call chain rather than against the previous label, and found the
+labels lagging the work in both directions: the delegation stop/steer controls,
+the owner-scoped remote task centre, the retrieval-source panel, the Notebook
+language selector and the specialist connector allowlist were all `open` while
+being implemented, wired in `app.js`, and covered by a named test. The local-job
+deadline and abandoned receipt, the memory edit and its expiry quota, the plan
+approve claim, the MCP byte budget and the checkpoint annotation binding were
+genuinely missing and are now closed. The distribution at `408098f` is **48
+`closed`, 5 `implemented_unverified`, 3 `deferred_p2`, and no `open` row**.
+
+The five `implemented_unverified` rows are all the same missing run: one real
+`workflow_dispatch` of the release workflow, plus notarization with credentials
+this working copy does not hold. They stay unverified rather than closed on
+purpose — a gate whose YAML has never executed is not a gate that passed.
 
 Two examples of the shape of the error, because it recurs and is worth
 recognising:
@@ -268,17 +286,18 @@ unreachable-code and no-recovery-path defects.
 
 ### Still open from the audit
 
-**Four.** The table above carries four rows whose commit column reads `PENDING`,
-and this section previously read "Nothing. Every finding from the audit round is
-either fixed above or recorded below as a decision." Both statements were in the
-file at the same time, and the second one was wrong:
+**Re-checked at `408098f`: none of the four is still open.** This section said
+"Four", and before that it said "Nothing" while four rows sat above it reading
+`PENDING`. Both were wrong at the time; the first is wrong now, which is why it
+is being corrected rather than left as a conservative overstatement — a defect
+list that names fixed things is as unreadable as one that omits broken ones.
 
-| Severity | Defect | Status |
+| Severity | Defect | Status at `408098f` |
 | --- | --- | --- |
-| Medium | `generation_confidence` and `provenance` were written by a migration and read by nothing | open |
-| Low | `Tool.dangerous` was declared on ten tools and read by no gate, audit or prompt | open |
-| Low | `host.app_render` grew without bound (100 MB measured); a released idle session kept its history | open |
-| Low | model-profile `readiness` and the probe route had no UI call site | partly addressed by P1-A A.2; the probe success path is still unverified |
+| Medium | `generation_confidence` and `provenance` were written by a migration and read by nothing | closed — read by `app.js` (the version pane gates on `=== "verified"`) and by `openai4s/benchmark/steps.py` |
+| Low | `Tool.dangerous` was declared on ten tools and read by no gate, audit or prompt | closed — `host_dispatch.py` carries it into the audit record, and `app.js` renders the high-risk permission badge and shortens the grant to once-only |
+| Low | `host.app_render` grew without bound (100 MB measured); a released idle session kept its history | closed — `MAX_APP_TILE_CHARS` refuses an oversized payload and `MAX_APP_TILES` evicts oldest-first, reporting `dropped` so a cell cannot mistake `tiles()` for the full history |
+| Low | model-profile `readiness` and the probe route had no UI call site | closed — Customize → Models renders the readiness card and the explicit probe; the protocol menu carries all five protocols including Gemini, verified in a real browser at this SHA |
 
 ### Deliberately not fixed
 
@@ -446,3 +465,42 @@ Each is named in its commit. "No uncaught page errors across three engines" is a
 real and previously missing floor -- it rules out the whole class of failure where
 a change to `app.js` breaks the page on load -- but it is a floor, not a
 demonstration that these controls do what they say.
+
+## 15. This batch (2026-08-01) — merge with main, then the Plan's remaining gaps
+
+Ordered as it happened, because the merge is what made the rest possible.
+
+**`origin/main` merged into `next`.** `next` had absorbed the v0.3 squash (#52)
+as a plain commit rather than a merge, so git's merge base sat before both and
+every file the squash touched came back as an add/add conflict against work that
+already supersedes it. Fifty-two conflicts, thirty-six of which had no main-side
+change at all after `f2d8adb` — verified mechanically, not by eye. Main's real
+work is preserved: the BYOC confinement probe failing closed, the `$HOME`
+read-class denial and its xattr channel, Linux and Windows packaging with the
+bundle contract, the `wsl.exe` launcher exit code, and the example-session
+contract widening. Two of main's decisions are accepted as deletions: the
+gitleaks history scan and its allowlist are gone, and the working-tree source
+secret scan carries the load.
+
+The merge also recovered `120af6a`'s rendezvous deadline, which the sync commit
+after it had reverted, and re-introduced one block it should not have — a v0.3-era
+`release_model_binding` in `model_profiles.py` that the P0-2 immutable-revision
+work had removed. Five tests were red on it. A three-way merge against a
+superseded side can restore deleted code silently; the check that catches it is
+"the merge result must equal ours wherever main contributed nothing".
+
+| Plan clause | What was actually missing | Status |
+| --- | --- | --- |
+| P0-3 local job | No deadline at all (`MAX_ACTIVE_JOBS` said so in its own comment), the output cap applied *after* an unbounded `readline()`, no `close()`, nothing wired into `server_close`, no receipt across a restart, and `str(e)` on two public surfaces | `closed` — `tests/test_local_job_lifecycle.py` |
+| P0-3 MCP budgets | `_MAX_FRAME_BYTES` counted characters off a `text=True` pipe, one `read(1)` per character: a frame at the limit was a four-million-element list of one-character strings | `closed` — `tests/test_mcp_lifecycle.py` |
+| P0-4 plan state | `approve` had the read-then-write race `resume` was fixed for and none of the fix; two POSTs both got 202 and both turns ran the same steps | `closed` — `tests/test_plan_resume_claim.py` |
+| P0-4 error truth | Three public bodies answered with the OS's words: `restore failed: {error}`, `write failed: {error}`, and the attachment problem card | `closed` — `tests/test_public_exception_projector.py` |
+| P1-B memory | Expiry withheld a memory and kept its quota slot; and a memory could be written and deleted, never corrected | `closed` — `tests/test_memory_edit_and_expiry_quota.py` |
+| P1-A attachments | The annotation version binding did not survive a checkpoint restore — captured by `SELECT *`, restored by an explicit column list without it | `closed` — `tests/test_checkpoint_binding_survival.py` |
+| P1-A ArtifactRef | The chip existed on the *sent* message only; before the send a pinned reference was prose in a textarea | `closed` — verified by clicking against a real daemon |
+| P1-A export | Three export forms, all for re-running; none for reading | `closed` — `tests/test_notebook_export.py` |
+| P0-0 release | `linux-app` and `windows-package` arrived from a branch with no `freeze` job and checked out a moving ref, while P0-0's whole claim is one immutable SHA | `closed` — `tests/test_release_gate_manifest.py` |
+
+**The release gate itself stays `implemented_unverified`.** Nothing in this batch
+changes that: the YAML is asserted against the parsed workflow graph, and one
+real `workflow_dispatch` is still the missing run.
