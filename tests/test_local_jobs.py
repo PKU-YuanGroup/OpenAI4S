@@ -420,7 +420,7 @@ def test_a_truncated_job_log_says_so():
     what survived: a marker at the end would sit after the last line and imply
     the loss happened there.
     """
-    from openai4s.jobs import _MAX_OUTPUT, Job
+    from openai4s.jobs import _MAX_OUTPUT_BYTES, Job
 
     job = Job("bash", "echo hi", "/tmp")
 
@@ -428,17 +428,21 @@ def test_a_truncated_job_log_says_so():
     assert job.output() == "short output\n"
     assert "dropped" not in job.output()
 
-    job.append("A" * (_MAX_OUTPUT + 500))
+    job.append("A" * (_MAX_OUTPUT_BYTES + 500))
     seen = job.output()
     assert seen.startswith("...(earlier output dropped")
     assert "short output" not in seen
     # Still bounded, and still the tail.
     assert seen.rstrip().endswith("A")
-    assert len(seen) <= _MAX_OUTPUT + len(_TRUNCATION_NOTICE_LEN_PROBE) + 8
+    assert len(seen) <= _MAX_OUTPUT_BYTES + len(_TRUNCATION_NOTICE_LEN_PROBE) + 8
 
 
+# The cap is bytes now, not characters -- the pipe is read as bytes so that a
+# line with no newline in it cannot be allocated whole before being trimmed.
+# ASCII above, so the two units coincide and this assertion still measures the
+# same thing.
 _TRUNCATION_NOTICE_LEN_PROBE = (
-    "...(earlier output dropped; showing the last 200000 characters)\n"
+    "...(earlier output dropped; showing the last 200000 bytes)\n"
 )
 
 

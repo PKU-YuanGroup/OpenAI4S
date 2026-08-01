@@ -166,9 +166,9 @@ def test_the_job_reports_what_it_kept_and_what_it_dropped(tmp_path):
     )
     row = _wait(submitted["id"], manager, timeout=60)
 
-    for field in ("truncated", "seen_chars", "retained_chars", "dropped_chars"):
+    for field in ("truncated", "seen_bytes", "retained_bytes", "dropped_bytes"):
         assert field in row, f"the job receipt does not report {field}"
-    assert row["seen_chars"] >= row["retained_chars"]
-    assert row["dropped_chars"] == row["seen_chars"] - row["retained_chars"]
+    assert row["seen_bytes"] >= row["retained_bytes"]
+    assert row["dropped_bytes"] == row["seen_bytes"] - row["retained_bytes"]
     if row["truncated"]:
-        assert row["dropped_chars"] > 0
+        assert row["dropped_bytes"] > 0

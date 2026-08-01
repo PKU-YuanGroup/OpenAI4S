@@ -9902,6 +9902,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         b.get("command") or b.get("code") or "",
                         kind=b.get("kind") or "bash",
                         cwd=b.get("cwd"),
+                        # Optional, and bounded by the manager. Omitting it
+                        # takes the default deadline rather than the unbounded
+                        # run this route used to give every caller.
+                        deadline_s=b.get("deadline_s"),
                     )
                 )
                 return
@@ -10455,6 +10459,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 conn.close()  # stop the writer thread + mark dead
                 hub.remove(conn)
 
+    # Published on the class so `server_close` can reach it. The manager owns
+    # real process trees, and it lived only in this closure -- so the daemon
+    # exiting left them running, reparented, with nothing recording that they
+    # existed. The server owns the socket and the runner; it has to own this
+    # too, which is what P0-3 means by "server-owned close".
+    Handler.jobs_manager = _jobs_mgr
+
     return Handler
 
 
@@ -10768,7 +10779,16 @@ class _GatewayHTTPServer(ThreadingHTTPServer):
         try:
             self.runner.close()
         finally:
-            super().server_close()
+            try:
+                # Local jobs are process groups this daemon started. Closed in
+                # its own `finally` so a runner that raises on the way down
+                # cannot leave them orphaned, and after the runner because a
+                # cell may still be watching one.
+                manager = getattr(self.RequestHandlerClass, "jobs_manager", None)
+                if manager is not None:
+                    manager.close()
+            finally:
+                super().server_close()
 
 
 def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:

@@ -10,6 +10,7 @@ registry (bounded), live output capture.
 """
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -30,38 +31,99 @@ from openai4s.execution.process_group import stop_process_group as _stop_process
 from openai4s.kernel.environment import build_kernel_environment
 from openai4s.observability import carry_context
 
-#: Per-job captured output cap. Characters, not bytes: `append` measures
-#: `len()` on a `str`, and the comment here said bytes for long enough that
-#: the two readings of the same number stopped agreeing. The R worker gates
-#: on bytes and says bytes; this one counts characters and now says so.
-#: How many local jobs may be running or queued at once. A local job is a real
-#: process tree with no deadline; without a ceiling one loop over the route
-#: exhausts the host.
+#: How many local jobs may be running or queued at once. Without a ceiling one
+#: loop over the route exhausts the host.
 MAX_ACTIVE_JOBS = 8
 
-_MAX_OUTPUT = 200_000
+#: Per-job captured output cap, in bytes.
+#:
+#: It counted characters before, on a text-mode pipe. Two things were wrong with
+#: that and only one of them was the unit. `for line in proc.stdout` is
+#: `readline()`, which allocates until it finds a newline -- so a job printing a
+#: gigabyte with no newline in it had already materialised that gigabyte in the
+#: daemon before `append` got the chance to drop any of it. The cap described a
+#: buffer that was only ever trimmed *after* the allocation it was supposed to
+#: prevent. Reading fixed-size binary chunks bounds what the producer side can
+#: ask for at all, and bytes are what a chunk boundary is measured in.
+_MAX_OUTPUT_BYTES = 200_000
+#: What one `read1` may hand back. The read loop's peak allocation, and the
+#: granularity at which a job over its cap starts dropping.
+_READ_CHUNK_BYTES = 65_536
 #: Prepended, because the tail is what is kept. Without it a truncated log is
 #: indistinguishable from a job that printed less than it did.
 _TRUNCATION_NOTICE = (
-    f"...(earlier output dropped; showing the last {_MAX_OUTPUT} characters)\n"
+    f"...(earlier output dropped; showing the last {_MAX_OUTPUT_BYTES} bytes)\n"
 )
 _MAX_JOBS = 200  # registry cap (oldest finished pruned)
 
+#: Wall-clock ceiling on one job, and the ceiling a caller may ask for.
+#:
+#: The comment that used to sit on `MAX_ACTIVE_JOBS` said a local job is "a real
+#: process tree with no deadline", which was accurate: eight of them could hold
+#: the machine forever, because the only capacity that was ever released was the
+#: one a job chose to release by exiting. The active cap bounds concurrency; it
+#: cannot bound duration, and P0-3 asks for both.
+DEFAULT_JOB_DEADLINE_S = 3600.0
+MAX_JOB_DEADLINE_S = 24 * 3600.0
+
+#: A job that reached one of these is finished and will not change again.
+#: `abandoned` is terminal in exactly the same sense, and deliberately distinct
+#: from `cancelled`: nobody cancelled it, the daemon that was watching it died.
+TERMINAL_STATUSES = frozenset(
+    {"done", "failed", "cancelled", "timeout", "abandoned"}
+)
+
+
+def _record_diagnostic(exc: BaseException, *, surface: str) -> None:
+    """Route a failure to the one operator-side sink, without importing it early.
+
+    `openai4s.server.errors` is the single place that decides what an operator
+    record holds -- `redact_text` plus a collapsed home directory -- and a
+    second copy of that policy here would keep passing after the real one
+    changed. It is imported inside the call because importing it runs
+    `openai4s/server/__init__.py`, which pulls the entire gateway: this module
+    is also used from the CLI, where nothing should pay for that, and the
+    gateway imports this module back. On the daemon the module is already
+    loaded by the time a job can fail, so the deferral costs nothing there.
+    """
+    try:
+        from openai4s.server.errors import record_diagnostic
+
+        record_diagnostic(exc, surface=surface)
+    except Exception:  # noqa: BLE001 - diagnostics must not fail a job
+        pass
+
 
 class Job:
-    def __init__(self, kind: str, command: str, cwd: str) -> None:
-        self.id = "job-" + uuid.uuid4().hex[:12]
+    def __init__(
+        self,
+        kind: str,
+        command: str,
+        cwd: str,
+        *,
+        deadline_s: float = DEFAULT_JOB_DEADLINE_S,
+        job_id: str | None = None,
+    ) -> None:
+        self.id = job_id or ("job-" + uuid.uuid4().hex[:12])
         self.kind = kind  # "bash" | "python"
         self.command = command
         self.cwd = cwd
-        self.status = "queued"  # queued|running|done|failed|cancelled
+        # queued|running|done|failed|cancelled|timeout|abandoned
+        self.status = "queued"
+        self.deadline_s = deadline_s
         self.created_at = time.time()
         self.started_at: float | None = None
         self.finished_at: float | None = None
         self.exit_code: int | None = None
-        self._out: list[str] = []
+        self._out: list[bytes] = []
         self._truncated = False
         self._proc: subprocess.Popen | None = None
+        #: Set by the deadline timer before it stops the group, so `_run` can
+        #: tell a job the daemon killed on time from one that failed on its own.
+        #: Without it a timeout arrives as a SIGKILL exit code and is
+        #: indistinguishable from `failed` -- which P0-4 forbids: an expiry is
+        #: its own terminal state and may not borrow another one's name.
+        self._deadline_expired = False
         # Read at spawn and kept: once the leader is reaped, `os.getpgid` on
         # its pid raises, and the surviving group becomes unreachable exactly
         # when it most needs signalling.
@@ -75,34 +137,52 @@ class Job:
         #: Everything this job ever produced, whether or not it was retained.
         #: `truncated` alone said that *something* was dropped; a reader deciding
         #: whether the tail is enough needs to know how much.
-        self._seen_chars = 0
+        self._seen_bytes = 0
 
-    def append(self, text: str) -> None:
+    def append_bytes(self, chunk: bytes) -> None:
+        """Retain the tail of ``chunk``, and count all of it."""
+        if not chunk:
+            return
         with self._lock:
             # Counted before anything is dropped: a receipt that reports only what
             # survived cannot say how much did not.
-            self._seen_chars += len(text)
-            self._out.append(text)
-            # keep bounded
-            total = sum(len(x) for x in self._out)
-            while total > _MAX_OUTPUT and len(self._out) > 1:
+            self._seen_bytes += len(chunk)
+            self._out.append(chunk)
+            total = sum(len(part) for part in self._out)
+            while total > _MAX_OUTPUT_BYTES and len(self._out) > 1:
                 total -= len(self._out.pop(0))
                 self._truncated = True
-            # a single line larger than the cap must still be truncated, or the
-            # per-job memory bound is defeated by one giant no-newline blob
-            if total > _MAX_OUTPUT and len(self._out) == 1:
-                self._out[0] = self._out[0][-_MAX_OUTPUT:]
+            # One chunk larger than the whole cap still has to be cut, or the
+            # bound is defeated by a single oversized read.
+            if total > _MAX_OUTPUT_BYTES and len(self._out) == 1:
+                self._out[0] = self._out[0][-_MAX_OUTPUT_BYTES:]
                 self._truncated = True
+
+    def append(self, text: str) -> None:
+        """Append daemon-authored text to the log, in the buffer's own units."""
+        self.append_bytes(text.encode("utf-8", "replace"))
 
     def output(self) -> str:
         with self._lock:
-            value = "".join(self._out)
-            if not self._truncated:
-                return value
-            # The tail is kept on purpose -- for a job log the end is what
-            # explains how it finished. But the caller has to be told, or a
-            # silently short log reads as a job that simply printed less.
-            return _TRUNCATION_NOTICE + value
+            raw = b"".join(self._out)
+            truncated = self._truncated
+        # `errors="replace"` alone is not enough. Dropping whole chunks cuts on
+        # a read boundary, which lands mid-character often enough to matter, and
+        # a leading replacement character in every truncated log is a corruption
+        # the daemon introduced rather than one the job produced. Walk the
+        # continuation bytes off the front first; at most three are skipped.
+        if truncated:
+            start = 0
+            while start < len(raw) and start < 3 and (raw[start] & 0xC0) == 0x80:
+                start += 1
+            raw = raw[start:]
+        value = raw.decode("utf-8", "replace")
+        if not truncated:
+            return value
+        # The tail is kept on purpose -- for a job log the end is what
+        # explains how it finished. But the caller has to be told, or a
+        # silently short log reads as a job that simply printed less.
+        return _TRUNCATION_NOTICE + value
 
     def to_dict(self, *, with_output: bool = False) -> dict:
         d = {
@@ -119,16 +199,40 @@ class Job:
                 if self.started_at
                 else None
             ),
+            "deadline_s": self.deadline_s,
         }
         with self._lock:
             retained = sum(len(chunk) for chunk in self._out)
             d["truncated"] = bool(self._truncated)
-            d["seen_chars"] = self._seen_chars
-            d["retained_chars"] = retained
-            d["dropped_chars"] = max(0, self._seen_chars - retained)
+            d["seen_bytes"] = self._seen_bytes
+            d["retained_bytes"] = retained
+            d["dropped_bytes"] = max(0, self._seen_bytes - retained)
         if with_output:
             d["output"] = self.output()
         return d
+
+    def receipt(self) -> dict:
+        """The part of this job that survives the process that ran it.
+
+        Deliberately not the output. A receipt exists so a job the daemon was
+        watching when it died can be *named* on the next boot rather than
+        silently vanishing from the list; the log of such a job is gone with the
+        pipe that carried it, and writing a partial one to disk on every chunk
+        would turn a bounded in-memory buffer into an unbounded file.
+        """
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "command": self.command,
+            "cwd": self.cwd,
+            "status": self.status,
+            "exit_code": self.exit_code,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "deadline_s": self.deadline_s,
+            "pid": self._proc.pid if self._proc is not None else None,
+        }
 
 
 class JobManager:
@@ -138,18 +242,122 @@ class JobManager:
     #: generous cap on that, not an expected wait.
     _TERMINAL_JOIN_S = 5.0
 
+    #: How long `close` waits for the worker threads to return after their
+    #: process groups have been stopped. They are draining a closed pipe by
+    #: then, so this is a cap on a wait that should not happen, not a budget.
+    _CLOSE_JOIN_S = 10.0
+
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self._receipts = self.root / "receipts"
         self._jobs: dict[str, Job] = {}
         self._order: list[str] = []
         self._lock = threading.Lock()
+        self._closed = False
+        self._adopt_abandoned()
 
-    def submit(self, command: str, kind: str = "bash", cwd: str | None = None) -> dict:
+    # ---------------------------------------------------------------- receipts
+
+    def _adopt_abandoned(self) -> None:
+        """Name the jobs the previous daemon was still watching when it died.
+
+        Not revived -- read the status this writes. The process tree a local job
+        owned does not survive the daemon in any state worth resuming: it was
+        either killed with the session or reparented to init with its stdout
+        pipe closed, and in both cases nothing is left to attach to. What was
+        wrong before was quieter than a wrong resume: the registry was purely
+        in-memory, so a restart made those jobs *disappear*, and a user who
+        submitted a four-hour run came back to an empty Jobs panel with no way
+        to tell "it finished and was pruned" from "the daemon died holding it".
+
+        `abandoned` is its own terminal state for the reason P0-4 gives: calling
+        it `failed` claims the job's own command failed, and calling it
+        `cancelled` claims somebody meant to stop it. Neither happened.
+        """
+        try:
+            entries = sorted(self._receipts.glob("*.json"))
+        except OSError:
+            return
+        for path in entries:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or not data.get("id"):
+                continue
+            status = str(data.get("status") or "")
+            if status in TERMINAL_STATUSES and status != "abandoned":
+                # Finished cleanly under the previous daemon. Its receipt has
+                # done its job; keeping it would grow the directory without
+                # bound for jobs nobody can ask about any more.
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                continue
+            job = Job(
+                str(data.get("kind") or "bash"),
+                str(data.get("command") or ""),
+                str(data.get("cwd") or str(self.root)),
+                deadline_s=float(data.get("deadline_s") or DEFAULT_JOB_DEADLINE_S),
+                job_id=str(data["id"]),
+            )
+            job.status = "abandoned"
+            job.created_at = float(data.get("created_at") or job.created_at)
+            started = data.get("started_at")
+            job.started_at = float(started) if started is not None else None
+            job.finished_at = float(data.get("finished_at") or time.time())
+            job.append(
+                "\n[job] the daemon that was running this job exited before it "
+                "finished; its output was not retained.\n"
+            )
+            self._jobs[job.id] = job
+            self._order.append(job.id)
+            self._persist(job)
+
+    def _persist(self, job: Job) -> None:
+        """Write the job's receipt, atomically, best-effort.
+
+        Best-effort on purpose: a receipt is a courtesy to the next boot, and a
+        full disk must not be able to fail a job that is otherwise running fine.
+        """
+        try:
+            self._receipts.mkdir(parents=True, exist_ok=True)
+            target = self._receipts / f"{job.id}.json"
+            tmp = target.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(job.receipt(), ensure_ascii=False), encoding="utf-8"
+            )
+            os.replace(tmp, target)
+        except OSError:
+            pass
+
+    def submit(
+        self,
+        command: str,
+        kind: str = "bash",
+        cwd: str | None = None,
+        *,
+        deadline_s: float | None = None,
+    ) -> dict:
         command = (command or "").strip()
         if not command:
             return {"error": "empty command"}
         kind = kind if kind in ("bash", "python") else "bash"
+        try:
+            deadline = float(
+                DEFAULT_JOB_DEADLINE_S if deadline_s is None else deadline_s
+            )
+        except (TypeError, ValueError):
+            return {"error": "deadline_s must be a number", "code": "job_bad_deadline"}
+        if deadline <= 0 or deadline > MAX_JOB_DEADLINE_S:
+            return {
+                "error": (
+                    f"deadline_s must be between 0 and {MAX_JOB_DEADLINE_S:g} seconds"
+                ),
+                "code": "job_bad_deadline",
+            }
         # Confine the working directory to the jobs root. `normpath` is lexical --
         # it resolves ".." in the string and knows nothing about symlinks -- so a
         # link created inside the root passed this test and the process then ran
@@ -175,9 +383,24 @@ class JobManager:
             # An unwritable target used to raise straight out of `submit`,
             # which reaches the caller as a crash rather than as the error
             # dict every other refusal here returns.
-            return {"error": f"could not create the job working directory: {error}"}
-        job = Job(kind, command, wd)
+            #
+            # The message is the daemon's own, not the OSError's. `strerror`
+            # here arrives with the absolute path it failed on -- the data dir,
+            # so the account's username -- and this dict is returned to a client
+            # over HTTP. The original goes to the operator-side diagnostic,
+            # which is what a support ticket quotes.
+            _record_diagnostic(error, surface="jobs:submit")
+            return {
+                "error": "could not create the job working directory",
+                "code": "job_workspace_unavailable",
+            }
+        job = Job(kind, command, wd, deadline_s=deadline)
         with self._lock:
+            if self._closed:
+                return {
+                    "error": "the daemon is shutting down and is not accepting jobs",
+                    "code": "job_manager_closed",
+                }
             # Claimed inside the lock and before the Thread exists. Nothing
             # counted running jobs at all, so a loop over `POST /compute/jobs`
             # spawned a thread and a process per call with no ceiling. A check
@@ -198,6 +421,7 @@ class JobManager:
             self._jobs[job.id] = job
             self._order.append(job.id)
             self._prune_locked()
+        self._persist(job)
         thread = threading.Thread(
             # Carries the caller's correlation id: a local job is started on
             # behalf of one request or one cell, and its failures are read
@@ -245,8 +469,13 @@ class JobManager:
                     env=build_kernel_environment(cwd=job.cwd),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
+                    # Binary and unbuffered on this side. `text=True,
+                    # bufsize=1` made the read below `readline()`, which
+                    # allocates until it finds a newline: the per-job cap was
+                    # applied *after* an unbounded allocation the cap existed
+                    # to prevent. `read1` on a raw pipe returns whatever has
+                    # arrived, never more than it is asked for.
+                    bufsize=0,
                     # Its own process group, so cancel can signal the whole
                     # tree. Without this, `bash -lc "python train.py"` gave
                     # terminate() only the shell: bash died, python kept
@@ -267,23 +496,88 @@ class JobManager:
             if already_cancelled:
                 _stop_process_group(proc, job._pgid)
                 return
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                job.append(line)
-            proc.wait()
+            # Armed only once the process exists, so the timer can never fire
+            # against a `_proc` that is still None. Daemon, because a deadline
+            # that keeps the interpreter alive is a worse bug than a deadline
+            # that does not fire during shutdown -- `close` stops the group
+            # anyway.
+            timer = threading.Timer(job.deadline_s, self._expire, args=(job,))
+            timer.daemon = True
+            timer.start()
+            try:
+                assert proc.stdout is not None
+                # `os.read` rather than any file-object method: it is one
+                # `read(2)` of at most this many bytes and it returns what has
+                # arrived, so neither the buffering mode of the wrapper nor the
+                # presence of a newline can change how much is allocated. A
+                # buffered `.read(n)` would block for the full n, and
+                # `readline()` -- what this used to be -- has no bound at all.
+                fd = proc.stdout.fileno()
+                while True:
+                    chunk = os.read(fd, _READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    job.append_bytes(chunk)
+                proc.wait()
+            finally:
+                timer.cancel()
             job.exit_code = proc.returncode
-            # only claim done/failed if cancel() didn't already win the race
+            # only claim a terminal state if cancel() or the deadline didn't
+            # already win the race
             with job._lock:
-                if job.status != "cancelled":
-                    job.status = "done" if proc.returncode == 0 else "failed"
-        except Exception as e:  # noqa: BLE001
-            job.append(f"\n[job error] {e}\n")
+                if job._deadline_expired:
+                    # Written even over `cancelled`: the deadline is what
+                    # actually ended this process, and a receipt that says
+                    # somebody cancelled it is the wrong account of why the
+                    # work stopped.
+                    job.status = "timeout"
+                    expired = True
+                else:
+                    expired = False
+                    if job.status != "cancelled":
+                        job.status = "done" if proc.returncode == 0 else "failed"
+            # Outside the lock. `append` takes `job._lock` itself and
+            # `threading.Lock` is not reentrant, so writing this notice from
+            # inside the block above deadlocked the worker against itself --
+            # and, because `to_dict` wants the same lock, against every reader
+            # of the Jobs panel too. The status is already published; the
+            # notice is only the human-readable half of it.
+            if expired:
+                job.append(
+                    f"\n[job] stopped: the {job.deadline_s:g}s deadline expired.\n"
+                )
+        except Exception as error:  # noqa: BLE001
+            # The exception text is not the user's. An `OSError` from a spawn
+            # quotes the argv it tried to run and a `PermissionError` names an
+            # absolute path, and this log is served by `GET /compute/jobs/<id>`.
+            # The original goes to the operator-side diagnostic instead, where
+            # it is redacted once and paired with this job's id.
+            _record_diagnostic(error, surface=f"jobs:_run:{job.id}")
+            job.append(
+                "\n[job error] the job could not be run; the daemon diagnostics "
+                f"record the reason under job {job.id}.\n"
+            )
             with job._lock:
                 if job.status != "cancelled":
                     job.status = "failed"
             job.exit_code = -1
         finally:
             job.finished_at = time.time()
+            self._persist(job)
+
+    def _expire(self, job: Job) -> None:
+        """Stop a job that outlived its deadline, and say so.
+
+        The flag is claimed under the job lock before anything is signalled, so
+        `_run` cannot publish `done` in the window between the decision and the
+        signal and leave a killed process reported as a success.
+        """
+        with job._lock:
+            if job.status != "running" or job._proc is None:
+                return
+            job._deadline_expired = True
+            proc, pgid = job._proc, job._pgid
+        _stop_process_group(proc, pgid)
 
     def cancel(self, job_id: str) -> dict:
         """Stop a job, and report whether it actually stopped.
@@ -304,7 +598,7 @@ class JobManager:
         if not job:
             return {"error": "job not found"}
         with job._lock:  # atomic with _run's spawn claim and terminal write
-            if job.status in ("done", "failed", "cancelled"):
+            if job.status in TERMINAL_STATUSES:
                 return {"ok": True, "status": job.status}
             proc = job._proc
             pgid = job._pgid
@@ -317,6 +611,7 @@ class JobManager:
             late = job._proc
             if late is not None:  # a spawn we did not expect: stop it anyway
                 _stop_process_group(late, job._pgid)
+            self._persist(job)
             return {"ok": True, "status": "cancelled"}
 
         stopped, detail = _stop_process_group(proc, pgid)
@@ -348,11 +643,13 @@ class JobManager:
                 status = job.status
         if not stopped:
             job.append(f"\n[job] cancel failed: {detail}\n")
+            self._persist(job)
             return {
                 "ok": False,
                 "status": status,
                 "error": f"the job is still running: {detail}",
             }
+        self._persist(job)
         return {"ok": True, "status": status}
 
     def list(self) -> list[dict]:
@@ -366,6 +663,71 @@ class JobManager:
             return {"error": "job not found"}
         return job.to_dict(with_output=True)
 
+    def close(self) -> dict:
+        """Stop every live job, wait for its worker, and refuse new ones.
+
+        Owned by the server rather than by the process exiting, which is what
+        P0-3 asks for and what was missing: `JobManager` had no close at all.
+        The threads are daemon threads and the jobs are in their own process
+        groups, so nothing here was reaped on shutdown -- the interpreter simply
+        stopped, and whatever `bash -c` had started went on running, reparented,
+        with its stdout pipe closed and no record that it existed.
+
+        Idempotent, and safe to call from `server_close` on the way out of a
+        failed start: a manager that never ran any job closes to an empty
+        report rather than raising.
+        """
+        with self._lock:
+            if self._closed:
+                return {"ok": True, "closed": True, "stopped": [], "still_alive": []}
+            self._closed = True
+            jobs = [self._jobs[i] for i in self._order if i in self._jobs]
+
+        stopped: list[str] = []
+        still_alive: list[str] = []
+        for job in jobs:
+            with job._lock:
+                if job.status in TERMINAL_STATUSES:
+                    continue
+                proc, pgid = job._proc, job._pgid
+                if proc is None:
+                    # Never spawned. `_run` claims its transition to `running`
+                    # under this same lock, so it will see this and start
+                    # nothing -- the same interlock `cancel` relies on.
+                    job.status = "cancelled"
+                    job.finished_at = time.time()
+            if proc is None:
+                self._persist(job)
+                stopped.append(job.id)
+                continue
+            ok, _detail = _stop_process_group(proc, pgid)
+            with job._lock:
+                if job.status not in TERMINAL_STATUSES:
+                    job.status = "cancelled" if ok else "abandoned"
+                    job.finished_at = time.time()
+            (stopped if ok else still_alive).append(job.id)
+
+        # Join after signalling, not before: a worker blocked on `read1` returns
+        # when the pipe closes, and the pipe closes when the group dies. Joining
+        # first would wait the full budget for every job and then still have to
+        # signal them.
+        deadline = time.monotonic() + self._CLOSE_JOIN_S
+        for job in jobs:
+            worker = job._thread
+            if worker is None or worker is threading.current_thread():
+                continue
+            worker.join(max(0.0, deadline - time.monotonic()))
+            if worker.is_alive() and job.id not in still_alive:
+                still_alive.append(job.id)
+        for job in jobs:
+            self._persist(job)
+        return {
+            "ok": not still_alive,
+            "closed": True,
+            "stopped": stopped,
+            "still_alive": still_alive,
+        }
+
     def _prune_locked(self) -> None:
         while len(self._order) > _MAX_JOBS:
             # Evict the oldest TERMINAL job, without disturbing the order of
@@ -376,7 +738,7 @@ class JobManager:
             # "what I just started".
             for index, job_id in enumerate(self._order):
                 job = self._jobs.get(job_id)
-                if job is None or job.status in ("done", "failed", "cancelled"):
+                if job is None or job.status in TERMINAL_STATUSES:
                     self._order.pop(index)
                     self._jobs.pop(job_id, None)
                     break

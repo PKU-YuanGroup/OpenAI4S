@@ -373,14 +373,20 @@ jobs:
     # has vouched for, and the Windows package is a wrapper around this exact
     # tarball, so letting it start early would put an unvouched payload inside
     # a second artifact too.
-    needs: [quality]
+    #
+    # `freeze` is in the list for the ref below, not for ordering: `quality`
+    # already depends on it. This job arrived on a branch that had no `freeze`
+    # job and checked out `inputs.tag || github.ref`, which is a moving ref --
+    # a tag can be repointed between the gate and the build, and P0-0's whole
+    # claim is that every artifact came from one immutable SHA.
+    needs: [freeze, quality]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - name: Checkout the immutable release tag
+      - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.freeze.outputs.sha }}
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -415,14 +421,15 @@ jobs:
     # It consumes `linux-app`'s artifact rather than rebuilding: that is what
     # makes the payload byte-identical to the Linux bundle this same release
     # publishes, instead of a second build that merely ought to match.
-    needs: linux-app
+    # `freeze` for the ref, `linux-app` for the payload: same reason as above.
+    needs: [freeze, linux-app]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Checkout the immutable release tag
+      - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.freeze.outputs.sha }}
           persist-credentials: false
       - name: Download the verified Linux bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

@@ -149,6 +149,10 @@ jobs:
     # no WSL, which also makes it the right place to prove the refusal path
     # refuses instead of proceeding.
     runs-on: windows-latest
+    # Every job here carries one. A PowerShell parse that hangs would otherwise
+    # hold a Windows runner for the six-hour default, and this job arrived from
+    # a branch that predated the rule.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Parse the launcher
