@@ -16,15 +16,32 @@ this module has to produce.
 
 ## Why an unreadable home is not enough on macOS
 
-The credential this boundary exists to protect is not, in general, a file. The
-secret broker stores it in the login keychain, and `security
-find-generic-password -w` does not read `~/Library/Keychains` — it asks
-*securityd* to, in a process the profile does not cover. `allow default` left
-every Mach service that reaches securityd open, so the file denial the helper
-verifies from inside was satisfied while the secret was still one command away,
-on a helper that has the network by design. The profile therefore denies the
-keychain services explicitly, and the self-test probes that separately from the
-filesystem invariant, because neither implies the other.
+Twice over, for unrelated reasons.
+
+**The credential is not, in general, a file.** The secret broker stores it in
+the login keychain, and `security find-generic-password -w` does not read
+`~/Library/Keychains` — it asks *securityd* to, in a process the profile does
+not cover. `allow default` left every Mach service that reaches securityd open,
+so the file denial the helper verifies from inside was satisfied while the
+secret was still one command away, on a helper that has the network by design.
+The profile therefore denies the keychain services explicitly, and the self-test
+probes that separately from the filesystem invariant, because neither implies
+the other.
+
+**And "unreadable" used to mean contents only.** The home denial was written as
+`file-read-data`, so `stat()` still answered: a provider shim could walk a list
+of guesses and collect the size, mtime, mode and owner of `~/.ssh/id_ed25519`,
+`~/.aws/credentials`, `~/.kube/config` — enough to fingerprint the machine and
+choose a target, over the network it is allowed by design. The denial is now
+`file-read*`, with the interpreter's own path components named back as
+`file-read-metadata` literals so the loader can still resolve the binary
+(see `traversal_metadata_paths`, and the comment on the deny itself).
+
+That closes the *contents* of a metadata read. It does not close **existence**:
+Seatbelt answers a denied path with `EPERM` and a missing one with `ENOENT`, so
+a shim can still distinguish "something is here I may not read" from "nothing is
+here". SBPL has no way to make a deny lie. Said out loud because a boundary
+nobody delimits is one people assume is total.
 
 The same shape a second time, and closer to home: a file's contents are not
 only in its data fork. Extended attributes are a separate Seatbelt class,
@@ -36,8 +53,25 @@ refused a file through `open()` and served the same bytes through `getxattr()`.
 The helper's own probe could not have caught this: `listdir` is a data read, so
 the invariant it verifies from inside was satisfied the entire time. That is the
 recurring lesson of this module -- a check that answers an easier question than
-the one it stands in for -- and it is why the profile now denies xattrs under
-the home too, and why the host-side test asserts it separately.
+the one it stands in for -- and it is why the host-side test asserts xattrs
+separately from data.
+
+That hole was closed by a dedicated `(deny file-read-xattr …)` beside the data
+denial, and it stays. The whole-class `file-read*` denial above does subsume it
+*at that line* -- but the profile ends with `(allow file-read* …)` over the
+interpreter prefixes, the helper package and the stage, and a later whole-class
+allow re-opens `getxattr` on everything it names. An operation-specific deny is
+not re-opened by it. Measured, because an earlier revision of this change
+dropped the line on the strength of a control that probed a file directly under
+`$HOME` -- where it genuinely is a no-op -- and so answered an easier question
+than the one it stood in for: inside an allow-listed read root, without the line
+`getxattr` returns the bytes, with it `EPERM`.
+
+What neither form closes is `listxattr`: attribute *names* are governed by
+`file-read-metadata`, so they follow the traversal allowance and remain readable
+on the interpreter's own route. That residual is narrower than it was -- names
+were readable across the whole home while metadata was -- and it is stated here
+because a line that looks like it closes something is worse than no line at all.
 
 ## Why the profile is shaped the way it is
 
@@ -51,9 +85,11 @@ both directions:
 
 So: `allow default`, writes confined to the stage directory, network allowed,
 and `$HOME` unreadable — with the specific paths the interpreter needs to run
-at all read-allowed again on top, because SBPL is last-match-wins. Those paths
-are the Python installation and the helper's own package tree, which on a
-developer machine live under `$HOME`. Allow-listing them is not a hole in the
+at all read-allowed again on top, because SBPL is last-match-wins. That
+allowance has two parts, and they are not interchangeable: whole `file-read*`
+subpaths for the Python installation and the helper's own package tree, and
+bare `file-read-metadata` literals for the individual directory components the
+loader has to walk to reach them. Allow-listing either is not a hole in the
 boundary being built: the boundary is "the user's documents, credentials, ssh
 keys and shell history are not readable", and an interpreter that cannot import
 itself confines nothing because it never runs.
@@ -165,6 +201,91 @@ def runtime_read_paths(extra: tuple[str, ...] = ()) -> list[str]:
     return seen
 
 
+#: A ceiling on the symlink walk below. A chain longer than this is a loop or a
+#: layout pathological enough that no profile will help; either way the walk has
+#: to terminate, because the alternative is a daemon that hangs while building a
+#: sandbox profile.
+_MAX_TRAVERSAL_HOPS = 512
+
+
+def traversal_metadata_paths(
+    read_paths: tuple[str, ...] = (),
+    *,
+    home: str | os.PathLike[str] | None = None,
+    executable: str | None = None,
+) -> list[str]:
+    """Every path component the loader walks on its way to the interpreter.
+
+    `runtime_read_paths` answers "which trees must be readable", and
+    `_canonical` realpaths them — which is right for the trees and wrong for
+    the route to them. `execvp` and dyld do not resolve a path in one step;
+    they look up each component in turn and follow each symlink they find, and
+    a `file-read*` deny over `$HOME` refuses the metadata read that lookup is.
+    The failure is total and early: `sandbox-exec: execvp() ... Operation not
+    permitted`, before the helper exists to report anything.
+
+    The components that go missing are the ones a resolved path cannot name. A
+    uv-managed venv reaches its interpreter as::
+
+        <repo>/.venv/bin/python
+          -> ~/.local/share/uv/python/cpython-3.13-macos-aarch64-none/bin/python3.13
+          -> ~/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/bin/python3.13
+
+    where the middle hop is an alias symlink. `sys.base_prefix` reports only the
+    last line, so the alias directory the loader actually traverses appears
+    nowhere in a profile built from resolved prefixes — which is why allowing
+    `file-read*` on the resolved prefix is not enough on its own, verified.
+
+    So this walks it the way the loader does: emit every component of a path,
+    and at each component that is a symlink, rewrite the remainder onto the
+    link's target and walk that too. Components outside `home` are dropped —
+    nothing denies them, and naming them would only widen the profile.
+
+    Seeded from every allowed read root, not just the interpreter. On a host
+    where the repository and the interpreter live in different subtrees of
+    `$HOME` (a system python3 with a source checkout under `~/src`, say), the
+    helper's own package is reached through components no interpreter chain
+    passes, and omitting them fails exactly as loudly.
+    """
+    home_dir = _canonical(home if home is not None else Path.home())
+    within = home_dir.rstrip(os.sep) + os.sep
+    pending = [
+        str(seed)
+        for seed in (
+            executable or sys.executable,
+            *(read_paths or runtime_read_paths()),
+        )
+        if seed
+    ]
+    walked: set[str] = set()
+    found: set[str] = set()
+    hops = 0
+    while pending and hops < _MAX_TRAVERSAL_HOPS:
+        hops += 1
+        current = os.path.normpath(pending.pop())
+        if current in walked:
+            continue
+        walked.add(current)
+        parts = Path(current).parts
+        for depth in range(1, len(parts) + 1):
+            component = str(Path(*parts[:depth]))
+            if component == home_dir or component.startswith(within):
+                found.add(component)
+            try:
+                # `readlink` rather than `islink` + `readlink`: one syscall, and
+                # no window between the question and the answer. EINVAL (not a
+                # symlink) and ENOENT (raced away) are both "nothing to follow".
+                target = os.readlink(component)
+            except OSError:
+                continue
+            if not os.path.isabs(target):
+                target = os.path.join(os.path.dirname(component), target)
+            pending.append(os.path.join(target, *parts[depth:]))
+    # Sorted, so the profile a given host produces is byte-stable across runs
+    # and a diff of two profiles is about the boundary rather than dict order.
+    return sorted(found)
+
+
 def build_profile(
     stage: str | os.PathLike[str],
     *,
@@ -175,7 +296,11 @@ def build_profile(
 
     Order is load-bearing — SBPL takes the *last* matching rule — so the home
     denial comes after `allow default`, and the runtime read allowances come
-    after the denial.
+    after the denial. There are two of those, and they are not interchangeable:
+    `file-read*` subpaths for the trees the helper reads, and
+    `file-read-metadata` literals for the components the loader walks to reach
+    them. A subpath where a literal belongs would hand back everything beneath
+    `$HOME`'s directories, which is the disclosure the denial exists to end.
     """
     home_dir = _canonical(home if home is not None else Path.home())
     stage_dir = _canonical(stage)
@@ -193,54 +318,73 @@ def build_profile(
         '    (literal "/dev/stderr"))',
         # The invariant the helper verifies from inside.
         #
-        # `file-read-data`, not `file-read*`. Denying the whole read class over
-        # a home directory also denies the *metadata* reads `execvp` and dyld
-        # perform on the interpreter itself, so `sandbox-exec` fails before the
-        # helper starts — verified by execution: with `file-read*` the exec
-        # dies with "Operation not permitted", with `file-read-data` the helper
-        # runs and `os.listdir($HOME)` still raises PermissionError, which is
-        # exactly the invariant the helper probes for. Metadata is what the
-        # loader needs; contents are what a credential is.
+        # `file-read*`, not `file-read-data`. The narrow form was here because
+        # denying the whole read class over a home directory also denies the
+        # *metadata* reads `execvp` and dyld perform while resolving the
+        # interpreter, so `sandbox-exec` dies with "execvp() ... Operation not
+        # permitted" before the helper starts. That symptom is real and
+        # reproduces on demand. The conclusion drawn from it — that `file-read*`
+        # cannot be used here — was wrong, and the comment this replaces said so
+        # itself: the blocker is an enumeration problem, and lifting it belongs
+        # in a change that can be tested across layouts. This is that change.
+        # `traversal_metadata_paths` does the enumeration, including the
+        # unresolved symlink hops that a realpath'd allowance cannot describe;
+        # allowing `file-read*` on the resolved prefix alone is *not* enough,
+        # measured separately from allowing nothing at all.
         #
-        # That is the shipped trade-off, but it is *not* forced, and the
-        # difference matters to anyone who reads the paragraph above as a dead
-        # end. Re-measured on macOS 26.5 with this venv's interpreter: a
-        # `file-read*` home denial does start, and closes `stat()` as well,
-        # once every ancestor path component of the interpreter carries an
-        # explicit `(allow file-read-metadata (literal …))` — 16 of them here,
-        # including the *unresolved* symlink hops (`.venv/bin/python`, and uv's
-        # un-versioned `cpython-3.13-…` alias). Re-allowing the resolved
-        # `sys.base_prefix` by `subpath` is not enough; the loader walks the
-        # alias, and `_canonical()` resolves precisely that name out of the
-        # allow-list. So the blocker is an enumeration problem, not a kernel
-        # one — and an incomplete enumeration fails by the helper not starting
-        # on a user's machine, which is why lifting this belongs in a change
-        # that can be tested across venv/uv/Homebrew/conda/system layouts
-        # rather than assumed from one.
-        f"(deny file-read-data (subpath {_quote(home_dir)}))",
-        # ...and "contents" is not only the data fork. Extended attributes are
-        # governed by their own class, `file-read-xattr`, which the line above
-        # does not touch — and on macOS an xattr routinely *is* the file:
-        # `com.apple.ResourceFork` holds the resource fork, and
-        # `com.apple.metadata:kMDItemWhereFroms` holds the originating URL,
-        # which for anything saved from a `data:` URL is the whole document
-        # base64-encoded.
+        # What the widening buys: under `file-read-data` a `stat()` on any
+        # guessed path under $HOME succeeded, by design — `~/.ssh/id_ed25519`
+        # and `~/.aws/credentials` returned size, mtime, mode and owner to a
+        # provider shim that also has the network. Now they raise EPERM.
+        # Verified by execution on macOS 26.5.2 (arm64) across five interpreter
+        # layouts — a uv-managed venv (symlinked, via the alias above), a
+        # `python -m venv` off Homebrew python3.14 whose base prefix is outside
+        # $HOME, a conda base install under $HOME, a conda env under it, and the
+        # system /usr/bin/python3 (whose prefix is outside $HOME entirely, so the
+        # only components under it lead to the helper's own package): under all
+        # five the helper starts and imports its package, `os.listdir($HOME)`
+        # raises PermissionError — the invariant the helper itself probes for —
+        # and `stat(~/.zshrc)` raises PermissionError where it previously
+        # returned a stat result. One macOS version, which is the gap in this
+        # evidence: the self-test below is what catches a layout or a release
+        # this enumeration did not anticipate, and it now probes with the real
+        # interpreter precisely so that it can.
         #
-        # Verified by execution on macOS 26.5, one file under a denied home
-        # carrying its own bytes in an xattr:
-        #     open(path)                            -> EPERM
-        #     open(path + "/..namedfork/rsrc")      -> EPERM
-        #     getxattr(path, "com.apple.ResourceFork") -> the bytes, allowed
-        # The same content refused on one path and served on another, to a
-        # helper that has the network by design.
+        # What it does not buy: existence. A denied path answers EPERM and a
+        # missing one ENOENT, so a shim can still tell "something is here I may
+        # not read" from "nothing is here". SBPL cannot make a deny lie.
         #
-        # This is a separate class from `file-read-metadata`, which stays
-        # allowed for the reason above: denying *that* is what breaks execvp
-        # and dyld. Denying xattrs costs nothing — re-verified that the helper
-        # still starts and still reaches its own argv error with this line in
-        # place. `listxattr` (attribute *names*, not values) remains readable,
-        # because closing it needs `file-read-metadata`; names are not
-        # contents, and that residual is accepted deliberately.
+        f"(deny file-read* (subpath {_quote(home_dir)}))",
+        # The dedicated xattr deny stays, and the reason is narrower than
+        # "belt and braces". `file-read*` does subsume `file-read-xattr` at
+        # this line — but the allowance at the bottom of this function is
+        # `(allow file-read* …)` over the interpreter prefixes, the helper
+        # package and the stage. A later whole-class *allow* re-opens
+        # `getxattr` on everything it names; an operation-specific *deny* is
+        # not re-opened by it.
+        #
+        # An earlier revision of this change dropped the line, on the stated
+        # grounds that a control had measured it byte-equal. The control probed
+        # a file directly under `$HOME`, where it is indeed a no-op. Inside an
+        # allow-listed read root it is not:
+        #
+        #     file with com.apple.review.secret=INSIDE in sys.base_prefix
+        #       profile without this line : getxattr -> ALLOWED:INSIDE
+        #       profile with    this line : getxattr -> EPERM
+        #
+        # Those trees' data forks are readable either way, so what this closes
+        # is xattr-only content — resource forks, `kMDItemWhereFroms` — on
+        # files the helper may already open. Small, but it is the boundary the
+        # profile already had, and a measurement that answers an easier
+        # question than the one it stands in for is this module's own recurring
+        # bug. `tests/test_byoc_confinement_scope.py` now pins it.
+        #
+        # `listxattr` (attribute *names*, not values) is governed by
+        # `file-read-metadata`, not by `file-read-xattr`, so this line does not
+        # close it. Names are not contents; that residual is accepted, and it
+        # narrows under this change rather than growing — names were readable
+        # across the whole home while metadata was, and are now readable only
+        # on the interpreter's route.
         f"(deny file-read-xattr (subpath {_quote(home_dir)}))",
         # The keychain is not a file the home denial covers, and this is the
         # hole that denial looked like it closed.
@@ -276,8 +420,17 @@ def build_profile(
         '    (subpath "/private/var/db/SystemKey"))',
     ]
     allowed = list(read_paths) or runtime_read_paths()
+    # The route to those trees, as distinct from the trees themselves. `literal`
+    # and not `subpath`: metadata on `$HOME` must not become metadata on
+    # everything under it, which is the disclosure the deny above exists to end.
+    traversal = traversal_metadata_paths(tuple(allowed), home=home_dir)
+    if traversal:
+        entries = [f"    (literal {_quote(path)})" for path in traversal]
+        entries[-1] += ")"
+        lines.append("(allow file-read-metadata")
+        lines.extend(entries)
     if allowed:
-        lines.append("(allow file-read-data")
+        lines.append("(allow file-read*")
         lines.extend(f"    (subpath {_quote(path)})" for path in allowed)
         lines.append(f"    (subpath {_quote(stage_dir)}))")
     return "\n".join(lines) + "\n"
@@ -466,13 +619,41 @@ def _probe_argv(executable: str, stage: str, home: str) -> list[str]:
     #
     # Distinct exit codes, because "the boundary did not hold" is not a useful
     # thing to tell someone who then has to work out which half of it.
+    #
+    # Run under `sys.executable`, not `/bin/sh`. The shell lives outside `$HOME`
+    # and starts under any profile this module can emit, so a shell probe passed
+    # on hosts where the *interpreter* could not start — and the interpreter is
+    # what the helper is actually launched with. That made the one failure mode
+    # of the metadata enumeration (a component not named, on a layout not
+    # tested) invisible to the check whose job is to catch it: `auto` would
+    # report an active boundary and the op would then die at exec. Probing with
+    # the real interpreter turns that into a self-test failure, which `auto`
+    # degrades on visibly and `enforce` refuses on.
     script = (
-        f"ls {home!r} >/dev/null 2>&1 && exit {_PROBE_HOME_READABLE}; "
-        f"/usr/bin/security list-keychains >/dev/null 2>&1 && "
-        f"exit {_PROBE_KEYCHAIN_REACHABLE}; "
-        "exit 0"
+        "import os, subprocess, sys\n"
+        "try:\n"
+        f"    os.listdir({home!r})\n"
+        f"    sys.exit({_PROBE_HOME_READABLE})\n"
+        "except OSError:\n"
+        "    pass\n"
+        "try:\n"
+        "    reachable = subprocess.run(\n"
+        "        ['/usr/bin/security', 'list-keychains'],\n"
+        "        capture_output=True,\n"
+        "    ).returncode == 0\n"
+        "except Exception:\n"
+        "    reachable = False\n"
+        f"sys.exit({_PROBE_KEYCHAIN_REACHABLE} if reachable else 0)\n"
     )
-    return [executable, "-p", build_profile(stage, home=home), "/bin/sh", "-c", script]
+    return [
+        executable,
+        "-p",
+        build_profile(stage, home=home),
+        sys.executable,
+        "-I",
+        "-c",
+        script,
+    ]
 
 
 def self_test(*, force: bool = False) -> tuple[bool, str]:
@@ -536,11 +717,27 @@ def self_test(*, force: bool = False) -> tuple[bool, str]:
                     completed.stderr.decode("utf-8", "replace").strip()
                     or f"exit {completed.returncode}"
                 )
-                verdict = (
-                    False,
-                    f"{backend} is installed but did not establish a filesystem "
-                    f"boundary here: {detail}",
-                )
+                if "execvp" in detail:
+                    # The profile compiled and applied, and then denied the
+                    # interpreter itself — the one way the metadata enumeration
+                    # can be wrong. It fails on the layout it did not anticipate
+                    # rather than on the machine it was written on, so it has to
+                    # say which failure this is: "no boundary" would send
+                    # someone looking at sandbox-exec, and the fault is a path.
+                    verdict = (
+                        False,
+                        f"{backend} applied a profile that denies the "
+                        f"interpreter itself, so the helper cannot start: the "
+                        f"metadata allowances built for this host do not cover "
+                        f"every path component the loader walks to reach "
+                        f"{sys.executable!r} ({detail})",
+                    )
+                else:
+                    verdict = (
+                        False,
+                        f"{backend} is installed but did not establish a "
+                        f"filesystem boundary here: {detail}",
+                    )
     except subprocess.TimeoutExpired:
         verdict = (
             False,
@@ -692,5 +889,6 @@ __all__ = [
     "reset_self_test_cache",
     "runtime_read_paths",
     "self_test",
+    "traversal_metadata_paths",
     "wrap",
 ]

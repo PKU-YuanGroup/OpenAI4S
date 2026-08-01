@@ -230,8 +230,15 @@ def test_the_self_test_probes_the_keychain_too():
     script = argv[-1]
     assert "list-keychains" in script
     # One-directional: only a *successful* keychain read fails the probe, so a
-    # host without `security` is not misreported as unconfined.
-    assert f"&& exit {bc._PROBE_KEYCHAIN_REACHABLE}" in script
+    # host without `security` is not misreported as unconfined. This used to
+    # read `&& exit 82` — the probe was a `/bin/sh` script then. It runs under
+    # `sys.executable` now, deliberately: the shell lives outside `$HOME` and
+    # starts under any profile this module emits, so a shell probe stayed green
+    # on hosts where the *interpreter* could not start, which is the one way the
+    # home denial's metadata allowances can be wrong. The assertion follows the
+    # mechanism; the property it pins is unchanged.
+    assert sys.executable in argv, argv
+    assert f"sys.exit({bc._PROBE_KEYCHAIN_REACHABLE} if reachable else 0)" in script
     # ...and the verdict codes must not collide with the small exit codes
     # `sandbox-exec` uses when it fails to apply the profile at all, or "the
     # backend never ran" would be reported as "the boundary does not hold".
