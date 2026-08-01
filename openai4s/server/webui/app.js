@@ -536,6 +536,8 @@ Object.assign(I18N.zh, {
   "ac.fromOtherSession": "来自其他会话，发送时会复制进来",
   "refs.problemsTitle": "有 {0} 处引用没能解析（这一轮仍在继续）",
   "refs.unresolvedChip": "这个引用现在解析不到任何文件；发送后这一轮会照常继续。",
+  "cust.memory.edited": "已修改",
+  "cust.memory.editPrompt": "修改这条记忆的内容：",
   "versions.retrievalSource": "数据来源（只读）",
   "versions.retrievalTruncated": "以下字段过长已截断：{0}",
   "versions.retrievalWithheld": "另有 {0} 个字段未展示",
@@ -1458,6 +1460,8 @@ Object.assign(I18N.en, {
   "ac.fromOtherSession": "from another session — copied in on send",
   "refs.problemsTitle": "{0} reference(s) did not resolve (the turn still ran)",
   "refs.unresolvedChip": "This reference resolves to nothing right now; the turn will still run.",
+  "cust.memory.edited": "edited",
+  "cust.memory.editPrompt": "Edit this memory:",
   "versions.retrievalSource": "Retrieved from (read-only)",
   "versions.retrievalTruncated": "clipped for length: {0}",
   "versions.retrievalWithheld": "{0} further field(s) not shown",
@@ -8155,7 +8159,35 @@ async function custMemory(c) { try {
   const groups = {}; (mem.memories || []).forEach(x => { const b = x.block || "general"; (groups[b] = groups[b] || []).push(x); });
   Object.keys(groups).sort().forEach(block => {
     c.appendChild(el("div", "cust-subhead", block));
-    groups[block].forEach(x => { const row = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "ds", x.content || "")); const sc = el("div", "ds"); sc.appendChild(el("span", "pill", memScopeLabel(x.project_id))); info.appendChild(sc); row.appendChild(info); const del = el("button", "icon-ghost"); del.appendChild(iconEl("trash-2", 14)); del.onclick = async () => { try { await api(`/memory/${x.memory_id}?project_id=${encodeURIComponent(x.project_id || "global")}`, { method: "DELETE" }); custTab("memory"); } catch (e) { hint(apiErrorText(e), true); } }; row.appendChild(del); c.appendChild(row); });
+    groups[block].forEach(x => {
+      const row = el("div", "cust-row"); const info = el("div", "info");
+      info.appendChild(el("div", "ds", x.content || ""));
+      const sc = el("div", "ds"); sc.appendChild(el("span", "pill", memScopeLabel(x.project_id)));
+      // Said out loud, because it is what retention measures. A memory nobody
+      // has touched in a year stops being injected, and until there was an
+      // edit the only "touch" a row could have was the day it was written.
+      if (x.updated_at) sc.appendChild(el("span", "pill", t("cust.memory.edited")));
+      info.appendChild(sc); row.appendChild(info);
+      // Edit in place. Correcting standing context used to mean delete and
+      // rewrite: two round trips through a scope that may be at its cap, so
+      // the second can fail and leave the user with neither version.
+      const edit = el("button", "icon-ghost"); edit.title = t("common.edit");
+      edit.appendChild(iconEl("pencil", 14));
+      edit.onclick = async () => {
+        const next = prompt(t("cust.memory.editPrompt"), x.content || "");
+        if (next === null) return;
+        const value = String(next).trim();
+        if (!value || value === (x.content || "")) return;
+        try {
+          await api(`/memory/${x.memory_id}?project_id=${encodeURIComponent(x.project_id || "global")}`, { method: "PATCH", body: JSON.stringify({ content: value }) });
+          custTab("memory");
+        } catch (e) { hint(apiErrorText(e), true); }
+      };
+      row.appendChild(edit);
+      const del = el("button", "icon-ghost"); del.appendChild(iconEl("trash-2", 14));
+      del.onclick = async () => { try { await api(`/memory/${x.memory_id}?project_id=${encodeURIComponent(x.project_id || "global")}`, { method: "DELETE" }); custTab("memory"); } catch (e) { hint(apiErrorText(e), true); } };
+      row.appendChild(del); c.appendChild(row);
+    });
   });
   if (!(mem.memories || []).length) c.appendChild(el("div", "dock-empty", t("cust.memory.empty")));
 } catch (e) { c.textContent = t("versions.load.err", e.message); } }
