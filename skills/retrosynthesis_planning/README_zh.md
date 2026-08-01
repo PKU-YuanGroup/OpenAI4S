@@ -50,6 +50,14 @@ audit = audit_routes(routes)
 
 `audit_routes(...)` 在 LLM 注释之前运行。它会报告缺失路线树、空或无效的分子 SMILES、没有前体子节点的反应、重复前体、缺少反应标识，以及在安装 RDKit 时检查简单的“产物相对前体元素缺口”。每份结果都带有明确免责声明，因为这些检查不能替代正向预测、文献先例或实验审阅。
 
+## 可选外部模型
+
+[`external_backends.py`](external_backends.py) 增加了版本化、标准库优先的 subprocess 边界，用于运行可选单步模型。[`syntheseus_worker.py`](syntheseus_worker.py) 可以在独立 Python 或 conda 环境中调用 RetroChimera 或受支持的 Syntheseus wrapper，从而不把 PyTorch、CUDA、checkpoint 和模型专属依赖带入 OpenAI4S core 进程。
+
+默认禁止自动下载 checkpoint。模型运行可以携带不含本地路径的 manifest，记录模型版本、checkpoint 标识与 SHA-256、训练数据集和许可证信息。返回分数始终保留为原始模型输出，并附带科学免责声明；它们不会被转换成实验成功概率。
+
+安装、manifest、协议、错误处理与 Harness replay 详见 [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) 和 [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md)。
+
 ## 文件
 
 | 文件 | 职责 |
@@ -59,8 +67,12 @@ audit = audit_routes(routes)
 | [`workflow.py`](workflow.py) | 面向用户的编排层：经过校验的 `aizynthcli` 参数，以及“规范化 → 排序 → 去重 → 多样性选择”的审阅流程。 |
 | [`route_review.py`](route_review.py) | 稳定路线签名、重复路线来源记录，以及基于反应、产物、前体和末端原料特征的多样性选择。 |
 | [`structural_audit.py`](structural_audit.py) | LLM 解释前的确定性路线树检查。它保持标准库优先，仅在安装 RDKit 时增加解析和元素检查。 |
+| [`external_backends.py`](external_backends.py) | 版本化外部模型请求/响应校验、不含路径的 model manifest、超时与大小限制，以及 `SyntheseusBackend` subprocess adapter。 |
+| [`syntheseus_worker.py`](syntheseus_worker.py) | 用于 RetroChimera 和受支持 Syntheseus 模型类别的隔离可选依赖 worker。它将模型日志重定向到 stderr，并只输出一个结构化 JSON 响应。 |
+| [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | 外部模型隔离安装、provenance manifest、使用方式、wire error、科学边界和离线 replay 验证的英文说明。 |
+| [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | 外部模型后端与可信度说明的中文版本。 |
 
-这一层的定向回归测试位于 [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py)。
+这一层的定向回归测试位于 [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py) 和 [`../../tests/test_harness_contract.py`](../../tests/test_harness_contract.py)。
 
 ## 子目录
 
