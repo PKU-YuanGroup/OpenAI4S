@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "retrochimera_complete_provenance",
+      "response": {
+        "schema_version": 1,
+        "request_id": "replay-success-1",
+        "backend": "syntheseus",
+        "operation": "single_step",
+        "ok": true,
+        "target_smiles": "CCOC(=O)N",
+        "model": "RetroChimera",
+        "predictions": [
+          {
+            "rank": 1,
+            "reactants_smiles": "CCO.NC=O",
+            "reaction_smiles": "CCO.NC=O>>CCOC(=O)N",
+            "score": 0.61,
+            "score_type": "probability",
+            "metadata": {
+              "probability": 0.61
+            }
+          },
+          {
+            "rank": 2,
+            "reactants_smiles": "CCOC(=O)Cl.N",
+            "reaction_smiles": "CCOC(=O)Cl.N>>CCOC(=O)N",
+            "score": 0.22,
+            "score_type": "probability",
+            "metadata": {
+              "probability": 0.22
+            }
+          }
+        ],
+        "model_manifest": {
+          "schema_version": 1,
+          "provider": "Microsoft Research",
+          "model": "RetroChimera",
+          "model_version": "1.2.0",
+          "checkpoint_id": "synthetic-test-checkpoint",
+          "checkpoint_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "training_dataset": "synthetic fixture",
+          "code_license": "MIT",
+          "checkpoint_license": "MIT",
+          "source_url": "https://github.com/microsoft/retrochimera",
+          "metadata": {
+            "fixture": true
+          }
+        },
+        "runtime": {
+          "python": "fixture",
+          "packages": {
+            "syntheseus": "0.7.2",
+            "retrochimera": "1.2.0"
+          }
+        },
+        "warnings": [],
+        "elapsed_seconds": 0.1
+      },
+      "expect": {
+        "ok": true,
+        "prediction_count": 2,
+        "provenance_status": "complete"
+      }
+    },
+    {
+      "id": "checkpoint_download_disabled",
+      "response": {
+        "schema_version": 1,
+        "request_id": "replay-error-1",
+        "backend": "syntheseus",
+        "operation": "single_step",
+        "ok": false,
+        "runtime": {
+          "python": "fixture",
+          "packages": {
+            "syntheseus": null,
+            "retrochimera": null
+          }
+        },
+        "warnings": [],
+        "elapsed_seconds": null,
+        "error": {
+          "code": "checkpoint_required",
+          "message": "model_dir is required because automatic checkpoint downloads are disabled",
+          "retryable": false
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_code": "checkpoint_required"
+      }
+    }
+  ]
+}
