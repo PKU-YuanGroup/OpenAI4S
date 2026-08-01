@@ -510,7 +510,6 @@ print("PROBE" + json.dumps(out))
 
 
 @macos_only
-@macos_only
 def test_an_allowed_read_root_under_home_still_denies_attribute_values(tmp_path):
     """The regression a "byte-equal" control missed, tried for real.
 
@@ -563,6 +562,7 @@ def test_an_allowed_read_root_under_home_still_denies_attribute_values(tmp_path)
     )
 
 
+@macos_only
 def test_metadata_under_home_is_denied_and_only_existence_survives(tmp_path):
     """The home denial is `file-read*`, and this pins what that does and does not buy.
 
