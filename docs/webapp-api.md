@@ -547,9 +547,20 @@ the route index so the surface is discoverable from one place.
 | `GET /compute/providers` | `{"providers":[…]}`. |
 | `GET /compute/local/hostinfo` | Host info snapshot. |
 | `GET /compute/jobs` | `{"jobs":[…]}`. |
-| `POST /compute/jobs` | Body `{command|code,kind("bash"),cwd?}` → job row. **Local code-exec endpoint** — protected only by the Origin check + loopback bind. |
+| `POST /compute/jobs` | Body `{command|code,kind("bash"),cwd?,deadline_s?}` → job row. `deadline_s` defaults to one hour and is refused above 24 h with `job_bad_deadline`; there is no unbounded run. **Local code-exec endpoint** — protected only by the Origin check + loopback bind. |
 | `POST /compute/jobs/{id}/cancel` | Cancel result. |
-| `GET /compute/jobs/{id}` | Job row. |
+| `GET /compute/jobs/{id}` | Job row, plus `output`. |
+
+A job row carries `status` from `queued|running|done|failed|cancelled|timeout|abandoned`.
+The last two are distinct on purpose: `timeout` is the daemon stopping a job that
+outlived its deadline, and `abandoned` is a job the previous daemon was running
+when it died — read from its receipt on the next boot, never revived, and never
+reported as `failed` (which would blame the job's own command) or `cancelled`
+(which would claim somebody meant to stop it).
+
+Output is bounded in bytes as it is read, not trimmed afterwards, so every row
+carries `seen_bytes`, `retained_bytes`, `dropped_bytes` and `truncated`. What is
+kept is the tail; `output` is prefixed with a notice when anything was dropped.
 | `GET /environments/status` | `{"environments":[{language,status,python_version,package_count,packages,preinstall}]}`. |
 | `GET /environments` | Same shape as `GET /frames/{fid}/environments`, without a session. |
 | `GET /kernel/packages` | `{"packages":[…],"preinstall":{…}}`. |
@@ -566,7 +577,14 @@ the route index so the surface is discoverable from one place.
 | `POST /memory` | Body `{content,block?("general"),project_id?}` → memory row. |
 | `GET /memory/categories?project_id=` | `{"categories":[…]}`. |
 | `GET /memory/context?project_id=` | `{"context":"- …\n- …"}`. |
+| `PATCH /memory/{id}?project_id=` | Body `{content?,block?}` → the edited row. `project_id` is required and is not defaulted, exactly as for the DELETE: an id is not authority over a project, and a cross-scope edit answers 404 rather than succeeding. Refuses empty or over-long content before the write (`memory_empty`, `memory_too_long`), and refuses a request that changes nothing (`memory_no_change`). Sets `updated_at`, which is what retention measures — an edit is a touch, so a corrected memory does not expire on the clock of the one it replaced. |
 | `DELETE /memory/{id}` | `{"ok":true}`. |
+
+`POST /memory` refuses on two distinct codes when a scope is full.
+`memory_scope_full` counts memories still inside the retention window;
+`memory_scope_full_expired` is the ceiling on rows *stored*, live or not. They
+are separate because the remedies are: one asks the user to delete a memory they
+are still using, the other rows that are not being injected at all.
 | `GET|PUT|PATCH|POST /network/status` | Write toggles `OPENAI4S_ALLOW_NETWORK` (process env + setting); always returns `{"enabled":bool}`. |
 | `GET /preferences/builtin-allowlist` | `{"enabled","egress_mode","granted":[domains],"groups"}`. |
 | `GET|PUT|PATCH|POST /search/config` | Tavily key config; write accepts `{api_key}` or `{clear_api_key}`; always returns `{"endpoint":"https://api.tavily.com/search","api_key_configured":bool}` — the key itself is never echoed. |

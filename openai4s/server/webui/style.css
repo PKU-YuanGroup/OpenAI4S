@@ -1460,6 +1460,12 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
 .msg-ref-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border:1px solid var(--border);border-radius:9px;background:var(--bg-2);color:var(--text-400);font-size:11px;max-width:100%}
 .msg-ref-chip.clickable{cursor:pointer}
 .msg-ref-chip.clickable:hover{color:var(--text-200)}
+/* The composer's copy of the message chips, drawn before the send. Same
+   element so the two cannot drift apart visually; the row is what is new. */
+.composer-refs{display:flex;flex-wrap:wrap;gap:6px;padding:6px 12px 0}
+.composer-refs.hidden{display:none}
+.msg-ref-chip.unresolved{border-color:var(--warn,#b8860b);color:var(--warn,#b8860b)}
+.msg-ref-chip.elsewhere{border-style:dashed}
 .ref-problems{margin:8px 20px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-2)}
 .ref-problems-head{font-size:12px;color:var(--text-400);margin-bottom:6px}
 .ref-problem{display:flex;gap:8px;align-items:baseline;font-size:12px;line-height:1.5}

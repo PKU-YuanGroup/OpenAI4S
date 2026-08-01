@@ -535,6 +535,7 @@ Object.assign(I18N.zh, {
   "dash.sessions.empty": "还没有会话。",
   "ac.fromOtherSession": "来自其他会话，发送时会复制进来",
   "refs.problemsTitle": "有 {0} 处引用没能解析（这一轮仍在继续）",
+  "refs.unresolvedChip": "这个引用现在解析不到任何文件；发送后这一轮会照常继续。",
   "versions.retrievalSource": "数据来源（只读）",
   "versions.retrievalTruncated": "以下字段过长已截断：{0}",
   "versions.retrievalWithheld": "另有 {0} 个字段未展示",
@@ -1455,6 +1456,7 @@ Object.assign(I18N.en, {
   "dash.sessions.empty": "No sessions yet.",
   "ac.fromOtherSession": "from another session — copied in on send",
   "refs.problemsTitle": "{0} reference(s) did not resolve (the turn still ran)",
+  "refs.unresolvedChip": "This reference resolves to nothing right now; the turn will still run.",
   "versions.retrievalSource": "Retrieved from (read-only)",
   "versions.retrievalTruncated": "clipped for length: {0}",
   "versions.retrievalWithheld": "{0} further field(s) not shown",
@@ -4852,6 +4854,66 @@ function renderMessageRefChips(host, refs) {
   if (row.children.length) host.appendChild(row);
 }
 
+// The same six facts as `renderMessageRefChips`, drawn *before* the send.
+//
+// A pinned reference was invisible until the turn came back. The autocomplete
+// inserts `@name#v-...` and then it is prose in a textarea: nothing says which
+// version was pinned, nothing says a file is coming from another conversation
+// and will be copied in, and a token typed or pasted by hand -- or one whose
+// artifact was since deleted -- looks exactly like one that resolves. The user
+// found out by reading the answer.
+//
+// Resolved against the artifacts this client already holds, so this adds no
+// route and no fetch. A token that resolves to nothing is drawn as unresolved
+// rather than dropped: "this will not do what you think" is the whole reason to
+// show it early, and hiding it would put the surprise back where it was.
+function renderComposerRefChips() {
+  const host = $("#composer-refs");
+  if (!host) return;
+  host.innerHTML = "";
+  const text = (($("#composer") || {}).value) || "";
+  // `@name` or `@name#version`, ended by whitespace. Same shape the server's
+  // resolver accepts; deliberately not a second, cleverer grammar.
+  const found = [];
+  const seen = new Set();
+  const re = /(?:^|\s)@([^\s@#]+)(?:#(v-[A-Za-z0-9_-]+))?/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const key = m[1] + "#" + (m[2] || "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.push({ name: m[1], version: m[2] || "" });
+    if (found.length >= 8) break;
+  }
+  if (!found.length) { host.classList.add("hidden"); return; }
+  const pool = [...(S.artifacts || []), ...((_acFiles && _acFiles.list) || [])];
+  found.forEach(ref => {
+    const match = pool.find(a => a && a.filename === ref.name
+      && (!ref.version || String(a.version_id || "") === ref.version));
+    const chip = el("span", "msg-ref-chip" + (match ? "" : " unresolved"));
+    chip.appendChild(iconEl(match ? "file-text" : "alert-triangle", 11));
+    chip.appendChild(el("span", null, publicText(ref.name, 60)));
+    if (!match) {
+      chip.title = t("refs.unresolvedChip");
+      host.appendChild(chip);
+      return;
+    }
+    // Facts, not a sentence, and in the same order the message chip uses --
+    // the two are read one above the other and must not disagree.
+    const parts = [String(ref.version || match.version_id || "")];
+    if (match.checksum) parts.push("sha256:" + String(match.checksum).slice(0, 12));
+    const elsewhere = match.root_frame_id && S.currentId
+      && match.root_frame_id !== S.currentId;
+    if (elsewhere) parts.push("\u2197 " + String(match.root_frame_id).slice(0, 12));
+    chip.title = parts.filter(Boolean).join(" \u00b7 ");
+    if (elsewhere) chip.classList.add("elsewhere");
+    chip.classList.add("clickable");
+    chip.onclick = () => openViewer(match);
+    host.appendChild(chip);
+  });
+  host.classList.remove("hidden");
+}
+
 /* ---------- session title / actions ---------- */
 async function commitTitle() {
   if (!S.currentId) return;
@@ -5289,7 +5351,8 @@ async function send(text, opts) {
   // would actually interrupt.
   if (queueing) hint(t("queue.accepted"));
   else { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true); }
-  $("#composer").value = ""; grow(); const annIds = anns.map(x => x.id);
+  $("#composer").value = ""; grow(); renderComposerRefChips();
+  const annIds = anns.map(x => x.id);
   if (annIds.length) { setLocalAnnotationStatus(annIds, "sent"); refreshAllStages(); updateAnnotBadge(); }
   sub(S.currentId);  // guarantee this client is subscribed BEFORE the POST spawns the
                      // turn thread. On the FIRST turn opened via newSession(), S.currentId
@@ -8624,7 +8687,10 @@ function acPick(i) {
   const token = ac.trigger + it.insert + " ";
   c.value = val.slice(0, ac.start) + token + val.slice(pos);
   const np = ac.start + token.length; c.setSelectionRange(np, np);
-  acClose(); grow(); c.focus();
+  // Assigning `value` fires no `input` event, so the chip row has to be told.
+  // Without this the one path that always inserts a *correct* token was the
+  // one path that never drew a chip for it.
+  acClose(); grow(); renderComposerRefChips(); c.focus();
 }
 // Unresolved @references, shown inline above the composer.
 function renderAttachmentProblems(problems) {
@@ -8991,7 +9057,7 @@ async function init() {
   $("#proj-modal").onclick = (e) => { if (e.target.id === "proj-modal") closeProjectModal(); };
   $("#pm-create").onclick = submitProjectModal;
   const c = $("#composer");
-  c.addEventListener("input", () => { grow(); acUpdate(); });
+  c.addEventListener("input", () => { grow(); acUpdate(); renderComposerRefChips(); });
   c.addEventListener("keydown", (e) => {
     if (e.isComposing || e.keyCode === 229) return;  // IME composition: Enter commits the candidate, not the message
     if (ac.open) {
