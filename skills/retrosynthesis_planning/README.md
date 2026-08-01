@@ -50,6 +50,14 @@ audit = audit_routes(routes)
 
 `audit_routes(...)` runs before LLM annotation. It reports missing trees, empty or invalid molecule SMILES, reactions without precursor children, duplicate precursors, missing reaction identity and — when RDKit is installed — simple product-versus-precursor elemental deficits. Every result carries an explicit disclaimer because these checks do not replace forward prediction, literature precedent or experimental review.
 
+## Optional external models
+
+[`external_backends.py`](external_backends.py) adds a versioned, stdlib-only subprocess boundary for optional single-step models. [`syntheseus_worker.py`](syntheseus_worker.py) can run RetroChimera or supported Syntheseus wrappers inside a separate Python or conda environment, keeping PyTorch, CUDA, checkpoints and model-specific dependencies out of the OpenAI4S core process.
+
+Automatic checkpoint downloading is disabled by default. A model run can carry a path-free manifest containing model version, checkpoint identifier and SHA-256, training dataset and license information. Returned model scores remain raw model outputs and are always accompanied by a scientific disclaimer; they are not converted into experimental success probabilities.
+
+See [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) and [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) for installation, manifest, protocol, failure handling and Harness replay details.
+
 ## Files
 
 | File | Responsibility |
@@ -59,8 +67,12 @@ audit = audit_routes(routes)
 | [`workflow.py`](workflow.py) | The user-facing orchestration layer: validated `aizynthcli` options and the normalize → rank → de-duplicate → diversify review path. |
 | [`route_review.py`](route_review.py) | Stable route signatures, duplicate provenance and diversity-aware route selection based on reaction, product, precursor and terminal-material features. |
 | [`structural_audit.py`](structural_audit.py) | Deterministic route-tree checks before LLM interpretation. It remains stdlib-only and adds RDKit parse/element checks only when RDKit is installed. |
+| [`external_backends.py`](external_backends.py) | Versioned external-model request/response validation, path-free model manifests, timeout and size enforcement, and the `SyntheseusBackend` subprocess adapter. |
+| [`syntheseus_worker.py`](syntheseus_worker.py) | The isolated optional-dependency worker for RetroChimera and supported Syntheseus model classes. It redirects model logs to stderr and emits one structured JSON response. |
+| [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | English guide to isolated model installation, provenance manifests, usage, wire errors, scientific limits and offline replay verification. |
+| [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | Chinese version of the external-model backend and trust guide. |
 
-Focused regressions for this layer live in [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py).
+Focused regressions for this layer live in [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py) and [`../../tests/test_harness_contract.py`](../../tests/test_harness_contract.py).
 
 ## Subdirectories
 
