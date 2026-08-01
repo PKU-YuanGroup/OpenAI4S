@@ -9329,9 +9329,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     "python",
                     "r",
                     "bundle",
+                    # A reading form, not a re-running one: both languages in
+                    # execution order in one document, for an issue or a
+                    # methods section. It rides this route rather than a new
+                    # one because it answers the same question about the same
+                    # branch, and a second route would be a second place for
+                    # "which cells belong to this branch" to be decided.
+                    "markdown",
                 }:
                     self._json(
-                        {"error": "notebook language must be python, r, or bundle"},
+                        {
+                            "error": (
+                                "notebook language must be python, r, bundle, "
+                                "or markdown"
+                            )
+                        },
                         400,
                     )
                     return

@@ -188,7 +188,7 @@ or stored `Content-Type`:
 | `GET /api/artifacts/{ident}` | artifact bytes | `ident` may be a **version_id, artifact_id, or filename** (in that resolution order: `store.resolve_artifact_path` tries `artifact_versions.version_id` first, then `artifacts.artifact_id` → its latest version; the handler falls back to a filename lookup). `Content-Type` comes from stored metadata, else guessed from the filename. |
 | `GET /api/frames/{fid}/artifacts.zip` | ZIP bytes | Current Artifact versions for one session. |
 | `GET /api/projects/{pid}/artifacts.zip` | ZIP bytes | Current Artifact versions across one project. |
-| `GET /api/frames/{fid}/notebook/export?language=` | `.ipynb` or ZIP bytes | `python`/`r` returns one Notebook; omitted/`bundle` returns both plus a manifest. |
+| `GET /api/frames/{fid}/notebook/export?language=` | `.ipynb`, ZIP or Markdown bytes | `python`/`r` returns one Notebook; omitted/`bundle` returns both plus a manifest; `markdown` returns one `.md` with both languages in execution order. |
 | `GET /api/frames/{fid}/session/export` | Session ZIP bytes | Deterministic `application/vnd.openai4s.session+zip`; carries schema and SHA-256 headers. |
 | `GET /preview/{ident}` | artifact bytes | Same resolution, but `Content-Type` is **forced** to `text/html; charset=utf-8` (sandboxed iframe preview). Not under `/api`. |
 | `GET /ketcher` | HTML | Static placeholder page. |
@@ -429,7 +429,7 @@ These routes are thin Gateway adapters over `SessionDomainService` and
 | `GET /frames/{fid}/recovery/actions` | Describes enabled/disabled reasons for `restore`, `retry`, and `restart_fresh` on the current root branch. |
 | `POST /frames/{fid}/recovery/actions/{restore\|retry\|restart_fresh}` | Runs the advertised verified-recovery action under an exact recovery execution ticket. `restart_fresh` requires `{"confirm":true}` and never claims namespace restoration. |
 | `GET /frames/{fid}/kernel/variables?language=python|r` | Bounded idle-only Variable Inspector projection. It never starts a stopped language worker and returns explicit Busy/Restoring/Ended/Not Started states. |
-| `GET /frames/{fid}/notebook/export?language=` | Raw deterministic `.ipynb` for `python`/`r`; omitted or `bundle` returns a stable ZIP containing both plus a manifest. Includes `Content-Disposition` and `X-Content-SHA256`. |
+| `GET /frames/{fid}/notebook/export?language=` | Raw deterministic `.ipynb` for `python`/`r`; omitted or `bundle` returns a stable ZIP containing both plus a manifest. `markdown` returns a `text/markdown` rendering of the branch — both languages in execution order, because the interleaving is the record the split forms lose — with every cell's index, language and state revision in a citable heading, and failed cells kept and labelled. Anything else is 400. Includes `Content-Disposition` and `X-Content-SHA256`. |
 | `GET /frames/{fid}/session/export` | Raw deterministic, manifest-hashed Session package. |
 | `GET /renderers` | Safe scientific renderer descriptor catalog. |
 | `GET /artifacts/{aid}/renderer?version=&root_frame_id=` | Selects a version-bound renderer descriptor plus immutable checksum/size/provenance metadata; it never executes Artifact content. |

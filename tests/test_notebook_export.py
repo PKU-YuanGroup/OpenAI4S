@@ -104,3 +104,48 @@ def test_export_bundle_is_deterministic_and_manifest_checksums_match():
 def test_unknown_notebook_language_is_rejected():
     with pytest.raises(ValueError, match="python or r"):
         NotebookExportService(_Store()).notebook("root-1", "julia")
+
+
+# -- the reading form ---------------------------------------------------------
+
+
+def test_markdown_keeps_both_languages_in_execution_order():
+    """The bundle already splits them; splitting is what this must not do.
+
+    A session's record is the interleaving -- which R cell answered which
+    Python cell -- and two files cannot carry it. The heading of every cell
+    names its index, language and state revision so a reader can cite one.
+    """
+    service = NotebookExportService(_Store())
+
+    text = service.markdown("root-1").decode("utf-8")
+
+    assert text.index("value = 21 * 2") < text.index("stop('boom')")
+    assert "## Cell 1 — python (state revision 11)" in text
+    assert "## Cell 2 — r (state revision 12)" in text
+    assert "```python" in text and "```r" in text
+    assert "42" in text
+
+
+def test_markdown_keeps_a_failed_cell_and_says_it_failed():
+    """Dropping it would make the document describe a run that went smoothly."""
+    service = NotebookExportService(_Store())
+
+    text = service.markdown("root-1").decode("utf-8")
+
+    assert "Error:" in text
+    assert "Error: boom" in text
+    assert "Stderr:" in text and "warning" in text
+    assert "Artifacts: `plot.png`" in text
+
+
+def test_the_export_descriptor_names_markdown_as_markdown():
+    """A `.md` served as `application/zip` is a download nothing will open."""
+    service = NotebookExportService(_Store())
+
+    exported = service.export("root-1", language="markdown")
+
+    assert exported["filename"].endswith(".md")
+    assert exported["content_type"].startswith("text/markdown")
+    assert exported["immutable"] is True
+    assert exported["data"] == service.markdown("root-1")

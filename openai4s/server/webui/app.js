@@ -978,6 +978,7 @@ Object.assign(I18N.zh, {
   "prov.exec.downloadNotebook": "下载 Notebook（打包）",
   "prov.exec.downloadPython": "只下载 Python Notebook (.ipynb)",
   "prov.exec.downloadR": "只下载 R Notebook (.ipynb)",
+  "prov.exec.downloadMarkdown": "下载 Markdown 记录 (.md)",
   "prov.exec.downloadMore": "其他导出格式",
   "prov.exec.noRecords": "暂无执行记录。",
   "prov.msg.loadFailed": "无法加载对话：{0}",
@@ -1899,6 +1900,7 @@ Object.assign(I18N.en, {
   "prov.exec.downloadNotebook": "Download notebooks (zip)",
   "prov.exec.downloadPython": "Python notebook only (.ipynb)",
   "prov.exec.downloadR": "R notebook only (.ipynb)",
+  "prov.exec.downloadMarkdown": "Markdown record (.md)",
   "prov.exec.downloadMore": "Other export formats",
   "prov.exec.noRecords": "No execution records yet.",
   "prov.msg.loadFailed": "Failed to load conversation: {0}",
@@ -6939,6 +6941,10 @@ const NOTEBOOK_EXPORTS = [
   { language: "bundle", key: "prov.exec.downloadNotebook", suffix: "notebooks.zip" },
   { language: "python", key: "prov.exec.downloadPython", suffix: "python.ipynb" },
   { language: "r", key: "prov.exec.downloadR", suffix: "r.ipynb" },
+  // The reading form. The three above are for re-running the work; this one is
+  // for pasting it into an issue or a methods section, with both languages in
+  // execution order because the interleaving is the record.
+  { language: "markdown", key: "prov.exec.downloadMarkdown", suffix: "md" },
 ];
 function notebookExportLink(frameId) {
   const wrap = el("div", "prov-dl");
