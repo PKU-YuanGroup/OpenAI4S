@@ -294,6 +294,7 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_llm_system_placement.py`](test_llm_system_placement.py) | Only leading system messages become the provider's initial system field, so compaction cannot invade the cache prefix. |
 | [`test_startup_no_implicit_install.py`](test_startup_no_implicit_install.py) | `serve` diagnoses the environment and never mutates it. |
 | [`test_startup_no_implicit_side_effects.py`](test_startup_no_implicit_side_effects.py) | A boot on a fresh data dir opens no socket, spawns no process, runs no cell and persists no session — guarded at `socket.connect` and `subprocess.Popen`, with `OPENAI4S_SEED_DEMO=1` as the positive control. |
+| [`test_diagnostic_archive_boundary.py`](test_diagnostic_archive_boundary.py) | Nothing unknown leaves the machine in a shareable diagnostics ZIP: the archive is deny-by-default, so a structured line survives only as validated metadata and an unstructured one only as a count, a class and a fingerprint. |
 | [`test_diagnostics.py`](test_diagnostics.py) | The support bundle is safe to paste into a public issue, including a token sitting mid-sentence in a log line. |
 | [`test_evidence_verification.py`](test_evidence_verification.py) | An exported package verifies with no daemon, and four tamper shapes are caught — including a payload rewritten together with its recorded hash. |
 | [`test_observability.py`](test_observability.py) | Correlation IDs and shape-based redaction of structured log fields. |

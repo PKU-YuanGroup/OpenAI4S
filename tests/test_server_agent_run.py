@@ -616,7 +616,11 @@ def test_trailing_environment_failure_is_returned_without_dangling_history(
     assert len(outcome.history_messages) == 2
     assert "pending environment switch failed" in outcome.observation
     assert any(message["is_error"] for message in outcome.history_messages)
-    assert "spawn failed" in outcome.history_messages[-1]["content"]
+    # The class, not the message. This used to require `"spawn failed"` -- the
+    # exception's own text -- in the history that is sent to the provider on
+    # the next turn and exported in the session package.
+    assert "RuntimeError" in outcome.history_messages[-1]["content"]
+    assert "spawn failed" not in outcome.history_messages[-1]["content"]
 
 
 def test_cancelled_run_stops_before_plan_or_action(monkeypatch):

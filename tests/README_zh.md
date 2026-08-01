@@ -294,6 +294,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_llm_system_placement.py`](test_llm_system_placement.py) | 只有开头的 system 消息成为初始 system 字段，压缩摘要不会侵入缓存前缀。 |
 | [`test_startup_no_implicit_install.py`](test_startup_no_implicit_install.py) | `serve` 只诊断环境，绝不修改它。 |
 | [`test_startup_no_implicit_side_effects.py`](test_startup_no_implicit_side_effects.py) | 全新数据目录上启动：不建立任何出站连接、不拉起任何子进程、不执行任何 cell、不落任何会话——在 `socket.connect` 与 `subprocess.Popen` 两个边界上设卡，并以 `OPENAI4S_SEED_DEMO=1` 作为正向对照。 |
+| [`test_diagnostic_archive_boundary.py`](test_diagnostic_archive_boundary.py) | 可分享的诊断 ZIP 里不会带出任何未知内容：归档边界默认拒绝，结构化日志行只保留通过校验的元数据，非结构化行只保留条数、分类和指纹。 |
 | [`test_diagnostics.py`](test_diagnostics.py) | 诊断包可以安全贴进公开 issue，包括夹在日志句子中间的 token。 |
 | [`test_evidence_verification.py`](test_evidence_verification.py) | 导出的包无需 daemon 即可校验，四种篡改都被抓到——含 payload 与其记录 hash 被一起改写。 |
 | [`test_observability.py`](test_observability.py) | correlation ID 与按形状脱敏的结构化日志字段。 |

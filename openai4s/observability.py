@@ -274,6 +274,41 @@ def _redact_netloc(netloc: str) -> str:
     return netloc
 
 
+def _redact_fragment(fragment: str) -> str:
+    """The half of a URL that never reaches a server, and therefore holds the
+    credentials that are not supposed to.
+
+    OAuth's implicit flow puts the access token after the `#` precisely so it
+    stays in the browser -- which means a fragment token appearing in a local
+    log is one the browser handed to this machine. It was passed through
+    untouched while the query beside it was scrubbed.
+
+    Parsed as a query when it looks like one, since that is what the flow
+    produces; otherwise judged whole, so a bare opaque fragment is not missed
+    for want of an `=`.
+    """
+    if not fragment:
+        return fragment
+    if "=" in fragment:
+        pairs = parse_qsl(fragment, keep_blank_values=True)
+        if pairs:
+            return urlencode(
+                [
+                    (
+                        name,
+                        f"<redacted:{fingerprint(value)}>"
+                        if value
+                        and any(bit in name.lower() for bit in CREDENTIAL_PARAMS)
+                        else value,
+                    )
+                    for name, value in pairs
+                ]
+            )
+    if _looks_opaque(fragment):
+        return f"<redacted:{fingerprint(fragment)}>"
+    return fragment
+
+
 def redact_url(raw: str) -> str:
     """Return the URL with credential-bearing query parameters fingerprinted.
 
@@ -301,7 +336,7 @@ def redact_url(raw: str) -> str:
             _redact_netloc(parts.netloc),
             _redact_path(parts.path),
             urlencode(cleaned),
-            parts.fragment,
+            _redact_fragment(parts.fragment),
         )
     )
     return rebuilt

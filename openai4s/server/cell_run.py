@@ -508,9 +508,12 @@ class CellExecutionService:
             # no argument, path or credential from the raised instance. It is
             # also what makes the row useful at all once the message is gone.
             #
-            # The original goes to `record_diagnostic`, which is not served over
-            # HTTP and is not exported, and which pairs it with a request id a
-            # support ticket can quote.
+            # The failure goes to `record_diagnostic`, which pairs it with a
+            # request id a support ticket can quote. Not "the original": that
+            # claim was true when written and stopped being true twice over --
+            # `record_diagnostic` reaches `logs/app.out`, which the support
+            # bundle now collects, and it no longer renders the exception at
+            # all. What it records is the surface, the class and a fingerprint.
             from openai4s.server.errors import record_diagnostic
 
             if isinstance(error, BaseException):

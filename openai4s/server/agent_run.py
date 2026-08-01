@@ -60,22 +60,32 @@ def _env_switch_notice(exc: BaseException) -> str:
     into the exported session package, and to the observation the Timeline
     renders.
 
-    Blanking it the way ``cell_run`` blanks an attempt row is the wrong move
-    here, because the sink is the *agent*: it has to know whether the
-    environment is missing or the kernel would not start in order to do
-    anything sensible next. So the exception is reported rather than quoted --
-    class name, redacted detail, bounded length -- which is what
-    ``redacted_detail`` already produced for the operator diagnostic. The
-    original still goes to ``record_diagnostic``, so nothing is lost, only
-    moved to a surface that does not leave.
+    An earlier pass sent it through ``redacted_detail`` and called that enough.
+    It is not: redaction is a set of patterns and an exception message is
+    arbitrary, so an ordinary English sentence, a ``/srv`` path and a command
+    with no identity in it all came through every pattern intact. The message
+    is not a bounded thing that happens to need scrubbing; it is unbounded, and
+    the only safe amount of it to forward is none.
+
+    What the agent needs is the *category*, not the prose: whether to try a
+    different environment, re-run, or give up. The exception's class name is
+    that category, it comes from the type rather than from ``__str__``, and it
+    is what this returns.
     """
-    from openai4s.server.errors import record_diagnostic, redacted_detail
+    try:
+        kind = type(exc).__name__
+    except Exception:  # noqa: BLE001 — a broken type must not break the turn
+        kind = "unknown"
+    from openai4s.server.errors import record_diagnostic
 
     try:
         record_diagnostic(exc, surface="agent:pending_env")
     except Exception:  # noqa: BLE001 — a diagnostic must not break the turn
         pass
-    return f"pending environment switch failed: {redacted_detail(exc)}"
+    return (
+        f"pending environment switch failed ({kind}); "
+        "the environment was not changed and the previous one is still active"
+    )
 
 
 def _is_action_fence(fence_char: str, info: str) -> bool:

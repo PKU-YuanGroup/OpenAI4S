@@ -41,6 +41,7 @@ from openai4s.llm.models import TransportError
 from openai4s.observability import reset_correlation_id, set_correlation_id
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
+from openai4s.server.errors import DIAGNOSTIC_DETAIL as INTERNAL_DIAGNOSTIC_DETAIL
 from openai4s.server.errors import (
     INTERNAL_ERROR_MESSAGE,
     GatewayError,
@@ -404,27 +405,46 @@ def test_the_diagnostic_keeps_the_failure_but_redacts_the_credential():
     assert record["exception"] == "CanaryFailure"
     assert record["request_id"] == "req-canary"
     assert record["surface"] == "test:diagnostic"
-    # The failure is still identifiable...
-    assert "upstream refused" in record["detail"]
-    # ...but the credential is not in it, and cannot be recovered from it.
-    assert CREDENTIAL not in json.dumps(record)
-    assert "<redacted:" in record["detail"]
+    # The failure is identifiable by (surface, error_class) -- not by quoting
+    # it. This test used to require `"upstream refused" in record["detail"]`,
+    # which is the assertion that kept an arbitrary exception message on a
+    # record that outlives the request. Redaction was the argument for allowing
+    # it, and redaction lost: a `/srv` path, a shell command and an ordinary
+    # English sentence all came through every pattern intact, and the record
+    # then reached `logs/app.out`, which the support bundle collects.
+    assert record["detail"] == INTERNAL_DIAGNOSTIC_DETAIL
+    assert record["error_class"]
+    blob = json.dumps(record, ensure_ascii=False, default=str)
+    for canary in CANARIES:
+        assert canary not in blob, f"{canary!r} reached the operator record"
 
 
-def test_a_home_relative_path_is_collapsed_in_the_diagnostic(monkeypatch, tmp_path):
-    """A bundle is shared with support. Of an absolute path, the username is
-    the part that identifies a person rather than a file."""
+def test_no_path_of_any_kind_reaches_the_diagnostic(monkeypatch, tmp_path):
+    """This used to assert the home directory was collapsed to `~`.
+
+    Collapsing was the right instinct and the wrong scope: it handled *this*
+    account's home and nothing else, so a path under another user, a `/srv`
+    mount or a shared volume went through untouched. The record no longer
+    carries a rendering of the exception at all, so there is no path in it to
+    collapse -- which is the only version of this guarantee that does not
+    depend on having thought of the right prefixes.
+    """
     home = str(tmp_path / "someone")
     monkeypatch.setenv("HOME", home)
 
     record = record_diagnostic(
-        OSError(f"cannot open {home}/notes/embargo.csv"),
+        OSError(f"cannot read {home}/notes/embargo.csv or /srv/raw/other.csv"),
         surface="test:home",
         request_id="req-canary",
     )
 
-    assert home not in record["detail"]
-    assert "~/notes/embargo.csv" in record["detail"]
+    blob = json.dumps(record, ensure_ascii=False, default=str)
+    assert home not in blob
+    assert "/srv/raw/other.csv" not in blob
+    assert "embargo.csv" not in blob
+    # Still a diagnostic: which surface, which kind of failure.
+    assert record["exception"] == "OSError"
+    assert record["surface"] == "test:home"
 
 
 # --------------------------------------------------------------------------

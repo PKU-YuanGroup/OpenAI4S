@@ -15,6 +15,7 @@ import os
 
 from openai4s.observability import (
     correlation_id,
+    fingerprint,
     log_event,
     redact_identities,
     redact_text,
@@ -129,6 +130,34 @@ INTERNAL_ERROR_MESSAGE = "internal error"
 _DIAGNOSTIC_CHARS = 600
 
 
+#: What an unknown failure is allowed to say on a record that outlives the
+#: request. It says nothing about *this* failure on purpose: the pair
+#: (`surface`, `error_class`) is the identity, and the message is the part that
+#: cannot be bounded.
+DIAGNOSTIC_DETAIL = "an unhandled exception was recorded"
+
+
+def error_class(exc: BaseException) -> str:
+    """A stable, content-free identity for a kind of failure.
+
+    Built from the exception's *type* and never from its message, so nothing
+    here can render an arbitrary ``__str__`` — not to redact it, not to bound
+    it, not to fingerprint it. That is the whole point: a rendering is the one
+    operation an unknown exception gets to influence, and it can be enormous,
+    hostile, or itself raise.
+
+    What it buys back is the thing losing the message costs: two occurrences of
+    the same failure at the same surface are recognisably the same failure, so
+    a support ticket quoting a request id still leads somewhere.
+    """
+    try:
+        kind = type(exc)
+        name = f"{kind.__module__}.{kind.__qualname__}"
+    except Exception:  # noqa: BLE001 — a broken type must not break reporting
+        name = "unknown"
+    return fingerprint(name)
+
+
 def redacted_detail(exc: BaseException | str) -> str:
     """A failure rendered for somewhere it will outlive the request.
 
@@ -188,11 +217,16 @@ def record_diagnostic(
     this line together by ``request_id`` -- that pairing is the whole reason
     the generic message is tolerable.
     """
+    try:
+        kind = type(exc).__name__
+    except Exception:  # noqa: BLE001 — a broken type must not break reporting
+        kind = "unknown"
     return log_event(
         "unhandled_exception",
         surface=str(surface or "unknown"),
-        exception=type(exc).__name__,
-        detail=_redacted_detail(exc),
+        exception=kind,
+        detail=DIAGNOSTIC_DETAIL,
+        error_class=error_class(exc),
         request_id=str(request_id or correlation_id() or ""),
     )
 
@@ -278,6 +312,8 @@ __all__ = [
     "gateway_error_payload",
     "public_exception",
     "public_failure",
+    "DIAGNOSTIC_DETAIL",
+    "error_class",
     "record_diagnostic",
     "redacted_detail",
 ]

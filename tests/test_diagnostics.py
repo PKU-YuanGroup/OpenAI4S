@@ -28,7 +28,7 @@ from openai4s.diagnostics import (
     rotate_log,
     security_posture,
 )
-from openai4s.observability import redact_text
+from openai4s.observability import redact_text, redact_url
 
 _KEY = "canary-live-9f3a1c7e4b2d8e6f0a1b2c3d"
 
@@ -238,7 +238,11 @@ def test_the_bundle_collects_the_log_the_daemon_actually_writes(cfg, tmp_path):
         "the bundle skipped the only log the daemon writes: " f"{result['included']}"
     )
     with zipfile.ZipFile(target) as archive:
-        assert "something failed" in archive.read("logs/app.out").decode("utf-8")
+        shared = archive.read("logs/app.out").decode("utf-8")
+    # Collected, and summarised rather than quoted: an unstructured line is
+    # arbitrary text and the archive boundary is deny-by-default.
+    assert "something failed" not in shared
+    assert '"lines": 2' in shared
 
 
 def test_a_credential_in_the_daemon_log_never_reaches_the_bundle(cfg, tmp_path):
@@ -271,9 +275,12 @@ def test_another_accounts_home_directory_is_collapsed_in_the_bundle(cfg, tmp_pat
     blob = _bundle_bytes(target)
 
     assert b"/Users/canary" not in blob, blob[:400]
-    # ...and the bundle still says what failed, and about which file.
-    assert b"FileNotFoundError" in blob
-    assert b"grant-embargo.csv" in blob
+    # The file name goes too. It used to be kept deliberately -- "it is what
+    # makes the line worth keeping" -- and that reasoning does not survive the
+    # bundle being shared: a path under someone else's home names a person and
+    # the file names their unpublished work. An unstructured line is summarised.
+    assert b"grant-embargo.csv" not in blob
+    assert b"classes" in blob
 
 
 def test_an_operator_host_is_not_shipped_in_the_bundle(cfg, tmp_path):
@@ -301,9 +308,14 @@ def test_an_operator_host_is_not_shipped_in_the_bundle(cfg, tmp_path):
 
     assert _OPERATOR_HOST.encode() not in blob, blob[:400]
     assert b"root@" not in blob
-    # The failure is still legible: what threw, and that it was an rsync.
-    assert b"CalledProcessError" in blob
-    assert b"rsync" in blob
+    # The command goes too. This test used to assert `rsync` survived, on the
+    # argument that the bundle is operator-facing and a command quoted inside a
+    # failure is diagnostic content. That argument was wrong on its own
+    # evidence: the same change made `app.out` the file the bundle collects, so
+    # "operator-facing" stopped being a property of it. The plan's contract --
+    # no shell command in a shareable ZIP -- was never mine to reinterpret.
+    assert b"rsync" not in blob
+    assert b"/srv/raw" not in blob
 
 
 def test_a_real_diagnostic_record_is_scrubbed_in_the_bundle(cfg, tmp_path):
@@ -340,10 +352,12 @@ def test_a_real_diagnostic_record_is_scrubbed_in_the_bundle(cfg, tmp_path):
     assert _CANARY_KEY.encode() not in blob
     assert b"/Users/canary" not in blob
     assert _OPERATOR_HOST.encode() not in blob
-    # Still a diagnostic: the surface, the exception type and the sentence.
+    # Still a diagnostic: the surface and the exception type, which are
+    # allowlisted metadata. Not the sentence -- `record_diagnostic` no longer
+    # renders the exception at all, so there is nothing to scrub.
     assert b"bundle:canary" in blob
     assert b"_CanaryFailure" in blob
-    assert b"upstream refused" in blob
+    assert b"upstream refused" not in blob
     # ...and the line is still parseable JSON, which the identity pass runs
     # over as text and must not have broken.
     with zipfile.ZipFile(target) as archive:
@@ -407,37 +421,29 @@ def test_the_access_token_never_reaches_the_bundle(cfg, tmp_path):
     blob = _bundle_bytes(target)
 
     assert _TOKEN.encode() not in blob, blob[:400]
-    # The line is still diagnostic: which port, which model, that it listened.
-    assert b"8760" in blob
-    assert (
-        b"token=" in blob
-    ), "the parameter name is provenance; only the value is a secret"
+    # The banner is an unstructured line, so the archive keeps its shape rather
+    # than its content. `redact_url` still runs -- it is what makes the *local*
+    # log safe to read -- and this asserts the outer boundary on top of it.
+    assert b"8760" not in blob
+    assert b"lines" in blob
+    assert _TOKEN not in redact_url(_LISTEN_LINE.split(" ")[3])
 
 
-def test_a_long_name_equals_value_is_still_treated_as_opaque(cfg, tmp_path):
+def test_a_long_name_equals_value_is_still_treated_as_opaque():
     """Recorded because it is a real cost, not because it is desirable.
 
-    `_looks_opaque` admits `=` into its character set, so any `name=value` of
-    24 characters or more reads as one credential-shaped token — the daemon's
-    own `(model=doubao-seed-2.0-pro)` among them. Splitting on `=` and judging
-    the right-hand side would keep the model name and still catch
+    `_looks_opaque` admits `=`, so any `name=value` of 24 characters or more
+    reads as one credential-shaped token -- the daemon's own
+    `(model=doubao-seed-2.0-pro)` among them. Splitting on `=` and judging the
+    right-hand side would keep the model name and still catch
     `Authorization=sk-...`, which is strictly better on both counts.
 
-    Not changed here. `_looks_opaque` backs `redact`, `_redact_path` and
-    `_redact_netloc` as well, and loosening the rule that decides what is a
-    secret is not something to do as a side effect of collecting a different
-    file. This test pins today's behaviour so the change is deliberate when it
-    comes, rather than a surprise diff in a bundle nobody re-reads.
+    Asserted on `redact_text` directly rather than through the bundle: the
+    archive boundary now withholds an unstructured line whatever it contains,
+    so routing this through a ZIP would pass for the wrong reason and stop
+    pinning the thing it exists to pin.
     """
-    (cfg.data_dir / "logs" / "app.out").write_text(
-        "listening (model=doubao-seed-2.0-pro)\n", encoding="utf-8"
-    )
-    target = tmp_path / "b.zip"
-    build_bundle(cfg, target)
-    blob = _bundle_bytes(target)
-
-    assert b"doubao-seed-2.0-pro" not in blob
-    assert b"<redacted:" in blob
+    assert "<redacted:" in redact_text("listening (model=doubao-seed-2.0-pro)")
 
 
 def test_a_credential_in_a_url_path_is_redacted_in_the_bundle(cfg, tmp_path):
@@ -455,4 +461,7 @@ def test_a_credential_in_a_url_path_is_redacted_in_the_bundle(cfg, tmp_path):
     blob = _bundle_bytes(target)
 
     assert key.encode() not in blob, blob[:400]
-    assert b"api.example.org" in blob
+    # The host goes with the rest of the unstructured line; `redact_url` is
+    # asserted directly below, where it is the thing under test.
+    assert b"api.example.org" not in blob
+    assert redact_url(f"https://api.example.org/v1/{key}/records").count(key) == 0

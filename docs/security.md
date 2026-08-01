@@ -181,18 +181,44 @@ fingerprints the value. The daemon's own startup banner is exactly this shape �
 `listening at http://127.0.0.1:8760/?token=…`, printed to stdout, which the
 launchers redirect into `app.out`, which the bundle collects.
 
-On top of credential redaction, what leaves in the bundle has its **identities**
-collapsed (`observability.redact_identities`): a home-shaped path keeps
-everything but the user segment, and a `user@host` becomes a fingerprint. The
-existing `$HOME` collapse only ever saw *this* process's home, and a bundle is
-shipped to someone else — a path under a collaborator's home, a shared machine
-or a mounted volume names a person exactly as squarely. Deliberately *not*
-removed: the rest of the message, including a shell command quoted inside a
-failure. There is no boundary between such a command and the sentence around
-it, so a rule wide enough to delete one deletes the description the bundle
-exists to carry; the identity inside it is the separable part. A bare address
-with no user attached still survives, which is a stopping point rather than an
-oversight — matching every dotted quad would start eating version numbers.
+What leaves in the bundle is decided **deny-by-default**, and that is a
+different layer from the redaction above. `redact`/`redact_text`/
+`redact_identities`/`redact_url` make the *local* operator log safer to read,
+and the log keeps its richness on disk. The archive is narrower, because it is
+the thing standing between a user's disk and a public issue tracker:
+
+- a **structured** line survives only as an allowlist of validated, bounded
+  metadata — `ts`, `event`, `surface`, `exception`, `error_class`,
+  `request_id`, and a few siblings. Every other value becomes a fingerprint.
+  Pattern-based scrubbing was tried here and lost: field-wise redaction asks
+  "is this whole value a credential", and an ordinary `message` field holding a
+  sentence is never opaque, so it carried a credential and a token URL straight
+  through. The field was not called `token`, and it never will be.
+- an **unstructured** line is never shared verbatim at all. `app.out` is the
+  daemon's whole stdout and stderr — every `print`, every `traceback.print_exc`,
+  every dependency's chatter — and no pattern set makes arbitrary text safe. The
+  archive carries a count, a classification and a fingerprint instead.
+- `report.json` goes through the same sanitizer, and its
+  `json.dumps(..., default=str)` escape hatch is gone: "stringify anything the
+  encoder does not understand" is the same *call str() and hope* that the
+  diagnostic record itself stopped doing.
+
+`record_diagnostic` is the source, and it no longer renders the exception.
+There is no redacted rendering of `str(exc)` on the record, because a rendering
+is the one operation an unknown exception influences and it can be arbitrary,
+enormous, or itself raise. The record carries the surface, the exception's
+class name and an `error_class` fingerprint derived from the *type*, so two
+occurrences of the same failure remain recognisably the same failure and a
+support ticket quoting a `request_id` still leads somewhere. The same rule
+applies to the agent's observation when an environment switch fails, and to the
+two posture probes in `security_posture`, which report an `error_type` rather
+than an exception message.
+
+An earlier version of this section said a shell command quoted inside a failure
+was "deliberately not removed" because the bundle is operator-facing. That was
+wrong on its own evidence: the same change made `app.out` the file the bundle
+collects, and once an artifact leaves the machine "operator-facing" is not a
+property it still has.
 
 ### Credentials at rest
 
