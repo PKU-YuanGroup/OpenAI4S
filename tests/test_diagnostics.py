@@ -374,3 +374,85 @@ def test_the_identity_pass_tells_an_account_from_a_version(line, survives):
     assert (result == line) is survives, result
     if not survives:
         assert "<redacted:" in result
+
+
+# The daemon prints this at startup — twice — and every packaged launcher
+# redirects that stdout into `logs/app.out`, which the bundle now collects.
+# Copied from a real run rather than invented.
+_TOKEN = "u4twvnEF" + "kYAgN3Ex2Sb89SPVbgjq5NBwiRaFa6cLaE0"
+_LISTEN_LINE = (
+    f"openai4s listening at http://127.0.0.1:8760/?token={_TOKEN} "
+    "(model=doubao-seed-2.0-pro)"
+)
+
+
+def test_the_access_token_never_reaches_the_bundle(cfg, tmp_path):
+    """The daemon's own startup banner is a credential in a URL.
+
+    `redact_text` scans word by word and asks whether a word is opaque. A URL
+    has no spaces, so the whole `http://…/?token=…` arrives as one word, and
+    its scheme, dots and slashes stop it reading as opaque — the token rides
+    through untouched. That is the same shape `retrieval_source` already
+    guards a provenance URL against; the bundle did not have it.
+
+    This became reachable the moment the bundle started collecting `app.out`,
+    which is where every packaged launcher sends the banner. Collecting the
+    right file and redacting it are one change, not two.
+    """
+    (cfg.data_dir / "logs" / "app.out").write_text(
+        _LISTEN_LINE + "\n", encoding="utf-8"
+    )
+    target = tmp_path / "b.zip"
+    build_bundle(cfg, target)
+    blob = _bundle_bytes(target)
+
+    assert _TOKEN.encode() not in blob, blob[:400]
+    # The line is still diagnostic: which port, which model, that it listened.
+    assert b"8760" in blob
+    assert (
+        b"token=" in blob
+    ), "the parameter name is provenance; only the value is a secret"
+
+
+def test_a_long_name_equals_value_is_still_treated_as_opaque(cfg, tmp_path):
+    """Recorded because it is a real cost, not because it is desirable.
+
+    `_looks_opaque` admits `=` into its character set, so any `name=value` of
+    24 characters or more reads as one credential-shaped token — the daemon's
+    own `(model=doubao-seed-2.0-pro)` among them. Splitting on `=` and judging
+    the right-hand side would keep the model name and still catch
+    `Authorization=sk-...`, which is strictly better on both counts.
+
+    Not changed here. `_looks_opaque` backs `redact`, `_redact_path` and
+    `_redact_netloc` as well, and loosening the rule that decides what is a
+    secret is not something to do as a side effect of collecting a different
+    file. This test pins today's behaviour so the change is deliberate when it
+    comes, rather than a surprise diff in a bundle nobody re-reads.
+    """
+    (cfg.data_dir / "logs" / "app.out").write_text(
+        "listening (model=doubao-seed-2.0-pro)\n", encoding="utf-8"
+    )
+    target = tmp_path / "b.zip"
+    build_bundle(cfg, target)
+    blob = _bundle_bytes(target)
+
+    assert b"doubao-seed-2.0-pro" not in blob
+    assert b"<redacted:" in blob
+
+
+def test_a_credential_in_a_url_path_is_redacted_in_the_bundle(cfg, tmp_path):
+    """The other URL shape, which has no query at all.
+
+    Path-style keys are ordinary on scientific APIs, and a URL carrying one is
+    exactly the URL a query-parameter rule never inspects.
+    """
+    key = "sk-live-" + "5f2c81aa47d9e603b1c8f4a2"
+    (cfg.data_dir / "logs" / "app.out").write_text(
+        f"GET https://api.example.org/v1/{key}/records failed\n", encoding="utf-8"
+    )
+    target = tmp_path / "b.zip"
+    build_bundle(cfg, target)
+    blob = _bundle_bytes(target)
+
+    assert key.encode() not in blob, blob[:400]
+    assert b"api.example.org" in blob

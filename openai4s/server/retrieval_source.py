@@ -29,9 +29,20 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from openai4s.observability import _looks_opaque, fingerprint, redact_text
+from openai4s.observability import (
+    CREDENTIAL_PARAMS,
+    _looks_opaque,
+    fingerprint,
+    redact_text,
+    redact_url,
+)
+
+#: Named here because this module's own contract is about a provenance URL;
+#: the implementation moved to `observability` when the diagnostic bundle
+#: turned out to need the identical guarantee for the daemon's startup
+#: banner, and two copies of a redactor is how one of them goes stale.
+_redact_url = redact_url
 
 #: Fields a client may see, with what each is for. Anything else in the
 #: envelope is dropped rather than rendered: this is written by retrieval code
@@ -51,72 +62,6 @@ ALLOWED_FIELDS: dict[str, str] = {
 #: Per-value ceiling. A query can be a large POST body, and a provenance panel
 #: is not where anyone should discover that.
 MAX_VALUE_CHARS = 2000
-
-#: Query parameters that hold credentials on real scientific APIs. Matched by
-#: substring so `apikey`, `api_key` and `X-Api-Key` all land.
-CREDENTIAL_PARAMS = ("key", "token", "secret", "password", "auth", "signature", "sig")
-
-
-def _redact_path(path: str) -> str:
-    """Fingerprint any path segment that looks like a credential.
-
-    `redact_text` splits on spaces, and a URL has none — so a key embedded in
-    the path (`/v1/sk-live-.../records`) arrives as a single "word" whose
-    slashes and dots stop it reading as opaque, and it survives untouched. That
-    is not hypothetical: path-style keys are ordinary in scientific APIs, and
-    the test for it is what found this. Segments are the right unit because
-    each one is exactly the kind of token the opacity check was written for.
-    """
-    return "/".join(
-        f"<redacted:{fingerprint(segment)}>" if _looks_opaque(segment) else segment
-        for segment in path.split("/")
-    )
-
-
-def _redact_netloc(netloc: str) -> str:
-    """Userinfo is a credential by definition when it has a password."""
-    if "@" not in netloc:
-        return netloc
-    userinfo, _, host = netloc.rpartition("@")
-    user, sep, secret = userinfo.partition(":")
-    if sep and secret:
-        return f"{user}:<redacted:{fingerprint(secret)}>@{host}"
-    if _looks_opaque(userinfo):
-        return f"<redacted:{fingerprint(userinfo)}>@{host}"
-    return netloc
-
-
-def _redact_url(raw: str) -> str:
-    """Return the URL with credential-bearing query parameters fingerprinted.
-
-    The parameter is kept and its *value* replaced, because "which parameters
-    were sent" is provenance and the value is the secret. Dropping the
-    parameter entirely would quietly change what the URL claims to have been.
-    """
-    try:
-        parts = urlsplit(raw)
-    except ValueError:
-        return "<unparseable url>"
-    # No early return for a URL without a query. An earlier version had one,
-    # and it meant the path and userinfo redaction below never ran for exactly
-    # the URLs that carry a path-style key -- which is the shape that has no
-    # query by construction. The test for it is what found that.
-    cleaned = []
-    for name, value in parse_qsl(parts.query, keep_blank_values=True):
-        if value and any(bit in name.lower() for bit in CREDENTIAL_PARAMS):
-            cleaned.append((name, f"<redacted:{fingerprint(value)}>"))
-        else:
-            cleaned.append((name, value))
-    rebuilt = urlunsplit(
-        (
-            parts.scheme,
-            _redact_netloc(parts.netloc),
-            _redact_path(parts.path),
-            urlencode(cleaned),
-            parts.fragment,
-        )
-    )
-    return rebuilt
 
 
 def _clip(value: str) -> tuple[str, bool]:

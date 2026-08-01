@@ -41,6 +41,7 @@ import sys
 import time
 import uuid
 from typing import Any, Callable
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 # The id for the unit of work currently in flight. A ContextVar rather than a
 # thread-local because within one thread it survives into everything that thread
@@ -193,7 +194,17 @@ def redact_text(text: str) -> str:
     for word in str(text).split(" "):
         # Punctuation commonly abuts a token in prose ("key=sk-…," / "(sk-…)").
         stripped = word.strip("\"'`,;:()[]{}<>")
-        if stripped and _looks_opaque(stripped):
+        if stripped.startswith(("http://", "https://", "ws://", "wss://")):
+            # A URL has no spaces, so word-scanning sees the whole thing at
+            # once — and `_looks_opaque` deliberately answers False for it,
+            # because redacting every URL would gut the log. The credential is
+            # *inside*, in a query value or a path segment, so it needs the
+            # structural pass instead. The daemon's own startup banner is this
+            # exact shape: `listening at http://127.0.0.1:8760/?token=…`,
+            # printed to stdout, which every packaged launcher redirects into
+            # the file the support bundle collects.
+            out.append(word.replace(stripped, redact_url(stripped)))
+        elif stripped and _looks_opaque(stripped):
             out.append(word.replace(stripped, f"<redacted:{fingerprint(stripped)}>"))
         else:
             out.append(word)
@@ -227,6 +238,73 @@ _USER_AT_HOST = re.compile(
     r"|localhost"
     r")\b"
 )
+
+
+#: Query parameters that hold credentials on real scientific APIs. Matched by
+#: substring so `apikey`, `api_key` and `X-Api-Key` all land.
+CREDENTIAL_PARAMS = ("key", "token", "secret", "password", "auth", "signature", "sig")
+
+
+def _redact_path(path: str) -> str:
+    """Fingerprint any path segment that looks like a credential.
+
+    `redact_text` splits on spaces, and a URL has none — so a key embedded in
+    the path (`/v1/sk-live-.../records`) arrives as a single "word" whose
+    slashes and dots stop it reading as opaque, and it survives untouched. That
+    is not hypothetical: path-style keys are ordinary in scientific APIs, and
+    the test for it is what found this. Segments are the right unit because
+    each one is exactly the kind of token the opacity check was written for.
+    """
+    return "/".join(
+        f"<redacted:{fingerprint(segment)}>" if _looks_opaque(segment) else segment
+        for segment in path.split("/")
+    )
+
+
+def _redact_netloc(netloc: str) -> str:
+    """Userinfo is a credential by definition when it has a password."""
+    if "@" not in netloc:
+        return netloc
+    userinfo, _, host = netloc.rpartition("@")
+    user, sep, secret = userinfo.partition(":")
+    if sep and secret:
+        return f"{user}:<redacted:{fingerprint(secret)}>@{host}"
+    if _looks_opaque(userinfo):
+        return f"<redacted:{fingerprint(userinfo)}>@{host}"
+    return netloc
+
+
+def redact_url(raw: str) -> str:
+    """Return the URL with credential-bearing query parameters fingerprinted.
+
+    The parameter is kept and its *value* replaced, because "which parameters
+    were sent" is provenance and the value is the secret. Dropping the
+    parameter entirely would quietly change what the URL claims to have been.
+    """
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return "<unparseable url>"
+    # No early return for a URL without a query. An earlier version had one,
+    # and it meant the path and userinfo redaction below never ran for exactly
+    # the URLs that carry a path-style key -- which is the shape that has no
+    # query by construction. The test for it is what found that.
+    cleaned = []
+    for name, value in parse_qsl(parts.query, keep_blank_values=True):
+        if value and any(bit in name.lower() for bit in CREDENTIAL_PARAMS):
+            cleaned.append((name, f"<redacted:{fingerprint(value)}>"))
+        else:
+            cleaned.append((name, value))
+    rebuilt = urlunsplit(
+        (
+            parts.scheme,
+            _redact_netloc(parts.netloc),
+            _redact_path(parts.path),
+            urlencode(cleaned),
+            parts.fragment,
+        )
+    )
+    return rebuilt
 
 
 def redact_identities(text: str) -> str:
@@ -279,9 +357,11 @@ __all__ = [
     "fingerprint",
     "log_event",
     "new_correlation_id",
+    "CREDENTIAL_PARAMS",
     "redact",
     "redact_identities",
     "redact_text",
+    "redact_url",
     "reset_correlation_id",
     "set_correlation_id",
 ]

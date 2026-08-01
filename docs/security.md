@@ -171,6 +171,16 @@ events land, since they are written to stderr. An earlier version globbed
 install carried postures and versions and *no logs at all*, with a manifest
 that listed what it did include and so read as complete.
 
+A credential inside a **URL** needs its own pass. `redact_text` scans word by
+word and a URL has no spaces, so the whole thing arrives as one word — and
+`_looks_opaque` deliberately answers "not a credential" for anything starting
+`http://`, because fingerprinting every URL would gut the log. The secret is
+*inside*, in a query value or a path segment, so URL-shaped words go through
+`observability.redact_url`, which keeps the parameter name as provenance and
+fingerprints the value. The daemon's own startup banner is exactly this shape —
+`listening at http://127.0.0.1:8760/?token=…`, printed to stdout, which the
+launchers redirect into `app.out`, which the bundle collects.
+
 On top of credential redaction, what leaves in the bundle has its **identities**
 collapsed (`observability.redact_identities`): a home-shaped path keeps
 everything but the user segment, and a `user@host` becomes a fingerprint. The
