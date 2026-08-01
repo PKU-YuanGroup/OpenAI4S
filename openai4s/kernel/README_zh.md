@@ -30,6 +30,7 @@
 | [`r_worker.R`](r_worker.R) | 常驻的 R worker，execute/response 契约与 Python 完全一致：输出捕获、中断、出错的行号与调用、资源计量。入站 frame 用 `jsonlite` 解析，出站 JSON 却是手写转义的——所以即便这套 R 里没装 `jsonlite`，它也能报出一个结构化的干净错误，而不是直接死掉。它是分析通道：没有 `host` 对象，没有 Cell 中途 RPC，也没法从 Cell 内部完成任务。 |
 | [`recovery.py`](recovery.py) | 用内容寻址的规范 bootstrap recipe，加上保守分类过的 replay step，构建替代内核，并在别人看到它之前先做验证。只有验证全部通过才发布候选内核；状态无法安全重建时，如实报告 `partial`。 |
 | [`env_generations.py`](env_generations.py) | 把环境变更当事务：`plan` 什么也不碰，`apply` 构建一个**新的** generation 并且只有到最后才移动 `current` 指针，失败的 apply 让原环境原封不动，`rollback` 只是把指针指回一个仍在磁盘上的 generation。generation 直接在它的最终 prefix 上构建——Conda 会把绝对路径烤进去，所以「改名的暂存目录」等于一个坏掉的环境——被做成原子的是它的**可见性**。指代 generation 的 id 被限定在它自己的环境内，因为它会被拼进路径，并被之后每一次内核启动读回。 |
+| [`sink_drain.py`](sink_drain.py) | 替那些自己管不住输出量的 worker，从 host 这一端把捕获输出卡住。R 是单线程的，顶层表达式内部不会触发任何回调，所以写在 R worker 里的上限只能在**表达式之间**生效——一个表达式打印 300 MB，照样会把这 300 MB 全写进临时文件，而在多数 Linux 上那就是 tmpfs，也就是内存。现在 Cell 的两条流都写进 fifo，由这个模块来抽干：它只留下头一兆，其余的边到边丢，并且如实报出自己一共看见了多少字节、丢掉了多少字节——这样「被截断的结果」就不会和「被悄悄丢失的输出」混为一谈。 |
 | [`supervisor.py`](supervisor.py) | 只管持久的 Python/R session slot，再往下就不碰了。调用方拿到的 lease 写明了它当时操作的是哪一个 generation；只有这个 lease 仍然对得上活着的 slot，中断、重启和 watchdog 替换才会真的执行——迟到的调用方因此杀不掉那个已经顶替上来的新内核。它从不读取协议 frame。 |
 | [`worker.py`](worker.py) | 常驻的 Python worker，也是必须把琐碎细节全做对的那个文件。协议用的文件描述符被从 stdout 挪开，于是 Cell 代码里一句乱飞的 print 只会落到 stderr，不会污染协议通道。`host` 注入到命名空间里，并被限制成同时只有一个 Host-call 事务。Cell 源码会登记进 `linecache`，所以 traceback 指向的正是研究者真正写下的那一行。SIGINT 处理、guards、audit hook、溯源，以及有界的变量检查与用量应答，都是在这里装好的。 |
 

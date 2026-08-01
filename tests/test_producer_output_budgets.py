@@ -23,13 +23,15 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import threading
+import time
 import tracemalloc
 from pathlib import Path
 
 import pytest
 
-from openai4s.kernel import worker
+from openai4s.kernel import sink_drain, worker
 from openai4s.kernel.background import BackgroundExecutor
 from openai4s.kernel.r_kernel import resolve_r_interpreter
 
@@ -404,113 +406,263 @@ def test_real_r_caps_a_giant_error_instead_of_wiring_it(tmp_path):
         kernel.shutdown()
 
 
+# --- the host's drain, which is where the R streams are now bounded ---------
+
+
+def test_the_host_sink_cap_is_the_python_workers_cap():
+    """Restating a number is how the R side drifted from `MAX_OUTPUT` before.
+
+    `sink_drain` cannot import `worker`: worker.py is a subprocess entry point
+    that performs an fd swap when it runs, and the daemon has no reason to load
+    it. So the constant is restated there and pinned here, the same way the R
+    source's own caps are pinned above.
+    """
+    assert sink_drain.CAP_BYTES == worker.MAX_OUTPUT
+
+
+def test_the_host_drain_counts_every_byte_it_declines_to_keep():
+    """Exact accounting is an acceptance criterion, not a nicety.
+
+    The shell drainer this replaces (`sink()` into
+    `pipe("head -c CAP > f; cat > /dev/null")`) failed it: `head -c` over-read
+    the pipe it was bounding, so a 300,200-byte stream came out as 1,000
+    retained plus 298,976 counted -- 224 bytes unaccounted for, and no way to
+    tell from the result whether they had been written or dropped.
+
+    Driven with a real writer process on the other end of the fifo, because
+    what is under test is the reader's behaviour against a producer it cannot
+    pace, and an in-process writer would be paced by the GIL.
+    """
+    directory = sink_drain.SinkDirectory()
+    try:
+        capture = directory.open(cap=1000)
+        writer = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys\n"
+                "out = open(sys.argv[1], 'wb')\n"
+                "out.write(b'a' * 300_200)\n"
+                "out.close()\n"
+                "err = open(sys.argv[2], 'wb')\n"
+                "err.write(b'e' * 7)\n"
+                "err.close()\n",
+                capture.out_path,
+                capture.err_path,
+            ]
+        )
+        assert writer.wait(timeout=30) == 0
+        stdout, stderr = capture.finish()
+        counters = capture.counters()
+    finally:
+        directory.close()
+
+    assert counters["stdout_seen_bytes"] == 300_200, counters
+    assert counters["stdout_retained_bytes"] == 1000
+    assert counters["stdout_dropped_bytes"] == 299_200
+    # seen == retained + dropped is the property `head -c` could not give.
+    assert (
+        counters["stdout_retained_bytes"] + counters["stdout_dropped_bytes"]
+        == counters["stdout_seen_bytes"]
+    )
+
+    # The head is kept, and the cut is announced exactly once.
+    assert stdout == "a" * 1000 + sink_drain.truncation_marker(1000)
+    assert stdout.count("...(truncated at") == 1
+
+    # A stream that ended under the cap is returned whole, unmarked.
+    assert stderr == "eeeeeee"
+    assert counters["stderr_dropped_bytes"] == 0
+
+
+def test_the_host_drain_streams_before_the_producer_pauses():
+    """The criterion the shell drainer failed outright.
+
+    Fed a writer that emitted 100 bytes, paused 1.2 s and emitted 100 more,
+    `head -c`'s capture file held **0 bytes at 1.8 s** -- its stdout to a file
+    is stdio-buffered, so adopting it would have silently killed the live R
+    output the streaming path exists to provide. Here the first bytes have to
+    arrive while the producer is still asleep.
+    """
+    directory = sink_drain.SinkDirectory()
+    seen: list[tuple[float, str]] = []
+    started = time.monotonic()
+    try:
+        capture = directory.open(
+            cap=10_000,
+            on_chunk=lambda text: seen.append((time.monotonic() - started, text)),
+        )
+        writer = subprocess.Popen(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                "import sys, time\n"
+                "out = open(sys.argv[1], 'wb', buffering=0)\n"
+                "out.write(b'a' * 100)\n"
+                "time.sleep(1.2)\n"
+                "out.write(b'b' * 100)\n"
+                "out.close()\n"
+                "open(sys.argv[2], 'wb').close()\n",
+                capture.out_path,
+                capture.err_path,
+            ]
+        )
+        assert writer.wait(timeout=30) == 0
+        capture.finish()
+    finally:
+        directory.close()
+
+    early = [(at, text) for at, text in seen if at < 1.0]
+    assert early, f"nothing reached the host before the producer paused: {seen}"
+    assert early[0][1] == "a" * 100
+
+
+def test_the_host_drain_does_not_split_a_character_across_two_reads():
+    """A caller watching a cell live must not see a character become two
+    replacement marks because a multibyte sequence straddled a read boundary.
+
+    The writer sleeps between the two halves of one character so the reader is
+    guaranteed to see them separately -- without the pause this passes on a
+    fast machine whether or not the decoder is incremental.
+    """
+    directory = sink_drain.SinkDirectory()
+    seen: list[str] = []
+    try:
+        capture = directory.open(cap=10_000, on_chunk=seen.append)
+        writer = subprocess.Popen(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                "import sys, time\n" "out = open(sys.argv[1], 'wb', buffering=0)\n"
+                # 'é' is two bytes; send them one at a time.
+                "out.write(b'\\xc3')\n"
+                "time.sleep(0.4)\n"
+                "out.write(b'\\xa9!')\n"
+                "out.close()\n"
+                "open(sys.argv[2], 'wb').close()\n",
+                capture.out_path,
+                capture.err_path,
+            ]
+        )
+        assert writer.wait(timeout=30) == 0
+        stdout, _ = capture.finish()
+    finally:
+        directory.close()
+
+    assert "".join(seen) == "é!", seen
+    assert "\ufffd" not in "".join(seen)
+    assert stdout == "é!"
+
+
 @pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
-def test_the_r_capture_file_stops_growing_once_the_cap_is_passed(tmp_path):
-    """The R side bounded the *read* and left the *write* unbounded.
+def test_one_r_expression_cannot_outrun_the_host_cap(tmp_path):
+    """The case the worker-side cap could never reach.
 
-    `.oai4s_slurp` reads at most one byte past the cap and says why: reading the
-    whole file "allocated 300 MB in this worker to keep 1 MB of it". But the
-    file it declines to read is still written in full — `sink()` sends every
-    byte the cell prints to a tempfile, so a runaway cell fills the disk (a
-    tmpfs `/tmp`, on much of Linux, meaning RAM) with output that has already
-    been decided against. worker.py's equivalent buffer drops those bytes at
-    `write` time; this one kept them and then ignored them.
+    R is single threaded, `addTaskCallback` does not fire inside an expression
+    and a connection callback cannot be written in R, so every bound the worker
+    could enforce ran *between* top-level expressions. A cell whose whole body
+    is one expression printing 300 MB wrote all 300 MB to a tempfile -- a tmpfs
+    on much of Linux, so RAM -- and the worker then read 1 MB of it and threw
+    the rest away. Measured on R 4.6.1: 1.2 MB in, 21.2 MB on disk, for output
+    already decided against.
 
-    Probed from inside the cell rather than by sampling from the test thread,
-    because a sampler races the writer and would pass or fail on scheduling.
-    The cell finds its own sink file through `showConnections`, records the
-    size after an expression that crosses the cap, prints 20 MB more, and
-    records the size again. The second number is the whole test: frozen means
-    the producer stopped, and growing means it did not.
+    Everything below is one expression: the `invisible({...})` braces are what
+    make this test about the gap rather than about the between-expression cap.
+
+    The counters are the assertion that matters. A capped `stdout` looks
+    identical whether the host read 300 MB and declined 299 of them or the
+    producer quietly dropped them before they were ever written -- and that
+    second reading is not hypothetical, it is exactly what R's fifo() does at
+    its default `blocking = FALSE` (measured: 1.5 MB of 300 MB arrived, no
+    error, status 0). `stdout_seen_bytes` is what tells the two apart.
     """
     from openai4s.kernel.r_kernel import spawn_r_kernel
 
-    probe = tmp_path / "probe"
-    code = "\n".join(
-        (
-            "cons <- showConnections(all = TRUE)",
-            'hit <- grepl("oai4s-out-", cons[, "description"], fixed = TRUE)',
-            'path <- cons[hit, "description"][1]',
-            f'writeLines(path, {str(probe) + ".path"!r})',
-            "cat(strrep('a', 1200000L))",
-            f'writeLines(as.character(file.info(path)$size), {str(probe) + ".1"!r})',
-            "cat(strrep('b', 20000000L))",
-            f'writeLines(as.character(file.info(path)$size), {str(probe) + ".2"!r})',
-        )
-    )
-
     kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
     try:
-        result = kernel.execute(code)
+        result = kernel.execute(
+            "invisible({cat(strrep('a', 3e8)); cat(strrep('z', 10L))})"
+        )
     finally:
         kernel.shutdown()
 
     assert result.get("error") is None, result.get("error")
-    assert (
-        probe.parent / "probe.path"
-    ).exists(), "the cell could not find its own capture file; the probe proves nothing"
-    crossed = int(float((probe.parent / "probe.1").read_text().strip()))
-    after = int(float((probe.parent / "probe.2").read_text().strip()))
+    usage = result["usage"]
 
-    assert crossed > worker.MAX_OUTPUT, (
-        "the first expression did not cross the cap, so the test never reached "
-        f"the condition it is about: {crossed}"
-    )
-    # 20 MB was printed after the cap was already passed. Every one of those
-    # bytes is discarded by `.oai4s_cap` later, so none of them should have
-    # reached the disk.
-    assert after <= 4 * worker.MAX_OUTPUT, (
-        f"the capture file grew from {crossed} to {after} bytes writing output "
-        "that was already destined to be thrown away"
-    )
+    # Every byte the cell wrote reached the host, and the host kept the cap.
+    assert usage["stdout_seen_bytes"] == 300_000_010, usage
+    assert usage["stdout_retained_bytes"] == worker.MAX_OUTPUT
+    assert usage["stdout_dropped_bytes"] == 300_000_010 - worker.MAX_OUTPUT
 
-    # And the answer is still correct: head retained, cut announced once.
-    assert result["stdout"].startswith("a")
-    assert result["stdout"].count("...(truncated at") == 1
-    # The retained part is the head, not a window that slid into the second
-    # expression's output. Sliced before the marker because the marker's own
-    # wording contains a "b".
-    kept = result["stdout"].split("\n...(truncated at")[0]
+    # ...and the answer is still right: head retained, cut announced once.
+    stdout = result["stdout"]
+    assert len(stdout) == worker.MAX_OUTPUT + len(
+        sink_drain.truncation_marker(worker.MAX_OUTPUT)
+    )
+    assert stdout.count("...(truncated at") == 1
+    kept = stdout.split("\n...(truncated at")[0]
     assert set(kept) == {"a"}, sorted(set(kept))[:5]
 
 
 @pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
-def test_the_r_message_capture_file_stops_growing_too(tmp_path):
-    """The same bound on the other stream.
+def test_the_r_message_stream_is_bounded_by_the_same_drain(tmp_path):
+    """The other stream, asserted separately rather than assumed.
 
-    `message()` has its own sink and its own tempfile, and a cell that warns in
-    a loop reaches the cap the same way a chatty one does. Asserted separately
-    rather than assumed from the stdout test: the two are one helper called
-    with different arguments, and "called with the wrong connection" is a defect
-    that looks identical to "not called".
+    `message()` has its own sink and its own fifo. The two are one mechanism
+    called with different arguments, and "wired to the wrong connection" is a
+    defect that looks exactly like "not wired at all" from the stdout side.
     """
     from openai4s.kernel.r_kernel import spawn_r_kernel
 
-    probe = tmp_path / "msg"
-    code = "\n".join(
-        (
-            "cons <- showConnections(all = TRUE)",
-            'hit <- grepl("oai4s-msg-", cons[, "description"], fixed = TRUE)',
-            'path <- cons[hit, "description"][1]',
-            "message(strrep('a', 1200000L))",
-            f'writeLines(as.character(file.info(path)$size), {str(probe) + ".1"!r})',
-            "message(strrep('b', 20000000L))",
-            f'writeLines(as.character(file.info(path)$size), {str(probe) + ".2"!r})',
-        )
-    )
-
     kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
     try:
-        result = kernel.execute(code)
+        result = kernel.execute(
+            "invisible({message(strrep('m', 2e7)); message('tail')})"
+        )
     finally:
         kernel.shutdown()
 
     assert result.get("error") is None, result.get("error")
-    crossed = int(float((probe.parent / "msg.1").read_text().strip()))
-    after = int(float((probe.parent / "msg.2").read_text().strip()))
-
-    assert crossed > worker.MAX_OUTPUT, crossed
-    assert (
-        after <= 4 * worker.MAX_OUTPUT
-    ), f"the message capture file grew from {crossed} to {after} bytes"
+    usage = result["usage"]
+    # 20 MB + the newline message() appends, twice, plus "tail".
+    assert usage["stderr_seen_bytes"] == 20_000_000 + 1 + 4 + 1, usage
+    assert usage["stderr_retained_bytes"] == worker.MAX_OUTPUT
     assert result["stderr"].count("...(truncated at") == 1
+    assert set(result["stderr"].split("\n...(truncated at")[0]) == {"m"}
+    # The stdout drain stayed at zero: this cell printed nothing.
+    assert usage["stdout_seen_bytes"] == 0
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_a_finished_r_cell_does_not_wait_out_the_drain_grace(tmp_path):
+    """Every cell pays the drain's exit, so the drain has to end on EOF.
+
+    The reader cannot tell "no writer yet" from "writer closed" -- both are a
+    zero-length read -- so it carries a bounded grace period for a worker that
+    never closed at all. If EOF detection regressed, nothing would break and
+    nothing would be lost: every R cell in the product would simply take two
+    seconds longer, which no assertion about output would ever notice.
+
+    Timed on the second cell so the measurement excludes spawning R, and the
+    margin is an order of magnitude: a trivial cell runs in milliseconds and
+    the grace it must not wait for is two seconds.
+    """
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        kernel.execute("1 + 1")  # warm: spawn and first-cell cost excluded
+        started = time.monotonic()
+        result = kernel.execute("cat('quick\n')")
+        elapsed = time.monotonic() - started
+    finally:
+        kernel.shutdown()
+
+    assert result["stdout"] == "quick\n"
+    assert elapsed < sink_drain._FINISH_GRACE_SECONDS, (
+        f"a trivial cell took {elapsed:.2f}s against a "
+        f"{sink_drain._FINISH_GRACE_SECONDS}s grace — the drain is timing out "
+        "rather than ending on EOF"
+    )

@@ -96,4 +96,9 @@ def spawn_r_kernel(
         env_root=env_root,
         env_name=env_name,
         argv=r_argv(rs),
+        # R cannot bound its own output inside a single top-level expression —
+        # single threaded, no callback fires mid-expression — so the cell's two
+        # streams are sunk to fifos the host drains and caps. See
+        # kernel/sink_drain.py for what was measured before choosing this.
+        capture_sinks=True,
     )

@@ -13,17 +13,28 @@
 #   fd 0          = /dev/null  (user code reading stdin cannot eat frames)
 #   fd 1          = aliased to stderr (stray C-level prints never hit the wire)
 #
-# Frames handled: {"type":"execute","id":...,"code":...} -> one
-# {"type":"response", id, stdout, stderr, error, interrupted,
-#  trace:{error_lineno,error_call}, guards:{}, usage:{wall_s,cpu_s,peak_rss_kb}}
-# per cell (identical result contract to worker.py); {"type":"shutdown"} exits.
+# Frames handled: {"type":"execute","id":...,"code":...,"sink_out":...,
+# "sink_err":...} -> one {"type":"response", id, sink_capture, stdout, stderr,
+#  error, interrupted, trace:{error_lineno,error_call}, guards:{},
+#  usage:{wall_s,cpu_s,peak_rss_kb}} per cell (identical result contract to
+# worker.py); {"type":"shutdown"} exits.
+#
+# The two `sink_*` paths are fifos the HOST drains, and they are required: this
+# worker refuses an execute frame without them rather than running the cell
+# uncaptured. `stdout`/`stderr` therefore leave here empty and `sink_capture`
+# tells the manager to fill them from what it read. Why the capture moved out
+# of this file at all is in .oai4s_run and in kernel/sink_drain.py.
 # This ANALYSIS kernel never emits host_call frames — there is no `host` object
 # in R; completion (host.submit_output) stays on the python control plane.
 #
 # Inbound JSON is parsed with jsonlite (pinned in envs/r.yml). Outbound JSON is
 # hand-escaped so a jsonlite-less R still reports a clean, structured error.
 
-.oai4s_MAX_OUTPUT <- 1000000L  # 1MB head cap per captured stream (worker.py parity)
+# 1MB head cap (worker.py parity). The two captured streams are now bounded by
+# the host at the same number (kernel/sink_drain.CAP_BYTES); what is left for
+# this constant is the one string R itself produces — an error message, which
+# never travels through a sink.
+.oai4s_MAX_OUTPUT <- 1000000L
 
 # Hard backstop for one outbound frame, whatever it carries — the sibling of
 # worker.py's `_MAX_FRAME_BYTES`, which this side simply did not have, so an
@@ -98,9 +109,11 @@
 }
 
 .oai4s_respond <- function(id, stdout_txt, stderr_txt, error, interrupted,
-                           lineno, callname, wall, cpu, rss) {
+                           lineno, callname, wall, cpu, rss,
+                           sink_capture = FALSE) {
   json <- paste0(
     '{"type":"response","id":', .oai4s_esc(id),
+    ',"sink_capture":', if (isTRUE(sink_capture)) "true" else "false",
     ',"stdout":', .oai4s_esc(stdout_txt),
     ',"stderr":', .oai4s_esc(stderr_txt),
     ',"error":', if (is.null(error)) "null" else .oai4s_esc(error),
@@ -123,6 +136,9 @@
     # being a hang instead of a message.
     json <- paste0(
       '{"type":"response","id":', .oai4s_esc(id),
+      # Still true, and still the host's to fill: the payload this drops is
+      # the error string, not the cell's output.
+      ',"sink_capture":', if (isTRUE(sink_capture)) "true" else "false",
       ',"stdout":"","stderr":"","error":',
       .oai4s_esc(sprintf(
         "R kernel dropped an oversized response frame (>%d bytes)",
@@ -147,18 +163,17 @@
   # Bound a string R ITSELF produced — an error message — before it is pasted
   # into anything larger.
   #
-  # The two captured streams have been producer-bounded since .oai4s_slurp
-  # stopped reading past the cap, but the error string never was: a cell doing
-  # stop(strrep("x", 2e8)) built a 200 MB message, pasted it into a bigger one,
-  # escaped it character by character in .oai4s_esc, and put the result on the
-  # wire. worker.py caps its error; this did not.
+  # The two captured streams are bounded by the host that drains them, but the
+  # error string never travels that way: a cell doing stop(strrep("x", 2e8))
+  # built a 200 MB message, pasted it into a bigger one, escaped it character
+  # by character in .oai4s_esc, and put the result on the wire. worker.py caps
+  # its error; this did not.
   #
   # Cut in CHARACTERS, and the marker says so rather than borrowing the byte
-  # wording the stream caps use. charToRaw() — what .oai4s_cap reaches for —
-  # allocates a raw vector as large as the whole string, which is precisely the
-  # allocation being avoided here; substr() is safe on a string R constructed
-  # because R made it valid, and the raw path stays as the fallback for one it
-  # did not.
+  # wording the host's stream cap uses. charToRaw() allocates a raw vector as
+  # large as the whole string, which is precisely the allocation being avoided
+  # here; substr() is safe on a string R constructed because R made it valid,
+  # and the raw path stays as the fallback for one it did not.
   if (is.null(s) || length(s) == 0L) return("")
   s <- paste(as.character(s), collapse = "\n")
   n <- tryCatch(nchar(s, type = "chars"), error = function(e) NA_integer_)
@@ -176,75 +191,6 @@
   # nlines stops the deparser after one line and width.cutoff bounds that line.
   tryCatch(deparse(cl, nlines = 1L, width.cutoff = 500L)[1],
            error = function(e) "<call>")
-}
-
-.oai4s_slurp <- function(path) {
-  # Reads at most one byte past the cap, never the whole file. It used to read
-  # `sz` -- the entire capture -- and hand it to .oai4s_cap, which threw all
-  # but the first megabyte away. A cell printing 300 MB therefore allocated
-  # 300 MB in this worker to keep 1 MB of it, while worker.py has bounded the
-  # same output *at write time* since the streaming buffer landed.
-  #
-  # The extra byte is what tells a file that ended exactly at the cap from one
-  # that was cut, so the truncation marker is not attached to complete output.
-  if (!file.exists(path)) return("")
-  sz <- file.info(path)$size
-  if (is.na(sz) || sz <= 0) return("")
-  want <- min(sz, .oai4s_MAX_OUTPUT + 1)
-  tryCatch(readChar(path, want, useBytes = TRUE), error = function(e) "")
-}
-
-.oai4s_cap <- function(s) {
-  if (is.null(s) || !nzchar(s)) return("")
-  if (nchar(s, type = "bytes") <= .oai4s_MAX_OUTPUT) return(s)
-  # truncate in the SAME units the gate compares (bytes) — substr counts
-  # characters and would keep up to 4x the cap for multibyte output. A split
-  # trailing multibyte char is repaired by .oai4s_esc's iconv(sub="byte").
-  head_bytes <- charToRaw(s)[seq_len(.oai4s_MAX_OUTPUT)]
-  paste0(
-    rawToChar(head_bytes),
-    sprintf("\n...(truncated at %d bytes)", .oai4s_MAX_OUTPUT)
-  )
-}
-
-.oai4s_nullfile <- function() {
-  tryCatch(nullfile(), error = function(e) {
-    if (identical(.Platform$OS.type, "windows")) "nul" else "/dev/null"
-  })
-}
-
-.oai4s_cap_sink <- function(con, path, type) {
-  # Stop capturing a stream that has already exceeded the cap.
-  #
-  # `.oai4s_slurp` bounds the *read*; this bounds the *write*. Without it a
-  # runaway cell still sends every byte to a tempfile -- on much of Linux a
-  # tmpfs, so the disk it fills is RAM -- and `.oai4s_cap` then throws all but
-  # the first megabyte away. worker.py's buffer has dropped those bytes at
-  # `write` time since the streaming buffer landed; this side kept them and
-  # then ignored them.
-  #
-  # Returns the replacement connection so the caller can close it, or NULL if
-  # the stream is still under the cap (or the null device would not open, in
-  # which case capturing continues -- degraded, never broken).
-  #
-  # The diversion is popped and re-pushed rather than the connection being
-  # closed: `.oai4s_run` closes `con` in its own teardown, and the file has to
-  # stay readable for the final slurp.
-  sz <- tryCatch(file.info(path)$size, error = function(e) NA_real_)
-  if (is.na(sz) || sz <= .oai4s_MAX_OUTPUT) return(NULL)
-  null_con <- tryCatch(file(.oai4s_nullfile(), open = "wt"), error = function(e) NULL)
-  if (is.null(null_con)) return(NULL)
-  ok <- tryCatch({
-    flush(con)
-    sink(type = type)
-    sink(null_con, type = type)
-    TRUE
-  }, error = function(e) FALSE)
-  if (!ok) {
-    tryCatch(close(null_con), error = function(e) NULL)
-    return(NULL)
-  }
-  null_con
 }
 
 .oai4s_rss_kb <- function() {
@@ -280,58 +226,33 @@
   }, error = function(e) NULL)
 }
 
-.oai4s_stream_stdout <- function(out_con, out_file, id, sent) {
-  # Emit whatever landed on stdout since the last call as a `stdout_chunk`
-  # frame, and return the new offset.
-  #
-  # The R worker never emitted these at all, so live output — the Notebook's
-  # running-cell view and `exec_peek` on a background job — was dead for the R
-  # half of the product while the host side has always accepted the frames.
-  # A long R cell showed nothing until it finished.
-  #
-  # This runs between top-level expressions, which the evaluator was already
-  # looping over. Mid-expression streaming would need C-level work: R is
-  # single-threaded, `addTaskCallback` does not fire inside an expression, and
-  # a connection callback cannot be written in R. So a chatty `for` loop still
-  # arrives in one piece, and a multi-statement cell now reports as it goes.
-  #
-  # Bounded the same way the final capture is. Without a cap a runaway cell
-  # would stream its whole output to the host in frames *and* have it capped
-  # in the response — the host paying for output it will not keep.
-  if (sent >= .oai4s_MAX_OUTPUT) return(sent)
-  ok <- tryCatch({ flush(out_con); TRUE }, error = function(e) FALSE)
-  if (!ok) return(sent)
-  size <- file.info(out_file)$size
-  if (is.na(size) || size <= sent) return(sent)
-  want <- min(size, .oai4s_MAX_OUTPUT) - sent
-  if (want <= 0) return(sent)
-  text <- tryCatch({
-    con <- file(out_file, open = "rb")
-    on.exit(close(con), add = TRUE)
-    seek(con, where = sent)
-    rawToChar(readBin(con, "raw", n = want))
-  }, error = function(e) NULL)
-  if (is.null(text) || !nzchar(text)) return(sent)
-  .oai4s_write_frame(paste0(
-    '{"type":"stdout_chunk","id":', .oai4s_esc(id),
-    ',"text":', .oai4s_esc(text), '}'
-  ))
-  sent + want
-}
-
 # --- one cell ----------------------------------------------------------------
 
-.oai4s_run <- function(code, id) {
-  out_file <- tempfile("oai4s-out-")
-  msg_file <- tempfile("oai4s-msg-")
-  out_con <- file(out_file, open = "wt")
-  msg_con <- file(msg_file, open = "wt")
+.oai4s_run <- function(code, id, sink_out, sink_msg) {
+  # The two streams go to fifos the HOST drains, not to tempfiles this worker
+  # reads back.
+  #
+  # R gives no hook inside a single top-level expression -- it is single
+  # threaded, addTaskCallback does not fire mid-expression, and a connection
+  # callback cannot be written in R -- so every bound this side could enforce
+  # only ran *between* expressions. One expression printing 300 MB wrote all
+  # 300 MB to a tempfile (a tmpfs on much of Linux, so RAM) and this worker
+  # then read 1 MB of it and discarded the rest. A reader on the other end of
+  # a pipe bounds the writer instead of auditing it afterwards: it keeps the
+  # first cap bytes and drops the rest as they arrive, and the same cell now
+  # materialises nothing. kernel/sink_drain.py records what was measured.
+  #
+  # blocking = TRUE is load-bearing. R's fifo() defaults to non-blocking, and
+  # a non-blocking writer silently drops everything that does not fit the pipe
+  # buffer -- measured at 1.5 MB retained out of 300 MB written, with no error
+  # and status 0. Blocking makes the host's reader the thing that paces the
+  # cell, which is the whole design.
+  out_con <- fifo(sink_out, open = "wb", blocking = TRUE)
+  msg_con <- fifo(sink_msg, open = "wb", blocking = TRUE)
   sink(out_con, type = "output")
   sink(msg_con, type = "message")
 
   err <- NULL; lineno <- NULL; callname <- NULL; interrupted <- FALSE
-  streamed <- 0
-  null_out <- NULL; null_msg <- NULL
   t0 <- Sys.time(); p0 <- proc.time()
 
   parsed <- tryCatch(parse(text = code, keep.source = TRUE), error = function(e) e)
@@ -381,37 +302,35 @@
           message("print failed: ", conditionMessage(e))
         })
       }
-      streamed <- .oai4s_stream_stdout(out_con, out_file, id, streamed)
-      # Between top-level expressions is the only hook R gives us -- the same
-      # cadence, and for the same reason, as the streaming above: R is
-      # single-threaded and no callback fires inside an expression. So a single
-      # expression printing 300 MB still writes it, and the expressions after
-      # it write nothing.
-      if (is.null(null_out)) null_out <- .oai4s_cap_sink(out_con, out_file, "output")
-      if (is.null(null_msg)) null_msg <- .oai4s_cap_sink(msg_con, msg_file, "message")
+      # Flushed between top-level expressions so a chatty multi-statement cell
+      # reaches the host as it goes. It is no longer the only cadence the host
+      # gets -- the drain sees bytes the moment R's connection buffer empties,
+      # inside an expression as well -- but an expression that ends without
+      # filling that buffer would otherwise sit here until the next one did.
+      tryCatch(flush(out_con), error = function(e) NULL)
     }
   }
 
   .oai4s_unwind_sinks()
+  # Closed BEFORE the response frame, so that by the time the host learns the
+  # cell is over the fifos are already at EOF and its readers end on that
+  # rather than on the grace period they fall back to. Only the fallback is
+  # load-bearing for correctness -- moving these two lines below the respond
+  # keeps the output, because R closes microseconds later and the reader is
+  # still waiting. Stated that way because a mutation proved it: swapping the
+  # order changes nothing a test can see, and a comment claiming otherwise
+  # would be describing a guarantee this code does not make.
   tryCatch(close(out_con), error = function(e) NULL)
   tryCatch(close(msg_con), error = function(e) NULL)
-  # The null devices, if a stream overflowed. R allows ~128 connections at
-  # once, so leaking one per overflowing cell is a kernel that stops working
-  # after a hundred of them.
-  for (con in list(null_out, null_msg)) {
-    if (!is.null(con)) tryCatch(close(con), error = function(e) NULL)
-  }
 
   wall <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
   dp <- proc.time() - p0
   cpu <- sum(dp[c("user.self", "sys.self", "user.child", "sys.child")], na.rm = TRUE)
 
-  stdout_txt <- .oai4s_cap(.oai4s_slurp(out_file))
-  stderr_txt <- .oai4s_cap(.oai4s_slurp(msg_file))
-  unlink(c(out_file, msg_file))
-
-  .oai4s_respond(id, stdout_txt, stderr_txt, err, interrupted, lineno, callname,
-                 wall, cpu, .oai4s_rss_kb())
+  # Empty, and `sink_capture` says why: the host holds this cell's output and
+  # fills both fields in. A worker that does not set the flag keeps its own.
+  .oai4s_respond(id, "", "", err, interrupted, lineno, callname,
+                 wall, cpu, .oai4s_rss_kb(), sink_capture = TRUE)
 }
 
 # --- read-only variable inspection ------------------------------------------
@@ -683,9 +602,27 @@ assign("q", function(...) stop("q() is disabled inside openai4s R cells; the ker
     return("ok")
   }
   if (identical(type, "execute")) {
+    id <- as.character(.oai4s_or(frame$id, "unknown"))
+    sink_out <- .oai4s_or(frame$sink_out, NULL)
+    sink_msg <- .oai4s_or(frame$sink_err, NULL)
+    if (is.null(sink_out) || is.null(sink_msg) ||
+        !nzchar(sink_out) || !nzchar(sink_msg)) {
+      # Refused rather than run uncaptured. The host is this worker's only
+      # caller and always supplies both fifos; running the cell anyway would
+      # execute it for real and then report no output at all, which reads as
+      # "the code printed nothing" rather than as the protocol break it is.
+      .oai4s_respond(
+        id, "", "",
+        "R kernel received an execute frame with no host capture sinks",
+        FALSE, NULL, NULL, 0, 0, NULL
+      )
+      return("ok")
+    }
     .oai4s_run(
       as.character(.oai4s_or(frame$code, "")),
-      as.character(.oai4s_or(frame$id, "unknown"))
+      id,
+      as.character(sink_out),
+      as.character(sink_msg)
     )
   }
   # host_response frames only follow a host_call, which this worker never

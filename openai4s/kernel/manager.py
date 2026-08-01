@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from openai4s.kernel.environment import build_kernel_environment
+from openai4s.kernel.sink_drain import CAP_BYTES as _SINK_CAP
+from openai4s.kernel.sink_drain import SinkCapture, SinkDirectory
 from openai4s.security.sandbox import KernelSandbox, create_kernel_sandbox
 
 _WORKER = Path(__file__).resolve().parent / "worker.py"
@@ -41,6 +43,7 @@ class Kernel:
         env_name: str | None = None,
         argv: list[str] | None = None,
         sandbox: KernelSandbox | None = None,
+        capture_sinks: bool = False,
     ):
         self.dispatcher = dispatcher
         self.mode = mode
@@ -69,9 +72,19 @@ class Kernel:
         self._action_context_local = threading.local()
         self.generation = 0  # bumped on every (re)spawn
         self.authorization_generation = f"kernel:{uuid.uuid4()}"
+        # A worker that cannot bound its own output between top-level
+        # expressions (r_worker.R) sinks to a fifo per cell and lets the host
+        # do the bounding. Created here, so a temp directory where fifos cannot
+        # be made refuses the kernel instead of producing one whose cells
+        # silently have no cap.
+        self._sinks: "SinkDirectory | None" = None
+        if capture_sinks:
+            self._sinks = SinkDirectory(self._sandbox.status.temp_dir)
         try:
             self._proc = self._spawn()
         except Exception:
+            if self._sinks is not None:
+                self._sinks.close()
             self._sandbox.close()
             raise
 
@@ -169,18 +182,27 @@ class Kernel:
                 if action_context is not None
                 else inherited_context or {}
             )
+            capture: SinkCapture | None = None
             try:
                 if not self.is_alive():
                     raise RuntimeError("kernel worker is not alive")
                 cell_id = str(cell_id or uuid.uuid4())
-                self._send(
-                    {
-                        "type": "execute",
-                        "id": cell_id,
-                        "code": code,
-                        "origin": origin,
-                    }
-                )
+                request: dict[str, Any] = {
+                    "type": "execute",
+                    "id": cell_id,
+                    "code": code,
+                    "origin": origin,
+                }
+                if self._sinks is not None:
+                    # Opened before the request is sent, so the worker's
+                    # blocking open finds a reader already waiting and never
+                    # blocks on one that has not arrived.
+                    capture = self._sinks.open(
+                        cap=_SINK_CAP, on_chunk=on_chunk if on_chunk else None
+                    )
+                    request["sink_out"] = capture.out_path
+                    request["sink_err"] = capture.err_path
+                self._send(request)
 
                 stdout_chunks: list[str] = []
                 while True:
@@ -195,7 +217,24 @@ class Kernel:
                         raise RuntimeError(f"kernel worker exited unexpectedly: {err}")
                     ftype = frame.get("type")
                     if ftype == "response":
-                        if stdout_chunks and not frame.get("stdout"):
+                        if capture is not None and frame.get("sink_capture"):
+                            # The worker declares it sank to the host's fifos,
+                            # so the host — not the worker — is what has the
+                            # cell's output. A worker that did not (the R
+                            # protocol fixture) keeps its own fields.
+                            frame["stdout"], frame["stderr"] = capture.finish()
+                            # What was read and what was kept, reported rather
+                            # than inferred. A capped `stdout` looks the same
+                            # whether the host read 300 MB and declined 299 of
+                            # them or the worker quietly dropped them before
+                            # they were ever written — R's fifo() defaults to
+                            # non-blocking, and that second reading is what it
+                            # produces. These are the only fields that tell
+                            # those two apart.
+                            usage = frame.get("usage")
+                            if isinstance(usage, dict):
+                                usage.update(capture.counters())
+                        elif stdout_chunks and not frame.get("stdout"):
                             frame["stdout"] = "".join(stdout_chunks)
                         # Host-side annotation, not a protocol field: the
                         # observation formatter needs somewhere inside the
@@ -217,6 +256,11 @@ class Kernel:
                         # diagnostic from worker; ignore or log
                         pass
             finally:
+                if capture is not None:
+                    # Unconditional: an interrupt, a dead worker or a raising
+                    # host call all leave a fifo and two reader threads behind,
+                    # and the reader is what keeps a blocked writer moving.
+                    capture.close()
                 if previous_context is marker:
                     try:
                         del self._active_action_context
@@ -425,6 +469,8 @@ class Kernel:
                     stream and stream.close()
                 except Exception:  # noqa: BLE001
                     pass
+            if self._sinks is not None:
+                self._sinks.close()
             self._sandbox.close()
 
     def __enter__(self) -> "Kernel":
