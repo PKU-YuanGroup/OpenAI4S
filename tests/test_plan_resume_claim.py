@@ -16,6 +16,8 @@ import threading
 import time
 from http.server import ThreadingHTTPServer
 
+import pytest
+
 from openai4s.config import Config, LLMConfig
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
@@ -439,5 +441,78 @@ def test_the_approval_claim_reports_per_status_refusals(tmp_path):
         claim = runner.plans.claim_approval(frame_id)
         assert claim["ok"] is True
         assert claim["plan"]["status"] == "executing"
+    finally:
+        runner.close()
+
+
+# --------------------------------------------------------------------------
+# the claim must not be a one-way door
+# --------------------------------------------------------------------------
+
+
+def _route_handler(cfg, runner):
+    handler = object.__new__(gateway_mod.make_handler(cfg, runner.hub, runner))
+    handler._correlation_id = "req-plan"
+    handler._last_status = 0
+    handler.headers = {}
+    handler._query = lambda: {}
+    handler._body = lambda: {}
+    handler._json = lambda value, code=200: None
+    return handler
+
+
+@pytest.mark.parametrize(
+    "action,submit_attr,seed",
+    [
+        ("approve", "submit_plan_approval", "draft"),
+        ("resume", "submit_plan_resume", "paused"),
+    ],
+)
+def test_a_job_that_never_starts_releases_the_claim(
+    tmp_path, action, submit_attr, seed
+):
+    """`Thread.start` can fail, and the claim has already moved the row.
+
+    The compare-and-swap is what makes exactly one caller the owner, and it runs
+    before the spawn so the 202 means something. If the spawn then fails -- a
+    process that cannot make another thread is the realistic case -- the plan
+    sits at `executing` with nothing running, and it is stuck there for good:
+    every later approve swaps against `draft`, every later resume against
+    `paused`, so both lose forever. Measured before this fix: the row read back
+    `executing`.
+
+    Injected at the spawn seam rather than at `threading.Thread.start`, because
+    a blanket refusal also hits whatever the runner and the handler start on the
+    way through, and the test would then describe a broken process rather than
+    a spawn that failed.
+    """
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        host="127.0.0.1",
+        port=_free_port(),
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    store = runner.store
+    try:
+        frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+        plan = (_draft_plan if seed == "draft" else _paused_plan)(store, frame_id)
+        store.update_plan(plan["plan_id"], status=seed)
+
+        setattr(
+            runner,
+            submit_attr,
+            lambda *a, **k: (_ for _ in ()).throw(
+                RuntimeError("can't start new thread")
+            ),
+        )
+        with pytest.raises(RuntimeError):
+            _route_handler(cfg, runner)._api(
+                "POST", f"/frames/{frame_id}/plan/{action}"
+            )
+
+        assert (
+            store.get_plan(plan["plan_id"])["status"] == seed
+        ), f"the claim was not released; this plan can never be {action}d again"
     finally:
         runner.close()

@@ -8879,9 +8879,24 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         if claim.get("plan_id") is None:
                             raise GatewayError(404, claim["error"], "plan_not_found")
                         raise GatewayError(409, claim["error"], "plan_not_draft")
-                    job = runner.submit_plan_approval(
-                        fid, pid, model, claimed_plan_id=claim["plan_id"]
-                    )
+                    # The claim already moved the row to `executing`, which is
+                    # what makes the 202 mean something. If the job then never
+                    # starts -- a process that cannot make another thread is
+                    # the realistic case -- the plan is left `executing` with
+                    # nothing running, and it is stuck there permanently:
+                    # every later approve compare-and-swaps against `draft` and
+                    # every later resume against `paused`, so both lose
+                    # forever. Releasing the claim is what keeps it a claim
+                    # rather than a one-way door.
+                    try:
+                        job = runner.submit_plan_approval(
+                            fid, pid, model, claimed_plan_id=claim["plan_id"]
+                        )
+                    except Exception:
+                        store.compare_and_set_plan_status(
+                            claim["plan_id"], expected="executing", new_status="draft"
+                        )
+                        raise
                     self._json(
                         {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
                         202,
@@ -8902,9 +8917,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         if claim.get("plan_id") is None:
                             raise GatewayError(404, claim["error"], "plan_not_found")
                         raise GatewayError(409, claim["error"], "plan_not_paused")
-                    job = runner.submit_plan_resume(
-                        fid, pid, model, claimed_plan_id=claim["plan_id"]
-                    )
+                    # Same one-way door as `approve` above, and only a
+                    # `paused` row can be resumed.
+                    try:
+                        job = runner.submit_plan_resume(
+                            fid, pid, model, claimed_plan_id=claim["plan_id"]
+                        )
+                    except Exception:
+                        store.compare_and_set_plan_status(
+                            claim["plan_id"], expected="executing", new_status="paused"
+                        )
+                        raise
                     self._json(
                         {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
                         202,
