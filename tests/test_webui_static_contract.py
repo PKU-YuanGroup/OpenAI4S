@@ -1389,6 +1389,11 @@ def test_every_attachment_reason_the_server_sends_is_handled() -> None:
 def _fn(name: str) -> str:
     """The body of one top-level function, for assertions scoped to it."""
     start = APP_JS.index(f"function {name}(")
+    # Keep the `async` keyword: lifted without it, a body containing `await`
+    # is a syntax error, and the test then fails for a reason that has nothing
+    # to do with what it asserts.
+    if APP_JS[max(0, start - 6) : start] == "async ":
+        start -= 6
     depth = 0
     for index in range(APP_JS.index("{", start), len(APP_JS)):
         if APP_JS[index] == "{":
@@ -1533,6 +1538,7 @@ def _drive(program: str) -> dict:
             "ownsTurnTicket",
             "acceptTurnTicket",
             "retireTurnTicket",
+            "isStaleTurnEvent",
         )
     )
     script = f"const S = {{ running: false }};\n{sources}\n{program}"
@@ -1677,7 +1683,10 @@ def test_a_rejected_send_only_tears_down_a_turn_it_owns() -> None:
 
 def test_the_processing_event_hands_the_slot_over() -> None:
     """And unconditionally: `S.running` is already true when a queued turn starts."""
-    assert 'if (m.status === "processing") activateTurnTicket(m.request_id);' in APP_JS
+    assert (
+        'if (m.status === "processing") activateTurnTicket(m.request_id, m.execution_id);'
+        in APP_JS
+    )
     index = APP_JS.index('if (m.status === "processing") activateTurnTicket')
     guarded = APP_JS.index('if (m.status === "processing" && !S.running)')
     assert index < guarded, "the hand-off sits inside the not-running guard"
@@ -1887,3 +1896,305 @@ def test_retiring_never_touches_a_turn_it_does_not_own() -> None:
     )
     assert state["retired"] is False
     assert state["pending"] == "req-OTHER", "retiring cleared another turn's id"
+
+
+# --- a terminal event for a turn that is no longer on screen -------------------
+
+
+def test_every_late_turn_event_goes_through_the_stale_filter() -> None:
+    """Prose as well as the terminal.
+
+    A failure that arrives after the next turn started would otherwise wipe the
+    running turn's stream and print its predecessor's error into it.
+    """
+    assert "if (mine(fid) && !isStaleTurnEvent(m)) startStream();" in APP_JS
+    assert "if (mine(fid) && !isStaleTurnEvent(m)) feed(" in APP_JS
+    assert "if (isStaleTurnEvent(m)) scheduleWorkbenchRefresh();" in APP_JS
+    assert "activateTurnTicket(m.request_id, m.execution_id)" in APP_JS
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_an_idless_processing_retires_tickets_without_forgetting_who_is_running():
+    """An older daemon sends `processing` with no ids at all.
+
+    The generation must still advance -- another turn is running, so every
+    ticket in flight is stale. But clearing the identity there throws away what
+    the 202 already gave us, leaving the running turn's own failure with
+    nothing to quote and nothing to filter on.
+    """
+    state = _drive(
+        """
+        S.running = true;
+        const token = openTurnTicket();
+        commitTurnTicket(token, { request_id: "req-A", execution_id: "exec-A" });
+        const before = S.turnTicket;
+        activateTurnTicket(undefined, undefined);
+        console.log(JSON.stringify({
+          bumped: S.turnTicket === before + 1,
+          request: S.pendingRequestId,
+          execution: S.pendingExecutionId,
+          stale: ownsTurnTicket(token)
+        }));
+        """
+    )
+    assert state["bumped"] is True, "an idless processing left stale tickets valid"
+    assert state["request"] == "req-A", "the running turn's id was forgotten"
+    assert state["execution"] == "exec-A"
+    assert state["stale"] is False
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_a_late_terminal_from_the_previous_execution_is_stale() -> None:
+    """processing(A) -> processing(B) -> failed(A), the order that reproduces.
+
+    A fails inside the turn, persists its row, and finishes unwinding only
+    after B has been promoted out of the queue. Acting on A's terminal closes
+    B's turn and unlocks the composer under a turn that is still running.
+    """
+    state = _drive(
+        """
+        activateTurnTicket("req-A", "exec-A");
+        activateTurnTicket("req-B", "exec-B");
+        console.log(JSON.stringify({
+          lateA: isStaleTurnEvent({ request_id: "req-A", execution_id: "exec-A" }),
+          ownB: isStaleTurnEvent({ request_id: "req-B", execution_id: "exec-B" })
+        }));
+        """
+    )
+    assert state["lateA"] is True, "A's terminal would have closed B's turn"
+    assert state["ownB"] is False, "B's own terminal was refused"
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_a_reused_request_id_is_still_told_apart_by_execution() -> None:
+    """Clients may reuse `X-Request-Id`, so A and B can share one.
+
+    A filter that compared only request ids would call A's late terminal
+    current, which is the whole reason the execution id is on the wire.
+    """
+    state = _drive(
+        """
+        activateTurnTicket("req-same", "exec-A");
+        activateTurnTicket("req-same", "exec-B");
+        console.log(JSON.stringify({
+          lateA: isStaleTurnEvent({ request_id: "req-same", execution_id: "exec-A" }),
+          ownB: isStaleTurnEvent({ request_id: "req-same", execution_id: "exec-B" })
+        }));
+        """
+    )
+    assert state["lateA"] is True, "two turns sharing a request id were confused"
+    assert state["ownB"] is False
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_an_older_daemon_without_identities_still_closes_its_turns() -> None:
+    """The filter must not strand a client talking to a server that predates it.
+
+    Neither side offering any identity is the pre-identity contract, and
+    treating that as stale would leave every turn open forever. One side silent
+    is the mixed case -- also not evidence of staleness.
+    """
+    state = _drive(
+        """
+        const out = {};
+        closeTurnTicket();
+        out.bothSilent = isStaleTurnEvent({});
+        activateTurnTicket("req-A", undefined);          // daemon sends no exec id
+        out.reqOnlyMatch = isStaleTurnEvent({ request_id: "req-A" });
+        out.reqOnlyOther = isStaleTurnEvent({ request_id: "req-Z" });
+        out.execArrivesLater = isStaleTurnEvent({ execution_id: "exec-A" });
+        console.log(JSON.stringify(out));
+        """
+    )
+    assert state["bothSilent"] is False
+    assert state["reqOnlyMatch"] is False
+    assert state["reqOnlyOther"] is True, "the request-id fallback stopped working"
+    assert state["execArrivesLater"] is False, "one side silent is not staleness"
+
+
+# --- plan turns take a ticket too ----------------------------------------------
+
+
+def test_the_three_plan_turns_share_one_generation_owned_dispatch() -> None:
+    """Each used to lock the UI after its own 202, or without a ticket at all."""
+    for name in ("approvePlan", "resumePlan", "revisePlan"):
+        assert "dispatchPlanTurn(" in _fn(name), name
+    body = _fn("dispatchPlanTurn")
+    # The ticket and the lock come BEFORE the POST, or a terminal event that
+    # beats the 202 cannot invalidate anything.
+    assert body.index("openTurnTicket()") < body.index("await api("), body
+    assert body.index("S.running = true") < body.index("await api(")
+    assert "if (!ownsTurnTicket(token)) return true;" in body
+    assert "commitTurnTicket(token, accepted || {})" in body
+    assert 'if (ownsTurnTicket(token)) turnDone("failed");' in body
+
+
+def test_approve_still_leaves_plan_mode_on_a_failed_dispatch() -> None:
+    """The toggle follows acceptance; a refused approve is still a draft."""
+    body = _fn("approvePlan")
+    assert "if (await dispatchPlanTurn(" in body, body
+    assert "S.planMode = false" in body
+
+
+# --- the plan dispatcher, actually executed -----------------------------------
+#
+# Lifting the ticket helpers and simulating what `dispatchPlanTurn` *would* do
+# is not evidence about `dispatchPlanTurn`: those tests stay green while the
+# shipped action is wrong. These run it, against a real pending promise.
+
+
+def _drive_plan(program: str) -> dict:
+    """Run the shipped `dispatchPlanTurn` under node with a deferred `api`."""
+    lifted = "\n".join(
+        _fn(name)
+        for name in (
+            "openTurnTicket",
+            "commitTurnTicket",
+            "closeTurnTicket",
+            "activateTurnTicket",
+            "ownsTurnTicket",
+            "retireTurnTicket",
+            "isStaleTurnEvent",
+            "dispatchPlanTurn",
+        )
+    )
+    harness = """
+const S = { currentId: "frame-1", running: false, _openGen: 3 };
+const calls = { api: 0, resume: 0, turnDone: 0, hint: 0 };
+let settle = null;
+const api = (_path, _opts) => {
+  calls.api += 1;
+  return new Promise((resolve, reject) => { settle = { resolve, reject }; });
+};
+const $ = () => ({ classList: { add() {}, remove() {} } });
+const hint = () => { calls.hint += 1; };
+const t = (key) => key;
+const apiErrorText = (e) => String(e && e.message ? e.message : e);
+const enableComposer = () => {};
+const resumeWatch = () => { calls.resume += 1; };
+const turnDone = (_status) => { calls.turnDone += 1; S.running = false; closeTurnTicket(); };
+const tick = () => new Promise(r => setTimeout(r, 0));
+"""
+    out = subprocess.run(
+        [NODE, "--input-type=module", "-e", harness + lifted + "\n" + program],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr[:1000]
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_a_plan_dispatch_while_a_turn_runs_is_refused_outright() -> None:
+    """A double-click, or a plan control pressed during someone else's turn.
+
+    A second ticket makes the newer request the owner: a 409 then tears down
+    the turn that is actually running, and an acceptance replaces its identity
+    so its own terminal event is judged stale and never closes it.
+    """
+    state = _drive_plan(
+        """
+        activateTurnTicket("req-A", "exec-A");
+        S.running = true;
+        const generation = S.turnTicket;
+        const refused = await dispatchPlanTurn("/plan/approve", {}, "h", "k");
+        console.log(JSON.stringify({
+          refused, api: calls.api, turnDone: calls.turnDone,
+          sameGeneration: S.turnTicket === generation,
+          running: S.running,
+          pending: S.pendingRequestId, execution: S.pendingExecutionId
+        }));
+        """
+    )
+    assert state["refused"] is False
+    assert state["api"] == 0, "a second plan request was sent during a running turn"
+    assert state["turnDone"] == 0
+    assert state["sameGeneration"] is True
+    assert state["running"] is True
+    assert state["pending"] == "req-A" and state["execution"] == "exec-A"
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_a_second_plan_click_while_the_first_is_in_flight_sends_nothing() -> None:
+    """The first POST is still pending; the button is pressed again."""
+    state = _drive_plan(
+        """
+        const first = dispatchPlanTurn("/plan/approve", {}, "h", "k");
+        await tick();
+        const second = await dispatchPlanTurn("/plan/approve", {}, "h", "k");
+        settle.resolve({ request_id: "req-1", execution_id: "exec-1" });
+        const firstResult = await first;
+        console.log(JSON.stringify({
+          second, firstResult, api: calls.api,
+          pending: S.pendingRequestId, execution: S.pendingExecutionId
+        }));
+        """
+    )
+    assert state["second"] is False
+    assert state["api"] == 1, "the second click sent its own request"
+    assert state["firstResult"] is True
+    assert state["pending"] == "req-1"
+    assert state["execution"] == "exec-1"
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_a_terminal_before_the_plan_202_does_not_relock_the_composer() -> None:
+    """The stuck-session case, run rather than simulated."""
+    state = _drive_plan(
+        """
+        const pending = dispatchPlanTurn("/plan/approve", {}, "h", "k");
+        await tick();
+        turnDone("failed");                       // the WS beat the 202
+        settle.resolve({ request_id: "req-late", execution_id: "exec-late" });
+        await pending;
+        console.log(JSON.stringify({
+          running: S.running, resume: calls.resume,
+          pending: S.pendingRequestId, execution: S.pendingExecutionId
+        }));
+        """
+    )
+    assert state["running"] is False, "the late 202 locked the composer again"
+    assert state["resume"] == 0, "the watchdog was re-armed for a finished turn"
+    assert state.get("pending") in (None, "")
+    assert state.get("execution") in (None, "")
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_a_rejected_plan_post_does_not_end_the_turn_that_took_over() -> None:
+    state = _drive_plan(
+        """
+        const pending = dispatchPlanTurn("/plan/approve", {}, "h", "k");
+        await tick();
+        activateTurnTicket("req-B", "exec-B");     // B took over mid-flight
+        settle.reject(new Error("409 plan_not_paused"));
+        await pending;
+        console.log(JSON.stringify({
+          turnDone: calls.turnDone, running: S.running,
+          pending: S.pendingRequestId, execution: S.pendingExecutionId
+        }));
+        """
+    )
+    assert state["turnDone"] == 0, "a rejected plan POST ended another turn"
+    assert state["running"] is True
+    assert state["pending"] == "req-B" and state["execution"] == "exec-B"
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_a_legacy_202_without_ids_still_leaves_the_turn_running() -> None:
+    """An older daemon answers with neither id, and its turn must still work."""
+    state = _drive_plan(
+        """
+        const pending = dispatchPlanTurn("/plan/approve", {}, "h", "k");
+        await tick();
+        settle.resolve({ status: "accepted", job_id: "j-1" });
+        await pending;
+        const before = { running: S.running, resume: calls.resume };
+        const stale = isStaleTurnEvent({ type: "frame_update", status: "failed" });
+        if (!stale) turnDone("failed");
+        console.log(JSON.stringify({ before, stale, running: S.running }));
+        """
+    )
+    assert state["before"] == {"running": True, "resume": 1}
+    assert state["stale"] is False, "an idless terminal could never close the turn"
+    assert state["running"] is False

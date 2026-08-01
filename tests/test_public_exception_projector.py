@@ -29,6 +29,7 @@ import importlib.util
 import json
 import sqlite3
 import sys
+import threading
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
@@ -1827,3 +1828,425 @@ def test_a_direct_plan_failure_names_one_turn_everywhere(runner, monkeypatch):
     assert stored and json.loads(stored[-1]["metadata"])["failure"]["request_id"] == (
         job.request_id
     )
+
+
+@pytest.mark.stubbed_backend
+def test_a_plan_failure_before_the_turn_starts_still_names_an_execution(
+    runner, monkeypatch
+):
+    """The plan spawner holds no coordinator ticket.
+
+    So its job had `execution_id = None` all the way through, and a failure
+    before `run_message` reached an execution emitted a terminal event with no
+    execution at all. A client whose running turn *does* have one then falls
+    into the "one side is silent" compatibility branch and closes it.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    runner.store.create_plan(
+        frame_id=frame_id,
+        project_id="proj",
+        title="p",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+        status="draft",
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_plan_execution",
+        lambda *a, **k: (_ for _ in ()).throw(CanaryFailure()),
+    )
+
+    job = runner.submit_plan_approval(frame_id, "proj")
+    job.wait_result()
+    updates = _failed_frame_updates(runner)
+
+    assert job.execution_id, "the plan ticket has no execution identity at all"
+    assert updates and updates[-1].get("execution_id") == job.execution_id
+
+
+@pytest.mark.stubbed_backend
+def test_a_plan_tail_failure_names_the_execution_the_turn_actually_ran(
+    runner, monkeypatch
+):
+    """Once the turn reaches an execution, that is the identity it keeps.
+
+    Emitting the synthetic one after the turn has already announced the real
+    one on `processing` would make its own terminal event look stale to every
+    client -- the failure would never close the turn it belongs to.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    runner.store.create_plan(
+        frame_id=frame_id,
+        project_id="proj",
+        title="p",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+        status="draft",
+    )
+    monkeypatch.setattr(runner, "_loop", lambda *a, **k: "submitted")
+    real_execution = runner.run_plan_execution
+
+    def run_then_fail(*args, **kwargs):
+        real_execution(*args, **kwargs)
+        raise CanaryFailure()  # the tail: update_plan / emit_ready
+
+    monkeypatch.setattr(runner, "run_plan_execution", run_then_fail)
+
+    job = runner.submit_plan_approval(frame_id, "proj")
+    job.wait_result()
+    processing = [
+        e
+        for e in runner.hub.events
+        if e.get("type") == "frame_update" and e.get("status") == "processing"
+    ]
+    updates = _failed_frame_updates(runner)
+
+    assert processing and processing[-1].get("execution_id"), processing
+    assert not str(job.execution_id).startswith(
+        "plan-"
+    ), "the real execution id was never bound back to the ticket"
+    assert updates[-1].get("execution_id") == processing[-1]["execution_id"], (
+        updates[-1],
+        processing[-1],
+    )
+
+
+# --------------------------------------------------------------------------
+# the resume buffer belongs to an execution, not to a frame
+# --------------------------------------------------------------------------
+#
+# The client-side filter is not enough on its own. `WSHub._live` is keyed by
+# frame, so A's late `text_reset` replaced the window B was streaming into and
+# A's late terminal cleared `running` -- and a client that RECONNECTS replays
+# from that window and asks `is_running` from that flag. The turn that is
+# genuinely still running looks finished to everyone who arrives afterwards.
+
+
+# --------------------------------------------------------------------------
+# the resume buffer belongs to an execution, not to a frame
+# --------------------------------------------------------------------------
+#
+# The client-side filter is not enough on its own. `WSHub._live` is keyed by
+# frame, so A's late `text_reset` replaced the window B was streaming into and
+# A's late terminal cleared `running`. A client that RECONNECTS replays from
+# that window and asks `is_running` from that flag, so the turn that is
+# genuinely still running looks finished to everyone arriving afterwards.
+#
+# Driven through `WSHub._record`, the shipped recorder, in the order the
+# gateway emits.
+
+
+@pytest.fixture
+def hub():
+    from openai4s.server import gateway as gw
+
+    return gw.WSHub()
+
+
+def _live(hub, frame_id):
+    return hub._live.get(frame_id) or {}
+
+
+def test_a_new_execution_takes_the_window_over_from_a_running_one(hub):
+    """The boundary must be read before the staleness test.
+
+    Judged as an ordinary event, `processing(B)` is stale against A's window --
+    so it is dropped, and A's window stays live forever while B streams into
+    nothing.
+    """
+    hub._record("f", {"type": "text_reset", "frame_id": "f", "execution_id": "exec-A"})
+    assert _live(hub, "f").get("execution_id") == "exec-A"
+
+    hub._record(
+        "f",
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "processing",
+            "execution_id": "exec-B",
+        },
+    )
+
+    assert (
+        _live(hub, "f").get("execution_id") == "exec-B"
+    ), "B never took the window over"
+    assert _live(hub, "f").get("running") is True
+
+
+def test_an_idless_reset_keeps_the_identity_the_boundary_established(hub):
+    """A running turn's own stream events carry no execution id.
+
+    Taking the field verbatim wipes what `processing` just established and
+    hands the window to whichever late event arrives next.
+    """
+    hub._record(
+        "f",
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "processing",
+            "execution_id": "exec-B",
+        },
+    )
+    hub._record("f", {"type": "text_reset", "frame_id": "f"})
+
+    assert (
+        _live(hub, "f").get("execution_id") == "exec-B"
+    ), "an identity-less reset erased the running execution"
+    assert _live(hub, "f").get("running") is True
+
+
+def test_every_late_event_from_the_previous_execution_is_dropped(hub):
+    """Reset, chunk and terminal alike -- the last one is the damaging one."""
+    hub._record("f", {"type": "text_reset", "frame_id": "f", "execution_id": "exec-A"})
+    hub._record(
+        "f",
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "processing",
+            "execution_id": "exec-B",
+        },
+    )
+    hub._record("f", {"type": "text_reset", "frame_id": "f"})
+    hub._record("f", {"type": "text_chunk", "frame_id": "f", "chunk": "B says"})
+
+    for late in (
+        {"type": "text_reset", "frame_id": "f", "execution_id": "exec-A"},
+        {
+            "type": "text_chunk",
+            "frame_id": "f",
+            "chunk": "_Error: A failed_",
+            "execution_id": "exec-A",
+        },
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "failed",
+            "execution_id": "exec-A",
+        },
+    ):
+        hub._record("f", late)
+
+    buf = _live(hub, "f")
+    assert buf.get("execution_id") == "exec-B"
+    assert buf.get("running") is True, "A's terminal ended B's window"
+    assert hub.is_running("f") is True
+    text = json.dumps(buf.get("events") or [], ensure_ascii=False)
+    assert "A failed" not in text, f"A's late prose landed in B's window: {text}"
+    assert "B says" in text, "B's own stream was lost"
+
+
+def test_the_running_executions_own_terminal_still_closes_the_window(hub):
+    """The guard must not make a turn impossible to finish."""
+    hub._record(
+        "f",
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "processing",
+            "execution_id": "exec-B",
+        },
+    )
+    hub._record(
+        "f",
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "completed",
+            "execution_id": "exec-B",
+        },
+    )
+
+    assert hub.is_running("f") is False
+
+
+def test_a_daemon_without_execution_ids_behaves_as_it_always_did(hub):
+    """Neither side naming one is the pre-identity contract."""
+    hub._record("f", {"type": "text_reset", "frame_id": "f"})
+    hub._record("f", {"type": "text_chunk", "frame_id": "f", "chunk": "hello"})
+    assert hub.is_running("f") is True
+
+    hub._record("f", {"type": "frame_update", "frame_id": "f", "status": "completed"})
+    assert hub.is_running("f") is False
+
+
+@pytest.mark.stubbed_backend
+def test_a_late_turn_does_not_end_the_resume_window_of_the_running_one(tmp_path):
+    """End to end: processing(A) -> processing(B) -> A's outer terminal.
+
+    Three events, no sleeps and no serial fake concurrency. A stays inside its
+    loop until B is queued; A's tail faults so it leaves through the outer
+    handler; that handler waits until B has reached its own loop -- which
+    proves B's `processing` is already recorded -- and B stays there until the
+    assertions have run.
+
+    The two turns are told apart by `correlation_id()`, which each job target
+    binds to its own ticket. A shared flag cannot do it: A's tail resets before
+    B is scheduled, so B gets mistaken for A and nothing ever releases.
+    """
+    from openai4s.config import LLMConfig
+    from openai4s.observability import correlation_id, set_correlation_id
+    from openai4s.server import gateway as gw
+
+    cfg = Config(
+        data_dir=tmp_path, llm=LLMConfig(provider="deepseek", api_key="test-key")
+    )
+    hub = gw.WSHub()
+    runner = gw.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    b_queued = threading.Event()
+    b_running = threading.Event()
+    b_release = threading.Event()
+    seen: set[str] = set()
+    job_b = None
+
+    try:
+        frame_id = runner.store.new_frame(
+            kind="turn", project_id="default", status="ready"
+        )
+
+        def loop(_st, *_a, **_k):
+            if correlation_id() == "req-B":
+                b_running.set()
+                assert b_release.wait(20), "the probe never released B"
+                return "submitted"
+            seen.add("a-loop")
+            assert b_queued.wait(20), "B was never queued"
+            raise CanaryFailure()
+
+        real_touch = runner.recovery.touch
+
+        def tail(*args, **kwargs):
+            if correlation_id() == "req-A" and "a-loop" in seen and "tail" not in seen:
+                seen.add("tail")
+                raise RuntimeError("recovery journal is unwritable")
+            return real_touch(*args, **kwargs)
+
+        real_persist = runner._persist_outer_failure
+
+        def persist_after_b(*args, **kwargs):
+            assert b_running.wait(20), "B never reached its loop"
+            return real_persist(*args, **kwargs)
+
+        runner._loop = loop
+        runner.recovery.touch = tail
+        runner._persist_outer_failure = persist_after_b
+
+        set_correlation_id("req-A")
+        job_a = runner.submit_message(frame_id, "default", "a")
+        set_correlation_id("req-B")
+        job_b = runner.submit_message(frame_id, "default", "b")
+        set_correlation_id("")
+        b_queued.set()
+        job_a.wait_result()
+        assert b_running.wait(20), "B never started"
+
+        # A is finished; B is still inside its loop.
+        buf = hub._live.get(frame_id) or {}
+        assert buf.get("execution_id") == job_b.execution_id, (
+            f"the live window belongs to {buf.get('execution_id')!r}, not to the "
+            f"turn still running ({job_b.execution_id!r})"
+        )
+        assert (
+            hub.is_running(frame_id) is True
+        ), "a finished turn's terminal event closed the running turn's window"
+        stale = [
+            event
+            for event in buf.get("events") or []
+            if str(event.get("execution_id") or "") == str(job_a.execution_id)
+        ]
+        assert not stale, f"A's late events landed in B's window: {stale}"
+    finally:
+        b_release.set()
+        if job_b is not None:
+            job_b.wait_result()
+        runner.close()
+
+    assert hub.is_running(frame_id) is False, "B's own terminal did not close it"
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "path,body",
+    [("plan/approve", {}), ("plan/revise", {"changes": "x"})],
+)
+def test_a_plan_202_names_the_execution_a_pre_run_failure_will_use(
+    runner, monkeypatch, path, body
+):
+    """The 202 is the only synchronous thing a `wait:false` client receives.
+
+    A plan turn that fails before it reaches an execution is reported under the
+    synthetic id, and without it on the 202 the client cannot tell that failure
+    from the next turn's -- which is the case the whole execution filter exists
+    for.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    runner.store.create_plan(
+        frame_id=frame_id,
+        project_id="proj",
+        title="p",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+        status="draft",
+    )
+    for attribute in ("run_plan_execution", "run_plan_revision"):
+        monkeypatch.setattr(
+            runner,
+            attribute,
+            lambda *a, **k: (_ for _ in ()).throw(CanaryFailure()),
+        )
+
+    accepted, status = _api(runner, "POST", f"/frames/{frame_id}/{path}", body)
+    assert status == 202, (status, accepted)
+    assert accepted.get("execution_id"), f"the plan 202 named no execution: {accepted}"
+
+    job = next(j for j in runner._jobs.values() if j.job_id == accepted["job_id"])
+    result = job.wait_result()
+    updates = _failed_frame_updates(runner)
+
+    # The 202, the poll and the socket agree about which execution failed.
+    assert result.get("execution_id") == accepted["execution_id"], result
+    assert updates and updates[-1].get("execution_id") == accepted["execution_id"]
+
+
+@pytest.mark.stubbed_backend
+def test_a_post_run_plan_failure_reports_the_real_execution_on_every_surface(
+    runner, monkeypatch
+):
+    """Once bound, the real id is what the poll and the socket both carry."""
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    runner.store.create_plan(
+        frame_id=frame_id,
+        project_id="proj",
+        title="p",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+        status="draft",
+    )
+    monkeypatch.setattr(runner, "_loop", lambda *a, **k: "submitted")
+    real_execution = runner.run_plan_execution
+
+    def run_then_fail(*args, **kwargs):
+        real_execution(*args, **kwargs)
+        raise CanaryFailure()
+
+    monkeypatch.setattr(runner, "run_plan_execution", run_then_fail)
+
+    accepted, _ = _api(runner, "POST", f"/frames/{frame_id}/plan/approve", {})
+    job = next(j for j in runner._jobs.values() if j.job_id == accepted["job_id"])
+    result = job.wait_result()
+    processing = [
+        e
+        for e in runner.hub.events
+        if e.get("type") == "frame_update" and e.get("status") == "processing"
+    ]
+    updates = _failed_frame_updates(runner)
+
+    real = processing[-1]["execution_id"]
+    assert not real.startswith("plan-"), real
+    assert result.get("execution_id") == real, result
+    assert updates[-1].get("execution_id") == real

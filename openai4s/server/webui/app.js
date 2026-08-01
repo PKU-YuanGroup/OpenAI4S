@@ -3305,7 +3305,10 @@ function onEvent(m) {
   else if (m.type === "attachment_problems") {
     if (mine(fid)) renderAttachmentProblems(m.problems || []);
   }
-  else if (m.type === "text_reset") { if (mine(fid)) startStream(); }
+  // A late failure's prose is addressed to the turn that produced it. Without
+  // this it wipes the running turn's stream and prints its predecessor's error
+  // into it.
+  else if (m.type === "text_reset") { if (mine(fid) && !isStaleTurnEvent(m)) startStream(); }
   else if (m.type === "notebook_cell_draft") { if (mine(fid)) nbCellDraft(m); }
   else if (m.type === "notebook_cell_start") { if (mine(fid)) nbCellStart(m); }
   else if (m.type === "notebook_cell_chunk") { if (mine(fid)) nbCellChunk(m); }
@@ -3342,7 +3345,7 @@ function onEvent(m) {
     scheduleWorkbenchRefresh(60); if (S.activeTab === "timeline") renderActionTimeline();
   } }
   else if (["sandbox", "sandbox_status", "security_status"].includes(m.type)) { if (mine(fid)) { S.securityState = sanitizeSecurity(m); if (S.activeTab === "timeline") renderActionTimeline(); } }
-  else if (m.type === "text_chunk") { if (mine(fid)) feed(m.block_type || "text", m.chunk || "", m); }
+  else if (m.type === "text_chunk") { if (mine(fid) && !isStaleTurnEvent(m)) feed(m.block_type || "text", m.chunk || "", m); }
   else if (m.type === "step") { if (mine(fid)) addLiveStep(m); }
   else if (m.type === "step_update") { if (mine(fid)) updateLiveStep(m); }
   else if (m.type === "plan_ready") { if (mine(fid)) renderPlanCard(m.plan, m.status); }
@@ -3355,9 +3358,16 @@ function onEvent(m) {
       // when a queued follow-up starts, `S.running` is already true from the
       // turn that just ended, and that is precisely the hand-off this exists
       // for.
-      if (m.status === "processing") activateTurnTicket(m.request_id);
+      if (m.status === "processing") activateTurnTicket(m.request_id, m.execution_id);
       if (m.status === "processing" && !S.running) { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); resumeWatch(fid, S._openGen); }  // a turn observed on the WS (e.g. started from another tab) — watchdog covers a missed terminal event
-      if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) { turnDone(m.status, m); scheduleWorkbenchRefresh(); }
+      if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) {
+        // A terminal event for a turn that is no longer on screen may not
+        // close the one that is: no hint, no teardown, no ticket cleared. The
+        // workbench still refreshes, because the artifacts and cells that turn
+        // produced are real.
+        if (isStaleTurnEvent(m)) scheduleWorkbenchRefresh();
+        else { turnDone(m.status, m); scheduleWorkbenchRefresh(); }
+      }
     }
     loadSessions();
   }
@@ -3567,6 +3577,9 @@ function commitTurnTicket(token, accepted) {
   if (token !== S.turnTicket) return false;   // a newer turn owns the slot
   if (!S.running) return false;               // this turn already ended
   S.pendingRequestId = String(accepted.request_id);
+  // The 202 names the execution too, and it is the id the stale filter
+  // actually compares -- a reused request id cannot tell two turns apart.
+  if (accepted.execution_id) S.pendingExecutionId = String(accepted.execution_id);
   return true;
 }
 // A turn has started running server-side: it owns the slot from now on.
@@ -3617,19 +3630,49 @@ function acceptTurnTicket(token, accepted) {
 // a later resolution cannot claim the slot with it. Deliberately leaves
 // `pendingRequestId` alone -- if we no longer own the generation, whatever is
 // in there belongs to somebody else's turn.
+// Is this event the tail of a turn that is no longer the one on screen?
+//
+// The ordering is real and reproducible: `processing(A)`, `processing(B)`,
+// then `failed(A)` -- A fails inside the turn, persists its row, and only
+// finishes unwinding after B has been promoted out of the queue. Acting on
+// A's terminal there closes B's turn, unlocks the composer under a running
+// turn, and prints A's error into B's transcript.
+//
+// Filtered on the EXECUTION, not the request: a client may reuse
+// `X-Request-Id`, so A and B can legitimately share one. Request id is the
+// fallback for a daemon old enough not to send an execution id, and when
+// neither side offers any identity at all the event is treated as current --
+// the pre-identity behaviour, which is the only safe default for a client
+// talking to an older server.
+function isStaleTurnEvent(event) {
+  const incomingExec = (event && event.execution_id) || "";
+  if (incomingExec && S.pendingExecutionId) return incomingExec !== S.pendingExecutionId;
+  if (incomingExec || S.pendingExecutionId) return false;   // one side is silent
+  const incomingReq = (event && event.request_id) || "";
+  if (incomingReq && S.pendingRequestId) return incomingReq !== S.pendingRequestId;
+  return false;
+}
 function retireTurnTicket(token) {
   if (!ownsTurnTicket(token)) return false;
   S.turnTicket = (S.turnTicket || 0) + 1;
   return true;
 }
-function activateTurnTicket(requestId) {
+function activateTurnTicket(requestId, executionId) {
+  // The generation always advances: another turn is running now, so every
+  // ticket in flight is stale whether or not this event named itself.
   S.turnTicket = (S.turnTicket || 0) + 1;
-  S.pendingRequestId = requestId ? String(requestId).slice(0, 96) : null;
+  // The identities are only *overwritten* by an event that carries them. An
+  // older daemon sends `processing` with neither, and clearing on that would
+  // throw away the ids the 202 had already given us -- leaving the running
+  // turn's own failure with nothing to quote and nothing to filter on.
+  if (requestId) S.pendingRequestId = String(requestId).slice(0, 96);
+  if (executionId) S.pendingExecutionId = String(executionId).slice(0, 96);
   return S.turnTicket;
 }
 function closeTurnTicket() {
   S.turnTicket = (S.turnTicket || 0) + 1;
   S.pendingRequestId = null;
+  S.pendingExecutionId = null;
 }
 // The sentence a failed turn shows, from whichever source has the facts.
 //
@@ -3808,20 +3851,54 @@ function updatePlanProgress(m) {
   if (foot && S.planReady) { const done = (S.planReady.steps || []).filter(s => s.status === "completed").length; const total = (S.planReady.steps || []).length; foot.textContent = t("plan.status.executing", done, total); }
   down();
 }
+// One generation-owned dispatch for every plan turn.
+//
+// Each of these used to lock the UI *after* awaiting its 202 (revise locked
+// first, but took no ticket). A plan can fail before the POST is answered, so
+// the terminal event arrives first, `turnDone` unlocks -- and then the await
+// resolves and locks the composer again against a turn that has already ended.
+// The session is stuck until reload. The mirror case is just as bad: while the
+// await is outstanding another turn can start, and a rejected plan POST then
+// tears *that* turn down.
+//
+// So: take the generation and lock before the POST; commit the 202's ids only
+// if the generation still stands; and let only the owner tear anything down.
+async function dispatchPlanTurn(path, body, runningHint, failedKey) {
+  // Refuse outright while a turn is running -- including this one, if the
+  // user double-clicks. Taking a second ticket makes the newer request the
+  // owner: a 409 then tears down the turn that is actually running, and an
+  // acceptance replaces the running turn's identity with a queued plan's, so
+  // that turn's own terminal event is judged stale and never closes it.
+  if (!S.currentId || S.running) return false;
+  const token = openTurnTicket();
+  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden");
+  hint(runningHint, false, true);
+  try {
+    const accepted = await api(`/frames/${S.currentId}${path}`, { method: "POST", body: JSON.stringify(body) });
+    // A terminal event that beat the 202 has already closed this generation.
+    // Re-locking, storing its ids or re-arming the watchdog here would revive
+    // a turn that is over.
+    if (!ownsTurnTicket(token)) return true;
+    commitTurnTicket(token, accepted || {});
+    resumeWatch(S.currentId, S._openGen);  // 202 returns at once; only the WS unlocks us
+    return true;
+  } catch (e) {
+    hint(t(failedKey, apiErrorText(e)), true);
+    // Only our own turn. If another one took over while we were awaiting, this
+    // failure is ours to report and not theirs to end.
+    if (ownsTurnTicket(token)) turnDone("failed");
+    return false;
+  }
+}
 async function approvePlan() {
-  if (!S.currentId) return;
-  try { await api(`/frames/${S.currentId}/plan/approve`, { method: "POST", body: JSON.stringify({ model: S.defaultModelName }) }); }
-  catch (e) { hint(t("plan.approveFailed", apiErrorText(e)), true); return; }
-  S.planMode = false; const pt = $("#plan-toggle"); if (pt) pt.classList.remove("on");
-  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("plan.autoExecuting"), false, true);
-  resumeWatch(S.currentId, S._openGen);  // /plan/approve returns 202 immediately — only the WS unlocks us; watchdog covers a missed terminal event
+  // The mode toggle follows acceptance, as it always has: an approved plan is
+  // no longer being drafted.
+  if (await dispatchPlanTurn("/plan/approve", { model: S.defaultModelName }, t("plan.autoExecuting"), "plan.approveFailed")) {
+    S.planMode = false; const pt = $("#plan-toggle"); if (pt) pt.classList.remove("on");
+  }
 }
 async function resumePlan() {
-  if (!S.currentId) return;
-  try { await api(`/frames/${S.currentId}/plan/resume`, { method: "POST", body: JSON.stringify({ model: S.defaultModelName }) }); }
-  catch (e) { hint(t("plan.resumeFailed", apiErrorText(e)), true); return; }
-  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("plan.resuming"), false, true);
-  resumeWatch(S.currentId, S._openGen);  // 202 immediately, same as approve — only the WS unlocks us
+  await dispatchPlanTurn("/plan/resume", { model: S.defaultModelName }, t("plan.resuming"), "plan.resumeFailed");
 }
 async function discardPlan() {
   if (!S.currentId) return;
@@ -3830,10 +3907,7 @@ async function discardPlan() {
   S.planReady = null; S.planStatus = "discarded"; S.planPending = false; hint(t("toast.planDiscarded"));
 }
 async function revisePlan(changes) {
-  if (!S.currentId) return;
-  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.planRevising"), false, true);
-  try { await api(`/frames/${S.currentId}/plan/revise`, { method: "POST", body: JSON.stringify({ changes, model: S.defaultModelName }) }); resumeWatch(S.currentId, S._openGen); }
-  catch (e) { hint(t("toast.reviseFailed", apiErrorText(e)), true); if (S.running) turnDone("failed"); }
+  await dispatchPlanTurn("/plan/revise", { changes, model: S.defaultModelName }, t("toast.planRevising"), "toast.reviseFailed");
 }
 
 /* ---------- semantic activity steps (plan / search / env / skill / …) ---------- */

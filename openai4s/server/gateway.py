@@ -857,6 +857,7 @@ class WSHub:
         events: list[dict],
         *,
         scope: str,
+        execution_id: str = "",
     ) -> dict:
         prepared: list[dict] = []
         sizes: list[int] = []
@@ -872,6 +873,11 @@ class WSHub:
             "active_cells": {},
             "active_cell_sizes": {},
             "scope": scope,
+            # Which execution this window belongs to. Stated rather than
+            # inferred from the last event that happened to arrive: the whole
+            # problem is that events arrive out of order, so the last one is
+            # exactly the wrong thing to trust.
+            "execution_id": str(execution_id or ""),
         }
 
     def _ensure_live_accounting(self, buf: dict) -> None:
@@ -917,6 +923,20 @@ class WSHub:
         buf["event_sizes"] = kept_sizes
         buf["event_bytes"] = sum(kept_sizes)
 
+    @staticmethod
+    def _is_stale_for_buffer(buf: dict | None, event_execution: str) -> bool:
+        """Does this event belong to an execution the live window has moved on from?
+
+        Both sides must name one. A daemon that predates execution ids on the
+        wire, and the identity-less stream events a current turn still emits
+        between its `processing` and its terminal, both fall through as current
+        -- which is the only answer that cannot strand a running turn.
+        """
+        if not buf or not buf.get("running") or not event_execution:
+            return False
+        active = str(buf.get("execution_id") or "")
+        return bool(active) and active != event_execution
+
     def _record(self, rid: str, obj: dict) -> None:
         t = obj.get("type")
         # Approval cards have their own durable replay source.  In particular,
@@ -925,24 +945,57 @@ class WSHub:
         if t in {"await_permission", "permission_resolved"}:
             return
         buf = self._live.get(rid)
-        if t == "text_reset":
-            # a new turn begins — start a fresh buffer
-            self._install_live_buffer(
-                rid,
-                self._new_live_buffer([obj], scope="turn"),
-            )
-            return
+        event_execution = str(obj.get("execution_id") or "")
+        # A `processing` naming a new execution is a BOUNDARY, and it has to be
+        # read before the staleness test -- which would otherwise judge it
+        # against the window it is replacing and drop it, leaving the previous
+        # execution's window live forever.
         if (
             t == "frame_update"
             and obj.get("status") == "processing"
-            and (buf is None or not buf.get("running"))
+            and (
+                buf is None
+                or not buf.get("running")
+                or (
+                    event_execution
+                    and str(buf.get("execution_id") or "") != event_execution
+                )
+            )
         ):
             # A manual Reviewer (or another activity without a text stream)
-            # starts after the prior turn's buffer has ended. Give it a fresh
-            # resume window so reconnecting clients can replay its step events.
+            # starts after the prior turn's buffer has ended; a queued turn
+            # starts while the previous one is still unwinding. Either way this
+            # is the live window now.
             self._install_live_buffer(
                 rid,
-                self._new_live_buffer([obj], scope="turn"),
+                self._new_live_buffer(
+                    [obj], scope="turn", execution_id=event_execution
+                ),
+            )
+            return
+        if self._is_stale_for_buffer(buf, event_execution):
+            # This event is the tail of an execution that is no longer the live
+            # one. The client-side filter is not enough on its own: the resume
+            # buffer is what a RECONNECTING client replays and what
+            # `is_running` answers from, so a late `text_reset` replacing the
+            # window -- or a late terminal clearing `running` -- makes the turn
+            # that is genuinely still running look finished to every client
+            # that arrives afterwards, including the one that reconnects.
+            return
+        if t == "text_reset":
+            # A new turn begins -- but the identity is INHERITED when the event
+            # does not name one. The stream events a running turn emits carry
+            # no execution id today, so taking the field verbatim would wipe
+            # the id the `processing` boundary just established and hand the
+            # window straight back to whichever late event arrived next.
+            self._install_live_buffer(
+                rid,
+                self._new_live_buffer(
+                    [obj],
+                    scope="turn",
+                    execution_id=event_execution
+                    or (str(buf.get("execution_id") or "") if buf else ""),
+                ),
             )
             return
         if t == "notebook_cell_start" and (buf is None or not buf.get("running")):
@@ -1536,6 +1589,11 @@ class MessageJob:
         # request -- and the error envelope already distinguishes those.
         if self.request_id:
             failure["request_id"] = self.request_id
+        if self.execution_id:
+            # The id that tells this failure from a later turn's. A poll and
+            # the socket must agree about which execution ended, or a client
+            # that missed the event cannot reconstruct what the socket said.
+            failure["execution_id"] = self.execution_id
         if self.output_committed:
             failure["output_committed"] = True
         return failure
@@ -4705,13 +4763,33 @@ class SessionRunner:
                 self._best_effort(
                     "prose",
                     lambda: (
-                        emit({"type": "text_reset", "frame_id": root_frame_id}),
+                        emit(
+                            {
+                                "type": "text_reset",
+                                "frame_id": root_frame_id,
+                                # Same identity as the terminal event: a
+                                # failure that arrives after the next turn has
+                                # started would otherwise wipe that turn's
+                                # stream and print its predecessor's error into
+                                # it.
+                                **(
+                                    {"execution_id": job.execution_id}
+                                    if job.execution_id
+                                    else {}
+                                ),
+                            }
+                        ),
                         emit(
                             {
                                 "type": "text_chunk",
                                 "frame_id": root_frame_id,
                                 "block_type": "text",
                                 "chunk": f"\n\n_Error: {message}_\n",
+                                **(
+                                    {"execution_id": job.execution_id}
+                                    if job.execution_id
+                                    else {}
+                                ),
                             }
                         ),
                     ),
@@ -5415,6 +5493,7 @@ class SessionRunner:
             owner_id=f"direct-{uuid.uuid4().hex[:12]}",
             reason="user message",
         ) as execution:
+            self._bind_execution_to_turn(getattr(execution, "execution_id", ""))
             self.recovery.touch(st)
             # Tool-only and plan turns need the control plane and provider
             # history, not a scientific worker.  A CodeCell acquires its kernel
@@ -5432,6 +5511,14 @@ class SessionRunner:
                     # so this event -- "your turn is running now" -- is the
                     # moment its id becomes the current one.
                     "request_id": turn_request_id,
+                    # And which execution it is, so a terminal event arriving
+                    # out of order can be told from this turn's own. A client
+                    # may reuse `X-Request-Id`; execution ids are minted here.
+                    **(
+                        {"execution_id": execution.execution_id}
+                        if getattr(execution, "execution_id", "")
+                        else {}
+                    ),
                 }
             )
             # first user message names the session. The truncation is set at once
@@ -5679,7 +5766,14 @@ class SessionRunner:
             # One id on every terminal surface, a code whenever this turn
             # failed for any reason. `output_committed` only ever appears when
             # the projector actually read it -- absent is "no claim".
-            turn_identity: dict[str, object] = {"request_id": turn_request_id}
+            turn_identity: dict[str, object] = {
+                "request_id": turn_request_id,
+                **(
+                    {"execution_id": execution.execution_id}
+                    if getattr(execution, "execution_id", "")
+                    else {}
+                ),
+            }
             if status == "failed":
                 turn_identity["code"] = str(failure_meta.get("code") or "turn_failed")
                 if failure_meta.get("output_committed"):
@@ -6624,6 +6718,12 @@ class SessionRunner:
             "status": "failed",
             # The same local id the submit 202 and the job query carry.
             "request_id": job.request_id,
+            # Which *execution* this is the end of. A request id is not enough
+            # to tell a stale terminal from a current one: a client may reuse
+            # `X-Request-Id`, and the ordering that produced this bug --
+            # processing(A), processing(B), failed(A) -- then looks like B's
+            # own terminal event and closes B's turn.
+            **({"execution_id": job.execution_id} if job.execution_id else {}),
             "code": job.error_code or "internal_error",
             # Only when true: absent means "no claim", and a false would
             # assert a safety this cannot know.
@@ -6669,6 +6769,23 @@ class SessionRunner:
                 # and the outermost `finally` will clear it.
                 return None
             return self._terminal_failures.pop(job_id)
+
+    def _bind_execution_to_turn(self, execution_id: str) -> None:
+        """Give this thread's ticket the execution the turn actually got.
+
+        The message spawner already knows it -- it holds the coordinator ticket
+        -- so this is a no-op there. The plan spawner does not, and its job
+        carried a synthetic id until this line. The two are never both in
+        flight: the synthetic one is only ever emitted by a failure that
+        happened before the turn reached an execution at all.
+        """
+        job_id = getattr(self._turn_scope, "job_id", "")
+        if not job_id or not execution_id:
+            return
+        with self._lock:
+            job = self._jobs.get(job_id)
+        if job is not None:
+            job.execution_id = execution_id
 
     def _enter_turn_scope(self, job_id: str) -> None:
         """Bind this thread's turn to `job_id`."""
@@ -6760,6 +6877,15 @@ class SessionRunner:
         """Run `fn` in a background daemon thread as a tracked MessageJob (shared
         machinery behind submit_message / plan approve / plan revise)."""
         job = MessageJob(f"job-{uuid.uuid4().hex[:12]}", root_frame_id)
+        # Every ticket owns an execution identity from the moment it is
+        # accepted. The plan spawner holds no coordinator ticket, so its job had
+        # `execution_id = None` the whole way through -- and a failure before
+        # `run_message` reached an execution emitted a terminal event naming
+        # none. A client whose running turn *does* have one then falls into the
+        # "one side is silent" compatibility branch and closes it. Synthetic
+        # until the real one is bound, and derived from the job id so it can
+        # never collide with a coordinator-minted one.
+        job.execution_id = f"plan-{job.job_id}"
         try:
             # On the submitting thread, while the Store is known to work. The
             # helper used to fall back to the root frame when this was missing,
@@ -8994,6 +9120,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         "frame_id": fid,
                         "job_id": job.job_id,
                         "request_id": job.request_id,
+                        # The plan spawner holds no coordinator ticket, so this
+                        # is synthetic until the turn reaches a real execution.
+                        # It is still the id a pre-run failure will be reported
+                        # under, and a client needs it to tell that failure
+                        # from the next turn's.
+                        "execution_id": job.execution_id,
                     },
                     202,
                 )
@@ -9274,6 +9406,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "frame_id": fid,
                             "job_id": job.job_id,
                             "request_id": job.request_id,
+                            # Synthetic until the turn reaches a real
+                            # execution, and still the id a pre-run failure is
+                            # reported under.
+                            "execution_id": job.execution_id,
                         },
                         202,
                     )
@@ -9310,6 +9446,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "frame_id": fid,
                             "job_id": job.job_id,
                             "request_id": job.request_id,
+                            # Synthetic until the turn reaches a real
+                            # execution, and still the id a pre-run failure is
+                            # reported under.
+                            "execution_id": job.execution_id,
                         },
                         202,
                     )
@@ -9325,6 +9465,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "frame_id": fid,
                             "job_id": job.job_id,
                             "request_id": job.request_id,
+                            # Synthetic until the turn reaches a real
+                            # execution, and still the id a pre-run failure is
+                            # reported under.
+                            "execution_id": job.execution_id,
                         },
                         202,
                     )
