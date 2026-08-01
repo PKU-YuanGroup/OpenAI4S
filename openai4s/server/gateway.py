@@ -1468,6 +1468,12 @@ class MessageJob:
         # so `Handler._json` never enriches it and the code has to be carried
         # here or it does not exist on this surface at all.
         self.error_code: str = ""
+        #: Whether the failure happened after output was already committed --
+        #: bytes streamed, or a tool run. `llm/models.py` calls it the retry
+        #: veto; it is kept here so the socket and the job query can both say
+        #: so, which is what stops the UI offering a retry that would duplicate
+        #: work that already happened.
+        self.output_committed: bool = False
 
     def finish(self, result: dict | None = None, error: str | None = None) -> None:
         self.result = result
@@ -1492,6 +1498,7 @@ class MessageJob:
             exc, surface=surface, request_id=self.request_id
         )
         self.error_code = str(body.get("code") or "internal_error")
+        self.output_committed = bool(body.get("output_committed"))
         return str(body.get("error") or INTERNAL_ERROR_MESSAGE)
 
     def wait_result(self) -> dict:
@@ -1510,6 +1517,8 @@ class MessageJob:
         # request -- and the error envelope already distinguishes those.
         if self.request_id:
             failure["request_id"] = self.request_id
+        if self.output_committed:
+            failure["output_committed"] = True
         return failure
 
 
@@ -4655,6 +4664,22 @@ class SessionRunner:
                             "type": "frame_update",
                             "frame_id": root_frame_id,
                             "status": "failed",
+                            # The same local id the submit response and the job
+                            # query already carry. Without it the one surface a
+                            # user is actually watching -- the stream -- showed
+                            # "internal error" and nothing to quote, so the id
+                            # existed only for a client that thought to poll
+                            # the job afterwards. P0-4 asks for one id across
+                            # all four surfaces, and this was the missing one.
+                            "request_id": job.request_id,
+                            "code": job.error_code or "internal_error",
+                            # Only when true: absent means "no claim", and a
+                            # false would assert a safety this cannot know.
+                            **(
+                                {"output_committed": True}
+                                if job.output_committed
+                                else {}
+                            ),
                         }
                     )
                 except Exception:
@@ -6485,6 +6510,16 @@ class SessionRunner:
                             "type": "frame_update",
                             "frame_id": root_frame_id,
                             "status": "failed",
+                            # Same id, same reason as the message turn above.
+                            "request_id": job.request_id,
+                            "code": job.error_code or "internal_error",
+                            # Only when true: absent means "no claim", and a
+                            # false would assert a safety this cannot know.
+                            **(
+                                {"output_committed": True}
+                                if job.output_committed
+                                else {}
+                            ),
                         }
                     )
                 except Exception:
@@ -8651,7 +8686,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 job = runner.submit_review(fid, frame.get("project_id") or "default")
                 self._json(
-                    {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
+                    {
+                        "status": "accepted",
+                        "frame_id": fid,
+                        "job_id": job.job_id,
+                        "request_id": job.request_id,
+                    },
                     202,
                 )
                 return
@@ -8710,6 +8750,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "execution_id": job.execution_id,
                             "owner": job.execution_owner,
                             "queue_position": (queued or {}).get("queue_position"),
+                            # The id the socket event and the job query will
+                            # both name for this turn. A 202 says "accepted,
+                            # watch elsewhere", so it is the one place a client
+                            # can learn which request the later failure belongs
+                            # to -- and it was the only one of the three that
+                            # did not say.
+                            "request_id": job.request_id,
                         },
                         202,
                     )
@@ -8919,7 +8966,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         )
                         raise
                     self._json(
-                        {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
+                        {
+                            "status": "accepted",
+                            "frame_id": fid,
+                            "job_id": job.job_id,
+                            "request_id": job.request_id,
+                        },
                         202,
                     )
                 elif action == "resume":
@@ -8950,7 +9002,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         )
                         raise
                     self._json(
-                        {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
+                        {
+                            "status": "accepted",
+                            "frame_id": fid,
+                            "job_id": job.job_id,
+                            "request_id": job.request_id,
+                        },
                         202,
                     )
                 elif action == "revise":
@@ -8960,7 +9017,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         return
                     job = runner.submit_plan_revision(fid, pid, changes, model)
                     self._json(
-                        {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
+                        {
+                            "status": "accepted",
+                            "frame_id": fid,
+                            "job_id": job.job_id,
+                            "request_id": job.request_id,
+                        },
                         202,
                     )
                 else:  # discard

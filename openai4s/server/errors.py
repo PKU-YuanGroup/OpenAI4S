@@ -207,6 +207,22 @@ def public_exception(
         "error": INTERNAL_ERROR_MESSAGE,
         "code": error_code or error_code_for(status),
     }
+    # The retry veto, carried out to the client.
+    #
+    # `openai4s/llm/models.py` defines `output_committed` and says what it
+    # decides: "Once a stream has handed bytes to the caller -- or a tool has
+    # run -- a transparent retry would duplicate visible output or re-fire a
+    # side effect, so it is never safe regardless of how retryable the status
+    # looks." It was set on the exception and read by nobody outside the LLM
+    # layer, so the one fact that decides whether a retry is safe never reached
+    # the surface that offers the retry. A 502 looks retryable; a 502 after a
+    # tool has already run is not, and nothing said so.
+    #
+    # Only ever emitted as `True`. Absent means "no claim", which is what an
+    # exception that knows nothing about committed output is entitled to say;
+    # emitting `False` there would assert safety this projector cannot know.
+    if getattr(exc, "output_committed", False):
+        payload["output_committed"] = True
     return _enriched(payload, status, request_id), status
 
 

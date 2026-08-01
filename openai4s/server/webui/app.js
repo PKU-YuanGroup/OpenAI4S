@@ -1130,6 +1130,7 @@ Object.assign(I18N.zh, {
   "toolLabel.searchSkills": "搜索技能中",
   "toolLabel.writeFile": "写入文件中",
   "turn.failed": "这一轮失败了，请重试。",
+  "turn.failedCommitted": "这一轮失败了，但它已经产出了输出或执行过工具——直接重试会重复已经发生的操作。请先检查结果再决定。",
   "upload.dropping": "正在上传拖入的文件…",
   "upload.failed": "上传失败：{0}",
   "upload.pasting": "正在上传粘贴的文件…",
@@ -2054,6 +2055,7 @@ Object.assign(I18N.en, {
   "toolLabel.searchSkills": "Searching skills",
   "toolLabel.writeFile": "Writing file",
   "turn.failed": "This turn failed. Please try again.",
+  "turn.failedCommitted": "This turn failed after it had already produced output or run a tool — retrying would repeat work that already happened. Check the result before deciding.",
   "upload.dropping": "Uploading dropped files…",
   "upload.failed": "Upload failed: {0}",
   "upload.pasting": "Uploading pasted files…",
@@ -3348,7 +3350,7 @@ function onEvent(m) {
   else if (m.type === "frame_update") {
     if (mine(m.frame_id) || mine(fid)) {
       if (m.status === "processing" && !S.running) { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); resumeWatch(fid, S._openGen); }  // a turn observed on the WS (e.g. started from another tab) — watchdog covers a missed terminal event
-      if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) { turnDone(m.status); scheduleWorkbenchRefresh(); }
+      if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) { turnDone(m.status, m); scheduleWorkbenchRefresh(); }
     }
     loadSessions();
   }
@@ -3537,13 +3539,23 @@ function feed(kind, chunk, event) {
   } else { st.text += chunk; st.full += chunk; st.md.classList.add("cursor"); scheduleRender(st); return; }
   down();
 }
-function turnDone(status) {
+function turnDone(status, detail) {
   S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");  clearTimeout(S._resumeTimer); S._resumeTok = (S._resumeTok || 0) + 1;  // retire the resume-watchdog (incl. any in-flight tick) so it can't bleed into the next turn
   if (S.stream) { flushRender(S.stream, true); S.stream.md.classList.remove("cursor"); addMsgActions(S.stream.wrap, S.stream.full || S.stream.text); }
   // Belt-and-suspenders: a completed turn must leave nothing blinking, even on
   // text blocks orphaned earlier by a tool/step that started mid-stream.
   const mm = $("#messages"); if (mm) mm.querySelectorAll(".md.cursor").forEach(n => n.classList.remove("cursor"));
-  hint(status === "failed" ? t("turn.failed") : "", status === "failed");
+  // "please retry" is the wrong advice once output has been committed. The
+  // server sets `output_committed` when the failure happened after bytes were
+  // streamed or a tool ran, and `llm/models.py` calls it the retry veto: a
+  // transparent retry there duplicates visible output or re-fires a side
+  // effect, however retryable the status looks. Saying "retry" anyway is how a
+  // UI turns one failed turn into two executions of the same tool.
+  const committed = !!(detail && detail.output_committed);
+  hint(
+    status === "failed" ? t(committed ? "turn.failedCommitted" : "turn.failed") : "",
+    status === "failed"
+  );
   invalidateKernelCache();  // the kernel just went turn_running → idle; re-read promptly
   if (S.currentId) { loadArtifacts(S.currentId); loadExecutionLog(S.currentId); }
   S.stream = null; S.liveCells = []; S._liveCell = null;
