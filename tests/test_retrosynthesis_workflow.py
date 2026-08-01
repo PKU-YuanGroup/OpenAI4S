@@ -171,5 +171,7 @@ def test_structural_audit_reports_missing_precursors_without_external_services()
 
     assert audit["route_count"] == 1
     assert audit["severity_counts"]["error"] == 1
-    assert any(issue["code"] == "reaction_without_precursors" for issue in audit["issues"])
+    assert any(
+        issue["code"] == "reaction_without_precursors" for issue in audit["issues"]
+    )
     assert "does not validate reaction feasibility" in audit["disclaimer"]
