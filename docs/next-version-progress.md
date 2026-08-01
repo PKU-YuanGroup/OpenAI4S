@@ -514,3 +514,66 @@ during browser acceptance. Closed by `tests/test_upload_scope_resolution.py`.
 **The release gate itself stays `implemented_unverified`.** Nothing in this batch
 changes that: the YAML is asserted against the parsed workflow graph, and one
 real `workflow_dispatch` is still the missing run.
+
+## 17. Browser evidence (2026-08-01)
+
+Run against a real daemon at `2947bec9786633359e0a693ba9d6f5e637ecfdeb`, with
+the auth gate on — the daemon answered `401` to an unauthenticated `GET /`, and
+both harnesses logged in through the `?token=` bootstrap, so the 303 and the
+cookie hand-off are on the path too.
+
+| Check | Engine | Result |
+|---|---|---|
+| `tests/browser_smoke.mjs` (full workbench walk) | chromium | passed |
+| `tests/browser_matrix.mjs` | chromium | 9/9 |
+| `tests/browser_matrix.mjs` | firefox | 9/9 |
+| `tests/browser_matrix.mjs` | webkit | 9/9 |
+
+`browser_smoke.mjs` needs `OPENAI4S_NOTEBOOK_REPL=1`, the same variable CI sets.
+A daemon started without it fails the run on `kernel/interrupt` with `403
+notebook REPL is disabled` — an environment precondition, not a product defect,
+and worth writing down because the failure reads like one.
+
+### Driven by hand, in the browser, at the same SHA
+
+Each of these is a click or a real request through the running product, not a
+unit test standing in for one.
+
+| Path | What was observed |
+|---|---|
+| ArtifactRef composer chip | Typing a partial `@figure_cell3` drew the chip in its unresolved state; accepting the autocomplete flipped it to resolved with `v-f85486107c9c · sha256:15e83e6a4e08`. Both halves matter — the unresolved state is the whole reason to draw it before the send. |
+| Same-name Artifact selection | The `@` menu lists project artifacts keyed by `artifact_id`, each row carrying its short version id, so two files sharing a name are separately pickable. |
+| Notebook language selector | All four export forms are real hrefs; `?language=markdown` came back `200 text/markdown; charset=utf-8`, 12,519 bytes, with the structured per-cell headings. |
+| Models protocol menu | Five protocols including Gemini; the session model list is provider-qualified, so same-named models do not collapse. |
+| Skills readiness | `alphafold2` renders `本机缺少: gpu` — a readiness verdict computed from declared requirements, separate from the enable toggle. |
+| Memory scope and edit | Scope selector plus the injection counts (injected / omitted / inherited / overridden); the new pencil edited a row in place and it came back carrying the `edited` pill, without losing its position. |
+| Table truncation banner | A 5001×101 TSV renders `共 5,001 行 × 101 列 … 1 行、1 列未显示` and reports the true shape rather than the displayed one. |
+| Retrieval-source panel | A version created through a REPL cell calling `host.save_artifact(source=…)` renders all eight allowlisted fields, with `apiKey=` redacted to `<redacted:7314196d6cc3>` and the non-allowlisted field withheld and counted as `另有 1 个字段未展示`. |
+| Dual-tab repaint | A rename issued in one tab repainted a second tab over the WebSocket with no reload. |
+| Three-item queue, cancel the middle | Three `user_repl` tickets at positions 0/1/2; cancelling the middle over the real WebSocket returned `ok: true, scope: "queued"`, the running ticket kept `cancel_requested: false`, and the third survived and moved up — siblings untouched, FIFO preserved. |
+
+### What this run does not establish
+
+Two of the paths on the acceptance list could not be driven here, and neither
+is recorded as verified.
+
+**The composer follow-up queue strip** renders queued *agent messages*. Queuing
+one requires a turn to be running, which requires a provider credential this
+working copy does not hold and which is not ours to supply. The queue machinery
+underneath it is exercised: `browser_smoke.mjs` asserts the Agent queuing behind
+a REPL cell, its automatic admission and its terminal state, in Chromium against
+this daemon, and `tests/test_queued_followups.py` covers the per-item cancel and
+the FIFO order the strip displays.
+
+**The remote compute task centre populated with a real record** requires a BYOC
+submission. The route's central promise is verified live — opening it answers
+`polled: false`, because the probe is the harvest and a page that refreshed
+itself would bill a provider on a schedule nobody chose — but the list is empty
+in this data directory. Seeding a row by writing to the store directly would be
+evidence about a fixture, not about the product, so it was not done;
+`tests/test_compute_task_centre.py` carries the owner isolation, the restart
+survival and the `unknown`-is-not-failure rendering.
+
+One defect was found by this run rather than by any test: `POST /uploads`
+answered `500` for every session outside the `default` project. It is fixed and
+recorded in §15.
