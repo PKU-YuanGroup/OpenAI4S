@@ -811,8 +811,9 @@ class CheckpointStateRepository:
         memories = [
             dict(row)
             for row in self._bounded_rows(
-                "SELECT memory_id,project_id,block,content,created_at FROM memories "
-                "WHERE project_id=? ORDER BY created_at,memory_id LIMIT ?",
+                "SELECT memory_id,project_id,block,content,created_at,updated_at "
+                "FROM memories WHERE project_id=? ORDER BY created_at,memory_id "
+                "LIMIT ?",
                 (project_id, MAX_MEMORIES + 1),
                 limit=MAX_MEMORIES,
                 label="memories",
@@ -1054,9 +1055,17 @@ class CheckpointStateRepository:
             if artifact is None or artifact["root_frame_id"] != root_frame_id:
                 raise ValueError("checkpoint annotation Artifact is unavailable")
             self._connection.execute(
+                # `version_id` and `checksum` travel. They were added by
+                # migration 12 because an annotation that names only the
+                # artifact lets a re-plot between the pin and the send change
+                # what the model is shown -- and the capture above is
+                # `SELECT *`, so they were being read and then dropped here.
+                # Every restore silently unbound every pin in the session and
+                # put the "resolve to latest" behaviour back.
                 "INSERT INTO annotations(annotation_id,root_frame_id,artifact_id,"
-                "artifact_name,rel_x,rel_y,number,body,status,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "artifact_name,rel_x,rel_y,number,body,status,created_at,"
+                "updated_at,version_id,checksum) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     item["annotation_id"],
                     root_frame_id,
@@ -1069,6 +1078,8 @@ class CheckpointStateRepository:
                     str(item.get("status") or "open"),
                     int(item.get("created_at") or 0),
                     int(item.get("updated_at") or item.get("created_at") or 0),
+                    item.get("version_id"),
+                    item.get("checksum"),
                 ),
             )
 
@@ -1100,14 +1111,18 @@ class CheckpointStateRepository:
         )
         for item in memories:
             self._connection.execute(
-                "INSERT INTO memories(memory_id,project_id,block,content,created_at) "
-                "VALUES(?,?,?,?,?)",
+                # `updated_at` too: retention asks when a memory was last
+                # touched, so restoring a corrected memory without it would
+                # re-expire the correction on the original's clock.
+                "INSERT INTO memories(memory_id,project_id,block,content,"
+                "created_at,updated_at) VALUES(?,?,?,?,?,?)",
                 (
                     item["memory_id"],
                     project_id,
                     item.get("block"),
                     item.get("content"),
                     int(item.get("created_at") or 0),
+                    item.get("updated_at"),
                 ),
             )
 

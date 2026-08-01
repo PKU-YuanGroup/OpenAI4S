@@ -8855,6 +8855,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # the same steps against the same session.
                     claim = runner.claim_plan_approval(fid)
                     if not claim.get("ok"):
+                        # 404 when there is no plan at all, 409 when there is
+                        # one and it is in the wrong state. They are different
+                        # answers to different questions -- "you are looking at
+                        # nothing" and "somebody else already has this" -- and
+                        # collapsing them makes the second unrecognisable.
+                        if claim.get("plan_id") is None:
+                            raise GatewayError(404, claim["error"], "plan_not_found")
                         raise GatewayError(409, claim["error"], "plan_not_draft")
                     job = runner.submit_plan_approval(
                         fid, pid, model, claimed_plan_id=claim["plan_id"]
@@ -8875,6 +8882,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # refused synchronously with the status it lost to.
                     claim = runner.claim_plan_resume(fid)
                     if not claim.get("ok"):
+                        # Same split as `approve` above.
+                        if claim.get("plan_id") is None:
+                            raise GatewayError(404, claim["error"], "plan_not_found")
                         raise GatewayError(409, claim["error"], "plan_not_paused")
                     job = runner.submit_plan_resume(
                         fid, pid, model, claimed_plan_id=claim["plan_id"]

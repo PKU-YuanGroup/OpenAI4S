@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -549,6 +550,7 @@ def _probe_handler(
     route: str,
     headers: dict[str, str] | None = None,
     query: dict[str, list[str]] | None = None,
+    body: dict | None = None,
 ):
     """A handler whose three response writers report into ``recorder``.
 
@@ -558,7 +560,7 @@ def _probe_handler(
     """
     handler = object.__new__(handler_class)
     handler._query = lambda: dict(query or {})
-    handler._body = lambda: {}
+    handler._body = lambda: dict(body or {})
     # The driver calls `_api` directly, so the token gate in `_route`
     # is not on its path today. The credential is presented anyway: the
     # gate is one refactor from moving, and a driver that only works
@@ -617,6 +619,10 @@ def _probe_handler(
 _CAPTURE_PROJECT = "contract-capture"
 _CAPTURE_FILENAME = "capture.bin"
 _CAPTURE_BYTES = b"contract-capture\n"
+#: How long the seeded pass waits for the turns its 202s accepted. Not a budget
+#: for the turn -- it fails immediately without a provider -- but a ceiling, so
+#: a gate can never block on one.
+_SEEDED_JOB_WAIT_S = 30.0
 
 
 def _drive_seeded_downloads(
@@ -625,23 +631,37 @@ def _drive_seeded_downloads(
     runner,
     headers: dict[str, str] | None = None,
 ) -> None:
-    """Record the 200 of the routes whose success is bytes, not JSON.
+    """Record the success of routes the parameterless sweep can only refuse.
 
-    The parameterless sweep cannot reach these: a notebook export, a Session
-    package and an artifact download each need something to serve, so against a
-    probe id every one of them 404s. That left them worse than uncovered. The
-    four unimplemented verbs still recorded the dispatcher's 404, so a download
-    endpoint was published as `kinds: ["json"], statuses: [404]` — a contract
-    that describes only how the route refuses — and the coverage gate counted
-    it. Nothing a client of a download depends on was written down anywhere.
+    A notebook export, a Session package and an artifact download each need
+    something to serve, so against a probe id every one of them 404s. That left
+    them worse than uncovered: the four unimplemented verbs still recorded the
+    dispatcher's 404, so a download endpoint was published as
+    `kinds: ["json"], statuses: [404]` — a contract describing only how the
+    route refuses — and the coverage gate counted it.
 
-    One frame and one file is the whole fixture, created *after* the sweep so
-    the unknown-resource 404s it froze are unchanged. Both callers hand this a
-    Store in a temp directory that is removed on the way out.
+    The same shape reaches beyond downloads, which is why this is no longer
+    only about bytes. Any route whose success needs a row to exist first
+    freezes as refusal-only, and the two here were found by auditing the
+    contract for exactly that: `POST /frames/<id>/plan/approve` needs a draft
+    plan, and `PATCH /memory/<id>` needs a memory. Nothing about either
+    success was written down.
+
+    These are real successes, not stubbed ones: a seeded draft really is
+    approved, and the 202 is written before the turn it spawns — that turn then
+    fails on the capture environment's absent provider, which is the same thing
+    it does for every other route here and is not what is being recorded. A
+    fabricated 200 would be worse than an absent one, because it would be
+    believed.
+
+    One frame, one file, one plan and one memory is the whole fixture, created
+    *after* the sweep so the unknown-resource 404s it froze are unchanged. Both
+    callers hand this a Store in a temp directory that is removed on the way
+    out.
 
     A failure here is recorded, never swallowed: the seeded pass exists because
-    a silently skipped success republishes the 404-only contract it was written
-    to replace.
+    a silently skipped success republishes the refusal-only contract it was
+    written to replace.
     """
     store = runner.store
     frame_id = store.new_frame(kind="turn", project_id=_CAPTURE_PROJECT, status="ready")
@@ -660,6 +680,18 @@ def _drive_seeded_downloads(
         frame_id=frame_id,
         root_frame_id=frame_id,
         project_id=_CAPTURE_PROJECT,
+    )
+    store.create_plan(
+        frame_id=frame_id,
+        project_id=_CAPTURE_PROJECT,
+        title="capture",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "step", "detail": "", "deliverables": []}],
+        status="draft",
+    )
+    memory = store.add_memory(
+        content="capture memory", block="general", project_id=_CAPTURE_PROJECT
     )
     probes: tuple[tuple[str, str, dict[str, list[str]]], ...] = (
         # Both notebook forms. The default is a zip *bundle* and a named
@@ -688,6 +720,44 @@ def _drive_seeded_downloads(
             recorder.drive_failures[
                 f"GET {route} (seeded)"
             ] = f"{type(error).__name__}: {error}"
+
+    writes: tuple[tuple[str, str, str, dict[str, list[str]], dict], ...] = (
+        (
+            "POST",
+            r"/frames/([^/]+)/plan/(approve|resume|revise|discard)",
+            f"/frames/{frame_id}/plan/approve",
+            {},
+            {},
+        ),
+        (
+            "PATCH",
+            r"/memory/([^/]+)",
+            f"/memory/{memory['memory_id']}",
+            {"project_id": [_CAPTURE_PROJECT]},
+            {"content": "capture memory, corrected"},
+        ),
+    )
+    for method, route, path, query, body in writes:
+        handler = _probe_handler(
+            recorder, handler_class, method, path, route, headers, query, body
+        )
+        try:
+            handler._api(method, path)
+        except Exception as error:  # noqa: BLE001
+            recorder.drive_failures[
+                f"{method} {route} (seeded)"
+            ] = f"{type(error).__name__}: {error}"
+
+    # A 202 means work was accepted, and the work really starts: `approve`
+    # spawns a background turn that writes into the Store and the workspace.
+    # The callers here run against a temp directory they delete on the way out,
+    # and without this wait the delete raced a live thread and failed with
+    # "Directory not empty" -- the capture succeeding and the harness crashing
+    # afterwards. Bounded, because a hung turn must not hang the gate; the turn
+    # itself fails fast on the capture environment's absent provider.
+    deadline = time.monotonic() + _SEEDED_JOB_WAIT_S
+    for job in list(getattr(runner, "_jobs", {}).values()):
+        job.done.wait(max(0.0, deadline - time.monotonic()))
 
 
 def drive_all_routes(
