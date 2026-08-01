@@ -3351,6 +3351,11 @@ function onEvent(m) {
   else if (m.type === "permission_resolved") { if (mine(fid)) { resolvePermissionCard(m); scheduleWorkbenchRefresh(); } }
   else if (m.type === "frame_update") {
     if (mine(m.frame_id) || mine(fid)) {
+      // Unconditional, and deliberately outside the `!S.running` guard below:
+      // when a queued follow-up starts, `S.running` is already true from the
+      // turn that just ended, and that is precisely the hand-off this exists
+      // for.
+      if (m.status === "processing") activateTurnTicket(m.request_id);
       if (m.status === "processing" && !S.running) { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); resumeWatch(fid, S._openGen); }  // a turn observed on the WS (e.g. started from another tab) — watchdog covers a missed terminal event
       if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) { turnDone(m.status, m); scheduleWorkbenchRefresh(); }
     }
@@ -3541,6 +3546,91 @@ function feed(kind, chunk, event) {
   } else { st.text += chunk; st.full += chunk; st.md.classList.add("cursor"); scheduleRender(st); return; }
   down();
 }
+// A turn's request ticket, guarded by a generation.
+//
+// The job runs on its own thread and can fail before the handler has even
+// returned the 202. So the terminal WS event -- and `turnDone` with it -- can
+// arrive *first*, clear the ticket, and then `send`'s POST promise resolves
+// and writes the finished turn's id back into the slot. The next turn then
+// quotes a support id belonging to the previous one, which is worse than
+// showing none: it sends an operator to the wrong request.
+//
+// `openTurnTicket` takes the generation before the POST; `closeTurnTicket`
+// invalidates it (turn end, session switch); `commitTurnTicket` writes only if
+// the generation is still the one it took AND the turn is still running.
+function openTurnTicket() {
+  S.turnTicket = (S.turnTicket || 0) + 1;
+  return S.turnTicket;
+}
+function commitTurnTicket(token, accepted) {
+  if (!accepted || !accepted.request_id) return false;
+  if (token !== S.turnTicket) return false;   // a newer turn owns the slot
+  if (!S.running) return false;               // this turn already ended
+  S.pendingRequestId = String(accepted.request_id);
+  return true;
+}
+// A turn has started running server-side: it owns the slot from now on.
+//
+// This is the hand-off a queued follow-up depends on. Its 202 resolved while
+// the previous turn still owned the screen, so it could not take the slot then
+// -- and if it had, the earlier turn's own failure would have quoted the
+// follow-up's id. The `processing` event is the first moment the id is
+// current, and it carries it for exactly this reason.
+//
+// Bumping the generation here is what makes a late 202 from ANY earlier turn
+// unable to write: it is stale by definition once another turn is running.
+// Whether the server says this submission was QUEUED, whatever the client
+// believed when it started.
+//
+// `queueing` is a snapshot taken at the top of `send`, and several awaits run
+// before the POST -- the skills catalogue, sometimes creating the frame. In
+// that window another tab, or a recovered turn, can take ownership, so a send
+// that began idle can be answered with `queue_position: 1`. The 202 is the
+// authoritative answer and the local snapshot is only a hint.
+// Does THIS send still own the UI's current turn?
+//
+// `queueing`, read at the top of `send`, is a snapshot: several awaits follow
+// before the POST, and another tab -- or a recovered turn -- can change who
+// owns the session in that window. Deciding anything later from that snapshot
+// is how a rejected follow-up tore down a turn that had started meanwhile.
+// The provisional token is the honest question: it exists only for a send that
+// began as the active turn, and it stops matching the moment any other turn is
+// activated.
+function ownsTurnTicket(token) {
+  return token != null && token === S.turnTicket;
+}
+// Claim the slot for this submission, if the server says it is the one running.
+//
+// `queue_position === 0` is the ONLY proof of that. Greater than zero is
+// queued behind someone else; absent means the snapshot could not be taken --
+// typically a job that finished before it was read -- and an unknown is not a
+// yes. Neither may write, or the running turn's failure quotes the wrong id.
+function acceptTurnTicket(token, accepted) {
+  // Ownership is `commitTurnTicket`'s question and it already asks it; asking
+  // again here would be a branch no test can reach, which reads as care and is
+  // decoration. What this adds is the server's answer.
+  if (!accepted || !accepted.request_id) return false;
+  if (accepted.queue_position !== 0) return false;
+  return commitTurnTicket(token, accepted);
+}
+// This send is not the running turn after all: kill its provisional ticket so
+// a later resolution cannot claim the slot with it. Deliberately leaves
+// `pendingRequestId` alone -- if we no longer own the generation, whatever is
+// in there belongs to somebody else's turn.
+function retireTurnTicket(token) {
+  if (!ownsTurnTicket(token)) return false;
+  S.turnTicket = (S.turnTicket || 0) + 1;
+  return true;
+}
+function activateTurnTicket(requestId) {
+  S.turnTicket = (S.turnTicket || 0) + 1;
+  S.pendingRequestId = requestId ? String(requestId).slice(0, 96) : null;
+  return S.turnTicket;
+}
+function closeTurnTicket() {
+  S.turnTicket = (S.turnTicket || 0) + 1;
+  S.pendingRequestId = null;
+}
 // The sentence a failed turn shows, from whichever source has the facts.
 //
 // Two of them exist and they have to agree: the `frame_update` a live client
@@ -3592,10 +3682,10 @@ function turnDone(status, detail) {
   // effect, however retryable the status looks. Saying "retry" anyway is how a
   // UI turns one failed turn into two executions of the same tool.
   hint(status === "failed" ? failureHint(detail) : "", status === "failed");
-  // Retired with the turn it belonged to. Kept only as the fallback above, for
-  // a terminal event that arrives without an id; carrying it further would
-  // let one turn's id be quoted on the next turn's failure.
-  S.pendingRequestId = null;
+  // Retired with the turn it belonged to, and the generation moved on so a
+  // 202 still in flight cannot write it back. Kept only as the fallback above,
+  // for a terminal event that arrives without an id.
+  closeTurnTicket();
   invalidateKernelCache();  // the kernel just went turn_running → idle; re-read promptly
   if (S.currentId) { loadArtifacts(S.currentId); loadExecutionLog(S.currentId); }
   S.stream = null; S.liveCells = []; S._liveCell = null;
@@ -4730,7 +4820,7 @@ async function openConversation(fid, pid) {
   showWorkspace(); showConv(); renderProjMenu();
   if (mqMobile.matches) setSidebar(true);  // collapse the mobile drawer so the conversation is visible
   S.currentId = fid; $("#messages").innerHTML = ""; S.stream = null;
-  S.pendingRequestId = null;  // a ticket belongs to the session that issued it
+  closeTurnTicket();  // a ticket belongs to the session that issued it
   S.msgCursor = null; S.msgHasEarlier = false; S._msgEarlierLoading = false;  // the history window restarts at the newest page
   S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");
   clearTimeout(S._resumeTimer);  // stop any resume-watchdog from the previously open session
@@ -5425,7 +5515,17 @@ async function send(text, opts) {
   // and the Stop button, and re-announcing "Running…" here would make the Stop
   // control read as belonging to the item just typed rather than to the one it
   // would actually interrupt.
-  if (queueing) hint(t("queue.accepted"));
+  // Read AFTER every await above and BEFORE this send touches `S.running`.
+  // The snapshot at the top of `send` is only good enough to decide how the
+  // bubble looks: the skills catalogue and, on a first message, creating the
+  // frame all await, and another tab or a recovered turn can take ownership in
+  // that window. Reading it any later is worse than useless -- by then this
+  // very send has set it to true and every observation says "queued".
+  const sawRunningAtDispatch = S.running;
+  const turnTicket = sawRunningAtDispatch ? null : openTurnTicket();
+  // Declared out here, not inside the `try`: the catch needs it, and a
+  // block-scoped `const` would have made that a ReferenceError.
+  if (!turnTicket) hint(t("queue.accepted"));
   else { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true); }
   $("#composer").value = ""; grow(); renderComposerRefChips();
   const annIds = anns.map(x => x.id);
@@ -5450,8 +5550,15 @@ async function send(text, opts) {
     if (accepted && accepted.execution_id) w.dataset.executionId = accepted.execution_id;
     // The id this turn will be blamed under. `wait:false` means the 202 is the
     // only synchronous thing the client gets, so this is where the correlation
-    // starts -- the socket event and the job query name the same one.
-    if (accepted && accepted.request_id) S.pendingRequestId = String(accepted.request_id);
+    // starts -- the socket event and the job query name the same one. Written
+    // through the generation guard, because this promise can resolve after the
+    // turn it belongs to has already failed and been cleaned up.
+    // Accepted, or retired. A 202 that is not `queue_position: 0` means this
+    // send is not the running turn after all -- it was queued, or the snapshot
+    // could not be read -- so its provisional ticket is dead and its id will
+    // arrive on its own `processing` event instead. Retiring touches nothing
+    // that belongs to another turn.
+    if (!acceptTurnTicket(turnTicket, accepted)) retireTurnTicket(turnTicket);
     // The optimistic status above clears the badge immediately; reload once the turn POST finishes to reconcile with the server.
     if (annIds.length) { try { await loadAnnotations(S.currentId); } catch {} refreshAllStages(); updateAnnotBadge(); }
   }
@@ -5474,7 +5581,10 @@ async function send(text, opts) {
         try {
           await api(`/frames/${encodeURIComponent(S.currentId)}/model-binding`, { method: "POST" });
           hint(t("model.rebind.done"));
-          if (S.running && !queueing) turnDone("failed");
+          // Ownership, not the dispatch snapshot: the rebind prompt is modal
+          // and the user can sit on it for a long time, which is more than
+          // enough for another turn to start and own the screen.
+          if (ownsTurnTicket(turnTicket)) turnDone("failed");
           loadSessions();
           return;
         } catch (rebindError) { hint(apiErrorText(rebindError), true); }
@@ -5485,8 +5595,13 @@ async function send(text, opts) {
     // already running. Tearing the turn state down here would report the
     // running turn as failed because a *different*, never-admitted message was
     // rejected — and would re-enable Stop against a turn nobody stopped.
-    if (queueing) w.classList.add("cancelled");
-    else if (S.running) turnDone("failed");
+    // Ownership, not the stale snapshot. A send that began idle can be
+    // rejected *after* another turn has started -- the `false -> true` case --
+    // and tearing down there reports someone else's running turn as failed and
+    // re-enables Stop against a turn nobody stopped. If this send no longer
+    // owns the turn, its own bubble is the only thing that changes.
+    if (ownsTurnTicket(turnTicket)) turnDone("failed");
+    else w.classList.add("cancelled");
     loadSessions();
     return;
   }

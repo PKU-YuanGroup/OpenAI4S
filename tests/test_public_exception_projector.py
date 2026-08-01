@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import sqlite3
 import sys
 from email.message import Message
 from pathlib import Path
@@ -968,3 +969,861 @@ def test_a_plan_approval_failure_is_named_on_its_own_route(runner, monkeypatch):
     blob = json.dumps([accepted, updates[-1], result], ensure_ascii=False, default=str)
     for canary in CANARIES:
         assert canary not in blob, blob
+
+
+# --------------------------------------------------------------------------
+# the OUTER catches are real paths too
+# --------------------------------------------------------------------------
+#
+# A fault before the turn is entered or after it returns never reaches
+# `run_message`'s own handler, and the plan spawner's `fn` can raise outside it
+# entirely. Replacing the whole of `run_message` is the wrong injection for the
+# *common* failure -- which is what made the earlier tests wrong -- but it is
+# the right one for these, because that is exactly the shape of a fault around
+# the call rather than inside it.
+
+
+@pytest.mark.stubbed_backend
+def test_an_outer_message_failure_is_persisted_and_projected(runner, monkeypatch):
+    """It had the socket and the job result, and nothing that survives a reload."""
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    monkeypatch.setattr(
+        runner, "run_message", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+
+    accepted, status = _api(
+        runner, "POST", f"/frames/{frame_id}/message", {"request": "go", "wait": False}
+    )
+    assert status == 202
+    result = next(iter(runner._jobs.values())).wait_result()
+    messages, _ = _api(runner, "GET", f"/frames/{frame_id}/messages")
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert stored, f"an outer failure left nothing to reopen: {messages}"
+    assert (
+        accepted["request_id"]
+        == result["request_id"]
+        == stored[-1]["failure"]["request_id"]
+    )
+    assert stored[-1]["failure"].get("code")
+    # The socket said it too, with the same id and code -- read rather than
+    # assumed from the job result, because they are separate emitters.
+    updates = _failed_frame_updates(runner)
+    assert updates, runner.hub.events
+    assert updates[-1]["request_id"] == accepted["request_id"]
+    assert updates[-1].get("code") == stored[-1]["failure"]["code"]
+    # Exactly one row, not one per surface that noticed.
+    raw = [
+        m
+        for m in runner.store.list_messages(frame_id)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+    assert len(raw) == 1, raw
+    blob = json.dumps([accepted, result, messages], ensure_ascii=False, default=str)
+    for canary in CANARIES:
+        assert canary not in blob, blob
+
+
+@pytest.mark.stubbed_backend
+def test_an_outer_plan_failure_is_persisted_and_projected(runner, monkeypatch):
+    """The plan spawner's `fn` raising outside `run_message` is its own site."""
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    runner.store.create_plan(
+        frame_id=frame_id,
+        project_id="proj",
+        title="p",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+        status="draft",
+    )
+    # Committed on purpose: the plan route has its own emitter, and without a
+    # veto here the plan WS fields can be deleted while the message tests stay
+    # green.
+    monkeypatch.setattr(
+        runner,
+        "run_plan_execution",
+        lambda *a, **k: (_ for _ in ()).throw(
+            TransportError(
+                "upstream 502 after a tool ran",
+                provider="deepseek",
+                status=502,
+                output_committed=True,
+            )
+        ),
+    )
+
+    accepted, status = _api(runner, "POST", f"/frames/{frame_id}/plan/approve", {})
+    assert status == 202
+    job = next(j for j in runner._jobs.values() if j.job_id == accepted["job_id"])
+    result = job.wait_result()
+    messages, _ = _api(runner, "GET", f"/frames/{frame_id}/messages")
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert stored, f"an outer plan failure left nothing to reopen: {messages}"
+    assert accepted["request_id"] == stored[-1]["failure"]["request_id"]
+    assert result.get("request_id") == accepted["request_id"]
+    updates = _failed_frame_updates(runner)
+    assert updates and updates[-1]["request_id"] == accepted["request_id"]
+    assert updates[-1].get("code") == stored[-1]["failure"]["code"]
+    assert updates[-1].get("output_committed") is True, updates[-1]
+    assert stored[-1]["failure"].get("output_committed") is True, stored
+    assert result.get("output_committed") is True, result
+    raw = [
+        m
+        for m in runner.store.list_messages(frame_id)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+    assert len(raw) == 1, raw
+
+
+@pytest.mark.stubbed_backend
+def test_an_outer_failure_records_exactly_one_diagnostic(runner, monkeypatch):
+    """`job.project` already ran the projector; persisting must not run it again.
+
+    Two records of one failure is how the two accounts of it drift apart, and
+    the second would be written from a site that has no exception left to
+    describe.
+    """
+    from openai4s.server import errors as errors_mod
+
+    real = errors_mod.record_diagnostic
+    seen: list[str] = []
+    monkeypatch.setattr(
+        errors_mod,
+        "record_diagnostic",
+        lambda exc, *, surface, request_id=None: (
+            seen.append(surface),
+            real(exc, surface=surface, request_id=request_id),
+        )[1],
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    monkeypatch.setattr(
+        runner, "run_message", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+
+    _api(
+        runner, "POST", f"/frames/{frame_id}/message", {"request": "go", "wait": False}
+    )
+    next(iter(runner._jobs.values())).wait_result()
+
+    assert seen == ["web:message"], seen
+
+
+# --------------------------------------------------------------------------
+# one authoritative terminal failure per request
+# --------------------------------------------------------------------------
+#
+# Both catches can fire for one turn: `_loop` fails and the inner handler
+# records it, then the tail -- `update_frame`, `mark_finalizing`,
+# `recovery.touch` -- fails too and leaves through the outer one. That is not
+# hypothetical; it is what a database or filesystem problem during
+# finalisation looks like.
+#
+# `MessageJob.project` assigns `output_committed` unconditionally, so the
+# second, uncommitted exception *downgrades* the veto the first one earned, and
+# `_persist_outer_failure` adds a second terminal row. The user is shown two
+# failures, the last of which invites a retry that re-runs a tool.
+
+
+def _committed_then_tail_failure(runner, monkeypatch):
+    """The real double fault: a committed turn failure, then a tail failure."""
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+
+    def loop_boom(*_a, **_k):
+        raise TransportError(
+            "upstream 502 after streaming tool calls",
+            provider="deepseek",
+            status=502,
+            output_committed=True,
+        )
+
+    # Only AFTER the turn has already failed: `recovery.touch` is also called
+    # on the way in, and raising there would kill the turn before the inner
+    # handler ever ran -- a different bug, and not this one.
+    real_touch = runner.recovery.touch
+
+    def tail_boom(*args, **kwargs):
+        if state["failed"]:
+            raise RuntimeError("recovery journal is unwritable")
+        return real_touch(*args, **kwargs)
+
+    state = {"failed": False}
+
+    def loop_then_mark(*args, **kwargs):
+        try:
+            loop_boom(*args, **kwargs)
+        finally:
+            state["failed"] = True
+
+    monkeypatch.setattr(runner, "_loop", loop_then_mark)
+    monkeypatch.setattr(runner.recovery, "touch", tail_boom)
+    accepted, status = _api(
+        runner, "POST", f"/frames/{frame_id}/message", {"request": "go", "wait": False}
+    )
+    assert status == 202
+    result = next(iter(runner._jobs.values())).wait_result()
+    messages, _ = _api(runner, "GET", f"/frames/{frame_id}/messages")
+    return frame_id, accepted, result, messages
+
+
+@pytest.mark.stubbed_backend
+def test_a_tail_failure_does_not_downgrade_the_retry_veto(runner, monkeypatch):
+    """The veto may only ever be OR-ed for one request.
+
+    Losing it is the one direction that costs something: the UI goes back to
+    "please try again" for a turn that already ran a tool.
+    """
+    _fid, accepted, result, messages = _committed_then_tail_failure(runner, monkeypatch)
+    updates = _failed_frame_updates(runner)
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert result.get("output_committed") is True, result
+    assert updates[-1].get("output_committed") is True, updates[-1]
+    assert stored and stored[-1]["failure"].get("output_committed") is True, stored
+
+
+@pytest.mark.stubbed_backend
+def test_a_double_fault_leaves_exactly_one_terminal_failure(runner, monkeypatch):
+    """Two exceptions, one thing that happened to the user."""
+    fid, accepted, result, messages = _committed_then_tail_failure(runner, monkeypatch)
+    raw = [
+        m
+        for m in runner.store.list_messages(fid)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert len(raw) == 1, f"{len(raw)} terminal failure rows for one request"
+    assert len(stored) == 1, stored
+    identity = json.loads(raw[0]["metadata"])["failure"]
+    updates = _failed_frame_updates(runner)
+    assert identity["request_id"] == accepted["request_id"] == result["request_id"]
+    assert updates and updates[-1]["request_id"] == identity["request_id"]
+    # One code for one thing that happened, on every surface that names it.
+    codes = {
+        identity["code"],
+        stored[0]["failure"]["code"],
+        updates[-1].get("code"),
+        result.get("code"),
+    }
+    assert len(codes) == 1, codes
+
+
+@pytest.mark.stubbed_backend
+def test_a_double_fault_records_both_diagnostics_once_each(runner, monkeypatch):
+    """Two real exceptions are two operator events, whatever the user is shown."""
+    from openai4s.server import errors as errors_mod
+
+    real = errors_mod.record_diagnostic
+    seen: list[str] = []
+    monkeypatch.setattr(
+        errors_mod,
+        "record_diagnostic",
+        lambda exc, *, surface, request_id=None: (
+            seen.append(surface),
+            real(exc, surface=surface, request_id=request_id),
+        )[1],
+    )
+    _committed_then_tail_failure(runner, monkeypatch)
+
+    assert seen == ["web:turn", "web:message"], seen
+
+
+@pytest.mark.stubbed_backend
+def test_a_second_projection_cannot_un_say_the_veto(runner):
+    """The invariant, driven on `MessageJob` itself.
+
+    The merge above happens to carry the veto through today, so a test that
+    only goes through the routes stays green with this assignment restored --
+    and the next caller that projects twice would silently lose it again. A
+    veto is a fact about the request; the last exception projected does not get
+    to withdraw it.
+    """
+    job = gateway_mod.MessageJob("job-veto", "f-veto")
+
+    job.project(
+        TransportError(
+            "committed", provider="deepseek", status=502, output_committed=True
+        ),
+        "web:turn",
+    )
+    assert job.output_committed is True
+
+    job.project(RuntimeError("an ordinary tail failure"), "web:message")
+
+    assert (
+        job.output_committed is True
+    ), "a later, uncommitted exception withdrew the retry veto"
+
+
+@pytest.mark.stubbed_backend
+def test_the_terminal_failure_handoff_is_scoped_to_its_turn(runner):
+    """A note belongs to one job and one request, and dies with the job.
+
+    Not to a branch resolved later: the outer handler runs while the failure is
+    still happening, and re-deriving a branch there is how the correct
+    hand-off got dropped. The note carries its own.
+    """
+    identity = {"request_id": "req-1", "code": "internal_error"}
+    runner._enter_turn_scope("job-1")
+    try:
+        runner._remember_terminal_failure("req-1", "branch-a", "m-1", identity)
+
+        assert (
+            runner._take_terminal_failure("job-2", "req-1") is None
+        ), "another job claimed this turn's note"
+        assert (
+            runner._take_terminal_failure("job-1", "req-other") is None
+        ), "a different request claimed this turn's note"
+        taken = runner._take_terminal_failure("job-1", "req-1")
+        assert taken and taken["message_id"] == "m-1"
+        # The branch travels with the note rather than being asked for again.
+        assert taken["branch_id"] == "branch-a"
+        # Taken once: a hand-off, not a registry.
+        assert runner._take_terminal_failure("job-1", "req-1") is None
+    finally:
+        runner._exit_turn_scope("job-1")
+
+    assert not runner._terminal_failures, runner._terminal_failures
+
+
+@pytest.mark.stubbed_backend
+def test_the_outer_handler_actually_receives_the_note(runner, monkeypatch):
+    """The ordering, asserted rather than assumed.
+
+    The scope used to be a `with` around the call, so it closed as the
+    exception unwound -- taking the note away a moment before the handler it
+    was filed for ran. Nothing about the resulting duplicate row said why.
+    """
+    taken: list[dict | None] = []
+    real = runner._take_terminal_failure
+    monkeypatch.setattr(
+        runner,
+        "_take_terminal_failure",
+        lambda job_id, request_id: taken.append(real(job_id, request_id)) or taken[-1],
+    )
+    _committed_then_tail_failure(runner, monkeypatch)
+
+    assert (
+        taken and taken[-1] is not None
+    ), "the outer handler found no note, so it wrote a second row"
+    assert taken[-1]["identity"].get("output_committed") is True
+
+
+@pytest.mark.stubbed_backend
+def test_an_outer_plan_failure_records_exactly_one_diagnostic(runner, monkeypatch):
+    """The plan spawner's own surface, counted separately from the message one."""
+    from openai4s.server import errors as errors_mod
+
+    real = errors_mod.record_diagnostic
+    seen: list[str] = []
+    monkeypatch.setattr(
+        errors_mod,
+        "record_diagnostic",
+        lambda exc, *, surface, request_id=None: (
+            seen.append(surface),
+            real(exc, surface=surface, request_id=request_id),
+        )[1],
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    runner.store.create_plan(
+        frame_id=frame_id,
+        project_id="proj",
+        title="p",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+        status="draft",
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_plan_execution",
+        lambda *a, **k: (_ for _ in ()).throw(CanaryFailure()),
+    )
+
+    accepted, _ = _api(runner, "POST", f"/frames/{frame_id}/plan/approve", {})
+    next(
+        j for j in runner._jobs.values() if j.job_id == accepted["job_id"]
+    ).wait_result()
+
+    assert seen == ["web:plan"], seen
+
+
+@pytest.mark.stubbed_backend
+def test_an_outer_failure_after_a_committed_turn_keeps_the_veto_everywhere(
+    runner, monkeypatch
+):
+    """The committed case on the outer path, across helper, WS, job and GET."""
+    _fid, accepted, result, messages = _committed_then_tail_failure(runner, monkeypatch)
+    updates = _failed_frame_updates(runner)
+    stored = [m for m in messages["messages"] if m.get("failure")]
+
+    assert result.get("output_committed") is True, result
+    assert updates[-1].get("output_committed") is True, updates[-1]
+    assert stored[-1]["failure"].get("output_committed") is True, stored
+    assert (
+        accepted["request_id"]
+        == result["request_id"]
+        == updates[-1]["request_id"]
+        == stored[-1]["failure"]["request_id"]
+    )
+
+
+@pytest.mark.stubbed_backend
+def test_a_reused_request_id_does_not_let_one_turn_amend_another(runner, monkeypatch):
+    """The hand-off must not outlive the turn that created it.
+
+    Only the outer handler consumed the note, so a turn that failed *inside*
+    and returned normally left one behind forever. An HTTP client may reuse
+    `X-Request-Id`, so the next independent outer failure on the same branch
+    found that stale note, amended a message from a turn that had already
+    finished, and wrote nothing of its own -- one failure silently swallowed
+    and an old one rewritten.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+
+    from openai4s.observability import set_correlation_id
+
+    def post(body):
+        # The id a client supplied, twice. `MessageJob` reads the contextvar,
+        # so this is where a reused `X-Request-Id` actually lands.
+        set_correlation_id("req-reused")
+        handler = object.__new__(
+            gateway_mod.make_handler(runner.cfg, runner.hub, runner)
+        )
+        handler._correlation_id = "req-reused"
+        handler._last_status = 0
+        handler.headers = {}
+        handler._query = lambda: {}
+        handler._body = lambda: body
+        seen: list[tuple] = []
+        handler._json = lambda value, code=200: seen.append((value, code))
+        handler._api("POST", f"/frames/{frame_id}/message")
+        return seen[-1][0]
+
+    # Turn A: fails inside `run_message`, which returns normally.
+    monkeypatch.setattr(
+        runner, "_loop", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+    first = post({"request": "a", "wait": False})
+    next(iter(runner._jobs.values())).wait_result()
+
+    # Turn B: an independent failure that leaves through the OUTER handler.
+    monkeypatch.setattr(
+        runner, "run_message", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+    second = post({"request": "b", "wait": False})
+    for job in list(runner._jobs.values()):
+        job.wait_result()
+
+    assert first["request_id"] == second["request_id"] == "req-reused"
+    rows = [
+        m
+        for m in runner.store.list_messages(frame_id)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+    assert len(rows) == 2, (
+        f"{len(rows)} terminal rows for two independent failures -- the second "
+        "amended the first instead of recording itself"
+    )
+    # And nothing is left over to catch a third.
+    assert not runner._terminal_failures, runner._terminal_failures
+
+
+@pytest.mark.stubbed_backend
+def test_a_store_that_cannot_persist_still_completes_the_job(runner, monkeypatch):
+    """The persistence is best effort; the job's completion is not.
+
+    This runs inside the outer handler, on the job thread, after the original
+    exception. If it raises, the thread dies before `job.finish` -- so the
+    socket never gets a terminal event, `wait_result()` blocks forever, and a
+    polling client never terminates. The failure that brought us here is very
+    often the Store itself, which makes this the expected path rather than the
+    exotic one.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    monkeypatch.setattr(
+        runner, "run_message", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+
+    def unwritable(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(runner.store, "add_message", unwritable)
+    monkeypatch.setattr(runner.store, "active_session_branch", unwritable)
+
+    accepted, status = _api(
+        runner, "POST", f"/frames/{frame_id}/message", {"request": "go", "wait": False}
+    )
+    assert status == 202
+    job = next(iter(runner._jobs.values()))
+
+    # The assertion that matters: this returns at all.
+    assert job.done.wait(timeout=10), "the job thread died and nothing finished it"
+    result = job.wait_result()
+
+    assert result["status"] == "failed"
+    assert result["request_id"] == accepted["request_id"]
+    assert result.get("code")
+    updates = _failed_frame_updates(runner)
+    assert updates, "no terminal event reached the socket"
+    assert updates[-1]["request_id"] == accepted["request_id"]
+    blob = json.dumps([accepted, result, updates[-1]], ensure_ascii=False, default=str)
+    for canary in CANARIES:
+        assert canary not in blob, blob
+
+
+@pytest.mark.stubbed_backend
+def test_a_failed_persistence_does_not_add_a_second_diagnostic(runner, monkeypatch):
+    """The store failing is not a second thing that happened to the user."""
+    from openai4s.server import errors as errors_mod
+
+    real = errors_mod.record_diagnostic
+    seen: list[str] = []
+    monkeypatch.setattr(
+        errors_mod,
+        "record_diagnostic",
+        lambda exc, *, surface, request_id=None: (
+            seen.append(surface),
+            real(exc, surface=surface, request_id=request_id),
+        )[1],
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    monkeypatch.setattr(
+        runner, "run_message", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+    monkeypatch.setattr(
+        runner.store,
+        "add_message",
+        lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("locked")),
+    )
+
+    _api(
+        runner, "POST", f"/frames/{frame_id}/message", {"request": "go", "wait": False}
+    )
+    next(iter(runner._jobs.values())).wait_result()
+
+    assert seen == ["web:message"], seen
+
+
+@pytest.mark.stubbed_backend
+def test_an_outer_plan_failure_lands_on_the_branch_it_was_submitted_on(
+    runner, monkeypatch
+):
+    """A fork's failure belongs to the fork.
+
+    The plan spawner froze no branch at all, so the helper fell back to the
+    root frame. On a session whose active branch is a sibling that writes the
+    failure somewhere the user is not looking, and grows one on the trunk that
+    never happened there. Frozen on the submitting thread, where the answer is
+    both available and still true.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    sibling = "branch-fork-1"
+    monkeypatch.setattr(runner.store, "active_session_branch", lambda _fid: sibling)
+    runner.store.create_plan(
+        frame_id=frame_id,
+        project_id="proj",
+        title="p",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+        status="draft",
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_plan_execution",
+        lambda *a, **k: (_ for _ in ()).throw(CanaryFailure()),
+    )
+
+    accepted, _ = _api(runner, "POST", f"/frames/{frame_id}/plan/approve", {})
+    next(
+        j for j in runner._jobs.values() if j.job_id == accepted["job_id"]
+    ).wait_result()
+
+    rows = [
+        m
+        for m in runner.store.list_messages(frame_id)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+    assert len(rows) == 1, rows
+    on_branch = runner.store.list_messages(frame_id, branch_id=sibling)
+    assert [
+        m for m in on_branch if "failure" in str(m.get("metadata") or "")
+    ], "the failure is not on the branch the plan was approved from"
+    on_root = runner.store.list_messages(frame_id, branch_id=frame_id)
+    assert not [
+        m for m in on_root if "failure" in str(m.get("metadata") or "")
+    ], "the failure was written onto the trunk, where it never happened"
+
+
+def _outer_failure_with_unwritable_frame(runner, monkeypatch, *, plan: bool):
+    """An outer failure on a Store that cannot record the frame's status."""
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    if plan:
+        runner.store.create_plan(
+            frame_id=frame_id,
+            project_id="proj",
+            title="p",
+            rationale="",
+            confidence="high",
+            steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+            status="draft",
+        )
+        monkeypatch.setattr(
+            runner,
+            "run_plan_execution",
+            lambda *a, **k: (_ for _ in ()).throw(
+                TransportError(
+                    "upstream 502 after a tool ran",
+                    provider="deepseek",
+                    status=502,
+                    output_committed=True,
+                )
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            runner,
+            "run_message",
+            lambda *a, **k: (_ for _ in ()).throw(
+                TransportError(
+                    "upstream 502 after a tool ran",
+                    provider="deepseek",
+                    status=502,
+                    output_committed=True,
+                )
+            ),
+        )
+
+    real_update = runner.store.update_frame
+
+    def refuse(fid, **fields):
+        if fields.get("status") == "failed":
+            raise sqlite3.OperationalError("database is locked")
+        return real_update(fid, **fields)
+
+    monkeypatch.setattr(runner.store, "update_frame", refuse)
+    path = f"/frames/{frame_id}/plan/approve" if plan else f"/frames/{frame_id}/message"
+    body = {} if plan else {"request": "go", "wait": False}
+    accepted, status = _api(runner, "POST", path, body)
+    assert status == 202, (status, accepted)
+    job = next(j for j in runner._jobs.values() if j.job_id == accepted["job_id"])
+    return accepted, job
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("plan", [False, True], ids=["message", "plan"])
+def test_a_frame_status_write_failure_does_not_swallow_the_terminal_event(
+    runner, monkeypatch, plan
+):
+    """Three obligations, one `try`, and the first failure cancelled the rest.
+
+    `update_frame` and the emits shared a handler, so an `OperationalError`
+    recording the frame's status skipped the terminal `frame_update`
+    altogether. The client had been told 202 and was watching the socket: it
+    got a turn that simply never ended. The earlier Store test missed this
+    because it broke `add_message` and left `update_frame` working.
+    """
+    accepted, job = _outer_failure_with_unwritable_frame(runner, monkeypatch, plan=plan)
+
+    assert job.done.wait(timeout=10), "the job never finished"
+    result = job.wait_result()
+    updates = _failed_frame_updates(runner)
+
+    assert updates, "the terminal event was cancelled by the status write"
+    assert updates[-1]["request_id"] == accepted["request_id"]
+    assert updates[-1].get("code")
+    assert updates[-1].get("output_committed") is True, updates[-1]
+    assert result["request_id"] == accepted["request_id"]
+    assert result.get("output_committed") is True, result
+
+
+@pytest.mark.stubbed_backend
+def test_an_outer_message_failure_lands_on_the_branch_it_was_submitted_on(
+    runner, monkeypatch
+):
+    """The message turn's own branch, taken from the ticket that admitted it.
+
+    Asserted separately from the plan route's: they freeze the branch from
+    different sources -- the execution ticket here, an explicit lookup on the
+    submitting thread there -- so one can be broken while the other holds.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    sibling = "branch-fork-msg"
+    monkeypatch.setattr(runner.store, "active_session_branch", lambda _fid: sibling)
+    monkeypatch.setattr(
+        runner.store, "ensure_active_session_branch", lambda _f: sibling
+    )
+    monkeypatch.setattr(
+        runner, "run_message", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+
+    accepted, _ = _api(
+        runner, "POST", f"/frames/{frame_id}/message", {"request": "go", "wait": False}
+    )
+    next(iter(runner._jobs.values())).wait_result()
+
+    on_branch = [
+        m
+        for m in runner.store.list_messages(frame_id, branch_id=sibling)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+    on_root = [
+        m
+        for m in runner.store.list_messages(frame_id, branch_id=frame_id)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+    assert on_branch, "the failure is not on the branch the turn was submitted on"
+    assert not on_root, "the failure was written onto the trunk instead"
+
+
+@pytest.mark.stubbed_backend
+def test_the_processing_event_names_the_turn_it_starts(runner, monkeypatch):
+    """A queued follow-up's 202 is useless to the client that receives it.
+
+    It resolves while an earlier turn still owns the screen, so the follow-up
+    cannot take the slot then. `processing` -- "your turn is running now" -- is
+    the first moment its id is current, and it is the only event that can carry
+    it there.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    monkeypatch.setattr(runner, "_loop", lambda *a, **k: "submitted")
+
+    accepted, status = _api(
+        runner, "POST", f"/frames/{frame_id}/message", {"request": "go", "wait": False}
+    )
+    assert status == 202
+    next(iter(runner._jobs.values())).wait_result()
+
+    processing = [
+        e
+        for e in runner.hub.events
+        if e.get("type") == "frame_update" and e.get("status") == "processing"
+    ]
+    assert processing, runner.hub.events
+    assert processing[-1].get("request_id") == accepted["request_id"], processing[-1]
+
+
+@pytest.mark.stubbed_backend
+def test_a_direct_turn_still_names_itself(runner, monkeypatch):
+    """A call with no HTTP request behind it must not emit an empty id.
+
+    The CLI, a recovery replay and a test all reach `run_message` directly, and
+    an empty `request_id` on `processing` and on the terminal event is a field
+    every client has to special-case. Under a job the contextvar is already set
+    by the request thread, so this and the 202 are the same string.
+    """
+    from openai4s.observability import set_correlation_id
+
+    set_correlation_id("")
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    monkeypatch.setattr(runner, "_loop", lambda *a, **k: "submitted")
+
+    response = runner.run_message(frame_id, "proj", "go")
+
+    processing = [
+        e
+        for e in runner.hub.events
+        if e.get("type") == "frame_update" and e.get("status") == "processing"
+    ]
+    assert processing and processing[-1].get("request_id"), processing
+    assert response.get("request_id") == processing[-1]["request_id"]
+
+
+# --- no HTTP request behind the turn ------------------------------------------
+#
+# The CLI, a recovery replay and a direct API user all submit without a
+# correlation id in context. `MessageJob` read the contextvar and got "", so the
+# 202 and the job result were nameless -- while `run_message` minted its own for
+# the socket. Two ids for one turn is worse than none: they cannot be joined.
+
+
+@pytest.mark.stubbed_backend
+def test_a_direct_submit_names_one_turn_everywhere(runner, monkeypatch):
+    from openai4s.observability import set_correlation_id
+
+    set_correlation_id("")
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    monkeypatch.setattr(runner, "_loop", lambda *a, **k: "submitted")
+
+    job = runner.submit_message(frame_id, "proj", "go")
+    result = job.wait_result()
+    processing = [
+        e
+        for e in runner.hub.events
+        if e.get("type") == "frame_update" and e.get("status") == "processing"
+    ]
+
+    assert job.request_id, "the ticket has no id at all"
+    assert processing and processing[-1].get("request_id") == job.request_id
+    assert result.get("request_id") == job.request_id
+
+
+@pytest.mark.stubbed_backend
+def test_a_direct_plan_turn_names_one_turn_everywhere(runner, monkeypatch):
+    from openai4s.observability import set_correlation_id
+
+    set_correlation_id("")
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    runner.store.create_plan(
+        frame_id=frame_id,
+        project_id="proj",
+        title="p",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+        status="draft",
+    )
+    monkeypatch.setattr(runner, "_loop", lambda *a, **k: "submitted")
+
+    job = runner.submit_plan_approval(frame_id, "proj")
+    job.wait_result()
+    processing = [
+        e
+        for e in runner.hub.events
+        if e.get("type") == "frame_update" and e.get("status") == "processing"
+    ]
+
+    assert job.request_id
+    assert processing and processing[-1].get("request_id") == job.request_id, processing
+
+
+@pytest.mark.stubbed_backend
+def test_a_direct_plan_failure_names_one_turn_everywhere(runner, monkeypatch):
+    """The outer path, with nothing in context to inherit."""
+    from openai4s.observability import set_correlation_id
+
+    set_correlation_id("")
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    runner.store.create_plan(
+        frame_id=frame_id,
+        project_id="proj",
+        title="p",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+        status="draft",
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_plan_execution",
+        lambda *a, **k: (_ for _ in ()).throw(CanaryFailure()),
+    )
+
+    job = runner.submit_plan_approval(frame_id, "proj")
+    result = job.wait_result()
+    updates = _failed_frame_updates(runner)
+    stored = [
+        m
+        for m in runner.store.list_messages(frame_id)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+
+    assert job.request_id, "the ticket has no id"
+    assert updates and updates[-1]["request_id"] == job.request_id
+    assert result.get("request_id") == job.request_id
+    assert stored and json.loads(stored[-1]["metadata"])["failure"]["request_id"] == (
+        job.request_id
+    )

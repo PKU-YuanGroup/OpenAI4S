@@ -1453,7 +1453,11 @@ class MessageJob:
         # Captured here, on the request thread that constructs the job. The
         # failure a user reads and the log line for the work that failed have
         # to be the same id, or the id ties nothing to anything.
-        self.request_id: str = correlation_id()
+        # `or new_correlation_id()`: a direct submit -- the CLI, a recovery
+        # replay -- has no HTTP request behind it, and an empty id here made
+        # the 202 and the job result nameless while `run_message` minted its
+        # own for the socket. Two ids for one turn is worse than none.
+        self.request_id: str = correlation_id() or new_correlation_id()
         # The model configuration this job was ACCEPTED under. `submit_message`
         # froze the identity at send, but onto the *frame* -- and the frame's pin
         # is mutable by design, because `POST /frames/{id}/model-binding` is the
@@ -1474,6 +1478,12 @@ class MessageJob:
         #: so, which is what stops the UI offering a retry that would duplicate
         #: work that already happened.
         self.output_committed: bool = False
+        #: The branch this turn was accepted on, resolved at submit time while
+        #: the Store is known to be working. Resolving it again during a
+        #: failure is the wrong moment: the failure is frequently the Store,
+        #: and a lookup that falls back to the root frame yields a *different*
+        #: key from the one the turn filed its note under.
+        self.branch_id: str = ""
 
     def finish(self, result: dict | None = None, error: str | None = None) -> None:
         self.result = result
@@ -1498,7 +1508,16 @@ class MessageJob:
             exc, surface=surface, request_id=self.request_id
         )
         self.error_code = str(body.get("code") or "internal_error")
-        self.output_committed = bool(body.get("output_committed"))
+        # OR, never assign. Both handlers can fire for one turn -- `_loop`
+        # fails and the inner one records it, then the tail fails and leaves
+        # through the outer one -- and the second exception is usually an
+        # ordinary one. Assigning let it *downgrade* the veto the first had
+        # earned, so a turn that had already run a tool went back to being
+        # offered a retry. A veto is a fact about the request, not about
+        # whichever exception was projected last.
+        self.output_committed = self.output_committed or bool(
+            body.get("output_committed")
+        )
         return str(body.get("error") or INTERNAL_ERROR_MESSAGE)
 
     def wait_result(self) -> dict:
@@ -1910,6 +1929,20 @@ class SessionRunner:
         self.skills = SkillLoader(cfg=cfg)
         self._sessions: dict[str, SessionState] = {}
         self._jobs: dict[str, MessageJob] = {}
+        #: The row an in-flight turn has already written as its terminal
+        #: failure, so the *outer* handler for the same turn amends it rather
+        #: than appending a second one.
+        #:
+        #: Keyed by job id and cleared when that job's function returns, which
+        #: is the only lifetime that is correct. Keyed by request id it was a
+        #: leak with teeth: only the outer handler consumed a note, so an
+        #: ordinary inner failure left one behind forever, and a client reusing
+        #: `X-Request-Id` -- which clients do -- had its next unrelated failure
+        #: amend a finished turn's message and record nothing of its own.
+        self._terminal_failures: dict[str, dict] = {}
+        #: Which job the current thread is running, so `run_message` can file
+        #: its note without being handed the ticket.
+        self._turn_scope = threading.local()
         self._lock = threading.Lock()
         self._closed = False
         self._deleting_projects: set[str] = set()
@@ -4609,8 +4642,24 @@ class SessionRunner:
             for jid in done:
                 self._jobs.pop(jid, None)
             self._jobs[job.job_id] = job
+        # The branch this turn was admitted on, taken from the ticket that
+        # admitted it. No second lookup: the ticket already resolved this, and
+        # asking the Store again during a failure is precisely the query most
+        # likely to fail alongside it.
+        job.branch_id = ticket.branch_id or st.branch_id or ""
 
         def _target() -> None:
+            # The scope wraps the handlers as well as the call: the note exists
+            # so the `except` below can amend the row `run_message` already
+            # wrote, and a context manager closing as the exception unwinds
+            # would take it away a moment before that handler runs.
+            self._enter_turn_scope(job.job_id)
+            # The turn runs on this thread under the id its ticket was issued
+            # with. `carry_context` copies whatever the request thread had --
+            # which is nothing for a direct submit -- so without this
+            # `run_message` mints a second id and the socket disagrees with the
+            # 202 about which request just failed.
+            token = set_correlation_id(job.request_id)
             try:
                 with self.executions.admitted(ticket, cancel_event=st.cancel):
                     result = self.run_message(
@@ -4648,43 +4697,33 @@ class SessionRunner:
                 traceback.print_exc()
                 emit = self.hub.emitter(root_frame_id)
                 message = job.project(e, "web:message")
-                try:
-                    self.store.update_frame(root_frame_id, status="failed")
-                    emit({"type": "text_reset", "frame_id": root_frame_id})
-                    emit(
-                        {
-                            "type": "text_chunk",
-                            "frame_id": root_frame_id,
-                            "block_type": "text",
-                            "chunk": f"\n\n_Error: {message}_\n",
-                        }
-                    )
-                    emit(
-                        {
-                            "type": "frame_update",
-                            "frame_id": root_frame_id,
-                            "status": "failed",
-                            # The same local id the submit response and the job
-                            # query already carry. Without it the one surface a
-                            # user is actually watching -- the stream -- showed
-                            # "internal error" and nothing to quote, so the id
-                            # existed only for a client that thought to poll
-                            # the job afterwards. P0-4 asks for one id across
-                            # all four surfaces, and this was the missing one.
-                            "request_id": job.request_id,
-                            "code": job.error_code or "internal_error",
-                            # Only when true: absent means "no claim", and a
-                            # false would assert a safety this cannot know.
-                            **(
-                                {"output_committed": True}
-                                if job.output_committed
-                                else {}
-                            ),
-                        }
-                    )
-                except Exception:
-                    pass
+                self._persist_outer_failure(root_frame_id, job, message)
+                self._best_effort(
+                    "frame_status",
+                    lambda: self.store.update_frame(root_frame_id, status="failed"),
+                )
+                self._best_effort(
+                    "prose",
+                    lambda: (
+                        emit({"type": "text_reset", "frame_id": root_frame_id}),
+                        emit(
+                            {
+                                "type": "text_chunk",
+                                "frame_id": root_frame_id,
+                                "block_type": "text",
+                                "chunk": f"\n\n_Error: {message}_\n",
+                            }
+                        ),
+                    ),
+                )
+                self._best_effort(
+                    "terminal",
+                    lambda: emit(self._terminal_failure_event(root_frame_id, job)),
+                )
                 job.finish(error=message)
+            finally:
+                self._exit_turn_scope(job.job_id)
+                reset_correlation_id(token)
 
         t = threading.Thread(
             target=carry_context(_target),
@@ -5359,6 +5398,16 @@ class SessionRunner:
         st.plan = bool(plan)
         # plan mode wins: a plan turn never executes, so explore is meaningless
         st.explore = bool(explore) and not st.plan
+        # Frozen above the `processing` event rather than in the failure
+        # handler, because that event is how a *queued* turn announces itself:
+        # its 202 resolved while an earlier turn still owned the screen, so the
+        # socket is the only place its id can become current.
+        # `or new_correlation_id()`: a direct call -- the CLI, a recovery
+        # replay, a test -- has no HTTP request behind it, and an empty id on
+        # the `processing` and terminal events is a field a client must special
+        # case. Under a job this is the contextvar the 202 already read, so the
+        # two are the same string by construction.
+        turn_request_id = correlation_id() or new_correlation_id()
         emit = self.hub.emitter(root_frame_id)
         with self._session_execution(
             st,
@@ -5378,6 +5427,11 @@ class SessionRunner:
                     "type": "frame_update",
                     "frame_id": root_frame_id,
                     "status": "processing",
+                    # The same id the 202 returned. A queued follow-up's 202
+                    # resolves while the previous turn still owns the screen,
+                    # so this event -- "your turn is running now" -- is the
+                    # moment its id becomes the current one.
+                    "request_id": turn_request_id,
                 }
             )
             # first user message names the session. The truncation is set at once
@@ -5478,7 +5532,6 @@ class SessionRunner:
             # `max_turns` is the common one -- so deriving the id from an
             # `except` clause would leave the most ordinary failure in the
             # product with nothing to quote on any of its three surfaces.
-            turn_request_id = correlation_id()
             # Filled only by the exception path: a code the projector chose,
             # and the retry veto if it read one. The id above is not in here,
             # because it exists whether or not anything was raised.
@@ -5639,7 +5692,7 @@ class SessionRunner:
             elif status == "completed" and loop_reason != "submitted" and not had_prose:
                 tail = "_(no textual response)_"
             if tail:
-                self.store.add_message(
+                tail_row = self.store.add_message(
                     root_frame_id=root_frame_id,
                     branch_id=st.branch_id,
                     role="assistant",
@@ -5656,6 +5709,17 @@ class SessionRunner:
                         {"failure": dict(turn_identity)} if status == "failed" else None
                     ),
                 )
+                if status == "failed":
+                    # So the outer handler amends this row instead of adding a
+                    # second one. Keyed by request *and* branch: "some failure
+                    # already exists" is a different question, and answering it
+                    # would swallow a genuinely separate failure on a sibling.
+                    self._remember_terminal_failure(
+                        turn_request_id,
+                        st.branch_id or root_frame_id,
+                        tail_row.get("message_id"),
+                        turn_identity,
+                    )
             if (
                 auto_review
                 and status == "completed"
@@ -6536,10 +6600,175 @@ class SessionRunner:
             lambda: self.run_plan_revision(root_frame_id, project_id, changes, model),
         )
 
+    @staticmethod
+    def _best_effort(step: str, action) -> None:
+        """Run one terminal-failure side effect, and never let it stop the next.
+
+        These were a single `try`, so the first one to fail cancelled the rest:
+        an `OperationalError` from `update_frame` skipped the terminal
+        `frame_update` entirely, and the client -- which had been told 202 and
+        was watching the socket -- was left with a turn that never ended. The
+        frame's stored status, the prose, and the terminal event are three
+        independent obligations to three different readers.
+        """
+        try:
+            action()
+        except Exception:  # noqa: BLE001 - the original failure is the news
+            traceback.print_exc()
+
+    def _terminal_failure_event(self, root_frame_id: str, job: "MessageJob") -> dict:
+        """The one terminal `frame_update` a failed turn owes the socket."""
+        return {
+            "type": "frame_update",
+            "frame_id": root_frame_id,
+            "status": "failed",
+            # The same local id the submit 202 and the job query carry.
+            "request_id": job.request_id,
+            "code": job.error_code or "internal_error",
+            # Only when true: absent means "no claim", and a false would
+            # assert a safety this cannot know.
+            **({"output_committed": True} if job.output_committed else {}),
+        }
+
+    def _remember_terminal_failure(
+        self,
+        request_id: str,
+        branch_id: str,
+        message_id: str | None,
+        identity: dict,
+    ) -> None:
+        """Note which row is this TURN's authoritative terminal failure."""
+        job_id = getattr(self._turn_scope, "job_id", "")
+        if not job_id or not request_id or not message_id:
+            return
+        with self._lock:
+            self._terminal_failures[job_id] = {
+                "message_id": message_id,
+                "identity": dict(identity),
+                "request_id": request_id,
+                "branch_id": branch_id,
+            }
+
+    def _take_terminal_failure(self, job_id: str, request_id: str) -> dict | None:
+        """The note this job filed, if it is for this request.
+
+        The job id is already unique, and the note froze its own branch, so
+        there is nothing left to re-derive. Matching on a branch resolved
+        *during* the failure was worse than useless: a failed lookup fell back
+        to the root frame, which is a different key from the one the note was
+        filed under, so the correct hand-off was dropped and a duplicate row
+        written -- the exact defect this exists to prevent.
+        """
+        with self._lock:
+            note = self._terminal_failures.get(job_id)
+            if not note:
+                return None
+            if note.get("request_id") != request_id:
+                # A different request is a different failure, not this one
+                # seen twice. Left in place: it belongs to this job either way
+                # and the outermost `finally` will clear it.
+                return None
+            return self._terminal_failures.pop(job_id)
+
+    def _enter_turn_scope(self, job_id: str) -> None:
+        """Bind this thread's turn to `job_id`."""
+        self._turn_scope.job_id = job_id
+
+    def _exit_turn_scope(self, job_id: str) -> None:
+        """Drop the binding and whatever note this turn left behind.
+
+        Called from the outermost `finally` of the job target -- after the
+        outer handler has had its chance to consume the note, after the socket
+        event, after `job.finish`. Anywhere earlier and the hand-off is taken
+        away from the handler it was filed for; anywhere later and there is no
+        `anywhere later`.
+        """
+        self._turn_scope.job_id = ""
+        with self._lock:
+            self._terminal_failures.pop(job_id, None)
+
+    def _persist_outer_failure(
+        self, root_frame_id: str, job: "MessageJob", message: str
+    ) -> None:
+        """Store the tail of a failure that never reached `run_message`.
+
+        The outer catches are real paths -- a fault before the turn is entered,
+        or after it returns, and for the plan spawner anything its `fn` raises
+        outside `run_message`. They were given the live surfaces (the socket
+        event and the job result) and nothing durable, so the identity survived
+        exactly as long as the tab did: `GET /frames/{id}/messages` had no row
+        to project and a reopened session showed a failure with no support id
+        and no retry veto.
+
+        `job.project` has already run the projector once -- it is what produced
+        `message`, `error_code` and `output_committed` -- so nothing here calls
+        it again. A second call would write a second operator diagnostic for
+        one failure, which is how two records of the same event drift apart.
+        """
+        try:
+            self._persist_outer_failure_inner(root_frame_id, job, message)
+        except Exception:  # noqa: BLE001
+            # NOTHING here may escape. This runs inside the outer handler, on
+            # the job thread, and an exception leaving it kills that thread
+            # before `job.finish` -- so the socket stays silent, `wait_result`
+            # blocks forever, and a poll never terminates. The original failure
+            # is frequently the Store being unavailable, which is exactly when
+            # the branch lookup and the insert below are most likely to fail
+            # too, so this is the expected case rather than the exotic one.
+            traceback.print_exc()
+
+    def _persist_outer_failure_inner(
+        self, root_frame_id: str, job: "MessageJob", message: str
+    ) -> None:
+        prior = self._take_terminal_failure(job.job_id, job.request_id)
+        # Frozen at submit, or carried on the note. Either way this path asks
+        # the Store nothing to decide where the row goes.
+        branch_id = (prior or {}).get("branch_id") or job.branch_id or root_frame_id
+        if prior:
+            # The inner handler already wrote this request's terminal row. Two
+            # exceptions, one thing that happened to the user -- so this amends
+            # rather than appends, and the veto is OR-ed: an ordinary tail
+            # failure must not un-say that a tool had already run.
+            merged = dict(prior["identity"])
+            if job.output_committed:
+                merged["output_committed"] = True
+            job.output_committed = bool(merged.get("output_committed"))
+            job.error_code = str(merged.get("code") or job.error_code)
+            self.store.update_message_metadata(prior["message_id"], {"failure": merged})
+            return
+        identity: dict[str, object] = {
+            "request_id": job.request_id,
+            "code": job.error_code or "internal_error",
+        }
+        if job.output_committed:
+            # Only when true; absent is "no claim".
+            identity["output_committed"] = True
+        # Unguarded on purpose: `_persist_outer_failure` holds the single
+        # catch for this whole operation. Nested try/excepts here made that
+        # outer one unreachable, which reads as defence and is decoration --
+        # no test can tell whether it is still there.
+        self.store.add_message(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            role="assistant",
+            content=message,
+            frame_id=root_frame_id,
+            metadata={"failure": identity},
+        )
+
     def _spawn_job(self, root_frame_id: str, fn) -> "MessageJob":
         """Run `fn` in a background daemon thread as a tracked MessageJob (shared
         machinery behind submit_message / plan approve / plan revise)."""
         job = MessageJob(f"job-{uuid.uuid4().hex[:12]}", root_frame_id)
+        try:
+            # On the submitting thread, while the Store is known to work. The
+            # helper used to fall back to the root frame when this was missing,
+            # which writes the failure onto the wrong branch whenever the
+            # active one is a sibling -- a user on a fork would see nothing and
+            # the trunk would grow a failure that never happened there.
+            job.branch_id = self.store.active_session_branch(root_frame_id)
+        except Exception:  # noqa: BLE001 - a ticket without one still works
+            traceback.print_exc()
         with self._lock:
             done = [
                 jid
@@ -6551,6 +6780,8 @@ class SessionRunner:
             self._jobs[job.job_id] = job
 
         def _target() -> None:
+            self._enter_turn_scope(job.job_id)
+            token = set_correlation_id(job.request_id)
             try:
                 result = fn() or {}
                 result.setdefault("job_id", job.job_id)
@@ -6573,29 +6804,23 @@ class SessionRunner:
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
                 message = job.project(e, "web:plan")
-                try:
-                    emit = self.hub.emitter(root_frame_id)
-                    self.store.update_frame(root_frame_id, status="failed")
-                    emit(
-                        {
-                            "type": "frame_update",
-                            "frame_id": root_frame_id,
-                            "status": "failed",
-                            # Same id, same reason as the message turn above.
-                            "request_id": job.request_id,
-                            "code": job.error_code or "internal_error",
-                            # Only when true: absent means "no claim", and a
-                            # false would assert a safety this cannot know.
-                            **(
-                                {"output_committed": True}
-                                if job.output_committed
-                                else {}
-                            ),
-                        }
-                    )
-                except Exception:
-                    pass
+                self._persist_outer_failure(root_frame_id, job, message)
+                emit = self.hub.emitter(root_frame_id)
+                self._best_effort(
+                    "frame_status",
+                    lambda: self.store.update_frame(root_frame_id, status="failed"),
+                )
+                # Separately guarded, for the same reason as the message turn:
+                # a Store that cannot record the status must not also cost the
+                # client its terminal event.
+                self._best_effort(
+                    "terminal",
+                    lambda: emit(self._terminal_failure_event(root_frame_id, job)),
+                )
                 job.finish(error=message)
+            finally:
+                self._exit_turn_scope(job.job_id)
+                reset_correlation_id(token)
 
         t = threading.Thread(
             target=carry_context(_target),
