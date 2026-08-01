@@ -361,12 +361,161 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  linux-app:
+    name: Build the Linux app bundle (x86_64)
+    # Buildable on any host — nothing is compiled, uv fetches a relocatable
+    # CPython for the target and manylinux wheels only — but only a Linux runner
+    # can *execute* the result, and the verifier's import probe is the one check
+    # that proves the science stack imports rather than merely being on disk.
+    #
+    # Gated on `quality` for the same reason `build` and `macos-app` are: an
+    # artifact produced before the offline gates ran at this SHA is one nothing
+    # has vouched for, and the Windows package is a wrapper around this exact
+    # tarball, so letting it start early would put an unvouched payload inside
+    # a second artifact too.
+    needs: [quality]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout the immutable release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - name: Build the .tar.gz
+        run: bash scripts/build_linux_bundle.sh
+      - name: Verify the bundle
+        # Fails closed on a runtime that did not relocate, an incomplete science
+        # stack, a missing Web UI / R worker, a desktop entry that launches
+        # nothing, or any credential material swept into the archive.
+        run: python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+      - name: Upload the verified bundle
+        # The .sha256 sidecar travels because `windows-package` embeds it in the
+        # zip, so the digest the Windows launcher checks against is the one this
+        # job produced. It is not a release asset: `release_pipeline.py` collects
+        # only distribution suffixes and publishes one SHA256SUMS covering them.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-app-bundle
+          path: |
+            dist/OpenAI4S-*-linux-x86_64.tar.gz
+            dist/OpenAI4S-*-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  windows-package:
+    name: Build the Windows package (WSL2 payload)
+    # Not a native Windows build, on purpose: platform_support.py refuses to
+    # start a kernel on win32, so the Windows deliverable is a Windows launcher
+    # around the Linux bundle, which it installs into WSL2. See the header of
+    # scripts/build_windows_zip.sh.
+    #
+    # It consumes `linux-app`'s artifact rather than rebuilding: that is what
+    # makes the payload byte-identical to the Linux bundle this same release
+    # publishes, instead of a second build that merely ought to match.
+    needs: linux-app
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout the immutable release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+      - name: Download the verified Linux bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-app-bundle
+          path: dist/
+      - name: Build the .zip
+        run: bash scripts/build_windows_zip.sh
+      - name: Verify the package
+        # Fails closed on CRLF in the WSL bootstrap, a payload that no longer
+        # matches its checksum, macOS resource-fork litter, or a launcher that
+        # has grown a native Windows execution path.
+        run: python3 scripts/verify_windows_zip.py dist/OpenAI4S-*-windows-x86_64.zip
+      - name: Upload the verified package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-package
+          path: |
+            dist/OpenAI4S-*-windows-x86_64.zip
+            dist/OpenAI4S-*-windows-x86_64.zip.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  windows-launcher:
+    name: Parse the shipped Windows launcher on Windows
+    # The launcher is the only artifact in this release nothing else can run: a
+    # syntax error in the .ps1 is invisible to every Linux and macOS job and
+    # fails on the first user's machine instead. This job parses the copy that
+    # is actually inside the built zip — not the source file — because the build
+    # rewrites its line endings on the way in.
+    needs: windows-package
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download the built package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-package
+          path: pkg/
+      - name: Parse the packaged launcher
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem pkg\*.zip | Select-Object -First 1
+          Expand-Archive -Path $zip.FullName -DestinationPath unpacked -Force
+          $ps1 = Get-ChildItem -Path unpacked -Recurse -Filter openai4s.ps1 |
+            Select-Object -First 1
+          if (-not $ps1) { throw 'the package ships no openai4s.ps1' }
+          $errors = $null
+          $tokens = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $ps1.FullName, [ref] $tokens, [ref] $errors)
+          if ($errors -and $errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Host "::error::$($_.Extent.StartLineNumber): $($_.Message)"
+            }
+            throw "the packaged launcher does not parse"
+          }
+          Write-Host "parsed OK ($($tokens.Count) tokens)"
+      - name: The refusal path must actually refuse
+        # These runners have no WSL, which is exactly the machine the guidance
+        # was written for. A launcher that exits 0 here is one that would go on
+        # to do something on a machine that cannot run the app. Driving the
+        # `.cmd` rather than the `.ps1` is deliberate: the wrapper and its
+        # -ExecutionPolicy handoff are what a user actually double-clicks.
+        shell: pwsh
+        env:
+          OPENAI4S_NONINTERACTIVE: "1"
+        run: |
+          $cmd = Get-ChildItem -Path unpacked -Recurse -Filter OpenAI4S.cmd |
+            Select-Object -First 1
+          if (-not $cmd) { throw 'the package ships no OpenAI4S.cmd' }
+          $out = & $cmd.FullName 2>&1 | Out-String
+          # Captured immediately, and the step ends with an explicit `exit 0`.
+          # A refusal is a NON-ZERO exit -- that is the thing being asserted --
+          # and the pwsh shell appends `exit $LASTEXITCODE`, so leaving it set
+          # fails the step for the launcher behaving correctly.
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -eq 0) {
+            throw 'the launcher succeeded on a machine with no WSL'
+          }
+          if ($out -notmatch 'wsl --install') {
+            throw 'the refusal does not tell the user how to install WSL'
+          }
+          Write-Host "refused with exit $code and named the way out"
+          exit 0
+
   attach:
     name: Stage assets onto the draft
     # Staging only. This job never makes anything public: the flip lives in
     # `finalize`, after PyPI.
     if: inputs.publish
-    needs: [freeze, guard, build, macos-app]
+    needs: [freeze, guard, quality, build, macos-app, linux-app, windows-package, windows-launcher]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -381,6 +530,16 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: macos-app-image
+          path: assets/
+      - name: Download the verified Linux bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-app-bundle
+          path: assets/
+      - name: Download the verified Windows package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-package
           path: assets/
       # The proof that the gates ran at this SHA. `step_test` refuses to stage
       # without it, and refuses one written for a different commit.
@@ -449,7 +608,7 @@ jobs:
     if: inputs.publish
     # A version number, once taken on an index, is taken forever, so this may
     # only run from the staged path where every check has already passed.
-    needs: [guard, build, macos-app, attach]
+    needs: [guard, quality, build, macos-app, linux-app, windows-package, windows-launcher, attach]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:

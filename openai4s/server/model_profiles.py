@@ -621,6 +621,14 @@ class ModelProfileService:
             self._forget_key(profile)
         if self.store.get_setting("active_model_profile") == profile_id:
             self.store.set_setting("active_model_profile", "")
+        # A session pinned to this profile must not be left unsendable. The
+        # pin's whole purpose is to record what a session ran under; once the
+        # profile is gone there is nothing left to name, and refusing forever
+        # is the one outcome that helps nobody.
+        try:
+            self.store.release_model_binding(profile_id)
+        except Exception:  # noqa: BLE001 — the profile is already deleted
+            pass
 
     def migrate_profile_keys(self) -> dict:
         """Move any plaintext profile key behind a reference.

@@ -140,8 +140,15 @@ out of shell history and structured command output.
 
 ## Platform support
 
-The native runtime is supported on Linux and macOS. Windows users should run
-the Linux package under WSL2. The current persistent-kernel transport, resource
-accounting, process interruption, and OS sandbox adapters depend on Unix
-primitives; installing the wheel with native Windows Python does not imply that
-scientific Cell execution is supported there.
+The native runtime is supported on Linux and macOS. The current
+persistent-kernel transport, resource accounting, process interruption, and OS
+sandbox adapters depend on Unix primitives; installing the wheel with native
+Windows Python does not imply that scientific Cell execution is supported
+there — the kernel spawn path refuses it outright.
+
+Windows users run the Linux build under WSL2. The release ships
+`OpenAI4S-<version>-windows-<arch>.zip`, which is that Linux build plus a
+launcher that installs it into WSL2 and opens the Windows browser at the
+forwarded port; it is not a native Windows build and does not pretend to be
+one. The full matrix, and what actually ships per platform, is
+[`platforms.md`](platforms.md).

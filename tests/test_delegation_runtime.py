@@ -157,15 +157,34 @@ def test_shared_budget_reservation_is_atomic_across_concurrent_runners(monkeypat
                 successes.append(result["child_id"])
 
     threads = [
-        threading.Thread(target=spawn, args=(root if index % 2 else sibling, index))
+        threading.Thread(
+            target=spawn,
+            args=(root if index % 2 else sibling, index),
+            name=f"spawn-{index}",
+        )
         for index in range(16)
     ]
     for thread in threads:
         thread.start()
     barrier.wait()
+    # The last wait in this file that never got `_RENDEZVOUS_TIMEOUT`, and it
+    # failed the same way the comment up there describes: three seconds each is
+    # plenty on an idle laptop and not plenty on a CI runner sharing itself with
+    # eight other branches, where this suite took 20 minutes against 13 locally.
+    # Reproduced deterministically by making the workers slower without changing
+    # a thing about what they do -- so the assertion was measuring latency while
+    # claiming to measure atomicity.
+    #
+    # One deadline for the whole set rather than per thread: they are released
+    # together by the barrier and run concurrently, so the meaningful budget is
+    # wall-clock for all of them, and a genuine deadlock still fails inside a
+    # bounded time. Nothing below is weakened -- the counts, the identity of the
+    # winners and the budget ledger are what this test is actually about.
+    deadline = time.monotonic() + _RENDEZVOUS_TIMEOUT
     for thread in threads:
-        thread.join(3)
-        assert not thread.is_alive()
+        thread.join(max(0.0, deadline - time.monotonic()))
+    stuck = [thread.name for thread in threads if thread.is_alive()]
+    assert not stuck, f"threads never returned within {_RENDEZVOUS_TIMEOUT}s: {stuck}"
 
     assert len(successes) == 8
     assert len(set(successes)) == 8

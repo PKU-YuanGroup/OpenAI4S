@@ -1,0 +1,40 @@
+# Windows 启动器源文件
+
+[English](README.md)
+
+Windows 发布包用作入口的三个文件。[`../build_windows_zip.sh`](../build_windows_zip.sh)
+会把它们和作为 payload 携带的 Linux bundle 一起放进包里；这里没有任何东西会在构建时
+被执行。
+
+它们以真正的文件形式存在，而不是塞在构建脚本里的 heredoc，因为这是要在一台我们所有 CI
+镜像都不像的机器上运行的代码：它必须自己就能读、能 diff、能被解析。
+[`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 与
+[`../../.github/workflows/release.yml`](../../.github/workflows/release.yml)
+里的 `windows-launcher` 作业会在真正的 Windows runner 上解析 `openai4s.ps1`，正是为了
+这个原因——它里面的语法错误对所有 Linux 和 macOS 作业都是不可见的，只会在第一个用户的
+机器上暴露。
+
+## 为什么跑在 WSL2 里
+
+这不是打包上的偷懒。[`../../openai4s/platform_support.py`](../../openai4s/platform_support.py)
+在 `win32` 上拒绝启动内核：内核要拉起 POSIX 子进程，R 通道靠 shell 重定向走文件描述符
+3 和 4，而 OS 沙箱根本没有 Windows 后端。一个照样启动的包，只会让科研人员从一次半吊子的
+分析里才发现问题——这正是那道拒绝要防的「先警告、再照跑」，只不过下沉到了发布渠道这一层。
+
+WSL2 报告自己是 `linux`，属于受支持平台，所以这个包跑的就是其他平台跑的同一个程序，而不是
+它的近似版。平台支持矩阵见 [`../../docs/platforms.md`](../../docs/platforms.md)。
+
+## 文件
+
+| 文件 | 职责 |
+| --- | --- |
+| `OpenAI4S.cmd` | 可双击的入口。资源管理器双击 `.ps1` 是用编辑器打开而不是运行，默认执行策略连命令行调用也会拦，所以这层包装只对这一个进程加 `-ExecutionPolicy Bypass` 调起 PowerShell，并原样透传参数与退出码。以 CRLF 发布。 |
+| `openai4s.ps1` | Windows 这一半：找到一个 WSL **2** 发行版（拒绝 WSL 1——它没有 user namespace，也就没有沙箱），用 `wslpath` 翻译包路径，安装 payload，启动 daemon，轮询转发出来的端口，然后打开浏览器。每一处拒绝都同时说明原因和那条能解决它的确切命令。以 CRLF 发布。 |
+| `bootstrap.sh` | Linux 这一半，在发行版内部运行。它在解包前先校验 payload 的 checksum（归档要跨 9p/DrvFs 边界，那里的短读会给出一个被截断的文件而不是一个错误），幂等安装，并把 daemon 完全脱离终端地拉起。以 LF 发布——这里出现回车符会让它在 WSL 里以 `bad interpreter` 失败，而 `../verify_windows_zip.py` 会直接拒绝这样的包。 |
+
+## 在架构中的位置
+
+这些都不属于 daemon，运行中的应用永远不会 import 或调用它们。它们只存在于「用户双击下载
+下来的 zip」和「受支持的 Linux daemon 起来」之间；从那一刻起，这就是
+[`../../docs/release-validation.md`](../../docs/release-validation.md) 里描述的那个普通
+Linux 安装。

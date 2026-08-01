@@ -302,8 +302,10 @@ def test_secret_shaped_text_is_redacted_not_leaked(tmp_path):
         frame_id=root,
         role="user",
         # A deliberately fake, secret-SHAPED string to prove _safe_text redacts
-        # it — not a real credential (gitleaks:allow).
-        content="my api_key=sk-ABCDEFGH1234567890 keep it safe",  # gitleaks:allow
+        # it — not a real credential. Its 18 trailing characters fall short of
+        # the 24+ the `sk-` detector in scripts/source_secret_scan.py requires,
+        # so the one scanner that remains does not flag it.
+        content="my api_key=sk-ABCDEFGH1234567890 keep it safe",
     )
     builder = _builder(store, domain, workspace, tmp_path)
     files = _unpack(builder.serialize_package(builder.build(root, root))["data"])

@@ -141,6 +141,52 @@ jobs:
           cd "${RUNNER_TEMP}"
           "${RUNNER_TEMP}/openai4s-release-venv/bin/python" "${GITHUB_WORKSPACE}/scripts/release_import_smoke.py"
 
+  windows-launcher:
+    name: Windows launcher parses on Windows
+    # The Windows package's launcher is the only shipped file nothing on Linux
+    # or macOS can even parse, so a syntax error in it is invisible to every
+    # other job here and surfaces on the first user's machine. This runner has
+    # no WSL, which also makes it the right place to prove the refusal path
+    # refuses instead of proceeding.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Parse the launcher
+        shell: pwsh
+        run: |
+          $errors = $null
+          $tokens = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD\scripts\windows\openai4s.ps1", [ref] $tokens, [ref] $errors)
+          if ($errors -and $errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Host "::error::$($_.Extent.StartLineNumber): $($_.Message)"
+            }
+            throw "scripts/windows/openai4s.ps1 does not parse"
+          }
+          Write-Host "parsed OK ($($tokens.Count) tokens)"
+      - name: Refuse, with guidance, on a machine that has no WSL
+        shell: pwsh
+        env:
+          OPENAI4S_NONINTERACTIVE: "1"
+        run: |
+          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File "$PWD\scripts\windows\openai4s.ps1" 2>&1 | Out-String
+          # Captured immediately, and the step ends with an explicit `exit 0`.
+          # A refusal is a NON-ZERO exit -- that is the thing being asserted --
+          # and the pwsh shell appends `exit $LASTEXITCODE`, so leaving it set
+          # fails the step for the launcher behaving correctly.
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -eq 0) {
+            throw "the launcher succeeded on a machine with no WSL"
+          }
+          if ($out -notmatch 'wsl --install') {
+            throw "the refusal does not tell the user how to install WSL"
+          }
+          Write-Host "refused with exit $code and named the way out"
+          exit 0
+
   test:
     name: Offline tests (py${{ matrix.python-version }})
     timeout-minutes: 45
@@ -277,11 +323,24 @@ jobs:
           OPENAI4S_KERNEL_SANDBOX: enforce
         run: uv run python -m harness.smoke.macos_sandbox
 
-  linux-sandbox-smoke:
-    name: Linux bubblewrap enforcement (nightly)
-    # The frozen platform matrix puts Linux at beta "after enforced bubblewrap
-    # E2E", gated on a real enforced sandbox rather than a probe that degrades.
-    # macOS had this proof; Linux did not, so its tier rested on nothing.
+  # There is deliberately no Linux bubblewrap job here. `harness.smoke.linux_sandbox`
+  # still exists and still passes on a Linux host that permits unprivileged user
+  # namespaces -- but not on a GitHub-hosted runner, where bwrap cannot bring up
+  # the loopback interface inside its new network namespace
+  # (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). That is the
+  # runner's confinement, not a defect in the sandbox, so the job failed every
+  # single night while telling us nothing about the code. A check that cannot
+  # pass is not evidence; docs/platforms.md now states what is and is not proven
+  # rather than pointing at a job that was always red. Run the smoke by hand on a
+  # permissive Linux host to re-establish the claim.
+
+  linux-bundle-smoke:
+    name: Linux app bundle builds and imports (nightly)
+    # The desktop bundle is only built at release time, so the first sign that
+    # a manifest package lost its manylinux wheel — or that the embedded
+    # interpreter no longer imports the stack — would otherwise be a release
+    # day. Nightly and manual only: it downloads a runtime plus ~1 GB of
+    # wheels, which is not a cost to put on every contributor's PR.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 25
     runs-on: ubuntu-latest
@@ -290,14 +349,17 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
-      - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
-      - name: Install the zero-dependency runtime
-        run: uv sync --locked
-      - name: Require real bubblewrap isolation and child-env scrubbing
-        env:
-          OPENAI4S_KERNEL_SANDBOX: enforce
-        run: uv run python -m harness.smoke.linux_sandbox
+      - name: Build the bundle
+        run: bash scripts/build_linux_bundle.sh
+      - name: Run the embedded interpreter and import the whole science stack
+        # This runner is the only place that check can happen: everything else
+        # in this repository's CI either cannot execute a linux-x86_64 binary
+        # or never builds the bundle at all.
+        run: python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+      - name: Wrap it as the Windows package and verify that too
+        run: |
+          bash scripts/build_windows_zip.sh
+          python3 scripts/verify_windows_zip.py dist/OpenAI4S-*-windows-x86_64.zip
 
   connector-canary:
     name: Science connector canary (nightly)

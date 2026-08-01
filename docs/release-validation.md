@@ -96,7 +96,7 @@ credentials.
 The `.dmg` is a third contract, and neither of the checks above can see it. It
 does not install the wheel: the kernel spawns its worker through
 `sys.executable`, so the image embeds a relocatable standalone CPython with the
-science stack from `scripts/dmg_bundled_packages.txt` pre-baked into it — the
+science stack from `scripts/bundled_packages.txt` pre-baked into it — the
 pip-installable superset of the default `python.yml` kernel env, so a downloaded
 app runs cheminformatics (rdkit), single-cell (scanpy), and dataframe workflows
 offline with no `pip install` — and ships the source tree as loose `.py` files.
@@ -138,6 +138,60 @@ stack on every launch from a read-only install. And `Contents/Resources/runtime/
 redirects on-demand installs to a private user site under the data directory:
 the kernel strips `PIP_*` from every Cell's environment, so config inside the
 bundle is the only redirect that also covers `host.bash("pip install …")`.
+
+## Linux app bundle
+
+A fourth contract, and structurally the DMG's twin: the same embedded
+relocatable CPython, the same pre-baked science stack from
+`scripts/bundled_packages.txt`, the same loose source tree — packed as a
+relocatable directory rather than a signed image. What differs is the desktop
+integration. `Exec=` and `Icon=` in a `.desktop` entry are absolute paths, and a
+tarball does not know where it will be unpacked, so the entry ships as a
+template and `install.sh` substitutes the real location at install time.
+Shipping a pre-baked path would produce a menu entry that launches nothing.
+
+```bash
+bash scripts/build_linux_bundle.sh                               # native
+python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+```
+
+Unlike the DMG this **can** be cross-built, because nothing in it is compiled:
+`uv` fetches a relocatable CPython built for the target and manylinux wheels
+only, and bytecode magic tracks the CPython version rather than the machine.
+What a foreign host cannot do is *execute* the result, so the verifier reports
+two depths and names which one it reached — a static inspection anywhere, and on
+a matching Linux host the import probe that actually proves the science stack
+imports rather than merely being present on disk. The release job therefore runs
+on a Linux runner, and a cross-build says out loud that it has not been run.
+
+## Windows package
+
+Not a native Windows build. `openai4s/platform_support.py` refuses to start a
+kernel on `win32`, so the Windows deliverable is a Windows launcher wrapped
+around the Linux bundle, which it installs into WSL2 on first run — see
+[`platforms.md`](platforms.md) for why that is the honest packaging rather than
+a workaround. The release job consumes the Linux job's artifact instead of
+rebuilding, which is what makes the payload byte-identical to the Linux tarball
+the same release publishes rather than a second build that ought to match.
+
+```bash
+bash scripts/build_windows_zip.sh
+python3 scripts/verify_windows_zip.py dist/OpenAI4S-*-windows-x86_64.zip
+```
+
+The failure modes are specific to the format. `wsl/bootstrap.sh` must arrive
+LF-only, because a carriage return makes WSL fail it with `bad interpreter` — on
+the user's machine, not here. The payload's checksum sidecar must match its
+bytes, or every install refuses for the wrong reason. And the launcher must not
+have grown a native execution path: the verifier fails on any shipped `.exe`,
+`.dll` or `.pyd`, and on a launcher that starts Python on the Windows side.
+
+One check cannot run anywhere else. A syntax error in `openai4s.ps1` is
+invisible to every Linux and macOS job and would surface on the first user's
+machine, so a `windows-latest` job parses the packaged launcher with the
+PowerShell parser and — on a runner that has no WSL, which is exactly the
+machine the guidance was written for — asserts that it refuses with the
+`wsl --install` instructions instead of proceeding.
 
 ## Enforced contracts
 

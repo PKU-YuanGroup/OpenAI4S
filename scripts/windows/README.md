@@ -1,0 +1,46 @@
+# Windows launcher sources
+
+[中文说明](README_zh.md)
+
+The three files the Windows release package ships as its entry point.
+[`../build_windows_zip.sh`](../build_windows_zip.sh) stages them beside the
+Linux bundle it carries as a payload; nothing here is executed at build time.
+
+They live as real files rather than heredocs inside the build script because
+this is the code that runs on a machine none of our CI images resembles: it has
+to be readable, diffable, and parseable on its own. The `windows-launcher` jobs
+in [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) and
+[`../../.github/workflows/release.yml`](../../.github/workflows/release.yml)
+parse `openai4s.ps1` on a real Windows runner for exactly that reason — a syntax
+error in it is invisible to every Linux and macOS job and would surface on the
+first user's machine.
+
+## Why this runs inside WSL2
+
+Not a packaging shortcut. [`../../openai4s/platform_support.py`](../../openai4s/platform_support.py)
+refuses to start a kernel on `win32`: the kernel spawns POSIX subprocesses, the
+R channel rides file descriptors 3 and 4 through a shell redirection, and the OS
+sandbox has no Windows backend. A package that started anyway would leave a
+scientist to discover the problem from a half-working analysis — the same
+"warns and proceeds" failure the refusal exists to prevent, one release channel
+further downstream.
+
+WSL2 reports as `linux`, which is a supported platform, so this package runs
+the same program every other platform runs rather than an approximation of it.
+The supported-platform matrix is [`../../docs/platforms.md`](../../docs/platforms.md).
+
+## Files
+
+| File | Purpose |
+| --- | --- |
+| `OpenAI4S.cmd` | The double-clickable entry point. Explorer opens a `.ps1` in an editor rather than running it, and the default execution policy blocks it even from a prompt, so this wrapper invokes PowerShell with `-ExecutionPolicy Bypass` for that one process and forwards its arguments and exit code. Ships CRLF. |
+| `openai4s.ps1` | The Windows half: find a WSL **2** distribution (refusing WSL 1, which has no user namespaces and therefore no sandbox), translate the package path with `wslpath`, install the payload, start the daemon, poll the forwarded port, and open the browser. Every refusal names both the cause and the exact command that fixes it. Ships CRLF. |
+| `bootstrap.sh` | The Linux half, run inside the distribution. It verifies the payload's checksum before unpacking (the archive crosses the 9p/DrvFs boundary, where a short read yields a truncated file rather than an error), installs idempotently, and starts the daemon fully detached. Ships LF — a carriage return here fails inside WSL with `bad interpreter`, and `../verify_windows_zip.py` refuses a package that has one. |
+
+## Where this fits
+
+None of this is part of the daemon, and the running application never imports
+or invokes it. It exists only between the user double-clicking a downloaded zip
+and the supported Linux daemon starting; from that point on the app is the
+ordinary Linux install described in
+[`../../docs/release-validation.md`](../../docs/release-validation.md).

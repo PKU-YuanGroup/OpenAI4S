@@ -5799,7 +5799,10 @@
             ]
           },
           "frame_id": {
-            "type": "null"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "project_id": {
             "type": "string"
@@ -17285,7 +17288,10 @@
             ]
           },
           "frame_id": {
-            "type": "null"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "project_id": {
             "type": "string"

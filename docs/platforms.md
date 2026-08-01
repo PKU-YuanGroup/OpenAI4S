@@ -8,10 +8,35 @@ a support claim nobody has to take on faith is the only kind worth publishing.
 | --- | --- | --- | --- | --- |
 | macOS (Apple Silicon) | **stable** | runs | Seatbelt, enforced and smoke-tested nightly | Developer ID signing + notarization — **not yet done** |
 | macOS (Intel) | stable | runs | Seatbelt | the `.dmg` is Apple Silicon only; install from PyPI |
-| Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced and smoke-tested nightly | enforced-bubblewrap E2E — **met** (`harness/smoke/linux_sandbox.py`) |
+| Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced | enforced-bubblewrap E2E — **written, not continuously verified** (`harness/smoke/linux_sandbox.py`; see below) |
 | Windows (native) | **unsupported** | **refused** | none exists | not planned; use WSL2, which reports as Linux |
 | Anything else | unsupported | **refused** | — | — |
 
+## What ships, per platform
+
+A support tier is a claim about the code. This is the separate question of what
+a person can actually download, and the two are not the same thing — the Windows
+row above says "unsupported" and the Windows row below says a package exists,
+because that package does not run OpenAI4S on Windows.
+
+| Download | Built by | Verified by | What it is |
+| --- | --- | --- | --- |
+| `OpenAI4S-<v>-macos-arm64.dmg` | [`scripts/build_macos_dmg.sh`](../scripts/build_macos_dmg.sh) | `verify_macos_bundle.py` | An `.app` with an embedded relocatable CPython and the pre-baked science stack. Ad-hoc signed, not notarized. |
+| `OpenAI4S-<v>-linux-x86_64.tar.gz` | [`scripts/build_linux_bundle.sh`](../scripts/build_linux_bundle.sh) | `verify_linux_bundle.py` | The same payload as a relocatable directory, plus a `.desktop` template and a per-user `install.sh`. Unpack anywhere and run `./OpenAI4S`. |
+| `OpenAI4S-<v>-windows-x86_64.zip` | [`scripts/build_windows_zip.sh`](../scripts/build_windows_zip.sh) | `verify_windows_zip.py` | A Windows launcher wrapped around **that exact Linux tarball**, which it installs into WSL2 on first run. Not a native Windows build; see below. |
+| `openai4s-<v>-py3-none-any.whl` | `uv build` | `verify_release_artifacts.py` | The zero-dependency wheel, for any supported platform with its own Python. |
+
+Only `x86_64` slices are published, the same way the `.dmg` is Apple Silicon
+only. Both build scripts take `ARCH=aarch64` and produce a correct arm64 bundle,
+but nothing publishes one yet, so arm64 Linux and Windows-on-ARM install from
+PyPI (`pip install openai4s`). Naming an architecture we do not actually upload
+would put the burden of discovering that on the person downloading it.
+
+The Linux bundle is deliberately not an AppImage. An AppImage is a squashfs
+mounted through FUSE, and this program's job is to spawn subprocesses under
+bubblewrap; nesting a user namespace inside a FUSE mount is the combination that
+fails on hardened and containerised hosts, and it would fail at *cell execution*
+time — long after the app looked like it had started successfully.
 ## Python versions
 
 | Version | `requires-python` | Classifier | CI offline suite | Ships in the `.dmg` |
@@ -62,6 +87,31 @@ Python and R kernel passes through, so there is no route to a subprocess that
 skips it. The message names both the reason (POSIX subprocesses, and no Windows
 sandbox backend) and the way out (WSL2).
 
+## The Windows package, and why it is not a contradiction
+
+There is a Windows download, and native Windows is still refused. Both are true
+because the package does not run OpenAI4S on Windows: it is a launcher that
+installs the Linux bundle into the user's WSL2 distribution, starts the daemon
+there, and opens the Windows browser at the forwarded localhost port. WSL2
+reports as `linux`, so what runs is the supported build, unmodified.
+
+Making the documented way out double-clickable is the whole value. The
+alternative — shipping something that starts on native Windows — would move the
+"warns and proceeds" failure from the kernel to the installer, where it is
+harder to see and lands on a machine nobody here can debug.
+
+Three properties keep the package honest, and
+[`scripts/verify_windows_zip.py`](../scripts/verify_windows_zip.py) fails the
+build on each:
+
+- it contains no Windows executable (`.exe`, `.dll`, `.pyd`), so there is
+  nothing in it that *could* start a native kernel;
+- the launcher's only execution path goes through `wsl.exe`;
+- a WSL **1** distribution is refused rather than used. WSL 1 emulates Linux
+  syscalls and has no user namespaces, so bubblewrap cannot start and cells
+  would run unisolated — the exact silent degradation the tiers above exist to
+  rule out.
+
 ## Why Linux is beta and macOS is stable
 
 Not a difference in the code — the same kernel and the same host RPC run on
@@ -71,9 +121,10 @@ both. The tiers differ in what has been *proven*:
   top of a technical one. **That signing and notarization has not happened
   yet**, so the stable tier is the target, not the current state.
 - Linux is gated on a real enforced-bubblewrap end-to-end test rather than on a
-  probe that degrades. That test now exists and runs nightly; it asserts the
-  backend really is bubblewrap, so a runner that silently fell back cannot
-  report a pass for a boundary it never tested.
+  probe that degrades. That test exists and asserts the backend really is
+  bubblewrap, so a host that silently fell back cannot report a pass for a
+  boundary it never tested. **It is not running in CI**, for the reason below,
+  so the Linux tier currently rests on manual runs.
 
 Both smokes check the same four boundaries, from one shared implementation
 ([`harness/smoke/sandbox_boundary.py`](../harness/smoke/sandbox_boundary.py)):
@@ -82,10 +133,38 @@ inside its workspace, and cannot leak the daemon's credentials into a
 subprocess it spawns. They are shared rather than copied because two copies
 drift until one platform quietly stops checking what the other still does.
 
+## Why the Linux smoke is not in CI
+
+A GitHub-hosted runner cannot run it. `bwrap` creates its network namespace and
+then fails to bring up the loopback interface inside it:
+
+```
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+```
+
+That is the runner's own confinement of unprivileged user namespaces, not a
+defect in the sandbox and not something the code under test can influence. The
+job was therefore red every night from the day it was added, and a check that
+cannot pass is not evidence of anything — it is a signal everyone learns to
+scroll past, which costs more than the absent check does.
+
+So the claim is downgraded here instead of being propped up by a job that never
+went green. To re-establish it, run the smoke on a Linux host that permits
+unprivileged user namespaces:
+
+```bash
+OPENAI4S_KERNEL_SANDBOX=enforce uv run python -m harness.smoke.linux_sandbox
+```
+
+Restoring it to CI needs a runner where that is possible — a self-hosted Linux
+runner, or a container with the namespace permissions bwrap needs. Until one
+exists, "beta" here means the boundary is implemented and asserted by a test
+someone has to run, not one that runs itself.
+
 ## Degraded sandboxes
 
 `OPENAI4S_KERNEL_SANDBOX` takes `auto` (default), `enforce`, or `off`. On
 `auto`, a missing backend degrades **visibly** — a runtime warning and a
 machine-readable degraded status — rather than silently. `enforce` fails closed
-before a worker starts. The nightly smokes run under `enforce`, which is why a
-missing bubblewrap is a CI failure rather than a shrug.
+before a worker starts. The macOS nightly smoke runs under `enforce`, which is
+why a missing Seatbelt is a CI failure rather than a shrug.

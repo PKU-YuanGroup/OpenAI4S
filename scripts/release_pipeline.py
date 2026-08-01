@@ -1598,9 +1598,24 @@ class Pipeline:
         # would still self-validate while PyPI already holds the first run's
         # bytes. PyPI is immutable per version, so it is the anchor: every Python
         # distribution the draft would publish must be on PyPI with a matching
-        # digest. Only wheels and sdists live on PyPI — the dmg, sbom, provenance
-        # and SHA256SUMS are GitHub-only and are not expected there.
-        draft_dists = {name for name in checked if name.endswith((".whl", ".tar.gz"))}
+        # digest. Only wheels and the sdist live on PyPI — the dmg, the Linux
+        # tarball, the Windows zip, sbom, provenance and SHA256SUMS are
+        # GitHub-only and are not expected there.
+        #
+        # The sdist is matched by exact name rather than by `.tar.gz`, because
+        # it is no longer the only tarball on a draft: the Linux desktop bundle
+        # is `OpenAI4S-<version>-linux-<arch>.tar.gz`. Suffix-matching swept it
+        # into the anchor set, where it could never be satisfied — PyPI cannot
+        # hold that filename — so `finalize` would refuse to flip the draft
+        # *after* the immutable PyPI version had already been consumed.
+        #
+        # Case matters and is the whole reason this is `==` and not a
+        # case-folded prefix test: PEP 625 names the sdist `openai4s-...` while
+        # the bundle is `OpenAI4S-...`. The two differ only in case.
+        sdist_name = f"openai4s-{self.version}.tar.gz"
+        draft_dists = {
+            name for name in checked if name.endswith(".whl") or name == sdist_name
+        }
         published = self._pypi_digests("openai4s", self.version)
         if not published:
             # Fail closed: an empty response is not "everything matches". The

@@ -71,6 +71,26 @@ SCHEMA_VERSION = 1
 #: quietly drop two unrelated routes' contracts as well.
 _MACHINE_STATE_KEYS = frozenset({"sandbox", "default_host", "gpu_name", "cuda_version"})
 
+#: A different failure that looks like the one above, and must not be fixed the
+#: same way.
+#:
+#: `merge` widens across observations, so a nullable field ends up `["null",
+#: "string"]` *if the suite observes it both ways*. A field the suite only ever
+#: sees in one state freezes as that state alone -- and the resulting entry
+#: describes the run, not the API. `POST /example/session` was the first one
+#: caught: its `error` is `str | None` straight from `last_error()`, but the
+#: suite observed it exactly once, immediately after `start()` cleared the error
+#: and spawned a thread that may or may not have failed yet. Both threads then
+#: contend for one lock, so the field froze as `string` on Linux/CI and `null`
+#: on macOS, and the gate called the other machine a breaking change.
+#:
+#: The fix is a test that exercises the other state, never an entry here. These
+#: fields are not host-dependent -- they are *under-observed*, and eliding them
+#: would delete a real guarantee to silence a coverage gap. A survey at the time
+#: of writing found 94 fields frozen as null-only across 43 route entries
+#: (`frame_id` on both `/example/session` verbs among them); each is a latent
+#: version of this, waiting for the first capture that sees the populated state.
+
 #: How many incompatibilities to name per route before summarising the rest.
 #: One structural change can break dozens of nested fields, and a wall of them
 #: buries the first one, which is usually the cause of all the others.
