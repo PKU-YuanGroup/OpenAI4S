@@ -24,8 +24,12 @@ for `gateway_error_payload`.
 """
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import json
+import sys
 from email.message import Message
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -44,7 +48,20 @@ from openai4s.server.errors import (
 # Three shapes, one exception. Each is the thing a real failure on that surface
 # actually carries; a test that only planted a credential would pass against a
 # fix that scrubbed credentials and shipped the path.
-CREDENTIAL = "sk-live-9f2c8b1a4d7e6f0a3b5c9d1e"
+#
+# The credential is assembled rather than written out. `source_secret_scan.py`
+# scans this file like any other release source, and it was failing on the
+# literal that used to sit here -- a real finding, because the value is
+# deliberately shaped like a real key and the scanner cannot know which side of
+# the redaction it is on. The two ways to silence it are both worse than this
+# one: writing a value the detector misses gives up the shape the canary exists
+# to have, and teaching the scanner an exemption trades a live detection for a
+# green gate. The f-string keeps the runtime value key-shaped -- asserted below
+# against the production detector -- while no substring of this source matches
+# it, because `sk-live-` is five characters before `{` ends the run and the
+# detector needs twenty-four.
+_CANARY_DIGEST = hashlib.sha256(b"openai4s/public-exception-projector").hexdigest()
+CREDENTIAL = f"sk-live-{_CANARY_DIGEST[:24]}"
 ABS_PATH = "/Users/canary/Documents/grant-embargo.csv"
 SHELL_COMMAND = "rsync -av --delete /srv/raw root@10.0.0.4:/backup"
 
@@ -424,3 +441,62 @@ def test_the_projector_falls_back_to_the_local_correlation_id():
     assert status == 500
     assert body["request_id"] == "req-ambient"
     assert_safe(body, expect_code="internal_error")
+
+
+# --------------------------------------------------------------------------
+# the canary itself
+# --------------------------------------------------------------------------
+
+
+def _secret_scanner():
+    """The release gate's own module, loaded from `scripts/` by path.
+
+    Imported rather than re-implemented for the same reason the projection is:
+    a local copy of the detector would keep passing after the real one changed,
+    and the claim these two tests make is about the gate that actually runs.
+    """
+    path = Path(__file__).resolve().parents[1] / "scripts" / "source_secret_scan.py"
+    spec = importlib.util.spec_from_file_location("openai4s_test_secret_scan", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    # Registered before execution: the module defines a `@dataclass` under
+    # `from __future__ import annotations`, and resolving those annotations
+    # reads `sys.modules[cls.__module__]`. Skipping this raises inside
+    # `dataclasses`, not at the import.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_credential_canary_is_still_shaped_like_a_real_key(tmp_path):
+    """Assembling it must not have made it something the detector ignores.
+
+    Without this, `CREDENTIAL = "redacted"` would satisfy the scan gate and
+    every assertion in this file, while testing nothing: a projector that
+    forwards `str(e)` verbatim passes once the planted value stops looking like
+    a credential. The runtime value is written to a scratch file and put through
+    the real scanner, so the canary's shape is measured rather than asserted.
+    """
+    scanner = _secret_scanner()
+    (tmp_path / "leak.py").write_text(f'TOKEN = "{CREDENTIAL}"\n', encoding="utf-8")
+
+    findings = scanner.scan(tmp_path)
+
+    assert [(item.path, item.detector) for item in findings] == [
+        ("leak.py", "openai-api-key")
+    ]
+
+
+def test_this_file_carries_no_value_the_release_gate_would_flag():
+    """The other half: key-shaped at runtime, invisible in the source.
+
+    This is the assertion that was red before the canary was assembled, and it
+    is here rather than only in `scripts/` because the fix belongs to this file
+    -- the next author to inline a realistic literal for readability finds out
+    from the suite instead of from a release gate three jobs later.
+    """
+    scanner = _secret_scanner()
+
+    findings = scanner.scan(Path(__file__).resolve().parent)
+
+    assert [item for item in findings if item.path == Path(__file__).name] == []
