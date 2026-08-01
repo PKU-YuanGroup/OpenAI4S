@@ -291,9 +291,7 @@ def test_execution_ranking_totally_orders_mixed_step_values(kernel):
     assert len(constrained) == len(routes)
 
 
-def test_search_spec_builds_documented_cli_options_in_stable_order(
-    workflow, tmp_path
-):
+def test_search_spec_builds_documented_cli_options_in_stable_order(workflow, tmp_path):
     checkpoint = tmp_path / "checkpoint.json.gz"
     command = workflow.build_aizynth_search_command(
         "CCO",
