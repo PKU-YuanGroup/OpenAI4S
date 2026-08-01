@@ -923,6 +923,32 @@ class WSHub:
         buf["event_sizes"] = kept_sizes
         buf["event_bytes"] = sum(kept_sizes)
 
+    #: Event types that belong to ONE turn's stream. Everything else -- kernel
+    #: status, permission cards, metadata deltas -- is frame state that no
+    #: execution owns, and withholding those would break surfaces that have
+    #: nothing to do with turn ordering.
+    _TURN_SCOPED_TYPES = frozenset({"text_reset", "text_chunk", "frame_update"})
+
+    def _refuses_event_locked(self, rid: str, obj: dict) -> bool:
+        """Should this event be withheld from the buffer AND from live sockets?
+
+        Dropping it from the resume window alone is not enough. `broadcast`
+        still delivered it, and a tab that joined during B has no stored
+        identity for A -- so its own filter reads "one side silent", which
+        means current, and A's late terminal closes B. The hub is the only
+        place that knows both identities, so the fence has to be here.
+        """
+        t = obj.get("type")
+        if t not in self._TURN_SCOPED_TYPES:
+            return False
+        if t == "frame_update" and obj.get("status") == "processing":
+            # A boundary announces a new execution; it is never stale against
+            # the one it replaces.
+            return False
+        return self._is_stale_for_buffer(
+            self._live.get(rid), str(obj.get("execution_id") or "")
+        )
+
     @staticmethod
     def _is_stale_for_buffer(buf: dict | None, event_execution: str) -> bool:
         """Does this event belong to an execution the live window has moved on from?
@@ -1282,6 +1308,11 @@ class WSHub:
                 # two producers interleave and hand out a sequence that does not
                 # match delivery order — which is the one thing a resume cursor
                 # cannot tolerate.
+                if self._refuses_event_locked(root_frame_id, obj):
+                    # Not recorded, not delivered, and NOT given a sequence
+                    # number: it is not part of this frame's stream, so it must
+                    # not advance a cursor either.
+                    return
                 obj["seq"] = self._next_seq_locked(root_frame_id)
                 self._record(root_frame_id, obj)
             # ``send_json`` only performs JSON encoding + a non-blocking queue

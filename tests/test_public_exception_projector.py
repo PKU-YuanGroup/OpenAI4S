@@ -2250,3 +2250,198 @@ def test_a_post_run_plan_failure_reports_the_real_execution_on_every_surface(
     assert not real.startswith("plan-"), real
     assert result.get("execution_id") == real, result
     assert updates[-1].get("execution_id") == real
+
+
+# --- the fence has to be at the connection, not just at the buffer ------------
+
+
+class _FakeConn:
+    """Just enough of `WSConnection` for the hub to deliver to."""
+
+    def __init__(self) -> None:
+        self.alive = True
+        self.subs: set[str] = set()
+        self.sent: list[dict] = []
+
+    def send_json(self, obj: dict) -> None:
+        self.sent.append(dict(obj))
+
+
+def _turn_events(conn):
+    return [
+        e
+        for e in conn.sent
+        if e.get("type") in {"text_reset", "text_chunk", "frame_update"}
+    ]
+
+
+def test_a_late_turns_events_never_reach_a_subscriber(hub):
+    """Dropping them from the resume window is not enough.
+
+    `broadcast` delivered them anyway, and a tab that joined during B has no
+    stored identity for A -- so its own filter reads "one side silent", which
+    means current, and A's late terminal closes B.
+    """
+    conn = _FakeConn()
+    conn.subs.add("f")
+    hub._conns.add(conn)
+
+    hub.broadcast(
+        "f", {"type": "text_reset", "frame_id": "f", "execution_id": "exec-A"}
+    )
+    hub.broadcast(
+        "f",
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "processing",
+            "execution_id": "exec-B",
+        },
+    )
+    hub.broadcast("f", {"type": "text_reset", "frame_id": "f"})
+    hub.broadcast("f", {"type": "text_chunk", "frame_id": "f", "chunk": "B says"})
+    before = len(conn.sent)
+
+    for late in (
+        {"type": "text_reset", "frame_id": "f", "execution_id": "exec-A"},
+        {
+            "type": "text_chunk",
+            "frame_id": "f",
+            "chunk": "_Error: A failed_",
+            "execution_id": "exec-A",
+        },
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "failed",
+            "execution_id": "exec-A",
+        },
+    ):
+        hub.broadcast("f", late)
+
+    assert (
+        len(conn.sent) == before
+    ), f"A's late events reached the socket: {conn.sent[before:]}"
+    assert hub.is_running("f") is True
+    assert "A failed" not in json.dumps(conn.sent, ensure_ascii=False)
+
+
+def test_state_deltas_that_no_execution_owns_are_still_broadcast(hub):
+    """The fence must not swallow permission cards or kernel/idle deltas.
+
+    Those belong to the frame, not to a turn, and withholding them breaks
+    surfaces that have nothing to do with turn ordering -- including the
+    approval prompt, which blocks until someone answers it.
+    """
+    conn = _FakeConn()
+    conn.subs.add("f")
+    hub._conns.add(conn)
+    hub.broadcast(
+        "f",
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "processing",
+            "execution_id": "exec-B",
+        },
+    )
+    before = len(conn.sent)
+
+    hub.broadcast("f", {"type": "await_permission", "frame_id": "f", "id": "p-1"})
+    hub.broadcast("f", {"type": "kernel_status", "frame_id": "f", "state": "idle"})
+
+    kinds = [e.get("type") for e in conn.sent[before:]]
+    assert kinds == ["await_permission", "kernel_status"], conn.sent[before:]
+
+
+def test_the_running_turns_own_terminal_still_reaches_the_socket(hub):
+    conn = _FakeConn()
+    conn.subs.add("f")
+    hub._conns.add(conn)
+    hub.broadcast(
+        "f",
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "processing",
+            "execution_id": "exec-B",
+        },
+    )
+    hub.broadcast(
+        "f",
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "completed",
+            "execution_id": "exec-B",
+        },
+    )
+
+    assert _turn_events(conn)[-1]["status"] == "completed"
+    assert hub.is_running("f") is False
+
+
+def test_a_daemon_that_names_no_execution_broadcasts_everything(hub):
+    conn = _FakeConn()
+    conn.subs.add("f")
+    hub._conns.add(conn)
+    for event in (
+        {"type": "text_reset", "frame_id": "f"},
+        {"type": "text_chunk", "frame_id": "f", "chunk": "hello"},
+        {"type": "frame_update", "frame_id": "f", "status": "completed"},
+    ):
+        hub.broadcast("f", event)
+
+    assert len(_turn_events(conn)) == 3, conn.sent
+    assert hub.is_running("f") is False
+
+
+def test_a_tab_that_joins_during_b_is_never_told_that_a_ended_it(hub):
+    """The new-tab case, through the real `subscribe` replay path.
+
+    This is the client the fence exists for. It has no stored identity for A --
+    it was not connected when A ran -- so its own filter reads A's late
+    terminal as "one side silent", which means current, and closes the turn it
+    is actually watching. Subscribing after B's window exists, rather than
+    adding to `conn.subs` by hand, is what makes it that client.
+    """
+    hub.broadcast(
+        "f",
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "processing",
+            "execution_id": "exec-B",
+        },
+    )
+    hub.broadcast("f", {"type": "text_reset", "frame_id": "f"})
+    hub.broadcast("f", {"type": "text_chunk", "frame_id": "f", "chunk": "B says"})
+
+    conn = _FakeConn()
+    hub._conns.add(conn)
+    hub.subscribe("f", conn)
+    replayed = len(conn.sent)
+    assert replayed, "the joining tab received no replay of the running turn"
+
+    for late in (
+        {"type": "text_reset", "frame_id": "f", "execution_id": "exec-A"},
+        {
+            "type": "text_chunk",
+            "frame_id": "f",
+            "chunk": "_Error: A failed_",
+            "execution_id": "exec-A",
+        },
+        {
+            "type": "frame_update",
+            "frame_id": "f",
+            "status": "failed",
+            "execution_id": "exec-A",
+        },
+    ):
+        hub.broadcast("f", late)
+
+    assert (
+        len(conn.sent) == replayed
+    ), f"A's late events reached the joining tab: {conn.sent[replayed:]}"
+    assert hub.is_running("f") is True
+    assert "A failed" not in json.dumps(conn.sent, ensure_ascii=False)
