@@ -384,16 +384,12 @@ def test_prepare_routes_normalizes_deduplicates_and_limits_output(workflow):
             {
                 "score": 0.9,
                 "solved": True,
-                "tree": _workflow_route(
-                    1, "CCOC(=O)N", "amide", "CCO", "NC=O"
-                )["tree"],
+                "tree": _workflow_route(1, "CCOC(=O)N", "amide", "CCO", "NC=O")["tree"],
             },
             {
                 "score": 0.8,
                 "solved": True,
-                "tree": _workflow_route(
-                    2, "CCOC(=O)N", "amide", "NC=O", "CCO"
-                )["tree"],
+                "tree": _workflow_route(2, "CCOC(=O)N", "amide", "NC=O", "CCO")["tree"],
             },
         ]
     }
