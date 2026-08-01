@@ -215,9 +215,7 @@ def _single_step(request: Mapping[str, Any]) -> dict[str, Any]:
         )
     allow_download = request.get("allow_model_download", False)
     if not isinstance(allow_download, bool):
-        raise RequestError(
-            "invalid_request", "allow_model_download must be a boolean"
-        )
+        raise RequestError("invalid_request", "allow_model_download must be a boolean")
     model_dir_value = request.get("model_dir")
     model_dir = None
     if model_dir_value not in (None, ""):
@@ -235,9 +233,7 @@ def _single_step(request: Mapping[str, Any]) -> dict[str, Any]:
             "invalid_request", "num_results must be an integer between 1 and 10"
         )
     if not 1 <= num_results <= 10:
-        raise RequestError(
-            "invalid_request", "num_results must be between 1 and 10"
-        )
+        raise RequestError("invalid_request", "num_results must be between 1 and 10")
     manifest = _normalize_manifest(request.get("model_manifest"))
     warnings: list[str] = []
     if manifest is None:

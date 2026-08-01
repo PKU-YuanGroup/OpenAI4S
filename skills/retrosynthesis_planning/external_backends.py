@@ -64,9 +64,7 @@ def _clean_text(value: Any, *, field_name: str, max_length: int = 500) -> str:
     return cleaned
 
 
-def _optional_text(
-    value: Any, *, field_name: str, max_length: int = 500
-) -> str | None:
+def _optional_text(value: Any, *, field_name: str, max_length: int = 500) -> str | None:
     if value in (None, ""):
         return None
     return _clean_text(value, field_name=field_name, max_length=max_length)
@@ -150,9 +148,7 @@ class ModelManifest:
         object.__setattr__(
             self,
             "checkpoint_sha256",
-            _normalize_sha256(
-                self.checkpoint_sha256, field_name="checkpoint_sha256"
-            ),
+            _normalize_sha256(self.checkpoint_sha256, field_name="checkpoint_sha256"),
         )
         object.__setattr__(self, "source_url", _normalize_source_url(self.source_url))
         metadata = _json_copy(dict(self.metadata), field_name="metadata")
