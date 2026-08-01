@@ -2604,8 +2604,19 @@ class SessionRunner:
             jobs = list(self._jobs.values())
         for job in jobs:
             thread = job.thread
-            if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=5.0)
+            if thread is None or thread is threading.current_thread():
+                continue
+            # `is_alive()` before `join()`, because a thread that was never
+            # started raises "cannot join thread before it is started" -- and
+            # `_spawn_job` registers a job *before* calling `start()`, so a
+            # refused spawn leaves exactly that. Shutdown is the worst possible
+            # place to discover it: nothing can be done about the exception and
+            # every job after this one in the list goes unjoined. A finished
+            # thread reports not-alive too, and joining one is a no-op, so the
+            # guard costs nothing on the normal path.
+            if not thread.is_alive():
+                continue
+            thread.join(timeout=5.0)
         with self._lock:
             self._jobs.clear()
 

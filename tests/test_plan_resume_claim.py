@@ -516,3 +516,48 @@ def test_a_job_that_never_starts_releases_the_claim(
         ), f"the claim was not released; this plan can never be {action}d again"
     finally:
         runner.close()
+
+
+def test_shutdown_survives_a_job_whose_thread_never_started(tmp_path):
+    """`_spawn_job` registers a job before it starts the thread.
+
+    So a refused `start` leaves an entry whose thread was never started, and
+    `close()` joined it unconditionally -- `join()` raises "cannot join thread
+    before it is started". Shutdown is the worst place to find that: nothing can
+    be done about the exception, and every job after it in the list goes
+    unjoined, which is the opposite of what close is for.
+
+    Observed while testing the claim rollback rather than by reading, and fixed
+    at the join rather than at the spawn: the guard holds no matter how an
+    unstarted thread came to be registered.
+    """
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        host="127.0.0.1",
+        port=_free_port(),
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    joined: list[str] = []
+
+    class _Live(threading.Thread):
+        def run(self):
+            joined.append("ran")
+
+    later = _Live(name="openai4s-plan-later", daemon=True)
+    later.start()
+
+    never = threading.Thread(target=lambda: None, name="openai4s-plan-never")
+    stuck = gateway_mod.MessageJob("job-never", "f-x")
+    stuck.thread = never
+    after = gateway_mod.MessageJob("job-after", "f-x")
+    after.thread = later
+    with runner._lock:
+        runner._jobs[stuck.job_id] = stuck
+        runner._jobs[after.job_id] = after
+
+    # Must not raise, and must not abandon the jobs queued behind the bad one.
+    runner.close()
+
+    assert joined == ["ran"]
+    assert not runner._jobs
