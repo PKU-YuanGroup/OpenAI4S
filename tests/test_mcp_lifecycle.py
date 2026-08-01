@@ -381,10 +381,16 @@ def test_a_huge_stderr_line_is_truncated_while_it_is_read(tmp_path):
         while time.monotonic() < deadline and len(connection._stderr_tail) < 2:
             time.sleep(0.05)
         assert len(connection._stderr_tail) == 2, "stderr never arrived"
-        widest = max(len(line) for line in connection._stderr_tail)
+        # Bytes, because bytes are what the budget is now expressed in and
+        # what the reader counts. The old assertion measured characters against
+        # a constant that claimed bytes, which is exactly the disagreement that
+        # let a multi-byte diagnostic use several times its stated budget.
+        widest = max(
+            len(line.encode("utf-8")) for line in connection._stderr_tail
+        )
         assert (
-            widest <= mcp_client._MAX_STDERR_LINE_CHARS
-        ), f"retained a {widest}-character stderr line"
+            widest <= mcp_client._MAX_STDERR_LINE_BYTES
+        ), f"retained a {widest}-byte stderr line"
         tail = connection.stderr_tail()
         assert len(tail) <= mcp_client._STDERR_TAIL_CHARS
         # Truncating the giant line must not cost the line after it.
@@ -469,3 +475,80 @@ def test_a_child_that_ignores_every_signal_is_reported_not_assumed_dead(
         monkeypatch.undo()
         connection.close()
         assert manager.shutdown() == []
+
+
+# -- the budget is bytes, and the reader allocates in chunks ------------------
+
+
+class _ChunkStream:
+    """A raw pipe that hands back at most `chunk` bytes per read, like a pipe."""
+
+    def __init__(self, payload: bytes, chunk: int = 7) -> None:
+        self._payload = payload
+        self._chunk = chunk
+        self._at = 0
+        self.reads = 0
+
+    def read(self, size: int) -> bytes:
+        self.reads += 1
+        take = min(size, self._chunk, len(self._payload) - self._at)
+        if take <= 0:
+            return b""
+        out = self._payload[self._at : self._at + take]
+        self._at += take
+        return out
+
+
+def test_the_line_reader_counts_bytes_not_characters():
+    """The constant said bytes; the reader counted characters off a text pipe.
+
+    Sixteen three-byte characters is forty-eight bytes. Under a ten-byte budget
+    a byte-accurate reader keeps three characters' worth; the character-counting
+    predecessor kept ten characters -- thirty bytes, three times its own limit,
+    and the multiplier is whatever the connector's encoding happens to be.
+    """
+    payload = ("中" * 16).encode("utf-8") + b"\n"
+    reader = mcp_client._BoundedLineReader(
+        _ChunkStream(payload), limit=10, keep_partial=True
+    )
+
+    line = reader.readline()
+
+    assert len(line.encode("utf-8")) <= 10, line
+    assert line.startswith("中")
+
+
+def test_an_over_budget_frame_is_dropped_and_the_next_one_still_parses():
+    """Half a JSON object is not a frame, so the reader must resynchronise.
+
+    The residual bytes of the chunk that ran past the newline live in the
+    reader, which is why it is constructed once per stream: a fresh reader per
+    line would discard everything already read past the terminator.
+    """
+    payload = b"x" * 40 + b"\n" + b'{"id": 7}' + b"\n"
+    reader = mcp_client._BoundedLineReader(_ChunkStream(payload), limit=10)
+
+    assert reader.readline() == "", "an over-budget frame must not be returned"
+    assert reader.readline() == '{"id": 7}'
+    assert reader.readline() is None
+
+
+def test_a_line_split_across_reads_is_reassembled():
+    payload = b'{"jsonrpc": "2.0", "id": 1}\n{"jsonrpc": "2.0", "id": 2}\n'
+    stream = _ChunkStream(payload, chunk=5)
+    reader = mcp_client._BoundedLineReader(stream)
+
+    assert reader.readline() == '{"jsonrpc": "2.0", "id": 1}'
+    assert reader.readline() == '{"jsonrpc": "2.0", "id": 2}'
+    assert reader.readline() is None
+    # One read per chunk plus the EOF probe, not one per byte: the predecessor
+    # called `read(1)` for every character, which is what made a four-megabyte
+    # frame a four-million-element list of one-character strings.
+    assert stream.reads <= len(payload) // 5 + 4
+
+
+def test_a_trailing_line_with_no_newline_is_still_delivered():
+    reader = mcp_client._BoundedLineReader(_ChunkStream(b'{"id": 3}'))
+
+    assert reader.readline() == '{"id": 3}'
+    assert reader.readline() is None

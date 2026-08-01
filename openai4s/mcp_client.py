@@ -38,12 +38,15 @@ _STDERR_TAIL_LINES = 200
 #: How many replies to ids nobody asked for before treating the channel as
 #: desynchronised. Staying attached to such a server only defers the failure.
 _MAX_INVALID_IDS = 64
-#: Longest stderr line retained, applied *while* the line is being read. Only
-#: the line COUNT was bounded before, so one connector writing a 20 MB
-#: newline-free diagnostic materialised all 20 MB inside the daemon -- and
+#: Longest stderr line retained, in bytes, applied *while* the line is being
+#: read. Only the line COUNT was bounded before, so one connector writing a
+#: 20 MB newline-free diagnostic materialised all 20 MB inside the daemon -- and
 #: `stderr_tail()` then built a second full copy before anyone truncated it.
 #: Bounding at the source is the only place the large allocation never happens.
-_MAX_STDERR_LINE_CHARS = 4096
+_MAX_STDERR_LINE_BYTES = 4096
+#: What one read off a connector pipe may hand back: the reader's peak
+#: allocation per syscall, and the granularity a dropped line is discarded at.
+_READ_CHUNK_BYTES = 65_536
 #: What `stderr_tail()` hands out; callers used to slice this themselves.
 _STDERR_TAIL_CHARS = 500
 #: Requests allowed in flight at once. A connector that answers nothing still
@@ -58,39 +61,113 @@ _TERMINATE_WAIT_S = 3.0
 _READER_JOIN_S = 5.0
 
 
-def _read_bounded_line(
-    stream: Any,
-    *,
-    limit: int = _MAX_FRAME_BYTES,
-    keep_partial: bool = False,
-) -> str | None:
-    """Read one line, refusing to materialise an unbounded one.
+class _BoundedLineReader:
+    """One newline-delimited line at a time, bounded in bytes that are real.
 
-    Returns ``None`` at EOF. An over-budget frame line is consumed and dropped
-    rather than truncated: half a JSON object is not a frame, and returning it
-    would desynchronise the reader on the next line. ``keep_partial`` is for
-    stderr, where there is no frame to desynchronise and a truncated prefix is
-    still the diagnostic the user needs.
+    The predecessor counted characters off a ``text=True`` pipe against a
+    constant named ``_MAX_FRAME_BYTES``, which is two different problems
+    wearing one number. A four-million-character line of three-byte characters
+    is twelve megabytes, not four -- and it accumulated them in a ``list`` of
+    four million single-character strings, each with a ``str`` object's fifty-
+    odd bytes of overhead, so the peak allocation for one frame *at the limit*
+    was some hundreds of megabytes. The bound was respected and meant nothing.
+
+    Reading the pipe raw fixes both at once: the budget is bytes because bytes
+    are what arrive, and they land in a ``bytearray`` that grows by the chunk
+    rather than by the character. Decoding happens once, on a buffer already
+    known to be within budget.
+
+    An over-budget *frame* is dropped rather than truncated -- half a JSON
+    object is not a frame, and returning it would desynchronise the next read.
+    ``keep_partial`` is for stderr, where there is no frame to desynchronise
+    and a truncated prefix is still the diagnostic the user needs.
     """
-    if stream is None:
-        return None
-    chunks: list[str] = []
-    size = 0
-    while True:
-        char = stream.read(1)
-        if not char:
-            return "".join(chunks) if chunks else None
-        if char == "\n":
-            return "".join(chunks)
-        size += 1
-        if size > limit:
-            # Drain to the newline so the next read starts on a frame boundary.
-            while True:
-                skip = stream.read(1)
-                if not skip or skip == "\n":
-                    break
-            return "".join(chunks) if keep_partial else ""
-        chunks.append(char)
+
+    def __init__(
+        self,
+        stream: Any,
+        *,
+        limit: int = _MAX_FRAME_BYTES,
+        keep_partial: bool = False,
+    ) -> None:
+        self._stream = stream
+        self._limit = int(limit)
+        self._keep_partial = bool(keep_partial)
+        self._buf = bytearray()
+
+    def _finish(self, kept: bytearray, over: bool) -> str:
+        if over and not self._keep_partial:
+            return ""
+        data = bytes(kept)
+        if over:
+            # A budget cut lands wherever the byte count ran out, which is
+            # mid-character often enough to matter. Trailing incomplete bytes
+            # are dropped rather than decoded to U+FFFD, because that character
+            # is itself three bytes: a line cut to ten would come back as
+            # twelve, and the caller measuring the result against the budget
+            # would be right to call it a violation.
+            for back in range(4):
+                head = data[: len(data) - back] if back else data
+                try:
+                    return head.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+        # Whole lines can still contain bytes no encoding explains; that is the
+        # connector's problem to show, not the reader's to hide.
+        return data.decode("utf-8", "replace")
+
+    def readline(self) -> str | None:
+        """The next line, ``""`` for one dropped as over-budget, ``None`` at EOF."""
+        if self._stream is None:
+            return None
+        kept = bytearray()
+        over = False
+
+        def _absorb(data: bytes | bytearray) -> None:
+            nonlocal over
+            if over:
+                return
+            room = self._limit - len(kept)
+            if len(data) > room:
+                kept.extend(data[:room])
+                over = True
+            else:
+                kept.extend(data)
+
+        while True:
+            newline = self._buf.find(b"\n")
+            if newline >= 0:
+                _absorb(self._buf[:newline])
+                del self._buf[: newline + 1]
+                return self._finish(kept, over)
+            _absorb(self._buf)
+            # Cleared whether or not it was absorbed: past the budget the rest
+            # of this line is discarded as it arrives, which is the only way the
+            # over-budget case never allocates the thing it is refusing.
+            self._buf.clear()
+            chunk = self._stream.read(_READ_CHUNK_BYTES)
+            if not chunk:
+                if not kept and not over:
+                    return None
+                return self._finish(kept, over)
+            self._buf.extend(chunk)
+
+
+def _write_all(stream: Any, payload: bytes) -> None:
+    """Write every byte to an unbuffered pipe.
+
+    ``bufsize=0`` makes stdin a raw ``FileIO``, whose ``write`` is one
+    ``write(2)`` and may report a short count on a pipe. The text-mode writer
+    this replaces looped internally; here it has to be done explicitly, or a
+    long request is silently cut in half and the connector sees a broken frame.
+    """
+    view = memoryview(payload)
+    while view:
+        written = stream.write(view)
+        if not written:
+            raise OSError("connector stdin accepted no bytes")
+        view = view[written:]
+    stream.flush()
 
 
 # A connector is third-party code.  Never copy the daemon's complete environment
@@ -213,8 +290,12 @@ class MCPConnection:
             # the child in `write` -- the two halves of this change cannot be
             # separated.
             stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+            # Raw pipes. `text=True` put a decoder between the reader and the
+            # bytes, so the byte budgets below could only ever be approximated
+            # in characters -- and `bufsize=1` (line buffering) is what made
+            # the old reader consume a byte at a time to avoid blocking.
+            text=False,
+            bufsize=0,
             env=env,
             cwd=cwd,
             # Its own session, so the child leads a process group we can signal
@@ -254,18 +335,21 @@ class MCPConnection:
     # -- wire ----------------------------------------------------------------
     def _send(self, obj: dict) -> None:
         assert self._proc.stdin is not None
-        self._proc.stdin.write(json.dumps(obj) + "\n")
-        self._proc.stdin.flush()
+        _write_all(self._proc.stdin, (json.dumps(obj) + "\n").encode("utf-8"))
 
     def _drain_stderr(self) -> None:
         stream = self._proc.stderr
         if stream is None:
             return
+        # One reader per stream, constructed once: it carries the residual
+        # bytes of a chunk that ran past a newline, so a fresh one per line
+        # would drop everything after the first.
+        reader = _BoundedLineReader(
+            stream, limit=_MAX_STDERR_LINE_BYTES, keep_partial=True
+        )
         try:
             while True:
-                line = _read_bounded_line(
-                    stream, limit=_MAX_STDERR_LINE_CHARS, keep_partial=True
-                )
+                line = reader.readline()
                 if line is None:
                     break
                 self._stderr_tail.append(line.rstrip("\n"))
@@ -305,10 +389,11 @@ class MCPConnection:
     def _read_loop(self) -> None:
         """The only reader. One thread owns the pipe; callers own their ids."""
         stream = self._proc.stdout
+        reader = _BoundedLineReader(stream)
         invalid_ids = 0
         try:
             while True:
-                line = _read_bounded_line(stream)
+                line = reader.readline()
                 if line is None:
                     break
                 line = line.strip()
