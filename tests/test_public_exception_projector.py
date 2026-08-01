@@ -581,3 +581,39 @@ def test_an_unreadable_attachment_card_names_the_file_and_nothing_else():
     blob = json.dumps(problem, default=str)
     assert ABS_PATH not in blob, blob
     assert "notes.txt" in blob, "the card must still name the file it is about"
+
+
+def test_a_failed_kernel_restart_does_not_quote_the_path_it_tried(runner, monkeypatch):
+    """`POST /frames/<id>/kernel/install` returns this dict to the client.
+
+    The install can succeed and the restart that follows it fail — through the
+    kernel spawn or the sandbox setup, either of which raises an `OSError`
+    naming the interpreter it tried to run and the workspace it tried to run it
+    in. That text went into `restart_error` verbatim, so a package install
+    answered with an absolute path and the account's username in it.
+
+    What the caller needs is that the restart did not happen. The code is there
+    so a client can branch without matching on English.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+
+    def refuse(*args, **kwargs):
+        raise OSError(13, "Permission denied", ABS_PATH)
+
+    monkeypatch.setattr(runner, "restart_kernel", refuse)
+    # The install itself is not what is under test; stubbing it keeps the case
+    # about the restart that follows a *successful* install, which is the only
+    # shape in which `restart_error` appears at all.
+    from openai4s.kernel import preinstall
+
+    monkeypatch.setattr(preinstall, "install", lambda packages: {"ok": True})
+
+    body = runner.install_packages(
+        ["numpy"], root_frame_id=frame_id, project_id="proj", restart=True
+    )
+
+    blob = json.dumps(body, ensure_ascii=False, default=str)
+    assert ABS_PATH not in blob, blob
+    assert "PermissionError" not in blob
+    if body.get("restart_error"):
+        assert body["restart_error_code"] == "kernel_restart_failed"

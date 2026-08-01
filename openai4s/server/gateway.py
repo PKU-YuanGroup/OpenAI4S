@@ -4059,8 +4059,18 @@ class SessionRunner:
             try:
                 self.restart_kernel(root_frame_id, project_id or "default")
                 res["restarted"] = True
-            except Exception as e:  # noqa: BLE001
-                res["restart_error"] = str(e)
+            except Exception as error:  # noqa: BLE001
+                # `POST /frames/<id>/kernel/install` returns this dict straight
+                # to the client, so `str(e)` was a public body. A restart fails
+                # through the kernel spawn and the sandbox setup, and an
+                # `OSError` from either names the interpreter it tried to run
+                # and the workspace directory it tried to run it in -- an
+                # absolute path, and with it the account's username. The
+                # install itself succeeded; what the caller needs to know is
+                # that the restart did not, and that is what it now says.
+                record_diagnostic(error, surface="kernel:restart_after_install")
+                res["restart_error"] = "the kernel could not be restarted"
+                res["restart_error_code"] = "kernel_restart_failed"
         if root_frame_id:
             emit = self.hub.emitter(root_frame_id)
             emit(
