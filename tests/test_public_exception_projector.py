@@ -617,3 +617,74 @@ def test_a_failed_kernel_restart_does_not_quote_the_path_it_tried(runner, monkey
     assert "PermissionError" not in blob
     if body.get("restart_error"):
         assert body["restart_error_code"] == "kernel_restart_failed"
+
+
+# A path outside any home directory. `redact_text` collapses only the running
+# account's home, so `/srv/...` survives redaction untouched -- which is why
+# redaction is the wrong instrument for a surface that must carry no path at
+# all, and why this canary is here alongside the home-relative one.
+FOREIGN_PATH = "/srv/embargo/2026-cohort/raw.csv"
+
+
+def test_an_execution_attempt_carries_no_exception_text_at_all(tmp_path):
+    """That row reaches the Action Timeline and the exported Session package.
+
+    `action_timeline._attempt` sends `error` straight through to the UI, and
+    `session_package` writes the same rows into a file the user shares. Plan
+    item 16 puts credential, absolute-path and shell-command canaries on
+    exactly those surfaces.
+
+    Redacting was not enough and is not what this asserts. `redact_text`
+    fingerprints credential-shaped tokens and collapses only *this* account's
+    home, so a `/srv/...` path and the argv of a failed spawn both survive it
+    intact. Nothing from the raised instance is safe to keep here, so nothing
+    is kept: a stable message and code, with the original going to
+    `record_diagnostic`, which is neither served nor exported.
+    """
+    from openai4s.server.cell_run import CellExecutionService
+
+    written: list[tuple] = []
+
+    class _Ports:
+        def finish_attempt(self, attempt_id, terminal_state, payload):
+            written.append((attempt_id, terminal_state, payload))
+
+    service = object.__new__(CellExecutionService)
+    service.ports = _Ports()
+
+    service._finish_attempt("att-1", "failed", CanaryFailure())
+
+    assert written, "the attempt was never finished"
+    payload = written[-1][2]
+    blob = json.dumps(payload, ensure_ascii=False, default=str)
+    for canary in (*CANARIES, FOREIGN_PATH):
+        assert canary not in blob, f"{canary!r} reached the attempt row: {blob}"
+    # The class name stays: it is a fact about the failure's shape and carries
+    # no argument from the instance, and it is what keeps the row useful.
+    assert payload["kind"] == "CanaryFailure"
+    assert payload["code"] == "attempt_failed"
+    assert payload["message"] == "the execution attempt failed"
+
+
+def test_an_execution_attempt_hides_a_foreign_path_and_a_command(tmp_path):
+    """The two canaries redaction would have let through."""
+    from openai4s.server.cell_run import CellExecutionService
+
+    written: list[tuple] = []
+
+    class _Ports:
+        def finish_attempt(self, attempt_id, terminal_state, payload):
+            written.append((attempt_id, terminal_state, payload))
+
+    service = object.__new__(CellExecutionService)
+    service.ports = _Ports()
+
+    service._finish_attempt(
+        "att-2",
+        "failed",
+        OSError(f"spawn failed running `{SHELL_COMMAND}` against {FOREIGN_PATH}"),
+    )
+
+    blob = json.dumps(written[-1][2], ensure_ascii=False, default=str)
+    assert FOREIGN_PATH not in blob, blob
+    assert SHELL_COMMAND not in blob, blob

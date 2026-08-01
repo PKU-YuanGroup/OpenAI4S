@@ -597,7 +597,18 @@ def test_worker_exception_still_finishes_allocated_attempt(tmp_path):
 
     assert attempts[0] == ("started", "attempt-dead")
     assert attempts[-1][:3] == ("finished", "attempt-dead", "worker_died")
-    assert attempts[-1][3] == {"kind": "EOFError", "message": "worker exited"}
+    # The attempt row carries no exception text now. It is projected into
+    # the Action Timeline the UI renders and written into the exported
+    # Session package, and Plan item 16 puts credential, absolute-path and
+    # shell-command canaries on exactly those surfaces. `kind` survives
+    # because a class name carries no argument from the instance; the
+    # original goes to `record_diagnostic`, which is neither served nor
+    # exported. See `test_public_exception_projector.py`.
+    assert attempts[-1][3] == {
+        "kind": "EOFError",
+        "message": "the execution attempt failed",
+        "code": "attempt_failed",
+    }
     assert not any(item[0] in {"response", "capture"} for item in attempts)
     assert harness.records[0]["state_revision"] == 1
     assert harness.records[0]["result"]["error"] == "worker exited"
@@ -632,7 +643,18 @@ def test_attempt_milestone_write_failure_still_finalizes_attempt(tmp_path):
         )
 
     assert attempts[-1][:3] == ("finished", "attempt-lock", "record_failed")
-    assert attempts[-1][3] == {"kind": "RuntimeError", "message": "database is locked"}
+    # The attempt row carries no exception text now. It is projected into
+    # the Action Timeline the UI renders and written into the exported
+    # Session package, and Plan item 16 puts credential, absolute-path and
+    # shell-command canaries on exactly those surfaces. `kind` survives
+    # because a class name carries no argument from the instance; the
+    # original goes to `record_diagnostic`, which is neither served nor
+    # exported. See `test_public_exception_projector.py`.
+    assert attempts[-1][3] == {
+        "kind": "RuntimeError",
+        "message": "the execution attempt failed",
+        "code": "attempt_failed",
+    }
 
 
 def test_worker_failure_is_recorded_once_and_retry_uses_a_new_cell_id(tmp_path):
@@ -707,6 +729,10 @@ def test_record_failure_is_not_misclassified_as_capture_failure(tmp_path):
         (
             "attempt-record",
             "record_failed",
-            {"kind": "OSError", "message": "sqlite unavailable"},
+            {
+                "kind": "OSError",
+                "message": "the execution attempt failed",
+                "code": "attempt_failed",
+            },
         )
     ]

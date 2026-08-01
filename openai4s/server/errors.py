@@ -124,7 +124,7 @@ INTERNAL_ERROR_MESSAGE = "internal error"
 _DIAGNOSTIC_CHARS = 600
 
 
-def _redacted_detail(exc: BaseException) -> str:
+def _redacted_detail(exc: BaseException | str) -> str:
     """What the operator-side record holds instead of the raw exception.
 
     ``redact_text`` fingerprints credential-shaped tokens but deliberately
@@ -134,7 +134,8 @@ def _redacted_detail(exc: BaseException) -> str:
     on top of that the home directory is collapsed to ``~``: of an absolute
     path, the username is the part that identifies a person rather than a file.
     """
-    text = redact_text(f"{type(exc).__name__}: {exc}")
+    subject = exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}"
+    text = redact_text(subject)
     home = os.path.expanduser("~")
     if home and home not in ("", "/"):
         text = text.replace(home, "~")

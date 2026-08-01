@@ -492,9 +492,33 @@ class CellExecutionService:
             return
         payload = None
         if error not in (None, ""):
+            # Generic, not redacted. This row is projected into the Action
+            # Timeline the UI renders (`action_timeline._attempt` sends `error`
+            # straight through) *and* written into the exported Session
+            # package, which the user shares. Plan item 16 puts credential,
+            # absolute-path and shell-command canaries on exactly those
+            # surfaces, and redaction is the wrong instrument for them:
+            # `redact_text` fingerprints credential-shaped tokens and collapses
+            # only *this* account's home, so a path under another user, a
+            # `/srv/...` path, or the argv of a failed spawn all survive it
+            # intact. Nothing here is safe to keep, so nothing is kept.
+            #
+            # `kind` stays. It is the exception class's name -- `PermissionError`,
+            # `EOFError` -- which is a fact about the failure's shape and carries
+            # no argument, path or credential from the raised instance. It is
+            # also what makes the row useful at all once the message is gone.
+            #
+            # The original goes to `record_diagnostic`, which is not served over
+            # HTTP and is not exported, and which pairs it with a request id a
+            # support ticket can quote.
+            from openai4s.server.errors import record_diagnostic
+
+            if isinstance(error, BaseException):
+                record_diagnostic(error, surface="cell:attempt")
             payload = {
                 "kind": type(error).__name__,
-                "message": str(error),
+                "message": "the execution attempt failed",
+                "code": "attempt_failed",
             }
         self.ports.finish_attempt(attempt_id, terminal_state, payload)
 
