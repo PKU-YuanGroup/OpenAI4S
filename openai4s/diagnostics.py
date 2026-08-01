@@ -28,7 +28,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from openai4s.observability import redact, redact_text
+from openai4s.observability import redact, redact_identities, redact_text
 
 # One generation is a size, not a duration: a daemon can be quiet for a week or
 # chatty for an hour, and bytes are what actually run out.
@@ -44,6 +44,15 @@ _NEVER_COLLECT = (
     "openai4s.db-shm",
     "openai4s.db-journal",
 )
+
+# What the daemon's log is actually called. `app.out` is the redirection every
+# packaged launcher uses -- macOS, Linux and Windows all `exec ... serve >>
+# "$OPENAI4S_DATA_DIR/logs/app.out" 2>&1` -- and it is where
+# `observability.log_event` lands, because that writes to stderr. It does not
+# match `*.log*`, so a bundle from a real install used to carry no logs at all
+# while its MANIFEST listed what it did include and so read as complete.
+# `*.log*` stays for anything an operator drops in beside it.
+_LOG_PATTERNS = ("*.log*", "app.out*")
 
 
 def _safe_read_tail(path: Path, limit: int = 512 * 1024) -> str:
@@ -62,9 +71,15 @@ def _safe_read_tail(path: Path, limit: int = 512 * 1024) -> str:
         # Structured lines redact field-wise; anything else is redacted as one
         # opaque string so a stray print of a token is still caught.
         try:
-            out.append(json.dumps(redact(json.loads(line)), ensure_ascii=False))
+            cleaned = json.dumps(redact(json.loads(line)), ensure_ascii=False)
         except (ValueError, TypeError):
-            out.append(redact_text(line.rstrip("\n")))
+            cleaned = redact_text(line.rstrip("\n"))
+        # Then the identities, on both branches. The structured branch needs it
+        # as much as the plain one: `redact` asks whether a whole field value
+        # is a credential, and an exception detail is a sentence, so a home
+        # directory or an account sitting inside that sentence goes straight
+        # through. `~` and a fingerprint are both safe inside a JSON string.
+        out.append(redact_identities(cleaned))
     return "\n".join(out)
 
 
@@ -167,7 +182,10 @@ def build_bundle(cfg: Any, destination: Path) -> dict:
         included.append("report.json")
         logs_dir = data_dir / "logs"
         if logs_dir.is_dir():
-            for log in sorted(logs_dir.glob("*.log*")):
+            collected = {
+                path for pattern in _LOG_PATTERNS for path in logs_dir.glob(pattern)
+            }
+            for log in sorted(collected):
                 if not log.is_file():
                     continue
                 bundle.writestr(f"logs/{log.name}", _safe_read_tail(log))

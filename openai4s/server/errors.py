@@ -148,10 +148,21 @@ def record_diagnostic(
     """Put the original failure where an operator can reach it and a client cannot.
 
     The structured logger is the sink rather than a new in-process buffer: it
-    already redacts field-wise, it already lands in the file
-    ``diagnostics.build_bundle`` collects, and it is not served over HTTP. A
-    second store would be a second thing to redact and a second thing to
-    forget.
+    already redacts field-wise, and it is not served over HTTP. A second store
+    would be a second thing to redact and a second thing to forget.
+
+    Where it ends up is worth being exact about, because this docstring used to
+    claim it "lands in the file ``diagnostics.build_bundle`` collects" and that
+    was false in two ways at once. ``log_event`` writes to **stderr**, and only
+    when ``OPENAI4S_STRUCTURED_LOGS`` is set — off by default, deliberately
+    (``docs/security.md``). On a packaged install stderr is redirected to
+    ``<data_dir>/logs/app.out``, which ``build_bundle`` skipped, because it
+    globbed ``*.log*`` and nothing in the product writes such a file. So the
+    operator half of this contract — a generic public message redeemable by
+    pairing ``request_id`` against the diagnostic — was not redeemable from a
+    support bundle at all. The glob is fixed; the default-off part is a posture
+    choice and stands, so on a default install the pairing is redeemable from
+    the terminal the daemon is running in, and nowhere else.
 
     Returns the emitted record so the projector can tie the public body and
     this line together by ``request_id`` -- that pairing is the whole reason

@@ -164,6 +164,26 @@ right for a field and wrong for a log line where a token sits mid-sentence. An
 earlier version of the bundle passed the structured lines and leaked the plain
 one.
 
+The log tail it collects is `logs/app.out` — the file every packaged launcher
+redirects the daemon's stdout and stderr into, and therefore where structured
+events land, since they are written to stderr. An earlier version globbed
+`*.log*`, which matches no file the product writes, so a bundle from a real
+install carried postures and versions and *no logs at all*, with a manifest
+that listed what it did include and so read as complete.
+
+On top of credential redaction, what leaves in the bundle has its **identities**
+collapsed (`observability.redact_identities`): a home-shaped path keeps
+everything but the user segment, and a `user@host` becomes a fingerprint. The
+existing `$HOME` collapse only ever saw *this* process's home, and a bundle is
+shipped to someone else — a path under a collaborator's home, a shared machine
+or a mounted volume names a person exactly as squarely. Deliberately *not*
+removed: the rest of the message, including a shell command quoted inside a
+failure. There is no boundary between such a command and the sentence around
+it, so a rule wide enough to delete one deletes the description the bundle
+exists to carry; the identity inside it is the separable part. A bare address
+with no user attached still survives, which is a stopping point rather than an
+oversight — matching every dotted quad would start eating version numbers.
+
 ### Credentials at rest
 
 Model and search credentials are held by a **SecretBroker**

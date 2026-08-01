@@ -36,6 +36,7 @@ import functools
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -199,6 +200,50 @@ def redact_text(text: str) -> str:
     return " ".join(out)
 
 
+#: A home directory by *shape*, whoever owns it. `str.replace($HOME, "~")`
+#: only ever sees this process's own, and a diagnostic bundle is shipped to
+#: someone else: a path under a collaborator's home, a shared machine or a
+#: mounted volume names a person exactly as squarely.
+_HOME_SHAPED = re.compile(
+    r"(?:/Users/|/home/|[A-Za-z]:\\Users\\)[^/\\\s:\"'`,;()\[\]{}<>]+",
+    re.IGNORECASE,
+)
+#: An account on a machine. Deliberately not "a shell command": there is no
+#: boundary between a command quoted inside a failure message and the rest of
+#: that message, so a rule wide enough to remove one removes the description
+#: the log exists to carry. The identity inside it is separable, and is the
+#: part that is worth removing.
+#:
+#: The right-hand side has to look like a host and not merely like text after
+#: an `@`, or this eats `pkg@1.2.3` — a package spec, which the daemon logs on
+#: every environment build and which is exactly the sort of line someone opens
+#: a bundle to read. Address, or dotted name ending in a TLD, or `localhost`.
+#: Residual, stated rather than hidden: a bare single-label host (`user@build`)
+#: does not match, because nothing separates it from the false positives.
+_USER_AT_HOST = re.compile(
+    r"\b[\w.+-]+@(?:"
+    r"(?:\d{1,3}\.){3}\d{1,3}"
+    r"|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"
+    r"|localhost"
+    r")\b"
+)
+
+
+def redact_identities(text: str) -> str:
+    """Collapse who and where, keeping what.
+
+    Paths keep everything but the home segment, because the file name is what
+    makes the line worth reading and the user name is what identifies a person
+    — the same trade `_redacted_detail` already makes for this account's own
+    home, applied to the shape rather than to one literal string.
+
+    Run this *after* `redact_text`: the fingerprints it leaves behind contain
+    no `@` and no home-shaped prefix, so the two do not interfere.
+    """
+    out = _HOME_SHAPED.sub("~", str(text))
+    return _USER_AT_HOST.sub(lambda m: f"<redacted:{fingerprint(m.group(0))}>", out)
+
+
 def enabled() -> bool:
     return os.environ.get(_ENABLED_ENV, "").strip().lower() in (
         "1",
@@ -235,6 +280,7 @@ __all__ = [
     "log_event",
     "new_correlation_id",
     "redact",
+    "redact_identities",
     "redact_text",
     "reset_correlation_id",
     "set_correlation_id",
