@@ -69,9 +69,7 @@ MAX_JOB_DEADLINE_S = 24 * 3600.0
 #: A job that reached one of these is finished and will not change again.
 #: `abandoned` is terminal in exactly the same sense, and deliberately distinct
 #: from `cancelled`: nobody cancelled it, the daemon that was watching it died.
-TERMINAL_STATUSES = frozenset(
-    {"done", "failed", "cancelled", "timeout", "abandoned"}
-)
+TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled", "timeout", "abandoned"})
 
 
 def _record_diagnostic(exc: BaseException, *, surface: str) -> None:

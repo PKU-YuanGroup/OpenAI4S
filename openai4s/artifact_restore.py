@@ -135,9 +135,7 @@ class ArtifactRestoreService:
             # The path is deliberately not quoted: it is absolute, under the
             # data directory, and this message is shown to whoever asked for
             # the restore. `version_id` identifies the same row and is theirs.
-            raise ArtifactRestoreRefused(
-                "artifact snapshot is unavailable"
-            ) from error
+            raise ArtifactRestoreRefused("artifact snapshot is unavailable") from error
         if not any(path.is_relative_to(root) for root in self.trusted_snapshot_dirs):
             raise ArtifactRestoreDenied("artifact snapshot is outside trusted storage")
         if not path.is_file():
@@ -148,7 +146,9 @@ class ArtifactRestoreService:
             raise ArtifactRestoreRefused("artifact snapshot has no recorded checksum")
         actual_checksum = hashlib.sha256(data).hexdigest()
         if actual_checksum != expected_checksum:
-            raise ArtifactRestoreRefused("artifact snapshot checksum verification failed")
+            raise ArtifactRestoreRefused(
+                "artifact snapshot checksum verification failed"
+            )
         expected_size = version.get("size_bytes")
         if expected_size is not None and len(data) != int(expected_size):
             raise ArtifactRestoreRefused("artifact snapshot size verification failed")
@@ -162,11 +162,15 @@ class ArtifactRestoreService:
         """Reject workspace drift and freeze the current head before overwrite."""
         live_exists = live.exists()
         if live_exists and not live.is_file():
-            raise ArtifactRestoreRefused("artifact workspace target is not a regular file")
+            raise ArtifactRestoreRefused(
+                "artifact workspace target is not a regular file"
+            )
         live_data = live.read_bytes() if live_exists else None
         expected_checksum = str(current.get("checksum") or "")
         if not expected_checksum:
-            raise ArtifactRestoreRefused("current artifact version has no recorded checksum")
+            raise ArtifactRestoreRefused(
+                "current artifact version has no recorded checksum"
+            )
         if live_data is not None:
             if hashlib.sha256(live_data).hexdigest() != expected_checksum:
                 raise ArtifactRestoreRefused(
@@ -193,11 +197,15 @@ class ArtifactRestoreService:
             )
             snapshot = self.primary_snapshot_dir / (f"{current['version_id']}__{safe}")
             if snapshot.exists():
-                raise ArtifactRestoreRefused("refusing to overwrite an existing snapshot")
+                raise ArtifactRestoreRefused(
+                    "refusing to overwrite an existing snapshot"
+                )
             self.atomic_write(snapshot, live_data)
             if hashlib.sha256(snapshot.read_bytes()).hexdigest() != expected_checksum:
                 snapshot.unlink(missing_ok=True)
-                raise ArtifactRestoreRefused("failed to verify the protected current snapshot")
+                raise ArtifactRestoreRefused(
+                    "failed to verify the protected current snapshot"
+                )
             try:
                 self.store.set_version_snapshot(current["version_id"], str(snapshot))
             except Exception:
@@ -216,7 +224,9 @@ class ArtifactRestoreService:
         artifact_id = str(artifact.get("artifact_id") or "")
         current_version_id = str(artifact.get("latest_version_id") or "")
         if source_version_id == current_version_id:
-            raise ArtifactRestoreRefused("restore requires a historical, non-current version")
+            raise ArtifactRestoreRefused(
+                "restore requires a historical, non-current version"
+            )
         source = self.store.version_meta(source_version_id)
         if source is None or source.get("artifact_id") != artifact_id:
             raise ArtifactRestoreRefused(
@@ -227,7 +237,9 @@ class ArtifactRestoreService:
 
         current = self.store.version_meta(current_version_id)
         if current is None or current.get("artifact_id") != artifact_id:
-            raise ArtifactRestoreRefused("artifact latest-version metadata is inconsistent")
+            raise ArtifactRestoreRefused(
+                "artifact latest-version metadata is inconsistent"
+            )
         live = Path(self.resolve_live_path(artifact, current)).expanduser().resolve()
         live_existed, previous_data = self._protect_current_version(current, live)
 
@@ -247,7 +259,9 @@ class ArtifactRestoreService:
         checksum = hashlib.sha256(source_data).hexdigest()
         if hashlib.sha256(new_snapshot.read_bytes()).hexdigest() != checksum:
             new_snapshot.unlink(missing_ok=True)
-            raise ArtifactRestoreRefused("restored snapshot checksum verification failed")
+            raise ArtifactRestoreRefused(
+                "restored snapshot checksum verification failed"
+            )
 
         try:
             self.atomic_write(live, source_data)
@@ -271,7 +285,7 @@ class ArtifactRestoreService:
                     self.atomic_write(live, previous_data)
                 else:
                     live.unlink(missing_ok=True)
-            except OSError as rollback_error:
+            except OSError:
                 raise ArtifactRestoreRefused(
                     "artifact restore failed and the workspace rollback also "
                     "failed; the daemon diagnostics record why"

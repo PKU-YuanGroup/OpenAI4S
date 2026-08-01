@@ -186,9 +186,7 @@ class NotebookExportService:
                 lines.append("")
             figures = list(cell.get("figures") or ())
             if figures:
-                lines.append(
-                    "Artifacts: " + ", ".join(f"`{item}`" for item in figures)
-                )
+                lines.append("Artifacts: " + ", ".join(f"`{item}`" for item in figures))
                 lines.append("")
             error = str(cell.get("error") or "").rstrip("\n")
             if error:

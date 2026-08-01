@@ -863,9 +863,13 @@ class ArtifactRepository:
                 if artifact is None or source is None:
                     raise ArtifactRestoreRefused("artifact restore source not found")
                 if artifact["latest_version_id"] != expected_latest_version_id:
-                    raise ArtifactRestoreRefused("artifact changed concurrently during restore")
+                    raise ArtifactRestoreRefused(
+                        "artifact changed concurrently during restore"
+                    )
                 if artifact["latest_version_id"] == source_version_id:
-                    raise ArtifactRestoreRefused("restore source is already the latest version")
+                    raise ArtifactRestoreRefused(
+                        "restore source is already the latest version"
+                    )
                 if source["checksum"] != checksum or (
                     source["size_bytes"] is not None
                     and int(source["size_bytes"]) != int(size_bytes)

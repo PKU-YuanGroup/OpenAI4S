@@ -155,7 +155,9 @@ def test_an_edit_cannot_reach_across_a_project_boundary(tmp_path):
     try:
         mine = store.add_memory(content="project a fact", project_id="a")
 
-        assert store.update_memory(mine["memory_id"], content="x", project_id="b") is None
+        assert (
+            store.update_memory(mine["memory_id"], content="x", project_id="b") is None
+        )
         assert store.list_memories(project_id="a")[0]["content"] == "project a fact"
 
         with pytest.raises(MemoryLimitError) as caught:
@@ -200,7 +202,9 @@ def test_an_edited_memory_moves_to_the_front_of_the_injection_order(tmp_path):
         store.add_memory(content="second", project_id="p")
 
         clock["now"] = base + 2000
-        store.update_memory(first["memory_id"], content="first, corrected", project_id="p")
+        store.update_memory(
+            first["memory_id"], content="first, corrected", project_id="p"
+        )
 
         assert [row["content"] for row in store.list_memories(project_id="p")] == [
             "first, corrected",
@@ -252,7 +256,9 @@ def test_the_edit_route_is_scoped_and_answers_the_edited_row(tmp_path):
         assert status == 400, body
         assert body["code"] == "memory_scope_required"
 
-        status, body = _patch(f"/api/v1/memory/{mid}?project_id=p", {"content": "after"})
+        status, body = _patch(
+            f"/api/v1/memory/{mid}?project_id=p", {"content": "after"}
+        )
         assert status == 200, body
         assert body["content"] == "after"
         assert body["updated_at"]

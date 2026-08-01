@@ -385,9 +385,7 @@ def test_a_huge_stderr_line_is_truncated_while_it_is_read(tmp_path):
         # what the reader counts. The old assertion measured characters against
         # a constant that claimed bytes, which is exactly the disagreement that
         # let a multi-byte diagnostic use several times its stated budget.
-        widest = max(
-            len(line.encode("utf-8")) for line in connection._stderr_tail
-        )
+        widest = max(len(line.encode("utf-8")) for line in connection._stderr_tail)
         assert (
             widest <= mcp_client._MAX_STDERR_LINE_BYTES
         ), f"retained a {widest}-byte stderr line"

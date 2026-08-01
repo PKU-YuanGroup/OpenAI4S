@@ -150,7 +150,9 @@ def test_the_snapshot_itself_carries_both_bindings(session):
         checksum=str(artifact["checksum"]),
     )
     saved = store.add_memory(content="remember this", project_id="science")
-    store.update_memory(saved["memory_id"], content="remember this, v2", project_id="science")
+    store.update_memory(
+        saved["memory_id"], content="remember this, v2", project_id="science"
+    )
 
     checkpoint = service.create_checkpoint(frame_id, reason="bindings")
     snapshot = store.get_checkpoint_state_snapshot(
