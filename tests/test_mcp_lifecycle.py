@@ -550,3 +550,93 @@ def test_a_trailing_line_with_no_newline_is_still_delivered():
 
     assert reader.readline() == '{"id": 3}'
     assert reader.readline() is None
+
+
+# -- connecting one connector must not stall the others -----------------------
+
+
+def test_a_slow_connect_does_not_stall_a_different_connector():
+    """`_connect` spawns a child and runs `initialize`; it was under the global lock.
+
+    That lock is the one every connector's `get`, `_evict`, `disconnect` and
+    `shutdown` need, so one server taking seconds to answer `initialize` — or
+    hanging until its timeout — stalled every other connector in the process,
+    including ones already connected and merely being looked up.
+
+    Asserted on wall-clock ordering rather than on the lock object: what a
+    caller experiences is the wait, and a test that inspected the locking would
+    keep passing if the waiting moved somewhere else.
+    """
+    manager = mcp_client.MCPManager()
+    started = threading.Event()
+    release = threading.Event()
+
+    class _Slow:
+        def faulted(self):
+            return False
+
+        def close(self):
+            return True
+
+    def connect(config):
+        if config.get("command") == "slow":
+            started.set()
+            assert release.wait(10), "the fast connect never arrived"
+        return _Slow()
+
+    manager._connect = connect
+    try:
+        slow = threading.Thread(
+            target=manager.get, args=("slow-one", {"command": "slow"}), daemon=True
+        )
+        slow.start()
+        assert started.wait(5), "the slow connect never started"
+
+        # While `slow-one` is mid-`initialize`, a different connector must be
+        # able to connect. Under the old global lock this call blocked until
+        # the slow one finished.
+        fast = manager.get("fast-one", {"command": "fast"})
+        assert fast is not None
+    finally:
+        release.set()
+        slow.join(10)
+        assert not slow.is_alive()
+
+
+def test_two_callers_for_the_same_connector_produce_one_child():
+    """Single-flight: the second adopts what the first cached, not a second child."""
+    manager = mcp_client.MCPManager()
+    made: list[object] = []
+    gate = threading.Event()
+
+    class _Conn:
+        def faulted(self):
+            return False
+
+        def close(self):
+            return True
+
+    def connect(config):
+        del config
+        gate.wait(10)
+        conn = _Conn()
+        made.append(conn)
+        return conn
+
+    manager._connect = connect
+    got: list[object] = []
+    threads = [
+        threading.Thread(
+            target=lambda: got.append(manager.get("same", {"command": "x"})),
+            daemon=True,
+        )
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    gate.set()
+    for thread in threads:
+        thread.join(10)
+
+    assert len(made) == 1, f"{len(made)} children were spawned for one connector"
+    assert got[0] is got[1]

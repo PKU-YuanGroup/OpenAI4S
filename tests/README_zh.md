@@ -153,7 +153,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_marker_policy.py`](test_marker_policy.py) | 两个测试守着离线契约。external、network、live-LLM、GPU、SSH、Docker、browser、lab 这些需要显式开启的标记，默认全部排除在外；改动默认的排除表达式，也没法悄悄把真实测试放回来。 |
 | [`test_mcp_client.py`](test_mcp_client.py) | 离线的 MCP：JSON-RPC 分帧、stdio 生命周期、请求配对、超时。真正要紧的边界是子进程环境——它按严格的允许名单重建，所以连一个 connector 也没法把 daemon 环境里的秘密顺手交给子进程。 |
 | [`test_mcp_control_tools.py`](test_mcp_control_tools.py) | MCP 的原生 Tool。列目录和读内容是两套策略；prompt 参数会被重新校验成字符串；从 connector 回来的内容在给 Agent 看之前先过注入筛查。 |
-| [`test_mcp_lifecycle.py`](test_mcp_lifecycle.py) | MCP 的生命周期与各种上限，全部用真实子进程 connector 来驱动，所以断言的是 pid 和进程本身，而不是「某个函数被调用了」。握手失败之后不留进程也不留读取线程；每一类故障只淘汰缓存里的那一个实例，下一次调用会以新的 pid 重连，而 JSON-RPC 错误不会；在途请求和已放弃 id 两个队列都有上限；8 MB 的 stderr 单行在读的过程中就被截断；终止能打到被包装的真实 server，而且不会把调用方挂死。 |
+| [`test_mcp_lifecycle.py`](test_mcp_lifecycle.py) | MCP 的生命周期与各种上限，全部用真实子进程 connector 来驱动，所以断言的是 pid 和进程本身，而不是「某个函数被调用了」。握手失败之后不留进程也不留读取线程；每一类故障只淘汰缓存里的那一个实例，下一次调用会以新的 pid 重连，而 JSON-RPC 错误不会；在途请求和已放弃 id 两个队列都有上限；8 MB 的 stderr 单行在读的过程中就被截断；终止能打到被包装的真实 server，而且不会把调用方挂死。 另外覆盖连接路径的加锁：`_connect` 会 spawn 子进程并跑 `initialize` 握手，而它此前是在管理器的**全局**锁内做这件事——那把锁是每个连接器的 `get`、`_evict`、`disconnect`、`shutdown` 都要的，于是一个挂到超时的服务器会拖住进程内所有其他连接器，包括那些已连上、只是被查一下的。断言落在墙钟时序而不是锁对象上，因为调用方感受到的是等待；另一例钉住同一 id 的两个调用方仍然只产生一个子进程。 |
 | [`test_memory_repository.py`](test_memory_repository.py) | 长期记忆：过滤条件跨 `Store` 边界保持不变、遗留的默认分类，以及删除 project 时级联删掉它的记忆。 |
 | [`test_metadata_repositories.py`](test_metadata_repositories.py) | 那几个小仓储——笔记、文件夹、动态 endpoint、compaction 归档。真正有牙的是 host call 日志：它在提交之前会做清洗、跳过和截断。 |
 | [`test_methodology_skills.py`](test_methodology_skills.py) | 关于纯方法学内置 Skill 的三个测试：以只读方式被发现、能被取回，其中一个还在 Agent 循环里被真正用了一次。 |

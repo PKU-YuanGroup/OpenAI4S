@@ -693,6 +693,10 @@ class MCPManager:
         #: process owns, and `shutdown` has to be able to reach them.
         self._probes: set[MCPConnection] = set()
         self._lock = threading.Lock()
+        #: One lock per connector id, so a connect is single-flighted without
+        #: the *global* lock being held across it. `self._lock` guards this
+        #: dict and the two above; it is never held while a child is spawned.
+        self._connect_locks: dict[str, threading.Lock] = {}
 
     @staticmethod
     def _argv(config: dict) -> list[str]:
@@ -762,20 +766,54 @@ class MCPManager:
                 self._evict(connector_id, conn)
             raise
 
+    def _connect_lock(self, connector_id: str) -> threading.Lock:
+        with self._lock:
+            lock = self._connect_locks.get(connector_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._connect_locks[connector_id] = lock
+            return lock
+
     def get(self, connector_id: str, config: dict) -> MCPConnection:
-        while True:
-            with self._lock:
-                conn = self._conns.get(connector_id)
-                if conn is None:
-                    conn = self._connect(config)
-                    self._conns[connector_id] = conn
-                    return conn
+        """The live connection for one connector, connecting it if needed.
+
+        `_connect` spawns a child and runs the `initialize` handshake, which is
+        bounded by the connector's own timeout and can therefore take seconds.
+        It used to happen inside `self._lock` -- the one lock every connector's
+        `get`, `_evict`, `disconnect` and `shutdown` need -- so one slow or
+        hanging server stalled every other connector in the process, including
+        ones that were already connected and merely being looked up.
+
+        Single-flighted per connector instead: two callers asking for the same
+        id still produce one child, because the second waits on that id's lock
+        and adopts what the first cached. Callers asking for *different* ids do
+        not wait on each other at all. The global lock is taken only for dict
+        reads and writes, and is never held across a spawn.
+        """
+        stale: MCPConnection | None = None
+        with self._lock:
+            conn = self._conns.get(connector_id)
+            if conn is not None:
                 if not conn.faulted():
                     return conn
                 del self._conns[connector_id]
-            # Closed outside the lock -- see `_evict` -- then round again to
-            # reconnect, or to adopt whatever another thread put there meanwhile.
-            conn.close()
+                stale = conn
+        if stale is not None:
+            # Outside the lock, like `_evict`: `close()` waits on a TERM->KILL
+            # and joins two reader threads.
+            stale.close()
+        with self._connect_lock(connector_id):
+            # Re-checked under the per-connector lock: another caller may have
+            # connected while this one waited, and adopting it is the whole
+            # point of single-flighting.
+            with self._lock:
+                conn = self._conns.get(connector_id)
+                if conn is not None and not conn.faulted():
+                    return conn
+            made = self._connect(config)
+            with self._lock:
+                self._conns[connector_id] = made
+            return made
 
     def probe(self, config: dict) -> dict:
         """Connect fresh, list tools, close. Returns {ok, tools|error}."""
@@ -864,6 +902,9 @@ class MCPManager:
             conns = list(self._conns.values()) + list(self._probes)
             self._conns.clear()
             self._probes.clear()
+            # A per-connector lock outlives its connection otherwise, and a
+            # long-lived daemon accumulates one per id it ever spoke to.
+            self._connect_locks.clear()
         survivors: list[str] = []
         for c in conns:
             if not c.close():
