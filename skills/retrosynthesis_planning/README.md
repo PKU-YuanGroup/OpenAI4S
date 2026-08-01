@@ -60,7 +60,7 @@ audit = audit_routes(routes)
 | [`route_review.py`](route_review.py) | Stable route signatures, duplicate provenance and diversity-aware route selection based on reaction, product, precursor and terminal-material features. |
 | [`structural_audit.py`](structural_audit.py) | Deterministic route-tree checks before LLM interpretation. It remains stdlib-only and adds RDKit parse/element checks only when RDKit is installed. |
 
-Focused regressions for this layer live in [`../../tests/test_retrosynthesis_workflow.py`](../../tests/test_retrosynthesis_workflow.py).
+Focused regressions for this layer live in [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py).
 
 ## Subdirectories
 
