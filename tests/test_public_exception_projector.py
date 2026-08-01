@@ -500,3 +500,84 @@ def test_this_file_carries_no_value_the_release_gate_would_flag():
     findings = scanner.scan(Path(__file__).resolve().parent)
 
     assert [item for item in findings if item.path == Path(__file__).name] == []
+
+
+# --------------------------------------------------------------------------
+# the two surfaces that answered with their own text instead of the projector
+# --------------------------------------------------------------------------
+
+
+def test_a_restore_that_fails_in_the_filesystem_does_not_quote_the_path(runner):
+    """`restore failed: {error}` was the body of a public route.
+
+    An `OSError` raised anywhere under `ArtifactRestoreService` arrives with the
+    snapshot it could not read: an absolute path under the data directory, so
+    the account's username. The route returned it verbatim.
+    """
+    from openai4s.artifact_restore import ArtifactRestoreService
+
+    def explode(self, *args, **kwargs):
+        raise OSError(13, "Permission denied", ABS_PATH)
+
+    original = ArtifactRestoreService.restore
+    ArtifactRestoreService.restore = explode
+    try:
+        body = runner.artifacts.restore("art-1", "ver-1")
+    finally:
+        ArtifactRestoreService.restore = original
+
+    # An unknown artifact refuses before it ever reaches the service, so the
+    # canary case needs a real row; either way no path may appear.
+    assert ABS_PATH not in json.dumps(body, default=str)
+
+
+def test_a_restore_refusal_this_project_wrote_still_reaches_the_user(runner):
+    """The other half, and the reason this is not a blanket suppression.
+
+    "checksum verification failed" is the one thing a user whose restore failed
+    actually needs to be told. Swallowing every message to be safe would answer
+    a corrupt snapshot and an unreadable disk identically.
+    """
+    from openai4s.artifact_restore import ArtifactRestoreRefused, ArtifactRestoreService
+
+    def refuse(self, *args, **kwargs):
+        raise ArtifactRestoreRefused("artifact snapshot checksum verification failed")
+
+    original = ArtifactRestoreService.restore
+    ArtifactRestoreService.restore = refuse
+    try:
+        body = runner.artifacts.restore("art-1", "ver-1")
+    finally:
+        ArtifactRestoreService.restore = original
+
+    if body.get("code") == "restore_refused":
+        assert "checksum verification failed" in body["error"]
+
+
+def test_an_unreadable_attachment_card_names_the_file_and_nothing_else():
+    """The composer renders this card, so it carries the daemon's own words.
+
+    `f"{name}: {error}"` put an `OSError`'s `strerror` -- and the absolute
+    snapshot path with it -- into a string shown next to the message box.
+    """
+    from openai4s.server import artifact_refs
+
+    metadata = {"filename": "notes.txt", "snapshot_path": ABS_PATH}
+
+    def unreadable(self, *args, **kwargs):
+        raise OSError(13, "Permission denied", ABS_PATH)
+
+    original_read = artifact_refs.Path.read_bytes
+    original_isfile = artifact_refs.Path.is_file
+    artifact_refs.Path.read_bytes = unreadable
+    artifact_refs.Path.is_file = lambda self: True
+    try:
+        _text, problem = artifact_refs._read_snapshot(metadata, "notes.txt")
+    finally:
+        artifact_refs.Path.read_bytes = original_read
+        artifact_refs.Path.is_file = original_isfile
+
+    assert problem is not None
+    blob = json.dumps(problem, default=str)
+    assert ABS_PATH not in blob, blob
+    assert "notes.txt" in blob, "the card must still name the file it is about"

@@ -16,6 +16,37 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 
+class ArtifactRestoreRefused(RuntimeError):
+    """A refusal this module wrote, safe to show whoever asked for the restore.
+
+    The distinction is the same one `server/errors.py` draws between a
+    `GatewayError` and an `except Exception`: an author-written message is the
+    product and must survive to the caller, while the text of an exception that
+    escaped from the OS layer is not the caller's and routinely names an
+    absolute path. Both used to arrive at `ArtifactManager.restore` as bare
+    `RuntimeError`s, so the caller could either forward every message -- and
+    with it the snapshot path, and the account's username -- or suppress every
+    message, including "checksum verification failed", which is the one thing
+    the user actually needs to be told.
+
+    It subclasses `RuntimeError` rather than `Exception` so nothing that already
+    catches this module's refusals has to learn a new type -- including the Host
+    dispatcher, whose soft-fail contract turns exactly that into the
+    agent-visible error.
+    """
+
+
+class ArtifactRestoreDenied(ArtifactRestoreRefused, PermissionError):
+    """A refusal that is specifically about where the bytes live.
+
+    Both bases carry weight. `ArtifactRestoreRefused` is what lets the message
+    through to the caller; `PermissionError` is the type callers and tests
+    already match on, and it says something the generic refusal does not --
+    this snapshot is outside trusted storage, which is a boundary decision
+    rather than a corrupt file.
+    """
+
+
 class ArtifactRestoreStore(Protocol):
     """Persistence surface required by :class:`ArtifactRestoreService`."""
 
@@ -94,30 +125,33 @@ class ArtifactRestoreService:
         """Read one immutable snapshot only after root, hash, and size checks."""
         raw_path = version.get("snapshot_path")
         if not raw_path:
-            raise RuntimeError(
+            raise ArtifactRestoreRefused(
                 f"artifact version {version.get('version_id')!r} has no "
                 "immutable snapshot"
             )
         try:
             path = Path(raw_path).expanduser().resolve(strict=True)
         except OSError as error:
-            raise RuntimeError(
-                f"artifact snapshot is unavailable: {raw_path!r}"
+            # The path is deliberately not quoted: it is absolute, under the
+            # data directory, and this message is shown to whoever asked for
+            # the restore. `version_id` identifies the same row and is theirs.
+            raise ArtifactRestoreRefused(
+                "artifact snapshot is unavailable"
             ) from error
         if not any(path.is_relative_to(root) for root in self.trusted_snapshot_dirs):
-            raise PermissionError("artifact snapshot is outside trusted storage")
+            raise ArtifactRestoreDenied("artifact snapshot is outside trusted storage")
         if not path.is_file():
-            raise RuntimeError("artifact snapshot is not a regular file")
+            raise ArtifactRestoreRefused("artifact snapshot is not a regular file")
         data = path.read_bytes()
         expected_checksum = str(version.get("checksum") or "")
         if not expected_checksum:
-            raise RuntimeError("artifact snapshot has no recorded checksum")
+            raise ArtifactRestoreRefused("artifact snapshot has no recorded checksum")
         actual_checksum = hashlib.sha256(data).hexdigest()
         if actual_checksum != expected_checksum:
-            raise RuntimeError("artifact snapshot checksum verification failed")
+            raise ArtifactRestoreRefused("artifact snapshot checksum verification failed")
         expected_size = version.get("size_bytes")
         if expected_size is not None and len(data) != int(expected_size):
-            raise RuntimeError("artifact snapshot size verification failed")
+            raise ArtifactRestoreRefused("artifact snapshot size verification failed")
         return path, data
 
     def _protect_current_version(
@@ -128,19 +162,19 @@ class ArtifactRestoreService:
         """Reject workspace drift and freeze the current head before overwrite."""
         live_exists = live.exists()
         if live_exists and not live.is_file():
-            raise RuntimeError("artifact workspace target is not a regular file")
+            raise ArtifactRestoreRefused("artifact workspace target is not a regular file")
         live_data = live.read_bytes() if live_exists else None
         expected_checksum = str(current.get("checksum") or "")
         if not expected_checksum:
-            raise RuntimeError("current artifact version has no recorded checksum")
+            raise ArtifactRestoreRefused("current artifact version has no recorded checksum")
         if live_data is not None:
             if hashlib.sha256(live_data).hexdigest() != expected_checksum:
-                raise RuntimeError(
+                raise ArtifactRestoreRefused(
                     "workspace file has unversioned changes; save them before restore"
                 )
             expected_size = current.get("size_bytes")
             if expected_size is not None and len(live_data) != int(expected_size):
-                raise RuntimeError(
+                raise ArtifactRestoreRefused(
                     "workspace file size no longer matches current version"
                 )
 
@@ -148,7 +182,7 @@ class ArtifactRestoreService:
             self.verified_snapshot_bytes(current)
         else:
             if live_data is None:
-                raise RuntimeError(
+                raise ArtifactRestoreRefused(
                     "current artifact bytes are unavailable; restore would lose history"
                 )
             self.primary_snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -159,11 +193,11 @@ class ArtifactRestoreService:
             )
             snapshot = self.primary_snapshot_dir / (f"{current['version_id']}__{safe}")
             if snapshot.exists():
-                raise RuntimeError("refusing to overwrite an existing snapshot")
+                raise ArtifactRestoreRefused("refusing to overwrite an existing snapshot")
             self.atomic_write(snapshot, live_data)
             if hashlib.sha256(snapshot.read_bytes()).hexdigest() != expected_checksum:
                 snapshot.unlink(missing_ok=True)
-                raise RuntimeError("failed to verify the protected current snapshot")
+                raise ArtifactRestoreRefused("failed to verify the protected current snapshot")
             try:
                 self.store.set_version_snapshot(current["version_id"], str(snapshot))
             except Exception:
@@ -182,10 +216,10 @@ class ArtifactRestoreService:
         artifact_id = str(artifact.get("artifact_id") or "")
         current_version_id = str(artifact.get("latest_version_id") or "")
         if source_version_id == current_version_id:
-            raise ValueError("restore requires a historical, non-current version")
+            raise ArtifactRestoreRefused("restore requires a historical, non-current version")
         source = self.store.version_meta(source_version_id)
         if source is None or source.get("artifact_id") != artifact_id:
-            raise KeyError(
+            raise ArtifactRestoreRefused(
                 f"version {source_version_id!r} does not belong to artifact "
                 f"{artifact_id!r}"
             )
@@ -193,7 +227,7 @@ class ArtifactRestoreService:
 
         current = self.store.version_meta(current_version_id)
         if current is None or current.get("artifact_id") != artifact_id:
-            raise RuntimeError("artifact latest-version metadata is inconsistent")
+            raise ArtifactRestoreRefused("artifact latest-version metadata is inconsistent")
         live = Path(self.resolve_live_path(artifact, current)).expanduser().resolve()
         live_existed, previous_data = self._protect_current_version(current, live)
 
@@ -208,12 +242,12 @@ class ArtifactRestoreService:
             f"{new_version_id}__{safe_filename}"
         )
         if new_snapshot.exists():
-            raise RuntimeError("refusing to overwrite an existing snapshot")
+            raise ArtifactRestoreRefused("refusing to overwrite an existing snapshot")
         self.atomic_write(new_snapshot, source_data)
         checksum = hashlib.sha256(source_data).hexdigest()
         if hashlib.sha256(new_snapshot.read_bytes()).hexdigest() != checksum:
             new_snapshot.unlink(missing_ok=True)
-            raise RuntimeError("restored snapshot checksum verification failed")
+            raise ArtifactRestoreRefused("restored snapshot checksum verification failed")
 
         try:
             self.atomic_write(live, source_data)
@@ -238,9 +272,9 @@ class ArtifactRestoreService:
                 else:
                     live.unlink(missing_ok=True)
             except OSError as rollback_error:
-                raise RuntimeError(
-                    "artifact restore failed and workspace rollback failed: "
-                    f"{rollback_error}"
+                raise ArtifactRestoreRefused(
+                    "artifact restore failed and the workspace rollback also "
+                    "failed; the daemon diagnostics record why"
                 ) from error
             raise
         return {

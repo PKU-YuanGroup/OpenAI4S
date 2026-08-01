@@ -17,8 +17,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from openai4s.artifact_restore import ArtifactRestoreService, trusted_snapshot_roots
+from openai4s.artifact_restore import (
+    ArtifactRestoreRefused,
+    ArtifactRestoreService,
+    trusted_snapshot_roots,
+)
 from openai4s.execution import CaptureResult
+from openai4s.server.errors import record_diagnostic
 
 _JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
 _EMBEDDED_IMAGE_TYPES = frozenset(
@@ -316,8 +321,21 @@ class ArtifactManager:
                 source_version_id=version_id,
                 frame_id=artifact.get("root_frame_id"),
             )
-        except (KeyError, OSError, PermissionError, RuntimeError, ValueError) as error:
-            return {"error": f"restore failed: {error}"}
+        except ArtifactRestoreRefused as refusal:
+            # Author-written, and the product: "checksum verification failed" is
+            # exactly what the user has to be told, and suppressing it to be
+            # safe would leave them with a restore that failed for no stated
+            # reason.
+            return {"error": f"restore failed: {refusal}", "code": "restore_refused"}
+        except (KeyError, OSError, RuntimeError, ValueError) as error:
+            # Anything else escaped from the OS layer with its own text. An
+            # `OSError` here names the snapshot it could not read -- an absolute
+            # path under the data directory, so the account's username -- and
+            # this dict is the body of
+            # `POST /artifacts/<id>/versions/<vid>/restore`. The original goes
+            # to the operator record, redacted once and paired with the id.
+            record_diagnostic(error, surface="artifacts:restore")
+            return {"error": "restore failed", "code": "restore_failed"}
 
         current_artifact = self.store.get_artifact(artifact_id)
         root_frame_id = artifact.get("root_frame_id")
@@ -386,7 +404,10 @@ class ArtifactManager:
             live.parent.mkdir(parents=True, exist_ok=True)
             live.write_text(content, encoding="utf-8")
         except OSError as error:
-            raise ArtifactOperationError(500, f"write failed: {error}") from error
+            # Same reason as `restore` above: `strerror` arrives with the
+            # absolute path it failed on, and a 500 body is a public surface.
+            record_diagnostic(error, surface="artifacts:write")
+            raise ArtifactOperationError(500, "write failed") from error
 
         record = self.store.save_artifact(
             path=str(live),

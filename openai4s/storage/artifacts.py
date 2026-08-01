@@ -16,6 +16,13 @@ import sqlite3
 import uuid
 from typing import Any, Callable
 
+# The restore refusal type, imported rather than duplicated: these three
+# raises are author-written refusals on the same restore transaction the
+# service owns, and the caller distinguishes them from an OS-layer failure
+# by type. `artifact_restore` imports nothing from storage, so this is a
+# leaf dependency rather than a cycle.
+from openai4s.artifact_restore import ArtifactRestoreRefused
+
 Clock = Callable[[], int]
 Execute = Callable[[str, tuple], None]
 GetFrame = Callable[[str], dict | None]
@@ -854,11 +861,11 @@ class ArtifactRepository:
                     (source_version_id, artifact_id),
                 ).fetchone()
                 if artifact is None or source is None:
-                    raise KeyError("artifact restore source not found")
+                    raise ArtifactRestoreRefused("artifact restore source not found")
                 if artifact["latest_version_id"] != expected_latest_version_id:
-                    raise RuntimeError("artifact changed concurrently during restore")
+                    raise ArtifactRestoreRefused("artifact changed concurrently during restore")
                 if artifact["latest_version_id"] == source_version_id:
-                    raise ValueError("restore source is already the latest version")
+                    raise ArtifactRestoreRefused("restore source is already the latest version")
                 if source["checksum"] != checksum or (
                     source["size_bytes"] is not None
                     and int(source["size_bytes"]) != int(size_bytes)

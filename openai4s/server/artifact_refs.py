@@ -32,6 +32,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+from openai4s.server.errors import record_diagnostic
+
 #: `@results.csv#v-abc123def456` -- a name a human can read plus the version
 #: that fixes what it means.
 PINNED_REF = re.compile(r"(?:^|\s)@([\w./-]+\.\w+)#(v-[0-9a-zA-Z]{6,})")
@@ -339,7 +341,11 @@ def _read_snapshot(metadata: dict, name: str) -> tuple[str | None, RefProblem | 
     try:
         raw = Path(str(snapshot)).read_bytes()[:MAX_REF_BYTES]
     except OSError as error:
-        return None, _problem(name, "unreadable", f"{name}: {error}")
+        # The card is rendered in the composer, so it carries the daemon's own
+        # words. `strerror` here quotes the snapshot path it could not read --
+        # absolute, under the data directory, and with it the username.
+        record_diagnostic(error, surface="artifact_refs:read")
+        return None, _problem(name, "unreadable", f"{name} could not be read")
     text = raw.decode("utf-8", errors="replace")
     # A high replacement-character density means this was not text after all --
     # a suffix allowlist cannot know about every binary format.
@@ -409,15 +415,29 @@ def _resolve_pinned(
                 try:
                     brought = materialise(version_id, alternative)
                 except Exception as error:  # noqa: BLE001 - reported, not raised
+                    record_diagnostic(error, surface="artifact_refs:materialise")
                     return (
                         None,
-                        _problem(ref, "materialise_failed", f"{name}: {error}"),
+                        _problem(
+                            ref,
+                            "materialise_failed",
+                            f"{name} could not be brought into this session",
+                        ),
                         None,
                     )
             except Exception as error:  # noqa: BLE001 - reported, not raised
+                # A bare `Exception`: whatever `materialise` raises is by
+                # definition something nobody wrote a message for, so its text
+                # is the least safe thing on this path and the most tempting to
+                # forward.
+                record_diagnostic(error, surface="artifact_refs:materialise")
                 return (
                     None,
-                    _problem(ref, "materialise_failed", f"{name}: {error}"),
+                    _problem(
+                        ref,
+                        "materialise_failed",
+                        f"{name} could not be brought into this session",
+                    ),
                     None,
                 )
             local = store.version_meta(str(brought.get("version_id") or ""))
