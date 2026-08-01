@@ -1519,10 +1519,18 @@ def test_an_outer_plan_failure_lands_on_the_branch_it_was_submitted_on(
     failure somewhere the user is not looking, and grows one on the trunk that
     never happened there. Frozen on the submitting thread, where the answer is
     both available and still true.
+
+    Injected at the branch the *session* is on, which is what the ticket now
+    carries. This used to patch `active_session_branch`, the reader the old
+    spawner called directly; the branch is now resolved once, when the session
+    state is built, and every ticket issued for that session inherits it.
     """
     frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
     sibling = "branch-fork-1"
     monkeypatch.setattr(runner.store, "active_session_branch", lambda _fid: sibling)
+    monkeypatch.setattr(
+        runner.store, "ensure_active_session_branch", lambda _fid: sibling
+    )
     runner.store.create_plan(
         frame_id=frame_id,
         project_id="proj",
@@ -2633,3 +2641,408 @@ def test_an_outer_failure_leaves_exactly_one_terminal_and_it_is_failed(
         f"the ticket recorded {terminal} for a turn that failed outside "
         f"`run_message`: {states}"
     )
+
+
+# --- a plan turn is an execution like any other -------------------------------
+
+
+def _draft(runner, frame_id, status="draft"):
+    return runner.store.create_plan(
+        frame_id=frame_id,
+        project_id="proj",
+        title="p",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "s", "detail": "d", "deliverables": []}],
+        status=status,
+    )
+
+
+def _plan_status(runner, frame_id):
+    return (runner.store.get_plan_by_frame(frame_id) or {}).get("status")
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "action,claimed_from",
+    [("approve", "draft"), ("resume", "paused")],
+)
+def test_a_plan_that_fails_before_it_runs_does_not_stay_executing(
+    runner, monkeypatch, action, claimed_from
+):
+    """The claim is a one-way door if nothing settles the row it moved.
+
+    The route compare-and-swaps the plan into `executing` before it answers
+    202, because a status read inside the background thread cannot decide who
+    owns the execution. That is right, and it means the route has handed the
+    background thread an obligation: whatever happens, the row it claimed has
+    to reach a settled status.
+
+    A failure *before* the turn reaches `run_message` -- the Store refusing the
+    re-read, `emit_ready` throwing, the seed builder raising -- skipped every
+    settle point, so the row stayed `executing` with nothing running. Nothing
+    recovers from that state: approve swaps against `draft` and resume against
+    `paused`, so both lose forever, and `get_by_frame` prefers the newest
+    non-discarded plan, so that row also shadows every new draft the session
+    ever makes. One failed turn permanently removes planning from the session.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    _draft(runner, frame_id, status=claimed_from)
+    target = "run_plan_execution" if action == "approve" else "run_plan_resume"
+    monkeypatch.setattr(
+        runner, target, lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+
+    accepted, status = _api(runner, "POST", f"/frames/{frame_id}/plan/{action}", {})
+    assert status == 202, (status, accepted)
+    job = next(j for j in runner._jobs.values() if j.job_id == accepted["job_id"])
+    job.wait_result()
+
+    assert _plan_status(runner, frame_id) == "failed", (
+        "the claimed plan row was left `executing` by a turn that never ran -- "
+        "approve and resume can both never win again"
+    )
+    ready = [
+        event
+        for event in runner.hub.events
+        if event.get("type") == "plan_ready" and event.get("status") == "failed"
+    ]
+    assert ready, "the client was never told the plan had settled"
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "action,claimed_from,expected",
+    [("approve", "draft", "paused"), ("resume", "paused", "paused")],
+)
+def test_a_cancelled_plan_turn_settles_paused_not_failed(
+    runner, monkeypatch, action, claimed_from, expected
+):
+    """Cancelling leaves work to finish, so the plan is paused, not over.
+
+    `run_execution` already draws this distinction once the turn has started.
+    A cancellation that arrives before it -- the session is being stopped while
+    the item is still queued -- took the other branch, and a user who pressed
+    stop got a plan marked `failed`.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    _draft(runner, frame_id, status=claimed_from)
+    target = "run_plan_execution" if action == "approve" else "run_plan_resume"
+    monkeypatch.setattr(
+        runner,
+        target,
+        lambda *a, **k: (_ for _ in ()).throw(
+            gateway_mod.ExecutionCancelled("stopped")
+        ),
+    )
+
+    accepted, _ = _api(runner, "POST", f"/frames/{frame_id}/plan/{action}", {})
+    job = next(j for j in runner._jobs.values() if j.job_id == accepted["job_id"])
+    job.wait_result()
+
+    assert (
+        _plan_status(runner, frame_id) == expected
+    ), "a cancelled plan turn did not settle as paused"
+
+
+@pytest.mark.stubbed_backend
+def test_a_plan_202_names_a_real_coordinator_execution(runner):
+    """The plan spawner minted `plan-<job id>` and told the client about it.
+
+    A synthetic id is not an execution: the FIFO never heard of it, so a plan
+    turn was not queued behind the running one and did not hold the session
+    while it finalised. It also made the 202's `execution_id` a different kind
+    of thing from the message path's, on a field clients filter by.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    _draft(runner, frame_id)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_loop(*_a, **_k):
+        started.set()
+        assert release.wait(20), "the probe never released the plan turn"
+        return "submitted"
+
+    runner._loop = blocking_loop
+    try:
+        accepted, status = _api(runner, "POST", f"/frames/{frame_id}/plan/approve", {})
+        assert status == 202, (status, accepted)
+        assert started.wait(20), "the plan turn never reached its loop"
+
+        execution_id = accepted.get("execution_id") or ""
+        assert not execution_id.startswith(
+            "plan-"
+        ), f"the 202 named a synthetic execution: {execution_id!r}"
+        # The FIFO's own view is the test: an id the coordinator does not hold
+        # is not an execution, whatever it is named.
+        state = runner.executions.snapshot(frame_id)
+        owner = state.get("owner") or {}
+        assert (
+            owner.get("execution_id") == execution_id
+        ), f"the coordinator does not own the execution the 202 named: {state}"
+
+        # And the socket agrees with the 202 -- one id, not two.
+        processing = [
+            event
+            for event in runner.hub.events
+            if event.get("type") == "frame_update"
+            and event.get("status") == "processing"
+        ]
+        assert (
+            processing and processing[-1].get("execution_id") == execution_id
+        ), f"the stream named a different execution than the 202: {processing}"
+    finally:
+        release.set()
+        job = next(
+            (j for j in runner._jobs.values() if j.job_id == accepted.get("job_id")),
+            None,
+        )
+        if job is not None:
+            job.wait_result()
+
+
+@pytest.mark.stubbed_backend
+def test_a_finalising_plan_turn_still_owns_the_session(runner):
+    """The plan path's half of the durable admission race.
+
+    A plan turn writes its own outcome after `run_message` returns: the plan
+    row's final status, a `plan_ready`, and -- when it failed -- the frame's
+    status and the terminal event. Holding no lease, all of that ran while the
+    next queued turn was already `processing`, so the same overwrite the
+    message path had applies here with an extra row on top of it.
+    """
+    from openai4s.observability import correlation_id
+
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    _draft(runner, frame_id)
+    finalising = threading.Event()
+    allow_finish = threading.Event()
+    a_in_loop = threading.Event()
+    b_started = threading.Event()
+    b_release = threading.Event()
+    job_b = None
+
+    real_emit_ready = runner.plans.emit_ready
+    seen: list[str] = []
+
+    def emit_ready(emit, rid, plan):
+        real_emit_ready(emit, rid, plan)
+        # The *last* one: the settle-time emit, after `run_message` returned.
+        if (plan or {}).get("status") in ("completed", "failed", "paused"):
+            seen.append("settled")
+            finalising.set()
+            assert allow_finish.wait(20), "the probe never released the plan turn"
+
+    def loop(_st, *_a, **_k):
+        if correlation_id() == "req-B":
+            b_started.set()
+            assert b_release.wait(20), "the probe never released B"
+        else:
+            a_in_loop.set()
+        return "submitted"
+
+    runner._loop = loop
+    runner.plans.emit_ready = emit_ready
+    try:
+        set_correlation_id("req-A")
+        accepted, _ = _api(runner, "POST", f"/frames/{frame_id}/plan/approve", {})
+        # B is queued only once A is unambiguously the running turn. Submitting
+        # it earlier races A's own thread for the head of the FIFO, and a probe
+        # that can deadlock on ordering says nothing about who holds the lease.
+        assert a_in_loop.wait(20), "the plan turn never started"
+        set_correlation_id("req-B")
+        job_b = runner.submit_message(frame_id, "proj", "b")
+        set_correlation_id("req-canary")
+
+        assert finalising.wait(20), "the plan turn never reached its settle"
+        state = runner.executions.snapshot(frame_id)
+        owner = state.get("owner") or {}
+        assert owner.get("execution_id") == accepted.get("execution_id"), (
+            "the plan turn released the session before writing its outcome: " f"{state}"
+        )
+        assert [item.get("queue_position") for item in state.get("queue") or []] == [
+            1
+        ], f"the follow-up is not waiting behind the plan turn: {state}"
+        assert not b_started.is_set()
+    finally:
+        allow_finish.set()
+        b_release.set()
+        job_a = next(
+            (j for j in runner._jobs.values() if j.job_id == accepted.get("job_id")),
+            None,
+        )
+        if job_a is not None:
+            job_a.wait_result()
+        if job_b is not None:
+            job_b.wait_result()
+
+
+@pytest.mark.stubbed_backend
+def test_a_failure_after_the_plan_finished_does_not_rewrite_its_status(
+    runner, monkeypatch
+):
+    """The settle must not become the damage it exists to prevent.
+
+    By the time the outer handler runs, the plan path may have already settled
+    the row itself -- `run_execution` writes `completed` and then emits a last
+    `plan_ready`, and that emit is a socket write, which is exactly the kind of
+    thing that fails after the science is done. Settling with a plain write
+    would then mark a finished plan `failed`: the steps ran, the artifacts
+    exist, and the row says the plan did not happen.
+
+    So it is a compare-and-swap from `executing` and nothing else -- if the row
+    has moved on, it is not this handler's to move.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    _draft(runner, frame_id)
+    monkeypatch.setattr(runner, "_loop", lambda *a, **k: "submitted")
+    real_emit_ready = runner.plans.emit_ready
+    settled: list[str] = []
+
+    def emit_ready(emit, rid, plan):
+        status = (plan or {}).get("status")
+        if status in ("completed", "failed", "paused"):
+            # The plan is finished and the row already says so; the socket is
+            # what fails.
+            settled.append(status)
+            raise CanaryFailure()
+        real_emit_ready(emit, rid, plan)
+
+    monkeypatch.setattr(runner.plans, "emit_ready", emit_ready)
+
+    accepted, _ = _api(runner, "POST", f"/frames/{frame_id}/plan/approve", {})
+    job = next(j for j in runner._jobs.values() if j.job_id == accepted["job_id"])
+    job.wait_result()
+
+    assert settled == ["completed"], settled
+    assert _plan_status(runner, frame_id) == "completed", (
+        "a plan that ran to completion was marked failed by the handler that "
+        "only exists to rescue rows nothing else settled"
+    )
+
+
+@pytest.mark.stubbed_backend
+def test_a_plan_cancelled_while_still_queued_does_not_strand_its_claim(runner):
+    """Stop drains the queue, and a queued plan never reaches its own handler.
+
+    The approve route claims the row before the 202, so a plan sitting behind a
+    running turn is already `executing` when the user presses stop. Cancelling
+    it raises out of `admitted` -- before `fn`, before any plan code -- so
+    every settle point inside the turn is skipped. The row was left
+    `executing`, which nothing recovers from: approve swaps against `draft`,
+    resume against `paused`, and `get_by_frame` keeps preferring that row over
+    every later draft.
+
+    It settles as `paused` rather than `failed` for the same reason a
+    cancellation mid-run does: stopping is not failing, and there is work left.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    _draft(runner, frame_id)
+    running = threading.Event()
+    release = threading.Event()
+
+    def loop(*_a, **_k):
+        running.set()
+        assert release.wait(20), "the probe never released the running turn"
+        return "submitted"
+
+    runner._loop = loop
+    job_a = runner.submit_message(frame_id, "proj", "a")
+    try:
+        assert running.wait(20), "the first turn never started"
+        accepted, status = _api(runner, "POST", f"/frames/{frame_id}/plan/approve", {})
+        assert status == 202, (status, accepted)
+        assert _plan_status(runner, frame_id) == "executing", "the route did not claim"
+
+        # The plan is behind the running turn. This is what a session Stop does
+        # to everything waiting.
+        cancelled = runner.executions.drain_queued(frame_id, reason="session stopped")
+        assert accepted["execution_id"] in cancelled, cancelled
+
+        job = next(j for j in runner._jobs.values() if j.job_id == accepted["job_id"])
+        result = job.wait_result()
+        assert result.get("status") == "cancelled", result
+        assert _plan_status(runner, frame_id) == "paused", (
+            "a plan cancelled before it ever started was left `executing` -- "
+            "neither approve nor resume can ever win against that row again"
+        )
+    finally:
+        release.set()
+        job_a.wait_result()
+
+
+@pytest.mark.stubbed_backend
+def test_a_failing_plan_turn_owns_the_session_while_it_settles(runner):
+    """The plan path's failure side effects, against a follow-up in the queue.
+
+    What a failing plan turn writes after `fn` has raised is not small: the
+    persisted failure row, the plan row's rescue out of `executing`, the
+    frame's status and the terminal event. Outside the lease, all of it lands
+    while the next turn is already `processing` -- so the frame says `failed`
+    for a turn that is running, and the plan the user is about to re-approve
+    changes status underneath them.
+
+    Parked at `_settle_claimed_plan`, which is the plan half specifically:
+    the barrier the success path proves runs inside `fn`, so it cannot see
+    whether the *handler* is leased.
+    """
+    from openai4s.observability import correlation_id
+
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    _draft(runner, frame_id)
+    settling = threading.Event()
+    allow_finish = threading.Event()
+    b_started = threading.Event()
+    b_release = threading.Event()
+    job_b = None
+
+    def loop(*_a, **_k):
+        if correlation_id() == "req-B":
+            b_started.set()
+            assert b_release.wait(20), "the probe never released B"
+        return "submitted"
+
+    real_settle = runner._settle_claimed_plan
+
+    def settle_holding_the_lease(*args, **kwargs):
+        outcome = real_settle(*args, **kwargs)
+        settling.set()
+        assert allow_finish.wait(20), "the probe never released the plan turn"
+        return outcome
+
+    runner._loop = loop
+    runner._settle_claimed_plan = settle_holding_the_lease
+    runner.run_plan_execution = lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    accepted = {}
+    try:
+        set_correlation_id("req-A")
+        accepted, _ = _api(runner, "POST", f"/frames/{frame_id}/plan/approve", {})
+        set_correlation_id("req-B")
+        job_b = runner.submit_message(frame_id, "proj", "b")
+        set_correlation_id("req-canary")
+
+        assert settling.wait(20), "the plan turn never reached its settle"
+        state = runner.executions.snapshot(frame_id)
+        owner = state.get("owner") or {}
+        assert owner.get("execution_id") == accepted.get(
+            "execution_id"
+        ), f"the failing plan turn released the session before settling: {state}"
+        assert [item.get("execution_id") for item in state.get("queue") or []] == [
+            job_b.execution_id
+        ], f"the follow-up is not waiting behind the failing plan turn: {state}"
+        assert not b_started.is_set()
+    finally:
+        allow_finish.set()
+        b_release.set()
+        job_a = next(
+            (j for j in runner._jobs.values() if j.job_id == accepted.get("job_id")),
+            None,
+        )
+        if job_a is not None:
+            job_a.wait_result()
+        if job_b is not None:
+            job_b.wait_result()
+
+    # And the rescue happened: the row is not left `executing`.
+    assert _plan_status(runner, frame_id) == "failed"

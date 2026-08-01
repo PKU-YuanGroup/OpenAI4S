@@ -6741,6 +6741,14 @@ class SessionRunner:
             lambda: self.run_plan_execution(
                 root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
             ),
+            project_id=project_id,
+            reason="plan approval",
+            claimed_plan_id=claimed_plan_id,
+            # Approving a draft and then cancelling leaves work to finish, so
+            # the plan is paused rather than back to `draft`: the steps it has
+            # already run are real, and resume is the operation that continues
+            # them. `run_execution` draws the same line once the turn started.
+            cancelled_plan_status="paused",
         )
 
     def claim_plan_approval(self, root_frame_id: str) -> dict:
@@ -6776,6 +6784,10 @@ class SessionRunner:
             lambda: self.run_plan_resume(
                 root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
             ),
+            project_id=project_id,
+            reason="plan resume",
+            claimed_plan_id=claimed_plan_id,
+            cancelled_plan_status="paused",
         )
 
     def submit_plan_revision(
@@ -6788,6 +6800,55 @@ class SessionRunner:
         return self._spawn_job(
             root_frame_id,
             lambda: self.run_plan_revision(root_frame_id, project_id, changes, model),
+            project_id=project_id,
+            reason="plan revision",
+            # Revising claims nothing: the row stays a draft throughout, and a
+            # failed revision leaves the draft the user already had.
+        )
+
+    def _settle_claimed_plan(
+        self, root_frame_id: str, plan_id: str | None, status: str
+    ) -> None:
+        """Move a row the route claimed out of `executing`, or leave it alone.
+
+        The approve and resume routes compare-and-swap the plan into
+        `executing` before answering 202, because a status read taken inside
+        the background thread cannot decide who owns the execution. That is
+        right, and it hands the background thread an obligation: the row it was
+        given has to reach a settled status no matter how the turn ends.
+
+        A failure before the turn reached `run_message` -- the Store refusing
+        the re-read, `emit_ready` throwing, the seed builder raising -- met no
+        settle point at all, and the row stayed `executing` with nothing
+        running. That state is unrecoverable rather than merely wrong: approve
+        swaps against `draft` and resume against `paused`, so both lose
+        forever, and `get_by_frame` prefers the newest non-discarded plan, so
+        the stuck row also shadows every draft the session makes afterwards.
+        One failed turn took planning away from the session permanently.
+
+        Compare-and-swap, not a write, and only ever from `executing`: by the
+        time this runs the plan path may have settled the row itself, and
+        overwriting a `completed` with `failed` would be this function causing
+        the damage it exists to prevent.
+        """
+        if not plan_id:
+            return
+        try:
+            moved = self.store.compare_and_set_plan_status(
+                plan_id, expected="executing", new_status=status
+            )
+        except Exception:  # noqa: BLE001 - the original failure is the news
+            traceback.print_exc()
+            return
+        if not moved:
+            return
+        self._best_effort(
+            "plan_ready",
+            lambda: self.plans.emit_ready(
+                self.hub.emitter(root_frame_id),
+                root_frame_id,
+                self.store.get_plan(plan_id),
+            ),
         )
 
     @staticmethod
@@ -6969,28 +7030,49 @@ class SessionRunner:
             metadata={"failure": identity},
         )
 
-    def _spawn_job(self, root_frame_id: str, fn) -> "MessageJob":
+    def _spawn_job(
+        self,
+        root_frame_id: str,
+        fn,
+        *,
+        project_id: str = "default",
+        reason: str = "plan turn",
+        claimed_plan_id: str | None = None,
+        cancelled_plan_status: str = "paused",
+    ) -> "MessageJob":
         """Run `fn` in a background daemon thread as a tracked MessageJob (shared
-        machinery behind submit_message / plan approve / plan revise)."""
+        machinery behind submit_message / plan approve / plan revise).
+
+        ``claimed_plan_id`` is the row the *route* already compare-and-swapped
+        into `executing` before answering 202. Handing it to the spawner is
+        what turns that claim into something the background thread can settle:
+        see `_settle_claimed_plan`.
+        """
+        st = self._state(root_frame_id, project_id)
         job = MessageJob(f"job-{uuid.uuid4().hex[:12]}", root_frame_id)
-        # Every ticket owns an execution identity from the moment it is
-        # accepted. The plan spawner holds no coordinator ticket, so its job had
-        # `execution_id = None` the whole way through -- and a failure before
-        # `run_message` reached an execution emitted a terminal event naming
-        # none. A client whose running turn *does* have one then falls into the
-        # "one side is silent" compatibility branch and closes it. Synthetic
-        # until the real one is bound, and derived from the job id so it can
-        # never collide with a coordinator-minted one.
-        job.execution_id = f"plan-{job.job_id}"
-        try:
-            # On the submitting thread, while the Store is known to work. The
-            # helper used to fall back to the root frame when this was missing,
-            # which writes the failure onto the wrong branch whenever the
-            # active one is a sibling -- a user on a fork would see nothing and
-            # the trunk would grow a failure that never happened there.
-            job.branch_id = self.store.active_session_branch(root_frame_id)
-        except Exception:  # noqa: BLE001 - a ticket without one still works
-            traceback.print_exc()
+        # A real ticket, taken here rather than deep inside `run_message`.
+        # This spawner used to mint `plan-<job id>` and hand it to the client on
+        # the 202, which is not an execution at all: the FIFO had never heard of
+        # it, so a plan turn was not queued behind the running one, did not hold
+        # the session while it wrote its own outcome, and named a different id
+        # on the 202 than the socket carried a moment later. `run_message`
+        # reuses whatever `executions.current` finds, so taking the ticket at
+        # submit gives the whole turn -- seed, agent loop, plan row, terminal
+        # event -- one identity and one lease.
+        ticket = self._queue_execution(
+            st,
+            owner="agent",
+            owner_id=job.job_id,
+            reason=reason,
+        )
+        job.execution_id = ticket.execution_id
+        job.execution_owner = ticket.owner.as_dict()
+        # Resolved by the ticket, on the submitting thread, while the Store is
+        # known to work. The helper used to fall back to the root frame when
+        # this was missing, which writes the failure onto the wrong branch
+        # whenever the active one is a sibling -- a user on a fork would see
+        # nothing and the trunk would grow a failure that never happened there.
+        job.branch_id = ticket.branch_id or st.branch_id or ""
         with self._lock:
             done = [
                 jid
@@ -7004,43 +7086,110 @@ class SessionRunner:
         def _target() -> None:
             self._enter_turn_scope(job.job_id)
             token = set_correlation_id(job.request_id)
+            #: Filled inside the lease, published after it -- the same split
+            #: `submit_message` makes, and for the same reason: `job.done` and
+            #: an active ticket must never disagree, because `is_running`
+            #: reads both.
+            outcome: dict = {}
             try:
-                result = fn() or {}
-                result.setdefault("job_id", job.job_id)
-                job.finish(result=result)
+                # The lease covers `fn` *and* everything the failure path owes.
+                # A plan turn writes its outcome after `run_message` returns --
+                # the plan row's final status, a `plan_ready`, and on failure
+                # the frame's status and the terminal event -- and holding no
+                # lease meant all of it landed while the next queued turn was
+                # already `processing`.
+                with self.executions.admitted(ticket, cancel_event=st.cancel):
+                    try:
+                        result = fn() or {}
+                        result.setdefault("job_id", job.job_id)
+                        result.setdefault("execution_id", ticket.execution_id)
+                        result.setdefault("owner", ticket.owner.as_dict())
+                        outcome["result"] = result
+                    except ExecutionCancelled as e:
+                        # Cancelling is not failing. Without this clause a
+                        # cancelled plan turn fell into the catch-all below and
+                        # wrote `status="failed"` onto the frame -- so a user
+                        # who pressed stop was shown an error, and the session
+                        # carried a failure it never had. `submit_message` has
+                        # always distinguished the two; the plan approve/revise
+                        # path shares this spawner and did not.
+                        self._settle_claimed_plan(
+                            root_frame_id, claimed_plan_id, cancelled_plan_status
+                        )
+                        outcome["result"] = {
+                            "status": "cancelled",
+                            "frame_id": root_frame_id,
+                            "job_id": job.job_id,
+                            "execution_id": ticket.execution_id,
+                            "owner": ticket.owner.as_dict(),
+                            "reason": str(e),
+                        }
+                        outcome["handled"] = e
+                        raise
+                    except Exception as e:  # noqa: BLE001
+                        traceback.print_exc()
+                        message = job.project(e, "web:plan")
+                        self._persist_outer_failure(root_frame_id, job, message)
+                        emit = self.hub.emitter(root_frame_id)
+                        self._settle_claimed_plan(
+                            root_frame_id, claimed_plan_id, "failed"
+                        )
+                        self._best_effort(
+                            "frame_status",
+                            lambda: self.store.update_frame(
+                                root_frame_id, status="failed"
+                            ),
+                        )
+                        # Separately guarded, for the same reason as the message
+                        # turn: a Store that cannot record the status must not
+                        # also cost the client its terminal event.
+                        self._best_effort(
+                            "terminal",
+                            lambda: emit(
+                                self._terminal_failure_event(root_frame_id, job)
+                            ),
+                        )
+                        outcome["error"] = message
+                        # Re-raised after the side effects so the coordinator
+                        # marks this ticket FAILED. Swallowing it left the lease
+                        # exiting cleanly and the execution log reading
+                        # queued -> running -> completed for a failed turn.
+                        outcome["handled"] = e
+                        raise
             except ExecutionCancelled as e:
-                # Cancelling is not failing. Without this clause a cancelled
-                # plan turn fell into the catch-all below and wrote
-                # `status="failed"` onto the frame -- so a user who pressed
-                # stop was shown an error, and the session carried a failure it
-                # never had. `submit_message` has always distinguished the two;
-                # the plan approve/revise path shares this spawner and did not.
-                job.finish(
-                    result={
+                if outcome.get("handled") is not e:
+                    # Raised BY `admitted`, not by `fn`: the item was cancelled
+                    # while it was still queued -- a session Stop drains the
+                    # FIFO -- so the turn never ran and the inner handler never
+                    # saw it. The route had already claimed the row, though, so
+                    # without this the plan is stranded `executing` by the one
+                    # action a user takes expecting nothing to be left behind.
+                    self._settle_claimed_plan(
+                        root_frame_id, claimed_plan_id, cancelled_plan_status
+                    )
+                    outcome["result"] = {
                         "status": "cancelled",
                         "frame_id": root_frame_id,
                         "job_id": job.job_id,
+                        "execution_id": ticket.execution_id,
+                        "owner": ticket.owner.as_dict(),
                         "reason": str(e),
                     }
-                )
             except Exception as e:  # noqa: BLE001
-                traceback.print_exc()
-                message = job.project(e, "web:plan")
-                self._persist_outer_failure(root_frame_id, job, message)
-                emit = self.hub.emitter(root_frame_id)
-                self._best_effort(
-                    "frame_status",
-                    lambda: self.store.update_frame(root_frame_id, status="failed"),
-                )
-                # Separately guarded, for the same reason as the message turn:
-                # a Store that cannot record the status must not also cost the
-                # client its terminal event.
-                self._best_effort(
-                    "terminal",
-                    lambda: emit(self._terminal_failure_event(root_frame_id, job)),
-                )
-                job.finish(error=message)
+                if outcome.get("handled") is not e:
+                    # Not ours: the lease itself refused, or something outside
+                    # the inner handler failed. Project it once, here -- and
+                    # settle the claim, which is the case the row would
+                    # otherwise be stranded `executing` by.
+                    outcome["error"] = job.project(e, "web:plan")
+                    self._settle_claimed_plan(root_frame_id, claimed_plan_id, "failed")
             finally:
+                if not job.done.is_set():
+                    # After the lease, so `job.done` and the ticket agree.
+                    if "result" in outcome:
+                        job.finish(result=outcome["result"])
+                    else:
+                        job.finish(error=outcome.get("error") or INTERNAL_ERROR_MESSAGE)
                 self._exit_turn_scope(job.job_id)
                 reset_correlation_id(token)
 
@@ -9502,9 +9651,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "frame_id": fid,
                             "job_id": job.job_id,
                             "request_id": job.request_id,
-                            # Synthetic until the turn reaches a real
-                            # execution, and still the id a pre-run failure is
-                            # reported under.
+                            # The coordinator's own id, taken at submit --
+                            # the same one the socket, the poll and a pre-run
+                            # failure all name.
                             "execution_id": job.execution_id,
                         },
                         202,
@@ -9542,9 +9691,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "frame_id": fid,
                             "job_id": job.job_id,
                             "request_id": job.request_id,
-                            # Synthetic until the turn reaches a real
-                            # execution, and still the id a pre-run failure is
-                            # reported under.
+                            # The coordinator's own id, taken at submit --
+                            # the same one the socket, the poll and a pre-run
+                            # failure all name.
                             "execution_id": job.execution_id,
                         },
                         202,
@@ -9561,9 +9710,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "frame_id": fid,
                             "job_id": job.job_id,
                             "request_id": job.request_id,
-                            # Synthetic until the turn reaches a real
-                            # execution, and still the id a pre-run failure is
-                            # reported under.
+                            # The coordinator's own id, taken at submit --
+                            # the same one the socket, the poll and a pre-run
+                            # failure all name.
                             "execution_id": job.execution_id,
                         },
                         202,
