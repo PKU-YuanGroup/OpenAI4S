@@ -1374,3 +1374,96 @@ def test_every_attachment_reason_the_server_sends_is_handled() -> None:
     body = body[: body.index("\nfunction ")]
     missing = sorted(r for r in reasons if r not in body)
     assert not missing, f"the client has no wording for: {missing}"
+
+
+# --- a failed turn's identity, in the browser ---------------------------------
+#
+# The backend mutations for this feature are backend mutations: they say
+# nothing about whether the JS reads the fields. These are the JS half. They
+# are source contracts, not behaviour -- browser acceptance is owed on top --
+# but each one fails if the branch it names is removed.
+
+
+def _fn(name: str) -> str:
+    """The body of one top-level function, for assertions scoped to it."""
+    start = APP_JS.index(f"function {name}(")
+    depth = 0
+    for index in range(APP_JS.index("{", start), len(APP_JS)):
+        if APP_JS[index] == "{":
+            depth += 1
+        elif APP_JS[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return APP_JS[start : index + 1]
+    raise AssertionError(f"{name} is not a closed function")
+
+
+def test_a_live_failure_shows_the_request_id_the_server_named() -> None:
+    """Without this the user is told to quote an id they were never shown."""
+    hint = _fn("failureHint")
+    assert "turn.supportId" in hint, hint
+    assert "request_id" in hint
+    # The 202 is the fallback: a terminal event that arrives without an id
+    # still has one, because `wait:false` means the 202 was the only
+    # synchronous thing this client received.
+    assert "pendingRequestId" in hint
+    assert '"turn.supportId"' in APP_JS  # zh
+    assert APP_JS.count('"turn.supportId"') >= 2  # and en
+
+
+def test_the_committed_wording_is_a_real_branch() -> None:
+    """ "Please try again" is the wrong advice once a tool has already run."""
+    hint = _fn("failureHint")
+    assert "output_committed" in hint
+    assert "turn.failedCommitted" in hint and "turn.failed" in hint
+    assert APP_JS.count('"turn.failedCommitted"') >= 2
+
+
+def test_turn_done_passes_the_event_through_and_retires_the_ticket() -> None:
+    """A ticket outliving its turn lets one turn's id be quoted on the next."""
+    done = _fn("turnDone")
+    assert "failureHint(detail)" in done, done
+    assert "S.pendingRequestId = null" in done
+    assert "turnDone(m.status, m)" in APP_JS, "the event is dropped before the hint"
+
+
+def test_a_stored_failure_is_inline_and_never_the_global_hint() -> None:
+    """A session renders oldest-first and prepends older pages later.
+
+    Calling `hint()` from the row renderer therefore lets any past failure --
+    including one several successful turns ago, or one on a page the reader
+    scrolled back to -- become the current state of the whole UI.
+    """
+    stored = _fn("renderStored")
+    assert "failureMeta(m.failure)" in stored, stored
+    code = "\n".join(
+        line for line in stored.splitlines() if not line.strip().startswith("//")
+    )
+    assert "hint(" not in code, "a rendered row is changing global UI state"
+    assert ".msg-failure-meta" in STYLE_CSS
+
+
+def test_the_inline_failure_carries_the_id_and_the_veto() -> None:
+    meta = _fn("failureMeta")
+    assert "turn.supportId" in meta and "turn.failedCommitted" in meta
+    assert "requestId" in meta and "committed" in meta
+
+
+def test_the_global_hint_is_restored_only_for_a_currently_failed_session() -> None:
+    """Once, from the frame's own status -- not from any stored failure.
+
+    `running: false` covers completed, cancelled and failed alike, so the
+    restore reads `status`, which `GET /frames/{id}/status` reports for exactly
+    this reason.
+    """
+    open_conv = _fn("openConversation")
+    assert 'stt.status === "failed"' in open_conv, open_conv
+    assert "lastTerminalFailure()" in open_conv
+    # And it is the LAST message that decides, not any of them.
+    last = _fn("lastTerminalFailure")
+    assert "rows[rows.length - 1]" in last, last
+
+
+def test_the_pending_ticket_does_not_outlive_its_session() -> None:
+    open_conv = _fn("openConversation")
+    assert "S.pendingRequestId = null" in open_conv, open_conv
