@@ -560,7 +560,18 @@ class ArtifactManager:
         """
         filename = payload.get("filename") or f"upload-{uuid.uuid4().hex[:8]}"
         frame_id = payload.get("frame_id")
-        project_id = payload.get("project_id") or "default"
+        # `None` when the client said nothing, not `"default"`.
+        #
+        # `artifact_write_scope` treats a non-None `project_id` as an assertion
+        # about the frame's project and refuses when the two disagree -- which
+        # is right. Defaulting here turned "the client did not say" into "the
+        # client said `default`", so uploading into any session outside the
+        # `default` project raised `project_id conflicts with producer frame`
+        # from a request that named no project at all. Every session in a real
+        # project was un-uploadable-to. The resolver already falls back to
+        # `"default"` itself when there is no producer frame, so the frameless
+        # case is unchanged.
+        project_id = payload.get("project_id")
         raw = self._upload_bytes(payload)
 
         workspace = (
@@ -570,7 +581,18 @@ class ArtifactManager:
         target = workspace / Path(filename).name
 
         # Both of these can refuse, and neither touches disk.
-        self.store.artifact_write_scope(frame_id=frame_id, project_id=project_id)
+        try:
+            _explicit, _root, project_id = self.store.artifact_write_scope(
+                frame_id=frame_id, project_id=project_id
+            )
+        except ValueError as conflict:
+            # A scope disagreement is the caller's, not the daemon's. It used to
+            # leave the repository as a bare `ValueError`, reach the dispatcher's
+            # catch-all and be answered `500 internal_error` -- so a client that
+            # named the wrong project was told the server had broken, with
+            # nothing to act on. The message is the repository's own and names
+            # only field names.
+            raise ArtifactOperationError(409, str(conflict)) from conflict
         existing = (
             self.store.artifact_by_filename(target.name, frame_id, strict=True)
             if frame_id
