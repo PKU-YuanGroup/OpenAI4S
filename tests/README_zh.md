@@ -272,6 +272,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | 模块 | 钉住了什么 |
 |---|---|
 | [`test_compute_trust_boundary.py`](test_compute_trust_boundary.py) | manager 绝不报告它没有观测到的成功。故障矩阵——断网、探测失败、远端进程被杀、部分传输、恶意归档、卡死的 helper、没落地的取消——必须落到 `failed`/`incomplete`/`unknown`，绝不是 `done`。含用真实 shell 抓到 `&` 结合弱于 `&&` 的那组。 |
+| [`test_compute_alias_registration.py`](test_compute_alias_registration.py) | 智能体可以指定任意 ssh 目的地，守护进程就会去连。`_safe_alias` 只校验别名不会被 ssh 读成**选项**——那是关于 argv 解析的问题——而这是当时唯一的检查，于是 `provider="ssh:<任何形状合法的串>"` 会直达 `ssh <该串>`，由 `Host *` 段或 DNS search domain 解析。在 `host.compute(...)` 上，这个串来自模型。拒绝点放在该边界而不是 `_split`：后者同时位于 CLI 与 Compute 面板路径上，那里的别名是人输入的，要求先注册会拒掉产品自己提供的名字。故障注入式断言：只要 `subprocess.run`/`Popen` 被调用测试即失败，因为「拒绝」和「连过之后再拒绝」是两种不同的安全结果，而只有前者是这里的主张。 |
 | [`test_compute_states.py`](test_compute_states.py) | 一套任务状态词表，写入时强制：终态不可被重新打开，`unknown` 保持存活以免有东西在远端默默计费，迁移把 `done`/`incomplete`/`closed` 折叠过来且不丢失各自的含义。 |
 | [`test_compute_manifest.py`](test_compute_manifest.py) | 任务要对着自己的承诺被检查：每个回收到的文件都带上大小与 sha256，声明了却没出现的产物会被点名，`featured_files` 是声明的子集而不是全部文件。 |
 | [`test_compute_durability.py`](test_compute_durability.py) | 远程任务的寿命超过 daemon。行在提交前写入，receipt 挺过重启，reconcile 只报告不重提。 |

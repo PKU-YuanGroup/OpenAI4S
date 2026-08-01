@@ -1690,7 +1690,41 @@ class HostDispatcher:
 
     # --- remote compute (host.compute backend) --------------------
     def _m_compute_submit(self, kw: dict) -> Any:
-        return self._compute_guard(lambda: self.compute.submit(kw))
+        return self._compute_guard(lambda: self._submit_to_known_host(kw))
+
+    def _submit_to_known_host(self, kw: dict) -> Any:
+        """Refuse an ssh destination nobody registered, before any subprocess.
+
+        `ComputeManager._safe_alias` checks the alias's *shape* -- that it
+        cannot be read as an ssh option or a second word. It says nothing about
+        whether the destination exists, so `provider="ssh:<anything>"` reached
+        `ssh <anything>` and was resolved by whatever a `Host *` stanza or a DNS
+        search domain supplies. The alias on this path is chosen by the model.
+
+        The check is here rather than inside `_split` deliberately. `_split` is
+        on every path into the manager, including the CLI and the user's own
+        Compute panel, where the alias is something the person typed and
+        requiring prior registration would refuse names the product itself
+        offers. What makes this path different is only that the string came
+        from an agent, and that is exactly the case registration is a proxy
+        for: a host a human has named at least once.
+
+        `~/.ssh/config` counts as registration for the same reason -- the Web
+        UI lists those aliases as remote-GPU candidates, so a name from there
+        has been offered to the user by the product.
+        """
+        from openai4s.compute import ComputeError, registry
+
+        target = str(kw.get("provider") or "")
+        family, _, alias = target.partition(":")
+        if family == "ssh" and alias:
+            if not registry.is_known_alias(alias, Path(self.cfg.data_dir)):
+                raise ComputeError(
+                    f"ssh alias {alias!r} is not a host this daemon knows: it "
+                    "is in neither the compute host registry nor ~/.ssh/config",
+                    "not_found",
+                )
+        return self.compute.submit(kw)
 
     def _m_compute_result(self, kw: dict) -> Any:
         return self._compute_guard(lambda: self.compute.result(kw))

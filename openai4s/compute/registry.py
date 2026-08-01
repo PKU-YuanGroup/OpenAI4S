@@ -126,6 +126,57 @@ def list_hosts(data_dir: Path | None = None) -> dict:
     return load(data_dir).get("hosts", {})
 
 
+def ssh_config_aliases() -> list[str]:
+    """Concrete `Host` aliases from ``~/.ssh/config``, wildcards skipped.
+
+    The second place an alias can legitimately come from. The Web UI offers
+    these as remote-GPU candidates, so treating only this registry as "known"
+    would refuse the very names the product invites the user to pick.
+    """
+    out: list[str] = []
+    try:
+        text = (Path.home() / ".ssh" / "config").read_text("utf-8", "replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, _, value = stripped.partition(" ")
+        if key.lower() != "host":
+            continue
+        for token in value.split():
+            if token and "*" not in token and "?" not in token and token not in out:
+                out.append(token)
+    return out
+
+
+def is_known_alias(alias: str, data_dir: Path | None = None) -> bool:
+    """Whether this daemon has any record of ``alias`` as a remote host.
+
+    Registration is the union of the two sources a user can actually create an
+    alias through: this registry, and their own ``~/.ssh/config``. A name in
+    neither has never been offered to them by anything, and spawning
+    ``ssh <name>`` for it lets an agent-chosen string reach the network through
+    whatever a ``Host *`` stanza or a DNS search domain resolves.
+
+    Deliberately not a shape check -- `manager._safe_alias` already covers
+    "cannot be read as an option". Shape is about argv parsing; this is about
+    whether the destination is one the user has ever named.
+
+    ``data_dir`` is taken from the caller rather than from the global config,
+    because a `ComputeManager` is constructed with a config and must read the
+    registry that config points at -- otherwise a manager bound to one data
+    directory answers questions about another's hosts.
+    """
+    text = str(alias or "").strip()
+    if not text:
+        return False
+    if get_host(text, data_dir) is not None:
+        return True
+    return text in ssh_config_aliases()
+
+
 def get_host(alias: str, data_dir: Path | None = None) -> dict | None:
     return load(data_dir).get("hosts", {}).get(alias)
 
