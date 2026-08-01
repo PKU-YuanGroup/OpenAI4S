@@ -2280,7 +2280,23 @@ class SessionRunner:
             # leaving those unregistered is the same gap on a narrower path.
             try:
                 self.artifacts.capture(
-                    st, st.cell_index, None, before, emit, language="native"
+                    st,
+                    st.cell_index,
+                    None,
+                    before,
+                    emit,
+                    language="native",
+                    # The one path whose files genuinely came from another
+                    # machine, and the only capture call that was not draining.
+                    # Two consequences, both of them the failure this subsystem
+                    # exists to prevent. A harvested artifact was stamped with
+                    # the *local* environment and carried no record of the host
+                    # that produced it. And because the drain never ran here,
+                    # the remote entry stayed buffered and was attached to
+                    # whatever cell wrote a file next -- the fold in cell 3
+                    # becoming the provenance of a figure from cell 7, which
+                    # the comment in `capture` describes as already fixed.
+                    drain_remote_provenance=self._remote_provenance_drain(st),
                 )
             except Exception:  # noqa: BLE001
                 # Capture must not convert a successful harvest into an error;
