@@ -1,0 +1,38 @@
+name: Temporary retrosynthesis Black fix
+
+on:
+  push:
+    branches:
+      - feat/retrosynthesis-syntheseus-backend
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/retrosynthesis-syntheseus-backend
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          python-version: "3.12"
+      - name: Apply repository-pinned Black version
+        run: |
+          uvx --from black==23.3.0 black \
+            skills/retrosynthesis_planning/external_backends.py \
+            skills/retrosynthesis_planning/syntheseus_worker.py
+      - name: Commit formatting when needed
+        run: |
+          if git diff --quiet; then
+            echo "Files already match Black."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            skills/retrosynthesis_planning/external_backends.py \
+            skills/retrosynthesis_planning/syntheseus_worker.py
+          git commit -m "style(retrosynthesis): apply Black formatting"
+          git push origin HEAD:feat/retrosynthesis-syntheseus-backend
