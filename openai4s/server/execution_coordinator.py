@@ -39,6 +39,11 @@ class _Binding:
     cancel_event: threading.Event
     lease: Any = None
     interrupt_lease: InterruptLease | None = None
+    #: Set by `mark_failed` while the turn still holds the lease. Recorded
+    #: rather than acted on: failing the ticket at that moment releases the
+    #: lease and promotes the next turn *before* this one has written its
+    #: durable status, its prose and its terminal event.
+    failure_reason: str | None = None
 
 
 class WebExecutionCoordinator:
@@ -129,7 +134,20 @@ class WebExecutionCoordinator:
                     owner=ticket.owner,
                     reason="execution cancellation was observed",
                 )
-            self._coordinator.complete(ticket)
+            reason = None
+            with self._lock:
+                current = self._bindings.get(ticket.execution_id)
+                if current is binding:
+                    reason = current.failure_reason
+            if reason:
+                # The single exit point that still holds the lease. Reporting
+                # the failure here, rather than when it was observed, is what
+                # keeps the log ending in `failed` instead of
+                # `failed -> completed`, and keeps the next turn from being
+                # promoted while this one is still finalising.
+                self._coordinator.fail(ticket, RuntimeError(reason))
+            else:
+                self._coordinator.complete(ticket)
         finally:
             stack.pop()
             with self._lock:
@@ -166,6 +184,35 @@ class WebExecutionCoordinator:
             "at": self._clock(),
         }
         self._emit_for(ticket.session_id, event)
+        return True
+
+    def mark_failed(
+        self, ticket: ExecutionTicket | None = None, *, reason: str | None = None
+    ) -> bool:
+        """Record that this turn has failed, without ending it yet.
+
+        A turn that fails *inside* `run_message` returns normally -- its own
+        handler catches the exception and reports `status="failed"` -- so the
+        lease exited cleanly and the execution log read
+        `queued -> running -> finalizing -> completed`. That log is what an
+        operator reads to learn what a session did, and it disagreed with the
+        job result, the socket and the stored frame about the one thing that
+        mattered.
+
+        Only the reason is stored. Failing the ticket at this point would
+        release the lease and promote the next turn while this one still has
+        its durable status, its prose and its terminal event to write -- which
+        is the race this whole change exists to close. `admitted` reports it at
+        the one exit that still holds the lease.
+        """
+        ticket = ticket or self.current()
+        if ticket is None or ticket.state is not TicketState.RUNNING:
+            return False
+        with self._lock:
+            binding = self._bindings.get(ticket.execution_id)
+            if binding is None or binding.ticket is not ticket:
+                return False
+            binding.failure_reason = reason or "the turn failed"
         return True
 
     def bind_lease(

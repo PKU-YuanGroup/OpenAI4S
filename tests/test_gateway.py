@@ -1590,13 +1590,22 @@ def test_frame_update_status_literal_vocabulary(tmp_path):
     exactly {processing, titled, failed, success, updated}; the run_message
     terminal site emits a VARIABLE status ∈ {completed, failed, cancelled}
     (asserted behaviorally by the structured-submit and max-turn tests above).
-    If this fails, a status was added/removed — update docs/webapp-api.md."""
+    If this fails, a status was added/removed — update docs/webapp-api.md.
+
+    The *vocabulary* is what docs/webapp-api.md promises, so the vocabulary is
+    what is locked. This used to also require at least seven emit sites, which
+    made deduplication look like a contract change: folding two copies of the
+    terminal failure event into `_terminal_failure_event` reddened it while
+    emitting exactly the same statuses. Collapsing a literal into the helper
+    that owns it is the direction this file should encourage, so the terminal
+    failure status is now asserted at that helper instead of counted.
+    """
     from openai4s.server import titles as titles_mod
 
     src = Path(gateway_mod.__file__).read_text(encoding="utf-8")
     src += Path(titles_mod.__file__).read_text(encoding="utf-8")
     sites = list(re.finditer(r'"type": "frame_update"', src))
-    assert len(sites) >= 7  # the emit sites documented today
+    assert sites, "no frame_update emit site is visible; this test sees nothing"
     literals = set()
     for m in sites:
         window = src[m.end() : m.end() + 250]
@@ -1604,6 +1613,20 @@ def test_frame_update_status_literal_vocabulary(tmp_path):
         if s:
             literals.add(s.group(1))
     assert literals == {"processing", "titled", "failed", "success", "updated"}
+
+    # The one status no longer written at more than one emit site. It is built
+    # by a named helper, so it is checked by calling it -- which also pins that
+    # a failed turn's terminal event carries the ids the client needs to tell
+    # it from the next turn's.
+    job = gateway_mod.MessageJob("job-vocab", "root-vocab")
+    job.execution_id = "exec-vocab"
+    terminal = gateway_mod.SessionRunner._terminal_failure_event(
+        None, "root-vocab", job
+    )
+    assert terminal["type"] == "frame_update"
+    assert terminal["status"] == "failed"
+    assert terminal["request_id"] == job.request_id
+    assert terminal["execution_id"] == "exec-vocab"
 
 
 def test_auto_title_broadcasts_titled_frame_update(monkeypatch, tmp_path):
@@ -3430,19 +3453,32 @@ def test_every_request_serving_spawn_goes_through_the_helper():
     )
 
 
-def test_a_job_built_outside_a_request_omits_the_field_rather_than_nulling_it():
-    """A `request_id: null` reads as "this request had no id". What it would
-    actually mean is that there was no request -- a daemon-lifetime sweep, a
-    recovery pass -- and the error envelope already has a way to say that."""
+def test_a_job_built_outside_a_request_mints_its_own_id_rather_than_none():
+    """A direct submit -- the CLI, a recovery replay -- has no HTTP request
+    behind it, and this used to leave the field off entirely. That was the
+    smaller of two wrongs: `run_message` minted its own id for the socket
+    regardless, so the 202 and the job query were nameless while the stream
+    carried an id nothing else knew. One id the caller can quote everywhere
+    beats an honest absence that the next layer contradicts."""
     from openai4s.observability import reset_correlation_id, set_correlation_id
 
     token = set_correlation_id("")
     try:
         job = gateway_mod.MessageJob("job-2", "root-2")
+        assert job.request_id, "a job built outside a request has no id at all"
         job.finish(error="boom")
         result = job.wait_result()
-        assert "request_id" not in result
+        assert result["request_id"] == job.request_id
         assert result["error"] == "boom"
+
+        # Portable: it travels in a header, a JSON body and a log line, so it
+        # has to survive all three unescaped.
+        assert re.fullmatch(r"[A-Za-z0-9_-]{8,64}", job.request_id), job.request_id
+
+        # And minted per job, not shared. Two turns that cannot be told apart
+        # are the defect this id exists to close.
+        other = gateway_mod.MessageJob("job-3", "root-2")
+        assert other.request_id != job.request_id
     finally:
         reset_correlation_id(token)
 

@@ -4749,88 +4749,146 @@ class SessionRunner:
             # `run_message` mints a second id and the socket disagrees with the
             # 202 about which request just failed.
             token = set_correlation_id(job.request_id)
+            #: Filled inside the lease, published after it. Both halves
+            #: matter: the side effects must happen while this turn still owns
+            #: the session, and the completion must not become visible while
+            #: its ticket is still active -- `runner.is_running` reads both, so
+            #: finishing inside the lease opens a window where a done job and a
+            #: live ticket disagree.
+            outcome: dict = {}
             try:
+                # Every durable and broadcast effect this turn owes -- the
+                # projection, the persisted row, the frame's status, the prose
+                # and the terminal event -- happens while the lease is still
+                # held. `job.finish` deliberately does NOT: publishing the
+                # outcome inside the lease would set `job.done` while the
+                # ticket is still active, and `runner.is_running` reads both.
+                # The side effects used to run after the `with` closed, so the
+                # next turn was already promoted and had written `processing`
+                # when A's `update_frame(status="failed")` landed: the durable
+                # status said failed while B was running, `/status` and the
+                # session list contradicted the socket, and crash recovery
+                # would have treated B as the failure.
+                #
+                # An owner check before the write cannot fix it -- B can be
+                # promoted between the check and the write. Only holding the
+                # lease can.
                 with self.executions.admitted(ticket, cancel_event=st.cancel):
-                    result = self.run_message(
-                        root_frame_id,
-                        project_id,
-                        user_text,
-                        model,
-                        plan,
-                        annos,
-                        explore,
-                        # What this item was accepted under, carried from the
-                        # request thread rather than re-read from the frame.
-                        frozen_binding=(
-                            (job.model_profile_id, job.model_profile_revision)
-                            if job.model_profile_id
-                            else None
-                        ),
-                    )
-                result.setdefault("job_id", job.job_id)
-                result.setdefault("execution_id", ticket.execution_id)
-                result.setdefault("owner", ticket.owner.as_dict())
-                job.finish(result=result)
+                    try:
+                        result = self.run_message(
+                            root_frame_id,
+                            project_id,
+                            user_text,
+                            model,
+                            plan,
+                            annos,
+                            explore,
+                            # What this item was accepted under, carried from the
+                            # request thread rather than re-read from the frame.
+                            frozen_binding=(
+                                (job.model_profile_id, job.model_profile_revision)
+                                if job.model_profile_id
+                                else None
+                            ),
+                        )
+                        result.setdefault("job_id", job.job_id)
+                        result.setdefault("execution_id", ticket.execution_id)
+                        result.setdefault("owner", ticket.owner.as_dict())
+                        outcome["result"] = result
+                    except ExecutionCancelled:
+                        # Handled once, outside the lease. A cancellation raised
+                        # *by* `admitted` -- a queued item stopped before it was
+                        # ever admitted -- never reaches this clause at all, so
+                        # projecting here would either miss that case or do it
+                        # twice.
+                        raise
+                    except Exception as e:  # noqa: BLE001
+                        traceback.print_exc()
+                        emit = self.hub.emitter(root_frame_id)
+                        message = job.project(e, "web:message")
+                        self._persist_outer_failure(root_frame_id, job, message)
+                        self._best_effort(
+                            "frame_status",
+                            lambda: self.store.update_frame(
+                                root_frame_id, status="failed"
+                            ),
+                        )
+                        self._best_effort(
+                            "prose",
+                            lambda: (
+                                emit(
+                                    {
+                                        "type": "text_reset",
+                                        "frame_id": root_frame_id,
+                                        # Same identity as the terminal event: a
+                                        # failure that arrives after the next turn has
+                                        # started would otherwise wipe that turn's
+                                        # stream and print its predecessor's error into
+                                        # it.
+                                        **(
+                                            {"execution_id": job.execution_id}
+                                            if job.execution_id
+                                            else {}
+                                        ),
+                                    }
+                                ),
+                                emit(
+                                    {
+                                        "type": "text_chunk",
+                                        "frame_id": root_frame_id,
+                                        "block_type": "text",
+                                        "chunk": f"\n\n_Error: {message}_\n",
+                                        **(
+                                            {"execution_id": job.execution_id}
+                                            if job.execution_id
+                                            else {}
+                                        ),
+                                    }
+                                ),
+                            ),
+                        )
+                        self._best_effort(
+                            "terminal",
+                            lambda: emit(
+                                self._terminal_failure_event(root_frame_id, job)
+                            ),
+                        )
+                        outcome["error"] = message
+                        # Re-raised after the side effects, so the coordinator
+                        # marks this ticket FAILED. Swallowing it left the lease
+                        # exiting cleanly: the execution log read
+                        # queued -> running -> completed while the job and the
+                        # socket both said failed.
+                        outcome["handled"] = e
+                        raise
             except ExecutionCancelled as e:
-                job.finish(
-                    result={
-                        "status": "cancelled",
-                        "frame_id": root_frame_id,
-                        "job_id": job.job_id,
-                        "execution_id": ticket.execution_id,
-                        "owner": ticket.owner.as_dict(),
-                        "reason": str(e),
-                    }
-                )
+                # First: `ExecutionCancelled` is an `Exception`, so the generic
+                # clause below would otherwise swallow every cancellation and
+                # report it as a failure.
+                if not job.done.is_set():
+                    job.finish(
+                        result={
+                            "status": "cancelled",
+                            "frame_id": root_frame_id,
+                            "job_id": job.job_id,
+                            "execution_id": ticket.execution_id,
+                            "owner": ticket.owner.as_dict(),
+                            "reason": str(e),
+                        }
+                    )
             except Exception as e:  # noqa: BLE001
-                traceback.print_exc()
-                emit = self.hub.emitter(root_frame_id)
-                message = job.project(e, "web:message")
-                self._persist_outer_failure(root_frame_id, job, message)
-                self._best_effort(
-                    "frame_status",
-                    lambda: self.store.update_frame(root_frame_id, status="failed"),
-                )
-                self._best_effort(
-                    "prose",
-                    lambda: (
-                        emit(
-                            {
-                                "type": "text_reset",
-                                "frame_id": root_frame_id,
-                                # Same identity as the terminal event: a
-                                # failure that arrives after the next turn has
-                                # started would otherwise wipe that turn's
-                                # stream and print its predecessor's error into
-                                # it.
-                                **(
-                                    {"execution_id": job.execution_id}
-                                    if job.execution_id
-                                    else {}
-                                ),
-                            }
-                        ),
-                        emit(
-                            {
-                                "type": "text_chunk",
-                                "frame_id": root_frame_id,
-                                "block_type": "text",
-                                "chunk": f"\n\n_Error: {message}_\n",
-                                **(
-                                    {"execution_id": job.execution_id}
-                                    if job.execution_id
-                                    else {}
-                                ),
-                            }
-                        ),
-                    ),
-                )
-                self._best_effort(
-                    "terminal",
-                    lambda: emit(self._terminal_failure_event(root_frame_id, job)),
-                )
-                job.finish(error=message)
+                if outcome.get("handled") is not e:
+                    # Not ours. The lease itself refused, or something outside
+                    # the inner handler failed -- project it once, here.
+                    outcome["error"] = job.project(e, "web:message")
             finally:
+                if not job.done.is_set():
+                    # The ticket is released by now, so `runner.is_running`
+                    # and `job.done` cannot disagree.
+                    if "result" in outcome:
+                        job.finish(result=outcome["result"])
+                    elif outcome.get("error"):
+                        job.finish(error=outcome["error"])
                 self._exit_turn_scope(job.job_id)
                 reset_correlation_id(token)
 
@@ -5876,6 +5934,13 @@ class SessionRunner:
                     else f"persisting {status} result"
                 ),
             )
+            if status == "failed":
+                # While the lease is still held. A turn that fails inside this
+                # method returns normally -- the handler above caught the
+                # exception and reported it -- so without this the coordinator
+                # saw a clean exit and logged `completed` for a turn every
+                # other surface calls failed.
+                self.executions.mark_failed(execution, reason="the turn failed")
             self.recovery.touch(st)
             response = {
                 "status": status,

@@ -2075,13 +2075,22 @@ def test_a_daemon_without_execution_ids_behaves_as_it_always_did(hub):
 
 @pytest.mark.stubbed_backend
 def test_a_late_turn_does_not_end_the_resume_window_of_the_running_one(tmp_path):
-    """End to end: processing(A) -> processing(B) -> A's outer terminal.
+    """A's whole failure runs while A still owns the session; B has not begun.
 
-    Three events, no sleeps and no serial fake concurrency. A stays inside its
-    loop until B is queued; A's tail faults so it leaves through the outer
-    handler; that handler waits until B has reached its own loop -- which
-    proves B's `processing` is already recorded -- and B stays there until the
-    assertions have run.
+    No sleeps and no serial fake concurrency. A stays inside its loop until B
+    is queued; A's tail faults so it leaves through the outer handler; that
+    handler stops *inside* A's finalisation, still holding the lease, and the
+    assertions run there. B is released afterwards and blocks inside its own
+    loop so the durable and projected `processing` can be read while it is
+    unambiguously the running turn.
+
+    This is the inverse of the probe's first version, which made A's
+    finalisation wait for B. That shape forced the old bug into the open but
+    deadlocks by construction once the lease is held correctly, because B
+    cannot start until A lets go. What has to be proven is the opposite: that
+    B is still *queued* -- not merely unscheduled -- while A writes its own
+    outcome, since A's `update_frame(status="failed")` would otherwise
+    overwrite the `processing` B had already written.
 
     The two turns are told apart by `correlation_id()`, which each job target
     binds to its own ticket. A shared flag cannot do it: A's tail resets before
@@ -2096,6 +2105,8 @@ def test_a_late_turn_does_not_end_the_resume_window_of_the_running_one(tmp_path)
     )
     hub = gw.WSHub()
     runner = gw.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    a_finalizing = threading.Event()
+    allow_a_finish = threading.Event()
     b_queued = threading.Event()
     b_running = threading.Event()
     b_release = threading.Event()
@@ -2106,6 +2117,11 @@ def test_a_late_turn_does_not_end_the_resume_window_of_the_running_one(tmp_path)
         frame_id = runner.store.new_frame(
             kind="turn", project_id="default", status="ready"
         )
+        # A real `WSHub` keeps no event list; a subscriber is how the ordering
+        # is observed, and it is also the client the ordering is *for*.
+        watcher = _FakeConn()
+        watcher.subs.add(frame_id)
+        hub._conns.add(watcher)
 
         def loop(_st, *_a, **_k):
             if correlation_id() == "req-B":
@@ -2126,13 +2142,15 @@ def test_a_late_turn_does_not_end_the_resume_window_of_the_running_one(tmp_path)
 
         real_persist = runner._persist_outer_failure
 
-        def persist_after_b(*args, **kwargs):
-            assert b_running.wait(20), "B never reached its loop"
-            return real_persist(*args, **kwargs)
+        def persist_holding_the_lease(*args, **kwargs):
+            outcome = real_persist(*args, **kwargs)
+            a_finalizing.set()
+            assert allow_a_finish.wait(20), "the probe never released A"
+            return outcome
 
         runner._loop = loop
         runner.recovery.touch = tail
-        runner._persist_outer_failure = persist_after_b
+        runner._persist_outer_failure = persist_holding_the_lease
 
         set_correlation_id("req-A")
         job_a = runner.submit_message(frame_id, "default", "a")
@@ -2140,8 +2158,64 @@ def test_a_late_turn_does_not_end_the_resume_window_of_the_running_one(tmp_path)
         job_b = runner.submit_message(frame_id, "default", "b")
         set_correlation_id("")
         b_queued.set()
+
+        # A is inside its failure handling and still holds the lease.
+        assert a_finalizing.wait(20), "A never reached its finalisation"
+        # Asked of the coordinator, which is the thing that decides. `b_running`
+        # is set by B's own thread, so its absence only says B has not been
+        # *scheduled* -- a release-early bug wins that by luck on a busy box.
+        # A broadcast is no better: it is downstream of the promotion and
+        # observing it is still a race. The FIFO's own state is neither: while
+        # A finalises, A must be the owner and B must still be sitting at
+        # position 1.
+        state = runner.executions.snapshot(frame_id)
+        owner = state.get("owner") or {}
+        assert owner.get("execution_id") == job_a.execution_id, (
+            "the session's owner is not the turn that is still finalising -- A "
+            f"released before writing its outcome: {state}"
+        )
+        queued = list(state.get("queue") or [])
+        assert [
+            (item.get("execution_id"), item.get("queue_position")) for item in queued
+        ] == [(job_b.execution_id, 1)], (
+            "B is not waiting behind A while A writes its own outcome -- A's "
+            f"durable status would overwrite the `processing` B wrote: {state}"
+        )
+        allow_a_finish.set()
         job_a.wait_result()
         assert b_running.wait(20), "B never started"
+
+        # B is blocked inside its loop, so it is unambiguously the running
+        # turn. Every surface has to say so -- the durable row A wrote its
+        # failure to must not be the one B is running under.
+        frame = runner.store.get_frame(frame_id) or {}
+        assert frame.get("status") == "processing", (
+            f"the stored frame says {frame.get('status')!r} while B is running: "
+            "A's terminal write overwrote the status B had already set"
+        )
+        projected, _ = _api(runner, "GET", f"/frames/{frame_id}/status")
+        assert projected.get("running") is True, projected
+        assert projected.get("status") == "processing", projected
+
+        # And A's failure was durable and announced before B ever said
+        # `processing` -- which is what holding the lease buys.
+        order = [
+            (index, event)
+            for index, event in enumerate(watcher.sent)
+            if event.get("type") == "frame_update"
+            and event.get("status") in {"failed", "processing"}
+        ]
+        a_failed = [i for i, e in order if e.get("status") == "failed"]
+        b_processing = [
+            i
+            for i, e in order
+            if e.get("status") == "processing"
+            and e.get("execution_id") == job_b.execution_id
+        ]
+        assert a_failed and b_processing, order
+        assert (
+            a_failed[-1] < b_processing[-1]
+        ), "B announced itself before A had finished failing"
 
         # A is finished; B is still inside its loop.
         buf = hub._live.get(frame_id) or {}
@@ -2159,6 +2233,12 @@ def test_a_late_turn_does_not_end_the_resume_window_of_the_running_one(tmp_path)
         ]
         assert not stale, f"A's late events landed in B's window: {stale}"
     finally:
+        # A first, and unconditionally. If an assertion above fires while A is
+        # parked inside its finalisation, releasing only B leaves A's thread
+        # holding the lease for the whole 20s wait and B blocked behind it --
+        # the failure report then describes a hang instead of the assertion,
+        # which is exactly what a mutation run needs to read.
+        allow_a_finish.set()
         b_release.set()
         if job_b is not None:
             job_b.wait_result()
@@ -2445,3 +2525,111 @@ def test_a_tab_that_joins_during_b_is_never_told_that_a_ended_it(hub):
     ), f"A's late events reached the joining tab: {conn.sent[replayed:]}"
     assert hub.is_running("f") is True
     assert "A failed" not in json.dumps(conn.sent, ensure_ascii=False)
+
+
+# --- the lease's own record of what happened ----------------------------------
+
+
+@pytest.mark.stubbed_backend
+def test_a_failed_turn_leaves_its_ticket_marked_failed(runner, monkeypatch):
+    """Swallowing the exception let the lease exit cleanly.
+
+    The coordinator then recorded `queued -> running -> completed` while the
+    job and the socket both said failed -- so the execution log, which is what
+    an operator reads to find out what a session did, disagreed with every
+    other surface about the one thing that mattered.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    monkeypatch.setattr(
+        runner, "_loop", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+
+    job = runner.submit_message(frame_id, "proj", "go")
+    job.wait_result()
+
+    states = [
+        event.get("status")
+        for event in runner.hub.events
+        if event.get("type") == "execution_state"
+    ]
+    assert states, f"the coordinator recorded nothing: {runner.hub.events}"
+    terminal = [
+        state for state in states if state in {"completed", "failed", "cancelled"}
+    ]
+    assert terminal == ["failed"], (
+        f"a turn that failed recorded {terminal} -- exactly one terminal state, "
+        f"and it must be the failure: {states}"
+    )
+
+
+@pytest.mark.stubbed_backend
+def test_a_turn_is_still_running_while_its_failure_is_being_recorded(
+    runner, monkeypatch
+):
+    """`job.finish` inside the lease opens a window nobody can see from outside.
+
+    `runner.is_running` answers from `job.done` and the ticket is still active,
+    so for the length of the failure handling a client polling `/status` was
+    told the session was idle while the coordinator still held its lease --
+    and a follow-up submitted in that window races the turn that has not
+    actually let go.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    observed: dict = {}
+    real_persist = runner._persist_outer_failure
+
+    def watch(root_frame_id, job, message):
+        # Inside the lease, in the OUTER handler -- the one that owns
+        # `job.finish`. An inner failure never reaches here, so the fault has
+        # to leave `run_message` itself for this window to exist at all.
+        observed["is_running"] = runner.is_running(root_frame_id)
+        observed["job_done"] = job.done.is_set()
+        return real_persist(root_frame_id, job, message)
+
+    monkeypatch.setattr(
+        runner, "run_message", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+    monkeypatch.setattr(runner, "_persist_outer_failure", watch)
+
+    job = runner.submit_message(frame_id, "proj", "go")
+    job.wait_result()
+
+    assert observed, "the failure path never ran"
+    assert observed["job_done"] is False, "the job finished before its lease ended"
+    assert (
+        observed["is_running"] is True
+    ), "the session reported idle while its ticket was still held"
+    # And it does end.
+    assert runner.is_running(frame_id) is False
+
+
+@pytest.mark.stubbed_backend
+def test_an_outer_failure_leaves_exactly_one_terminal_and_it_is_failed(
+    runner, monkeypatch
+):
+    """The other half of the coordinator contract.
+
+    An inner failure is reported through `mark_failed`; a fault that leaves
+    `run_message` itself never reaches it, and the lease fails on the
+    exception instead. Both paths owe the execution log the same thing: one
+    terminal state for this ticket, and it says failed.
+    """
+    frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
+    monkeypatch.setattr(
+        runner, "run_message", lambda *a, **k: (_ for _ in ()).throw(CanaryFailure())
+    )
+
+    job = runner.submit_message(frame_id, "proj", "go")
+    job.wait_result()
+
+    states = [
+        event.get("status")
+        for event in runner.hub.events
+        if event.get("type") == "execution_state"
+        and event.get("execution_id") == job.execution_id
+    ]
+    terminal = [s for s in states if s in {"completed", "failed", "cancelled"}]
+    assert terminal == ["failed"], (
+        f"the ticket recorded {terminal} for a turn that failed outside "
+        f"`run_message`: {states}"
+    )
