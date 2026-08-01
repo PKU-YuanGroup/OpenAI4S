@@ -60,7 +60,7 @@ audit = audit_routes(routes)
 | [`route_review.py`](route_review.py) | 稳定路线签名、重复路线来源记录，以及基于反应、产物、前体和末端原料特征的多样性选择。 |
 | [`structural_audit.py`](structural_audit.py) | LLM 解释前的确定性路线树检查。它保持标准库优先，仅在安装 RDKit 时增加解析和元素检查。 |
 
-这一层的定向回归测试位于 [`../../tests/test_retrosynthesis_workflow.py`](../../tests/test_retrosynthesis_workflow.py)。
+这一层的定向回归测试位于 [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py)。
 
 ## 子目录
 
