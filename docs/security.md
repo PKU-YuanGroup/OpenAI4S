@@ -276,10 +276,12 @@ printed at startup as a URL you open once to set the cookie. Scripts send it as
 `Authorization: Bearer <token>` or `X-OpenAI4S-Token`.
 
 The `?token=` form in that startup URL works for one thing only: opening the
-app. It is refused on `/api/v1/*`, on `/static/*` and on every mutation,
-because a URL with a credential in it is a credential you can paste into chat —
-and on a data path that single link hands over the data itself, with no
-redirect and no cookie exchange in between.
+app at `/`. Every other path refuses it — including `/preview/<id>`, which
+answers with artifact bytes and used to be bootstrappable because the rule was
+written as "not `/api/v1/*` and not `/static/*`" rather than as an allowlist. A
+mutation carrying `?token=` is refused outright, cookie or no cookie: a URL
+with a credential in it is a credential you can paste into chat, and one that
+still works is one nobody notices they leaked.
 
 `OPENAI4S_REQUIRE_TOKEN=0` turns the gate off on loopback for one minor
 release. Weigh it against what the daemon exposes: `kernel/execute`,

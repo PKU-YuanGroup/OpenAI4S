@@ -116,14 +116,21 @@ Origin, token or header defences.
   or `curl -H` reaches for), or `X-OpenAI4S-Token` (for when something upstream
   already owns `Authorization`). Neither header is preferred; the scheme is
   compared caselessly per RFC 7235 and the value in constant time.
-- **`?token=` bootstraps a navigation only.** A `GET` for a path that serves
-  the SPA shell responds `303` with the cookie set, redirecting to the *same*
-  path with only the token stripped — so deep links survive. It is refused on
-  `/api/v1/*`, on `/static/*`, and on every non-GET. A URL carrying a
-  credential is a shareable credential: pasted into chat, logged by proxies,
-  kept in history, leaked by `Referer`. On a navigation the link buys only the
-  bootstrap it was minted for; on a data path the response *is* the payload,
-  delivered to whoever holds the link with no cookie hand-off in between.
+- **`?token=` bootstraps the root page only.** A `GET` for `/` or
+  `/index.html` responds `303` with the cookie set, redirecting to the same
+  page with only the token stripped (any other query parameters survive).
+  Everywhere else it is refused — deep links included. They used to bootstrap,
+  because the rule was "any path that is not `/api/v1/*` or `/static/*`", and
+  `/preview/<id>` is neither: a link carrying a token there set the cookie and
+  then served the artifact bytes. A URL carrying a credential is a shareable
+  credential: pasted into chat, logged by proxies, kept in history, leaked by
+  `Referer`. On the root page the link buys an empty SPA shell; on a data path
+  the response *is* the payload.
+- **A `token` query parameter on a mutating request is refused outright** with
+  `401`, even when the request also carries a valid cookie or header. Ignoring
+  it meant the leaked URL worked, so the caller never discovered they were
+  shipping a secret in a URL. Send `Authorization: Bearer <token>` or
+  `X-OpenAI4S-Token` instead.
 - The token is minted once under the data dir (`access-token`, owner-only) and
   survives restarts; it used to be per-boot, which invalidated every cookie
   already issued. The CLI reads the same file, or `OPENAI4S_TOKEN` when the

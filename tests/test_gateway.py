@@ -1662,10 +1662,19 @@ def test_token_gate_401_and_cookie_redirect(monkeypatch, tmp_path, capsys):
     assert "HttpOnly" in resp["headers"]["Set-Cookie"]
 
     resp["headers"].clear()
-    handler.path = f"/preview/abc?token={token}&mode=raw"
+    handler.path = f"/?token={token}&mode=raw"
     handler._route("GET")
     assert resp["code"] == 303
-    assert resp["headers"]["Location"] == "/preview/abc?mode=raw"
+    assert resp["headers"]["Location"] == "/?mode=raw"
+
+    # ...but a path that answers with data may not be bootstrapped at all.
+    # `/preview/<id>` streams artifact bytes, so a link carrying a token there
+    # used to set the cookie and then hand the file to whoever held the link.
+    resp["headers"].clear()
+    handler.path = f"/preview/abc?token={token}&mode=raw"
+    handler._route("GET")
+    assert replies[-1][0] == 401
+    assert "Set-Cookie" not in resp["headers"]
 
 
 def test_gateway_error_maps_to_error_envelope(tmp_path):
@@ -3170,17 +3179,17 @@ def _probe_route(handler_cls, headers, path, method="GET"):
     return seen[-1] if seen else None
 
 
-def test_a_query_token_bootstraps_only_a_navigation(tmp_path, monkeypatch):
+def test_a_query_token_bootstraps_only_the_root_page(tmp_path, monkeypatch):
     """A URL with a credential in it is a shareable credential.
 
     It gets pasted into chat, logged by a proxy and kept in browser history.
     The gate accepted `?token=` on *any* GET, so
     `/api/v1/artifacts/<id>/download?token=…` was a link that hands over the
     file to whoever holds it -- no redirect, no cookie hand-off, the response
-    body is the payload. On a path that serves the SPA shell the same link buys
-    only the bootstrap it was minted for, and the 303 strips it immediately.
-
-    Deep links keep working: the redirect goes to the same path, not to "/".
+    body is the payload. Excluding `/api/v1/` and `/static/` narrowed that but
+    did not close it: `/preview/<id>` is neither, and it answers with artifact
+    bytes. Only the root page -- the one URL the product ever prints -- may be
+    bootstrapped, and the 303 strips the credential immediately.
     """
     from openai4s.server import local_auth
 
@@ -3191,8 +3200,12 @@ def test_a_query_token_bootstraps_only_a_navigation(tmp_path, monkeypatch):
     token = local_auth.read_token(cfg.data_dir)
     try:
         assert _probe_route(handler_cls, {}, f"/?token={token}") == 303
-        assert _probe_route(handler_cls, {}, f"/session/abc?token={token}") == 303
-        # Data paths: refused, even with a valid token in the query.
+        assert _probe_route(handler_cls, {}, f"/index.html?token={token}") == 303
+        # Everything else: refused, even with a valid token in the query.
+        # `/preview/<id>` is the one that mattered -- it is not under the API
+        # prefix, so the old subtractive rule bootstrapped it.
+        assert _probe_route(handler_cls, {}, f"/session/abc?token={token}") == 401
+        assert _probe_route(handler_cls, {}, f"/preview/abc?token={token}") == 401
         assert _probe_route(handler_cls, {}, f"/api/v1/frames?token={token}") == 401
         assert _probe_route(handler_cls, {}, f"/static/app.js?token={token}") == 401
         # And a mutation is refused on every path, navigation or not.

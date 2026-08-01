@@ -232,9 +232,12 @@ _TOKEN_HEADER = local_auth.TOKEN_HEADER
 def _strip_token_from_url(path: str, query: str) -> str:
     """The same URL without the `token` parameter.
 
-    The redirect used to go to "/" unconditionally, so opening a bookmarked
-    deep link with a token landed the user on the dashboard rather than at
-    what they asked for.
+    Only the credential is dropped, not the whole query string: the bootstrap
+    URL may carry the caller's own parameters alongside the token, and
+    discarding them would silently rewrite where the page thinks it was opened.
+    The entire point of the redirect is that the address bar, the history entry
+    and every later Referer hold a URL with no secret in it, so anything that
+    leaves `token` behind here defeats it.
     """
     remaining = [
         (key, value)
@@ -400,15 +403,37 @@ MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_SOURCE_IMAGE_BYTES = 64 * 1024 * 1024
 
 
-def _is_navigation(path: str) -> bool:
-    """Does this path serve the SPA shell rather than data?
+#: One definition for both of the places that ask "does this request change
+#: state": the Origin/CSRF guard and the query-string credential refusal below.
+#: They were two literal tuples one edit apart from disagreeing, and a method
+#: that counts as mutating for one guard and not the other is a hole in
+#: whichever of them forgot it.
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
-    Only these may bootstrap from `?token=`. Everything else -- the API, the
-    static assets -- must present a cookie or a header, because a URL with a
-    credential in it gets pasted into chat, logged by a proxy, and kept in
-    history, and on a data path that single link hands over the data itself.
+#: The only paths a `?token=` may be traded for a cookie on -- an allowlist,
+#: not a subtraction. The rule used to be "anything that is not `/api/v1/` and
+#: not `/static/`", which its own docstring described as "paths that serve the
+#: SPA shell". `/preview/<id>` is neither: it answers with artifact bytes, so
+#: `/preview/<id>?token=...` was a link that set a durable cookie and then
+#: handed the file to whoever held the link -- precisely the thing that
+#: docstring promised could not happen. A subtractive rule re-opens that hole
+#: every time a non-API route is added; an allowlist fails closed, and the root
+#: page is the only URL this product ever hands to a person (`openai4s url`,
+#: the startup banner, the .app).
+_BOOTSTRAP_PATHS = frozenset({"/", "/index.html"})
+
+
+def _is_bootstrap_path(path: str) -> bool:
+    """May a `?token=` here be exchanged for the cookie?
+
+    Root page only. The cost of being wrong is asymmetric: on the root page the
+    link buys an empty SPA shell and the 303 strips the credential before
+    anything renders, while on a path that answers with data the link *is* the
+    data. Deep-link bootstrapping was the convenience being paid for, and
+    nothing in the product ever generated such a link -- `_url()` builds the
+    origin and `/?token=`.
     """
-    return not (path.startswith(_API_PREFIX) or path.startswith("/static/"))
+    return path in _BOOTSTRAP_PATHS
 
 
 def _presented_token(headers: Any) -> str | None:
@@ -7440,8 +7465,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # Browsers always send Origin on WS upgrades; non-browser clients
                 # send none and pass.
                 if path == _API_WS or (
-                    method in ("POST", "PUT", "PATCH", "DELETE")
-                    and path.startswith(_API_PREFIX)
+                    method in _MUTATING_METHODS and path.startswith(_API_PREFIX)
                 ):
                     origin = self.headers.get("Origin")
                     if origin:
@@ -7465,26 +7489,56 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     header_token = _presented_token(self.headers)
                     qtok = parse_qs(parsed.query).get("token", [None])[0]
+                    if qtok is not None and method in _MUTATING_METHODS:
+                        # Refused outright, before any other credential is even
+                        # consulted. The gate already declined to *authenticate*
+                        # a mutation from the query string -- but a request that
+                        # also carried a valid cookie sailed straight through
+                        # with the credential still sitting in its URL, which is
+                        # accepted-with-a-warning nobody reads. That URL is in
+                        # the browser history, the proxy log and the next
+                        # Referer, so honouring it normalises the leak: the
+                        # caller has no way to find out they are shipping a
+                        # secret, because it works. Failing is what makes it
+                        # discoverable, and the remedy is always the same one.
+                        self.close_connection = True
+                        self._json(
+                            {
+                                "error": (
+                                    "a credential in the query string is refused "
+                                    f"on {method}; send {_TOKEN_HEADER} or "
+                                    "Authorization: Bearer instead"
+                                )
+                            },
+                            401,
+                        )
+                        return
                     if have_cookie or local_auth.matches(header_token, _auth_token):
                         pass  # already authenticated
                     elif (
                         local_auth.matches(qtok, _auth_token)
                         and method == "GET"
-                        and _is_navigation(path)
+                        and _is_bootstrap_path(path)
                     ):
-                        # Browser navigation: set the cookie and redirect to the
-                        # same path with the token stripped. It used to redirect
-                        # to "/" unconditionally, so every bookmarked deep link
-                        # landed on the dashboard instead of its target.
+                        # The root-page bootstrap: set the cookie and redirect
+                        # to the same page with the credential stripped, so it
+                        # survives in neither the address bar, the history
+                        # entry, nor the next Referer.
                         #
-                        # Restricted to paths that serve the SPA shell. A URL
-                        # carrying a credential is a shareable credential, and
-                        # on an API or download path it is worse than on a
-                        # navigation: the response *is* the data, delivered
-                        # straight to whoever holds the link, with no redirect
-                        # and no cookie hand-off in between. Here the only thing
-                        # the link buys is the bootstrap it was minted for.
+                        # Restricted to `_BOOTSTRAP_PATHS`. A URL carrying a
+                        # credential is a shareable credential, and on a path
+                        # that answers with data it is worse than on the shell:
+                        # the response *is* the data, delivered straight to
+                        # whoever holds the link, with no redirect and no cookie
+                        # hand-off in between. Here the link buys an empty page.
                         scrubbed = _strip_token_from_url(path, parsed.query)
+                        # Recorded for the access log in the `finally` below,
+                        # which reads `_last_status`. Only `_send` sets it and
+                        # this branch writes its own status line, so the single
+                        # most security-relevant request the daemon serves was
+                        # logged as `status=None` -- indistinguishable from a
+                        # request that died before answering.
+                        self._last_status = 303
                         self.send_response(303)
                         # The one `send_header` in this file that did not go
                         # through the sanitiser its five siblings use. It is
