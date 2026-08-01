@@ -56,15 +56,22 @@ recurring lesson of this module -- a check that answers an easier question than
 the one it stands in for -- and it is why the host-side test asserts xattrs
 separately from data.
 
-That hole was first closed by a dedicated `(deny file-read-xattr …)` beside the
-data denial. The whole-class `file-read*` denial above subsumes it, so the
-dedicated line is gone and `getxattr` stays `EPERM` -- confirmed by building the
-profile with and without it and getting byte-equal verdicts. What neither form
-closes is `listxattr`: attribute *names* are governed by `file-read-metadata`,
-so they follow the traversal allowance and remain readable on the interpreter's
-own route. That residual is narrower than it was -- names were readable across
-the whole home while metadata was -- and it is stated here because a line that
-looks like it closes something is worse than no line at all.
+That hole was closed by a dedicated `(deny file-read-xattr …)` beside the data
+denial, and it stays. The whole-class `file-read*` denial above does subsume it
+*at that line* -- but the profile ends with `(allow file-read* …)` over the
+interpreter prefixes, the helper package and the stage, and a later whole-class
+allow re-opens `getxattr` on everything it names. An operation-specific deny is
+not re-opened by it. Measured, because an earlier revision of this change
+dropped the line on the strength of a control that probed a file directly under
+`$HOME` -- where it genuinely is a no-op -- and so answered an easier question
+than the one it stood in for: inside an allow-listed read root, without the line
+`getxattr` returns the bytes, with it `EPERM`.
+
+What neither form closes is `listxattr`: attribute *names* are governed by
+`file-read-metadata`, so they follow the traversal allowance and remain readable
+on the interpreter's own route. That residual is narrower than it was -- names
+were readable across the whole home while metadata was -- and it is stated here
+because a line that looks like it closes something is worse than no line at all.
 
 ## Why the profile is shaped the way it is
 
@@ -347,31 +354,38 @@ def build_profile(
         # missing one ENOENT, so a shim can still tell "something is here I may
         # not read" from "nothing is here". SBPL cannot make a deny lie.
         #
-        # The separate `(deny file-read-xattr (subpath $HOME))` that stood here
-        # is **dropped**, and that is a decision rather than an oversight. It was
-        # added because `file-read-data` left `getxattr` open, and on macOS an
-        # xattr routinely *is* the file (`com.apple.ResourceFork`,
-        # `com.apple.metadata:kMDItemWhereFroms`). `file-read*` is the whole read
-        # class and subsumes it, so the line becomes a no-op — measured with a
-        # control rather than argued: building this profile with and without it
-        # and probing a file that carries its bytes in an xattr gives byte-equal
-        # verdicts, `getxattr` EPERM either way, including on the traversal
-        # components below.
-        #
-        # Keeping it would have been the safer-looking choice and the more
-        # misleading one, because of what it does *not* close. `listxattr`
-        # (attribute *names*) is governed by `file-read-metadata`, not by
-        # `file-read-xattr`, so it stays readable on the components the
-        # allowance below names — and an explicit xattr deny sitting after that
-        # allowance does not change it either. A line that closes nothing, next
-        # to a residual it looks like it closes, is worse than no line.
-        #
-        # Restore it if the denial above is ever narrowed back to
-        # `file-read-data`; that is the condition under which it stops being
-        # redundant. The residual itself narrows under this change rather than
-        # growing: attribute names were readable across the whole home while
-        # metadata was, and are now readable only on the interpreter's route.
         f"(deny file-read* (subpath {_quote(home_dir)}))",
+        # The dedicated xattr deny stays, and the reason is narrower than
+        # "belt and braces". `file-read*` does subsume `file-read-xattr` at
+        # this line — but the allowance at the bottom of this function is
+        # `(allow file-read* …)` over the interpreter prefixes, the helper
+        # package and the stage. A later whole-class *allow* re-opens
+        # `getxattr` on everything it names; an operation-specific *deny* is
+        # not re-opened by it.
+        #
+        # An earlier revision of this change dropped the line, on the stated
+        # grounds that a control had measured it byte-equal. The control probed
+        # a file directly under `$HOME`, where it is indeed a no-op. Inside an
+        # allow-listed read root it is not:
+        #
+        #     file with com.apple.review.secret=INSIDE in sys.base_prefix
+        #       profile without this line : getxattr -> ALLOWED:INSIDE
+        #       profile with    this line : getxattr -> EPERM
+        #
+        # Those trees' data forks are readable either way, so what this closes
+        # is xattr-only content — resource forks, `kMDItemWhereFroms` — on
+        # files the helper may already open. Small, but it is the boundary the
+        # profile already had, and a measurement that answers an easier
+        # question than the one it stands in for is this module's own recurring
+        # bug. `tests/test_byoc_confinement_scope.py` now pins it.
+        #
+        # `listxattr` (attribute *names*, not values) is governed by
+        # `file-read-metadata`, not by `file-read-xattr`, so this line does not
+        # close it. Names are not contents; that residual is accepted, and it
+        # narrows under this change rather than growing — names were readable
+        # across the whole home while metadata was, and are now readable only
+        # on the interpreter's route.
+        f"(deny file-read-xattr (subpath {_quote(home_dir)}))",
         # The keychain is not a file the home denial covers, and this is the
         # hole that denial looked like it closed.
         #

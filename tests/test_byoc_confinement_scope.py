@@ -150,6 +150,38 @@ print(json.dumps({
 }))
 """
 
+_METADATA_PROBE_AT = r"""
+import ctypes, ctypes.util, errno, json, os, sys
+
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+
+def _xattr_value(path, name):
+    buf = ctypes.create_string_buffer(65536)
+    size = _libc.getxattr(
+        path.encode(), name.encode(), buf, ctypes.c_size_t(len(buf)),
+        ctypes.c_uint32(0), ctypes.c_int(0),
+    )
+    if size < 0:
+        raise OSError(ctypes.get_errno(), "getxattr")
+    return buf.raw[:size]
+
+
+def outcome(fn):
+    try:
+        fn()
+        return "ALLOWED"
+    except OSError as exc:
+        return errno.errorcode.get(exc.errno, str(exc.errno))
+
+
+target, name = sys.argv[1], sys.argv[2]
+print(json.dumps({
+    "read": outcome(lambda: open(target, "rb").read(1)),
+    "xattr_value": outcome(lambda: _xattr_value(target, name)),
+}))
+"""
+
 #: An xattr macOS itself uses to carry a file's own bytes: anything saved from
 #: a `data:` URL gets the whole document base64-encoded in here.
 _WHERE_FROMS = "com.apple.metadata:kMDItemWhereFroms"
@@ -478,6 +510,59 @@ print("PROBE" + json.dumps(out))
 
 
 @macos_only
+@macos_only
+def test_an_allowed_read_root_under_home_still_denies_attribute_values(tmp_path):
+    """The regression a "byte-equal" control missed, tried for real.
+
+    The home denial is `file-read*`, which subsumes xattrs *at that line*. But
+    the profile ends with `(allow file-read* …)` over the interpreter prefixes,
+    the helper package and the stage — and those live under $HOME on a uv or
+    conda install. A later whole-class allow re-opens `getxattr` on everything
+    it names; an operation-specific deny is not re-opened by it.
+
+    A revision of this profile dropped the dedicated `(deny file-read-xattr …)`
+    on the strength of a control that measured it byte-equal. That control
+    probed a file directly under $HOME, where the line genuinely is a no-op, so
+    it answered an easier question than the one it stood in for — this module's
+    own recurring bug. Inside an allow-listed read root the verdicts differ:
+    without the line `getxattr` hands back the bytes, with it EPERM.
+
+    Hermetic on purpose: `home` and the allowed root are both under `tmp_path`,
+    so this neither reads nor writes the developer's real home or interpreter.
+    """
+    home = tmp_path / "home"
+    allowed = home / "prefix"
+    allowed.mkdir(parents=True)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    secret = allowed / "carrier.txt"
+    secret.write_text("the data fork is readable here by design\n", encoding="utf-8")
+    _set_xattr(secret, _WHERE_FROMS, b"attribute-only-content")
+
+    profile = bc.build_profile(stage, home=str(home), read_paths=(str(allowed),))
+    report = _probe(
+        [
+            "sandbox-exec",
+            "-p",
+            profile,
+            sys.executable,
+            "-I",
+            "-c",
+            _METADATA_PROBE_AT,
+            str(secret),
+            _WHERE_FROMS,
+        ]
+    )
+
+    # The point of the allowance: the helper must still read its own tree.
+    assert report["read"] == "ALLOWED"
+    # The point of the deny: attribute values are not part of that.
+    assert report["xattr_value"] == "EPERM", (
+        "getxattr returned an attribute value from inside an allow-listed read "
+        f"root under $HOME: {report}"
+    )
+
+
 def test_metadata_under_home_is_denied_and_only_existence_survives(tmp_path):
     """The home denial is `file-read*`, and this pins what that does and does not buy.
 
@@ -607,9 +692,15 @@ def test_the_walk_terminates_on_a_symlink_loop(tmp_path):
     assert str(home) in found
 
 
-@macos_only
 def test_the_profile_denies_the_read_class_over_the_home(tmp_path):
-    """The string, as a guard on the one line whose subtype is the whole point."""
+    """The string, as a guard on the one line whose subtype is the whole point.
+
+    Deliberately NOT ``@macos_only``. ``build_profile`` has no platform branch
+    — it emits the same SBPL text everywhere — and every other assertion about
+    this profile is macOS-gated, so on the required Linux jobs a full revert of
+    the denial to ``file-read-data`` used to pass with 21 green tests and
+    nothing red. This is the one assertion that can travel, so it does.
+    """
     stage = tmp_path / "stage"
     stage.mkdir()
     profile = bc.build_profile(stage, home="/Users/someone")
@@ -619,6 +710,21 @@ def test_the_profile_denies_the_read_class_over_the_home(tmp_path):
         "the home denial narrowed back to contents-only, so stat() on a guessed "
         "path under $HOME answers again"
     )
+    # The whole-class deny above subsumes xattrs *at that line*, but the
+    # profile ends with `(allow file-read* …)` over the interpreter prefixes,
+    # the helper package and the stage — and a later whole-class allow
+    # re-opens `getxattr` on everything it names. An operation-specific deny
+    # is not re-opened by it. Dropping this line was measured "byte-equal"
+    # against a file directly under $HOME, where it is a no-op; inside an
+    # allow-listed read root it is not.
+    assert '(deny file-read-xattr (subpath "/Users/someone"))' in profile, (
+        "the dedicated xattr denial is gone, so `getxattr` reads attribute "
+        "values back inside every subtree the trailing `(allow file-read* …)` "
+        "names — resource forks and kMDItemWhereFroms included"
+    )
+    assert profile.index("(deny file-read-xattr") < profile.index(
+        "(allow file-read*"
+    ), "the xattr denial must precede the read allowance it exists to survive"
 
 
 def test_the_metadata_allowance_is_literal_not_subpath(tmp_path):
