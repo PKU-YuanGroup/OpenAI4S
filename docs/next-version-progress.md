@@ -501,6 +501,16 @@ superseded side can restore deleted code silently; the check that catches it is
 | P1-A export | Three export forms, all for re-running; none for reading | `closed` — `tests/test_notebook_export.py` |
 | P0-0 release | `linux-app` and `windows-package` arrived from a branch with no `freeze` job and checked out a moving ref, while P0-0's whole claim is one immutable SHA | `closed` — `tests/test_release_gate_manifest.py` |
 
+**One defect this batch found only by driving the product.** `POST /uploads`
+answered `500 internal_error` for every session outside the `default` project:
+`upload` read `payload.get("project_id") or "default"`, so a request that named
+a frame and no project asserted `"default"` on the caller's behalf, and the
+scope resolver — correctly — refuses a stated project that disagrees with the
+producer frame. The refusal then escaped as a bare `ValueError` and became a
+500. Neither half is visible in a test that passes `project_id` explicitly,
+which every existing upload test did; it surfaced on the first real upload
+during browser acceptance. Closed by `tests/test_upload_scope_resolution.py`.
+
 **The release gate itself stays `implemented_unverified`.** Nothing in this batch
 changes that: the YAML is asserted against the parsed workflow graph, and one
 real `workflow_dispatch` is still the missing run.

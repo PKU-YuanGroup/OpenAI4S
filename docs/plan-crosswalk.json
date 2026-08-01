@@ -4,7 +4,7 @@
   "plan": "OpenAI4S-next-version-integrated-report-20260725.md",
   "plan_section": "14",
   "baseline": "126ef915c2f37fc6eed3f7f77f06492f27eaec5e",
-  "audited_at": "408098f8c7efe5bde6f62cde9953b38504b9665f",
+  "audited_at": "69a969e897ce084d00054c84e08f1c30b7da49ea",
   "expected_rows": 56,
   "statuses": {
     "closed": "production call chain verified, a test that fails without the fix exists",
@@ -164,7 +164,7 @@
       "integrated": "P1-B",
       "plan_conclusion": "纳入，保留独特项",
       "status": "closed",
-      "status_note": "global and project tiers with inheritance; per-item size and per-scope count enforced before the insert; scoped delete. The UI wrote to \"default\" while injection read the session's project, so a memory was invisible to the sessions it was written for Re-audited: expiry withheld a memory from injection and kept its quota slot, so a scope of expired rows refused every new write; admission now counts live rows against a separate stored ceiling. Memory also gained the edit it never had, with `updated_at` so a correction does not expire on the clock of what it replaced.",
+      "status_note": "global and project tiers with inheritance; per-item size and per-scope count enforced before the insert; scoped delete. The UI wrote to \"default\" while injection read the session's project, so a memory was invisible to the sessions it was written for Re-audited: expiry withheld a memory from injection and kept its quota slot, so a scope of expired rows refused every new write; admission now counts live rows against a separate stored ceiling. Memory also gained the edit it never had, with `updated_at` so a correction does not expire on the clock of what it replaced. Re-audited: expiry withheld a memory from injection and kept its quota slot, so a scope of expired rows refused every new write; admission now counts live rows against a separate stored ceiling. Memory also gained the edit it never had, with `updated_at` so a correction does not expire on the clock of what it replaced.",
       "tests": "tests/test_memory_scope_and_budgets.py,tests/test_memory_edit_and_expiry_quota.py",
       "browser_evidence": "",
       "external_evidence": ""
@@ -333,7 +333,7 @@
       "integrated": "P0-4",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "paused->executing is a CAS; the UPDATE's rowcount decides Re-audited: `approve` had the same read-then-write race `resume` was fixed for and none of the fix; it now claims with the same compare-and-swap, and two concurrent approves start exactly one turn.",
+      "status_note": "paused->executing is a CAS; the UPDATE's rowcount decides Re-audited: `approve` had the same read-then-write race `resume` was fixed for and none of the fix; it now claims with the same compare-and-swap, and two concurrent approves start exactly one turn. Re-audited: `approve` had the same read-then-write race `resume` was fixed for and none of the fix; it now claims with the same compare-and-swap, and two concurrent approves start exactly one turn.",
       "tests": "tests/test_plan_resume_claim.py",
       "browser_evidence": "",
       "external_evidence": ""
@@ -346,7 +346,7 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "MCP fault-driven eviction, bounded reads, process-group close Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes.",
+      "status_note": "MCP fault-driven eviction, bounded reads, process-group close Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes. Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes.",
       "tests": "tests/test_mcp_lifecycle.py",
       "browser_evidence": "",
       "external_evidence": ""
@@ -437,7 +437,7 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "MCP fault-driven eviction, bounded reads, process-group close Re-audited with R4/P0-2: same reader, same byte budget.",
+      "status_note": "MCP fault-driven eviction, bounded reads, process-group close Re-audited with R4/P0-2: same reader, same byte budget. Re-audited with R4/P0-2: same reader, same byte budget.",
       "tests": "tests/test_mcp_lifecycle.py",
       "browser_evidence": "",
       "external_evidence": ""
@@ -489,7 +489,7 @@
       "integrated": "P0-4",
       "plan_conclusion": "晋升",
       "status": "closed",
-      "status_note": "one safe exception projector; str(e) removed from every public surface Re-audited: three more public bodies answered with the OS's words (`restore failed: {error}`, `write failed: {error}`, and the attachment problem card). Author-written refusals are now a type, so they survive to the caller while an escapee from the OS layer does not.",
+      "status_note": "one safe exception projector; str(e) removed from every public surface Re-audited: three more public bodies answered with the OS's words (`restore failed: {error}`, `write failed: {error}`, and the attachment problem card). Author-written refusals are now a type, so they survive to the caller while an escapee from the OS layer does not. Re-audited: three more public bodies answered with the OS's words (`restore failed: {error}`, `write failed: {error}`, and the attachment problem card). Author-written refusals are now a type, so they survive to the caller while an escapee from the OS layer does not.",
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": ""
@@ -567,8 +567,8 @@
       "integrated": "P0-2",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "identity/scope: closed. Agent-SQL authorizer with session-scoped my_* views; foreign and absent artifact refusals made indistinguishable; view_image and lineage inputs scope-validated; materialisation and upload validate before mutating, stage, and replace atomically (the live file is no longer hardlinked to an immutable snapshot); model dispatch honours profile_id+revision including on a queued follow-up, and delete is a tombstone; compute idempotency is owner-scoped; compute_result declares writes_files so a native harvest becomes one Artifact version per file.",
-      "tests": "tests/test_artifact_scope_closure.py, tests/test_materialisation_atomicity.py, tests/test_model_profile_identity.py, tests/test_compute_owner_and_harvest.py",
+      "status_note": "identity/scope: closed. Agent-SQL authorizer with session-scoped my_* views; foreign and absent artifact refusals made indistinguishable; view_image and lineage inputs scope-validated; materialisation and upload validate before mutating, stage, and replace atomically (the live file is no longer hardlinked to an immutable snapshot); model dispatch honours profile_id+revision including on a queued follow-up, and delete is a tombstone; compute idempotency is owner-scoped; compute_result declares writes_files so a native harvest becomes one Artifact version per file. Re-audited: the byte contract was closed, but the route it guards answered 500 for every session outside the `default` project -- `upload` asserted a project the client had never sent, and the resulting scope refusal escaped as a bare ValueError. Found by uploading through a running daemon.",
+      "tests": "tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_model_profile_identity.py,tests/test_compute_owner_and_harvest.py,tests/test_upload_scope_resolution.py",
       "browser_evidence": "",
       "external_evidence": ""
     },
@@ -671,7 +671,7 @@
       "integrated": "P0-4",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "one safe exception projector with a local request id on every surface Re-audited with R5/P1-05: the artifact restore/write paths and the attachment card now project through the same envelope.",
+      "status_note": "one safe exception projector with a local request id on every surface Re-audited with R5/P1-05: the artifact restore/write paths and the attachment card now project through the same envelope. Re-audited with R5/P1-05: the artifact restore/write paths and the attachment card now project through the same envelope.",
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": ""
@@ -697,7 +697,7 @@
       "integrated": "P1-A",
       "plan_conclusion": "纳入，依赖精确视觉 Profile",
       "status": "closed",
-      "status_note": "attachments bound to an immutable version; magic-byte MIME Re-audited: the annotation version binding did not survive a checkpoint restore -- captured by `SELECT *`, restored by an explicit column list without `version_id`/`checksum` -- so every restore put the resolve-to-latest behaviour back.",
+      "status_note": "attachments bound to an immutable version; magic-byte MIME Re-audited: the annotation version binding did not survive a checkpoint restore -- captured by `SELECT *`, restored by an explicit column list without `version_id`/`checksum` -- so every restore put the resolve-to-latest behaviour back. Re-audited: the annotation version binding did not survive a checkpoint restore -- captured by `SELECT *`, restored by an explicit column list without `version_id`/`checksum` -- so every restore put the resolve-to-latest behaviour back.",
       "tests": "tests/test_annotation_version_binding.py,tests/test_checkpoint_binding_survival.py",
       "browser_evidence": "",
       "external_evidence": ""
