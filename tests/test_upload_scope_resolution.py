@@ -177,3 +177,102 @@ def test_a_five_thousand_row_upload_is_stored_whole(runner, tmp_path):
     assert stored["size_bytes"] == len(body)
     landed = Path(runner.workspace_for(frame_id)) / "table.tsv"
     assert landed.read_bytes() == body
+
+
+# --- the atomic boundary -----------------------------------------------------
+
+
+def test_a_snapshot_that_cannot_be_written_leaves_no_version_behind(
+    runner, monkeypatch
+):
+    """The order was DB-then-snapshot, through a call that swallows `OSError`.
+
+    So a snapshot the filesystem refused produced a *committed* version with a
+    NULL `snapshot_path` and no frozen bytes — and the upload returned success.
+    `ArtifactRestoreService.verified_snapshot_bytes` refuses precisely that
+    version, so what the route handed back was an artifact no restore could
+    ever read, with a checksum describing bytes that were nowhere.
+
+    Staging the bytes first moves the failure to before the row exists, which
+    is the only place it can happen without leaving something behind.
+    """
+    runner.store.create_project(name="Science", project_id="proj_science")
+    frame_id = runner.store.new_frame(
+        kind="turn", project_id="proj_science", status="ready"
+    )
+    before = len(runner.store.list_artifacts(frame_id))
+
+    # Injected at a level both the old and the new order share: any write into
+    # the versions directory fails. Patching `stage_version_bytes` would only
+    # exist in the new code and could not tell the two apart.
+    versions_dir = runner.artifacts.versions_dir().resolve()
+    real_write_bytes = Path.write_bytes
+
+    def refuse(self, data, *a, **k):
+        try:
+            inside = self.resolve().parent == versions_dir
+        except OSError:  # pragma: no cover - parent always resolvable here
+            inside = False
+        if inside:
+            raise OSError(28, "No space left on device")
+        return real_write_bytes(self, data, *a, **k)
+
+    monkeypatch.setattr(Path, "write_bytes", refuse)
+
+    with pytest.raises(Exception):
+        runner.artifacts.upload(_payload(frame_id, b"a\tb\n"))
+    monkeypatch.undo()
+    # Nothing became visible: no artifact, no version, no live file, no stage.
+    assert len(runner.store.list_artifacts(frame_id)) == before
+    workspace = runner.workspace_for(frame_id)
+    assert not (workspace / "table.tsv").exists()
+    assert not list(workspace.glob("*.part"))
+
+
+def test_every_committed_version_has_its_frozen_bytes(runner):
+    """The invariant the comment claimed and the code did not enforce."""
+    runner.store.create_project(name="Science", project_id="proj_science")
+    frame_id = runner.store.new_frame(
+        kind="turn", project_id="proj_science", status="ready"
+    )
+
+    saved = runner.artifacts.upload(_payload(frame_id, b"first\n"))
+    runner.artifacts.upload(_payload(frame_id, b"second\n"))
+
+    versions = runner.store.list_versions(saved["artifact_id"])
+    assert len(versions) == 2, versions
+    for version in versions:
+        # `version_meta`, not `list_versions`: the listing does not project
+        # `snapshot_path`, and this is the accessor
+        # `ArtifactRestoreService.verified_snapshot_bytes` reads, so it is the
+        # one whose answer decides whether a restore can happen.
+        meta = runner.store.version_meta(version["version_id"])
+        snapshot = (meta or {}).get("snapshot_path")
+        assert snapshot, f"version {version['version_id']} has no snapshot path"
+        assert Path(snapshot).is_file(), f"{snapshot} is not on disk"
+        # The name is the version's, not the pending one it was staged under.
+        assert Path(snapshot).name.startswith(version["version_id"])
+        assert not Path(snapshot).name.startswith(".pending-")
+
+
+def test_a_failed_upload_does_not_leave_a_pending_snapshot_behind(runner, monkeypatch):
+    """A stage that outlives its failure is a slow disk leak."""
+    runner.store.create_project(name="Science", project_id="proj_science")
+    frame_id = runner.store.new_frame(
+        kind="turn", project_id="proj_science", status="ready"
+    )
+    real_save = runner.store.save_artifact
+
+    def explode(**kwargs):
+        del kwargs
+        raise RuntimeError("database is locked")
+
+    runner.store.save_artifact = explode
+    try:
+        with pytest.raises(RuntimeError):
+            runner.artifacts.upload(_payload(frame_id, b"x\n"))
+    finally:
+        runner.store.save_artifact = real_save
+
+    assert not list(runner.artifacts.versions_dir().glob(".pending-*"))
+    assert not list(runner.workspace_for(frame_id).glob("*.part"))

@@ -252,6 +252,42 @@ class ArtifactManager:
             raise PermissionError("artifact live path escapes its workspace") from error
         return target
 
+    def stage_version_bytes(self, filename: str, data: bytes) -> Path:
+        """Freeze bytes under a pending name, before any version row exists.
+
+        The strict half of `write_version_snapshot`, and the reason it exists:
+        that method swallows `OSError`, so on the upload path a failed snapshot
+        left a *committed* version whose `snapshot_path` was NULL and whose
+        frozen bytes were nowhere -- and the call still returned success. The
+        comment directly above the call said "a committed version must never
+        lack the frozen bytes its checksum describes"; the code said otherwise,
+        and `ArtifactRestoreService.verified_snapshot_bytes` refuses exactly
+        that version, so the upload reported success and produced something no
+        restore could ever read.
+
+        Swallowing is right for `protect_latest`, which backfills opportunistically
+        and must not fail a turn. It is wrong here, where the write is the thing
+        that makes a version legitimate. Writing under a pending name lets the
+        caller do it *before* the row is created, so a failure happens while
+        nothing is visible rather than after the commit.
+        """
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
+        directory = self.versions_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        pending = directory / f".pending-{uuid.uuid4().hex}__{safe}"
+        pending.write_bytes(data)
+        return pending
+
+    def promote_version_bytes(
+        self, version_id: str, filename: str, pending: Path
+    ) -> Path:
+        """Give staged bytes their version-scoped name and record it."""
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
+        final = self.versions_dir() / f"{version_id}__{safe}"
+        os.replace(str(pending), str(final))
+        self.store.set_version_snapshot(version_id, str(final))
+        return final
+
     def write_version_snapshot(
         self,
         version_id: str,
@@ -599,8 +635,22 @@ class ArtifactManager:
             else None
         )
 
+        # Both stages happen before any row exists, so everything that can fail
+        # on the way in fails while nothing is visible: no version, no live
+        # file, no event. The old order committed the row first and then wrote
+        # the snapshot through a call that swallows `OSError`, which is how a
+        # successful-looking upload produced a version no restore could read.
         staged = target.with_name(f"{target.name}.{uuid.uuid4().hex[:8]}.part")
-        staged.write_bytes(raw)
+        pending: Path | None = None
+        try:
+            staged.write_bytes(raw)
+            pending = self.stage_version_bytes(target.name, raw)
+        except OSError as error:
+            staged.unlink(missing_ok=True)
+            if pending is not None:
+                pending.unlink(missing_ok=True)
+            record_diagnostic(error, surface="artifacts:upload:stage")
+            raise ArtifactOperationError(500, "upload staging failed") from error
         try:
             record = self.store.save_artifact(
                 path=str(target),
@@ -611,15 +661,23 @@ class ArtifactManager:
                 frame_id=frame_id,
                 project_id=project_id,
                 is_user_upload=True,
+                # Committed already pointing at bytes that exist. Between here
+                # and `promote_version_bytes` the row names the pending file,
+                # which is a worse *name* and the same bytes -- the invariant
+                # that matters holds throughout.
+                snapshot_path=str(pending),
                 artifact_id=(existing["artifact_id"] if existing else None),
             )
-            # From `raw`, before the live file moves: a committed version must
-            # never lack the frozen bytes its checksum describes.
-            self.write_version_snapshot(record["version_id"], target.name, data=raw)
+        except Exception:
+            # Nothing was made visible: drop both stages and let the caller see
+            # the refusal.
+            staged.unlink(missing_ok=True)
+            pending.unlink(missing_ok=True)
+            raise
+        try:
+            self.promote_version_bytes(record["version_id"], target.name, pending)
             os.replace(str(staged), str(target))
         except Exception:
-            # The live file was never touched, so there is nothing to restore --
-            # only the stage to remove.
             staged.unlink(missing_ok=True)
             raise
         self._notify(
