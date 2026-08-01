@@ -640,3 +640,49 @@ def test_two_callers_for_the_same_connector_produce_one_child():
 
     assert len(made) == 1, f"{len(made)} children were spawned for one connector"
     assert got[0] is got[1]
+
+
+def test_a_connector_that_never_reads_its_stdin_does_not_hang_the_caller():
+    """The write was the one phase of a request the deadline did not cover.
+
+    `_request` computes an absolute deadline and applies it to the reply wait.
+    The send in between was a blocking `write` on the child's stdin with no
+    bound at all, so a connector that never drains it fills the pipe buffer and
+    blocks there forever — while `_request` holds the connection lock, so the
+    caller hangs past its own timeout and every other request to that connector
+    queues behind it.
+
+    Asserted on wall clock, because a hang is what the caller experiences.
+    """
+
+    # A real pipe, filled to capacity with nobody reading it — the actual
+    # condition, not a stand-in. `select` for writability on a full pipe does
+    # not fire, which is precisely where the old code blocked forever.
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    try:
+        while True:
+            os.write(write_fd, b"x" * 65536)
+    except BlockingIOError:
+        pass
+
+    class _FullPipe:
+        def fileno(self):
+            return write_fd
+
+        def write(self, view):  # pragma: no cover - must never be reached
+            raise AssertionError("the write should not have been attempted")
+
+        def flush(self):  # pragma: no cover
+            return None
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(mcp_client.MCPTimeout):
+            mcp_client._write_all(
+                _FullPipe(), b"x" * 4096, deadline=time.monotonic() + 0.5
+            )
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+    assert time.monotonic() - started < 5, "the write was not bounded by the deadline"

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import select
 import signal
 import subprocess
 import sys
@@ -153,7 +154,7 @@ class _BoundedLineReader:
             self._buf.extend(chunk)
 
 
-def _write_all(stream: Any, payload: bytes) -> None:
+def _write_all(stream: Any, payload: bytes, deadline: float | None = None) -> None:
     """Write every byte to an unbuffered pipe.
 
     ``bufsize=0`` makes stdin a raw ``FileIO``, whose ``write`` is one
@@ -162,7 +163,25 @@ def _write_all(stream: Any, payload: bytes) -> None:
     long request is silently cut in half and the connector sees a broken frame.
     """
     view = memoryview(payload)
+    fileno = None
+    if deadline is not None:
+        try:
+            fileno = stream.fileno()
+        except (AttributeError, OSError):  # pragma: no cover - not a real pipe
+            fileno = None
     while view:
+        if fileno is not None:
+            # The write is the one phase of a request the deadline did not
+            # cover. A connector that never drains its stdin fills the pipe
+            # buffer and blocks this `write` forever -- and `_request` holds the
+            # connection lock across it, so the caller hangs past its own
+            # timeout and every other request to that connector queues behind
+            # it. `select` bounds the wait by whatever budget is left.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([], [fileno], [], remaining)[1]:
+                raise MCPTimeout(
+                    "connector did not read its stdin within the request deadline"
+                )
         written = stream.write(view)
         if not written:
             raise OSError("connector stdin accepted no bytes")
@@ -333,9 +352,13 @@ class MCPConnection:
             raise
 
     # -- wire ----------------------------------------------------------------
-    def _send(self, obj: dict) -> None:
+    def _send(self, obj: dict, deadline: float | None = None) -> None:
         assert self._proc.stdin is not None
-        _write_all(self._proc.stdin, (json.dumps(obj) + "\n").encode("utf-8"))
+        _write_all(
+            self._proc.stdin,
+            (json.dumps(obj) + "\n").encode("utf-8"),
+            deadline=deadline,
+        )
 
     def _drain_stderr(self) -> None:
         stream = self._proc.stderr
@@ -468,7 +491,8 @@ class MCPConnection:
                         "id": mid,
                         "method": method,
                         "params": params or {},
-                    }
+                    },
+                    deadline=deadline,
                 )
             except Exception:
                 self._pending.pop(mid, None)
