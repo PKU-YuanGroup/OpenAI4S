@@ -9524,10 +9524,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # Still guarded on `annos` for the original reason: a batch
                 # filtered empty by the frame check flips nothing.
                 annotations_state = "none"
-                if reservation_id:
+                if reservation_id and annos:
                     annotations_state = "sent"
                     try:
-                        store.finalize_annotations_sent(reservation_id)
+                        if not store.finalize_annotations_sent(
+                            reservation_id,
+                            expected_ids=[a["annotation_id"] for a in annos],
+                        ):
+                            # The set moved underneath the reservation. Neither
+                            # consumed nor free: say so rather than claim it.
+                            annotations_state = "pending"
                     except Exception:  # noqa: BLE001
                         # The turn is accepted and running. Reporting an HTTP
                         # failure now would tell the client the message was not
@@ -9906,6 +9912,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         str(current_annotation["root_frame_id"]),
                         "editing Session annotations",
                     )
+                if store.annotation_is_reserved(m.group(1)):
+                    # Held by an in-flight turn. Editing or deleting it here
+                    # would break exactly-once from outside the admission path,
+                    # which is the one direction that code cannot see.
+                    raise GatewayError(
+                        409,
+                        "this comment is being sent with a turn already in "
+                        "flight; wait for that turn to finish",
+                        "annotation_reserved",
+                    )
                 b = self._body()
                 anno = store.update_annotation(
                     m.group(1), body=b.get("body"), status=b.get("status")
@@ -9928,6 +9944,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(current_annotation["root_frame_id"]),
                         "deleting Session annotations",
+                    )
+                if store.annotation_is_reserved(m.group(1)):
+                    # Held by an in-flight turn. Editing or deleting it here
+                    # would break exactly-once from outside the admission path,
+                    # which is the one direction that code cannot see.
+                    raise GatewayError(
+                        409,
+                        "this comment is being sent with a turn already in "
+                        "flight; wait for that turn to finish",
+                        "annotation_reserved",
                     )
                 store.delete_annotation(m.group(1))
                 self._json({"ok": True})

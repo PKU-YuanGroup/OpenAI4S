@@ -109,6 +109,17 @@ class AnnotationRepository:
             rows = self._connection.execute(sql, tuple(params)).fetchall()
         return [dict(row) for row in rows]
 
+    def is_reserved(self, annotation_id: str) -> bool:
+        """Is this pin held by an in-flight request?
+
+        The public PATCH/DELETE routes are outside the admission path, so
+        without this a client could move a `reserved` row to `open` or delete
+        it while the turn quoting it was still in flight -- breaking
+        exactly-once from a direction the admission code never sees.
+        """
+        row = self.get(annotation_id)
+        return bool(row and row.get("status") == "reserved")
+
     def update(
         self,
         annotation_id: str,
@@ -218,11 +229,33 @@ class AnnotationRepository:
             self._connection.commit()
             return int(cursor.rowcount or 0)
 
-    def finalize_sent(self, reservation_id: str) -> int:
-        """Consume this reservation. One statement, so all-or-none."""
+    def finalize_sent(
+        self, reservation_id: str, *, expected_ids: list[str] | None = None
+    ) -> bool:
+        """Consume this reservation, all of it or none of it.
+
+        `expected_ids` is the exact set the prompt quoted. Finalising by
+        reservation id alone would consume "whatever is still reserved", which
+        is a different set the moment anything else has touched a row -- and it
+        would report success having consumed fewer rows than the message
+        carried. Checked and applied inside one lock so the count cannot change
+        between the two.
+        """
         if not reservation_id:
-            return 0
+            return False
         with self._lock:
+            held = {
+                row["annotation_id"]
+                for row in self._connection.execute(
+                    "SELECT annotation_id FROM annotations "
+                    "WHERE reservation_id=? AND status='reserved'",
+                    (reservation_id,),
+                ).fetchall()
+            }
+            if expected_ids is not None and held != set(expected_ids):
+                return False
+            if not held:
+                return False
             cursor = self._connection.execute(
                 f"UPDATE annotations SET status='sent', reservation_id=NULL, "
                 f"updated_at={self._clock_ms()} "
@@ -230,7 +263,7 @@ class AnnotationRepository:
                 (reservation_id,),
             )
             self._connection.commit()
-            return int(cursor.rowcount or 0)
+            return int(cursor.rowcount or 0) == len(held)
 
     def delete(self, annotation_id: str) -> None:
         self._execute(

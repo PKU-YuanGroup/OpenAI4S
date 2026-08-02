@@ -523,7 +523,12 @@ CREATE TABLE IF NOT EXISTS annotations (
     checksum       TEXT,
     number         INTEGER NOT NULL,   -- pin ordinal within (frame,artifact)
     body           TEXT NOT NULL,      -- the comment
-    status         TEXT NOT NULL DEFAULT 'open',   -- open|sent|resolved
+    -- Which in-flight request holds this pin. Admission is exactly-once: a
+    -- request claims `open` rows atomically into `reserved` under its own id,
+    -- and only what it claimed is quoted into the prompt. NULL whenever the
+    -- row is not held.
+    reservation_id TEXT,
+    status         TEXT NOT NULL DEFAULT 'open',   -- open|reserved|sent|resolved
     created_at     INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL
 );
@@ -1094,10 +1099,44 @@ class Store:
                         self._apply_annotation_version_binding,
                     ),
                     13: ("memory_updated_at", self._apply_memory_updated_at),
+                    14: (
+                        "annotation_reservation",
+                        self._apply_annotation_reservation,
+                    ),
                 },
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+
+    def _apply_annotation_reservation(self, conn: sqlite3.Connection) -> None:
+        """Version 14: which in-flight request holds a pin.
+
+        Added first to the ad-hoc add-column pass alone, which is why this
+        exists. A *fresh* database gets the column from `CREATE TABLE`, so
+        every test passed -- while an existing v13 install, meaning every
+        install that already has data in it, would reach an
+        `UPDATE annotations SET ... reservation_id=?` naming a column its table
+        does not have. The blind spot is always the same one: fresh and
+        upgraded are two different schemas, and only the fresh one is what
+        tests build by default.
+        """
+        try:
+            conn.execute("ALTER TABLE annotations ADD COLUMN reservation_id TEXT")
+        except sqlite3.OperationalError as exc:
+            if not _is_duplicate_column(exc):
+                raise
+        # Unique per live reservation, so two requests cannot share an id and a
+        # release cannot free somebody else's claim. Partial, because NULL is
+        # the resting state of nearly every row.
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_annot_reservation_row "
+            "ON annotations(reservation_id, annotation_id) "
+            "WHERE reservation_id IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_annot_reservation "
+            "ON annotations(reservation_id) WHERE reservation_id IS NOT NULL"
+        )
 
     def _apply_memory_updated_at(self, conn: sqlite3.Connection) -> None:
         """Version 13: record when a memory was last edited.
@@ -3324,8 +3363,15 @@ class Store:
     def release_annotations(self, reservation_id: str) -> int:
         return self._annotations.release(reservation_id)
 
-    def finalize_annotations_sent(self, reservation_id: str) -> int:
-        return self._annotations.finalize_sent(reservation_id)
+    def finalize_annotations_sent(
+        self, reservation_id: str, *, expected_ids: list[str] | None = None
+    ) -> bool:
+        return self._annotations.finalize_sent(
+            reservation_id, expected_ids=expected_ids
+        )
+
+    def annotation_is_reserved(self, annotation_id: str) -> bool:
+        return self._annotations.is_reserved(annotation_id)
 
     def delete_annotation(self, annotation_id: str) -> None:
         self._annotations.delete(annotation_id)

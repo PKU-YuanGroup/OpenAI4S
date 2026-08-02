@@ -600,3 +600,89 @@ def test_an_existing_install_gains_the_binding_columns(tmp_path):
         assert (saved["version_id"], saved["checksum"]) == ("v-1", "deadbeef")
     finally:
         store.close()
+
+
+def test_a_v13_install_gains_the_reservation_column(tmp_path):
+    """The fresh-vs-upgraded blind spot again, and the same shape of bug.
+
+    `reservation_id` was added only to the ad-hoc add-column pass, not as a
+    numbered migration, and `SCHEMA_VERSION` was left at 13. A *fresh*
+    database gets the column from `CREATE TABLE`, so every test passed -- while
+    an existing v13 install, which is every install that already exists, would
+    reach an `UPDATE annotations SET ... reservation_id=?` naming a column its
+    table does not have. Admission would fail on exactly the databases that
+    have data in them.
+
+    Driven by building a real v13 database and opening a Store on it, which is
+    the upgrade path a user actually takes.
+    """
+    db = tmp_path / "v13.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(_schema_sql())
+    columns = [
+        row[1]
+        for row in conn.execute("PRAGMA table_info(annotations)")
+        if row[1] != "reservation_id"
+    ]
+    conn.execute(f"CREATE TABLE _an AS SELECT {','.join(columns)} FROM annotations")
+    conn.execute("DROP TABLE annotations")
+    conn.execute("ALTER TABLE _an RENAME TO annotations")
+    conn.execute("PRAGMA user_version = 13")
+    conn.commit()
+    conn.close()
+
+    with sqlite3.connect(str(db)) as probe:
+        assert "reservation_id" not in {
+            row[1] for row in probe.execute("PRAGMA table_info(annotations)")
+        }
+
+    store = Store(db)
+    try:
+        after = {
+            row[1] for row in store._conn.execute("PRAGMA table_info(annotations)")
+        }
+        assert "reservation_id" in after
+        # The version moved, and the migration is in the auditable record.
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] >= 14
+        names = {
+            row["name"]
+            for row in store._conn.execute("SELECT name FROM schema_migrations")
+        }
+        assert "annotation_reservation" in names, names
+
+        # ...and admission actually works on the upgraded database, which is
+        # the thing the column exists for.
+        root = store.new_frame(kind="turn", project_id="p")
+        annotation = store.add_annotation(
+            root_frame_id=root,
+            artifact_id="a-1",
+            artifact_name="plot.png",
+            rel_x=0.5,
+            rel_y=0.5,
+            body="pin",
+        )
+        claimed = store.reserve_annotations(
+            root_frame_id=root,
+            annotation_ids=[annotation["annotation_id"]],
+            reservation_id="resv-upgraded",
+        )
+        assert [row["annotation_id"] for row in claimed] == [
+            annotation["annotation_id"]
+        ]
+        assert store.finalize_annotations_sent("resv-upgraded") == 1
+    finally:
+        store.close()
+
+
+def test_a_fresh_database_declares_the_reservation_column_canonically(tmp_path):
+    """A column that exists only via the add-column pass is a column the
+    canonical schema does not describe -- so the two definitions of "an
+    annotations table" disagree, and only the upgrade path is exercised."""
+    store = Store(tmp_path / "fresh.db")
+    try:
+        assert "reservation_id" in {
+            row[1] for row in store._conn.execute("PRAGMA table_info(annotations)")
+        }
+    finally:
+        store.close()
+    assert "reservation_id" in _schema_sql()

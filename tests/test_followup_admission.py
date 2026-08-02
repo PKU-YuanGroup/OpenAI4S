@@ -86,6 +86,26 @@ class _Client:
         handler._route("POST")
         return sent["code"], sent["body"]
 
+    def post_method(self, method, path, body):
+        handler = object.__new__(self._handler_class)
+        handler._correlation_id = "req-1"
+        sent: dict = {}
+
+        def _send(code, payload, ctype, extra=None):
+            sent["code"] = code
+            sent["body"] = json.loads(payload.decode("utf-8"))
+
+        handler._send = _send
+        handler.command = method
+        handler.path = f"/api/v1{path}"
+        handler.headers = {
+            "Content-Length": "0",
+            local_auth.TOKEN_HEADER: self._token,
+        }
+        handler._body = lambda: body
+        handler._route(method)
+        return sent["code"], sent["body"]
+
     def message(self, text, **extra):
         return self.post(f"/frames/{self.frame_id}/message", {"request": text, **extra})
 
@@ -488,4 +508,97 @@ def test_a_pending_consume_is_reported_as_pending(client, monkeypatch):
     assert status == 202, (status, body)
     assert body["annotations"] == "pending"
     # ...and the id it names is the one a reconcile would ask about.
+    assert _status(client, annotation_id) == "reserved"
+
+
+# --------------------------------------------------------------------------
+# a reserved pin is held, and the public routes must respect that
+# --------------------------------------------------------------------------
+
+
+def _reserve(client, annotation_id, reservation_id="resv-test"):
+    return client.store.reserve_annotations(
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+        reservation_id=reservation_id,
+    )
+
+
+def test_a_reserved_pin_cannot_be_edited_out_from_under_the_turn(client):
+    """`PATCH /annotations/{id}` set `status` from the request body with no
+    check at all, so a client could move a `reserved` row to `open` or `sent`
+    while the turn holding it was still in flight -- breaking exactly-once from
+    outside the admission path entirely."""
+    annotation_id = _pin(client)
+    assert _reserve(client, annotation_id)
+
+    status, _body = client.post(f"/annotations/{annotation_id}", {"status": "open"})
+
+    assert status == 409, status
+    assert _status(client, annotation_id) == "reserved"
+
+
+def test_a_reserved_pin_cannot_be_deleted_out_from_under_the_turn(client):
+    annotation_id = _pin(client)
+    assert _reserve(client, annotation_id)
+
+    status, _body = client.post_method("DELETE", f"/annotations/{annotation_id}", {})
+
+    assert status == 409, status
+    assert client.store.get_annotation(annotation_id) is not None
+
+
+def test_an_open_pin_is_still_editable_and_deletable(client):
+    """The guard must be about the reservation, not about annotations."""
+    annotation_id = _pin(client)
+    status, _ = client.post(f"/annotations/{annotation_id}", {"body": "edited"})
+    assert status == 200, status
+    assert client.store.get_annotation(annotation_id)["body"] == "edited"
+
+    status, _ = client.post_method("DELETE", f"/annotations/{annotation_id}", {})
+    assert status == 200, status
+    assert client.store.get_annotation(annotation_id) is None
+
+
+def test_a_finalize_names_the_exact_set_it_reserved(client):
+    """All-or-none over an *expected* set, not "whatever is still reserved".
+
+    Finalising by reservation id alone would consume a row that something else
+    had since attached to the same id, and would silently succeed having
+    consumed fewer rows than the prompt quoted.
+    """
+    first = _pin(client)
+    second = _pin(client, body="second pin")
+    claimed = client.store.reserve_annotations(
+        root_frame_id=client.frame_id,
+        annotation_ids=[first, second],
+        reservation_id="resv-exact",
+    )
+    assert len(claimed) == 2
+
+    # One row disappears underneath the reservation.
+    client.store._annotations._execute(
+        "UPDATE annotations SET status='open', reservation_id=NULL "
+        "WHERE annotation_id=?",
+        (second,),
+    )
+
+    consumed = client.store.finalize_annotations_sent(
+        "resv-exact", expected_ids=[first, second]
+    )
+    assert consumed is False, "a partial finalize reported success"
+    # All-or-none: the surviving row is not consumed either.
+    assert _status(client, first) == "reserved"
+
+
+def test_a_zero_row_claim_reports_none_rather_than_sent(client):
+    """A concurrent loser claims nothing. Saying `sent` would tell the client
+    its pins were consumed by a message that never carried them."""
+    annotation_id = _pin(client)
+    assert _reserve(client, annotation_id, "resv-winner")
+
+    status, body = client.message("go", annotation_ids=[annotation_id], wait=False)
+    assert status == 202, (status, body)
+    assert body.get("annotations") == "none", body
+    # The winner still holds it.
     assert _status(client, annotation_id) == "reserved"

@@ -98,6 +98,12 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # only `created_at`, correcting a stale instruction left the correction
         # expiring on the original's clock.
         "memory_updated_at",
+        # Which in-flight request holds a pin. Admission has to be exactly-once,
+        # and it cannot be without somewhere durable to record the claim -- so
+        # this is a column, not a process-local set. It arrived first in the
+        # ad-hoc add-column pass alone, which meant a fresh database had it and
+        # every database with data in it did not.
+        "annotation_reservation",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
