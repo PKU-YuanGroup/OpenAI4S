@@ -104,6 +104,10 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # ad-hoc add-column pass alone, which meant a fresh database had it and
         # every database with data in it did not.
         "annotation_reservation",
+        # A reservation column says a pin is held; it cannot say by which
+        # request, for which job, or whether the answer reached the client.
+        # After a lost response that is the only question worth asking.
+        "annotation_admission_ledger",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

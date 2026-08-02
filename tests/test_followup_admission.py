@@ -602,3 +602,181 @@ def test_a_zero_row_claim_reports_none_rather_than_sent(client):
     assert body.get("annotations") == "none", body
     # The winner still holds it.
     assert _status(client, annotation_id) == "reserved"
+
+
+def test_a_reservation_cannot_be_released_from_another_frame(client, tmp_path):
+    """Scoping is what makes a reservation id safe to accept from a caller.
+
+    `release`/`finalize` keyed on the reservation id alone would let a request
+    in one session free or consume a claim held in another -- the id is the
+    only thing they check, and ids travel in responses.
+    """
+    mine = _pin(client)
+    other_frame = client.store.new_frame(kind="turn", project_id="p")
+    claimed = client.store.reserve_annotations(
+        root_frame_id=client.frame_id,
+        annotation_ids=[mine],
+        reservation_id="resv-scoped",
+    )
+    assert claimed
+
+    # A caller naming the right reservation but the wrong frame gets nothing.
+    assert (
+        client.store.release_annotations("resv-scoped", root_frame_id=other_frame) == 0
+    )
+    assert _status(client, mine) == "reserved"
+    assert (
+        client.store.finalize_annotations_sent(
+            "resv-scoped", root_frame_id=other_frame, expected_ids=[mine]
+        )
+        is False
+    )
+    assert _status(client, mine) == "reserved"
+
+    # ...and the owning frame still can.
+    assert (
+        client.store.finalize_annotations_sent(
+            "resv-scoped", root_frame_id=client.frame_id, expected_ids=[mine]
+        )
+        is True
+    )
+    assert _status(client, mine) == "sent"
+
+
+def test_a_reservation_id_is_unique_enough_to_be_a_key(client):
+    """A short id would collide across sessions and across restarts, and the
+    thing it keys is a claim on someone's unpublished comment."""
+    seen = set()
+    for index in range(50):
+        annotation_id = _pin(client, body=f"pin {index}")
+        _status_before = _status(client, annotation_id)
+        status, body = client.message(
+            f"turn {index}", annotation_ids=[annotation_id], wait=False
+        )
+        assert status == 202
+        reservation = body["annotation_reservation_id"]
+        assert reservation not in seen
+        seen.add(reservation)
+        assert len(reservation) >= 20, reservation
+
+
+def test_the_waiting_branch_reports_the_same_admission_facts(client):
+    """`wait:true` and `wait:false` are two projections of one turn.
+
+    A client that waits must not be told less about its own pins than one that
+    does not -- it is the branch a script uses, and the branch with no socket
+    to reconcile from later.
+    """
+    annotation_id = _pin(client)
+    status, body = client.message("go", annotation_ids=[annotation_id], wait=True)
+
+    assert status in (200, 202), (status, body)
+    assert body.get("annotations") == "sent", body
+    assert body.get("annotation_reservation_id"), body
+
+
+def test_the_waiting_branch_reports_pending_too(client, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("the store went away")
+
+    monkeypatch.setattr(client.store, "finalize_annotations_sent", boom)
+    annotation_id = _pin(client)
+    status, body = client.message("go", annotation_ids=[annotation_id], wait=True)
+
+    assert status in (200, 202), (status, body)
+    assert body.get("annotations") == "pending", body
+    assert _status(client, annotation_id) == "reserved"
+
+
+# --------------------------------------------------------------------------
+# the admission ledger: what a reconcile reads after a lost response
+# --------------------------------------------------------------------------
+
+
+def test_an_accepted_admission_is_recorded_with_its_correlation(client):
+    """The 202 can be lost -- a dropped connection, a closed tab, a reload.
+
+    The client then knows only that it sent *something*. Without a durable
+    record tying the reservation to the request, the job and the message, there
+    is nothing to reconcile against, and the only options are to resend (double
+    work) or to abandon the pins (silent loss).
+    """
+    annotation_id = _pin(client)
+    status, body = client.message("go", annotation_ids=[annotation_id], wait=False)
+    assert status == 202
+
+    record = client.store.get_admission(body["annotation_reservation_id"])
+    assert record is not None, "the admission was not recorded"
+    assert record["root_frame_id"] == client.frame_id
+    assert record["state"] == "sent"
+    assert record["job_id"] == body["job_id"]
+    assert record["request_id"] == body["request_id"]
+    assert record["annotation_ids"] == [annotation_id]
+
+
+def test_a_reconcile_answers_what_happened_to_a_lost_response(client):
+    """The recovery path, driven the way a reloaded browser would use it."""
+    annotation_id = _pin(client)
+    _status_code, body = client.message(
+        "go", annotation_ids=[annotation_id], wait=False
+    )
+    reservation = body["annotation_reservation_id"]
+
+    reconciled = client.runner.reconcile_admission(client.frame_id, reservation)
+    assert reconciled["state"] == "sent"
+    assert reconciled["annotations"] == [annotation_id]
+    assert reconciled["request_id"] == body["request_id"]
+
+
+def test_a_reconcile_from_another_frame_learns_nothing(client):
+    """A reservation id is a value a client holds, so the lookup is scoped."""
+    annotation_id = _pin(client)
+    _status_code, body = client.message(
+        "go", annotation_ids=[annotation_id], wait=False
+    )
+    other = client.store.new_frame(kind="turn", project_id="p")
+
+    assert (
+        client.runner.reconcile_admission(other, body["annotation_reservation_id"])
+        is None
+    )
+
+
+def test_a_refused_admission_is_recorded_as_released(client):
+    """A reconcile must be able to say "released, retry" as confidently as it
+    says "sent, do not"."""
+    annotation_id = _pin(client)
+    status, _ = client.message("x" * (8 * 1024 * 1024), annotation_ids=[annotation_id])
+    assert status == 413
+
+    records = client.store.list_admissions(client.frame_id)
+    assert records, "the refused admission left no trace to reconcile against"
+    assert records[-1]["state"] == "released"
+    assert _status(client, annotation_id) == "open"
+
+
+def test_a_reservation_stranded_by_a_crash_is_recovered_at_startup(client, tmp_path):
+    """A process that dies between reserve and finalize leaves `reserved` rows
+    that nothing will ever release. On the next start they are neither sent nor
+    available, and no live request holds them -- so recovery puts them back."""
+    annotation_id = _pin(client)
+    client.store.reserve_annotations(
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+        reservation_id="resv-crashed",
+    )
+    client.store.record_admission(
+        reservation_id="resv-crashed",
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+        request_id="req-crashed",
+        job_id="job-crashed",
+        state="reserved",
+    )
+    assert _status(client, annotation_id) == "reserved"
+
+    recovered = client.store.recover_stranded_admissions()
+
+    assert recovered == 1, recovered
+    assert _status(client, annotation_id) == "open"
+    assert client.store.get_admission("resv-crashed")["state"] == "released"

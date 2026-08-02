@@ -532,6 +532,28 @@ CREATE TABLE IF NOT EXISTS annotations (
     created_at     INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL
 );
+-- One row per attempt to admit pinned comments into a message.
+--
+-- A 202 can be lost: a dropped connection, a closed tab, a reload. The client
+-- then knows only that it sent something, and without a durable record tying
+-- the reservation to the request, the job and the frame there is nothing to
+-- reconcile against -- leaving only "resend" (double work) or "give up"
+-- (silent loss of the user's comments).
+CREATE TABLE IF NOT EXISTS annotation_admissions (
+    reservation_id TEXT PRIMARY KEY,
+    root_frame_id  TEXT NOT NULL,
+    annotation_ids TEXT NOT NULL,      -- JSON array, the exact claimed set
+    request_id     TEXT,
+    job_id         TEXT,
+    message_id     TEXT,
+    state          TEXT NOT NULL,      -- reserved|sent|pending|released
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_admission_frame
+    ON annotation_admissions(root_frame_id);
+CREATE INDEX IF NOT EXISTS ix_admission_state
+    ON annotation_admissions(state);
 CREATE INDEX IF NOT EXISTS ix_annot_frame    ON annotations(root_frame_id);
 CREATE INDEX IF NOT EXISTS ix_annot_artifact ON annotations(artifact_id);
 
@@ -1103,10 +1125,43 @@ class Store:
                         "annotation_reservation",
                         self._apply_annotation_reservation,
                     ),
+                    15: (
+                        "annotation_admission_ledger",
+                        self._apply_annotation_admission_ledger,
+                    ),
                 },
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+
+    def _apply_annotation_admission_ledger(self, conn: sqlite3.Connection) -> None:
+        """Version 15: a durable record of each admission attempt.
+
+        The reservation column says a pin is held; it cannot say by which
+        request, for which job, or whether the answer reached the client. After
+        a lost response that is the only question worth asking, so it needs a
+        row of its own rather than an inference from status.
+        """
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS annotation_admissions ("
+            "reservation_id TEXT PRIMARY KEY,"
+            "root_frame_id TEXT NOT NULL,"
+            "annotation_ids TEXT NOT NULL,"
+            "request_id TEXT,"
+            "job_id TEXT,"
+            "message_id TEXT,"
+            "state TEXT NOT NULL,"
+            "created_at INTEGER NOT NULL,"
+            "updated_at INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_admission_frame "
+            "ON annotation_admissions(root_frame_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_admission_state "
+            "ON annotation_admissions(state)"
+        )
 
     def _apply_annotation_reservation(self, conn: sqlite3.Connection) -> None:
         """Version 14: which in-flight request holds a pin.
@@ -3351,6 +3406,104 @@ class Store:
     def mark_annotations_sent(self, annotation_ids: list[str]) -> None:
         self._annotations.mark_sent(annotation_ids)
 
+    # --- admission ledger -------------------------------------------------
+    def record_admission(
+        self,
+        *,
+        reservation_id: str,
+        root_frame_id: str,
+        annotation_ids: list[str],
+        request_id: str | None = None,
+        job_id: str | None = None,
+        message_id: str | None = None,
+        state: str = "reserved",
+    ) -> None:
+        now = _now_ms()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO annotation_admissions(reservation_id,root_frame_id,"
+                "annotation_ids,request_id,job_id,message_id,state,created_at,"
+                "updated_at) VALUES(?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(reservation_id) DO UPDATE SET "
+                "request_id=excluded.request_id, job_id=excluded.job_id, "
+                "message_id=excluded.message_id, state=excluded.state, "
+                "updated_at=excluded.updated_at",
+                (
+                    reservation_id,
+                    root_frame_id,
+                    json.dumps(list(annotation_ids)),
+                    request_id,
+                    job_id,
+                    message_id,
+                    state,
+                    now,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+    def set_admission_state(self, reservation_id: str, state: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE annotation_admissions SET state=?, updated_at=? "
+                "WHERE reservation_id=?",
+                (state, _now_ms(), reservation_id),
+            )
+            self._conn.commit()
+
+    def get_admission(
+        self, reservation_id: str, *, root_frame_id: str | None = None
+    ) -> dict | None:
+        sql = "SELECT * FROM annotation_admissions WHERE reservation_id=?"
+        params: list[Any] = [reservation_id]
+        if root_frame_id:
+            sql += " AND root_frame_id=?"
+            params.append(root_frame_id)
+        with self._lock:
+            row = self._conn.execute(sql, tuple(params)).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        record["annotation_ids"] = json.loads(record["annotation_ids"] or "[]")
+        return record
+
+    def list_admissions(self, root_frame_id: str) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM annotation_admissions WHERE root_frame_id=? "
+                "ORDER BY created_at",
+                (root_frame_id,),
+            ).fetchall()
+        out = []
+        for row in rows:
+            record = dict(row)
+            record["annotation_ids"] = json.loads(record["annotation_ids"] or "[]")
+            out.append(record)
+        return out
+
+    def recover_stranded_admissions(self) -> int:
+        """Release reservations no live request can still be holding.
+
+        A process that dies between reserve and finalize leaves `reserved` rows
+        that nothing will ever release: they are neither sent nor available,
+        and the comments are invisible in the composer forever. At startup no
+        request is in flight by definition, so anything still `reserved` is
+        stranded.
+        """
+        recovered = 0
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT reservation_id, root_frame_id FROM annotation_admissions "
+                "WHERE state IN ('reserved','pending')"
+            ).fetchall()
+        for row in rows:
+            if self._annotations.release(
+                row["reservation_id"], root_frame_id=row["root_frame_id"]
+            ):
+                recovered += 1
+            self.set_admission_state(row["reservation_id"], "released")
+        return recovered
+
     def reserve_annotations(
         self, *, root_frame_id: str, annotation_ids: list[str], reservation_id: str
     ) -> list[dict]:
@@ -3360,14 +3513,22 @@ class Store:
             reservation_id=reservation_id,
         )
 
-    def release_annotations(self, reservation_id: str) -> int:
-        return self._annotations.release(reservation_id)
+    def release_annotations(
+        self, reservation_id: str, *, root_frame_id: str | None = None
+    ) -> int:
+        return self._annotations.release(reservation_id, root_frame_id=root_frame_id)
 
     def finalize_annotations_sent(
-        self, reservation_id: str, *, expected_ids: list[str] | None = None
+        self,
+        reservation_id: str,
+        *,
+        expected_ids: list[str] | None = None,
+        root_frame_id: str | None = None,
     ) -> bool:
         return self._annotations.finalize_sent(
-            reservation_id, expected_ids=expected_ids
+            reservation_id,
+            expected_ids=expected_ids,
+            root_frame_id=root_frame_id,
         )
 
     def annotation_is_reserved(self, annotation_id: str) -> bool:

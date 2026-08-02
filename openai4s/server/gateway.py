@@ -4905,6 +4905,27 @@ class SessionRunner:
             raise
         return job
 
+    def reconcile_admission(
+        self, root_frame_id: str, reservation_id: str
+    ) -> dict | None:
+        """What happened to one admission, for a client whose answer was lost.
+
+        Scoped by frame: a reservation id travels in a response, so it is a
+        value a caller holds rather than a capability. Returns None when this
+        session has no such admission, which is the same answer a caller
+        guessing an id deserves.
+        """
+        record = self.store.get_admission(reservation_id, root_frame_id=root_frame_id)
+        if record is None:
+            return None
+        return {
+            "reservation_id": record["reservation_id"],
+            "state": record["state"],
+            "annotations": record["annotation_ids"],
+            "request_id": record["request_id"],
+            "job_id": record["job_id"],
+        }
+
     def submit_review(self, root_frame_id: str, project_id: str) -> MessageJob:
         return self.reviews.submit(root_frame_id, project_id)
 
@@ -9483,6 +9504,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         annotation_ids=ann_ids,
                         reservation_id=reservation_id,
                     )
+                    if annos:
+                        # Durable before the submit, so a crash between here and
+                        # the answer still leaves something to reconcile against.
+                        store.record_admission(
+                            reservation_id=reservation_id,
+                            root_frame_id=fid,
+                            annotation_ids=[a["annotation_id"] for a in annos],
+                            state="reserved",
+                        )
                     block = _format_annotations_block(annos)
                     if block:
                         req = (req + "\n\n" + block).strip() if req.strip() else block
@@ -9504,7 +9534,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # only this request's reservation is released.
                     if reservation_id:
                         try:
-                            store.release_annotations(reservation_id)
+                            store.release_annotations(reservation_id, root_frame_id=fid)
+                            store.set_admission_state(reservation_id, "released")
                         except Exception:  # noqa: BLE001
                             traceback.print_exc()
                     raise
@@ -9530,6 +9561,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         if not store.finalize_annotations_sent(
                             reservation_id,
                             expected_ids=[a["annotation_id"] for a in annos],
+                            root_frame_id=fid,
                         ):
                             # The set moved underneath the reservation. Neither
                             # consumed nor free: say so rather than claim it.
@@ -9542,6 +9574,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         # double-spent, and the answer says so rather than
                         # claiming they were consumed.
                         annotations_state = "pending"
+                        traceback.print_exc()
+                if reservation_id:
+                    try:
+                        store.record_admission(
+                            reservation_id=reservation_id,
+                            root_frame_id=fid,
+                            annotation_ids=[a["annotation_id"] for a in annos],
+                            request_id=job.request_id,
+                            job_id=job.job_id,
+                            state=annotations_state
+                            if annotations_state != "none"
+                            else "released",
+                        )
+                    except Exception:  # noqa: BLE001
                         traceback.print_exc()
                 if b.get("wait", True) is False:
                     snapshot = runner.executions.snapshot(fid)
@@ -9590,7 +9636,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         202,
                     )
                 else:
-                    self._json(job.wait_result())
+                    # The same admission facts on both branches. `wait:true` is
+                    # the branch a script uses and the one with no socket to
+                    # reconcile from later, so telling it *less* about its own
+                    # pins than the async branch gets is exactly backwards.
+                    waited = job.wait_result()
+                    if reservation_id and isinstance(waited, dict):
+                        waited = {
+                            **waited,
+                            "annotations": annotations_state,
+                            "annotation_reservation_id": reservation_id,
+                        }
+                    self._json(waited)
                 return
             m = re.fullmatch(r"/frames/([^/]+)/cancel", sub)
             if m and method == "POST":

@@ -215,22 +215,33 @@ class AnnotationRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def release(self, reservation_id: str) -> int:
-        """Put this reservation's pins back to `open`. Only ever its own."""
+    def release(self, reservation_id: str, *, root_frame_id: str | None = None) -> int:
+        """Put this reservation's pins back to `open`. Only ever its own.
+
+        Scoped by frame as well as by id. A reservation id travels in a
+        response, so it is a value a caller holds -- and keyed on the id alone,
+        a request in one session could free a claim held in another.
+        """
         if not reservation_id:
             return 0
+        scope = " AND root_frame_id=?" if root_frame_id else ""
+        params = (reservation_id, root_frame_id) if root_frame_id else (reservation_id,)
         with self._lock:
             cursor = self._connection.execute(
                 f"UPDATE annotations SET status='open', reservation_id=NULL, "
                 f"updated_at={self._clock_ms()} "
-                f"WHERE reservation_id=? AND status='reserved'",
-                (reservation_id,),
+                f"WHERE reservation_id=? AND status='reserved'{scope}",
+                params,
             )
             self._connection.commit()
             return int(cursor.rowcount or 0)
 
     def finalize_sent(
-        self, reservation_id: str, *, expected_ids: list[str] | None = None
+        self,
+        reservation_id: str,
+        *,
+        expected_ids: list[str] | None = None,
+        root_frame_id: str | None = None,
     ) -> bool:
         """Consume this reservation, all of it or none of it.
 
@@ -243,13 +254,15 @@ class AnnotationRepository:
         """
         if not reservation_id:
             return False
+        scope = " AND root_frame_id=?" if root_frame_id else ""
+        params = (reservation_id, root_frame_id) if root_frame_id else (reservation_id,)
         with self._lock:
             held = {
                 row["annotation_id"]
                 for row in self._connection.execute(
                     "SELECT annotation_id FROM annotations "
-                    "WHERE reservation_id=? AND status='reserved'",
-                    (reservation_id,),
+                    f"WHERE reservation_id=? AND status='reserved'{scope}",
+                    params,
                 ).fetchall()
             }
             if expected_ids is not None and held != set(expected_ids):
@@ -259,8 +272,8 @@ class AnnotationRepository:
             cursor = self._connection.execute(
                 f"UPDATE annotations SET status='sent', reservation_id=NULL, "
                 f"updated_at={self._clock_ms()} "
-                f"WHERE reservation_id=? AND status='reserved'",
-                (reservation_id,),
+                f"WHERE reservation_id=? AND status='reserved'{scope}",
+                params,
             )
             self._connection.commit()
             return int(cursor.rowcount or 0) == len(held)
