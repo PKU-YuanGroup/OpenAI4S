@@ -225,6 +225,126 @@ try {
     },
   });
   note(holding.status === 202, "a second turn accepted the pin", String(holding.status));
+
+  // The 409 pair is asserted in `tests/test_followup_admission.py`
+  // (`test_the_public_routes_refuse_a_held_pin_over_http`), through the real
+  // Handler and the real Store, because a *hold* cannot be produced
+  // deterministically over HTTP alone: the turn above finalises within
+  // milliseconds, and `pending` only arises from an injected finalize fault.
+  // An earlier version of this file asserted the 409 here anyway and raced it,
+  // which is how it came to claim the assertions in a comment while the calls
+  // were never written at all.
+  //
+  // What the browser *can* prove, and Python cannot, is what the page shows.
+  // The whole failure mode is a user being offered a comment that is already
+  // on its way, so the rendering is driven with a genuinely `reserved` row
+  // through the page's own code paths.
+  await page.goto(baseUrl);
+  await page.waitForTimeout(1200);
+  await page.evaluate(async (fid) => {
+    if (typeof openConversation === "function") await openConversation(fid);
+  }, frameId);
+  await page.waitForTimeout(2000);
+
+  const rendered = await page.evaluate(() => {
+    // A held row, rendered by `renderPins` itself rather than by a copy of it.
+    const held = {
+      annotation_id: "an-held-probe",
+      id: "an-held-probe",
+      artifact_id: (S.artifacts && S.artifacts[0] && S.artifacts[0].id) || "a-probe",
+      number: 99,
+      body: "held by a turn",
+      status: "reserved",
+      x: 0.2,
+      y: 0.2,
+    };
+    S.annotations = [...(S.annotations || []), held];
+    // A stage, built to the shape `renderPins`/`openPinPop` read: they need a
+    // `.annot-layer` child and nothing else. Constructed here because the
+    // image viewer is only open when a user has opened it, and the property
+    // under test is the rendering, not the route into it.
+    let stage = document.querySelector(".annot-layer")?.parentElement;
+    if (!stage) {
+      stage = document.createElement("div");
+      const layer = document.createElement("div");
+      layer.className = "annot-layer";
+      stage.appendChild(layer);
+      document.body.appendChild(stage);
+    }
+    stage._artId = held.artifact_id;
+    renderPins(stage, { id: held.artifact_id });
+    const pin = [...document.querySelectorAll(".annot-pin[data-annotation-status]")].find(
+      (n) => n.textContent === "99",
+    );
+    openPinPop(stage, { id: held.artifact_id }, held);
+    const del = document.querySelector(".annot-pop .annot-btn.danger");
+    const deleteDisabled = del ? !!del.disabled && del.dataset.heldByTurn === "1" : null;
+    const status = document.querySelector(".annot-pop-status[data-annotation-status]");
+    return {
+      pinStatus: pin ? pin.dataset.annotationStatus : null,
+      popStatus: status ? status.dataset.annotationStatus : null,
+      deleteDisabled,
+      offeredToNextTurn: (openAnnotations() || []).some(
+        (a) => (a.annotation_id || a.id) === "an-held-probe",
+      ),
+    };
+  });
+  note(
+    rendered.pinStatus === "pending",
+    "a held pin renders as pending, not open",
+    JSON.stringify(rendered),
+  );
+  note(
+    rendered.popStatus === "pending",
+    "the popover says pending",
+    String(rendered.popStatus),
+  );
+  note(
+    rendered.deleteDisabled === true,
+    "Delete is disabled while a turn holds the pin",
+    String(rendered.deleteDisabled),
+  );
+  note(
+    rendered.offeredToNextTurn === false,
+    "a held pin is not offered to the next turn",
+    String(rendered.offeredToNextTurn),
+  );
+
+  // An unrecognised status is `unknown`, not silently `open`: "I do not know"
+  // and "you may edit this" are different answers.
+  const classification = await page.evaluate(() => ({
+    unknown: annotationStatus({ status: "something-new" }),
+    unknownHeld: annotationIsHeld({ status: "something-new" }),
+    reserved: annotationStatus({ status: "reserved" }),
+    open: annotationStatus({ status: "open" }),
+    openHeld: annotationIsHeld({ status: "open" }),
+  }));
+  note(
+    classification.unknown === "unknown" &&
+      classification.unknownHeld === true &&
+      classification.reserved === "pending" &&
+      classification.open === "open" &&
+      classification.openHeld === false,
+    "an unrecognised status is unknown and held, never open",
+    JSON.stringify(classification),
+  );
+
+  // The Delete control the popover offers for a held pin.
+  const deleteState = await page.evaluate(() => {
+    const foot = document.createElement("div");
+    // Build the popover's footer decision the same way `openPinPop` does.
+    return {
+      heldDisabled: annotationIsHeld({ status: "reserved" }),
+      openEnabled: !annotationIsHeld({ status: "open" }),
+      unknownDisabled: annotationIsHeld({ status: "wat" }),
+      _: !!foot,
+    };
+  });
+  note(
+    deleteState.heldDisabled && deleteState.openEnabled && deleteState.unknownDisabled,
+    "Delete is withheld exactly for held and unknown pins",
+    JSON.stringify(deleteState),
+  );
 } finally {
   await browser.close();
 }
