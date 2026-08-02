@@ -389,11 +389,49 @@ try {
   );
   note(resentAfterTwo === 0, "neither turn was resent", `resent=${resentAfterTwo}`);
 
+  // The settled one goes; the one the server has never heard of STAYS, because
+  // it is still inside its dispatch lease. A 404 answers "not yet" and "never"
+  // with the same status, and deleting on the first is how a concurrent tab
+  // destroys the only handle on a send that is still in flight.
   const leftover = await page.evaluate((fid) => outstandingAdmissions(fid), frameId);
   note(
-    leftover.length === 0,
-    "both settled admissions were cleared, independently",
+    leftover.length === 1 && leftover[0] === twoOutstanding[1],
+    "the settled admission cleared and the fresh never-sent one was kept",
     JSON.stringify(leftover),
+  );
+
+  // Aged past the lease, the same 404 is taken at face value -- so a request
+  // that really never left cannot accumulate forever.
+  const aged = await page.evaluate(async (args) => {
+    const [fid, id] = args;
+    localStorage.setItem(
+      "openai4s.admission." + fid + "." + id,
+      String(Date.now() - 10 * 60 * 1000),
+    );
+    await reconcileLastAdmission(fid);
+    return outstandingAdmissions(fid);
+  }, [frameId, twoOutstanding[1]]);
+  note(aged.length === 0, "an aged never-sent admission is finally dropped", JSON.stringify(aged));
+
+  // A corrupt or future stamp is not a lease either: trusting one would let a
+  // bad value protect a key permanently.
+  const bogus = await page.evaluate(async (fid) => {
+    const out = {};
+    for (const [label, value] of [
+      ["garbage", "not-a-number"],
+      ["future", String(Date.now() + 10 * 60 * 1000)],
+      ["zero", "0"],
+    ]) {
+      localStorage.setItem("openai4s.admission." + fid + ".resv-bogus" + label + "0000000", value);
+      await reconcileLastAdmission(fid);
+      out[label] = outstandingAdmissions(fid).length;
+    }
+    return out;
+  }, frameId);
+  note(
+    bogus.garbage === 0 && bogus.future === 0 && bogus.zero === 0,
+    "a corrupt or future stamp confers no lease",
+    JSON.stringify(bogus),
   );
 
   const afterTwo = (await api(`/api/v1/frames/${frameId}/annotations`)).body;
@@ -409,6 +447,129 @@ try {
     "the pin on the turn that never left is the user's again",
     rowB ? rowB.status : "missing",
   );
+
+  // --- two real tabs, one localStorage, one pre-dispatch barrier ----------
+  //
+  // The race a single page cannot show. Tab A writes its admission key and has
+  // not sent the POST yet; tab B opens the same session and asks the server
+  // about that id. The server has genuinely never heard of it, so B gets 404 --
+  // a true answer. Acting on it was still wrong: deleting the key there, and
+  // then letting A's POST succeed with its response lost, leaves the comments
+  // unreconcilable from either tab.
+  //
+  // One BrowserContext, because that is what makes the two pages share
+  // localStorage; two contexts would be two browsers and would prove nothing.
+  const shared = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  try {
+    const pageA = await shared.newPage();
+    await authenticate(pageA, baseUrl);
+    const pageB = await shared.newPage();
+
+    const raceFrame = (
+      await api("/api/v1/frames", { method: "POST", data: { project_id: projectId } })
+    ).body;
+    const raceId = raceFrame && (raceFrame.id || raceFrame.frame_id);
+    const racePin = (
+      await api(`/api/v1/frames/${raceId}/annotations`, {
+        method: "POST",
+        data: { artifact_id: artifactId, body: "pinned in tab A", x: 0.3, y: 0.3 },
+      })
+    ).body.annotation.annotation_id;
+
+    // A's POST is held BEFORE it is forwarded, so while it is paused the
+    // daemon has no row for the id and B's 404 is genuine.
+    let held = null;
+    let posts = 0;
+    let releaseA = null;
+    const heldUntil = new Promise((resolve) => { releaseA = resolve; });
+    await pageA.route(`**/api/v1/frames/${raceId}/message`, async (route) => {
+      posts += 1;
+      held = true;
+      await heldUntil;
+      await route.fetch();               // the server really runs it...
+      await route.abort("connectionfailed");  // ...and A never sees the answer
+    });
+
+    await pageA.goto(baseUrl);
+    await pageA.waitForTimeout(1200);
+    await pageA.evaluate(async (fid) => {
+      if (typeof openConversation === "function") await openConversation(fid);
+    }, raceId);
+    await pageA.waitForTimeout(1200);
+    pageA.evaluate(async () => { try { await send("from tab A"); } catch {} });
+
+    // Wait for the key to be durable and the POST to be in flight.
+    let mintedId = null;
+    for (let i = 0; i < 60 && !(held && mintedId); i++) {
+      await pageA.waitForTimeout(100);
+      const ids = await pageA.evaluate((fid) => outstandingAdmissions(fid), raceId);
+      mintedId = ids[0] || null;
+    }
+    note(!!mintedId, "tab A stored its admission before dispatch", String(mintedId));
+    note(held === true, "tab A's POST is paused in flight", `posts=${posts}`);
+
+    // B now asks about it and is told 404, truthfully.
+    let bSaw404 = false;
+    pageB.on("response", (response) => {
+      if (/\/admissions\//.test(response.url()) && response.status() === 404) bSaw404 = true;
+    });
+    await pageB.goto(baseUrl);
+    await pageB.waitForTimeout(1200);
+    await pageB.evaluate(async (fid) => {
+      if (typeof openConversation === "function") await openConversation(fid);
+    }, raceId);
+    await pageB.waitForTimeout(2500);
+    note(bSaw404, "tab B was told 404 for an id the server has not seen yet", String(bSaw404));
+
+    const afterB = await pageB.evaluate((fid) => outstandingAdmissions(fid), raceId);
+    note(
+      afterB.includes(mintedId),
+      "tab B's 404 did NOT evict tab A's in-flight admission",
+      JSON.stringify(afterB),
+    );
+
+    // Watch BOTH tabs from here on. Either may be the one that settles it --
+    // A's own in-lease retry fires on a timer, and B re-asks on reload. The
+    // contract is that the id survives to be reconciled and then settles, not
+    // that one particular tab is the one to do it.
+    const answered = [];
+    const collect = (response) => {
+      const m = /\/admissions\/([^/?]+)/.exec(response.url());
+      if (m) answered.push([decodeURIComponent(m[1]), response.status()]);
+    };
+    pageA.on("response", collect);
+    pageB.on("response", collect);
+
+    // Let A through: the server takes the turn, A never learns.
+    releaseA();
+    await pageA.waitForTimeout(6000);
+
+    await pageB.goto(baseUrl);
+    await pageB.waitForTimeout(1200);
+    await pageB.evaluate(async (fid) => {
+      if (typeof openConversation === "function") await openConversation(fid);
+    }, raceId);
+    await pageB.waitForTimeout(3000);
+
+    note(
+      answered.some((pair) => pair[0] === mintedId && pair[1] === 200),
+      "after the POST landed, the surviving id reconciles 200 in a real tab",
+      JSON.stringify(answered),
+    );
+    const settled = await pageB.evaluate((fid) => outstandingAdmissions(fid), raceId);
+    note(settled.length === 0, "and the settled key is cleared", JSON.stringify(settled));
+    note(posts === 1, "the turn was sent exactly once across both tabs", `posts=${posts}`);
+
+    const raceRow = ((await api(`/api/v1/frames/${raceId}/annotations`)).body.annotations || [])
+      .find((a) => a.annotation_id === racePin);
+    note(
+      raceRow && raceRow.status === "sent",
+      "the pin the surviving admission named was really consumed",
+      raceRow ? raceRow.status : "missing",
+    );
+  } finally {
+    await shared.close();
+  }
 
   // --- a genuinely held pin refuses edit and delete with 409 --------------
   // Unique per run. A fixed id collides with the ledger row a previous run

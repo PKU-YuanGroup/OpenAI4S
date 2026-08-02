@@ -39,7 +39,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 from openai4s import memory_budget
@@ -4689,6 +4689,7 @@ class SessionRunner:
         plan: bool = False,
         annos: list | None = None,
         explore: bool = False,
+        on_admitted: Callable[[MessageJob], None] | None = None,
     ) -> MessageJob:
         """Start a user turn in a background thread.
 
@@ -4928,6 +4929,22 @@ class SessionRunner:
                 reset_correlation_id(token)
 
         try:
+            # Durable correlation BEFORE the worker exists.
+            #
+            # The admission ledger used to be stamped with this turn's request
+            # and job ids *after* `submit_message` returned -- so a transient
+            # write failure produced a 202 and a running turn whose ledger row
+            # still carried no correlation at all. That is byte-for-byte the
+            # shape a synchronous refusal leaves, and it is the one distinction
+            # a client whose 202 was lost has to make: resending is the right
+            # answer to a refusal and the wrong answer to an accepted turn.
+            #
+            # Here, and inside this `try`, so a failure takes the same
+            # unstarted-job path as a failed `Thread.start`: nothing runs, the
+            # pins go back, and the caller is told the turn was not accepted
+            # rather than being handed an accepted-but-uncorrelated job.
+            if on_admitted is not None:
+                on_admitted(job)
             t = threading.Thread(
                 target=carry_context(_target),
                 name=f"openai4s-turn-{root_frame_id}",
@@ -7993,6 +8010,32 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             return history
         return {**history, "status": service.status(name)}
 
+    def _require_canonical_session_root(frame_id: str) -> dict:
+        """The frame a pin or an admission may be written against.
+
+        Both routes took the id on trust. `store.get_frame(fid) or {}` meant a
+        frame that does not exist fell through to project `default` and reached
+        the reservation, so a request naming nothing wrote a real admission
+        ledger row -- an orphan, because `submit_message` refuses afterwards
+        and the refusal path only releases. A child frame did the same and was
+        worse: the row named the child as its root, and the deletion cascade
+        walks canonical roots, so deleting the session left it behind.
+
+        Checked before anything is written rather than after, because the write
+        is what has to not happen.
+        """
+        frame = store.get_frame(frame_id)
+        if not frame:
+            raise GatewayError(404, "session not found")
+        canonical = str(frame.get("root_frame_id") or frame.get("frame_id") or "")
+        if canonical != frame_id:
+            raise GatewayError(
+                404,
+                "comments belong to a Session, not to one of its sub-frames",
+                "not_a_session_root",
+            )
+        return frame
+
     def _require_session_writable(root_frame_id: str, operation: str) -> None:
         """Keep old lightweight test adapters compatible without weakening quarantine."""
 
@@ -9569,6 +9612,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 annos: list = []
                 reservation_id = ""
                 if ann_ids:
+                    # Before the reservation, not after it. The admission is a
+                    # durable row, and a request naming a missing or child
+                    # frame used to write one and only then be refused.
+                    _require_canonical_session_root(fid)
                     # Reserved, not read. `get_annotation` filters no status and
                     # dedupes nothing, so an already-`sent` id re-entered the
                     # prompt, a repeated id entered twice, and two concurrent
@@ -9617,6 +9664,45 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     block = _format_annotations_block(annos)
                     if block:
                         req = (req + "\n\n" + block).strip() if req.strip() else block
+                # The job id the refusal path must be able to retract,
+                # recorded BEFORE the write rather than after it.
+                #
+                # A commit whose outcome is unknown to the caller is the whole
+                # problem: wrapping the write and raising *after* it committed
+                # leaves the correlation durable while a flag set on the return
+                # path never gets set. Cleanup then falls back to a plain
+                # release and the row keeps its request and job ids -- still
+                # wearing the signature of accepted work. So the candidate is
+                # written down first and retracted unconditionally, by CAS on
+                # that exact id: if the write never landed the CAS matches
+                # nothing and the exact release runs instead.
+                correlated: dict = {}
+
+                def _persist_correlation(started_job) -> None:
+                    """Which request and job this admission belongs to, durable
+                    before the worker starts.
+
+                    Raising here is the point: `submit_message` runs this
+                    inside the same guard as `Thread.start`, so a failure
+                    aborts the unstarted turn instead of producing a 202 whose
+                    ledger row is indistinguishable from a refusal's.
+                    """
+                    if not reservation_id:
+                        return
+                    correlated["job_id"] = started_job.job_id
+                    if not store.update_admission(
+                        reservation_id,
+                        root_frame_id=fid,
+                        request_id=started_job.request_id,
+                        job_id=started_job.job_id,
+                    ):
+                        raise GatewayError(
+                            500,
+                            "the admission could not be recorded; the turn was "
+                            "not started",
+                            "admission_not_recorded",
+                        )
+
                 try:
                     job = runner.submit_message(
                         fid,
@@ -9626,6 +9712,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         plan=bool(b.get("plan")),
                         annos=annos,
                         explore=bool(b.get("explore")),
+                        on_admitted=_persist_correlation,
                     )
                 except BaseException:
                     # Every synchronous refusal lands here -- the 413 on an
@@ -9635,11 +9722,32 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # only this request's reservation is released.
                     if reservation_id:
                         try:
-                            # One call: `release_annotations` stamps the
-                            # ledger inside the same transaction as the rows.
-                            # No `job_id` is written, and that absence is the
-                            # discriminator -- a refused request never had one.
-                            store.release_annotations(reservation_id, root_frame_id=fid)
+                            # Two shapes of refusal, and they are not the
+                            # same cleanup.
+                            #
+                            # Refused before correlation: nothing was written,
+                            # so releasing the pins is the whole job, and the
+                            # absent job id is what marks it a refusal.
+                            #
+                            # Refused *after* correlation -- a `Thread.start`
+                            # that fails once the ids are already durable --
+                            # needs those ids retracted too. Left behind they
+                            # read as `released` with a request and a job,
+                            # which is the signature of accepted work, and a
+                            # reconcile would tell the client not to resend a
+                            # turn that never ran.
+                            retracted = False
+                            candidate = correlated.get("job_id")
+                            if candidate:
+                                retracted = store.abandon_admission(
+                                    reservation_id,
+                                    root_frame_id=fid,
+                                    job_id=candidate,
+                                )
+                            if not retracted:
+                                store.release_annotations(
+                                    reservation_id, root_frame_id=fid
+                                )
                         except Exception:  # noqa: BLE001
                             traceback.print_exc()
                     raise
@@ -9681,29 +9789,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         # claiming they were consumed.
                         annotations_state = "pending"
                         traceback.print_exc()
-                if reservation_id:
-                    # Unconditional, and correlation-only when the transition
-                    # was already terminal.
+                if reservation_id and annotations_state == "pending":
+                    # The only state this line still moves.
                     #
-                    # A turn that claimed nothing -- every pin filtered out, or
-                    # a concurrent loser -- is still work the server accepted,
-                    # and this was guarded on `annos`, so its ledger row kept
-                    # `request_id` and `job_id` NULL. That is the exact shape a
-                    # synchronous refusal leaves behind, so a client whose 202
-                    # was lost could not tell "accepted, nothing to consume"
-                    # from "never ran" -- and resending is the wrong answer to
-                    # one of them.
-                    #
-                    # `sent` and `released` are already written, in the same
-                    # transaction as the rows. Only the ambiguous outcome moves
-                    # state here.
+                    # Correlation is already durable -- `_persist_correlation`
+                    # wrote it before the worker started, which is what makes
+                    # an accepted turn distinguishable from a refusal even when
+                    # the 202 never arrives. `sent` and `released` are written
+                    # in the same transaction as the rows they describe. That
+                    # leaves `pending`: the consume neither confirmed nor
+                    # failed, which is the one outcome no other writer knows
+                    # about. It is a CAS in the Store, so it cannot overwrite a
+                    # terminal state that landed in between.
                     try:
                         store.update_admission(
-                            reservation_id,
-                            root_frame_id=fid,
-                            request_id=job.request_id,
-                            job_id=job.job_id,
-                            state="pending" if annotations_state == "pending" else None,
+                            reservation_id, root_frame_id=fid, state="pending"
                         )
                     except Exception:  # noqa: BLE001
                         traceback.print_exc()
@@ -10060,6 +10160,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if not body_text or not art_id:
                     self._json({"error": "artifact_id and body required"}, 400)
                     return
+                # A pin is Session-scoped, and `add_annotation` writes whatever
+                # root it is handed. A comment filed against a child frame is
+                # unreachable from the Session that owns it and survives that
+                # Session's deletion.
+                _require_canonical_session_root(fid)
                 # Bind the pin to the version on screen right now, not to the
                 # artifact. The client is not asked for it: a version id it
                 # supplied would be a claim about what it was displaying, and

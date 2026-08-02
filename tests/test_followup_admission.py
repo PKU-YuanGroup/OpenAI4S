@@ -27,6 +27,7 @@ reported it.
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -36,6 +37,7 @@ import pytest
 from openai4s.config import Config, LLMConfig
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
+from openai4s.store import Store
 
 
 class _Hub:
@@ -1649,3 +1651,460 @@ def test_the_admission_route_does_not_lean_on_the_deletion_cascade(client):
         "GET", f"/frames/{client.frame_id}/admissions/{reservation}", {}
     )
     assert status == 404, (status, body)
+
+
+def test_a_child_frame_cannot_be_admitted_against(client):
+    """The orphan this used to write.
+
+    `store.get_frame(fid) or {}` took the id on trust, so a request naming a
+    sub-frame reached the reservation and wrote a real ledger row naming the
+    *child* as its root. `submit_message` refused afterwards, so the turn never
+    ran -- but the row stayed, and the deletion cascade walks canonical roots,
+    so deleting the Session left it behind. Refused before anything is written,
+    because the write is what must not happen.
+    """
+    annotation_id = _pin(client)
+    child = client.store.new_frame(parent_id=client.frame_id, kind="delegate")
+    reservation = "resv-child-frame-admission1"
+
+    status, body = client.post(
+        f"/frames/{child}/message",
+        {
+            "request": "against a sub-frame",
+            "wait": False,
+            "annotation_ids": [annotation_id],
+            "annotation_reservation_id": reservation,
+        },
+    )
+    assert status == 404, (status, body)
+    assert client.store.get_admission(reservation) is None, "an orphan row was written"
+    # And the pin was never touched.
+    assert client.store.get_annotation(annotation_id)["status"] == "open"
+
+
+def test_a_frame_that_does_not_exist_cannot_be_admitted_against(client):
+    """The same guard, reached by the other route into it: a missing frame fell
+    through to project `default` and was admitted just as happily."""
+    annotation_id = _pin(client)
+    reservation = "resv-missing-frame-admission"
+
+    status, body = client.post(
+        "/frames/f-does-not-exist/message",
+        {
+            "request": "against nothing at all",
+            "wait": False,
+            "annotation_ids": [annotation_id],
+            "annotation_reservation_id": reservation,
+        },
+    )
+    assert status == 404, (status, body)
+    assert client.store.get_admission(reservation) is None
+    assert client.store.get_annotation(annotation_id)["status"] == "open"
+
+
+def test_a_pin_cannot_be_filed_against_a_child_frame(client):
+    """The other write on this path. A comment filed against a sub-frame is
+    unreachable from the Session that owns it and outlives that Session's
+    deletion."""
+    child = client.store.new_frame(parent_id=client.frame_id, kind="delegate")
+    before = len(client.store.list_annotations(child))
+
+    status, body = client.post(
+        f"/frames/{child}/annotations",
+        {
+            "artifact_id": "artifact-under-pin",
+            "body": "on a sub-frame",
+            "x": 0.5,
+            "y": 0.5,
+        },
+    )
+    assert status == 404, (status, body)
+    assert len(client.store.list_annotations(child)) == before
+
+
+class _watch_thread_start:
+    """Every turn thread that really started.
+
+    A refusal must not start one. Asserting only on side effects leaves the
+    case where the thread starts and dies before writing anything.
+    """
+
+    def __init__(self):
+        self.turns: list = []
+        self._real = threading.Thread.start
+        watcher = self
+
+        def _spy(thread, *args, **kwargs):
+            if (thread.name or "").startswith("openai4s-turn-"):
+                watcher.turns.append(thread.name)
+            return watcher._real(thread, *args, **kwargs)
+
+        threading.Thread.start = _spy
+
+    def stop(self):
+        threading.Thread.start = self._real
+
+
+def _watch_run_message(client):
+    """Record every entry into the turn body.
+
+    "No message row" is a weaker claim than "the worker never ran": a turn can
+    start, fail on the capture environment's absent provider, and write
+    nothing. The refusal contract is that it never begins.
+    """
+    seen: list = []
+    real = client.runner.run_message
+
+    def _spy(*args, **kwargs):
+        seen.append(args[:1])
+        return real(*args, **kwargs)
+
+    client.runner.run_message = _spy
+    return seen
+
+
+def _assert_clean_refusal(client, reservation, annotation_id):
+    """What a refused turn must leave behind, exactly.
+
+    `released` alone is not enough to assert -- it is what an *accepted*
+    zero-claim turn leaves too, and the whole point of writing correlation
+    before the worker starts is that `request_id`/`job_id` are the
+    discriminator. A refusal that keeps them reads as accepted work, and a
+    reconcile would tell the client not to resend a turn that never ran.
+    """
+    ledger = client.store.get_admission(reservation, root_frame_id=client.frame_id)
+    assert ledger is not None, "the admission row vanished"
+    assert ledger["state"] == "released", ledger
+    assert ledger["request_id"] is None, ledger
+    assert ledger["job_id"] is None, ledger
+    # The pin is the user's again, which is what makes a retry correct.
+    assert client.store.get_annotation(annotation_id)["status"] == "open"
+    # No turn ran, and none is queued or running.
+    assert client.store.list_messages(client.frame_id) == []
+    snapshot = client.runner.executions.snapshot(client.frame_id)
+    assert snapshot.get("queue") == [], snapshot
+    assert not client.runner.is_running(client.frame_id)
+    for job in client.runner._jobs.values():
+        assert job.done.is_set(), "a job is still running after a refusal"
+
+
+def _zero_claim_pin(client):
+    """A real pin this session cannot claim.
+
+    The zero-claim admission is the shape the defect lives in: its
+    `annotation_ids` is `[]` and its state is already `released` at reserve
+    time, so no finalize ever runs and `request_id`/`job_id` come from the
+    pre-start write alone. A locally-claimed pin would have been correlated by
+    `finalize_annotations_sent` regardless, which is why an earlier version of
+    these tests could not have failed on the old code.
+    """
+    elsewhere = client.runner.create_session(client.project_id)
+    return _pin_on(client.store, elsewhere)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["raise", "false", "commit-then-raise"],
+    ids=[
+        "the write raises",
+        "the write reports no row",
+        "the write commits and then raises",
+    ],
+)
+def test_a_ledger_write_failure_does_not_produce_an_accepted_uncorrelated_turn(
+    client, fault
+):
+    """The durability window between "accepted" and "recorded".
+
+    Correlation used to be written *after* `submit_message` returned, with the
+    result ignored -- so a transient failure there produced HTTP 202 and a
+    running turn whose ledger row carried no `request_id` and no `job_id`.
+    That is byte-for-byte what a synchronous refusal leaves behind, and telling
+    those two apart is the entire job of a reconcile after a lost 202:
+    resending is the right answer to one and the wrong answer to the other.
+
+    Both failure modes, because they are two different code paths through the
+    same guard -- an exception and a truthful "no row matched" -- and only one
+    of them was ever going to be written by accident.
+    """
+    foreign = _zero_claim_pin(client)
+    reservation = "resv-zero-claim-fault-0001"
+    ran = _watch_run_message(client)
+    started = _watch_thread_start()
+    real = client.store.update_admission
+    calls: list = []
+
+    def _fail_once(*args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            if fault == "raise":
+                raise sqlite3.OperationalError("database is locked")
+            if fault == "false":
+                return False
+            # The outcome-unknown commit: the row really is written, and the
+            # caller is told nothing but the exception. A flag set on the
+            # return path never gets set, so cleanup that depends on one leaves
+            # the correlation durable -- still wearing the signature of
+            # accepted work for a turn that never ran.
+            real(*args, **kwargs)
+            raise sqlite3.OperationalError("disk I/O error after commit")
+        return real(*args, **kwargs)
+
+    client.store.update_admission = _fail_once
+    try:
+        status, body = client.message(
+            "a turn that claims nothing, whose ledger write fails",
+            wait=False,
+            annotation_ids=[foreign],
+            annotation_reservation_id=reservation,
+        )
+    finally:
+        client.store.update_admission = real
+        started.stop()
+
+    assert status != 202, (status, body)
+    assert status >= 500, (status, body)
+    assert ran == [], "the worker ran despite the refusal"
+    assert started.turns == [], "a turn thread was started despite the refusal"
+
+    ledger = client.store.get_admission(reservation, root_frame_id=client.frame_id)
+    assert ledger is not None, "the admission row vanished"
+    assert ledger["annotation_ids"] == [], "this is not the zero-claim shape"
+    assert ledger["state"] == "released", ledger
+    assert ledger["request_id"] is None, ledger
+    assert ledger["job_id"] is None, ledger
+    assert client.store.list_messages(client.frame_id) == []
+    assert not client.runner.is_running(client.frame_id)
+
+
+def test_the_correlation_is_durable_before_the_worker_can_read_it(client):
+    """Ordering, asserted from inside the turn rather than after it.
+
+    "The ledger has the ids once the request returns" is a weaker claim than
+    the one that matters. The window this closes is the one where the worker is
+    already running and the row is not yet written -- so the check has to
+    happen at the moment the worker begins, on a second connection, before any
+    of the turn body has run.
+    """
+    foreign = _zero_claim_pin(client)
+    reservation = "resv-correlation-ordering01"
+    other = Store(client.store.db_path)
+    seen: list = []
+    real_run = client.runner.run_message
+
+    def _observe(*args, **kwargs):
+        seen.append(other.get_admission(reservation, root_frame_id=client.frame_id))
+        return real_run(*args, **kwargs)
+
+    client.runner.run_message = _observe
+    try:
+        status, body = client.message(
+            "a turn that claims nothing",
+            wait=False,
+            annotation_ids=[foreign],
+            annotation_reservation_id=reservation,
+        )
+        assert status == 202, (status, body)
+        for job in list(client.runner._jobs.values()):
+            job.done.wait(20)
+        assert seen, "the worker never ran, so this proves nothing about ordering"
+        first = seen[0]
+        assert first is not None, "the worker started before the ledger row existed"
+        assert first["job_id"], first
+        assert first["request_id"], first
+        assert first["state"] == "released", first
+    finally:
+        client.runner.run_message = real_run
+        other.close()
+
+
+def test_an_unstartable_worker_is_not_reported_as_accepted_either(client):
+    """The neighbouring failure, so the two share one path rather than one
+    being handled and the other forgotten."""
+    annotation_id = _pin(client)
+    reservation = "resv-thread-start-fails-01"
+    ran = _watch_run_message(client)
+    real_start = threading.Thread.start
+
+    def _refuse(self, *args, **kwargs):
+        if (self.name or "").startswith("openai4s-turn-"):
+            raise RuntimeError("can't start new thread")
+        return real_start(self, *args, **kwargs)
+
+    threading.Thread.start = _refuse
+    try:
+        status, body = client.message(
+            "the worker will not start",
+            wait=False,
+            annotation_ids=[annotation_id],
+            annotation_reservation_id=reservation,
+        )
+    finally:
+        threading.Thread.start = real_start
+
+    assert status != 202, (status, body)
+    assert ran == [], "the worker ran despite the refusal"
+    _assert_clean_refusal(client, reservation, annotation_id)
+
+
+def test_a_recovery_sweep_cannot_overwrite_a_finalize_that_won(client):
+    """A real interleave: two Stores on one file, with a barrier.
+
+    The sweep used to read its candidates, drop the lock, release, and stamp
+    `released` unconditionally. A live turn finalising in that gap set `sent`
+    -- and the sweep overwrote it. Terminal evidence going backwards: the
+    message carried the comments and the ledger says it did not, so a client
+    reconciling a lost 202 is told to send them again.
+
+    The finalize takes the write transaction FIRST and is held inside it, so
+    the sweep genuinely blocks on it rather than the two being sequenced by the
+    test. Nothing here edits a terminal state by hand -- an earlier version
+    finalised, then rewrote `sent` back to `pending` with raw SQL, which
+    removed both the race and the property under test.
+    """
+    other = Store(client.store.db_path)
+    try:
+        annotation_id = _pin(client)
+        client.store.reserve_with_admission(
+            reservation_id="resv-sweep-vs-finalize-1",
+            root_frame_id=client.frame_id,
+            annotation_ids=[annotation_id],
+        )
+
+        inside = threading.Event()
+        release = threading.Event()
+        outcome: dict = {}
+        real_clock = other._annotations._clock_ms
+
+        def _hold(*args, **kwargs):
+            # Called between `finalize_sent`'s SELECT and its UPDATE, which is
+            # inside its `BEGIN IMMEDIATE`. Holding here holds the write lock.
+            if not inside.is_set():
+                inside.set()
+                release.wait(10)
+            return real_clock(*args, **kwargs)
+
+        other._annotations._clock_ms = _hold
+
+        def _finalize():
+            try:
+                outcome["sent"] = other.finalize_annotations_sent(
+                    "resv-sweep-vs-finalize-1",
+                    root_frame_id=client.frame_id,
+                    expected_ids=[annotation_id],
+                    job_id="job-that-won",
+                )
+            except BaseException as error:  # noqa: BLE001
+                outcome["error"] = error
+
+        worker = threading.Thread(target=_finalize, daemon=True)
+        worker.start()
+        assert inside.wait(10), "the finalize never entered its transaction"
+
+        # The finalize now holds the write lock. Let it commit while the sweep
+        # is trying to take that same lock, so the sweep really waits on it.
+        threading.Timer(0.3, release.set).start()
+        recovered = client.store.recover_stranded_admissions()
+        worker.join(timeout=10)
+        other._annotations._clock_ms = real_clock
+
+        assert outcome.get("error") is None, outcome
+        assert outcome.get("sent") is True, outcome
+        assert recovered == 0, recovered
+
+        after = other.get_admission("resv-sweep-vs-finalize-1")
+        assert after["state"] == "sent", after
+        assert after["job_id"] == "job-that-won", after
+        # The pins are still consumed. Nothing reopened them.
+        assert other.get_annotation(annotation_id)["status"] == "sent"
+    finally:
+        other.close()
+
+
+def test_a_recovery_sweep_refuses_a_partial_or_empty_hold(client):
+    """It stamps only when the exact set the ledger names really goes back.
+
+    Zero rows moved and a partial move are both "somebody else got there
+    first", and both used to be stamped `released` anyway -- publishing an
+    outcome about pins this pass did not touch.
+    """
+    first, second = _pin(client, body="one"), _pin(client, body="two")
+    client.store.reserve_with_admission(
+        reservation_id="resv-sweep-partial-hold1",
+        root_frame_id=client.frame_id,
+        annotation_ids=[first, second],
+    )
+    # Half the set moves on underneath the reservation.
+    client.store._conn.execute(
+        "UPDATE annotations SET status='sent', reservation_id=NULL "
+        "WHERE annotation_id=?",
+        (second,),
+    )
+    client.store._conn.commit()
+
+    assert client.store.recover_stranded_admissions() == 0
+    ledger = client.store.get_admission("resv-sweep-partial-hold1")
+    assert ledger["state"] == "reserved", ledger
+    # The half still held was not silently freed on a false report either.
+    assert client.store.get_annotation(first)["status"] == "reserved"
+
+    # With the set whole again, the sweep does its job.
+    client.store._conn.execute(
+        "UPDATE annotations SET status='reserved', reservation_id=? "
+        "WHERE annotation_id=?",
+        ("resv-sweep-partial-hold1", second),
+    )
+    client.store._conn.commit()
+    assert client.store.recover_stranded_admissions() == 1
+    assert client.store.get_admission("resv-sweep-partial-hold1")["state"] == "released"
+    assert client.store.get_annotation(first)["status"] == "open"
+
+
+def test_a_release_refuses_a_partial_or_empty_hold(client):
+    """The same exact-set rule as the recovery sweep, on the ordinary path.
+
+    `rowcount > 0` is a different question from "the set the ledger names went
+    back". An admission naming two pins with only one still held moves one row,
+    and stamping the whole thing `released` on that publishes an outcome for a
+    pin this call did not touch -- one a live turn may already have sent.
+    """
+    first, second = _pin(client, body="one"), _pin(client, body="two")
+    client.store.reserve_with_admission(
+        reservation_id="resv-release-partial-01",
+        root_frame_id=client.frame_id,
+        annotation_ids=[first, second],
+    )
+    # Half the set moves on underneath the reservation.
+    client.store._conn.execute(
+        "UPDATE annotations SET status='sent', reservation_id=NULL "
+        "WHERE annotation_id=?",
+        (second,),
+    )
+    client.store._conn.commit()
+
+    assert (
+        client.store.release_annotations(
+            "resv-release-partial-01", root_frame_id=client.frame_id
+        )
+        == 0
+    )
+    ledger = client.store.get_admission("resv-release-partial-01")
+    assert ledger["state"] == "reserved", ledger
+    # And the half still held was not freed on a false report either.
+    assert client.store.get_annotation(first)["status"] == "reserved"
+
+    # With the set whole again, release does its job and stamps.
+    client.store._conn.execute(
+        "UPDATE annotations SET status='reserved', reservation_id=? "
+        "WHERE annotation_id=?",
+        ("resv-release-partial-01", second),
+    )
+    client.store._conn.commit()
+    assert (
+        client.store.release_annotations(
+            "resv-release-partial-01", root_frame_id=client.frame_id
+        )
+        == 2
+    )
+    assert client.store.get_admission("resv-release-partial-01")["state"] == "released"
+    assert client.store.get_annotation(first)["status"] == "open"

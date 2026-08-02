@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from typing import Any, Callable
@@ -309,18 +310,64 @@ class AnnotationRepository:
             # an in-flight claim that no longer exists.
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                ledger = self._connection.execute(
+                    "SELECT annotation_ids FROM annotation_admissions "
+                    f"WHERE reservation_id=?{scope}",
+                    params,
+                ).fetchone()
+                held = {
+                    row["annotation_id"]
+                    for row in self._connection.execute(
+                        "SELECT annotation_id FROM annotations "
+                        f"WHERE reservation_id=? AND status='reserved'{scope}",
+                        params,
+                    ).fetchall()
+                }
+                if ledger is not None:
+                    # All of the set the ledger names, or none of it.
+                    #
+                    # `rowcount > 0` is not the same question. An admission
+                    # naming two pins with only one still held moves one row,
+                    # and stamping the whole thing `released` on that publishes
+                    # an outcome for a pin this call did not touch -- one that
+                    # a live turn may already have sent. Zero, partial and
+                    # mismatched are all "somebody else got there first", and
+                    # the honest answer to all three is to change nothing and
+                    # leave the admission non-terminal.
+                    try:
+                        expected = set(json.loads(ledger["annotation_ids"] or "[]"))
+                    except ValueError:
+                        expected = set()
+                    if not held or held != expected:
+                        self._connection.rollback()
+                        return 0
                 cursor = self._connection.execute(
                     f"UPDATE annotations SET status='open', reservation_id=NULL, "
                     f"updated_at={self._clock_ms()} "
                     f"WHERE reservation_id=? AND status='reserved'{scope}",
                     params,
                 )
-                self._stamp_admission_locked("released", reservation_id, root_frame_id)
+                changed = int(cursor.rowcount or 0)
+                if ledger is not None:
+                    # Unreachable while the SELECT above and this UPDATE share
+                    # a predicate inside one transaction, and kept because that
+                    # is the assumption rather than a guarantee: the two are
+                    # written out separately and a future edit to one is
+                    # exactly how they come apart. A mutation removing it stays
+                    # green, and no test below claims otherwise.
+                    if changed != len(held):
+                        self._connection.rollback()
+                        return 0
+                    # Non-terminal states only, so a `sent` that landed in
+                    # between is not overwritten.
+                    self._stamp_admission_locked(
+                        "released", reservation_id, root_frame_id
+                    )
                 self._connection.commit()
             except BaseException:
                 self._connection.rollback()
                 raise
-            return int(cursor.rowcount or 0)
+            return changed
 
     def _stamp_admission_locked(
         self,
@@ -343,10 +390,22 @@ class AnnotationRepository:
         """
         scope = " AND root_frame_id=?" if root_frame_id else ""
         tail = (reservation_id, root_frame_id) if root_frame_id else (reservation_id,)
+        # A compare-and-set on the non-terminal states, never an assignment.
+        # `sent` and `released` are what the turn did, and nothing that happens
+        # afterwards -- a recovery sweep, a restore, a late release -- gets to
+        # rewrite it.
+        #
+        # Stated here, at the point it has to hold, though today it is a second
+        # gate rather than the only one: both callers already refuse unless the
+        # exact set the ledger names really moves, and neither can reach this
+        # line with a terminal row. That makes it defence rather than
+        # behaviour, and no test below claims otherwise -- a mutation removing
+        # it stays green, which is the honest reading of "unreachable by
+        # construction" and not evidence that it is unnecessary.
         self._connection.execute(
             "UPDATE annotation_admissions SET state=?, updated_at=?, "
             "request_id=COALESCE(?,request_id), job_id=COALESCE(?,job_id) "
-            f"WHERE reservation_id=?{scope}",
+            f"WHERE reservation_id=?{scope} AND state IN ('reserved','pending')",
             (state, self._clock_ms(), request_id, job_id, *tail),
         )
 

@@ -6439,6 +6439,32 @@ function outstandingAdmissions(fid) {
   found.sort((a, b) => (Number(a[1]) || 0) - (Number(b[1]) || 0) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
   return found.map(pair => pair[0]).filter(Boolean);
 }
+/* How long a just-minted admission is protected from another tab's 404.
+
+   The value stored under each key is the mint time, and it doubles as a
+   bounded dispatch lease. The race it closes: tab A writes its key and has not
+   sent the POST yet; tab B opens the same session, asks about that id, and is
+   told 404 because the server has genuinely never heard of it; B deletes the
+   key; A's POST then succeeds and its response is lost, with nothing left to
+   reconcile from. B's 404 was true and acting on it was still wrong -- "not
+   yet" and "never" are the same answer from the server and different facts.
+
+   Bounded, so a key for a request that really never left cannot accumulate
+   forever. Past the grace a 404 is taken at face value. */
+const ADMISSION_GRACE_MS = 60_000;
+function admissionAge(fid, id) {
+  let raw = null;
+  try { raw = localStorage.getItem(ADMISSION_PREFIX(fid) + id); } catch { return null; }
+  const minted = Number(raw);
+  // A missing, unparseable or future stamp is not a lease. Trusting one would
+  // make a corrupted value protect a key permanently.
+  if (!raw || !Number.isFinite(minted) || minted <= 0 || minted > Date.now()) return null;
+  return Date.now() - minted;
+}
+function admissionWithinGrace(fid, id) {
+  const age = admissionAge(fid, id);
+  return age !== null && age < ADMISSION_GRACE_MS;
+}
 function rememberAdmission(fid, id) {
   // A single independent write. No read, so nothing to lose a race with.
   try { localStorage.setItem(ADMISSION_PREFIX(fid) + id, String(Date.now())); } catch {}
@@ -6459,6 +6485,20 @@ function admissionSettled(state) {
    not do — "assume sent" silently loses the comments, "assume open" offers the
    user a comment a running turn is already carrying. So it asks, about every
    one of them, and keeps the ones that are still undecided. */
+/* One pending retry per session, so N unresolved ids schedule one sweep.
+
+   Without the de-dupe every 404 inside the lease would arm its own timer and a
+   tab with several outstanding sends would re-ask N times per round. */
+const _admissionRetries = new Map();
+function scheduleAdmissionRetry(fid) {
+  if (_admissionRetries.has(fid)) return;
+  _admissionRetries.set(fid, setTimeout(() => {
+    _admissionRetries.delete(fid);
+    // Only if the session is still the one on screen; reconciling a session
+    // the user has left would fight whatever is now open.
+    if (S.currentId === fid) reconcileLastAdmission(fid).catch(() => {});
+  }, 3000));
+}
 async function reconcileLastAdmission(fid) {
   const outstanding = outstandingAdmissions(fid);
   if (!outstanding.length) return null;
@@ -6468,10 +6508,16 @@ async function reconcileLastAdmission(fid) {
     try {
       record = await api(`/frames/${fid}/admissions/${encodeURIComponent(reservation)}`);
     } catch (e) {
-      // 404 means this session has no such admission — nothing to reconcile,
-      // and the stored id is stale. Anything else (offline, 5xx) leaves it for
-      // the next attempt rather than dropping the only handle on the comments.
-      if (e && e.status === 404) forgetAdmission(fid, reservation);
+      // 404 means this session has no such admission. That is true both for a
+      // stale id and for one whose POST has not left another tab yet, and the
+      // second must not be deleted — see ADMISSION_GRACE_MS. Within the lease
+      // the key is kept and re-asked; past it, taken at face value. Anything
+      // else (offline, 5xx) always leaves it for the next attempt rather than
+      // dropping the only handle on the comments.
+      if (e && e.status === 404) {
+        if (admissionWithinGrace(fid, reservation)) scheduleAdmissionRetry(fid);
+        else forgetAdmission(fid, reservation);
+      }
       continue;
     }
     records.push(record);

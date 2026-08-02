@@ -605,26 +605,155 @@ def test_a_checkpoint_taken_mid_send_restores_a_pin_the_user_can_act_on(tmp_path
     restored = store.get_annotation(annotation_id)
     assert restored["status"] == "open", restored
     assert restored["reservation_id"] is None, restored
+    # The ledger is settled in the SAME transaction. Left non-terminal it
+    # contradicted the pin it describes, and reconciliation derives from the
+    # rows while the ledger is non-terminal -- so the answer changed from
+    # `released` to `sent` the moment the user resolved that pin. The same
+    # admission, two answers, the second reached by an ordinary review action.
+    assert store.get_admission("resv-midflight-checkpoint")["state"] == "released"
     # And it is a pin the composer offers, which is the whole point.
     assert annotation_id in {
         row["annotation_id"]
         for row in store.list_annotations(root)
         if row["status"] == "open"
     }
+
+    # A later review action cannot change what that admission is reported as.
+    # While the ledger stayed non-terminal, reconciliation derived the state
+    # from the pin -- so resolving it flipped the answer from `released` to
+    # `sent`, and the user was told a turn had carried a comment it never saw.
+    for after in ("resolved", "dismissed"):
+        store.update_annotation(annotation_id, status=after)
+        assert (
+            store.get_admission("resv-midflight-checkpoint")["state"] == "released"
+        ), after
     store.close()
 
 
-def test_an_imported_checkpoint_activates_without_a_held_pin(tmp_path):
-    """The other entry point. Branch activation restores inside its own atomic
-    publication transaction rather than through the narrow repair facade, and a
-    quarantined import remaps every identity -- so it is a separate path to the
-    same INSERT, and it would have carried the same held pin in."""
+def test_a_quarantined_import_activates_without_a_held_pin(tmp_path):
+    """The real import path, end to end -- export, validate, remap, activate.
+
+    An earlier version of this test forked a branch inside the *same* session
+    and activated it. That exercises `activate_session_branch_checkpoint` and
+    nothing else: no envelope, no identity remap, no quarantine, and the pin it
+    checked was one this Store had reserved itself. It could not have failed
+    for the reason it claimed to test, so it was evidence about branching
+    labelled as evidence about import.
+
+    Here the held pin is captured into an envelope in one session and imported
+    into another, where every identity is remapped. Two claims, and they are
+    about different sessions: the imported pin must arrive as something the
+    receiving user can act on, and the *source* session must be untouched.
+
+    The second is the root-scope claim. Restoring into the target settles the
+    target's holders and nothing else -- the source session may still have a
+    live turn holding that pin, and an import into an unrelated session has no
+    standing to decide anything about it. So the source admission is asserted
+    to remain exactly `reserved`, not "settled": writing it the other way round
+    would assert the bug.
+    """
+    _database, workspace, store, root, service = _session(tmp_path)
+    source_annotation = _annotation(store, root, workspace, "held when exported")
+    source_pin = source_annotation["annotation_id"]
+    source_artifact = store.get_artifact(source_annotation["artifact_id"])
+    store.reserve_with_admission(
+        reservation_id="resv-exported-while-held",
+        root_frame_id=root,
+        annotation_ids=[source_pin],
+    )
+    assert store.get_annotation(source_pin)["status"] == "reserved"
+
+    source_checkpoint = service.create_checkpoint(root, reason="export while held")
+    envelope = store.get_checkpoint_state_snapshot(
+        source_checkpoint["checkpoint_id"], include_state=True
+    )
+    # The envelope is audit state and carries the holder -- that is the record
+    # of what was in flight when it was taken.
+    assert envelope["state"]["review"]["annotations"][0]["status"] == "reserved"
+    assert store.validate_checkpoint_state_import(envelope)["valid"] is True
+
+    store.create_project(name="Imported", project_id="imported-project")
+    imported_root = store.new_frame(
+        project_id="imported-project", kind="turn", status="ready"
+    )
+    imported_path = workspace / "imported-held.png"
+    imported_path.write_bytes(b"imported-held-image")
+    imported_artifact = store.save_artifact(
+        path=str(imported_path),
+        filename=imported_path.name,
+        content_type="image/png",
+        size_bytes=imported_path.stat().st_size,
+        checksum=hashlib.sha256(imported_path.read_bytes()).hexdigest(),
+        frame_id=imported_root,
+        root_frame_id=imported_root,
+        project_id="imported-project",
+    )
+    imported_checkpoint = store.create_session_checkpoint(
+        root_frame_id=imported_root,
+        branch_id=imported_root,
+        reason="imported",
+        workspace_tree_id="b" * 64,
+        capability_state={"version": 1, "states": []},
+        permission_state={"conversation": []},
+        metadata={"imported": True, "trust_state": "quarantined"},
+    )
+    store.import_quarantined_checkpoint_state(
+        envelope,
+        checkpoint_id=imported_checkpoint["checkpoint_id"],
+        root_frame_id=imported_root,
+        branch_id=imported_root,
+        project_id="imported-project",
+        artifact_id_map={
+            source_artifact["artifact_id"]: imported_artifact["artifact_id"]
+        },
+    )
+    store.activate_session_branch_checkpoint(
+        root_frame_id=imported_root,
+        branch_id=imported_root,
+        checkpoint_id=imported_checkpoint["checkpoint_id"],
+        expected_current_branch_id=imported_root,
+    )
+
+    rows = store.list_annotations(imported_root)
+    assert rows, "activation restored no annotations at all"
+    for row in rows:
+        assert row["annotation_id"] != source_pin, "identities were not remapped"
+        assert row["status"] == "open", row
+        assert row["reservation_id"] is None, row
+
+    # The source session is untouched: its turn may still be holding that pin,
+    # and an import into another session does not get to decide otherwise.
+    source_ledger = store.get_admission("resv-exported-while-held")
+    assert source_ledger["state"] == "reserved", source_ledger
+    assert source_ledger["root_frame_id"] == root
+    assert store.get_annotation(source_pin)["status"] == "reserved"
+
+    # And no ledger row was invented for the target. An envelope carries no
+    # ledger, and a correlation nothing produced would be believed by a
+    # reconcile.
+    assert (
+        store.get_admission("resv-exported-while-held", root_frame_id=imported_root)
+        is None
+    )
+    assert store.list_admissions(imported_root) == []
+    store.close()
+
+
+def test_an_activated_checkpoint_settles_the_admission_monotonically(tmp_path):
+    """Branch activation restores inside its own atomic publication
+    transaction rather than through the narrow repair facade, so it is a second
+    entry into the same INSERT and needs its own assertion.
+
+    Named for what it actually drives. It is a local fork and activate, and it
+    is not evidence about import -- that is the test above.
+    """
     _database, workspace, store, root, service = _session(tmp_path)
     annotation = _annotation(store, root, workspace, "held when captured")
+    annotation_id = annotation["annotation_id"]
     store.reserve_with_admission(
-        reservation_id="resv-import-activation-1",
+        reservation_id="resv-branch-activation-1",
         root_frame_id=root,
-        annotation_ids=[annotation["annotation_id"]],
+        annotation_ids=[annotation_id],
     )
     checkpoint = service.create_checkpoint(root, reason="held")
 
@@ -644,4 +773,157 @@ def test_an_imported_checkpoint_activates_without_a_held_pin(tmp_path):
     for row in rows:
         assert row["status"] != "reserved", row
         assert row["reservation_id"] is None, row
+    assert store.get_admission("resv-branch-activation-1")["state"] == "released"
+
+    # Monotonic: a later review action cannot rewrite that outcome.
+    for after in ("resolved", "dismissed"):
+        store.update_annotation(annotation_id, status=after)
+        assert (
+            store.get_admission("resv-branch-activation-1")["state"] == "released"
+        ), after
+    store.close()
+
+
+def test_a_restore_does_not_rewrite_an_admission_that_already_sent(tmp_path):
+    """The CAS half of the rule above.
+
+    Settling the ledger on restore has to be a compare-and-set on the
+    non-terminal states, not an assignment. A checkpoint taken *after* a send
+    captures pins whose admission is already `sent`; stamping `released` over
+    it would tell a client its comments were never taken, on the strength of a
+    restore that has nothing to say about a turn that already finished.
+    """
+    _database, workspace, store, root, service = _session(tmp_path)
+    annotation = _annotation(store, root, workspace, "already sent")
+    annotation_id = annotation["annotation_id"]
+    store.reserve_with_admission(
+        reservation_id="resv-already-sent-restore",
+        root_frame_id=root,
+        annotation_ids=[annotation_id],
+    )
+    # Captured WHILE held, so the snapshot names this holder -- otherwise the
+    # settle loop has nothing to iterate and the CAS is never reached, and the
+    # test passes without exercising the property it is named for.
+    checkpoint = service.create_checkpoint(root, reason="captured while held")
+    captured = store.get_checkpoint_state_snapshot(
+        checkpoint["checkpoint_id"], include_state=True
+    )
+    assert (
+        captured["state"]["review"]["annotations"][0]["reservation_id"]
+        == "resv-already-sent-restore"
+    )
+
+    # ...and only then does the turn finish. The holder is in the snapshot and
+    # the ledger is terminal, which is exactly the pair the CAS exists for.
+    store.finalize_annotations_sent(
+        "resv-already-sent-restore",
+        root_frame_id=root,
+        expected_ids=[annotation_id],
+        job_id="job-before-checkpoint",
+    )
+    assert store.get_admission("resv-already-sent-restore")["state"] == "sent"
+    store.restore_checkpoint_state_snapshot(
+        checkpoint_id=checkpoint["checkpoint_id"],
+        root_frame_id=root,
+        project_id="science",
+    )
+
+    ledger = store.get_admission("resv-already-sent-restore")
+    assert ledger["state"] == "sent", ledger
+    assert ledger["job_id"] == "job-before-checkpoint", ledger
+    store.close()
+
+
+def test_a_revert_settles_an_admission_taken_after_the_checkpoint(tmp_path):
+    """The holder the snapshot cannot know about.
+
+    A checkpoint taken while a pin is `open` records no holder for it. If a
+    turn then reserves that pin and the session is reverted to that older
+    checkpoint, the restore deletes the live `reserved` row -- and its ledger
+    entry, which the snapshot never mentioned, was left `reserved` forever.
+    Reserved against a pin that no longer exists: unreachable by any UI action,
+    and permanently in flight to every recovery pass that goes looking.
+
+    So the holders about to be overwritten are read before the delete and
+    unioned with the snapshot's.
+    """
+    _database, workspace, store, root, service = _session(tmp_path)
+    annotation = _annotation(store, root, workspace, "open when captured")
+    annotation_id = annotation["annotation_id"]
+
+    # Captured while it is open. The snapshot names no holder at all.
+    checkpoint = service.create_checkpoint(root, reason="before the send")
+    captured = store.get_checkpoint_state_snapshot(
+        checkpoint["checkpoint_id"], include_state=True
+    )
+    assert captured["state"]["review"]["annotations"][0]["status"] == "open"
+    assert captured["state"]["review"]["annotations"][0]["reservation_id"] is None
+
+    # ...and only then is it claimed.
+    store.reserve_with_admission(
+        reservation_id="resv-taken-after-capture",
+        root_frame_id=root,
+        annotation_ids=[annotation_id],
+    )
+    assert store.get_admission("resv-taken-after-capture")["state"] == "reserved"
+
+    store.restore_checkpoint_state_snapshot(
+        checkpoint_id=checkpoint["checkpoint_id"],
+        root_frame_id=root,
+        project_id="science",
+    )
+
+    restored = store.get_annotation(annotation_id)
+    assert restored["status"] == "open", restored
+    assert restored["reservation_id"] is None, restored
+    ledger = store.get_admission("resv-taken-after-capture")
+    assert ledger["state"] == "released", ledger
+
+    # Monotonic afterwards: a review action cannot flip that outcome.
+    for after in ("resolved", "dismissed"):
+        store.update_annotation(annotation_id, status=after)
+        assert (
+            store.get_admission("resv-taken-after-capture")["state"] == "released"
+        ), after
+    store.close()
+
+
+def test_a_revert_settles_only_its_own_frames_admissions(tmp_path):
+    """Scope. Reading the live holders before the delete must not reach past
+    the frame being restored -- a neighbouring session's in-flight turn is none
+    of this restore's business."""
+    _database, workspace, store, root, service = _session(tmp_path)
+    neighbour = store.new_frame(project_id="science", kind="turn", status="ready")
+    mine = _annotation(store, root, workspace, "mine")
+    theirs = store.add_annotation(
+        root_frame_id=neighbour,
+        artifact_id=mine["artifact_id"],
+        artifact_name="review.png",
+        rel_x=0.1,
+        rel_y=0.1,
+        body="theirs",
+    )["annotation_id"]
+
+    checkpoint = service.create_checkpoint(root, reason="mine only")
+    store.reserve_with_admission(
+        reservation_id="resv-mine-in-flight-0001",
+        root_frame_id=root,
+        annotation_ids=[mine["annotation_id"]],
+    )
+    store.reserve_with_admission(
+        reservation_id="resv-theirs-in-flight-01",
+        root_frame_id=neighbour,
+        annotation_ids=[theirs],
+    )
+
+    store.restore_checkpoint_state_snapshot(
+        checkpoint_id=checkpoint["checkpoint_id"],
+        root_frame_id=root,
+        project_id="science",
+    )
+
+    assert store.get_admission("resv-mine-in-flight-0001")["state"] == "released"
+    # Untouched, and still holding.
+    assert store.get_admission("resv-theirs-in-flight-01")["state"] == "reserved"
+    assert store.get_annotation(theirs)["status"] == "reserved"
     store.close()

@@ -1046,9 +1046,62 @@ class CheckpointStateRepository:
             root_frame_id,
             annotations,
         )
+        # The holders that are about to be overwritten, read BEFORE the delete.
+        #
+        # The snapshot's own holders are not the whole set. A checkpoint taken
+        # while a pin was `open` records no holder for it -- and if a turn
+        # reserves that pin afterwards and the session is then reverted to that
+        # older checkpoint, the delete below destroys the live `reserved` row
+        # while its ledger entry, which the snapshot never mentioned, stays
+        # `reserved` forever. Reserved against a pin that no longer exists:
+        # unreachable by any UI action, and permanently in flight to every
+        # recovery pass that goes looking.
+        live_holders = {
+            str(row["reservation_id"])
+            for row in self._connection.execute(
+                "SELECT DISTINCT reservation_id FROM annotations "
+                "WHERE root_frame_id=? AND reservation_id IS NOT NULL",
+                (root_frame_id,),
+            ).fetchall()
+            if row["reservation_id"]
+        }
         self._connection.execute(
             "DELETE FROM annotations WHERE root_frame_id=?", (root_frame_id,)
         )
+        # Every holder the snapshot names, settled in the same transaction as
+        # the pins.
+        #
+        # Normalising the pin alone left its ledger row at `reserved` or
+        # `pending`, so the two disagreed about the same admission: the pin was
+        # `open` and the record said a turn was still holding it. Reconcile
+        # derives from the rows while the ledger is non-terminal, so it said
+        # `released` -- correctly -- and then the moment a user resolved or
+        # dismissed that pin the derivation flipped to `sent`. The same
+        # reservation, two contradictory answers, the second one arrived at by
+        # an ordinary review action.
+        #
+        # A CAS, not an assignment: an admission that really was `sent` before
+        # the checkpoint was taken keeps saying so. `_stamp_admission_locked`
+        # would do this, but it belongs to the annotations repository and this
+        # transaction is already open here.
+        holders = live_holders | {
+            str(item.get("reservation_id"))
+            for item in annotations
+            if item.get("reservation_id")
+        }
+        # Scoped twice, in the read above and in the CAS below, and the pair is
+        # what holds: a neighbouring session's in-flight turn is none of this
+        # restore's business. Removing either alone changes nothing observable
+        # because the other still catches it -- removing both lets a revert in
+        # one session free a pin held by a live turn in another, which is what
+        # the scope test drives.
+        for holder in sorted(holders):
+            self._connection.execute(
+                "UPDATE annotation_admissions SET state='released', updated_at=? "
+                "WHERE reservation_id=? AND root_frame_id=? "
+                "AND state IN ('reserved','pending')",
+                (self._clock_ms(), holder, root_frame_id),
+            )
         for item in annotations:
             artifact = self._connection.execute(
                 "SELECT root_frame_id FROM artifacts WHERE artifact_id=?",

@@ -1162,6 +1162,39 @@ class Store:
             "CREATE INDEX IF NOT EXISTS ix_admission_state "
             "ON annotation_admissions(state)"
         )
+        # The v14 rows this table cannot account for.
+        #
+        # Migration 14 added `reservation_id`, so a v14 install that crashed
+        # mid-send has pins sitting at `reserved` with a holder. This migration
+        # created the ledger *empty*, and every recovery path looks for a
+        # ledger row -- so those pins upgraded into a state where nothing could
+        # find them and nothing could free them: invisible in the composer, not
+        # on any turn, permanently. The upgrade itself is the moment no request
+        # is in flight, which is exactly when they are safe to release.
+        #
+        # No ledger row is fabricated for them. The request that held them left
+        # no record of its id, its job or its outcome, and inventing one would
+        # publish a correlation that never existed -- worse than the absence,
+        # because a reconcile would believe it. They are simply given back.
+        # Two statements, because they are two different claims. Only a pin
+        # that is *held* goes back to `open`; a `sent`, `resolved` or
+        # `dismissed` pin keeps its status, and a single `SET status='open'`
+        # over `status='reserved' OR reservation_id IS NOT NULL` resurrected
+        # every one of them that still carried a historical holder -- undoing
+        # the user's review work and re-offering comments the model already
+        # answered.
+        conn.execute(
+            "UPDATE annotations SET status='open', reservation_id=NULL "
+            "WHERE status='reserved'"
+        )
+        # The leftover holder on a pin that has already moved on is stale
+        # bookkeeping: no live request answers for it, and `reservation_id` is
+        # what every recovery and reconcile path matches on. Cleared without
+        # touching the status.
+        conn.execute(
+            "UPDATE annotations SET reservation_id=NULL "
+            "WHERE reservation_id IS NOT NULL"
+        )
 
     def _apply_annotation_reservation(self, conn: sqlite3.Connection) -> None:
         """Version 14: which in-flight request holds a pin.
@@ -3539,14 +3572,63 @@ class Store:
                 sets.append(f"{column}=?")
                 params.append(value)
         params.extend([reservation_id, root_frame_id])
+        # A state change is a CAS on the non-terminal states; a
+        # correlation-only write is not. `sent` and `released` are what the
+        # turn did and no later caller gets to rewrite them -- but recording
+        # *which* request and job an already-terminal admission belonged to is
+        # exactly the correlation a lost 202 needs, so it stays unconditional.
+        guard = " AND state IN ('reserved','pending')" if state is not None else ""
         with self._lock:
             cursor = self._conn.execute(
                 f"UPDATE annotation_admissions SET {','.join(sets)} "
-                "WHERE reservation_id=? AND root_frame_id=?",
+                f"WHERE reservation_id=? AND root_frame_id=?{guard}",
                 tuple(params),
             )
             self._conn.commit()
             return bool(cursor.rowcount)
+
+    def abandon_admission(
+        self, reservation_id: str, *, root_frame_id: str, job_id: str
+    ) -> bool:
+        """Undo an admission whose turn was correlated and then never started.
+
+        Correlation is written before `Thread.start`, so that a client whose
+        202 was lost can tell an accepted turn from a refusal. That ordering
+        opens its own hole at the other end: if the start then fails, plain
+        release leaves `released` *with* a request and a job id -- the exact
+        signature of accepted work, for a turn that never ran. A reconcile
+        would report it as accepted and the client would not resend.
+
+        A CAS on the job id, so this can only ever retract the turn it was
+        called for: a start that succeeded owns its row and nothing here
+        matches it. Pins and ledger move in one transaction, for the same
+        reason every other terminal transition does.
+        """
+        now = _now_ms()
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                changed = self._conn.execute(
+                    "UPDATE annotation_admissions SET state='released', "
+                    "request_id=NULL, job_id=NULL, updated_at=? "
+                    "WHERE reservation_id=? AND root_frame_id=? AND job_id=? "
+                    "AND state IN ('reserved','pending','released')",
+                    (now, reservation_id, root_frame_id, job_id),
+                ).rowcount
+                if not changed:
+                    self._conn.rollback()
+                    return False
+                self._conn.execute(
+                    "UPDATE annotations SET status='open', reservation_id=NULL, "
+                    "updated_at=? WHERE reservation_id=? AND root_frame_id=? "
+                    "AND status='reserved'",
+                    (now, reservation_id, root_frame_id),
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+            return True
 
     def record_admission(
         self,
@@ -3633,16 +3715,73 @@ class Store:
         """
         recovered = 0
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT reservation_id, root_frame_id FROM annotation_admissions "
-                "WHERE state IN ('reserved','pending')"
-            ).fetchall()
-        for row in rows:
-            if self._annotations.release(
-                row["reservation_id"], root_frame_id=row["root_frame_id"]
-            ):
-                recovered += 1
-            self.set_admission_state(row["reservation_id"], "released")
+            # Read, release and stamp under ONE write transaction, per row.
+            #
+            # This used to read every candidate, drop the lock, and then for
+            # each one call `release` (its own transaction) followed by an
+            # unconditional `set_admission_state(..., "released")`. Both halves
+            # were wrong in the same direction. A live request can finalize
+            # between the read and the release -- the read says `reserved`, the
+            # turn sends, and the late recovery pass then stamps `released`
+            # over `sent`. That is terminal evidence going backwards: the
+            # message carried the comments and the ledger now says it did not,
+            # so a client reconciling after a lost 202 is told to send them
+            # again.
+            #
+            # `BEGIN IMMEDIATE` takes the write lock before the read, so the
+            # candidate cannot move underneath it, and the stamp is a CAS on
+            # the non-terminal states rather than an assignment.
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = self._conn.execute(
+                    "SELECT reservation_id, root_frame_id, annotation_ids FROM "
+                    "annotation_admissions WHERE state IN ('reserved','pending')"
+                ).fetchall()
+                for row in rows:
+                    reservation_id = row["reservation_id"]
+                    root = row["root_frame_id"]
+                    try:
+                        expected = set(json.loads(row["annotation_ids"] or "[]"))
+                    except ValueError:
+                        expected = set()
+                    held = {
+                        held_row["annotation_id"]
+                        for held_row in self._conn.execute(
+                            "SELECT annotation_id FROM annotations WHERE "
+                            "reservation_id=? AND status='reserved' "
+                            "AND root_frame_id=?",
+                            (reservation_id, root),
+                        ).fetchall()
+                    }
+                    # The ledger moves only when the exact set it names really
+                    # goes back. Anything else -- nothing held because a live
+                    # turn finalised them first, or a partial set because
+                    # something moved underneath -- is not this pass's news to
+                    # report, and stamping `released` over it would overwrite
+                    # the `sent` that turn just wrote. Terminal evidence that
+                    # can go backwards is not evidence.
+                    if not held or held != expected:
+                        continue
+                    freed = self._conn.execute(
+                        "UPDATE annotations SET status='open', "
+                        "reservation_id=NULL, updated_at=? "
+                        "WHERE reservation_id=? AND status='reserved' "
+                        "AND root_frame_id=?",
+                        (_now_ms(), reservation_id, root),
+                    ).rowcount
+                    if freed != len(held):
+                        continue
+                    self._conn.execute(
+                        "UPDATE annotation_admissions SET state='released', "
+                        "updated_at=? WHERE reservation_id=? "
+                        "AND state IN ('reserved','pending')",
+                        (_now_ms(), reservation_id),
+                    )
+                    recovered += 1
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         return recovered
 
     def reserve_annotations(

@@ -686,3 +686,112 @@ def test_a_fresh_database_declares_the_reservation_column_canonically(tmp_path):
     finally:
         store.close()
     assert "reservation_id" in _schema_sql()
+
+
+def test_a_v14_reserved_pin_is_given_back_on_the_upgrade_to_v15(tmp_path):
+    """The rows migration 15 created a table for and then could not account for.
+
+    v14 added `reservation_id`, so a v14 install that crashed mid-send has pins
+    at `reserved` with a holder. Migration 15 created `annotation_admissions`
+    *empty*, and every recovery path looks for a ledger row -- so those pins
+    upgraded into a state where nothing could find them and nothing could free
+    them. Invisible in the composer, on no turn, for the life of the install.
+
+    The upgrade is the moment no request is in flight, which is exactly when
+    they are safe to release. Built as a real v14 database and opened, because
+    the defect is entirely in the difference between fresh and upgraded.
+    """
+    db = tmp_path / "v14.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(_schema_sql())
+    conn.execute("DROP TABLE IF EXISTS annotation_admissions")
+    conn.execute(
+        "INSERT INTO frames(frame_id,root_frame_id,project_id,kind,status,"
+        "created_at,updated_at) VALUES('f-v14','f-v14','p','turn','ready',1,1)"
+    )
+    for _number, (suffix, status, holder) in enumerate(
+        (
+            ("held", "reserved", "resv-v14-crash-held-000001"),
+            ("free", "open", None),
+            # Terminal pins that still carry the holder of the turn they went out
+            # on. A single `SET status='open'` keyed on "reserved OR has a holder"
+            # resurrected all three -- undoing the user's review work and
+            # re-offering comments the model had already answered.
+            ("sent", "sent", "resv-v14-already-sent-0001"),
+            ("resolved", "resolved", "resv-v14-already-sent-0001"),
+            ("dismissed", "dismissed", "resv-v14-dismissed-00001"),
+        ),
+        start=1,
+    ):
+        conn.execute(
+            "INSERT INTO annotations(annotation_id,root_frame_id,artifact_id,"
+            "artifact_name,rel_x,rel_y,number,body,status,created_at,updated_at,"
+            "reservation_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                f"an-v14-{suffix}",
+                "f-v14",
+                "a-1",
+                "plot.png",
+                0.5,
+                0.5,
+                _number,
+                "pin",
+                status,
+                1,
+                1,
+                holder,
+            ),
+        )
+    conn.execute("PRAGMA user_version = 14")
+    conn.commit()
+    conn.close()
+
+    store = Store(db)
+    try:
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] >= 15
+        names = {
+            row["name"]
+            for row in store._conn.execute("SELECT name FROM schema_migrations")
+        }
+        assert "annotation_admission_ledger" in names, names
+
+        held = store.get_annotation("an-v14-held")
+        assert held["status"] == "open", held
+        assert held["reservation_id"] is None, held
+        # Untouched.
+        assert store.get_annotation("an-v14-free")["status"] == "open"
+
+        # Terminal statuses survive verbatim; only the stale holder is cleared,
+        # because `reservation_id` is what every recovery and reconcile path
+        # matches on and no live request answers for these.
+        for suffix, expected in (
+            ("sent", "sent"),
+            ("resolved", "resolved"),
+            ("dismissed", "dismissed"),
+        ):
+            row = store.get_annotation(f"an-v14-{suffix}")
+            assert row["status"] == expected, row
+            assert row["reservation_id"] is None, row
+
+        # No ledger row is invented for it. The request that held it left no
+        # record of its id, its job or its outcome, and a fabricated
+        # correlation would be believed by a reconcile -- worse than absence.
+        assert (
+            store._conn.execute(
+                "SELECT COUNT(*) FROM annotation_admissions"
+            ).fetchone()[0]
+            == 0
+        )
+        assert store.get_admission("resv-v14-crash-held-000001") is None
+
+        # And it is a pin the composer offers again, which is the whole point.
+        offered = {
+            row["annotation_id"]
+            for row in store.list_annotations("f-v14")
+            if row["status"] == "open"
+        }
+        assert "an-v14-held" in offered, offered
+        # ...and the three terminal ones are NOT back in the composer.
+        assert offered == {"an-v14-held", "an-v14-free"}, offered
+    finally:
+        store.close()
