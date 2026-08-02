@@ -25,9 +25,12 @@ def _clean_names(values: Iterable[str], *, field_name: str) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
-#: Switches this class or ``build_aizynth_command`` already emits. Repeating one
-#: through ``extra_args`` would silently win under argparse's last-value-wins
-#: rule and rewrite a target, config or output path the caller believes it set.
+#: Switches ``build_aizynth_search_command`` already emits, directly or through
+#: ``build_aizynth_command``. Repeating one through ``extra_args`` would silently
+#: win under argparse's last-value-wins rule and rewrite a target, config or
+#: output path the caller believes it set. ``kernel.build_aizynth_command`` does
+#: not enforce this on its own; the guarantee holds for callers that go through
+#: ``AiZynthSearchSpec``.
 MANAGED_SWITCHES = frozenset(
     {
         "--config",
@@ -57,10 +60,20 @@ def _clean_args(values: Iterable[str]) -> tuple[str, ...]:
         if not item:
             raise ValueError("extra_args entries must not be empty")
         switch = item.split("=", 1)[0]
-        if switch in MANAGED_SWITCHES:
+        # An exact-match check is not enough: aizynthcli builds its parser with
+        # argparse's default ``allow_abbrev=True``, so ``--out`` resolves to
+        # ``--output`` and ``--conf`` to ``--config``. Because those switches are
+        # emitted before extra_args, an accepted abbreviation is strictly later
+        # in argv and wins — the very rewrite this check exists to prevent.
+        conflicting = sorted(
+            managed for managed in MANAGED_SWITCHES if managed.startswith(switch)
+        )
+        if conflicting:
+            names = " / ".join(conflicting)
             raise ValueError(
-                f"extra_args must not repeat the managed switch {switch}; set it "
-                "through the corresponding AiZynthSearchSpec field"
+                f"extra_args entry {switch} must not repeat or abbreviate the "
+                f"managed switch {names}; set it through AiZynthSearchSpec or "
+                "the build_aizynth_search_command keyword instead"
             )
         if not cleaned and not item.startswith("-"):
             raise ValueError(

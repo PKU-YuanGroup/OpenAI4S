@@ -34,7 +34,7 @@ RetroChimera or Syntheseus model environment
 schema validation, provenance checks and Harness replay
 ```
 
-Stdout is reserved for one JSON object. Before it handles a request the worker moves descriptor 1 onto stderr and keeps a private duplicate for the response, so a native library that writes to stdout directly — PyTorch, DGL, CUDA and RDKit all do — cannot corrupt the protocol. Rebinding `sys.stdout` alone would not be enough, because those writes never pass through it. The host never uses `shell=True`, applies request and response size limits, enforces a timeout, verifies the response `request_id`, and rejects unknown response fields.
+Stdout is reserved for one JSON object. Before it handles a request the worker moves descriptor 1 onto stderr and keeps a private duplicate for the response, so a native library that writes to stdout directly — PyTorch, DGL, CUDA and RDKit all do — cannot corrupt the protocol. Rebinding `sys.stdout` alone would not be enough, because those writes never pass through it. The duplicate is closed in any forked child, so a model that forks without exec cannot hold the host's pipe open past its own exit. The swap happens inside the worker, so it cannot cover bytes written before the interpreter reaches it — an interpreter-startup banner from a `sitecustomize` on an inherited `PYTHONPATH` still corrupts the response, as it does for `openai4s/kernel/worker.py`. The host never uses `shell=True`, applies request and response size limits, enforces a timeout, verifies the response `request_id`, and rejects unknown response fields.
 
 ## Supported model classes
 
@@ -61,7 +61,9 @@ The safer production pattern is:
 
 The local `model_dir` is sent only to the isolated worker. It is not copied into the normalized result, dashboard, Harness tape or model manifest. This avoids leaking a workstation path into a public artifact.
 
-Model-reported metadata is filtered the same way before it leaves the worker. Keys naming a filesystem location are dropped, and any remaining value shaped like an absolute path or a `file://` URL is replaced with `<redacted-path>`. The value check is what carries the guarantee: a model wrapper may report a checkpoint or cache location under any key name it likes, so key names alone are not a boundary.
+Model-reported metadata is filtered the same way before it leaves the worker. Keys named `*path*` or `*directory*` are dropped, and any remaining string — value or key — that *begins* with an absolute path, a home-relative path, a UNC share or a `file://` URL is replaced with `<redacted-path>`. Error messages are scrubbed more aggressively, anywhere in the string, because a missing checkpoint surfaces as exception text carrying the caller's `model_dir`.
+
+Two boundaries are worth stating plainly rather than implying. Metadata values are matched only at the start of the string, so a path mentioned mid-sentence in a wrapper's free-text note is not masked: an unanchored match cannot distinguish `kcal/mol` or the bond directions in `F/C=C/F` from a directory, and mangling chemistry to catch a prose mention is the worse trade. And redaction runs inside the worker, so it cannot help with bytes written before the worker starts.
 
 ## Installation
 
@@ -113,12 +115,20 @@ backend = SyntheseusBackend(
     python_command=(
         "conda",
         "run",
+        "--no-capture-output",
         "-n",
         "openai4s-retro",
         "python",
     ),
     timeout_seconds=600,
 )
+```
+
+`--no-capture-output` is required, not cosmetic: without it `conda run` does not
+forward stdin, the worker reads an empty request, and every call comes back as
+an `invalid_json` error response instead of a result.
+
+```python
 
 capabilities = backend.capabilities()
 result = backend.single_step(

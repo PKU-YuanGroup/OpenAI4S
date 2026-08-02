@@ -34,7 +34,7 @@ RetroChimera 或 Syntheseus 模型环境
 schema 校验、provenance 检查与 Harness replay
 ```
 
-stdout 只允许输出一个 JSON 对象。worker 在处理请求前会把文件描述符 1 重定向到 stderr，并保留一个私有副本用于写响应，因此直接写 stdout 的原生库（PyTorch、DGL、CUDA、RDKit 都会这样做）无法破坏协议。仅重绑 `sys.stdout` 是不够的，因为这些写入根本不经过它。Host 不使用 `shell=True`，限制请求和响应大小，设置超时，核对响应中的 `request_id`，并拒绝未知响应字段。
+stdout 只允许输出一个 JSON 对象。worker 在处理请求前会把文件描述符 1 重定向到 stderr，并保留一个私有副本用于写响应，因此直接写 stdout 的原生库（PyTorch、DGL、CUDA、RDKit 都会这样做）无法破坏协议。仅重绑 `sys.stdout` 是不够的，因为这些写入根本不经过它。该副本会在任何 fork 出的子进程中关闭，因此不 exec 直接 fork 的模型不会在自身退出后仍占住 Host 的管道。重定向发生在 worker 内部，因此无法覆盖解释器到达该处之前写出的字节——继承的 `PYTHONPATH` 上某个 `sitecustomize` 打印的启动横幅仍会破坏响应，`openai4s/kernel/worker.py` 也有同样的限制。Host 不使用 `shell=True`，限制请求和响应大小，设置超时，核对响应中的 `request_id`，并拒绝未知响应字段。
 
 ## 支持的模型类别
 
@@ -61,7 +61,9 @@ Adapter 将 `num_results` 明确限制在 10 以内。低排名预测不会被�
 
 本地 `model_dir` 只发送给隔离 worker，不会复制进规范化结果、dashboard、Harness tape 或 model manifest，从而避免把工作站路径泄漏到公开 Artifact。
 
-模型返回的 metadata 在离开 worker 前会经过同样的过滤：命名了文件系统位置的 key 会被整体丢弃，剩余的值若形如绝对路径或 `file://` URL，则替换为 `<redacted-path>`。真正提供保证的是对值的检查——模型 wrapper 可以用任意 key 名报告 checkpoint 或 cache 位置，所以仅靠 key 名不构成边界。
+模型返回的 metadata 在离开 worker 前会经过同样的过滤：名为 `*path*` 或 `*directory*` 的 key 会被丢弃；剩余的字符串（无论是值还是 key），只要**以**绝对路径、家目录相对路径、UNC 共享或 `file://` URL 开头，就替换为 `<redacted-path>`。错误消息的清洗更激进，会替换字符串中任意位置的路径——因为 checkpoint 缺失时抛出的异常文本会带上调用方的 `model_dir`。
+
+有两条边界应当明说而非暗示。metadata 的值只在字符串开头匹配，因此 wrapper 自由文本注释里夹在句中的路径不会被遮蔽：不加锚定的匹配无法把 `kcal/mol` 或 `F/C=C/F` 中的键方向斜杠与目录区分开，为了抓一次散文提及而破坏化学数据是更差的取舍。另外，清洗发生在 worker 内部，因此对 worker 启动之前写出的字节无能为力。
 
 ## 安装
 
@@ -113,12 +115,19 @@ backend = SyntheseusBackend(
     python_command=(
         "conda",
         "run",
+        "--no-capture-output",
         "-n",
         "openai4s-retro",
         "python",
     ),
     timeout_seconds=600,
 )
+```
+
+`--no-capture-output`是必需的，不是可选项：缺少它时 `conda run` 不会转发 stdin，
+worker 读到空请求，于是每次调用都会返回 `invalid_json` 错误响应而不是结果。
+
+```python
 
 capabilities = backend.capabilities()
 result = backend.single_step(

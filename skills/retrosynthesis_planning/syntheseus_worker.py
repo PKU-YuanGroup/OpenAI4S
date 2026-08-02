@@ -90,34 +90,47 @@ def _runtime_info() -> dict[str, Any]:
     }
 
 
-_PATH_LIKE_KEY = re.compile(
-    r"(?:^|_)(?:path|paths|dir|dirs|directory|directories|folder|folders"
-    r"|file|files|filename|filepath|cache|home)(?:$|_)",
-    re.IGNORECASE,
+#: Values shaped like an absolute filesystem path, a home-relative path, a UNC
+#: share or a ``file://`` URL. The ``~`` branch requires a username-shaped run
+#: before the separator: a looser ``~[^/\\]*[/\\]`` also swallows ordinary
+#: approximate quantities such as ``~5 kcal/mol``.
+_PATH_LIKE_VALUE = re.compile(
+    r"^(?:/|~[A-Za-z0-9._-]*[/\\]|\\\\|[A-Za-z]:[\\/]|file://)", re.IGNORECASE
 )
-_PATH_LIKE_VALUE = re.compile(r"^(?:/|~[^/\\]*[/\\]|\\\\|[A-Za-z]:[\\/]|file://)")
-
-
-def _is_path_like_key(key: str) -> bool:
-    """Match key names that denote a filesystem location.
-
-    Matching is anchored on ``_`` boundaries rather than done as a substring
-    search: ``direction``, ``profile`` and ``root_atom`` are ordinary chemistry
-    metadata, and dropping them would lose real information.
-    """
-    return _PATH_LIKE_KEY.search(key) is not None
+#: The same shapes, found anywhere inside free text. Only ever applied to
+#: message strings, never to model metadata: the leading-``/`` branch would
+#: also fire on the bond-direction slashes inside a SMILES like ``F/C=C/F``.
+_PATH_IN_TEXT = re.compile(
+    r"(?<![\w~])(?:~?/[^\s'\"<>,;)]*|[A-Za-z]:[\\/][^\s'\"<>,;)]*)"
+)
 
 
 def _is_path_like_value(value: str) -> bool:
-    """Match values shaped like an absolute filesystem path or ``file://`` URL.
+    """Match a value that *begins* with a filesystem location.
 
-    Key names alone are not enough. A model wrapper is free to report a
-    checkpoint or cache location under any name it likes, so it is the value
-    shape that actually keeps a workstation path out of a published artifact.
-    A SMILES string never begins with any of these prefixes.
+    Key names alone are not a boundary — a model wrapper is free to report a
+    checkpoint or cache location under any name it likes — so the value shape
+    is what actually keeps a workstation path out of a published artifact.
+
+    The match is anchored on purpose. A path mentioned mid-sentence is left
+    alone because the unanchored form cannot tell ``kcal/mol`` or the bond
+    directions in ``F/C=C/F`` from a directory, and mangling chemistry to
+    catch a prose mention is the worse trade. `_scrub_text` covers the one
+    place where free text is expected: an error message.
     """
     text = value.strip()
     return bool(text) and _PATH_LIKE_VALUE.match(text) is not None
+
+
+def _scrub_text(text: str) -> str:
+    """Replace filesystem paths anywhere inside a free-text message.
+
+    Exception text is the one channel that reliably carries the caller's
+    ``model_dir``: a missing checkpoint surfaces as ``FileNotFoundError:
+    [Errno 2] ... '/home/chemist/private/model.ckpt'``, which would otherwise
+    publish the exact path the success response deliberately withholds.
+    """
+    return _PATH_IN_TEXT.sub(REDACTED_PATH, text)
 
 
 def _json_safe(value: Any, *, depth: int = 0) -> Any:
@@ -133,8 +146,14 @@ def _json_safe(value: Any, *, depth: int = 0) -> Any:
         result: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            if _is_path_like_key(key_text):
+            # The substring rule stays narrow. Widening it to every
+            # ``dir``/``file``/``cache`` token also deletes ``use_cache``,
+            # ``bond_dir`` and ``n_files``, none of which can hold a path;
+            # the value check below is what closes the leak instead.
+            if any(token in key_text.lower() for token in ("path", "directory")):
                 continue
+            if _is_path_like_value(key_text):
+                key_text = REDACTED_PATH
             result[key_text] = _json_safe(item, depth=depth + 1)
         return result
     if isinstance(value, (list, tuple, set, frozenset)):
@@ -381,10 +400,36 @@ def _error_response(
         "elapsed_seconds": None,
         "error": {
             "code": code,
-            "message": message[:2000],
+            # Scrubbed here rather than at each raise site so that every error
+            # channel out of this worker is covered, including the ones that
+            # carry a third-party exception's text verbatim.
+            "message": _scrub_text(message)[:2000],
             "retryable": retryable,
         },
     }
+
+
+_RESERVED_FD: int | None = None
+
+
+def _close_reserved_fd_in_child() -> None:
+    """Drop the reserved descriptor in a forked child.
+
+    ``os.dup`` marks the copy non-inheritable, but that only takes effect at
+    ``exec``. A model that forks without exec — a PyTorch ``DataLoader`` on the
+    default Linux start method does exactly this — would otherwise keep the
+    host's stdout pipe open for the life of the child, so the host blocks in
+    ``communicate()`` until the timeout on a run whose response was already
+    written correctly and whose worker already exited 0.
+    """
+    global _RESERVED_FD
+    if _RESERVED_FD is None:
+        return
+    try:
+        os.close(_RESERVED_FD)
+    except OSError:
+        pass
+    _RESERVED_FD = None
 
 
 def _reserve_protocol_stdout() -> int | None:
@@ -397,23 +442,38 @@ def _reserve_protocol_stdout() -> int | None:
     failure. Swapping the descriptor itself is what ``kernel/worker.py`` does
     with ``dup2`` and what ``kernel/r_worker.R`` does with shell redirection.
 
-    Returns ``None`` when the platform refuses the swap, in which case the
-    caller falls back to writing the response on the inherited stdout.
+    Returns ``None`` when there is no usable stderr to hide behind, in which
+    case the caller writes the response on the inherited stdout and the
+    process is no better protected than it was before — but visibly so, rather
+    than through a swap that silently did nothing.
+
+    Deliberately not flushed first: bytes buffered in ``sys.stdout`` before
+    this runs are better delivered at interpreter shutdown, by which time fd 1
+    is stderr. Flushing here is the only thing that would push them into the
+    response. Output already written *through* fd 1 before this point — an
+    interpreter-startup banner from ``sitecustomize`` reached over an
+    inherited ``PYTHONPATH``, say — is beyond any in-process fix.
     """
+    global _RESERVED_FD
     try:
-        sys.stdout.flush()
-    except (ValueError, OSError):
-        pass
-    try:
+        # A closed fd 2 would make os.dup(1) below return descriptor 2, and
+        # os.dup2(2, 1) would then alias fd 1 onto the reserved copy: a swap
+        # that reports success and protects nothing.
+        os.fstat(2)
         reserved = os.dup(1)
         os.dup2(2, 1)
     except (AttributeError, OSError):
         return None
+    _RESERVED_FD = reserved
+    register_at_fork = getattr(os, "register_at_fork", None)
+    if register_at_fork is not None:
+        register_at_fork(after_in_child=_close_reserved_fd_in_child)
     return reserved
 
 
 def _emit_response(response: Mapping[str, Any], *, reserved_fd: int | None) -> None:
     """Write exactly one JSON object on the reserved protocol descriptor."""
+    global _RESERVED_FD
     payload = (json.dumps(response, sort_keys=True, ensure_ascii=True) + "\n").encode(
         "utf-8"
     )
@@ -421,6 +481,7 @@ def _emit_response(response: Mapping[str, Any], *, reserved_fd: int | None) -> N
         sys.stdout.buffer.write(payload)
         sys.stdout.buffer.flush()
         return
+    _RESERVED_FD = None
     with os.fdopen(reserved_fd, "wb", closefd=True) as handle:
         handle.write(payload)
         handle.flush()

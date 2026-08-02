@@ -3,6 +3,7 @@
 import importlib
 import json
 import math
+import os
 import sys
 import textwrap
 
@@ -458,6 +459,13 @@ def test_extra_args_precede_variadic_switches_so_values_are_not_absorbed(workflo
         (("--config", "other.yml"), "managed switch"),
         (("--smiles", "CCC"), "managed switch"),
         (("--output=/tmp/elsewhere.json",), "managed switch"),
+        # argparse resolves unambiguous prefixes, so an abbreviation reaches
+        # exactly the switch the exact-match check was meant to protect.
+        (("--out", "/tmp/elsewhere.json"), "managed switch"),
+        (("--conf", "/tmp/attacker.yml"), "managed switch"),
+        (("--sm", "ATTACKER-TARGET"), "managed switch"),
+        (("--check", "/tmp/attacker.json"), "managed switch"),
+        (("--", "junk"), "managed switch"),
         (("distance.ckpt",), "must start with a switch"),
     ],
 )
@@ -468,7 +476,7 @@ def test_extra_args_reject_managed_switches_and_leading_bare_values(
         workflow.AiZynthSearchSpec(extra_args=extra_args)
 
 
-def test_worker_metadata_redacts_paths_under_unrecognized_keys(worker):
+def test_worker_metadata_redacts_paths_by_value_not_by_key_name(worker):
     safe = worker._json_safe(
         {
             "checkpoint_path": "/opt/ckpt",
@@ -477,28 +485,84 @@ def test_worker_metadata_redacts_paths_under_unrecognized_keys(worker):
             "weights_file": "C:\\models\\w.pt",
             "home": "/home/chemist",
             "resource": "/home/chemist/secret/w.pt",
+            "source": "FILE:///home/chemist/secret",
             "candidates": ["/home/chemist/a.pt", "CCO"],
+            "shards": {"/home/chemist/private/shard0.pt": "sha-abc"},
             "probability": 0.7,
+        }
+    )
+
+    # A key that names a filesystem location is still dropped outright.
+    assert "checkpoint_path" not in safe
+    # Every other path is caught by value, whatever the key is called, and a
+    # path used as a key is masked too rather than published verbatim.
+    assert safe["model_dir"] == worker.REDACTED_PATH
+    assert safe["cache_dir"] == worker.REDACTED_PATH
+    assert safe["weights_file"] == worker.REDACTED_PATH
+    assert safe["home"] == worker.REDACTED_PATH
+    assert safe["resource"] == worker.REDACTED_PATH
+    assert safe["source"] == worker.REDACTED_PATH
+    assert safe["candidates"] == [worker.REDACTED_PATH, "CCO"]
+    assert safe["shards"] == {worker.REDACTED_PATH: "sha-abc"}
+    assert safe["probability"] == 0.7
+
+
+def test_worker_metadata_keeps_chemistry_that_only_looks_path_shaped(worker):
+    """Redaction must not become the bigger data loss.
+
+    ``use_cache`` and ``n_files`` cannot hold a path, ``bond_dir`` is an RDKit
+    bond direction, and ``~5 kcal/mol`` is an approximate quantity — a `~`
+    branch loose enough to match it is matching the wrong thing.
+    """
+    safe = worker._json_safe(
+        {
+            "use_cache": True,
+            "num_cache_hits": 12,
+            "cache_size": 4096,
+            "n_files": 3,
+            "bond_dir": "ENDUPRIGHT",
+            "file_format": "SDF",
+            "barrier": "~5 kcal/mol",
+            "rate": "~120 reactions/s",
+            "concentration": "~0.5 mol/L",
+            "reaction": "F/C=C/F>>FC=CF",
             "direction": "retro",
             "root_atom": 3,
         }
     )
 
-    # Keys that name a filesystem location are dropped outright.
-    assert not {
-        "checkpoint_path",
-        "model_dir",
-        "cache_dir",
-        "weights_file",
-        "home",
-    } & set(safe)
-    # A path under a key that names nothing in particular is masked by value.
-    assert safe["resource"] == worker.REDACTED_PATH
-    assert safe["candidates"] == [worker.REDACTED_PATH, "CCO"]
-    # Ordinary chemistry metadata survives; "direction" is not a directory.
-    assert safe["probability"] == 0.7
-    assert safe["direction"] == "retro"
-    assert safe["root_atom"] == 3
+    assert safe == {
+        "use_cache": True,
+        "num_cache_hits": 12,
+        "cache_size": 4096,
+        "n_files": 3,
+        "bond_dir": "ENDUPRIGHT",
+        "file_format": "SDF",
+        "barrier": "~5 kcal/mol",
+        "rate": "~120 reactions/s",
+        "concentration": "~0.5 mol/L",
+        "reaction": "F/C=C/F>>FC=CF",
+        "direction": "retro",
+        "root_atom": 3,
+    }
+
+
+def test_worker_error_messages_do_not_publish_the_callers_model_dir(worker):
+    """The missing-checkpoint failure is the one that reliably leaks a path."""
+    response = worker._error_response(
+        request_id="r",
+        operation="single_step",
+        code="inference_failed",
+        message=(
+            "FileNotFoundError: [Errno 2] No such file or directory: "
+            "'/home/chemist/private-lab/rc-v3/model.ckpt'"
+        ),
+        retryable=False,
+    )
+
+    assert "/home/chemist" not in response["error"]["message"]
+    assert worker.REDACTED_PATH in response["error"]["message"]
+    assert "FileNotFoundError" in response["error"]["message"]
 
 
 def test_worker_response_survives_native_stdout_writes(backends, worker, tmp_path):
@@ -571,3 +635,86 @@ def test_worker_response_survives_native_stdout_writes(backends, worker, tmp_pat
 
     assert response["ok"] is True
     assert response["predictions"][0]["reactants_smiles"] == "CCO.N"
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX fork required")
+def test_reserved_descriptor_does_not_outlive_a_forked_model_child(backends, tmp_path):
+    """A forking model must not hold the host's stdout pipe open.
+
+    ``os.dup`` marks the copy non-inheritable, but that only applies at exec.
+    A PyTorch DataLoader on the default Linux start method forks without
+    exec, so without an at-fork hook the host blocks in ``communicate()``
+    until the timeout even though the worker already answered and exited 0.
+    """
+    script = tmp_path / "forking_worker.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            import os
+            import sys
+            import time
+            import types
+
+            sys.path.insert(0, {str(get_config().skills_dir)!r})
+
+
+            class FakeMolecule:
+                def __init__(self, smiles):
+                    self.smiles = smiles
+
+
+            class FakePrediction:
+                reactants_str = "CCO.N"
+                reaction_smiles = "CCO.N>>CCON"
+                metadata = {{"probability": 0.7}}
+
+
+            class ForkingModel:
+                def __init__(self, **kwargs):
+                    pass
+
+                def __call__(self, molecules, num_results):
+                    if os.fork() == 0:
+                        # Release fds 0/1/2, so only a leaked duplicate could
+                        # still be holding the host's stdout pipe open.
+                        null = os.open(os.devnull, os.O_RDWR)
+                        for fd in (0, 1, 2):
+                            os.dup2(null, fd)
+                        time.sleep(30)
+                        os._exit(0)
+                    return [[FakePrediction()]]
+
+
+            syntheseus = types.ModuleType("syntheseus")
+            syntheseus.Molecule = FakeMolecule
+            retrochimera = types.ModuleType("retrochimera")
+            retrochimera.RetroChimeraModel = ForkingModel
+            sys.modules["syntheseus"] = syntheseus
+            sys.modules["retrochimera"] = retrochimera
+
+            from retrosynthesis_planning.syntheseus_worker import main
+
+            raise SystemExit(main())
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    backend = backends.SubprocessRetrosynthesisBackend(
+        [sys.executable, str(script)], timeout_seconds=20
+    )
+    response = backend.run(
+        {
+            "schema_version": 1,
+            "request_id": "forking-child",
+            "operation": "single_step",
+            "target_smiles": "CCON",
+            "model": "RetroChimera",
+            "model_dir": "/synthetic/checkpoint",
+            "num_results": 1,
+            "allow_model_download": False,
+            "model_manifest": None,
+        }
+    )
+
+    assert response["ok"] is True
