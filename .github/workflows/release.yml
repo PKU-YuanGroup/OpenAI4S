@@ -199,9 +199,13 @@ jobs:
           - platform: macos
             runner: macos-14
             module: harness.smoke.macos_sandbox
-          - platform: linux
-            runner: ubuntu-latest
-            module: harness.smoke.linux_sandbox
+          # No linux leg. `harness.smoke.linux_sandbox` cannot pass on a
+          # GitHub-hosted runner -- ci.yml explains why and deliberately has no
+          # such job -- and `build` needs this one, so requiring it made every
+          # release unreachable. It is declared unprovable in
+          # `release_gates.PLATFORM_CHECKS_UNAVAILABLE`, which the evidence
+          # bundle carries, rather than dropped. Adding it back here without
+          # removing it there fails `test_the_release_declares_every_platform`.
     steps:
       - name: Checkout the frozen release SHA
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
