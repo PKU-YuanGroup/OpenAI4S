@@ -125,16 +125,50 @@ def _v_bool(value: Any) -> Any:
     return value if isinstance(value, bool) else None
 
 
+def _exact_str(value: Any) -> bool:
+    """`type(x) is str`, deliberately not `isinstance`.
+
+    A `str` subclass is accepted by `isinstance` and may define `__eq__`,
+    `__hash__`, `lower`, `__str__` and `encode`. Every one of those is a method
+    the *value* owns, so a membership test downstream of an `isinstance` gate
+    asks the attacker whether it is allowed — and it says yes, while the JSON
+    encoder writes the real buffer. Measured: an `Alias(str)` whose content was
+    a private phrase and whose `__eq__` claimed to be `Darwin` reached the
+    archive as both a value and a key.
+
+    So the exact type is checked *first*, before any membership, hash,
+    equality, fingerprint, encode or lower.
+    """
+    return type(value) is str
+
+
 def _v_enum(allowed: frozenset) -> Any:
+    """Membership, returning the repository's own literal.
+
+    Returning the *input* is what lets a subclass through even once the type
+    check is right: the object itself travels onward and something downstream
+    writes its buffer. Returning the source literal makes that unreachable
+    rather than merely caught.
+    """
+    canonical = {str(item): str(item) for item in allowed}
+
     def check(value: Any) -> Any:
-        return value if isinstance(value, str) and value in allowed else None
+        if not _exact_str(value):
+            return None
+        return canonical.get(value)
 
     return check
 
 
 def _v_lower_enum(allowed: frozenset) -> Any:
+    canonical = {str(item): str(item) for item in allowed}
+
     def check(value: Any) -> Any:
-        return value if isinstance(value, str) and value.lower() in allowed else None
+        # `value.lower()` is the value's own method; call it only after the
+        # exact-type check has established there is no override.
+        if not _exact_str(value):
+            return None
+        return canonical.get(value.lower())
 
     return check
 
@@ -149,7 +183,7 @@ def _v_identity(value: Any) -> Any:
     would lose the one thing tying a bundle to a ticket; the fingerprint keeps
     that, because support can fingerprint the id the user quotes and match.
     """
-    if not isinstance(value, str) or not value:
+    if not _exact_str(value) or not value:
         return None
     return f"<redacted:{fingerprint(value)}>"
 
@@ -157,24 +191,21 @@ def _v_identity(value: Any) -> Any:
 def _v_type_name(value: Any) -> Any:
     from openai4s.server.errors import _KNOWN_EXCEPTIONS, UNKNOWN_TYPE_NAME
 
-    if not isinstance(value, str):
+    if not _exact_str(value):
         return None
-    return value if value in _KNOWN_EXCEPTIONS or value == UNKNOWN_TYPE_NAME else None
+    for known in _KNOWN_EXCEPTIONS:
+        if value == known:
+            return str(known)
+    return UNKNOWN_TYPE_NAME if value == UNKNOWN_TYPE_NAME else None
 
 
 def _v_detail(value: Any) -> Any:
     """Exactly the one sentence, or nothing."""
     from openai4s.server.errors import DIAGNOSTIC_DETAIL
 
-    return value if value == DIAGNOSTIC_DETAIL else None
-
-
-def _v_fingerprint(value: Any) -> Any:
-    return (
-        value
-        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{6,64}", value)
-        else None
-    )
+    if not _exact_str(value):
+        return None
+    return DIAGNOSTIC_DETAIL if value == DIAGNOSTIC_DETAIL else None
 
 
 def _v_version(value: Any) -> Any:
@@ -187,7 +218,7 @@ def _v_version(value: Any) -> Any:
     is not a number, rather than trying to salvage the rest), and
     `3.privatecohortalpha` becomes nothing.
     """
-    if not isinstance(value, str) or not value:
+    if not _exact_str(value) or not value:
         return None
     parts: list[str] = []
     for chunk in value.split("."):
@@ -272,7 +303,11 @@ _ARCHIVE_FIELDS: dict[str, Any] = {
     "surface": _v_enum(_ARCHIVE_SURFACES),
     "exception": _v_type_name,
     "error_type": _v_type_name,
-    "error_class": _v_fingerprint,
+    # Re-fingerprinted, not checked for hex. A fingerprint *looks* like a safe
+    # thing, which is exactly why this was the last field still judged by
+    # shape -- and a line in `app.out` can put any 6-64 hex string there.
+    # Fingerprinting is stable, so correlation survives.
+    "error_class": _v_identity,
     "status": _v_lower_enum(_ARCHIVE_STATUSES),
     "detail": _v_detail,
     "fields_omitted": _v_number,
@@ -298,7 +333,7 @@ def _stable_repr(value: Any) -> str:
     record itself stopped doing -- an object whose `__repr__` returns a path
     and a command was rendered into the archive by the serializer.
     """
-    if isinstance(value, str):
+    if _exact_str(value):
         return value
     try:
         return f"{type(value).__module__}.{type(value).__qualname__}"
@@ -321,7 +356,7 @@ def _archive_structured(record: Mapping[str, Any]) -> dict:
     out: dict[str, Any] = {}
     dropped = 0
     for key, value in record.items():
-        if not isinstance(key, str) or key not in _ARCHIVE_FIELDS:
+        if not _exact_str(key) or key not in _ARCHIVE_FIELDS:
             dropped += 1
             continue
         out[key] = _archive_field(key, value)
@@ -366,6 +401,13 @@ def _archive_plain(lines: list[str]) -> list[str]:
     return out
 
 
+def _safe_error_type(exc: BaseException) -> str:
+    """The same category rule the rest of the boundary uses."""
+    from openai4s.server.errors import safe_type_name
+
+    return safe_type_name(exc)
+
+
 def _safe_read_tail(path: Path, limit: int = 512 * 1024) -> str:
     """The last `limit` bytes of a log, reduced to what is safe to share.
 
@@ -389,7 +431,7 @@ def _safe_read_tail(path: Path, limit: int = 512 * 1024) -> str:
         return json.dumps(
             {
                 "archive_note": "log could not be read",
-                "error_type": type(e).__name__,
+                "error_type": _safe_error_type(e),
             }
         )
     out: list[str] = []
@@ -482,7 +524,7 @@ def _archive_to_schema(value: Any, schema: Any) -> tuple[Any, int]:
             return None, 1
         out: dict[str, Any] = {}
         for key, item in value.items():
-            if not isinstance(key, str) or key not in schema:
+            if not _exact_str(key) or key not in schema:
                 # Never `str(key)`: a mapping key can be an object whose
                 # `__str__` this report does not own.
                 dropped += 1

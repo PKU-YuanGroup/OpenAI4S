@@ -234,14 +234,26 @@ def safe_type_name(exc: BaseException) -> str:
             name = klass.__name__
         except Exception:  # noqa: BLE001
             continue
-        if isinstance(name, str) and name in _KNOWN_EXCEPTIONS:
-            return name
+        # `type(x) is str`, not `isinstance`: a metaclass can make `__name__`
+        # a `str` subclass whose `__eq__` claims to be an allowed category
+        # while its buffer holds something else. And the *set's* member is
+        # returned, never the object handed in.
+        if type(name) is not str:
+            continue
+        for known in _KNOWN_EXCEPTIONS:
+            if name == known:
+                return str(known)
     return UNKNOWN_TYPE_NAME
 
 
 def safe_protocol_value(value: Any, allowed: frozenset) -> str:
     """A caller-supplied string, kept only if this repository named it."""
-    return value if isinstance(value, str) and value in allowed else UNKNOWN_TYPE_NAME
+    if type(value) is not str:
+        return UNKNOWN_TYPE_NAME
+    for known in allowed:
+        if value == known:
+            return str(known)
+    return UNKNOWN_TYPE_NAME
 
 
 def error_class(exc: BaseException) -> str:
@@ -276,7 +288,7 @@ def error_class(exc: BaseException) -> str:
 
 def _exact_id(value: Any) -> str:
     """An id, or nothing. Never a stringification of something else."""
-    return value if isinstance(value, str) and value else ""
+    return value if type(value) is str and value else ""
 
 
 def record_diagnostic(
@@ -310,7 +322,7 @@ def record_diagnostic(
         # No `str()`: a surface that is not exactly a string is not a
         # surface, and coercing one is how an object's `__str__` gets
         # invited into a record that outlives the request.
-        surface=surface if isinstance(surface, str) and surface else "unknown",
+        surface=surface if type(surface) is str and surface else "unknown",
         exception=safe_type_name(exc),
         detail=DIAGNOSTIC_DETAIL,
         error_class=error_class(exc),

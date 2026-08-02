@@ -421,8 +421,13 @@ def test_the_allowlisted_fields_still_carry_their_real_values(cfg, tmp_path):
 
     _names, blob = _bundle_parts(cfg, tmp_path)
     # Closed-set values travel as themselves...
-    for kept in (b"cell:attempt", b"PermissionError", b"a1b2c3d4e5f6"):
+    for kept in (b"cell:attempt", b"PermissionError"):
         assert kept in blob, kept
+    # ...and `error_class` does not, because a fingerprint-shaped field read
+    # out of a file is not evidence that we produced it. It is re-fingerprinted
+    # like every other variable id, which keeps correlation stable.
+    assert b"a1b2c3d4e5f6" not in blob
+    assert fingerprint("a1b2c3d4e5f6").encode() in blob
     # ...and a variable id travels as its fingerprint, which is what a support
     # ticket is matched on.
     assert b"req-abc123" not in blob
@@ -896,3 +901,249 @@ def test_a_non_string_surface_or_id_is_not_stringified():
     assert FOREIGN_PATH not in blob, blob
     assert record["surface"] == "unknown"
     assert record["request_id"] == ""
+
+
+# --------------------------------------------------------------------------
+# a value's *type* is part of the boundary, not just its content
+# --------------------------------------------------------------------------
+
+HEX_MIXED = "a1b2c3d4e5f60718"
+HEX_ALPHA = "a" * 32
+HEX_DIGIT = "1" * 32
+
+
+@pytest.mark.parametrize("value", [HEX_MIXED, HEX_ALPHA, HEX_DIGIT])
+def test_an_error_class_is_re_fingerprinted_rather_than_passed_on_its_shape(
+    cfg, tmp_path, value
+):
+    """`error_class` was the last field still judged by shape: 6-64 hex.
+
+    That is the identical mistake this module removed everywhere else, left
+    standing in one place because a fingerprint *looks* like a safe thing. A
+    line in `app.out` can put anything of that shape in the field, and two of
+    the three canaries below sail through untouched — the third was stopped
+    only by a later opacity pass, which is luck rather than a boundary.
+
+    Re-fingerprinting is free: it is stable, so correlation survives, and the
+    archive stops depending on the field having been produced by us.
+    """
+    from openai4s.observability import fingerprint
+
+    (cfg.data_dir / "logs" / "app.out").write_text(
+        json.dumps({"event": "unhandled_exception", "error_class": value}) + "\n",
+        encoding="utf-8",
+    )
+    _names, blob = _bundle_parts(cfg, tmp_path)
+    assert value.encode() not in blob, f"{value!r} passed on its shape"
+    assert fingerprint(value).encode() in blob
+
+
+class _Alias(str):
+    """Content is the secret; identity claims to be something allowlisted.
+
+    `isinstance(x, str)` is True for a subclass, so the membership test asks
+    *this object* whether it equals an allowed value and it answers yes — while
+    the JSON encoder writes the real buffer. Every check downstream of an
+    `isinstance` gate is consulting the attacker.
+    """
+
+    def __new__(cls, real: str, pretend: str) -> "_Alias":
+        obj = super().__new__(cls, real)
+        obj._pretend = pretend  # type: ignore[attr-defined]
+        return obj
+
+    def __hash__(self) -> int:  # type: ignore[override]
+        return hash(self._pretend)  # type: ignore[attr-defined]
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        return other == self._pretend  # type: ignore[attr-defined]
+
+
+class _LowerAlias(str):
+    """Passes a lower-cased enum by lying in `lower()`."""
+
+    def lower(self) -> str:  # type: ignore[override]
+        return "failed"
+
+
+class _Exploding(str):
+    """Records whether the boundary ever called its methods."""
+
+    called = False
+
+    def __str__(self) -> str:  # type: ignore[override]
+        type(self).called = True
+        raise RuntimeError("this string refuses to render")
+
+    def encode(self, *args, **kwargs):  # type: ignore[override]
+        type(self).called = True
+        raise RuntimeError("this string refuses to encode")
+
+
+def test_a_lying_string_subclass_cannot_impersonate_an_allowed_value(
+    cfg, tmp_path, monkeypatch
+):
+    import openai4s.diagnostics as diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "environment_report",
+        lambda: {"platform": _Alias(PRIVATE_IDENT, "Darwin")},
+    )
+    _names, blob = _bundle_parts(cfg, tmp_path)
+    assert PRIVATE_IDENT.encode() not in blob
+
+
+def test_a_lying_string_subclass_cannot_impersonate_an_allowed_key(
+    cfg, tmp_path, monkeypatch
+):
+    import openai4s.diagnostics as diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "environment_report",
+        lambda: {_Alias(PRIVATE_IDENT, "python"): "3.12.13"},
+    )
+    _names, blob = _bundle_parts(cfg, tmp_path)
+    assert PRIVATE_IDENT.encode() not in blob
+
+
+def test_a_lower_cased_enum_is_not_decided_by_the_value(cfg, tmp_path):
+    """`_v_lower_enum` called `value.lower()`, which the value defines."""
+    (cfg.data_dir / "logs" / "app.out").write_text(
+        json.dumps({"event": "unhandled_exception", "status": "ok"}) + "\n",
+        encoding="utf-8",
+    )
+    from openai4s.diagnostics import _ARCHIVE_STATUSES, _v_lower_enum
+
+    check = _v_lower_enum(_ARCHIVE_STATUSES)
+    assert check(_LowerAlias(PRIVATE_IDENT)) is None
+    # ...and a real value still passes, as the canonical literal.
+    result = check("OK")
+    assert result == "ok" and type(result) is str
+
+
+def test_a_string_that_refuses_to_render_is_never_asked_to(cfg, tmp_path, monkeypatch):
+    """The boundary must not call a method the value defines — not `str()`,
+    not `encode()`. Asserting the bundle merely survives is not enough: it
+    would also survive a `try/except` that called the method first."""
+    import openai4s.diagnostics as diagnostics
+
+    _Exploding.called = False
+    monkeypatch.setattr(
+        diagnostics,
+        "environment_report",
+        lambda: {"machine": _Exploding(PRIVATE_IDENT), "python": "3.12.13"},
+    )
+    _names, blob = _bundle_parts(cfg, tmp_path)
+
+    assert PRIVATE_IDENT.encode() not in blob
+    assert b"3.12.13" in blob
+    assert _Exploding.called is False, "the boundary called a method the value owns"
+
+
+def test_an_enum_returns_the_repositorys_own_literal(cfg, tmp_path):
+    """Returning the *input* is what lets a subclass through even after the
+    type check is right: the object travels, and the encoder writes its
+    buffer. Returning the source literal makes the class of bug unreachable
+    rather than merely caught."""
+    from openai4s.diagnostics import _ARCHITECTURES, _SYSTEMS, _v_enum
+
+    machine = _v_enum(_ARCHITECTURES)
+    got = machine("arm64")
+    assert got == "arm64" and type(got) is str
+    assert machine(_Alias(PRIVATE_IDENT, "arm64")) is None
+    assert _v_enum(_SYSTEMS)(_Alias(PRIVATE_IDENT, "Darwin")) is None
+
+
+def test_an_unknown_secret_backend_does_not_travel(cfg, tmp_path, monkeypatch):
+    import openai4s.diagnostics as diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "security_posture",
+        lambda cfg_: {"secret_store": {"backend": PRIVATE_LOWER, "secure": True}},
+    )
+    _names, blob = _bundle_parts(cfg, tmp_path)
+    assert PRIVATE_LOWER.encode() not in blob
+    assert b"true" in blob.lower()
+
+
+def test_a_migration_row_travels_only_as_fingerprints(cfg, tmp_path, monkeypatch):
+    import openai4s.diagnostics as diagnostics
+    from openai4s.observability import fingerprint
+
+    monkeypatch.setattr(
+        diagnostics,
+        "security_posture",
+        lambda cfg_: {
+            "schema": {
+                "version": 13,
+                "applied": [
+                    {
+                        "version": 1,
+                        "applied_at": 2,
+                        "name": PRIVATE_SNAKE,
+                        "checksum": HEX_ALPHA,
+                    }
+                ],
+            }
+        },
+    )
+    _names, blob = _bundle_parts(cfg, tmp_path)
+    assert PRIVATE_SNAKE.encode() not in blob
+    assert HEX_ALPHA.encode() not in blob
+    assert fingerprint(PRIVATE_SNAKE).encode() in blob
+    assert fingerprint(HEX_ALPHA).encode() in blob
+
+
+class _AliasNamed(type):
+    """A metaclass whose `__name__` is a lying `str` subclass.
+
+    `type(exc).__name__` reads like a fact about the class. It is a value the
+    class's author controls, and with a metaclass it need not even be a real
+    string — so the category lookup can be answered by the object being asked
+    about.
+    """
+
+    @property
+    def __name__(cls):  # type: ignore[override]
+        return _Alias(PRIVATE_IDENT, "ValueError")
+
+
+def test_a_class_that_lies_about_its_own_name_is_not_believed():
+    """The MRO walk is not enough on its own: this class's *own* name claims
+    to be an allowed category, so a check that trusts `__name__` returns at the
+    first step and never reaches the real base."""
+    from openai4s.server.errors import safe_type_name
+
+    Lying = _AliasNamed("Lying", (RuntimeError,), {})
+    reported = safe_type_name(Lying())
+
+    assert PRIVATE_IDENT not in reported
+    assert reported == "RuntimeError"
+    assert type(reported) is str
+
+
+def test_an_alias_key_would_travel_without_the_exact_type_check(
+    cfg, tmp_path, monkeypatch
+):
+    """The key path has no canonical-return to fall back on.
+
+    A value that slips the type check is still replaced by the repository's own
+    literal on the way out. A *key* is not: it is written into the output dict
+    as the object it is, and the encoder emits its buffer. So the exact-type
+    check is the only thing standing there, and this asserts it directly.
+    """
+    import openai4s.diagnostics as diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "environment_report",
+        lambda: {_Alias(PRIVATE_IDENT, "python"): "3.12.13"},
+    )
+    _names, blob = _bundle_parts(cfg, tmp_path)
+    assert PRIVATE_IDENT.encode() not in blob
+    # The impersonated key does not appear either -- it was dropped, not
+    # silently accepted under the name it claimed.
+    assert b'"python"' not in blob
