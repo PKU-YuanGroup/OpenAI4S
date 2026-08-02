@@ -9395,11 +9395,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     block = _format_annotations_block(annos)
                     if block:
                         req = (req + "\n\n" + block).strip() if req.strip() else block
-                    # Only burn annotations to 'sent' when we actually have
-                    # some to deliver — else a filtered-empty batch flips
-                    # nothing yet loses the pins forever (never back to 'open').
-                    if annos:
-                        store.mark_annotations_sent([a["annotation_id"] for a in annos])
                 job = runner.submit_message(
                     fid,
                     pid,
@@ -9409,6 +9404,23 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     annos=annos,
                     explore=bool(b.get("explore")),
                 )
+                # Consumed only by a message the server accepted, and that
+                # ordering is the whole guarantee. This ran *before*
+                # `submit_message`, which is where every refusal this route can
+                # make happens -- its own docstring says so, and the
+                # oversized-text 413 is one of them. `mark_sent` is one-way
+                # (`WHERE status='open'`, with nothing to set it back), so a
+                # message that was never accepted destroyed the user's pinned
+                # comments: not on a turn, because there was no turn, and not
+                # in the composer either. The browser told them the opposite in
+                # as many words -- "POST failed → annotations were never
+                # consumed server-side" -- and reconciled against the server on
+                # that basis, so the UI reported the loss as success.
+                #
+                # Still guarded on `annos` for the original reason: a batch
+                # filtered empty by the frame check flips nothing.
+                if annos:
+                    store.mark_annotations_sent([a["annotation_id"] for a in annos])
                 if b.get("wait", True) is False:
                     snapshot = runner.executions.snapshot(fid)
                     queued = next(

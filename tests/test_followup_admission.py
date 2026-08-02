@@ -260,3 +260,65 @@ def test_the_cap_is_reached_by_queueing_and_not_by_a_single_message(client):
         assert body["code"] == "message_too_large"
     finally:
         finish()
+
+
+# --------------------------------------------------------------------------
+# pinned annotations are consumed only by a message the server accepted
+# --------------------------------------------------------------------------
+
+
+def _pin(client, *, body="look at this peak"):
+    """One open annotation on a real artifact in this session."""
+    return client.store.add_annotation(
+        root_frame_id=client.frame_id,
+        artifact_id="artifact-under-pin",
+        artifact_name="plot.png",
+        rel_x=0.5,
+        rel_y=0.5,
+        body=body,
+    )["annotation_id"]
+
+
+def _status(client, annotation_id):
+    return (client.store.get_annotation(annotation_id) or {}).get("status")
+
+
+def test_a_refused_message_does_not_burn_the_pins_it_carried(client):
+    """`mark_annotations_sent` ran *before* `submit_message`.
+
+    Every refusal this route can make happens inside `submit_message` -- its
+    own docstring says so, and the oversized-text 413 below is one of them --
+    so a message that was never accepted had already flipped its pins to
+    `sent`. `mark_sent` is one-way (`WHERE status='open'`, and nothing sets it
+    back), so the comments were gone for good: not on the turn, because there
+    was no turn, and not in the composer either.
+
+    The browser said the opposite in as many words -- "POST failed →
+    annotations were never consumed server-side" -- and reconciled against the
+    server on that basis, so the UI faithfully reported the loss as success.
+    """
+    annotation_id = _pin(client)
+    assert _status(client, annotation_id) == "open"
+
+    status, _body = client.message(
+        "x" * (8 * 1024 * 1024), annotation_ids=[annotation_id]
+    )
+
+    assert status == 413, status
+    assert _status(client, annotation_id) == "open", (
+        "a refused message consumed its pinned comments; they cannot be "
+        "reopened, so the user's annotations are lost"
+    )
+
+
+def test_an_accepted_message_still_consumes_them(client):
+    """The other half: the fix must not make pins un-consumable, or every turn
+    would re-send the same comments forever."""
+    annotation_id = _pin(client)
+
+    status, _body = client.message(
+        "summarise the figure", annotation_ids=[annotation_id]
+    )
+
+    assert status in (200, 202), status
+    assert _status(client, annotation_id) == "sent"

@@ -5638,9 +5638,15 @@ async function send(text, opts) {
   }
   catch (e) {
     if (annIds.length) {
-      // POST failed → annotations were never consumed server-side. Reconcile with the server
-      // if reachable; if that reload also fails, revert the optimistic "sent" flip locally so
-      // the pending comments stay visible for a retry instead of vanishing from the composer.
+      // POST failed → annotations were never consumed server-side. That is true
+      // now and was not when this was written: the route burned the pins to
+      // 'sent' *before* `submit_message`, which is where every refusal it can
+      // make happens, and `mark_sent` is one-way. So a 413/409/429 destroyed
+      // the comments while this comment said it had not, and the reconcile
+      // below faithfully reported the loss as success. Reconcile with the
+      // server if reachable; if that reload also fails, revert the optimistic
+      // "sent" flip locally so the pending comments stay visible for a retry
+      // instead of vanishing from the composer.
       const reloaded = await loadAnnotations(S.currentId);
       if (!reloaded) setLocalAnnotationStatus(annIds, "open");
       refreshAllStages(); updateAnnotBadge();
