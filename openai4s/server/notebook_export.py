@@ -23,8 +23,12 @@ class CellStore(Protocol):
     def get_session_checkpoint(self, checkpoint_id: str) -> dict | None:
         ...
 
-    def list_messages(
-        self, root_frame_id: str, *, branch_id: str | None = None
+    def list_branch_messages(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str | None = None,
+        limit: int | None = None,
     ) -> list[dict]:
         ...
 
@@ -145,58 +149,75 @@ class NotebookExportService:
                 archive.writestr(info, data)
         return output.getvalue()
 
-    def _referenced_artifacts(self, root_frame_id: str, branch_id: str) -> list[dict]:
-        """The artifacts this session's turns were given, pinned as they were.
+    @staticmethod
+    def _refs_from_metadata(metadata: Any) -> list[Mapping[str, Any]]:
+        """The refs a message recorded, parsed strictly and from metadata only.
 
-        Read from the messages rather than from the cells because that is where
-        the choice lives: a reference is something the researcher wrote into a
-        turn, and it is resolved to an exact version at send time. The cells
-        only see files.
-
-        Tolerant of a store that will not take ``branch_id`` for the same
-        reason ``_branch_cells`` is: not every caller has a branch to give.
+        `metadata` comes back from the store as a JSON *string*, and it is
+        free-form: anything a future writer puts there arrives here too. So the
+        shape is checked rather than assumed, and the message *body* is never
+        looked at -- the `@name#version` text in it is what the resolver read,
+        not what it resolved to, and after a copy it can name a version this
+        session cannot see.
         """
-        reader = getattr(self.store, "list_messages", None)
-        if reader is None:
-            return []
-        # `limit=None` on purpose. `Store.list_messages` defaults to 300, which
-        # would silently drop the inputs of a long session's early turns -- and
-        # a provenance list that is quietly partial is worse than none, because
-        # a reader has no way to tell. The rendered list is bounded instead,
-        # and says so when it cuts.
-        try:
-            messages = reader(root_frame_id, branch_id=branch_id, limit=None)
-        except TypeError:
+        if type(metadata) is str:
             try:
-                messages = reader(root_frame_id, branch_id=branch_id)
-            except TypeError:
-                messages = reader(root_frame_id)
-        seen: set[tuple[str, str]] = set()
+                metadata = json.loads(metadata)
+            except (ValueError, TypeError):
+                return []
+        if not isinstance(metadata, Mapping):
+            return []
+        refs = metadata.get("artifact_refs")
+        if not isinstance(refs, list):
+            return []
+        return [ref for ref in refs if isinstance(ref, Mapping)]
+
+    def _referenced_artifacts(self, root_frame_id: str, branch_id: str) -> list[dict]:
+        """The artifacts this branch's turns were given, pinned as they were.
+
+        Read from the messages rather than the cells because that is where the
+        choice lives: a reference is something the researcher wrote into a
+        turn, and it is resolved to an exact version at send time. The cells
+        only ever see files.
+
+        Branch-aware on purpose. `list_messages` returns the frame's rows;
+        `list_branch_messages` runs the production projector, so a fork
+        inherits its parent's inputs and a revert stops naming the files an
+        abandoned turn referenced -- which would otherwise leak an abandoned
+        file name and version into a document meant for publication.
+
+        `limit=None` because `list_branch_messages` defaults to 300, and a
+        provenance list that is quietly partial is worse than absent: a reader
+        cannot tell. There is deliberately no `TypeError` fallback around this
+        call -- one would swallow a `TypeError` raised *inside* the reader and
+        silently return to the paged default, which is the same silent-partial
+        failure in a shape that is harder to see.
+        """
+        messages = self.store.list_branch_messages(
+            root_frame_id, branch_id=branch_id, limit=None
+        )
+        seen: set[str] = set()
         out: list[dict] = []
         for message in messages or ():
             if not isinstance(message, Mapping):
                 continue
-            refs = message.get("artifact_refs")
-            for ref in refs if isinstance(refs, list) else ():
-                if not isinstance(ref, Mapping):
+            for ref in self._refs_from_metadata(message.get("metadata")):
+                name = ref.get("display_name")
+                version = ref.get("version_id")
+                if type(name) is not str or not name:
                     continue
-                name = str(ref.get("display_name") or "")
-                version = str(ref.get("version_id") or "")
-                if not name:
-                    continue
-                # Two turns citing one pinned version are one input.
-                key = (name, version)
+                if type(version) is not str:
+                    version = ""
+                # Keyed on the version, because that is the identity: the same
+                # pinned version cited twice -- or under an alias -- is one
+                # input, and two versions of one file are two. An unpinned
+                # reference has no version to key on, so it falls back to the
+                # name rather than collapsing every unpinned file into one.
+                key = f"v:{version}" if version else f"n:{name}"
                 if key in seen:
                     continue
                 seen.add(key)
-                out.append(
-                    {
-                        "display_name": name,
-                        "version_id": version,
-                        "source_session": str(ref.get("source_session") or ""),
-                        "sha256": str(ref.get("sha256") or ""),
-                    }
-                )
+                out.append({"display_name": name, "version_id": version})
         return out
 
     def markdown(self, root_frame_id: str, *, branch_id: str | None = None) -> bytes:

@@ -11,6 +11,15 @@ from openai4s.server.notebook_export import NotebookExportService
 
 
 class _Store:
+    def list_branch_messages(self, root_frame_id, *, branch_id=None, limit=None):
+        # A session with cells and no conversation. Present rather than absent
+        # because the export's port requires it: a store that cannot answer
+        # this cannot be exported, and discovering that at runtime behind a
+        # `getattr` fallback is how the Inputs section came to render nothing
+        # in production while its tests were green.
+        assert limit is None, "the export took the store's paging default"
+        return []
+
     def list_cells(self, root_frame_id):
         assert root_frame_id == "root-1"
         return [
@@ -151,160 +160,220 @@ def test_the_export_descriptor_names_markdown_as_markdown():
     assert exported["data"] == service.markdown("root-1")
 
 
-class _StoreWithRefs(_Store):
-    """The same cells, plus the messages that named the files they read."""
-
-    def __init__(self, messages=None):
-        self.messages = (
-            messages
-            if messages is not None
-            else [
-                {
-                    "role": "user",
-                    "content": "compare @cohort.csv#v-aaa111222333 against last week",
-                    "artifact_refs": [
-                        {
-                            "display_name": "cohort.csv",
-                            "version_id": "v-aaa111222333",
-                            "sha256": "f" * 64,
-                            "source_session": "root-other",
-                        }
-                    ],
-                },
-                {"role": "assistant", "content": "done", "artifact_refs": []},
-                {
-                    "role": "user",
-                    "content": "now add @notes.md",
-                    "artifact_refs": [
-                        {
-                            "display_name": "notes.md",
-                            "version_id": "v-bbb444555666",
-                            "sha256": "e" * 64,
-                            "source_session": "root-1",
-                        }
-                    ],
-                },
-            ]
-        )
-
-    def list_messages(self, root_frame_id, *, branch_id=None, limit=None):
-        assert root_frame_id == "root-1"
-        return list(self.messages)
+# --------------------------------------------------------------------------
+# the Inputs section, driven through the REAL Store
+# --------------------------------------------------------------------------
+#
+# The first version of these tests used a hand-written stub exposing
+# `artifact_refs` at the top level of a message row. The product does not
+# produce that shape: `gateway.update_message_metadata` writes the refs into
+# `metadata`, and `list_messages` hands `metadata` back as a JSON *string*. So
+# the stub asserted a shape this repository never emits, the export rendered
+# nothing at all in production, and the tests were green. A stub's shape is one
+# the test author chose; only the real Store's is evidence.
 
 
-def test_markdown_names_the_artifact_versions_the_session_was_given():
-    """The document's own purpose is what makes this a gap.
+def _real_store(tmp_path):
+    from openai4s.config import Config
+    from openai4s.store import get_store
 
-    It says it exists "for reading it and for pasting it somewhere that is not
-    Jupyter -- an issue, a lab notebook, a supplementary methods section". A
-    methods section whose inputs are unnamed is the one kind of incomplete that
-    matters: the reader cannot tell which version of which file produced the
-    numbers, and the session *knows*, because the reference was pinned to a
-    version when the turn was sent.
-
-    Rendering cells only meant every `@file#version` a researcher chose was
-    dropped from the export while the UI showed it as a chip.
-    """
-    service = NotebookExportService(_StoreWithRefs())
-    text = service.markdown("root-1").decode("utf-8")
-
-    assert "cohort.csv" in text
-    assert "v-aaa111222333" in text
-    assert "notes.md" in text
-    assert "v-bbb444555666" in text
-    # The cells are still the body of the document.
-    assert "value = 21 * 2" in text
-    assert "stop('boom')" in text
+    config = Config(data_dir=tmp_path / "data")
+    config.ensure_dirs()
+    return config, get_store(config.db_path)
 
 
-def test_markdown_says_nothing_about_inputs_when_there_were_none():
-    """An empty section is a claim too -- that the question was asked and the
-    answer was none. A session with no references should read exactly as it
-    does today rather than gaining a heading with nothing under it."""
-    service = NotebookExportService(_StoreWithRefs(messages=[]))
-    text = service.markdown("root-1").decode("utf-8")
-
-    assert "Inputs" not in text
-    assert "value = 21 * 2" in text
+def _turn_with_refs(store, root, text, refs):
+    """A user message carrying refs exactly as the gateway writes them."""
+    message = store.add_message(root_frame_id=root, role="user", content=text)
+    message_id = message["message_id"] if isinstance(message, dict) else message
+    store.update_message_metadata(message_id, {"artifact_refs": list(refs)})
+    return message_id
 
 
-def test_markdown_does_not_export_the_prompt_text_with_the_reference():
+def _ref(name, version, **extra):
+    return {"display_name": name, "version_id": version, **extra}
+
+
+def test_markdown_names_the_versions_the_real_store_recorded(tmp_path):
+    """The production row shape, not a shape this test invented."""
+    _config, store = _real_store(tmp_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    _turn_with_refs(
+        store,
+        root,
+        "compare @cohort.csv#v-aaa111222333 against last week",
+        [_ref("cohort.csv", "v-aaa111222333", sha256="f" * 64)],
+    )
+    _turn_with_refs(
+        store, root, "now add @notes.md", [_ref("notes.md", "v-bbb444555666")]
+    )
+
+    text = NotebookExportService(store).markdown(root).decode("utf-8")
+
+    assert "## Inputs" in text
+    assert "cohort.csv" in text and "v-aaa111222333" in text
+    assert "notes.md" in text and "v-bbb444555666" in text
+
+
+def test_markdown_does_not_export_the_turn_text(tmp_path):
     """Only the provenance. The message body is the researcher's unpublished
     thinking and a different decision from naming the file it pointed at."""
-    service = NotebookExportService(_StoreWithRefs())
-    text = service.markdown("root-1").decode("utf-8")
-
-    assert "compare " not in text
-    assert "against last week" not in text
-    assert "now add" not in text
-
-
-def test_markdown_names_a_repeated_reference_once():
-    """Two turns citing the same pinned version are one input, not two."""
-    ref = {
-        "display_name": "cohort.csv",
-        "version_id": "v-aaa111222333",
-        "sha256": "f" * 64,
-        "source_session": "root-1",
-    }
-    service = NotebookExportService(
-        _StoreWithRefs(
-            messages=[
-                {"role": "user", "content": "one", "artifact_refs": [ref]},
-                {"role": "user", "content": "two", "artifact_refs": [dict(ref)]},
-            ]
-        )
+    _config, store = _real_store(tmp_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    _turn_with_refs(
+        store, root, "compare against last week", [_ref("cohort.csv", "v-aaa111222333")]
     )
-    text = service.markdown("root-1").decode("utf-8")
 
-    assert text.count("v-aaa111222333") == 1
+    text = NotebookExportService(store).markdown(root).decode("utf-8")
+    assert "against last week" not in text
+    assert "cohort.csv" in text
 
 
-def test_markdown_reads_past_the_stores_default_message_page():
-    """`Store.list_messages` defaults to `limit=300`.
+def test_markdown_reads_past_the_stores_default_message_page(tmp_path):
+    """`list_branch_messages` defaults to `limit=300`.
 
-    Taking that default would drop the inputs of every turn before the last
-    three hundred, and a provenance list that is quietly partial is worse than
-    absent: a reader cannot tell it is looking at a subset. The stub below
-    refuses the defaulted call so the test fails if the explicit `limit=None`
-    is ever dropped.
+    Taking that default drops the inputs of every turn before the last three
+    hundred, and a provenance list that is quietly partial is worse than
+    absent: a reader cannot tell it is looking at a subset.
     """
+    _config, store = _real_store(tmp_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    # The filler comes FIRST. The default page is the *oldest* 300, so a
+    # reference in an early turn would survive it and prove nothing -- the
+    # reference has to sit past the page boundary for the limit to matter.
+    for index in range(320):
+        store.add_message(root_frame_id=root, role="user", content=f"filler {index}")
+    _turn_with_refs(store, root, "the last turn", [_ref("latest.csv", "v-late000001")])
 
-    class _Paged(_Store):
-        def list_messages(self, root_frame_id, *, branch_id=None, limit=300):
-            assert limit is None, "the export took the store's paging default"
-            return [
-                {
-                    "role": "user",
-                    "content": "old turn",
-                    "artifact_refs": [
-                        {
-                            "display_name": "early.csv",
-                            "version_id": "v-early0000001",
-                        }
-                    ],
-                }
-            ]
-
-    text = NotebookExportService(_Paged()).markdown("root-1").decode("utf-8")
-    assert "early.csv" in text
-    assert "v-early0000001" in text
+    text = NotebookExportService(store).markdown(root).decode("utf-8")
+    assert "latest.csv" in text
+    assert "v-late000001" in text
 
 
-def test_markdown_says_when_it_stops_listing_inputs():
-    """A bounded list that does not admit the bound reads as complete."""
+def test_markdown_deduplicates_by_version_not_by_name(tmp_path):
+    """Two turns citing one pinned version are one input, and the same version
+    referenced under an alias is still one input -- but two *different*
+    versions of one file are two, which is the whole point of pinning."""
+    _config, store = _real_store(tmp_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    _turn_with_refs(store, root, "one", [_ref("cohort.csv", "v-same00000001")])
+    _turn_with_refs(store, root, "two", [_ref("cohort.csv", "v-same00000001")])
+    _turn_with_refs(store, root, "alias", [_ref("cohort-copy.csv", "v-same00000001")])
+    _turn_with_refs(store, root, "later", [_ref("cohort.csv", "v-later0000002")])
+
+    text = NotebookExportService(store).markdown(root).decode("utf-8")
+    assert text.count("v-same00000001") == 1
+    assert text.count("v-later0000002") == 1
+
+
+def test_markdown_says_nothing_about_inputs_when_there_were_none(tmp_path):
+    """An empty section is a claim too -- that the question was asked and the
+    answer was none."""
+    _config, store = _real_store(tmp_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    store.add_message(root_frame_id=root, role="user", content="no references here")
+
+    text = NotebookExportService(store).markdown(root).decode("utf-8")
+    assert "Inputs" not in text
+
+
+def test_markdown_ignores_metadata_that_is_not_the_expected_shape(tmp_path):
+    """Metadata is free-form JSON. A strict parse is what keeps the Inputs
+    section a statement about references rather than about whatever else a
+    future writer puts in there."""
+    _config, store = _real_store(tmp_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    message = store.add_message(root_frame_id=root, role="user", content="x")
+    message_id = message["message_id"] if isinstance(message, dict) else message
+    store.update_message_metadata(
+        message_id,
+        {"artifact_refs": ["not-a-dict", {"version_id": "v-noname00001"}, {}]},
+    )
+
+    text = NotebookExportService(store).markdown(root).decode("utf-8")
+    assert "Inputs" not in text
+
+
+def test_markdown_says_exactly_how_many_inputs_it_did_not_list(tmp_path):
+    """A bounded list that does not admit the bound reads as complete, and a
+    remainder that is off by one is a different kind of lie."""
     from openai4s.server import notebook_export
 
-    refs = [
-        {"display_name": f"file-{n}.csv", "version_id": f"v-{n:012d}"}
-        for n in range(notebook_export._MAX_RENDERED_INPUTS + 7)
-    ]
-    service = NotebookExportService(
-        _StoreWithRefs(
-            messages=[{"role": "user", "content": "x", "artifact_refs": refs}]
-        )
-    )
-    text = service.markdown("root-1").decode("utf-8")
+    _config, store = _real_store(tmp_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    cap = notebook_export._MAX_RENDERED_INPUTS
+    refs = [_ref(f"file-{n}.csv", f"v-{n:012d}") for n in range(cap + 7)]
+    _turn_with_refs(store, root, "many", refs)
 
+    text = NotebookExportService(store).markdown(root).decode("utf-8")
     assert "and 7 more" in text
-    assert "file-0.csv" in text
+    assert "v-000000000000" in text
+    # The 201st and everything after it is genuinely absent, not merely
+    # uncounted.
+    assert f"v-{cap:012d}" not in text
+
+
+def _fork(store, root, *, branch_id):
+    checkpoint = store.create_session_checkpoint(
+        root_frame_id=root,
+        branch_id=root,
+        reason="fork base",
+        workspace_tree_id="a" * 64,
+        action_cursor=0,
+    )
+    store.fork_session_branch(
+        root_frame_id=root,
+        from_checkpoint_id=checkpoint["checkpoint_id"],
+        branch_id=branch_id,
+    )
+    return branch_id
+
+
+def test_a_fork_inherits_the_inputs_its_parent_was_given(tmp_path):
+    """`list_messages` returns the frame's rows; the branch projector returns
+    the branch's. Reading the frame meant a fork's export claimed inputs from
+    turns that are not on it, and -- worse -- missed the ones it inherited."""
+    _config, store = _real_store(tmp_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    _turn_with_refs(store, root, "before the fork", [_ref("base.csv", "v-base0000001")])
+    branch = _fork(store, root, branch_id="branch-alt")
+    _turn_with_refs(
+        store,
+        root,
+        "only on the fork",
+        [_ref("child.csv", "v-child000001")],
+    )
+
+    service = NotebookExportService(store)
+    inherited = service._referenced_artifacts(root, branch)
+    versions = {item["version_id"] for item in inherited}
+    assert "v-base0000001" in versions, inherited
+
+
+def test_the_export_asks_for_the_active_branch(tmp_path):
+    """End to end through the service the route calls, so the branch actually
+    reaches the projector rather than being defaulted away."""
+    from openai4s.server.session_domain import SessionDomainService
+
+    _config, store = _real_store(tmp_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    _turn_with_refs(store, root, "use it", [_ref("cohort.csv", "v-e2e00000001")])
+
+    asked: list = []
+    real = store.list_branch_messages
+
+    def spy(root_frame_id, *, branch_id=None, limit=300):
+        asked.append((root_frame_id, branch_id, limit))
+        return real(root_frame_id, branch_id=branch_id, limit=limit)
+
+    store.list_branch_messages = spy  # type: ignore[method-assign]
+    try:
+        text = NotebookExportService(store).markdown(root).decode("utf-8")
+    finally:
+        store.list_branch_messages = real  # type: ignore[method-assign]
+
+    assert asked, "the export never asked the branch projector"
+    assert asked[0][1] == root
+    assert asked[0][2] is None
+    assert "v-e2e00000001" in text
+    assert SessionDomainService is not None
