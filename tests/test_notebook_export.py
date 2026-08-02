@@ -149,3 +149,162 @@ def test_the_export_descriptor_names_markdown_as_markdown():
     assert exported["content_type"].startswith("text/markdown")
     assert exported["immutable"] is True
     assert exported["data"] == service.markdown("root-1")
+
+
+class _StoreWithRefs(_Store):
+    """The same cells, plus the messages that named the files they read."""
+
+    def __init__(self, messages=None):
+        self.messages = (
+            messages
+            if messages is not None
+            else [
+                {
+                    "role": "user",
+                    "content": "compare @cohort.csv#v-aaa111222333 against last week",
+                    "artifact_refs": [
+                        {
+                            "display_name": "cohort.csv",
+                            "version_id": "v-aaa111222333",
+                            "sha256": "f" * 64,
+                            "source_session": "root-other",
+                        }
+                    ],
+                },
+                {"role": "assistant", "content": "done", "artifact_refs": []},
+                {
+                    "role": "user",
+                    "content": "now add @notes.md",
+                    "artifact_refs": [
+                        {
+                            "display_name": "notes.md",
+                            "version_id": "v-bbb444555666",
+                            "sha256": "e" * 64,
+                            "source_session": "root-1",
+                        }
+                    ],
+                },
+            ]
+        )
+
+    def list_messages(self, root_frame_id, *, branch_id=None, limit=None):
+        assert root_frame_id == "root-1"
+        return list(self.messages)
+
+
+def test_markdown_names_the_artifact_versions_the_session_was_given():
+    """The document's own purpose is what makes this a gap.
+
+    It says it exists "for reading it and for pasting it somewhere that is not
+    Jupyter -- an issue, a lab notebook, a supplementary methods section". A
+    methods section whose inputs are unnamed is the one kind of incomplete that
+    matters: the reader cannot tell which version of which file produced the
+    numbers, and the session *knows*, because the reference was pinned to a
+    version when the turn was sent.
+
+    Rendering cells only meant every `@file#version` a researcher chose was
+    dropped from the export while the UI showed it as a chip.
+    """
+    service = NotebookExportService(_StoreWithRefs())
+    text = service.markdown("root-1").decode("utf-8")
+
+    assert "cohort.csv" in text
+    assert "v-aaa111222333" in text
+    assert "notes.md" in text
+    assert "v-bbb444555666" in text
+    # The cells are still the body of the document.
+    assert "value = 21 * 2" in text
+    assert "stop('boom')" in text
+
+
+def test_markdown_says_nothing_about_inputs_when_there_were_none():
+    """An empty section is a claim too -- that the question was asked and the
+    answer was none. A session with no references should read exactly as it
+    does today rather than gaining a heading with nothing under it."""
+    service = NotebookExportService(_StoreWithRefs(messages=[]))
+    text = service.markdown("root-1").decode("utf-8")
+
+    assert "Inputs" not in text
+    assert "value = 21 * 2" in text
+
+
+def test_markdown_does_not_export_the_prompt_text_with_the_reference():
+    """Only the provenance. The message body is the researcher's unpublished
+    thinking and a different decision from naming the file it pointed at."""
+    service = NotebookExportService(_StoreWithRefs())
+    text = service.markdown("root-1").decode("utf-8")
+
+    assert "compare " not in text
+    assert "against last week" not in text
+    assert "now add" not in text
+
+
+def test_markdown_names_a_repeated_reference_once():
+    """Two turns citing the same pinned version are one input, not two."""
+    ref = {
+        "display_name": "cohort.csv",
+        "version_id": "v-aaa111222333",
+        "sha256": "f" * 64,
+        "source_session": "root-1",
+    }
+    service = NotebookExportService(
+        _StoreWithRefs(
+            messages=[
+                {"role": "user", "content": "one", "artifact_refs": [ref]},
+                {"role": "user", "content": "two", "artifact_refs": [dict(ref)]},
+            ]
+        )
+    )
+    text = service.markdown("root-1").decode("utf-8")
+
+    assert text.count("v-aaa111222333") == 1
+
+
+def test_markdown_reads_past_the_stores_default_message_page():
+    """`Store.list_messages` defaults to `limit=300`.
+
+    Taking that default would drop the inputs of every turn before the last
+    three hundred, and a provenance list that is quietly partial is worse than
+    absent: a reader cannot tell it is looking at a subset. The stub below
+    refuses the defaulted call so the test fails if the explicit `limit=None`
+    is ever dropped.
+    """
+
+    class _Paged(_Store):
+        def list_messages(self, root_frame_id, *, branch_id=None, limit=300):
+            assert limit is None, "the export took the store's paging default"
+            return [
+                {
+                    "role": "user",
+                    "content": "old turn",
+                    "artifact_refs": [
+                        {
+                            "display_name": "early.csv",
+                            "version_id": "v-early0000001",
+                        }
+                    ],
+                }
+            ]
+
+    text = NotebookExportService(_Paged()).markdown("root-1").decode("utf-8")
+    assert "early.csv" in text
+    assert "v-early0000001" in text
+
+
+def test_markdown_says_when_it_stops_listing_inputs():
+    """A bounded list that does not admit the bound reads as complete."""
+    from openai4s.server import notebook_export
+
+    refs = [
+        {"display_name": f"file-{n}.csv", "version_id": f"v-{n:012d}"}
+        for n in range(notebook_export._MAX_RENDERED_INPUTS + 7)
+    ]
+    service = NotebookExportService(
+        _StoreWithRefs(
+            messages=[{"role": "user", "content": "x", "artifact_refs": refs}]
+        )
+    )
+    text = service.markdown("root-1").decode("utf-8")
+
+    assert "and 7 more" in text
+    assert "file-0.csv" in text

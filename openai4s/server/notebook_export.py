@@ -23,6 +23,11 @@ class CellStore(Protocol):
     def get_session_checkpoint(self, checkpoint_id: str) -> dict | None:
         ...
 
+    def list_messages(
+        self, root_frame_id: str, *, branch_id: str | None = None
+    ) -> list[dict]:
+        ...
+
 
 _LANGUAGE = {
     "python": {
@@ -40,6 +45,11 @@ _LANGUAGE = {
         "file_extension": ".r",
     },
 }
+
+
+#: Bounded so one document cannot become a file listing, and the cut is
+#: announced rather than silent.
+_MAX_RENDERED_INPUTS = 200
 
 
 class NotebookExportService:
@@ -135,6 +145,60 @@ class NotebookExportService:
                 archive.writestr(info, data)
         return output.getvalue()
 
+    def _referenced_artifacts(self, root_frame_id: str, branch_id: str) -> list[dict]:
+        """The artifacts this session's turns were given, pinned as they were.
+
+        Read from the messages rather than from the cells because that is where
+        the choice lives: a reference is something the researcher wrote into a
+        turn, and it is resolved to an exact version at send time. The cells
+        only see files.
+
+        Tolerant of a store that will not take ``branch_id`` for the same
+        reason ``_branch_cells`` is: not every caller has a branch to give.
+        """
+        reader = getattr(self.store, "list_messages", None)
+        if reader is None:
+            return []
+        # `limit=None` on purpose. `Store.list_messages` defaults to 300, which
+        # would silently drop the inputs of a long session's early turns -- and
+        # a provenance list that is quietly partial is worse than none, because
+        # a reader has no way to tell. The rendered list is bounded instead,
+        # and says so when it cuts.
+        try:
+            messages = reader(root_frame_id, branch_id=branch_id, limit=None)
+        except TypeError:
+            try:
+                messages = reader(root_frame_id, branch_id=branch_id)
+            except TypeError:
+                messages = reader(root_frame_id)
+        seen: set[tuple[str, str]] = set()
+        out: list[dict] = []
+        for message in messages or ():
+            if not isinstance(message, Mapping):
+                continue
+            refs = message.get("artifact_refs")
+            for ref in refs if isinstance(refs, list) else ():
+                if not isinstance(ref, Mapping):
+                    continue
+                name = str(ref.get("display_name") or "")
+                version = str(ref.get("version_id") or "")
+                if not name:
+                    continue
+                # Two turns citing one pinned version are one input.
+                key = (name, version)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(
+                    {
+                        "display_name": name,
+                        "version_id": version,
+                        "source_session": str(ref.get("source_session") or ""),
+                        "sha256": str(ref.get("sha256") or ""),
+                    }
+                )
+        return out
+
     def markdown(self, root_frame_id: str, *, branch_id: str | None = None) -> bytes:
         """Render the branch as one Markdown document.
 
@@ -152,15 +216,43 @@ class NotebookExportService:
         a cell's content: it is the same `_branch_cells` the notebooks use, so
         the two exports cannot disagree about what ran.
         """
-        cells = self._branch_cells(root_frame_id, branch_id or root_frame_id)
+        selected = branch_id or root_frame_id
+        cells = self._branch_cells(root_frame_id, selected)
         lines: list[str] = [
             f"# Session {root_frame_id}",
             "",
-            f"- branch: `{branch_id or root_frame_id}`",
+            f"- branch: `{selected}`",
             f"- cells: {len(cells)}",
             "- history is read-only; this document is a rendering, not a source",
             "",
         ]
+        # Provenance, and only provenance. This document is meant to be pasted
+        # into "an issue, a lab notebook, a supplementary methods section", and
+        # a methods section whose inputs are unnamed is the kind of incomplete
+        # that matters: the reader cannot tell which version of which file
+        # produced the numbers, and the session knows, because the reference
+        # was pinned when the turn was sent. The message text around it is the
+        # researcher's unpublished thinking and is a separate decision from
+        # naming the file it pointed at, so it is not exported here.
+        inputs = self._referenced_artifacts(root_frame_id, selected)
+        if inputs:
+            lines.append("## Inputs")
+            lines.append("")
+            lines.append(
+                "Artifacts referenced by this session's turns, at the version "
+                "that was sent."
+            )
+            lines.append("")
+            for item in inputs[:_MAX_RENDERED_INPUTS]:
+                version = item["version_id"]
+                pinned = f"version `{version}`" if version else "unpinned"
+                lines.append(f"- `{item['display_name']}` — {pinned}")
+            if len(inputs) > _MAX_RENDERED_INPUTS:
+                lines.append(
+                    f"- ...and {len(inputs) - _MAX_RENDERED_INPUTS} more, "
+                    "not listed here"
+                )
+            lines.append("")
         for index, cell in enumerate(cells, start=1):
             language = str(cell.get("language") or "python").lower()
             revision = self._state_revision(cell, fallback=index)
