@@ -261,3 +261,172 @@ def test_a_queued_worker_that_never_started_reads_as_cancelled_not_failed(
     ]
     assert terminal, "no terminal event was emitted for the un-started ticket"
     assert terminal[-1]["status"] == "cancelled", terminal[-1]
+
+
+# --------------------------------------------------------------------------
+# every cleanup obligation, including when the cleanup itself faults
+# --------------------------------------------------------------------------
+
+
+class _HostileStart(RuntimeError):
+    """A start failure whose message cannot be rendered.
+
+    `coordinator._error_text` does `str(error)` to build the ticket's failure
+    text. If that raises, the release raises with it — and the ticket it was
+    releasing stays owned. Nothing on a cleanup path may depend on formatting
+    an exception it did not author.
+    """
+
+    rendered = False
+
+    def __str__(self) -> str:  # type: ignore[override]
+        type(self).rendered = True
+        raise ValueError("this exception refuses to be rendered")
+
+
+@pytest.fixture
+def break_worker_start_with(monkeypatch):
+    """Fail worker-thread starts with a caller-supplied exception."""
+
+    def install(factory):
+        real_start = threading.Thread.start
+
+        def start(self):
+            name = str(getattr(self, "name", ""))
+            if name.startswith(("openai4s-turn-", "openai4s-plan-", "openai4s-repl-")):
+                raise factory()
+            return real_start(self)
+
+        monkeypatch.setattr(threading.Thread, "start", start)
+
+    return install
+
+
+def test_an_unstarted_job_is_terminalised_not_merely_forgotten(
+    runner, frame_id, break_worker_start, monkeypatch
+):
+    """Popping the job from `_jobs` is not finishing it.
+
+    `wait_result()` blocks on `job.done`, which only `finish` sets. A caller
+    already waiting -- the `wait:true` branch of the message route is exactly
+    that -- would wait on an event nobody will ever set, for a job the registry
+    has already discarded.
+
+    Observed through a spy on `finish` rather than by racing a thread to grab
+    the job: the job is registered and popped within one call, so a poller
+    would pass or fail on scheduling.
+    """
+    calls: list = []
+    real_finish = gateway_mod.MessageJob.finish
+
+    def spy(self, result=None, error=None):
+        calls.append((self.job_id, result, error))
+        return real_finish(self, result=result, error=error)
+
+    monkeypatch.setattr(gateway_mod.MessageJob, "finish", spy)
+
+    finished: list = []
+    real_abort = runner._abort_unstarted_job
+
+    def capture(job, ticket, error, **kwargs):
+        real_abort(job, ticket, error, **kwargs)
+        finished.append(job)
+
+    monkeypatch.setattr(runner, "_abort_unstarted_job", capture)
+
+    with pytest.raises(_StartFailed):
+        runner.submit_message(frame_id, "proj", "do the thing")
+
+    assert calls, "the un-started job was never finished, only forgotten"
+    assert calls[-1][2], "the job was woken with no failure recorded"
+    assert finished and finished[0].done.is_set(), "a waiter would still block"
+    assert finished[0].error == runner.UNSTARTED_WORKER_MESSAGE
+
+
+def test_a_start_failure_that_cannot_be_rendered_still_releases(
+    runner, frame_id, break_worker_start_with
+):
+    """The abort reason must not be built by formatting the original."""
+    _HostileStart.rendered = False
+    break_worker_start_with(_HostileStart)
+
+    with pytest.raises(_HostileStart):
+        runner.submit_message(frame_id, "proj", "do the thing")
+
+    assert_session_is_idle(runner, frame_id, where="hostile __str__")
+
+
+def test_the_original_start_exception_instance_is_what_propagates(
+    runner, frame_id, break_worker_start_with
+):
+    """A cleanup that replaces the failure hides why the turn never began."""
+    sentinel = _StartFailed("the exact instance")
+    break_worker_start_with(lambda: sentinel)
+
+    with pytest.raises(_StartFailed) as caught:
+        runner.submit_message(frame_id, "proj", "do the thing")
+    assert caught.value is sentinel
+
+
+def test_a_job_cleanup_fault_still_releases_the_ticket(
+    runner, frame_id, break_worker_start, monkeypatch
+):
+    """Each obligation is independent; one failing must not skip the others."""
+
+    class _Hostile(dict):
+        def pop(self, *args, **kwargs):
+            raise RuntimeError("the registry refused")
+
+    monkeypatch.setattr(runner, "_jobs", _Hostile(runner._jobs))
+    with pytest.raises(_StartFailed):
+        runner.submit_message(frame_id, "proj", "do the thing")
+
+    state = runner.executions.snapshot(frame_id)
+    assert not state.get("owner"), "a job-cleanup fault stranded the ticket"
+    assert not runner.executions._tickets
+
+
+def test_a_plan_rollback_fault_still_releases_the_ticket_and_job(
+    runner, frame_id, break_worker_start, monkeypatch
+):
+    _draft(runner, frame_id)
+    plan = runner.store.get_plan_by_frame(frame_id)
+    runner.store.compare_and_set_plan_status(
+        plan["plan_id"], expected="draft", new_status="executing"
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("the plan row refused")
+
+    monkeypatch.setattr(runner, "_settle_claimed_plan", boom)
+    with pytest.raises(_StartFailed):
+        runner.submit_plan_approval(
+            frame_id, "proj", None, claimed_plan_id=plan["plan_id"]
+        )
+
+    state = runner.executions.snapshot(frame_id)
+    assert not state.get("owner"), "a plan-rollback fault stranded the ticket"
+    assert not [j for j in runner._jobs.values() if j.root_frame_id == frame_id]
+
+
+def test_a_hub_emit_fault_does_not_leak_the_coordinator_maps(runner, frame_id):
+    """`_on_core_event` popped `_tickets`/`_positions` *after* handing the
+    event to an external sink. A sink that raises therefore leaked both, and
+    the leak outlives the turn it belonged to."""
+    ticket = runner.executions.submit(frame_id, owner="agent", owner_id="emit-fault")
+
+    def boom(root_frame_id, event):
+        raise RuntimeError("the socket went away")
+
+    runner.hub.broadcast = boom  # type: ignore[method-assign]
+    runner.hub.emitter = lambda root_frame_id: boom  # type: ignore[method-assign]
+
+    try:
+        runner.executions.abort_unstarted(ticket, RuntimeError("never started"))
+    except Exception:
+        pass
+
+    assert (
+        ticket.execution_id not in runner.executions._tickets
+    ), "a failing event sink leaked the ticket map"
+    assert ticket.execution_id not in runner.executions._positions

@@ -46,6 +46,11 @@ class _Binding:
     failure_reason: str | None = None
 
 
+#: What a ticket records when its worker never started. Fixed text, so no
+#: cleanup path has to render an exception it did not author.
+_UNSTARTED_REASON = "worker thread was never started"
+
+
 class WebExecutionCoordinator:
     """Compose FIFO admission with Web events and exact runtime cancellation."""
 
@@ -272,15 +277,27 @@ class WebExecutionCoordinator:
 
         Returns which branch acted, for the caller's log and for tests.
         """
+        del error  # deliberately unused; see below
         cancelled = self._coordinator.cancel_queued(
             session_id=ticket.session_id,
             execution_id=ticket.execution_id,
             owner=ticket.owner,
-            reason="worker thread was never started",
+            reason=_UNSTARTED_REASON,
         )
         if cancelled:
             return "cancelled_queued"
-        return "failed_active" if self._coordinator.fail(ticket, error) else "absent"
+        # A FIXED reason, never one built from the original exception.
+        # `fail()` renders whatever it is given through `_error_text`, which
+        # calls `str(error)` -- and an exception whose `__str__` raises would
+        # take the release down with it, leaving the ticket owned by a turn
+        # that never began. Nothing on a cleanup path may depend on formatting
+        # an exception it did not author. The original still reaches the
+        # caller: it is re-raised by the spawner, unchanged.
+        return (
+            "failed_active"
+            if self._coordinator.fail(ticket, _UNSTARTED_REASON)
+            else "absent"
+        )
 
     def cancel(
         self,
@@ -515,7 +532,12 @@ class WebExecutionCoordinator:
                     ),
                 )
             projected.setdefault("reason", str(projected.get("status") or "state"))
-            self._emit_for(session_id, projected)
+            # Internal bookkeeping first, external sink second. This ran the
+            # other way round, so a subscriber that raised -- a closed socket,
+            # a broken projection -- left the ticket and its queue position in
+            # these maps forever, and the leak outlived the turn it belonged
+            # to. Nothing about a terminal transition depends on the emit
+            # succeeding, so nothing about it should wait for the emit.
             if projected.get("status") in {
                 "completed",
                 "failed",
@@ -524,6 +546,7 @@ class WebExecutionCoordinator:
                 with self._lock:
                     self._tickets.pop(execution_id, None)
                     self._positions.pop(execution_id, None)
+            self._emit_for(session_id, projected)
             return
         if kind == "execution_queue_changed":
             projected = dict(event)

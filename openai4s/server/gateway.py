@@ -7041,6 +7041,12 @@ class SessionRunner:
             metadata={"failure": identity},
         )
 
+    #: What a caller waiting on a job whose worker never started is told.
+    #: Fixed, like the ticket's reason: the original exception reaches the
+    #: submitter by being re-raised, and a waiter gets a sentence rather than
+    #: a rendering of something that may refuse to render.
+    UNSTARTED_WORKER_MESSAGE = "the worker for this turn could not be started"
+
     def _abort_unstarted_job(
         self, job, ticket, error, *, claimed_plan_id=None, rollback_status=None
     ) -> None:
@@ -7058,6 +7064,12 @@ class SessionRunner:
         """
         for step, action in (
             ("ticket", lambda: self.executions.abort_unstarted(ticket, error)),
+            # Terminalised, not merely forgotten. `wait_result()` blocks on
+            # `job.done`, which only `finish` sets -- so popping the job left
+            # any caller already waiting (the `wait:true` branch of the message
+            # route is exactly that) blocked forever on an event nobody would
+            # set, for a job the registry had already discarded.
+            ("wake", lambda: job.finish(error=self.UNSTARTED_WORKER_MESSAGE)),
             ("job", lambda: self._jobs.pop(job.job_id, None)),
             (
                 "plan",
