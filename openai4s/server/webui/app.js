@@ -5603,7 +5603,12 @@ async function send(text, opts) {
   else { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true); }
   $("#composer").value = ""; grow(); renderComposerRefChips();
   const annIds = anns.map(x => x.id);
-  if (annIds.length) { setLocalAnnotationStatus(annIds, "sent"); refreshAllStages(); updateAnnotBadge(); }
+  // Optimistically "pending", never "sent". The server is what decides whether
+  // a pin was consumed, and it can answer `pending` -- accepted, but the
+  // consume did not confirm -- in which case the comment is neither gone nor
+  // available and must not be shown as either. The authoritative state arrives
+  // in the response below and is applied there.
+  if (annIds.length) { setLocalAnnotationStatus(annIds, "pending"); refreshAllStages(); updateAnnotBadge(); }
   sub(S.currentId);  // guarantee this client is subscribed BEFORE the POST spawns the
                      // turn thread. On the FIRST turn opened via newSession(), S.currentId
                      // is already set so the block above is skipped and openConversation's
@@ -5633,8 +5638,21 @@ async function send(text, opts) {
     // arrive on its own `processing` event instead. Retiring touches nothing
     // that belongs to another turn.
     if (!acceptTurnTicket(turnTicket, accepted)) retireTurnTicket(turnTicket);
-    // The optimistic status above clears the badge immediately; reload once the turn POST finishes to reconcile with the server.
-    if (annIds.length) { try { await loadAnnotations(S.currentId); } catch {} refreshAllStages(); updateAnnotBadge(); }
+    // The server's own answer, not a guess. `annotations` is `sent`, `pending`
+    // or `none`, and `annotation_reservation_id` is what a reconcile asks
+    // about after a reload. Only `sent` is a consumed pin; `none` means this
+    // request claimed nothing (a concurrent turn won the race) and the comment
+    // is still the user's to send.
+    if (annIds.length) {
+      const said = accepted && accepted.annotations;
+      if (said === "none") setLocalAnnotationStatus(annIds, "open");
+      else if (said === "sent") setLocalAnnotationStatus(annIds, "sent");
+      if (accepted && accepted.annotation_reservation_id) {
+        S.lastAnnotationReservation = accepted.annotation_reservation_id;
+      }
+      try { await loadAnnotations(S.currentId); } catch {}
+      refreshAllStages(); updateAnnotBadge();
+    }
   }
   catch (e) {
     if (annIds.length) {
@@ -5656,8 +5674,15 @@ async function send(text, opts) {
       // server if reachable; if that reload also fails, revert the optimistic
       // "sent" flip locally so the pending comments stay visible for a retry
       // instead of vanishing from the composer.
+      // Reopen only on an authoritative *synchronous* refusal -- a status the
+      // server actually answered with, which means the reservation was
+      // released and the pins are the user's again. A transport failure with
+      // no status is not a refusal: the turn may be running and carrying them,
+      // and reopening would offer the user a comment that is already on its
+      // way. Ambiguity stays `pending` and is reconciled from the server.
+      const refused = !!(e && Number.isInteger(e.status) && e.status >= 400);
       const reloaded = await loadAnnotations(S.currentId);
-      if (!reloaded) setLocalAnnotationStatus(annIds, "open");
+      if (!reloaded) setLocalAnnotationStatus(annIds, refused ? "open" : "pending");
       refreshAllStages(); updateAnnotBadge();
     }
     // 409 `model_revision_unavailable` is the one send failure the user cannot

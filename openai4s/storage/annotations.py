@@ -120,13 +120,41 @@ class AnnotationRepository:
         row = self.get(annotation_id)
         return bool(row and row.get("status") == "reserved")
 
+    #: What a *public* caller may move a pin to, and from where.
+    #:
+    #: `reserved` is absent from every target on purpose: it is entered only by
+    #: `reserve`, which sets the id in the same statement. A PATCH that could
+    #: write `reserved` would produce a held row with no holder -- invisible in
+    #: the composer and released by nothing.
+    #: Enumerated from the statuses this product actually writes, not from the
+    #: schema comment -- which said `open|sent|resolved` and was already out of
+    #: date: `dismissed` is a real one, and omitting it turned a review action
+    #: into a 400. A whitelist has to be built from the callers.
+    _PUBLIC_STATUSES = frozenset({"open", "sent", "resolved", "dismissed"})
+
     def update(
         self,
         annotation_id: str,
         *,
         body: str | None = None,
         status: str | None = None,
+        expect_status: str | None = None,
     ) -> dict | None:
+        """Edit a pin, refusing to race a reservation.
+
+        The check and the write are one statement. Asking
+        `annotation_is_reserved()` and *then* updating is a TOCTOU window, and
+        it is a real one rather than a theoretical one: `Store` holds a
+        re-entrant lock per instance, and the daemon has more than one instance
+        against one file. Measured on two connections, a reservation taken in
+        that window produced `status='open'` with `reservation_id` still set --
+        a pin the composer offers to the user while a turn is quoting it.
+
+        So the expected current status is part of the predicate. A caller that
+        loses the race changes nothing and is told so.
+        """
+        if status is not None and status not in self._PUBLIC_STATUSES:
+            raise ValueError(f"not a public annotation status: {status!r}")
         sets: list[str] = []
         params: list[Any] = []
         if body is not None:
@@ -140,11 +168,33 @@ class AnnotationRepository:
         sets.append("updated_at=?")
         params.append(self._clock_ms())
         params.append(annotation_id)
-        self._execute(
-            f"UPDATE annotations SET {','.join(sets)} WHERE annotation_id=?",
-            tuple(params),
-        )
+
+        # Never touch a held row, whatever the caller asked for, and require
+        # the status it believed it was editing when it named one.
+        predicate = "annotation_id=? AND reservation_id IS NULL AND status!='reserved'"
+        if expect_status is not None:
+            predicate += " AND status=?"
+            params.append(expect_status)
+        with self._lock:
+            cursor = self._connection.execute(
+                f"UPDATE annotations SET {','.join(sets)} WHERE {predicate}",
+                tuple(params),
+            )
+            self._connection.commit()
+            if not cursor.rowcount:
+                return None
         return self.get(annotation_id)
+
+    def delete_unreserved(self, annotation_id: str) -> bool:
+        """Delete a pin only while nothing holds it. One statement, same reason."""
+        with self._lock:
+            cursor = self._connection.execute(
+                "DELETE FROM annotations WHERE annotation_id=? "
+                "AND reservation_id IS NULL AND status!='reserved'",
+                (annotation_id,),
+            )
+            self._connection.commit()
+            return bool(cursor.rowcount)
 
     def mark_sent(self, annotation_ids: list[str]) -> None:
         ids = [
@@ -210,8 +260,13 @@ class AnnotationRepository:
             )
             self._connection.commit()
             rows = self._connection.execute(
-                "SELECT * FROM annotations WHERE reservation_id=? ORDER BY number",
-                (reservation_id,),
+                # Scoped by frame as well as by id. The UPDATE above was
+                # already frame-scoped, but this read was not -- so the same
+                # reservation id used in a second session read *both* frames'
+                # rows back, and the caller quoted another session's pins.
+                "SELECT * FROM annotations WHERE reservation_id=? "
+                "AND root_frame_id=? ORDER BY number",
+                (reservation_id, root_frame_id),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -257,26 +312,45 @@ class AnnotationRepository:
         scope = " AND root_frame_id=?" if root_frame_id else ""
         params = (reservation_id, root_frame_id) if root_frame_id else (reservation_id,)
         with self._lock:
-            held = {
-                row["annotation_id"]
-                for row in self._connection.execute(
-                    "SELECT annotation_id FROM annotations "
+            # One transaction, not one lock. `Store`'s lock is per instance and
+            # the daemon has more than one instance on one file, so a SELECT
+            # followed by an UPDATE is not atomic across connections: measured,
+            # a row moved in between and this returned False having *already*
+            # sent the other one. BEGIN IMMEDIATE takes the write lock before
+            # the read, so the set cannot change under it, and a mismatch rolls
+            # back to zero rows changed.
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                held = {
+                    row["annotation_id"]
+                    for row in self._connection.execute(
+                        "SELECT annotation_id FROM annotations "
+                        f"WHERE reservation_id=? AND status='reserved'{scope}",
+                        params,
+                    ).fetchall()
+                }
+                if not held or (expected_ids is not None and held != set(expected_ids)):
+                    self._connection.rollback()
+                    return False
+            except BaseException:
+                self._connection.rollback()
+                raise
+            try:
+                cursor = self._connection.execute(
+                    f"UPDATE annotations SET status='sent', reservation_id=NULL, "
+                    f"updated_at={self._clock_ms()} "
                     f"WHERE reservation_id=? AND status='reserved'{scope}",
                     params,
-                ).fetchall()
-            }
-            if expected_ids is not None and held != set(expected_ids):
-                return False
-            if not held:
-                return False
-            cursor = self._connection.execute(
-                f"UPDATE annotations SET status='sent', reservation_id=NULL, "
-                f"updated_at={self._clock_ms()} "
-                f"WHERE reservation_id=? AND status='reserved'{scope}",
-                params,
-            )
-            self._connection.commit()
-            return int(cursor.rowcount or 0) == len(held)
+                )
+                changed = int(cursor.rowcount or 0)
+                if changed != len(held):
+                    self._connection.rollback()
+                    return False
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
+            return True
 
     def delete(self, annotation_id: str) -> None:
         self._execute(

@@ -139,6 +139,27 @@ def _imported_plan_status(raw: Any) -> str:
     return value if value in PLAN_STATUSES else "draft"
 
 
+def package_annotation(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One annotation, projected for something that leaves this process.
+
+    A reservation belongs to a request in *this* process. Exporting `reserved`
+    -- into a session package, a checkpoint, a share -- would hand a recipient
+    a pin held by a turn that will never run on their machine: permanently
+    invisible in their composer, with no request left to release it. So a live
+    reservation is projected back to `open`, which is the state a user can act
+    on, and the reservation id does not travel at all.
+
+    `sent` is untouched. That is a fact about a turn that really happened, not
+    about an in-flight request.
+    """
+    projected = {
+        key: value for key, value in dict(row).items() if key != "reservation_id"
+    }
+    if projected.get("status") == "reserved":
+        projected["status"] = "open"
+    return projected
+
+
 class SessionPackageError(ValueError):
     """A Session package is malformed, unsafe, unsupported, or incomplete."""
 
@@ -720,7 +741,7 @@ class SessionPackageService:
             "annotations", self.store.list_annotations(root_frame_id)
         )
         annotations = [
-            item
+            package_annotation(item)
             for item in annotations
             if str(item.get("artifact_id") or "") in safe_artifact_ids
         ]

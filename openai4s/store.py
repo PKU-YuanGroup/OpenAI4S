@@ -528,7 +528,7 @@ CREATE TABLE IF NOT EXISTS annotations (
     -- and only what it claimed is quoted into the prompt. NULL whenever the
     -- row is not held.
     reservation_id TEXT,
-    status         TEXT NOT NULL DEFAULT 'open',   -- open|reserved|sent|resolved
+    status         TEXT NOT NULL DEFAULT 'open',   -- open|reserved|sent|resolved|dismissed
     created_at     INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL
 );
@@ -3395,12 +3395,18 @@ class Store:
         )
 
     def update_annotation(
-        self, annotation_id: str, *, body: str | None = None, status: str | None = None
+        self,
+        annotation_id: str,
+        *,
+        body: str | None = None,
+        status: str | None = None,
+        expect_status: str | None = None,
     ) -> dict | None:
         return self._annotations.update(
             annotation_id,
             body=body,
             status=status,
+            expect_status=expect_status,
         )
 
     def mark_annotations_sent(self, annotation_ids: list[str]) -> None:
@@ -3536,6 +3542,9 @@ class Store:
 
     def delete_annotation(self, annotation_id: str) -> None:
         self._annotations.delete(annotation_id)
+
+    def delete_unreserved_annotation(self, annotation_id: str) -> bool:
+        return self._annotations.delete_unreserved(annotation_id)
 
     # --- global search (command palette) --------------------------------
     def search(self, query: str, limit: int = 20) -> dict:

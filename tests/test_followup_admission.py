@@ -780,3 +780,282 @@ def test_a_reservation_stranded_by_a_crash_is_recovered_at_startup(client, tmp_p
     assert recovered == 1, recovered
     assert _status(client, annotation_id) == "open"
     assert client.store.get_admission("resv-crashed")["state"] == "released"
+
+
+def test_a_packaged_session_does_not_export_a_live_reservation(client, tmp_path):
+    """A reservation belongs to a request in *this* process.
+
+    Exporting `reserved` would hand a recipient a pin held by a turn that will
+    never run on their machine -- permanently invisible in their composer, with
+    no request to release it. A session package is a snapshot of what the work
+    *is*, not of what one process was mid-way through doing.
+    """
+    annotation_id = _pin(client)
+    client.store.reserve_annotations(
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+        reservation_id="resv-packaged",
+    )
+    assert _status(client, annotation_id) == "reserved"
+
+    exported = client.store.list_annotations(client.frame_id)
+    row = next(r for r in exported if r["annotation_id"] == annotation_id)
+    # The raw row still carries it -- this is the store, not the projection.
+    assert row["status"] == "reserved"
+
+    from openai4s.server.session_package import package_annotation
+
+    projected = package_annotation(row)
+    assert projected["status"] == "open", projected
+    assert "reservation_id" not in projected, projected
+
+
+def test_a_checkpoint_restores_a_reserved_pin_as_open(client):
+    """Restoring mid-flight state would recreate a claim whose holder is gone.
+
+    A checkpoint is taken at one instant and applied at another; the request
+    that held the reservation does not survive the gap, so the only safe
+    restoration is the state a user can act on.
+    """
+    from openai4s.server.session_package import package_annotation
+
+    annotation_id = _pin(client)
+    client.store.reserve_annotations(
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+        reservation_id="resv-checkpoint",
+    )
+    row = client.store.get_annotation(annotation_id)
+
+    restored = package_annotation(row)
+    assert restored["status"] == "open"
+    # A pin already consumed stays consumed: it is a fact about a turn that
+    # really happened, not about an in-flight request.
+    client.store.finalize_annotations_sent(
+        "resv-checkpoint", root_frame_id=client.frame_id, expected_ids=[annotation_id]
+    )
+    assert (
+        package_annotation(client.store.get_annotation(annotation_id))["status"]
+        == "sent"
+    )
+
+
+# --------------------------------------------------------------------------
+# consistency across connections, not within one Store instance
+# --------------------------------------------------------------------------
+#
+# `Store` holds a re-entrant lock per instance and the daemon has more than one
+# instance against one file, so "we took the lock" is not a claim about the
+# database. Each test below uses two Stores on one path, which is the shape the
+# daemon actually has.
+
+
+def _second_store(client):
+    from openai4s.store import Store
+
+    return Store(client.store.db_path)
+
+
+def _pin_on(store, frame, body="pin"):
+    return store.add_annotation(
+        root_frame_id=frame,
+        artifact_id="a-1",
+        artifact_name="p.png",
+        rel_x=0.5,
+        rel_y=0.5,
+        body=body,
+    )["annotation_id"]
+
+
+def test_an_edit_cannot_race_a_reservation_taken_on_another_connection(client):
+    """Check-then-write is a TOCTOU window, and a real one.
+
+    The route asked `annotation_is_reserved()` and then updated by
+    `annotation_id` alone. A reservation taken in between produced a row with
+    `status='open'` and `reservation_id` still set -- a pin the composer offers
+    the user while a turn is quoting it.
+    """
+    other = _second_store(client)
+    try:
+        annotation_id = _pin(client)
+        other.reserve_annotations(
+            root_frame_id=client.frame_id,
+            annotation_ids=[annotation_id],
+            reservation_id="resv-raced",
+        )
+        # The write the route would have issued after its check passed.
+        assert client.store.update_annotation(annotation_id, status="open") is None
+        row = other.get_annotation(annotation_id)
+        assert row["status"] == "reserved"
+        assert row["reservation_id"] == "resv-raced"
+    finally:
+        other.close()
+
+
+def test_a_delete_cannot_race_a_reservation_taken_on_another_connection(client):
+    other = _second_store(client)
+    try:
+        annotation_id = _pin(client)
+        other.reserve_annotations(
+            root_frame_id=client.frame_id,
+            annotation_ids=[annotation_id],
+            reservation_id="resv-raced-delete",
+        )
+        assert client.store.delete_unreserved_annotation(annotation_id) is False
+        assert other.get_annotation(annotation_id) is not None
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("status", ["reserved", "banana", "SENT", ""])
+def test_a_public_edit_cannot_invent_a_status(client, status):
+    """`reserved` is entered only by `reserve`, which sets the id in the same
+    statement. A PATCH able to write it would make a held row with no holder --
+    invisible in the composer and released by nothing."""
+    annotation_id = _pin(client)
+    with pytest.raises(ValueError):
+        client.store.update_annotation(annotation_id, status=status)
+    assert _status(client, annotation_id) == "open"
+
+
+def test_a_failed_finalize_changes_zero_rows(client):
+    """All-or-none means none, including across connections.
+
+    A `SELECT` then an `UPDATE` under a per-instance lock is not a transaction:
+    measured on two Stores, a row moved in between and finalize returned False
+    having already sent the other one. The invariant is that a mismatch leaves
+    the database exactly as it was.
+    """
+    other = _second_store(client)
+    try:
+        first = _pin(client, body="one")
+        second = _pin(client, body="two")
+        client.store.reserve_annotations(
+            root_frame_id=client.frame_id,
+            annotation_ids=[first, second],
+            reservation_id="resv-zero",
+        )
+        # A second connection frees one of them.
+        other.release_annotations("resv-zero", root_frame_id=client.frame_id)
+        client.store.reserve_annotations(
+            root_frame_id=client.frame_id,
+            annotation_ids=[first],
+            reservation_id="resv-zero",
+        )
+
+        assert (
+            client.store.finalize_annotations_sent(
+                "resv-zero",
+                root_frame_id=client.frame_id,
+                expected_ids=[first, second],
+            )
+            is False
+        )
+        # Zero rows changed: the one still held is still held, not sent.
+        assert other.get_annotation(first)["status"] == "reserved"
+        assert other.get_annotation(second)["status"] == "open"
+    finally:
+        other.close()
+
+
+def test_one_reservation_id_in_two_frames_stays_isolated(client):
+    """The read-back after the claim was not frame-scoped, so a second session
+    using the same id read *both* frames' rows and quoted another session's
+    pins."""
+    other_frame = client.store.new_frame(kind="turn", project_id="p")
+    mine = _pin(client, body="mine")
+    theirs = _pin_on(client.store, other_frame, "theirs")
+
+    client.store.reserve_annotations(
+        root_frame_id=client.frame_id,
+        annotation_ids=[mine],
+        reservation_id="resv-collide",
+    )
+    claimed = client.store.reserve_annotations(
+        root_frame_id=other_frame,
+        annotation_ids=[theirs],
+        reservation_id="resv-collide",
+    )
+
+    assert [row["annotation_id"] for row in claimed] == [theirs]
+    # ...and releasing one frame's claim leaves the other's alone.
+    assert (
+        client.store.release_annotations("resv-collide", root_frame_id=other_frame) == 1
+    )
+    assert _status(client, mine) == "reserved"
+
+
+def test_a_finalize_interleaved_by_another_connection_is_still_all_or_none(client):
+    """The transaction, as distinct from the exact-set check.
+
+    A mismatch arranged *before* the call is caught by comparing the held set
+    to the expected one -- no transaction required. What needs the transaction
+    is an interleave: a second connection writing between the `SELECT` that
+    reads the set and the `UPDATE` that consumes it. Measured on the
+    lock-only version, that produced `returned=False` with one row already
+    `sent`: a failure that changed rows.
+
+    The clock is the hook because `finalize_sent` calls it between those two
+    statements, which is exactly the window.
+    """
+    import threading
+
+    other = _second_store(client)
+    try:
+        first = _pin(client, body="one")
+        second = _pin(client, body="two")
+        client.store.reserve_annotations(
+            root_frame_id=client.frame_id,
+            annotation_ids=[first, second],
+            reservation_id="resv-interleave",
+        )
+
+        reached = threading.Event()
+        proceed = threading.Event()
+        real_clock = client.store._annotations._clock_ms
+
+        def hooked():
+            if not reached.is_set():
+                reached.set()
+                proceed.wait(2)
+            return real_clock()
+
+        client.store._annotations._clock_ms = hooked
+
+        def interfere():
+            if reached.wait(2):
+                try:
+                    other.release_annotations(
+                        "resv-interleave", root_frame_id=client.frame_id
+                    )
+                except Exception:
+                    pass
+                proceed.set()
+
+        helper = threading.Thread(target=interfere, daemon=True)
+        helper.start()
+        try:
+            returned = client.store.finalize_annotations_sent(
+                "resv-interleave",
+                root_frame_id=client.frame_id,
+                expected_ids=[first, second],
+            )
+        finally:
+            proceed.set()
+            helper.join(timeout=10)
+            client.store._annotations._clock_ms = real_clock
+
+        states = [other.get_annotation(x)["status"] for x in (first, second)]
+        sent = states.count("sent")
+        # All-or-none, and the answer has to match what happened. The weaker
+        # form of this ("a False result changed no rows") missed the mutation
+        # that mattered: without the transaction the interleave leaves ONE row
+        # sent and the call reports success, which is a partial consume
+        # announced as a complete one.
+        assert sent in (0, 2), f"a partial consume: states={states}"
+        assert (returned is True) == (sent == 2), (
+            f"the answer disagrees with the database: "
+            f"returned={returned} states={states}"
+        )
+    finally:
+        other.close()

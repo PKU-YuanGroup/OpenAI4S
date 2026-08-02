@@ -9969,20 +9969,29 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         str(current_annotation["root_frame_id"]),
                         "editing Session annotations",
                     )
-                if store.annotation_is_reserved(m.group(1)):
-                    # Held by an in-flight turn. Editing or deleting it here
-                    # would break exactly-once from outside the admission path,
-                    # which is the one direction that code cannot see.
+                b = self._body()
+                # No `annotation_is_reserved()` first. The check and the write
+                # have to be one statement: `Store`'s lock is per instance and
+                # the daemon has more than one instance on one file, so a read
+                # here and a write below is a real race -- measured, it left a
+                # row `open` with its `reservation_id` still set.
+                try:
+                    anno = store.update_annotation(
+                        m.group(1),
+                        body=b.get("body"),
+                        status=b.get("status"),
+                    )
+                except ValueError as invalid:
+                    raise GatewayError(
+                        400, "unsupported annotation status", "invalid_status"
+                    ) from invalid
+                if anno is None and store.get_annotation(m.group(1)) is not None:
                     raise GatewayError(
                         409,
                         "this comment is being sent with a turn already in "
                         "flight; wait for that turn to finish",
                         "annotation_reserved",
                     )
-                b = self._body()
-                anno = store.update_annotation(
-                    m.group(1), body=b.get("body"), status=b.get("status")
-                )
                 if anno is None:
                     # The one refusal on this surface that did not carry the
                     # PublicFailure envelope: `{"annotation": null}` with a 404
@@ -10002,17 +10011,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         str(current_annotation["root_frame_id"]),
                         "deleting Session annotations",
                     )
-                if store.annotation_is_reserved(m.group(1)):
-                    # Held by an in-flight turn. Editing or deleting it here
-                    # would break exactly-once from outside the admission path,
-                    # which is the one direction that code cannot see.
+                existed = store.get_annotation(m.group(1)) is not None
+                if not store.delete_unreserved_annotation(m.group(1)) and existed:
                     raise GatewayError(
                         409,
                         "this comment is being sent with a turn already in "
                         "flight; wait for that turn to finish",
                         "annotation_reserved",
                     )
-                store.delete_annotation(m.group(1))
                 self._json({"ok": True})
                 return
             m = re.fullmatch(r"/frames/([^/]+)/artifacts\.zip", sub)
