@@ -240,6 +240,14 @@ class SinkCapture:
             "stderr_seen_bytes": self._err.seen,
             "stderr_retained_bytes": self._err.retained,
             "stderr_dropped_bytes": self._err.dropped,
+            # Stated, not left to be derived. A consumer asking "was this cut?"
+            # otherwise has to know that dropped>0 means yes, that a marker in
+            # the text means yes, and that neither is a promise -- and a cell
+            # whose output legitimately ends in the marker's own wording would
+            # answer the text question wrongly. The bytes stay for anyone who
+            # wants the magnitude; these two say the fact.
+            "stdout_truncated": self._out.dropped > 0,
+            "stderr_truncated": self._err.dropped > 0,
         }
 
     def close(self) -> None:

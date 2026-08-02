@@ -666,3 +666,129 @@ def test_a_finished_r_cell_does_not_wait_out_the_drain_grace(tmp_path):
         f"{sink_drain._FINISH_GRACE_SECONDS}s grace — the drain is timing out "
         "rather than ending on EOF"
     )
+
+
+# --- the truncation flag, stated rather than derived ------------------------
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+@pytest.mark.parametrize(
+    "size, truncated",
+    [
+        (0, False),
+        (worker.MAX_OUTPUT - 1, False),
+        (worker.MAX_OUTPUT, False),
+        (worker.MAX_OUTPUT + 1, True),
+    ],
+)
+def test_the_stdout_truncation_flag_is_exact_at_the_cap(tmp_path, size, truncated):
+    """Exactly at the cap is not truncated; one byte past it is.
+
+    The boundary is the whole value of a boolean here. `dropped > 0` and "the
+    marker is in the text" agree in the easy cases and disagree at the edges --
+    output that ends exactly at the cap was never cut, and a cell whose own
+    output happens to contain the marker's wording is not evidence of anything.
+    """
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        code = "invisible(NULL)" if size == 0 else f"cat(strrep('a', {size}L))"
+        result = kernel.execute(code)
+    finally:
+        kernel.shutdown()
+
+    assert result.get("error") is None, result.get("error")
+    usage = result["usage"]
+    assert usage["stdout_truncated"] is truncated, usage
+    assert usage["stderr_truncated"] is False, usage
+    assert (usage["stdout_dropped_bytes"] > 0) is truncated
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+@pytest.mark.parametrize(
+    "size, truncated",
+    [(worker.MAX_OUTPUT, False), (worker.MAX_OUTPUT + 1, True)],
+)
+def test_the_stderr_truncation_flag_is_exact_at_the_cap(tmp_path, size, truncated):
+    """The other stream, asserted separately: the two are one mechanism called
+    with different arguments, and "wired to the wrong connection" looks exactly
+    like "not wired at all" from the stdout side."""
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        # `message()` appends a newline, so ask for one byte less than the size
+        # under test and let R supply the last one.
+        result = kernel.execute(f"message(strrep('m', {size - 1}L))")
+    finally:
+        kernel.shutdown()
+
+    assert result.get("error") is None, result.get("error")
+    usage = result["usage"]
+    assert usage["stderr_truncated"] is truncated, usage
+    assert usage["stdout_truncated"] is False, usage
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_a_multibyte_character_cut_by_the_cap_is_still_reported_truncated(tmp_path):
+    """The cap counts bytes and the text is characters, so a cut can land in
+    the middle of one. The flag must not depend on the repaired text: the
+    replacement character is what a split looks like *after* decoding, and
+    reading truncation off the string would make that a guess."""
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        # Three-byte characters, so the cap cannot fall on a boundary.
+        count = (worker.MAX_OUTPUT // 3) + 10
+        result = kernel.execute(f"cat(strrep('\\u4e2d', {count}L))")
+    finally:
+        kernel.shutdown()
+
+    assert result.get("error") is None, result.get("error")
+    usage = result["usage"]
+    assert usage["stdout_truncated"] is True, usage
+    assert usage["stdout_dropped_bytes"] > 0
+    assert result["stdout"].count("...(truncated at") == 1
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_an_interrupted_cell_reports_what_the_host_had_drained(tmp_path):
+    """A real interrupt against the real fifo, not the parser or a helper.
+
+    SIGINT during a flooding expression is the case where the writer stops
+    mid-stream: R unwinds its sinks and closes, the host's readers see EOF, and
+    what they had already taken is what the cell reports. Driving the frame
+    parser instead would prove the protocol and say nothing about whether the
+    drain survives its writer being killed.
+    """
+    import threading
+
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        timer = threading.Timer(1.0, kernel.interrupt)
+        timer.start()
+        try:
+            result = kernel.execute(
+                "invisible(lapply(1:4000, function(i) cat(strrep('x', 1e6))))"
+            )
+        finally:
+            timer.cancel()
+
+        assert result.get("interrupted") is True, result
+        usage = result["usage"]
+        # The host drained real bytes before the interrupt landed, and the
+        # counters describe them rather than being reset by the interrupt.
+        assert usage["stdout_seen_bytes"] > 0, usage
+        assert usage["stdout_retained_bytes"] <= worker.MAX_OUTPUT
+
+        # ...and the kernel is still usable, which is what distinguishes an
+        # interrupt from a crash.
+        after = kernel.execute("cat('still here\n')")
+        assert after["stdout"] == "still here\n"
+        assert after["usage"]["stdout_truncated"] is False
+    finally:
+        kernel.shutdown()

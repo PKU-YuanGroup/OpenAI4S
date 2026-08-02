@@ -481,12 +481,12 @@ def test_real_r_streams_stdout_while_the_cell_runs(tmp_path):
     A long R cell showed nothing at all until it finished, while the same cell
     in Python reported as it went.
 
-    Streaming happens between top-level expressions, which the evaluator was
-    already looping over. Mid-expression streaming would need C-level work: R
-    is single-threaded, `addTaskCallback` does not fire inside an expression,
-    and a connection callback cannot be written in R. So a chatty `for` loop
-    still arrives in one piece — that limit is real and is stated in the
-    worker rather than implied.
+    This used to say a chatty `for` loop "still arrives in one piece", because
+    the worker could only flush between top-level expressions. That stopped
+    being true when the host began draining the fifo: the drain sees bytes as
+    R's connection buffer empties, which happens *inside* an expression too.
+    The worker-side flush remains, for the expression that ends without
+    filling that buffer.
     """
     kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
     try:
