@@ -140,24 +140,37 @@ def _imported_plan_status(raw: Any) -> str:
 
 
 def package_annotation(row: Mapping[str, Any]) -> dict[str, Any]:
-    """One annotation, projected for something that leaves this process.
+    """One annotation, as an exported *record* of what happened.
 
-    A reservation belongs to a request in *this* process. Exporting `reserved`
-    -- into a session package, a checkpoint, a share -- would hand a recipient
-    a pin held by a turn that will never run on their machine: permanently
-    invisible in their composer, with no request left to release it. So a live
-    reservation is projected back to `open`, which is the state a user can act
-    on, and the reservation id does not travel at all.
+    Two different things were being conflated. The reservation **id** is audit
+    state -- it says which admission this pin belonged to, and dropping it
+    makes the exported history unable to answer that. The reservation **hold**
+    is live process state, and a recipient's machine has no such request: a pin
+    exported as `reserved` would be permanently invisible in their composer,
+    with nothing left to release it.
 
-    `sent` is untouched. That is a fact about a turn that really happened, not
-    about an in-flight request.
+    So the id travels and the hold does not. `sent` is untouched: that is a
+    fact about a turn that really happened.
     """
-    projected = {
-        key: value for key, value in dict(row).items() if key != "reservation_id"
-    }
+    projected = dict(row)
     if projected.get("status") == "reserved":
         projected["status"] = "open"
     return projected
+
+
+def restore_annotation(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One annotation, coming back in. Normalises any stale live holder.
+
+    Applied on import and on checkpoint restore, which is where a row can
+    arrive still naming a holder -- from an older export, or from a checkpoint
+    taken mid-flight. The request that held it did not survive the gap, so the
+    only safe state is the one a user can act on.
+    """
+    restored = dict(row)
+    if restored.get("status") == "reserved":
+        restored["status"] = "open"
+    restored["reservation_id"] = None
+    return restored
 
 
 class SessionPackageError(ValueError):
@@ -3004,7 +3017,13 @@ class SessionPackageService:
                 rel_y=float(item.get("rel_y") or 0),
                 body=str(item.get("body") or ""),
             )
-            status = str(item.get("status") or "open")
+            # Normalised on the way in. A package can carry a row that still
+            # names a holder -- an older export, or one taken mid-flight -- and
+            # the request that held it did not survive the transfer. Left
+            # as-is, `reserved` would be rejected outright by the public status
+            # whitelist, and an import would fail on a session that is
+            # otherwise perfectly valid.
+            status = str(restore_annotation(item).get("status") or "open")
             if status != "open":
                 self.store.update_annotation(annotation["annotation_id"], status=status)
         for item in review.get("activity_steps") or []:

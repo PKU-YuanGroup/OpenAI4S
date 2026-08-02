@@ -294,6 +294,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_llm_system_placement.py`](test_llm_system_placement.py) | 只有开头的 system 消息成为初始 system 字段，压缩摘要不会侵入缓存前缀。 |
 | [`test_startup_no_implicit_install.py`](test_startup_no_implicit_install.py) | `serve` 只诊断环境，绝不修改它。 |
 | [`test_startup_no_implicit_side_effects.py`](test_startup_no_implicit_side_effects.py) | 全新数据目录上启动：不建立任何出站连接、不拉起任何子进程、不执行任何 cell、不落任何会话——在 `socket.connect` 与 `subprocess.Popen` 两个边界上设卡，并以 `OPENAI4S_SEED_DEMO=1` 作为正向对照。 |
+| [`test_unstarted_worker_admission.py`](test_unstarted_worker_admission.py) | 线程根本没起来的 worker，不能把整个会话一直占着；而且这套回滚本身出错时也得撑住：ticket 要释放，job 要真正终结而不是只从登记表里抹掉，plan 行要回到它自己那条路线还能重新认领的状态，并且整个过程不依赖去渲染一个可能拒绝被渲染的异常。 |
 | [`test_diagnostic_archive_boundary.py`](test_diagnostic_archive_boundary.py) | 可分享的诊断 ZIP 里不会带出任何未知内容：归档边界默认拒绝，结构化日志行只保留通过校验的元数据，非结构化行只保留条数、分类和指纹。 |
 | [`test_diagnostics.py`](test_diagnostics.py) | 诊断包可以安全贴进公开 issue，包括夹在日志句子中间的 token。 |
 | [`test_evidence_verification.py`](test_evidence_verification.py) | 导出的包无需 daemon 即可校验，四种篡改都被抓到——含 payload 与其记录 hash 被一起改写。 |
@@ -317,6 +318,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_contract_inventory.py`](test_contract_inventory.py) | 每个对外 route 与 event 都被契约清单覆盖。 |
 | [`test_frame_pagination.py`](test_frame_pagination.py) | 会话列表的 keyset 分页。 |
 | [`test_ws_resume_cursor.py`](test_ws_resume_cursor.py) | 单调事件序号，以及重连客户端可用的 resume cursor。 |
+| [`browser_admission_fault.mjs`](browser_admission_fault.mjs) | 只有浏览器能证明的那条：页面丢掉了自己的应答之后还能自恰。POST 真的打到 daemon 并成功，只有返回的响应被销毁，所以这一轮是真的被接受了。刷新之后，页面必须凭它在**发出请求之前**就存好的 id 去和服务端对账——既不能重发这一轮，也不能把正在运行的那一轮已经带走的批注重新标成待发送。 |
 | [`browser_matrix.mjs`](browser_matrix.mjs) | 工作台在三个引擎里被真实驱动，而不只是那个友好的。一个在 Chromium 正常、在 WebKit 悄悄失败的渲染器，对用它的那一半用户来说就是坏的产品，而只有真实引擎能说清是哪一半。 |
 | [`test_benchmark_workflows.py`](test_benchmark_workflows.py) | 带版本的工作流基准真的会跑：[`../workflows/`](../workflows/README_zh.md) 里每份清单都能加载、每个 step 名都能解析，声明结果与观察结果双向比对——期望 `failure` 的用例在跑出干净成功时判失败。 |
 | [`test_byoc_confinement.py`](test_byoc_confinement.py) | 从内部检验边界。家目录不可读、stage 目录是唯一可写处、解释器仍能启动——以及 keychain 不可达，这一条并不能由文件系统不变量推出，因为 `security find-generic-password` 是去问 securityd 而不是读文件。用的是带金丝雀的临时 keychain，绝不碰开发者本人的。 |

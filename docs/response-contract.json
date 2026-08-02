@@ -534,6 +534,17 @@
         404
       ]
     },
+    "/frames/([^/]+)/admissions/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/annotations": {
       "content_types": [
         "application/json"
@@ -893,6 +904,7 @@
       ],
       "statuses": [
         200,
+        202,
         404
       ]
     },

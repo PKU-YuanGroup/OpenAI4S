@@ -304,6 +304,13 @@ jobs:
           # it runs in every engine.
           if [ "${{ matrix.engine }}" = "chromium" ]; then
             node tests/browser_smoke.mjs
+            # The admission fault case: the POST reaches the daemon and
+            # succeeds, the response is destroyed on the way back, and the page
+            # has to reconcile from an id it stored before dispatch. Chromium
+            # only, for the same reason the walk is -- it is depth, not breadth
+            # -- but it has to run somewhere, because a browser file no gate
+            # invokes is not evidence of anything.
+            node tests/browser_admission_fault.mjs
           fi
           node tests/browser_matrix.mjs --browser=${{ matrix.engine }}
       - name: Show daemon log after a failure

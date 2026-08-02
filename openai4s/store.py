@@ -3413,6 +3413,141 @@ class Store:
         self._annotations.mark_sent(annotation_ids)
 
     # --- admission ledger -------------------------------------------------
+    def reserve_with_admission(
+        self,
+        *,
+        reservation_id: str,
+        root_frame_id: str,
+        annotation_ids: list[str],
+    ) -> tuple[bool, list[dict]]:
+        """Claim the id and the pins in ONE transaction.
+
+        Two commits is two outcomes. Reserving and then recording separately
+        means a ledger insert that fails leaves pins `reserved` with nothing to
+        reconcile them against -- held forever, invisible in the composer, and
+        with no row that a recovery pass could even find. So the ledger insert
+        and the status change are one `BEGIN IMMEDIATE`, and either both happen
+        or neither does.
+
+        The ledger's PRIMARY KEY is what makes an id globally unique: a second
+        request naming an existing id loses on the insert and gets nothing --
+        it does not coexist in another frame, and it does not overwrite the
+        first request's row. `annotations(reservation_id, annotation_id)` could
+        never have provided that, because `annotation_id` is already the
+        primary key and the pair is unique for free.
+        """
+        ids: list[str] = []
+        seen: set[str] = set()
+        for annotation_id in annotation_ids or []:
+            if (
+                type(annotation_id) is str
+                and annotation_id
+                and annotation_id not in seen
+            ):
+                seen.add(annotation_id)
+                ids.append(annotation_id)
+        now = _now_ms()
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute(
+                    "INSERT INTO annotation_admissions(reservation_id,"
+                    "root_frame_id,annotation_ids,request_id,job_id,message_id,"
+                    "state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        reservation_id,
+                        root_frame_id,
+                        json.dumps(ids),
+                        None,
+                        None,
+                        None,
+                        "reserved",
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                return False, []
+            except BaseException:
+                self._conn.rollback()
+                raise
+            try:
+                claimed: list[dict] = []
+                if ids:
+                    placeholders = ",".join("?" * len(ids))
+                    self._conn.execute(
+                        f"UPDATE annotations SET status='reserved', "
+                        f"reservation_id=?, updated_at={now} "
+                        f"WHERE root_frame_id=? AND status='open' "
+                        f"AND annotation_id IN ({placeholders})",
+                        (reservation_id, root_frame_id, *ids),
+                    )
+                    claimed = [
+                        dict(row)
+                        for row in self._conn.execute(
+                            "SELECT * FROM annotations WHERE reservation_id=? "
+                            "AND root_frame_id=? ORDER BY number",
+                            (reservation_id, root_frame_id),
+                        ).fetchall()
+                    ]
+                    # A claim that got nothing is not a live reservation. Left
+                    # `reserved`, it is a permanent row that recovery keeps
+                    # finding and a reconcile keeps reporting as in-flight --
+                    # for pins this request never held. The concurrent loser is
+                    # the ordinary way to reach this.
+                    self._conn.execute(
+                        "UPDATE annotation_admissions SET annotation_ids=?, "
+                        "state=? WHERE reservation_id=?",
+                        (
+                            json.dumps([r["annotation_id"] for r in claimed]),
+                            "reserved" if claimed else "released",
+                            reservation_id,
+                        ),
+                    )
+                else:
+                    self._conn.execute(
+                        "UPDATE annotation_admissions SET state='released' "
+                        "WHERE reservation_id=?",
+                        (reservation_id,),
+                    )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return True, claimed
+
+    def update_admission(
+        self,
+        reservation_id: str,
+        *,
+        root_frame_id: str,
+        state: str | None = None,
+        request_id: str | None = None,
+        job_id: str | None = None,
+    ) -> bool:
+        """Advance an admission this frame owns. Scoped, so an id alone is not
+        authority over somebody else's row."""
+        sets = ["updated_at=?"]
+        params: list[Any] = [_now_ms()]
+        for column, value in (
+            ("state", state),
+            ("request_id", request_id),
+            ("job_id", job_id),
+        ):
+            if value is not None:
+                sets.append(f"{column}=?")
+                params.append(value)
+        params.extend([reservation_id, root_frame_id])
+        with self._lock:
+            cursor = self._conn.execute(
+                f"UPDATE annotation_admissions SET {','.join(sets)} "
+                "WHERE reservation_id=? AND root_frame_id=?",
+                tuple(params),
+            )
+            self._conn.commit()
+            return bool(cursor.rowcount)
+
     def record_admission(
         self,
         *,

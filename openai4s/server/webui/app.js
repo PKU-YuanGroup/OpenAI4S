@@ -269,6 +269,8 @@ Object.assign(I18N.zh, {
   "annot.save.err": "标注保存失败：{0}",
   "annot.save.err404": "保存失败：后端未加载标注接口，请重启服务（python3 -m openai4s serve）",
   "annot.status.open": "待发送",
+  "annot.status.pending": "发送中",
+  "annot.status.unknown": "状态未知",
   "annot.status.resolved": "已处理",
   "annot.status.sent": "已发送",
   "app.title": "OpenAI4S",
@@ -1195,6 +1197,8 @@ Object.assign(I18N.en, {
   "annot.save.err": "Annotation save failed: {0}",
   "annot.save.err404": "Save failed: backend annotation API not loaded, please restart the service (python3 -m openai4s serve)",
   "annot.status.open": "Pending",
+  "annot.status.pending": "Sending",
+  "annot.status.unknown": "Unknown",
   "annot.status.resolved": "Resolved",
   "annot.status.sent": "Sent",
   "app.title": "OpenAI4S",
@@ -4941,7 +4945,15 @@ async function openConversation(fid, pid) {
   } catch {}
   if (gen !== S._openGen) return;
   if (!msgCount) renderEmptySession();
-  loadArtifacts(fid); loadExecutionLog(fid); loadAnnotations(fid); loadWorkbenchState(fid); down(true); updateJumpPill();
+  loadArtifacts(fid); loadExecutionLog(fid); loadWorkbenchState(fid); down(true); updateJumpPill();
+  // Sequenced, not raced. `reconcileLastAdmission` reads the server's view and
+  // then reloads annotations; firing it alongside `loadAnnotations` meant the
+  // two replies could land in either order, so a reload sometimes showed the
+  // stale pre-turn state and sometimes the reconciled one.
+  (async () => {
+    await loadAnnotations(fid);
+    await reconcileLastAdmission(fid);
+  })();
   // Resume: subscribe AFTER history renders so a replayed in-flight turn streams
   // below it. If a turn is still running server-side (survived our last close),
   // lock the composer and let the WS replay rebuild the live stream + notebook.
@@ -5603,12 +5615,29 @@ async function send(text, opts) {
   else { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true); }
   $("#composer").value = ""; grow(); renderComposerRefChips();
   const annIds = anns.map(x => x.id);
-  // Optimistically "pending", never "sent". The server is what decides whether
-  // a pin was consumed, and it can answer `pending` -- accepted, but the
-  // consume did not confirm -- in which case the comment is neither gone nor
-  // available and must not be shown as either. The authoritative state arrives
-  // in the response below and is applied there.
-  if (annIds.length) { setLocalAnnotationStatus(annIds, "pending"); refreshAllStages(); updateAnnotBadge(); }
+  // The admission id is generated HERE and stored BEFORE the request goes out.
+  //
+  // That ordering is the whole mechanism. The case this exists for is the one
+  // where the client never sees the response -- a dropped connection, a closed
+  // tab, a reload mid-flight -- and a server-minted id is unknown to a browser
+  // in exactly that case, so there is nothing left to ask about. Storing it
+  // after the promise resolves covers only the case that needed no help.
+  //
+  // 128 bits from the platform CSPRNG: it keys a claim on the user's own
+  // unpublished comments, and it has to survive collision across sessions and
+  // restarts.
+  let admissionId = "";
+  if (annIds.length) {
+    const bytes = new Uint8Array(16);
+    (self.crypto || window.crypto).getRandomValues(bytes);
+    admissionId = "resv-" + [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
+    try { localStorage.setItem("openai4s.admission." + S.currentId, admissionId); } catch {}
+    // Optimistically "pending", never "sent". The server decides whether a pin
+    // was consumed, and it can answer `pending` -- accepted, but the consume
+    // did not confirm -- in which case the comment is neither gone nor
+    // available and must not be shown as either.
+    setLocalAnnotationStatus(annIds, "pending"); refreshAllStages(); updateAnnotBadge();
+  }
   sub(S.currentId);  // guarantee this client is subscribed BEFORE the POST spawns the
                      // turn thread. On the FIRST turn opened via newSession(), S.currentId
                      // is already set so the block above is skipped and openConversation's
@@ -5622,7 +5651,7 @@ async function send(text, opts) {
     // so provider, endpoint and credential came from the pin while the model name
     // came from here, a configuration that exists in no profile. Changing model is
     // now activating a profile (PUT /models/default), which the session then binds.
-    const accepted = await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, plan: planNow, explore: exploreNow, annotation_ids: annIds, wait: false }) });
+    const accepted = await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, plan: planNow, explore: exploreNow, annotation_ids: annIds, annotation_reservation_id: admissionId || undefined, wait: false }) });
     // Tie the optimistic bubble to the ticket the 202 named, so cancelling that
     // exact queued item can mark the message the user is looking at. Nothing
     // else in the transcript carries an execution id.
@@ -6342,6 +6371,31 @@ async function loadAnnotations(fid) {
   updateAnnotBadge();
   return true;
 }
+/* What happened to the pins this tab last sent, when it never saw the answer.
+   A reload, a closed tab, a dropped connection: the 202 is gone and the client
+   knows only that it sent something. Guessing is the one thing it must not do
+   — "assume sent" silently loses the comments, "assume open" offers the user a
+   comment a running turn is already carrying. So it asks. */
+async function reconcileLastAdmission(fid) {
+  let reservation = null;
+  try { reservation = localStorage.getItem("openai4s.admission." + fid); } catch {}
+  if (!reservation) return null;
+  let record;
+  try {
+    record = await api(`/frames/${fid}/admissions/${encodeURIComponent(reservation)}`);
+  } catch (e) {
+    // 404 means this session has no such admission — nothing to reconcile, and
+    // the stored id is stale. Anything else leaves it for the next attempt.
+    if (e && e.status === 404) { try { localStorage.removeItem("openai4s.admission." + fid); } catch {} }
+    return null;
+  }
+  if (record && record.state && record.state !== "pending") {
+    try { localStorage.removeItem("openai4s.admission." + fid); } catch {}
+  }
+  await loadAnnotations(fid);
+  refreshAllStages(); updateAnnotBadge();
+  return record;
+}
 /* Render an image the user can pin comments onto, with zoom + pan. Used by the
    dock viewer AND the fullscreen modal. Zoom is WIDTH-BASED (the image element
    physically grows) rather than a CSS transform, so the pin layer scales with
@@ -6437,11 +6491,34 @@ function renderAnnotatableImage(body, a, url) {
     openAnnotDraft(stage, a, x, y);
   });
 }
+/* The one place that decides what a pin's status is for display. `reserved`
+   and `pending` are in-flight: not open (the user cannot act on them) and not
+   sent (they are not consumed yet). Anything unrecognised is `unknown` rather
+   than silently `open`, because "I do not know" and "you may edit this" are
+   different answers. */
+function annotationStatus(an) {
+  const raw = String((an && an.status) || "open");
+  if (raw === "sent" || raw === "resolved" || raw === "dismissed") return raw;
+  if (raw === "reserved" || raw === "pending") return "pending";
+  if (raw === "open") return "open";
+  return "unknown";
+}
+function annotationIsHeld(an) {
+  const shown = annotationStatus(an);
+  return shown === "pending" || shown === "unknown";
+}
 function renderPins(stage, a) {
   const layer = stage.querySelector(".annot-layer"); if (!layer) return;
   layer.querySelectorAll(".annot-pin:not(.draft)").forEach(n => n.remove());
   annotationsFor(a.id).forEach(an => {
-    const pin = el("div", "annot-pin" + (an.status === "sent" ? " sent" : (an.status === "resolved" ? " resolved" : "")));
+    // A held pin is not an open one. `reserved` (a turn is quoting it) and
+    // `pending` (accepted, consume unconfirmed) both used to render as `open`,
+    // which invites the user to edit or delete a comment that is already on its
+    // way -- and `data-annotation-status` exists so a test can assert that
+    // without matching on CSS class soup or translated text.
+    const shown = annotationStatus(an);
+    const pin = el("div", "annot-pin " + shown);
+    pin.dataset.annotationStatus = shown;
     pin.style.left = (an.x * 100) + "%"; pin.style.top = (an.y * 100) + "%";
     pin.textContent = an.number; pin.title = an.body || "";
     pin.onclick = (e) => { e.stopPropagation(); openPinPop(stage, a, an); };
@@ -6522,7 +6599,16 @@ function openPinPop(stage, a, an) {
   const pop = el("div", "annot-pop view");
   const head = el("div", "annot-pop-head");
   head.appendChild(el("span", "annot-pop-num", "#" + an.number));
-  const st = el("span", "annot-pop-status " + (an.status || "open"), an.status === "sent" ? t("annot.status.sent") : (an.status === "resolved" ? t("annot.status.resolved") : t("annot.status.open")));
+  const shown = annotationStatus(an);
+  const label = {
+    sent: t("annot.status.sent"),
+    resolved: t("annot.status.resolved"),
+    dismissed: t("annot.status.resolved"),
+    pending: t("annot.status.pending"),
+    unknown: t("annot.status.unknown"),
+  }[shown] || t("annot.status.open");
+  const st = el("span", "annot-pop-status " + shown, label);
+  st.dataset.annotationStatus = shown;
   head.appendChild(st);
   const bodyEl = el("div", "annot-pop-body", an.body || "");
   const foot = el("div", "annot-foot");
@@ -6532,6 +6618,14 @@ function openPinPop(stage, a, an) {
     try { await deleteAnnotations([annotationId(an)]); closeAnnotPop(); hint(t("annot.deleted")); }
     catch (e) { del.disabled = false; hint(t("toast.deleteFailed", apiErrorText(e)), true); }
   };
+  // A held pin is not the user's to delete: a turn is quoting it, and the
+  // server answers 409 for exactly this. Offering the button and then showing
+  // an error is a worse version of not offering it.
+  if (annotationIsHeld(an)) {
+    del.disabled = true;
+    del.title = t("annot.status.pending");
+    del.dataset.heldByTurn = "1";
+  }
   const close = el("button", "annot-btn solid", t("common.close")); close.onclick = () => closeAnnotPop();
   foot.appendChild(del); foot.appendChild(close);
   pop.appendChild(head); pop.appendChild(bodyEl); pop.appendChild(foot);

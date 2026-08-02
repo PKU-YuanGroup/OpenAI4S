@@ -408,6 +408,10 @@ MAX_SOURCE_IMAGE_BYTES = 64 * 1024 * 1024
 #: They were two literal tuples one edit apart from disagreeing, and a method
 #: that counts as mutating for one guard and not the other is a hole in
 #: whichever of them forgot it.
+#: A client-generated admission id: long enough not to collide across
+#: sessions or restarts, and narrow enough to be safe as a key.
+_CLIENT_RESERVATION = re.compile(r"[A-Za-z0-9_-]{24,96}")
+
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 #: The only paths a `?token=` may be traded for a cookie on -- an allowlist,
@@ -2238,6 +2242,29 @@ class SessionRunner:
         if start_idle_sweeper:
             self.recovery.start()
             self._share_boot_restore()
+            self._recover_stranded_admissions()
+
+    def _recover_stranded_admissions(self) -> int:
+        """Release pins held by a request that did not survive the process.
+
+        A daemon that dies between reserving and finalising leaves `reserved`
+        rows nothing will ever release: not sent, not available, and invisible
+        in the composer forever. At startup no request is in flight by
+        definition, so anything still held is stranded. Best-effort, because a
+        recovery pass must not be the reason a daemon fails to boot.
+        """
+        try:
+            recovered = self.store.recover_stranded_admissions()
+        except Exception:  # noqa: BLE001 - never block startup
+            traceback.print_exc()
+            return 0
+        if recovered:
+            print(
+                f"[openai4s] released {recovered} pinned comment(s) held by a "
+                "request that did not finish",
+                file=sys.stderr,
+            )
+        return recovered
 
     def _live_delegation_child(self, root_frame_id: str, child_id: str):
         """The live child a control action can actually reach, or a refusal.
@@ -4918,10 +4945,35 @@ class SessionRunner:
         record = self.store.get_admission(reservation_id, root_frame_id=root_frame_id)
         if record is None:
             return None
+        # Derived from the pins, not read off the ledger.
+        #
+        # The ledger records intent and is written by the same request that can
+        # fail: an update fault after the consume leaves it saying `reserved`
+        # while the pins are already `sent`, and a client asking "what
+        # happened" would be told the opposite of the truth. The annotations
+        # are the authority -- they are what the turn actually consumed -- so
+        # the state is computed from them, and the ledger supplies correlation.
+        ids = list(record["annotation_ids"] or [])
+        present = [row for row in (self.store.get_annotation(a) for a in ids) if row]
+        state = record["state"]
+        if ids:
+            if any(
+                row.get("reservation_id") == reservation_id
+                and row.get("status") == "reserved"
+                for row in present
+            ):
+                state = "pending"
+            elif not present:
+                state = "unknown"
+            elif all(row.get("status") == "sent" for row in present):
+                state = "sent"
+            else:
+                state = "released"
         return {
+            "state_from_ledger": record["state"],
             "reservation_id": record["reservation_id"],
-            "state": record["state"],
-            "annotations": record["annotation_ids"],
+            "state": state,
+            "annotations": ids,
             "request_id": record["request_id"],
             "job_id": record["job_id"],
         }
@@ -9498,21 +9550,45 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # requests both carried the same open pin. The reservation
                     # is one atomic UPDATE, so exactly one request claims a
                     # given pin and only what it actually claimed is quoted.
-                    reservation_id = f"resv-{uuid.uuid4().hex[:16]}"
-                    annos = store.reserve_annotations(
+                    # Client-generated, because the case this whole mechanism
+                    # exists for is the one where the client never sees the
+                    # response. A server-minted id is unknown to a browser
+                    # whose 202 was lost, so there is nothing for it to ask
+                    # about. The client stores its own id *before* dispatch and
+                    # reconciles with it afterwards.
+                    #
+                    # That makes the id untrusted input, so it is validated for
+                    # shape and claimed rather than upserted: a second request
+                    # naming an existing id is a replay, not an adoption.
+                    supplied = b.get("annotation_reservation_id")
+                    if supplied is not None:
+                        if type(
+                            supplied
+                        ) is not str or not _CLIENT_RESERVATION.fullmatch(supplied):
+                            raise GatewayError(
+                                400,
+                                "annotation_reservation_id must be 24-96 chars "
+                                "of [A-Za-z0-9_-]",
+                                "invalid_reservation_id",
+                            )
+                        reservation_id = supplied
+                    else:
+                        # Full 128 bits. A truncated id collides across
+                        # sessions and restarts, and what it keys is a claim
+                        # on somebody's unpublished comment.
+                        reservation_id = f"resv-{uuid.uuid4().hex}"
+                    admitted, annos = store.reserve_with_admission(
+                        reservation_id=reservation_id,
                         root_frame_id=fid,
                         annotation_ids=ann_ids,
-                        reservation_id=reservation_id,
                     )
-                    if annos:
-                        # Durable before the submit, so a crash between here and
-                        # the answer still leaves something to reconcile against.
-                        store.record_admission(
-                            reservation_id=reservation_id,
-                            root_frame_id=fid,
-                            annotation_ids=[a["annotation_id"] for a in annos],
-                            state="reserved",
+                    if not admitted:
+                        raise GatewayError(
+                            409,
+                            "this admission id has already been used",
+                            "admission_replayed",
                         )
+
                     block = _format_annotations_block(annos)
                     if block:
                         req = (req + "\n\n" + block).strip() if req.strip() else block
@@ -9535,7 +9611,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     if reservation_id:
                         try:
                             store.release_annotations(reservation_id, root_frame_id=fid)
-                            store.set_admission_state(reservation_id, "released")
+                            store.update_admission(
+                                reservation_id,
+                                root_frame_id=fid,
+                                state="released",
+                            )
                         except Exception:  # noqa: BLE001
                             traceback.print_exc()
                     raise
@@ -9575,17 +9655,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         # claiming they were consumed.
                         annotations_state = "pending"
                         traceback.print_exc()
-                if reservation_id:
+                if reservation_id and annos:
                     try:
-                        store.record_admission(
-                            reservation_id=reservation_id,
+                        store.update_admission(
+                            reservation_id,
                             root_frame_id=fid,
-                            annotation_ids=[a["annotation_id"] for a in annos],
                             request_id=job.request_id,
                             job_id=job.job_id,
-                            state=annotations_state
-                            if annotations_state != "none"
-                            else "released",
+                            state=annotations_state,
                         )
                     except Exception:  # noqa: BLE001
                         traceback.print_exc()
@@ -9960,6 +10037,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     checksum=bound.get("checksum"),
                 )
                 self._json({"annotation": _annotation_json(anno)}, 201)
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/admissions/([^/]+)", sub)
+            if m and method == "GET":
+                # What a client asks after its 202 never arrived. Without this
+                # its only options are to resend (double work) or abandon the
+                # comments (silent loss).
+                record = runner.reconcile_admission(m.group(1), m.group(2))
+                if record is None:
+                    raise GatewayError(404, "no such admission")
+                self._json(record)
                 return
             m = re.fullmatch(r"/annotations/([^/]+)", sub)
             if m and method in ("PATCH", "POST", "PUT"):

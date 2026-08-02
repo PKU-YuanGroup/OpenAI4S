@@ -732,6 +732,17 @@ def _drive_seeded_downloads(
                 f"GET {route} (seeded)"
             ] = f"{type(error).__name__}: {error}"
 
+    # A pin to send. Created here rather than reused, so the capture does not
+    # depend on some other seeded step having left one `open`.
+    annotation_id = runner.store.add_annotation(
+        root_frame_id=frame_id,
+        artifact_id="capture-artifact",
+        artifact_name="capture.png",
+        rel_x=0.5,
+        rel_y=0.5,
+        body="capture pin",
+    )["annotation_id"]
+
     writes: tuple[tuple[str, str, str, dict[str, list[str]], dict], ...] = (
         (
             "POST",
@@ -746,6 +757,22 @@ def _drive_seeded_downloads(
             f"/memory/{memory['memory_id']}",
             {"project_id": [_CAPTURE_PROJECT]},
             {"content": "capture memory, corrected"},
+        ),
+        # A real `wait:false` turn carrying a real pin. The 202 grows two
+        # fields when annotations ride along (`annotations`,
+        # `annotation_reservation_id`), and a probe that never sends one
+        # freezes the shape without them -- publishing a contract for a
+        # response the server does not send in the case that needs it most.
+        (
+            "POST",
+            r"/frames/([^/]+)/message",
+            f"/frames/{frame_id}/message",
+            {},
+            {
+                "request": "capture turn with a pinned comment",
+                "wait": False,
+                "annotation_ids": [annotation_id],
+            },
         ),
     )
     for method, route, path, query, body in writes:

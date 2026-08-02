@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -112,7 +114,50 @@ class _Client:
 
 @pytest.fixture
 def client(tmp_path):
-    return _Client(tmp_path)
+    """A real Handler + Store, drained and closed before the test ends.
+
+    `wait:false` accepts a turn and returns; the job keeps running in a daemon
+    thread. Tearing the fixture down without draining left those threads
+    reaching into a closed Store, which printed
+    `sqlite3.ProgrammingError: Cannot operate on a closed database` from
+    `_target`/`run_message`/`_persist_outer_failure` -- to stderr, from a
+    thread, where pytest counts it as nothing at all. Exit 0 with that in the
+    output is not a green run; it is a green run and an unobserved crash.
+
+    So: every accepted job is joined, background exceptions are captured, and
+    a test that leaves one behind fails on it rather than printing it.
+    """
+    import threading as _threading
+
+    background: list = []
+    previous_hook = _threading.excepthook
+
+    def hook(args):
+        background.append(args)
+        previous_hook(args)
+
+    _threading.excepthook = hook
+    made = _Client(tmp_path)
+    try:
+        yield made
+    finally:
+        deadline = time.monotonic() + 20
+        for job in list(getattr(made.runner, "_jobs", {}).values()):
+            job.done.wait(max(0.0, deadline - time.monotonic()))
+        for job in list(getattr(made.runner, "_jobs", {}).values()):
+            thread = getattr(job, "thread", None)
+            if thread is not None:
+                thread.join(max(0.0, deadline - time.monotonic()))
+        try:
+            made.runner.close()
+        finally:
+            _threading.excepthook = previous_hook
+        assert (
+            not background
+        ), "a background thread raised and nothing observed it: " + "; ".join(
+            f"{getattr(a, 'exc_type', '?').__name__}: {getattr(a, 'exc_value', '?')}"
+            for a in background
+        )
 
 
 # --------------------------------------------------------------------------
@@ -806,8 +851,11 @@ def test_a_packaged_session_does_not_export_a_live_reservation(client, tmp_path)
     from openai4s.server.session_package import package_annotation
 
     projected = package_annotation(row)
+    # The hold does not travel: a recipient has no request to release it.
     assert projected["status"] == "open", projected
-    assert "reservation_id" not in projected, projected
+    # The id does: it is audit state, and without it the exported history
+    # cannot say which admission this pin belonged to.
+    assert projected["reservation_id"] == "resv-packaged", projected
 
 
 def test_a_checkpoint_restores_a_reserved_pin_as_open(client):
@@ -827,8 +875,13 @@ def test_a_checkpoint_restores_a_reserved_pin_as_open(client):
     )
     row = client.store.get_annotation(annotation_id)
 
-    restored = package_annotation(row)
+    from openai4s.server.session_package import restore_annotation
+
+    restored = restore_annotation(row)
     assert restored["status"] == "open"
+    # Coming back in, the stale holder is cleared -- a checkpoint is taken at
+    # one instant and applied at another, and the request does not survive it.
+    assert restored["reservation_id"] is None
     # A pin already consumed stays consumed: it is a fact about a turn that
     # really happened, not about an in-flight request.
     client.store.finalize_annotations_sent(
@@ -958,31 +1011,101 @@ def test_a_failed_finalize_changes_zero_rows(client):
         other.close()
 
 
-def test_one_reservation_id_in_two_frames_stays_isolated(client):
-    """The read-back after the claim was not frame-scoped, so a second session
-    using the same id read *both* frames' rows and quoted another session's
-    pins."""
+def test_one_reservation_id_cannot_be_used_in_two_frames(client):
+    """An admission id is globally unique, not unique per frame.
+
+    An earlier version of this test asserted the two frames stayed *isolated*,
+    which encoded the wrong contract: it accepted that one id could name two
+    live claims at once. The id is client-generated and travels in a response,
+    so a duplicate is either a replay or a collision, and both must lose --
+    atomically, without coexisting and without overwriting the first claim's
+    ledger row. `annotations(reservation_id, annotation_id)` could never have
+    enforced this: `annotation_id` is already the primary key, so the pair is
+    unique for free and the index said nothing.
+    """
     other_frame = client.store.new_frame(kind="turn", project_id="p")
     mine = _pin(client, body="mine")
     theirs = _pin_on(client.store, other_frame, "theirs")
 
-    client.store.reserve_annotations(
+    ok, claimed = client.store.reserve_with_admission(
+        reservation_id="resv-globally-unique-000001",
         root_frame_id=client.frame_id,
         annotation_ids=[mine],
-        reservation_id="resv-collide",
     )
-    claimed = client.store.reserve_annotations(
+    assert ok and [row["annotation_id"] for row in claimed] == [mine]
+
+    lost, nothing = client.store.reserve_with_admission(
+        reservation_id="resv-globally-unique-000001",
         root_frame_id=other_frame,
         annotation_ids=[theirs],
-        reservation_id="resv-collide",
     )
+    assert lost is False, "a duplicate admission id was accepted"
+    assert nothing == []
+    # The loser changed nothing: not the other frame's pin, and not the
+    # winner's ledger row.
+    assert _status(client, theirs) == "open"
+    record = client.store.get_admission("resv-globally-unique-000001")
+    assert record["root_frame_id"] == client.frame_id
+    assert record["annotation_ids"] == [mine]
 
-    assert [row["annotation_id"] for row in claimed] == [theirs]
-    # ...and releasing one frame's claim leaves the other's alone.
-    assert (
-        client.store.release_annotations("resv-collide", root_frame_id=other_frame) == 1
-    )
-    assert _status(client, mine) == "reserved"
+
+def test_a_ledger_failure_leaves_no_reserved_pin_behind(client, monkeypatch):
+    """Two commits is two outcomes.
+
+    Reserving and then recording separately means a ledger insert that fails
+    leaves pins `reserved` with nothing to reconcile them against: held
+    forever, invisible in the composer, and with no row a recovery pass could
+    even find. One transaction, so either both happen or neither does.
+    """
+    annotation_id = _pin(client)
+    real_conn = client.store._conn
+    calls = {"n": 0}
+
+    class _Flaky:
+        """A connection that fails one statement inside the transaction.
+
+        Wrapped rather than patched: `sqlite3.Connection.execute` is a
+        read-only attribute, so the fault has to be injected at the object the
+        store holds.
+        """
+
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+        def execute(self, sql, *args, **kwargs):
+            if "UPDATE annotations SET status='reserved'" in sql:
+                calls["n"] += 1
+                raise RuntimeError("the ledger went away mid-transaction")
+            return real_conn.execute(sql, *args, **kwargs)
+
+    monkeypatch.setattr(client.store, "_conn", _Flaky())
+    with pytest.raises(RuntimeError):
+        client.store.reserve_with_admission(
+            reservation_id="resv-rolled-back-00000001",
+            root_frame_id=client.frame_id,
+            annotation_ids=[annotation_id],
+        )
+    monkeypatch.undo()
+
+    assert calls["n"] == 1
+    assert _status(client, annotation_id) == "open", "a pin was stranded"
+    assert client.store.get_admission("resv-rolled-back-00000001") is None
+
+
+def test_a_generated_admission_id_carries_full_entropy(client):
+    """A truncated id collides across sessions and restarts, and what it keys
+    is a claim on somebody's unpublished comment. Asserted on the width of the
+    random part rather than by drawing samples, which measures nothing."""
+    import re as _re
+
+    annotation_id = _pin(client)
+    _code, body = client.message("go", annotation_ids=[annotation_id], wait=False)
+    generated = body["annotation_reservation_id"]
+
+    random_part = generated.split("resv-", 1)[-1]
+    assert _re.fullmatch(r"[0-9a-f]{32}", random_part), generated
+    # 32 hex characters is 128 bits; the previous 16 was 64.
+    assert len(random_part) * 4 == 128
 
 
 def test_a_finalize_interleaved_by_another_connection_is_still_all_or_none(client):
@@ -1059,3 +1182,279 @@ def test_a_finalize_interleaved_by_another_connection_is_still_all_or_none(clien
         )
     finally:
         other.close()
+
+
+def test_the_reconcile_route_answers_a_client_whose_answer_was_lost(client):
+    """Driven through the real Handler, which is the surface a reloaded
+    browser actually reaches."""
+    annotation_id = _pin(client)
+    _code, body = client.message("go", annotation_ids=[annotation_id], wait=False)
+    reservation = body["annotation_reservation_id"]
+
+    status, payload = client.post_method(
+        "GET", f"/frames/{client.frame_id}/admissions/{reservation}", {}
+    )
+    assert status == 200, (status, payload)
+    assert payload["state"] == "sent"
+    assert payload["annotations"] == [annotation_id]
+    assert payload["request_id"] == body["request_id"]
+
+
+def test_the_reconcile_route_is_scoped_to_the_frame(client):
+    annotation_id = _pin(client)
+    _code, body = client.message("go", annotation_ids=[annotation_id], wait=False)
+    other = client.store.new_frame(kind="turn", project_id="p")
+
+    status, _payload = client.post_method(
+        "GET",
+        f"/frames/{other}/admissions/{body['annotation_reservation_id']}",
+        {},
+    )
+    assert status == 404, status
+
+
+def test_the_public_routes_refuse_a_held_pin_over_http(client):
+    """The 409 as a client sees it, not as the repository returns it."""
+    annotation_id = _pin(client)
+    client.store.reserve_annotations(
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+        reservation_id="resv-http",
+    )
+
+    status, body = client.post(f"/annotations/{annotation_id}", {"body": "edit"})
+    assert status == 409, (status, body)
+    assert body.get("code") == "annotation_reserved"
+
+    status, _ = client.post_method("DELETE", f"/annotations/{annotation_id}", {})
+    assert status == 409, status
+    assert client.store.get_annotation(annotation_id) is not None
+
+
+def test_an_unknown_status_is_a_client_error_not_a_crash(client):
+    annotation_id = _pin(client)
+    status, body = client.post(f"/annotations/{annotation_id}", {"status": "banana"})
+    assert status == 400, (status, body)
+    assert body.get("code") == "invalid_status"
+
+
+def test_a_client_supplied_admission_id_survives_a_lost_response(client):
+    """The case the whole mechanism exists for, end to end.
+
+    The server accepts the turn; the client never sees the answer. Because the
+    id was generated and stored *before* dispatch, a reloaded page can ask what
+    happened -- without resending the turn and without reopening pins a running
+    turn is already carrying.
+    """
+    annotation_id = _pin(client)
+    client_id = "resv-" + "b7" * 16  # what the browser stores before dispatch
+
+    status, _body = client.message(
+        "go",
+        annotation_ids=[annotation_id],
+        annotation_reservation_id=client_id,
+        wait=False,
+    )
+    assert status == 202
+    # The response is now discarded, as if the socket died.
+
+    reconciled_status, record = client.post_method(
+        "GET", f"/frames/{client.frame_id}/admissions/{client_id}", {}
+    )
+    assert reconciled_status == 200, (reconciled_status, record)
+    assert record["state"] == "sent"
+    assert record["annotations"] == [annotation_id]
+    assert _status(client, annotation_id) == "sent"
+
+
+def test_a_replayed_admission_id_is_refused(client):
+    """A duplicate is either a replay or a collision, and both must lose."""
+    first = _pin(client, body="one")
+    second = _pin(client, body="two")
+    client_id = "resv-" + "c3" * 16
+
+    status, _ = client.message(
+        "first", annotation_ids=[first], annotation_reservation_id=client_id, wait=False
+    )
+    assert status == 202
+
+    status, body = client.message(
+        "second",
+        annotation_ids=[second],
+        annotation_reservation_id=client_id,
+        wait=False,
+    )
+    assert status == 409, (status, body)
+    assert body.get("code") == "admission_replayed"
+    # The replay changed nothing.
+    assert _status(client, second) == "open"
+    assert client.store.get_admission(client_id)["annotation_ids"] == [first]
+
+
+@pytest.mark.parametrize("bad", ["short", "resv-" + "!" * 30, 17, "", "x" * 200])
+def test_a_malformed_admission_id_is_a_client_error(client, bad):
+    annotation_id = _pin(client)
+    status, body = client.message(
+        "go", annotation_ids=[annotation_id], annotation_reservation_id=bad, wait=False
+    )
+    assert status == 400, (status, body)
+    assert body.get("code") == "invalid_reservation_id"
+    assert _status(client, annotation_id) == "open"
+
+
+def test_a_real_package_roundtrip_normalises_a_mid_flight_pin(client, tmp_path):
+    """The actual ZIP, through the service the route uses.
+
+    Calling `package_annotation` directly proves the rule and not the wiring. A
+    package built while a turn holds a pin must import into a session where
+    that pin is the user's again -- and it must import *at all*, which it would
+    not if `reserved` reached the public status whitelist on the way back in.
+    """
+    import hashlib
+
+    service = client.runner.session_domain.packages
+    # A real file in the session workspace: an artifact with no bytes is not
+    # exportable, and an annotation on a dropped artifact is dropped with it --
+    # so without this the assertion below would pass on an empty package.
+    workspace = Path(client.runner.workspace_for(client.frame_id))
+    workspace.mkdir(parents=True, exist_ok=True)
+    payload = b"\x89PNG\r\n\x1a\n"
+    (workspace / "plot.png").write_bytes(payload)
+    artifact = client.store.save_artifact(
+        path=str(workspace / "plot.png"),
+        filename="plot.png",
+        content_type="image/png",
+        size_bytes=len(payload),
+        checksum=hashlib.sha256(payload).hexdigest(),
+        root_frame_id=client.frame_id,
+        project_id=client.project_id,
+    )
+    annotation = client.store.add_annotation(
+        root_frame_id=client.frame_id,
+        artifact_id=artifact["artifact_id"],
+        artifact_name="plot.png",
+        rel_x=0.5,
+        rel_y=0.5,
+        body="held while packaging",
+    )
+    claimed, _rows = client.store.reserve_with_admission(
+        reservation_id="resv-packaged-roundtrip-01",
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation["annotation_id"]],
+    )
+    assert claimed
+    assert _status(client, annotation["annotation_id"]) == "reserved"
+
+    exported = service.export(client.frame_id)
+    data = exported["data"]
+    assert isinstance(data, bytes) and data[:2] == b"PK", exported
+
+    imported = service.import_bytes(data)
+    new_root = (
+        imported.get("root_frame_id") or imported.get("frame_id")
+        if isinstance(imported, dict)
+        else imported
+    )
+    assert new_root, imported
+    restored = client.store.list_annotations(new_root)
+    assert restored, "the packaged pin did not import"
+    assert all(row["status"] == "open" for row in restored), restored
+    assert all(row["reservation_id"] is None for row in restored), restored
+
+
+def test_startup_releases_pins_a_dead_process_left_held(tmp_path):
+    """Recovery has to run, not merely exist.
+
+    A `Store` method nothing calls is a comment. This drives the real runner
+    constructor -- the path a daemon boot takes -- against a database that
+    already contains a stranded reservation.
+    """
+    first = _Client(tmp_path)
+    frame = first.frame_id
+    annotation_id = first.store.add_annotation(
+        root_frame_id=frame,
+        artifact_id="a-1",
+        artifact_name="p.png",
+        rel_x=0.5,
+        rel_y=0.5,
+        body="held when the process died",
+    )["annotation_id"]
+    claimed, _rows = first.store.reserve_with_admission(
+        reservation_id="resv-stranded-by-a-crash01",
+        root_frame_id=frame,
+        annotation_ids=[annotation_id],
+    )
+    assert claimed
+    assert first.store.get_annotation(annotation_id)["status"] == "reserved"
+    first.runner.close()
+
+    # A fresh daemon over the same data directory: the boot path, not a helper.
+    revived = gateway_mod.SessionRunner(first.cfg, _Hub(), start_idle_sweeper=True)
+    try:
+        row = revived.store.get_annotation(annotation_id)
+        assert row["status"] == "open", "startup left the pin stranded"
+        assert row["reservation_id"] is None
+        assert (
+            revived.store.get_admission("resv-stranded-by-a-crash01")["state"]
+            == "released"
+        )
+    finally:
+        revived.close()
+
+
+def test_a_claim_that_got_nothing_leaves_no_live_ledger_row(client):
+    """The concurrent loser is the ordinary way to reach this.
+
+    A claim that got nothing is not a live reservation. Recorded `reserved`, it
+    is a permanent row that startup recovery keeps finding and a reconcile
+    keeps reporting as in-flight -- for pins this request never held.
+    """
+    annotation_id = _pin(client)
+    client.store.reserve_with_admission(
+        reservation_id="resv-winner-of-the-race01",
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+    )
+    ok, claimed = client.store.reserve_with_admission(
+        reservation_id="resv-loser-of-the-race001",
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+    )
+    assert ok and claimed == []
+
+    record = client.store.get_admission("resv-loser-of-the-race001")
+    assert record["state"] == "released", record
+    assert record["annotation_ids"] == []
+    # ...and a reconcile of it does not claim anything is in flight.
+    reconciled = client.runner.reconcile_admission(
+        client.frame_id, "resv-loser-of-the-race001"
+    )
+    assert reconciled["state"] == "released"
+
+
+def test_a_reconcile_believes_the_pins_over_the_ledger(client, monkeypatch):
+    """The ledger records intent and is written by the request that can fail.
+
+    An update fault after the consume leaves it saying `reserved` while the
+    pins are already `sent` -- and a client asking "what happened" would be
+    told the opposite of the truth.
+    """
+    annotation_id = _pin(client)
+    client.store.reserve_with_admission(
+        reservation_id="resv-ledger-lies-000001",
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+    )
+    client.store.finalize_annotations_sent(
+        "resv-ledger-lies-000001",
+        root_frame_id=client.frame_id,
+        expected_ids=[annotation_id],
+    )
+    # The ledger never got its update.
+    assert client.store.get_admission("resv-ledger-lies-000001")["state"] == "reserved"
+
+    reconciled = client.runner.reconcile_admission(
+        client.frame_id, "resv-ledger-lies-000001"
+    )
+    assert reconciled["state"] == "sent", reconciled
+    assert reconciled["state_from_ledger"] == "reserved"
