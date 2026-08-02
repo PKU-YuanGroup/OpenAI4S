@@ -4,6 +4,7 @@ import importlib
 import json
 import math
 import sys
+import textwrap
 
 import pytest
 
@@ -20,6 +21,18 @@ def kernel():
 def workflow():
     sys.path.insert(0, str(get_config().skills_dir))
     return importlib.import_module("retrosynthesis_planning.workflow")
+
+
+@pytest.fixture(scope="module")
+def worker():
+    sys.path.insert(0, str(get_config().skills_dir))
+    return importlib.import_module("retrosynthesis_planning.syntheseus_worker")
+
+
+@pytest.fixture(scope="module")
+def backends():
+    sys.path.insert(0, str(get_config().skills_dir))
+    return importlib.import_module("retrosynthesis_planning.external_backends")
 
 
 def _direct_purchase_route(*, rank=1, score=1.0, stock=True):
@@ -421,3 +434,140 @@ def test_structural_audit_reports_missing_precursors_without_external_services(
         issue["code"] == "reaction_without_precursors" for issue in audit["issues"]
     )
     assert "does not validate reaction feasibility" in audit["disclaimer"]
+
+
+def test_extra_args_precede_variadic_switches_so_values_are_not_absorbed(workflow):
+    command = workflow.build_aizynth_search_command(
+        "CCO",
+        "config.yml",
+        search=workflow.AiZynthSearchSpec(
+            post_processing=("my.post",),
+            extra_args=("--route_distance_model", "distance.ckpt"),
+        ),
+    )
+
+    # Emitted after --post_processing, "distance.ckpt" would have been parsed as
+    # a second post-processing module, because --post_processing is variadic.
+    assert command.index("--route_distance_model") < command.index("--post_processing")
+    assert command[command.index("--post_processing") + 1 :] == ["my.post"]
+
+
+@pytest.mark.parametrize(
+    "extra_args,match",
+    [
+        (("--config", "other.yml"), "managed switch"),
+        (("--smiles", "CCC"), "managed switch"),
+        (("--output=/tmp/elsewhere.json",), "managed switch"),
+        (("distance.ckpt",), "must start with a switch"),
+    ],
+)
+def test_extra_args_reject_managed_switches_and_leading_bare_values(
+    workflow, extra_args, match
+):
+    with pytest.raises(ValueError, match=match):
+        workflow.AiZynthSearchSpec(extra_args=extra_args)
+
+
+def test_worker_metadata_redacts_paths_under_unrecognized_keys(worker):
+    safe = worker._json_safe(
+        {
+            "checkpoint_path": "/opt/ckpt",
+            "model_dir": "/home/chemist/models",
+            "cache_dir": "~/.cache/models",
+            "weights_file": "C:\\models\\w.pt",
+            "home": "/home/chemist",
+            "resource": "/home/chemist/secret/w.pt",
+            "candidates": ["/home/chemist/a.pt", "CCO"],
+            "probability": 0.7,
+            "direction": "retro",
+            "root_atom": 3,
+        }
+    )
+
+    # Keys that name a filesystem location are dropped outright.
+    assert not {
+        "checkpoint_path",
+        "model_dir",
+        "cache_dir",
+        "weights_file",
+        "home",
+    } & set(safe)
+    # A path under a key that names nothing in particular is masked by value.
+    assert safe["resource"] == worker.REDACTED_PATH
+    assert safe["candidates"] == [worker.REDACTED_PATH, "CCO"]
+    # Ordinary chemistry metadata survives; "direction" is not a directory.
+    assert safe["probability"] == 0.7
+    assert safe["direction"] == "retro"
+    assert safe["root_atom"] == 3
+
+
+def test_worker_response_survives_native_stdout_writes(backends, worker, tmp_path):
+    """A model library writing to fd 1 must not corrupt the JSON response.
+
+    ``contextlib.redirect_stdout`` cannot see this write, so the worker swaps
+    the descriptor itself before handling a request.
+    """
+    script = tmp_path / "noisy_worker.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            import os
+            import sys
+            import types
+
+            sys.path.insert(0, {str(get_config().skills_dir)!r})
+
+
+            class FakeMolecule:
+                def __init__(self, smiles):
+                    self.smiles = smiles
+
+
+            class FakePrediction:
+                reactants_str = "CCO.N"
+                reaction_smiles = "CCO.N>>CCON"
+                metadata = {{"probability": 0.7}}
+
+
+            class NoisyModel:
+                def __init__(self, **kwargs):
+                    os.write(1, b"CUDA init: found 1 device\\n")
+
+                def __call__(self, molecules, num_results):
+                    os.write(1, b"[inference] running 1 batch\\n")
+                    print("python-level chatter")
+                    return [[FakePrediction()]]
+
+
+            syntheseus = types.ModuleType("syntheseus")
+            syntheseus.Molecule = FakeMolecule
+            retrochimera = types.ModuleType("retrochimera")
+            retrochimera.RetroChimeraModel = NoisyModel
+            sys.modules["syntheseus"] = syntheseus
+            sys.modules["retrochimera"] = retrochimera
+
+            from retrosynthesis_planning.syntheseus_worker import main
+
+            raise SystemExit(main())
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    backend = backends.SubprocessRetrosynthesisBackend([sys.executable, str(script)])
+    response = backend.run(
+        {
+            "schema_version": 1,
+            "request_id": "native-noise",
+            "operation": "single_step",
+            "target_smiles": "CCON",
+            "model": "RetroChimera",
+            "model_dir": "/synthetic/checkpoint",
+            "num_results": 1,
+            "allow_model_download": False,
+            "model_manifest": None,
+        }
+    )
+
+    assert response["ok"] is True
+    assert response["predictions"][0]["reactants_smiles"] == "CCO.N"

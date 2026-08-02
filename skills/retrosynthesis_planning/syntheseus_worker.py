@@ -6,7 +6,9 @@ import importlib
 import importlib.metadata
 import json
 import math
+import os
 import platform
+import re
 import sys
 import time
 from collections.abc import Mapping
@@ -14,6 +16,7 @@ from typing import Any
 
 WIRE_SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 1024 * 1024
+REDACTED_PATH = "<redacted-path>"
 SUPPORTED_MODELS = {
     "RetroChimera": ("retrochimera", "RetroChimeraModel"),
     "RetroChimeraEdit": ("retrochimera", "RetroChimeraEditModel"),
@@ -87,10 +90,42 @@ def _runtime_info() -> dict[str, Any]:
     }
 
 
+_PATH_LIKE_KEY = re.compile(
+    r"(?:^|_)(?:path|paths|dir|dirs|directory|directories|folder|folders"
+    r"|file|files|filename|filepath|cache|home)(?:$|_)",
+    re.IGNORECASE,
+)
+_PATH_LIKE_VALUE = re.compile(r"^(?:/|~[^/\\]*[/\\]|\\\\|[A-Za-z]:[\\/]|file://)")
+
+
+def _is_path_like_key(key: str) -> bool:
+    """Match key names that denote a filesystem location.
+
+    Matching is anchored on ``_`` boundaries rather than done as a substring
+    search: ``direction``, ``profile`` and ``root_atom`` are ordinary chemistry
+    metadata, and dropping them would lose real information.
+    """
+    return _PATH_LIKE_KEY.search(key) is not None
+
+
+def _is_path_like_value(value: str) -> bool:
+    """Match values shaped like an absolute filesystem path or ``file://`` URL.
+
+    Key names alone are not enough. A model wrapper is free to report a
+    checkpoint or cache location under any name it likes, so it is the value
+    shape that actually keeps a workstation path out of a published artifact.
+    A SMILES string never begins with any of these prefixes.
+    """
+    text = value.strip()
+    return bool(text) and _PATH_LIKE_VALUE.match(text) is not None
+
+
 def _json_safe(value: Any, *, depth: int = 0) -> Any:
     if depth > 5:
         return "<max-depth>"
-    if value is None or isinstance(value, (str, bool, int)):
+    if isinstance(value, str):
+        return REDACTED_PATH if _is_path_like_value(value) else value
+    if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else None
@@ -98,13 +133,14 @@ def _json_safe(value: Any, *, depth: int = 0) -> Any:
         result: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            if any(token in key_text.lower() for token in ("path", "directory")):
+            if _is_path_like_key(key_text):
                 continue
             result[key_text] = _json_safe(item, depth=depth + 1)
         return result
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_json_safe(item, depth=depth + 1) for item in value]
-    return str(value)[:500]
+    text = str(value)[:500]
+    return REDACTED_PATH if _is_path_like_value(text) else text
 
 
 def _score_from_metadata(
@@ -351,7 +387,47 @@ def _error_response(
     }
 
 
+def _reserve_protocol_stdout() -> int | None:
+    """Point fd 1 at stderr and return a private duplicate of the original.
+
+    ``contextlib.redirect_stdout`` only rebinds the ``sys.stdout`` object.
+    A native library that writes to descriptor 1 directly — PyTorch, DGL, CUDA
+    and RDKit all do — would still land inside the response and break the
+    one-JSON-object contract, with no way for the host to attribute the
+    failure. Swapping the descriptor itself is what ``kernel/worker.py`` does
+    with ``dup2`` and what ``kernel/r_worker.R`` does with shell redirection.
+
+    Returns ``None`` when the platform refuses the swap, in which case the
+    caller falls back to writing the response on the inherited stdout.
+    """
+    try:
+        sys.stdout.flush()
+    except (ValueError, OSError):
+        pass
+    try:
+        reserved = os.dup(1)
+        os.dup2(2, 1)
+    except (AttributeError, OSError):
+        return None
+    return reserved
+
+
+def _emit_response(response: Mapping[str, Any], *, reserved_fd: int | None) -> None:
+    """Write exactly one JSON object on the reserved protocol descriptor."""
+    payload = (json.dumps(response, sort_keys=True, ensure_ascii=True) + "\n").encode(
+        "utf-8"
+    )
+    if reserved_fd is None:
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
+        return
+    with os.fdopen(reserved_fd, "wb", closefd=True) as handle:
+        handle.write(payload)
+        handle.flush()
+
+
 def main() -> int:
+    reserved_fd = _reserve_protocol_stdout()
     raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
     if len(raw) > MAX_REQUEST_BYTES:
         response = _error_response(
@@ -361,7 +437,7 @@ def main() -> int:
             message="request exceeded 1 MiB",
             retryable=False,
         )
-        print(json.dumps(response, sort_keys=True))
+        _emit_response(response, reserved_fd=reserved_fd)
         return 0
     request_id = "unknown"
     operation = "unknown"
@@ -397,7 +473,7 @@ def main() -> int:
             message=f"{type(exc).__name__}: {str(exc)[:1500]}",
             retryable=False,
         )
-    print(json.dumps(response, sort_keys=True, ensure_ascii=True))
+    _emit_response(response, reserved_fd=reserved_fd)
     return 0
 
 

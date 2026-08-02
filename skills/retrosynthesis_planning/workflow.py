@@ -25,6 +25,27 @@ def _clean_names(values: Iterable[str], *, field_name: str) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
+#: Switches this class or ``build_aizynth_command`` already emits. Repeating one
+#: through ``extra_args`` would silently win under argparse's last-value-wins
+#: rule and rewrite a target, config or output path the caller believes it set.
+MANAGED_SWITCHES = frozenset(
+    {
+        "--config",
+        "--smiles",
+        "--output",
+        "--policy",
+        "--filter",
+        "--stocks",
+        "--cluster",
+        "--nproc",
+        "--checkpoint",
+        "--log_to_file",
+        "--post_processing",
+        "--pre_processing",
+    }
+)
+
+
 def _clean_args(values: Iterable[str]) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError("extra_args must be an iterable of strings, not a string")
@@ -35,6 +56,17 @@ def _clean_args(values: Iterable[str]) -> tuple[str, ...]:
         item = value.strip()
         if not item:
             raise ValueError("extra_args entries must not be empty")
+        switch = item.split("=", 1)[0]
+        if switch in MANAGED_SWITCHES:
+            raise ValueError(
+                f"extra_args must not repeat the managed switch {switch}; set it "
+                "through the corresponding AiZynthSearchSpec field"
+            )
+        if not cleaned and not item.startswith("-"):
+            raise ValueError(
+                "extra_args must start with a switch so its values cannot be "
+                "absorbed by a preceding option"
+            )
         cleaned.append(item)
     return tuple(cleaned)
 
@@ -53,7 +85,12 @@ class AiZynthSearchSpec:
     """Typed command-line options supported by ``aizynthcli``.
 
     Algorithm, depth, rewards and bond constraints remain in AiZynthFinder's
-    configuration file.  This class exposes only documented CLI switches.
+    configuration file.  Every field above ``extra_args`` maps to a documented
+    CLI switch.  ``extra_args`` is a deliberate escape hatch for switches this
+    class does not model; it may not repeat a managed switch and must begin
+    with one of its own, because ``--policy``, ``--filter``, ``--stocks`` and
+    ``--post_processing`` are variadic and would otherwise swallow a bare
+    value that followed them.
     """
 
     policies: tuple[str, ...] = field(default_factory=tuple)
@@ -103,8 +140,13 @@ class AiZynthSearchSpec:
                 raise ValueError("nproc must be at least 1")
 
     def to_cli_args(self) -> list[str]:
-        """Return validated ``aizynthcli`` arguments in deterministic order."""
-        args: list[str] = []
+        """Return validated ``aizynthcli`` arguments in deterministic order.
+
+        ``extra_args`` is emitted first so that the variadic switches below it
+        terminate it. Emitted last, a bare value at the end of ``extra_args``
+        would be parsed as one more ``--post_processing`` module.
+        """
+        args: list[str] = [*self.extra_args]
         if self.policies:
             args.extend(["--policy", *self.policies])
         if self.filters:
@@ -123,7 +165,6 @@ class AiZynthSearchSpec:
             args.extend(["--post_processing", *self.post_processing])
         if self.pre_processing:
             args.extend(["--pre_processing", self.pre_processing])
-        args.extend(self.extra_args)
         return args
 
 
@@ -173,6 +214,7 @@ def prepare_routes(
 
 __all__ = [
     "AiZynthSearchSpec",
+    "MANAGED_SWITCHES",
     "audit_route_structure",
     "audit_routes",
     "build_aizynth_search_command",

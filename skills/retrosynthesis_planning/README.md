@@ -46,6 +46,8 @@ audit = audit_routes(routes)
 
 `AiZynthSearchSpec` exposes the documented `aizynthcli` switches for policy, filter, stock, clustering, multiprocessing, checkpoints and pre/post-processing modules. Search algorithm, depth, rewards and bond constraints still belong in AiZynthFinder's `config.yml`; the wrapper does not silently rewrite that configuration.
 
+`extra_args` is the escape hatch for switches the class does not model. It is emitted ahead of the typed switches and must begin with a switch of its own, because `--policy`, `--filter`, `--stocks` and `--post_processing` are variadic and would otherwise absorb a bare value that followed them. It may not repeat a switch the wrapper already manages, so it cannot quietly rewrite the target, config or output path.
+
 `prepare_routes(...)` applies the existing ranking path, collapses identical route trees while retaining their original ranks, and then selects a diverse review set using reaction/product/precursor features. When a fixed dashboard size requires a similar route to be reintroduced, it is marked with `diversity_relaxed=True` rather than being presented as independent evidence.
 
 `audit_routes(...)` runs before LLM annotation. It reports missing trees, empty or invalid molecule SMILES, reactions without precursor children, duplicate precursors, missing reaction identity and — when RDKit is installed — simple product-versus-precursor elemental deficits. Every result carries an explicit disclaimer because these checks do not replace forward prediction, literature precedent or experimental review.
@@ -68,7 +70,7 @@ See [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) and [`MODEL_BACKENDS_zh.md`](MODEL_
 | [`route_review.py`](route_review.py) | Stable route signatures, duplicate provenance and diversity-aware route selection based on reaction, product, precursor and terminal-material features. |
 | [`structural_audit.py`](structural_audit.py) | Deterministic route-tree checks before LLM interpretation. It remains stdlib-only and adds RDKit parse/element checks only when RDKit is installed. |
 | [`external_backends.py`](external_backends.py) | Versioned external-model request/response validation, path-free model manifests, timeout and size enforcement, and the `SyntheseusBackend` subprocess adapter. |
-| [`syntheseus_worker.py`](syntheseus_worker.py) | The isolated optional-dependency worker for RetroChimera and supported Syntheseus model classes. It redirects model logs to stderr and emits one structured JSON response. |
+| [`syntheseus_worker.py`](syntheseus_worker.py) | The isolated optional-dependency worker for RetroChimera and supported Syntheseus model classes. It moves descriptor 1 onto stderr before handling a request — so native model output cannot corrupt the protocol — strips filesystem paths out of model metadata, and emits one structured JSON response. |
 | [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | English guide to isolated model installation, provenance manifests, usage, wire errors, scientific limits and offline replay verification. |
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | Chinese version of the external-model backend and trust guide. |
 

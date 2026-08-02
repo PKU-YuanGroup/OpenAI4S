@@ -34,7 +34,7 @@ RetroChimera or Syntheseus model environment
 schema validation, provenance checks and Harness replay
 ```
 
-Model logs are redirected to stderr. Stdout is reserved for one JSON object. The host never uses `shell=True`, applies request and response size limits, enforces a timeout, verifies the response `request_id`, and rejects unknown response fields.
+Stdout is reserved for one JSON object. Before it handles a request the worker moves descriptor 1 onto stderr and keeps a private duplicate for the response, so a native library that writes to stdout directly — PyTorch, DGL, CUDA and RDKit all do — cannot corrupt the protocol. Rebinding `sys.stdout` alone would not be enough, because those writes never pass through it. The host never uses `shell=True`, applies request and response size limits, enforces a timeout, verifies the response `request_id`, and rejects unknown response fields.
 
 ## Supported model classes
 
@@ -60,6 +60,8 @@ The safer production pattern is:
 5. pass both the local checkpoint directory and manifest to the adapter.
 
 The local `model_dir` is sent only to the isolated worker. It is not copied into the normalized result, dashboard, Harness tape or model manifest. This avoids leaking a workstation path into a public artifact.
+
+Model-reported metadata is filtered the same way before it leaves the worker. Keys naming a filesystem location are dropped, and any remaining value shaped like an absolute path or a `file://` URL is replaced with `<redacted-path>`. The value check is what carries the guarantee: a model wrapper may report a checkpoint or cache location under any key name it likes, so key names alone are not a boundary.
 
 ## Installation
 
@@ -130,7 +132,7 @@ The result preserves:
 - model name and runtime package versions;
 - ordered reactant proposals and reaction SMILES;
 - the original score field and score type when available;
-- model metadata that can be represented safely as JSON;
+- model metadata that can be represented as JSON, with filesystem paths removed;
 - the public model manifest and its fingerprint;
 - warnings when checkpoint provenance is incomplete;
 - a scientific disclaimer that prevents a model score being described as yield or success probability.

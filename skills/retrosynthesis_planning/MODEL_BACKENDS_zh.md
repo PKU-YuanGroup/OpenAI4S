@@ -34,7 +34,7 @@ RetroChimera 或 Syntheseus 模型环境
 schema 校验、provenance 检查与 Harness replay
 ```
 
-模型日志会重定向到 stderr，stdout 只允许输出一个 JSON 对象。Host 不使用 `shell=True`，限制请求和响应大小，设置超时，核对响应中的 `request_id`，并拒绝未知响应字段。
+stdout 只允许输出一个 JSON 对象。worker 在处理请求前会把文件描述符 1 重定向到 stderr，并保留一个私有副本用于写响应，因此直接写 stdout 的原生库（PyTorch、DGL、CUDA、RDKit 都会这样做）无法破坏协议。仅重绑 `sys.stdout` 是不够的，因为这些写入根本不经过它。Host 不使用 `shell=True`，限制请求和响应大小，设置超时，核对响应中的 `request_id`，并拒绝未知响应字段。
 
 ## 支持的模型类别
 
@@ -60,6 +60,8 @@ Adapter 将 `num_results` 明确限制在 10 以内。低排名预测不会被�
 5. 将本地 checkpoint 目录和 manifest 一起传给 adapter。
 
 本地 `model_dir` 只发送给隔离 worker，不会复制进规范化结果、dashboard、Harness tape 或 model manifest，从而避免把工作站路径泄漏到公开 Artifact。
+
+模型返回的 metadata 在离开 worker 前会经过同样的过滤：命名了文件系统位置的 key 会被整体丢弃，剩余的值若形如绝对路径或 `file://` URL，则替换为 `<redacted-path>`。真正提供保证的是对值的检查——模型 wrapper 可以用任意 key 名报告 checkpoint 或 cache 位置，所以仅靠 key 名不构成边界。
 
 ## 安装
 
@@ -130,7 +132,7 @@ result = backend.single_step(
 - 模型名与运行时包版本；
 - 按顺序排列的反应物候选和 reaction SMILES；
 - 可用时的原始 score 字段及 score type；
-- 可以安全表示为 JSON 的模型 metadata；
+- 可表示为 JSON、且已剔除文件系统路径的模型 metadata；
 - 公开 model manifest 及其 fingerprint；
 - checkpoint provenance 不完整时的 warning；
 - 防止把模型分数描述成产率或成功概率的科学免责声明。
