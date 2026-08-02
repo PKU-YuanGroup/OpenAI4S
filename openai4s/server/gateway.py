@@ -4892,13 +4892,17 @@ class SessionRunner:
                 self._exit_turn_scope(job.job_id)
                 reset_correlation_id(token)
 
-        t = threading.Thread(
-            target=carry_context(_target),
-            name=f"openai4s-turn-{root_frame_id}",
-            daemon=True,
-        )
-        job.thread = t
-        t.start()
+        try:
+            t = threading.Thread(
+                target=carry_context(_target),
+                name=f"openai4s-turn-{root_frame_id}",
+                daemon=True,
+            )
+            job.thread = t
+            t.start()
+        except BaseException as error:
+            self._abort_unstarted_job(job, ticket, error)
+            raise
         return job
 
     def submit_review(self, root_frame_id: str, project_id: str) -> MessageJob:
@@ -6744,6 +6748,12 @@ class SessionRunner:
             project_id=project_id,
             reason="plan approval",
             claimed_plan_id=claimed_plan_id,
+            # What the route claimed *from*, which is where a never-started
+            # worker has to put it back. `cancelled_plan_status` is the
+            # cancellation terminal and is a different question: rolling an
+            # approved plan back to `paused` would strand it, because approve
+            # swaps against `draft`.
+            claimed_from_status="draft",
             # Approving a draft and then cancelling leaves work to finish, so
             # the plan is paused rather than back to `draft`: the steps it has
             # already run are real, and resume is the operation that continues
@@ -6787,6 +6797,7 @@ class SessionRunner:
             project_id=project_id,
             reason="plan resume",
             claimed_plan_id=claimed_plan_id,
+            claimed_from_status="paused",
             cancelled_plan_status="paused",
         )
 
@@ -7030,6 +7041,42 @@ class SessionRunner:
             metadata={"failure": identity},
         )
 
+    def _abort_unstarted_job(
+        self, job, ticket, error, *, claimed_plan_id=None, rollback_status=None
+    ) -> None:
+        """Undo everything a submission did once its worker refused to start.
+
+        Order matters. The ticket goes back first, because it is what holds the
+        session and blocks every later turn; then the job, because `is_running`
+        answers from `_jobs` and would otherwise report a running turn for a
+        session with nothing in it; then the plan row, back to the status its
+        own route can claim again.
+
+        Each step is independently guarded: a failure to undo one must not stop
+        the others, or a thread-start failure becomes a session that is wedged
+        in a *different* way.
+        """
+        for step, action in (
+            ("ticket", lambda: self.executions.abort_unstarted(ticket, error)),
+            ("job", lambda: self._jobs.pop(job.job_id, None)),
+            (
+                "plan",
+                lambda: self._settle_claimed_plan(
+                    job.root_frame_id, claimed_plan_id, rollback_status
+                )
+                if claimed_plan_id and rollback_status
+                else None,
+            ),
+        ):
+            try:
+                action()
+            except Exception:  # noqa: BLE001 — every undo runs, whatever failed
+                print(
+                    f"openai4s: could not undo {step} for an unstarted worker",
+                    file=sys.stderr,
+                )
+                traceback.print_exc()
+
     def _spawn_job(
         self,
         root_frame_id: str,
@@ -7039,6 +7086,7 @@ class SessionRunner:
         reason: str = "plan turn",
         claimed_plan_id: str | None = None,
         cancelled_plan_status: str = "paused",
+        claimed_from_status: str | None = None,
     ) -> "MessageJob":
         """Run `fn` in a background daemon thread as a tracked MessageJob (shared
         machinery behind submit_message / plan approve / plan revise).
@@ -7193,13 +7241,29 @@ class SessionRunner:
                 self._exit_turn_scope(job.job_id)
                 reset_correlation_id(token)
 
-        t = threading.Thread(
-            target=carry_context(_target),
-            name=f"openai4s-plan-{root_frame_id}",
-            daemon=True,
-        )
-        job.thread = t
-        t.start()
+        # Constructed *and* started inside the guard. `Thread(...)` allocates,
+        # so it can fail too, and a failure there leaves exactly the same
+        # wreckage as a failure in `start()`.
+        try:
+            t = threading.Thread(
+                target=carry_context(_target),
+                name=f"openai4s-plan-{root_frame_id}",
+                daemon=True,
+            )
+            job.thread = t
+            t.start()
+        except BaseException as error:
+            self._abort_unstarted_job(
+                job,
+                ticket,
+                error,
+                claimed_plan_id=claimed_plan_id,
+                rollback_status=claimed_from_status,
+            )
+            # Re-raised, never swallowed into a 202: "accepted, it is running"
+            # is the one answer a caller cannot recover from here, because it
+            # will wait for a terminal event nobody will emit.
+            raise
         return job
 
     def run_repl(
@@ -7363,13 +7427,17 @@ class SessionRunner:
                 # around the cell threw, which is machinery detail.
                 job.finish(error=job.project(error, "web:repl"))
 
-        thread = threading.Thread(
-            target=carry_context(target),
-            name=f"openai4s-repl-{root_frame_id}",
-            daemon=True,
-        )
-        job.thread = thread
-        thread.start()
+        try:
+            thread = threading.Thread(
+                target=carry_context(target),
+                name=f"openai4s-repl-{root_frame_id}",
+                daemon=True,
+            )
+            job.thread = thread
+            thread.start()
+        except BaseException as error:
+            self._abort_unstarted_job(job, ticket, error)
+            raise
         return job
 
 

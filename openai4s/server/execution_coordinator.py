@@ -249,6 +249,39 @@ class WebExecutionCoordinator:
             binding.interrupt_lease = None
             return True
 
+    def abort_unstarted(
+        self, ticket: ExecutionTicket, error: BaseException | str
+    ) -> str:
+        """Release a ticket whose worker was never started.
+
+        Deliberately does **not** read ``ticket.state`` first. Two reasons, and
+        both are why the ordinary `cancel` is wrong here:
+
+        * reading and then acting is a race — the FIFO can admit this ticket
+          between the two, so the queued branch would no-op against a ticket
+          that is now active and the ticket would be held forever;
+        * `cancel`'s RUNNING branch calls `request_interrupt` and signals the
+          binding, which asks the runtime to interrupt a thread that does not
+          exist.
+
+        So this asks the coordinator to do each exact thing in turn and lets it
+        arbitrate: cancel the exact queued ticket, and only if that reports
+        "not queued" fail the exact active one. Neither branch touches anybody
+        else's ticket. The maps are cleared by the terminal event both branches
+        emit, through the same path every other completion uses.
+
+        Returns which branch acted, for the caller's log and for tests.
+        """
+        cancelled = self._coordinator.cancel_queued(
+            session_id=ticket.session_id,
+            execution_id=ticket.execution_id,
+            owner=ticket.owner,
+            reason="worker thread was never started",
+        )
+        if cancelled:
+            return "cancelled_queued"
+        return "failed_active" if self._coordinator.fail(ticket, error) else "absent"
+
     def cancel(
         self,
         session_id: str,
