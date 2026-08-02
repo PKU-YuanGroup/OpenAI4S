@@ -5631,7 +5631,7 @@ async function send(text, opts) {
     const bytes = new Uint8Array(16);
     (self.crypto || window.crypto).getRandomValues(bytes);
     admissionId = "resv-" + [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
-    try { localStorage.setItem("openai4s.admission." + S.currentId, admissionId); } catch {}
+    rememberAdmission(S.currentId, admissionId);
     // Optimistically "pending", never "sent". The server decides whether a pin
     // was consumed, and it can answer `pending` -- accepted, but the consume
     // did not confirm -- in which case the comment is neither gone nor
@@ -5679,6 +5679,10 @@ async function send(text, opts) {
       if (accepted && accepted.annotation_reservation_id) {
         S.lastAnnotationReservation = accepted.annotation_reservation_id;
       }
+      // The answer arrived, so there is nothing left to reconcile. Removing it
+      // here rather than on the next reload keeps storage to what is genuinely
+      // outstanding -- and only a decided answer removes anything.
+      if (admissionId && admissionSettled(said)) forgetAdmission(S.currentId, admissionId);
       try { await loadAnnotations(S.currentId); } catch {}
       refreshAllStages(); updateAnnotBadge();
     }
@@ -5710,6 +5714,11 @@ async function send(text, opts) {
       // and reopening would offer the user a comment that is already on its
       // way. Ambiguity stays `pending` and is reconciled from the server.
       const refused = !!(e && Number.isInteger(e.status) && e.status >= 400);
+      // An authoritative synchronous refusal is an answer: the server released
+      // the reservation and said so, so there is nothing to ask it later. A
+      // transport failure with no status is the ambiguous case this mechanism
+      // exists for, and its id is kept.
+      if (admissionId && refused) forgetAdmission(S.currentId, admissionId);
       const reloaded = await loadAnnotations(S.currentId);
       if (!reloaded) setLocalAnnotationStatus(annIds, refused ? "open" : "pending");
       refreshAllStages(); updateAnnotBadge();
@@ -6376,25 +6385,104 @@ async function loadAnnotations(fid) {
    knows only that it sent something. Guessing is the one thing it must not do
    — "assume sent" silently loses the comments, "assume open" offers the user a
    comment a running turn is already carrying. So it asks. */
-async function reconcileLastAdmission(fid) {
-  let reservation = null;
-  try { reservation = localStorage.getItem("openai4s.admission." + fid); } catch {}
-  if (!reservation) return null;
-  let record;
+/* One localStorage key per outstanding admission, never a container.
+
+   Two designs were wrong before this one. A single scalar
+   (`openai4s.admission.<fid>`) meant a second send while the first was still
+   outstanding — the ordinary queued follow-up, and exactly the case where a
+   response goes missing — overwrote the only record of the first: not sent as
+   far as the tab knew, not open as far as the server knew, and with no id left
+   to ask about. Replacing it with a JSON list under the same key fixed the
+   overwrite within one tab and kept it between two: read-modify-write is not
+   atomic across tabs, so both read the same list and the later `setItem` drops
+   the other's id. That list also carried a cap, which silently evicted the
+   *oldest unresolved* id — and the queue accepts far more than the cap was set
+   to, so the eviction was reachable by ordinary use.
+
+   Independent keys have neither problem: a write touches one reservation, so
+   concurrent tabs cannot clobber each other, and there is nothing to bound.
+   Unresolved ids are removed when they are answered, never to make room. */
+const ADMISSION_LEGACY_KEY = fid => "openai4s.admission." + fid;
+const ADMISSION_PREFIX = fid => "openai4s.admission." + fid + ".";
+/* The scalar and the list a tab may still be holding when it reloads into this
+   build — which is precisely a client with something outstanding, so dropping
+   them would lose the comments this whole mechanism exists to recover. */
+function migrateAdmissions(fid) {
+  let raw = null;
+  try { raw = localStorage.getItem(ADMISSION_LEGACY_KEY(fid)); } catch { return; }
+  if (!raw) return;
+  let ids = [];
+  if (raw[0] === "[") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) ids = parsed.filter(x => typeof x === "string" && x);
+    } catch {}
+  } else ids = [raw];
+  for (const id of ids) rememberAdmission(fid, id);
+  try { localStorage.removeItem(ADMISSION_LEGACY_KEY(fid)); } catch {}
+}
+function outstandingAdmissions(fid) {
+  migrateAdmissions(fid);
+  const prefix = ADMISSION_PREFIX(fid);
+  const found = [];
   try {
-    record = await api(`/frames/${fid}/admissions/${encodeURIComponent(reservation)}`);
-  } catch (e) {
-    // 404 means this session has no such admission — nothing to reconcile, and
-    // the stored id is stale. Anything else leaves it for the next attempt.
-    if (e && e.status === 404) { try { localStorage.removeItem("openai4s.admission." + fid); } catch {} }
-    return null;
-  }
-  if (record && record.state && record.state !== "pending") {
-    try { localStorage.removeItem("openai4s.admission." + fid); } catch {}
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(prefix)) found.push([key.slice(prefix.length), localStorage.getItem(key)]);
+    }
+  } catch { return []; }
+  // Oldest first, by the stamp written at mint time. Ties break on the id:
+  // `Date.now()` has millisecond resolution and several sends can share one,
+  // in which case sorting on the stamp alone falls back to storage iteration
+  // order -- which is not defined, so "oldest first" would be a claim the code
+  // does not keep.
+  found.sort((a, b) => (Number(a[1]) || 0) - (Number(b[1]) || 0) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return found.map(pair => pair[0]).filter(Boolean);
+}
+function rememberAdmission(fid, id) {
+  // A single independent write. No read, so nothing to lose a race with.
+  try { localStorage.setItem(ADMISSION_PREFIX(fid) + id, String(Date.now())); } catch {}
+}
+function forgetAdmission(fid, id) {
+  try { localStorage.removeItem(ADMISSION_PREFIX(fid) + id); } catch {}
+}
+/* Whether an answer settles an admission. `sent`, `released` and `none` are
+   decided; `pending` is undecided by definition, and an unrecognised state is
+   not evidence of anything — dropping either throws away the only handle the
+   client has on those comments. */
+function admissionSettled(state) {
+  return state === "sent" || state === "released" || state === "none";
+}
+/* What happened to the pins this tab sent, when it never saw the answers.
+   A reload, a closed tab, a dropped connection: the 202s are gone and the
+   client knows only that it sent something. Guessing is the one thing it must
+   not do — "assume sent" silently loses the comments, "assume open" offers the
+   user a comment a running turn is already carrying. So it asks, about every
+   one of them, and keeps the ones that are still undecided. */
+async function reconcileLastAdmission(fid) {
+  const outstanding = outstandingAdmissions(fid);
+  if (!outstanding.length) return null;
+  const records = [];
+  for (const reservation of outstanding) {
+    let record = null;
+    try {
+      record = await api(`/frames/${fid}/admissions/${encodeURIComponent(reservation)}`);
+    } catch (e) {
+      // 404 means this session has no such admission — nothing to reconcile,
+      // and the stored id is stale. Anything else (offline, 5xx) leaves it for
+      // the next attempt rather than dropping the only handle on the comments.
+      if (e && e.status === 404) forgetAdmission(fid, reservation);
+      continue;
+    }
+    records.push(record);
+    // Only a decided outcome is forgotten.
+    if (admissionSettled(record && record.state)) forgetAdmission(fid, reservation);
   }
   await loadAnnotations(fid);
   refreshAllStages(); updateAnnotBadge();
-  return record;
+  // The most recent decided record, for callers that want one answer; every
+  // record was acted on above regardless.
+  return records.length ? records[records.length - 1] : null;
 }
 /* Render an image the user can pin comments onto, with zoom + pan. Used by the
    dock viewer AND the fullscreen modal. Zoom is WIDTH-BASED (the image element

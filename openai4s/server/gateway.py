@@ -412,6 +412,14 @@ MAX_SOURCE_IMAGE_BYTES = 64 * 1024 * 1024
 #: sessions or restarts, and narrow enough to be safe as a key.
 _CLIENT_RESERVATION = re.compile(r"[A-Za-z0-9_-]{24,96}")
 
+# Written in the same transaction as the pins they describe, so they are
+# evidence rather than a cached guess, and reconciliation does not re-derive
+# them from rows that have since moved on.
+_TERMINAL_ADMISSION_STATES = frozenset({"sent", "released"})
+# A pin that has been sent, and everything a review action can do to it
+# afterwards. All of them mean the same thing to a lost 202: consumed.
+_CONSUMED_ANNOTATION_STATES = frozenset({"sent", "resolved", "dismissed"})
+
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 #: The only paths a `?token=` may be traded for a cookie on -- an allowlist,
@@ -4954,9 +4962,22 @@ class SessionRunner:
         # are the authority -- they are what the turn actually consumed -- so
         # the state is computed from them, and the ledger supplies correlation.
         ids = list(record["annotation_ids"] or [])
-        present = [row for row in (self.store.get_annotation(a) for a in ids) if row]
         state = record["state"]
-        if ids:
+        if state not in _TERMINAL_ADMISSION_STATES and ids:
+            # Row-derived, and only here. The terminal states are written in
+            # the same transaction as the row change they describe, so they are
+            # evidence about what the *turn* did and stay true afterwards: a
+            # pin that was sent and is later resolved, dismissed or deleted
+            # does not un-send the message it went out on. Deriving `sent` from
+            # `status == 'sent'` reported exactly that as `released`, telling a
+            # client its comments were never taken when the model had already
+            # answered them.
+            #
+            # `reserved` and `pending` are the states a fault can leave stale,
+            # and there the rows really are the authority.
+            present = [
+                row for row in (self.store.get_annotation(a) for a in ids) if row
+            ]
             if any(
                 row.get("reservation_id") == reservation_id
                 and row.get("status") == "reserved"
@@ -4965,10 +4986,14 @@ class SessionRunner:
                 state = "pending"
             elif not present:
                 state = "unknown"
-            elif all(row.get("status") == "sent" for row in present):
+            elif all(
+                row.get("status") in _CONSUMED_ANNOTATION_STATES for row in present
+            ):
                 state = "sent"
-            else:
+            elif all(row.get("status") == "open" for row in present):
                 state = "released"
+            else:
+                state = "unknown"
         return {
             "state_from_ledger": record["state"],
             "reservation_id": record["reservation_id"],
@@ -9610,12 +9635,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # only this request's reservation is released.
                     if reservation_id:
                         try:
+                            # One call: `release_annotations` stamps the
+                            # ledger inside the same transaction as the rows.
+                            # No `job_id` is written, and that absence is the
+                            # discriminator -- a refused request never had one.
                             store.release_annotations(reservation_id, root_frame_id=fid)
-                            store.update_admission(
-                                reservation_id,
-                                root_frame_id=fid,
-                                state="released",
-                            )
                         except Exception:  # noqa: BLE001
                             traceback.print_exc()
                     raise
@@ -9642,6 +9666,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             reservation_id,
                             expected_ids=[a["annotation_id"] for a in annos],
                             root_frame_id=fid,
+                            request_id=job.request_id,
+                            job_id=job.job_id,
                         ):
                             # The set moved underneath the reservation. Neither
                             # consumed nor free: say so rather than claim it.
@@ -9655,14 +9681,29 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         # claiming they were consumed.
                         annotations_state = "pending"
                         traceback.print_exc()
-                if reservation_id and annos:
+                if reservation_id:
+                    # Unconditional, and correlation-only when the transition
+                    # was already terminal.
+                    #
+                    # A turn that claimed nothing -- every pin filtered out, or
+                    # a concurrent loser -- is still work the server accepted,
+                    # and this was guarded on `annos`, so its ledger row kept
+                    # `request_id` and `job_id` NULL. That is the exact shape a
+                    # synchronous refusal leaves behind, so a client whose 202
+                    # was lost could not tell "accepted, nothing to consume"
+                    # from "never ran" -- and resending is the wrong answer to
+                    # one of them.
+                    #
+                    # `sent` and `released` are already written, in the same
+                    # transaction as the rows. Only the ambiguous outcome moves
+                    # state here.
                     try:
                         store.update_admission(
                             reservation_id,
                             root_frame_id=fid,
                             request_id=job.request_id,
                             job_id=job.job_id,
-                            state=annotations_state,
+                            state="pending" if annotations_state == "pending" else None,
                         )
                     except Exception:  # noqa: BLE001
                         traceback.print_exc()
@@ -10043,6 +10084,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # What a client asks after its 202 never arrived. Without this
                 # its only options are to resend (double work) or abandon the
                 # comments (silent loss).
+                # The frame first. A deleted session takes its pins and its
+                # ledger with it, but a client holding the old frame id and a
+                # reservation id would still have been answered 200 from
+                # whatever survived -- a session that no longer exists
+                # reporting on comments that no longer exist.
+                if store.get_frame(m.group(1)) is None:
+                    raise GatewayError(404, "no such session")
                 record = runner.reconcile_admission(m.group(1), m.group(2))
                 if record is None:
                     raise GatewayError(404, "no such admission")

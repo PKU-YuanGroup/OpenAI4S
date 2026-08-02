@@ -20,6 +20,8 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
+from openai4s.storage.annotations import settle_restored_annotation
+
 CHECKPOINT_STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS checkpoint_state_snapshots (
     checkpoint_id          TEXT PRIMARY KEY,
@@ -1054,6 +1056,7 @@ class CheckpointStateRepository:
             ).fetchone()
             if artifact is None or artifact["root_frame_id"] != root_frame_id:
                 raise ValueError("checkpoint annotation Artifact is unavailable")
+            settled = settle_restored_annotation(item)
             self._connection.execute(
                 # `version_id` and `checksum` travel. They were added by
                 # migration 12 because an annotation that names only the
@@ -1062,10 +1065,19 @@ class CheckpointStateRepository:
                 # `SELECT *`, so they were being read and then dropped here.
                 # Every restore silently unbound every pin in the session and
                 # put the "resolve to latest" behaviour back.
+                # `reservation_id` travels too, and `status` is normalised
+                # through the same rule import uses. A checkpoint taken
+                # mid-flight captures `reserved` plus a holder; the request
+                # that held it did not survive the restore, so writing the raw
+                # pair back produced a pin that is `reserved` with a holder no
+                # live request answers for -- and the earlier code wrote the
+                # status without the id, leaving `reserved` + NULL, which
+                # `recover_stranded_admissions` cannot even find because it
+                # matches on the holder. Unresolvable by any UI action.
                 "INSERT INTO annotations(annotation_id,root_frame_id,artifact_id,"
                 "artifact_name,rel_x,rel_y,number,body,status,created_at,"
-                "updated_at,version_id,checksum) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "updated_at,version_id,checksum,reservation_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     item["annotation_id"],
                     root_frame_id,
@@ -1075,11 +1087,12 @@ class CheckpointStateRepository:
                     float(item.get("rel_y") or 0),
                     int(item.get("number") or 0),
                     str(item.get("body") or ""),
-                    str(item.get("status") or "open"),
+                    str(settled.get("status") or "open"),
                     int(item.get("created_at") or 0),
                     int(item.get("updated_at") or item.get("created_at") or 0),
                     item.get("version_id"),
                     item.get("checksum"),
+                    settled.get("reservation_id"),
                 ),
             )
 

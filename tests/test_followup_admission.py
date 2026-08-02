@@ -1432,29 +1432,220 @@ def test_a_claim_that_got_nothing_leaves_no_live_ledger_row(client):
     assert reconciled["state"] == "released"
 
 
-def test_a_reconcile_believes_the_pins_over_the_ledger(client, monkeypatch):
-    """The ledger records intent and is written by the request that can fail.
+def test_the_consume_and_its_ledger_row_move_in_one_transaction(client):
+    """The gap this used to test no longer exists, so neither does the lie.
 
-    An update fault after the consume leaves it saying `reserved` while the
-    pins are already `sent` -- and a client asking "what happened" would be
-    told the opposite of the truth.
+    This test previously *constructed* the split -- finalise the pins, leave
+    the ledger saying `reserved` -- and asserted that reconciliation preferred
+    the rows. That was the right answer to the wrong design: the window was
+    real, and a caller landing in it got a truthful answer only because
+    something else happened to be readable. The two writes are now one
+    transaction, so the disagreement is not reachable through the API at all.
     """
     annotation_id = _pin(client)
     client.store.reserve_with_admission(
-        reservation_id="resv-ledger-lies-000001",
+        reservation_id="resv-atomic-consume-01",
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+    )
+    assert client.store.get_admission("resv-atomic-consume-01")["state"] == "reserved"
+
+    assert client.store.finalize_annotations_sent(
+        "resv-atomic-consume-01",
+        root_frame_id=client.frame_id,
+        expected_ids=[annotation_id],
+        request_id="req-atomic-1",
+        job_id="job-atomic-1",
+    )
+    ledger = client.store.get_admission("resv-atomic-consume-01")
+    assert ledger["state"] == "sent"
+    # Correlation rides the same commit, so an accepted turn is identifiable
+    # from the ledger alone.
+    assert ledger["request_id"] == "req-atomic-1"
+    assert ledger["job_id"] == "job-atomic-1"
+
+    reconciled = client.runner.reconcile_admission(
+        client.frame_id, "resv-atomic-consume-01"
+    )
+    assert reconciled["state"] == "sent", reconciled
+    assert reconciled["state_from_ledger"] == "sent"
+
+
+def test_a_send_stays_sent_after_the_pin_is_resolved(client):
+    """The state a review action used to erase.
+
+    `sent` means "this turn carried these comments", which is a fact about the
+    turn. Deriving it from `status == 'sent'` made it a fact about the pin
+    instead, so resolving or dismissing one afterwards -- an ordinary review
+    action, on a pin the model had already answered -- flipped the answer to
+    `released`, which tells a client its comments were never taken and the
+    right move is to send them again.
+    """
+    annotation_id = _pin(client)
+    client.store.reserve_with_admission(
+        reservation_id="resv-sent-then-resolved",
         root_frame_id=client.frame_id,
         annotation_ids=[annotation_id],
     )
     client.store.finalize_annotations_sent(
-        "resv-ledger-lies-000001",
+        "resv-sent-then-resolved",
         root_frame_id=client.frame_id,
         expected_ids=[annotation_id],
+        job_id="job-sent-1",
     )
-    # The ledger never got its update.
-    assert client.store.get_admission("resv-ledger-lies-000001")["state"] == "reserved"
+    for after in ("resolved", "dismissed"):
+        client.store.update_annotation(annotation_id, status=after)
+        reconciled = client.runner.reconcile_admission(
+            client.frame_id, "resv-sent-then-resolved"
+        )
+        assert reconciled["state"] == "sent", (after, reconciled)
 
+    # And when the pin is deleted outright, the evidence still stands.
+    client.store.delete_annotation(annotation_id)
     reconciled = client.runner.reconcile_admission(
-        client.frame_id, "resv-ledger-lies-000001"
+        client.frame_id, "resv-sent-then-resolved"
     )
     assert reconciled["state"] == "sent", reconciled
-    assert reconciled["state_from_ledger"] == "reserved"
+
+
+def test_a_release_and_its_ledger_row_move_in_one_transaction(client):
+    """The other half. A release that commits the rows and then fails to stamp
+    the ledger leaves `reserved` recorded against pins already back in the
+    composer -- an in-flight claim that does not exist."""
+    annotation_id = _pin(client)
+    client.store.reserve_with_admission(
+        reservation_id="resv-atomic-release-1",
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+    )
+    assert client.store.release_annotations(
+        "resv-atomic-release-1", root_frame_id=client.frame_id
+    )
+    assert client.store.get_admission("resv-atomic-release-1")["state"] == "released"
+    assert client.store.get_annotation(annotation_id)["status"] == "open"
+
+    reconciled = client.runner.reconcile_admission(
+        client.frame_id, "resv-atomic-release-1"
+    )
+    assert reconciled["state"] == "released", reconciled
+
+
+def test_an_accepted_turn_that_claimed_nothing_still_records_its_job(client):
+    """The shape a lost 202 has to tell apart from a refusal.
+
+    A turn whose pins all filtered out -- a stale id, a concurrent loser -- is
+    still work the server accepted and is running. Its ledger row kept
+    `request_id` and `job_id` NULL, which is exactly what a synchronous refusal
+    leaves behind, so the client could not tell "accepted, nothing to consume"
+    from "never ran". Resending is the wrong answer to one of those.
+    """
+    reservation = "resv-zero-claim-accepted-0001"
+    elsewhere = client.runner.create_session(client.project_id)
+    status, body = client.message(
+        "no pins of mine on this one",
+        wait=False,
+        # A real pin, in a session this frame does not own.
+        annotation_ids=[_pin_on(client.store, elsewhere)],
+        annotation_reservation_id=reservation,
+    )
+    assert status == 202, (status, body)
+
+    ledger = client.store.get_admission(reservation, root_frame_id=client.frame_id)
+    assert ledger["state"] == "released", ledger
+    assert ledger["annotation_ids"] == [], ledger
+    assert ledger["job_id"], "an accepted turn must be identifiable from the ledger"
+
+    reconciled = client.runner.reconcile_admission(client.frame_id, reservation)
+    assert reconciled["state"] == "released"
+    assert reconciled["job_id"] == ledger["job_id"]
+
+
+def test_a_refused_request_records_no_job_at_all(client):
+    """The other side of that discriminator, so the pair is a test.
+
+    A synchronous refusal releases the pins and writes no correlation. Same
+    terminal state as the zero-claim accept above; `job_id` is the only thing
+    that separates them, which is why the accept must always write one.
+    """
+    annotation_id = _pin(client)
+    reservation = "resv-refused-no-job-00001"
+    status, body = client.message(
+        "x" * (8 * 1024 * 1024),
+        wait=False,
+        annotation_ids=[annotation_id],
+        annotation_reservation_id=reservation,
+    )
+    assert status == 413, (status, body)
+
+    ledger = client.store.get_admission(reservation, root_frame_id=client.frame_id)
+    assert ledger["state"] == "released", ledger
+    assert ledger["job_id"] is None, ledger
+    assert ledger["request_id"] is None, ledger
+    assert client.store.get_annotation(annotation_id)["status"] == "open"
+
+
+def test_the_admission_route_refuses_a_session_that_no_longer_exists(client):
+    """404, not a report on a deleted session.
+
+    The route looked up the ledger and answered from it. A client holding an
+    old frame id and a reservation id -- which is exactly what a tab that was
+    open when the session was deleted holds -- got 200 and a correlation record
+    for comments that no longer exist. The frame is checked first, so the
+    answer does not depend on which table the cascade happened to reach.
+    """
+    annotation_id = _pin(client)
+    reservation = "resv-deleted-session-route"
+    client.store.reserve_with_admission(
+        reservation_id=reservation,
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+    )
+    # It answers while the session is alive, so the 404 below is about the
+    # deletion and not about the id being wrong.
+    status, _body = client.post_method(
+        "GET", f"/frames/{client.frame_id}/admissions/{reservation}", {}
+    )
+    assert status == 200, status
+
+    client.runner.delete_session(client.frame_id)
+
+    status, body = client.post_method(
+        "GET", f"/frames/{client.frame_id}/admissions/{reservation}", {}
+    )
+    assert status == 404, (status, body)
+
+
+def test_the_admission_route_does_not_lean_on_the_deletion_cascade(client):
+    """The state the frame check actually defends, constructed directly.
+
+    The test above passes on the cascade alone -- `delete_session` now removes
+    the ledger, so `reconcile_admission` finds nothing whatever the route
+    checks first. That makes it evidence about the cascade, not about the
+    route, and the two are separate answers to separate questions: the cascade
+    decides what is retained, the route decides what is served.
+
+    So: the ledger row is left in place and only the frame is removed, which is
+    what any future path that deletes a frame without running the aggregate
+    would leave behind. The route must refuse on the session being gone, not on
+    the row happening to be gone with it.
+    """
+    annotation_id = _pin(client)
+    reservation = "resv-ledger-outlives-frame"
+    client.store.reserve_with_admission(
+        reservation_id=reservation,
+        root_frame_id=client.frame_id,
+        annotation_ids=[annotation_id],
+    )
+    # Reaching past the facade on purpose: no public API produces this state,
+    # and the point is that the route does not depend on one that does.
+    client.store._conn.execute(
+        "DELETE FROM frames WHERE frame_id=?", (client.frame_id,)
+    )
+    client.store._conn.commit()
+    assert client.store.get_frame(client.frame_id) is None
+    assert client.store.get_admission(reservation) is not None, "ledger row must remain"
+
+    status, body = client.post_method(
+        "GET", f"/frames/{client.frame_id}/admissions/{reservation}", {}
+    )
+    assert status == 404, (status, body)

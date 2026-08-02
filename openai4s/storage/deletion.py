@@ -275,6 +275,19 @@ class SessionDeletionRepository:
             self._delete_counted(
                 deleted_rows, "annotations", " OR ".join(clauses), params
             )
+        if roots:
+            # The admission ledger goes with the pins it correlates. It was
+            # left behind: `delete_session` removed the frames and the
+            # annotations and kept every row naming their root, annotation,
+            # request and job ids -- the correlation record outliving
+            # everything it correlates. Root-scoped only; an admission belongs
+            # to the session that admitted it, never to an artifact.
+            self._delete_counted(
+                deleted_rows,
+                "annotation_admissions",
+                f"root_frame_id IN {self._marks(roots)}",
+                roots,
+            )
         if artifacts:
             self._delete_counted(
                 deleted_rows,

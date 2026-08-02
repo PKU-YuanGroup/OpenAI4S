@@ -459,3 +459,82 @@ def test_feedback_delete_escapes_like_metacharacters(tmp_path):
 
     assert store.get_setting("fb:f-percent%:vote") is None
     assert store.get_setting("fb:f-percentX:vote") == "down"
+
+
+def _admitted_pin(store, root, reservation):
+    """One reserved pin plus the ledger row that correlates it."""
+    annotation = store.add_annotation(
+        root_frame_id=root,
+        artifact_id="a-del",
+        artifact_name="p.png",
+        rel_x=0.5,
+        rel_y=0.5,
+        body="pin",
+    )
+    store.reserve_with_admission(
+        reservation_id=reservation,
+        root_frame_id=root,
+        annotation_ids=[annotation["annotation_id"]],
+    )
+    return annotation["annotation_id"]
+
+
+def test_deleting_a_session_takes_its_admission_ledger_with_it(tmp_path):
+    """The correlation record outliving everything it correlates.
+
+    `annotation_admissions` was not in the deletion aggregate. Deleting a
+    session removed its frames and its annotations and kept every ledger row
+    naming their root, annotation, request and job ids -- a record of what a
+    user commented on, in a session they deleted. Root-scoped, and only the
+    deleted root's.
+    """
+    cfg = Config(data_dir=tmp_path)
+    store = get_store(cfg.db_path)
+    store.create_project(project_id="science", name="Science")
+    deleted = store.new_frame(project_id="science", status="ready")
+    kept = store.new_frame(project_id="science", status="ready")
+    _admitted_pin(store, deleted, "resv-deleted-session-0001")
+    _admitted_pin(store, kept, "resv-kept-session-000001")
+
+    service = SessionDeletionService(
+        store,
+        data_dir=tmp_path,
+        cas=WorkspaceCAS(tmp_path / "workspace-cas"),
+        drop_runtime=lambda root, reason: None,
+        drop_resume_window=lambda root: None,
+    )
+    assert service.delete_session(deleted)["ok"] is True
+
+    assert store.get_admission("resv-deleted-session-0001") is None
+    assert store.get_admission("resv-kept-session-000001") is not None
+    store.close()
+
+
+def test_deleting_a_project_takes_every_admission_ledger_in_it(tmp_path):
+    """The project cascade reaches the same table by the same root scope, but
+    over a set of roots -- a separate code path in `_delete_aggregate_locked`
+    and so a separate assertion."""
+    cfg = Config(data_dir=tmp_path)
+    store = get_store(cfg.db_path)
+    store.create_project(project_id="doomed", name="Doomed")
+    store.create_project(project_id="survivor", name="Survivor")
+    first = store.new_frame(project_id="doomed", status="ready")
+    second = store.new_frame(project_id="doomed", status="ready")
+    elsewhere = store.new_frame(project_id="survivor", status="ready")
+    _admitted_pin(store, first, "resv-doomed-first-00001")
+    _admitted_pin(store, second, "resv-doomed-second-0001")
+    _admitted_pin(store, elsewhere, "resv-survivor-000000001")
+
+    service = SessionDeletionService(
+        store,
+        data_dir=tmp_path,
+        cas=WorkspaceCAS(tmp_path / "workspace-cas"),
+        drop_runtime=lambda root, reason: None,
+        drop_resume_window=lambda root: None,
+    )
+    assert service.delete_project("doomed")["ok"] is True
+
+    assert store.get_admission("resv-doomed-first-00001") is None
+    assert store.get_admission("resv-doomed-second-0001") is None
+    assert store.get_admission("resv-survivor-000000001") is not None
+    store.close()

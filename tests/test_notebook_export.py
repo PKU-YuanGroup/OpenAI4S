@@ -313,13 +313,14 @@ def test_markdown_says_exactly_how_many_inputs_it_did_not_list(tmp_path):
     assert f"v-{cap:012d}" not in text
 
 
-def _fork(store, root, *, branch_id):
+def _fork(store, root, *, branch_id, message_cursor=None):
     checkpoint = store.create_session_checkpoint(
         root_frame_id=root,
         branch_id=root,
         reason="fork base",
         workspace_tree_id="a" * 64,
         action_cursor=0,
+        message_cursor=message_cursor,
     )
     store.fork_session_branch(
         root_frame_id=root,
@@ -336,18 +337,43 @@ def test_a_fork_inherits_the_inputs_its_parent_was_given(tmp_path):
     _config, store = _real_store(tmp_path)
     root = store.new_frame(kind="turn", project_id="p")
     _turn_with_refs(store, root, "before the fork", [_ref("base.csv", "v-base0000001")])
-    branch = _fork(store, root, branch_id="branch-alt")
+
+    # The fork point is a real position in the conversation. Without a
+    # `message_cursor` the checkpoint has no position, so the projector cannot
+    # tell "before the fork" from "after it" -- every message lands on every
+    # branch, inheritance passes for the wrong reason, and isolation is never
+    # exercised at all.
+    before = store.list_messages(root, limit=None)
+    branch = _fork(store, root, branch_id="branch-alt", message_cursor=len(before))
+
+    # One turn on each side of the fork.
     _turn_with_refs(
-        store,
-        root,
-        "only on the fork",
-        [_ref("child.csv", "v-child000001")],
+        store, root, "only on the parent", [_ref("parent.csv", "v-parent00001")]
+    )
+    child = store.add_message(
+        root_frame_id=root,
+        role="user",
+        content="only on the child",
+        branch_id=branch,
+    )
+    child_id = child["message_id"] if isinstance(child, dict) else child
+    store.update_message_metadata(
+        child_id, {"artifact_refs": [_ref("child.csv", "v-child000001")]}
     )
 
     service = NotebookExportService(store)
-    inherited = service._referenced_artifacts(root, branch)
-    versions = {item["version_id"] for item in inherited}
-    assert "v-base0000001" in versions, inherited
+    inherited = {
+        item["version_id"] for item in service._referenced_artifacts(root, branch)
+    }
+    parent_side = {
+        item["version_id"] for item in service._referenced_artifacts(root, root)
+    }
+
+    assert "v-base0000001" in inherited, inherited
+    assert "v-child000001" in inherited, inherited
+    # Isolation, in both directions -- the half a cursorless fork cannot test.
+    assert "v-parent00001" not in inherited, inherited
+    assert "v-child000001" not in parent_side, parent_side
 
 
 def test_the_export_asks_for_the_active_branch(tmp_path):
@@ -377,3 +403,53 @@ def test_the_export_asks_for_the_active_branch(tmp_path):
     assert asked[0][2] is None
     assert "v-e2e00000001" in text
     assert SessionDomainService is not None
+
+
+def test_the_gateway_markdown_export_carries_the_inputs(tmp_path):
+    """Through `SessionDomainService.notebook_export`, which is what the route
+    calls -- including its `active_session_branch` lookup.
+
+    The earlier "E2E" spied on the store from a directly-constructed
+    `NotebookExportService`. That proves the service passes what it is given
+    and says nothing about whether the layer above passes the right branch, or
+    calls it at all.
+    """
+    from openai4s.server.session_domain import SessionDomainService
+
+    _config, store = _real_store(tmp_path)
+    root = store.new_frame(kind="turn", project_id="p")
+    _turn_with_refs(
+        store,
+        root,
+        "use @cohort.csv#v-gw0000000001",
+        [_ref("cohort.csv", "v-gw0000000001")],
+    )
+
+    domain = SessionDomainService.__new__(SessionDomainService)
+    domain.store = store
+    domain.notebooks = NotebookExportService(store)
+    exported = domain.notebook_export(root, language="markdown")
+
+    payload = exported.get("data") if isinstance(exported, dict) else exported
+    text = payload.decode("utf-8") if isinstance(payload, bytes) else str(payload)
+    assert "## Inputs" in text, text[:400]
+    assert "cohort.csv" in text
+    assert "v-gw0000000001" in text
+
+
+def test_a_reader_error_is_not_swallowed_into_the_paged_default(tmp_path):
+    """The deleted `except TypeError` would have caught this.
+
+    It was written to tolerate a store that will not take `branch_id`. It would
+    equally have caught a `TypeError` raised *inside* the reader and fallen
+    back to the paged default -- the same silent-partial failure the Inputs
+    section exists to avoid, in a shape that is harder to see. A reader that
+    breaks must break loudly.
+    """
+
+    class _Broken(_Store):
+        def list_branch_messages(self, root_frame_id, *, branch_id=None, limit=None):
+            raise TypeError("something inside the reader is wrong")
+
+    with pytest.raises(TypeError, match="inside the reader"):
+        NotebookExportService(_Broken()).markdown("root-1")

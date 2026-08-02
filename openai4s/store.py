@@ -3665,11 +3665,15 @@ class Store:
         *,
         expected_ids: list[str] | None = None,
         root_frame_id: str | None = None,
+        request_id: str | None = None,
+        job_id: str | None = None,
     ) -> bool:
         return self._annotations.finalize_sent(
             reservation_id,
             expected_ids=expected_ids,
             root_frame_id=root_frame_id,
+            request_id=request_id,
+            job_id=job_id,
         )
 
     def annotation_is_reserved(self, annotation_id: str) -> bool:

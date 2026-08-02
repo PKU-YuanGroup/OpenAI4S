@@ -560,3 +560,88 @@ def test_quarantined_import_rejects_corruption_without_partial_state(tmp_path):
         store.validate_checkpoint_state_import(scoped)
     assert store._conn.total_changes == before
     store.close()
+
+
+def test_a_checkpoint_taken_mid_send_restores_a_pin_the_user_can_act_on(tmp_path):
+    """The state a real restore used to leave behind, through the real service.
+
+    A checkpoint can be taken while a turn is in flight, so the snapshot
+    captures a pin that is `reserved` with a live holder. The request that held
+    it does not survive the restore. Writing the raw pair back gives a pin no
+    UI can free; writing the status without the holder -- which is what this
+    did, because `reservation_id` was simply not in the INSERT -- gives
+    `reserved` with a NULL holder, which is worse: `recover_stranded_admissions`
+    matches on the holder, so the one pass built to clean this up cannot even
+    see it. The comment is unreachable for the life of the session.
+    """
+    _database, workspace, store, root, service = _session(tmp_path)
+    annotation = _annotation(store, root, workspace, "mid-flight comment")
+    annotation_id = annotation["annotation_id"]
+
+    admitted, claimed = store.reserve_with_admission(
+        reservation_id="resv-midflight-checkpoint",
+        root_frame_id=root,
+        annotation_ids=[annotation_id],
+    )
+    assert admitted and len(claimed) == 1
+    assert store.get_annotation(annotation_id)["status"] == "reserved"
+
+    checkpoint = service.create_checkpoint(root, reason="taken mid-flight")
+    # The snapshot is audit state and keeps the holder -- that is the record of
+    # what was in flight when the checkpoint was taken.
+    snapshot = store.get_checkpoint_state_snapshot(
+        checkpoint["checkpoint_id"], include_state=True
+    )
+    captured = snapshot["state"]["review"]["annotations"][0]
+    assert captured["status"] == "reserved"
+    assert captured["reservation_id"] == "resv-midflight-checkpoint"
+
+    store.restore_checkpoint_state_snapshot(
+        checkpoint_id=checkpoint["checkpoint_id"],
+        root_frame_id=root,
+        project_id="science",
+    )
+
+    restored = store.get_annotation(annotation_id)
+    assert restored["status"] == "open", restored
+    assert restored["reservation_id"] is None, restored
+    # And it is a pin the composer offers, which is the whole point.
+    assert annotation_id in {
+        row["annotation_id"]
+        for row in store.list_annotations(root)
+        if row["status"] == "open"
+    }
+    store.close()
+
+
+def test_an_imported_checkpoint_activates_without_a_held_pin(tmp_path):
+    """The other entry point. Branch activation restores inside its own atomic
+    publication transaction rather than through the narrow repair facade, and a
+    quarantined import remaps every identity -- so it is a separate path to the
+    same INSERT, and it would have carried the same held pin in."""
+    _database, workspace, store, root, service = _session(tmp_path)
+    annotation = _annotation(store, root, workspace, "held when captured")
+    store.reserve_with_admission(
+        reservation_id="resv-import-activation-1",
+        root_frame_id=root,
+        annotation_ids=[annotation["annotation_id"]],
+    )
+    checkpoint = service.create_checkpoint(root, reason="held")
+
+    branch = store.fork_session_branch(
+        root_frame_id=root,
+        from_checkpoint_id=checkpoint["checkpoint_id"],
+        name="from a held checkpoint",
+    )
+    store.activate_session_branch_checkpoint(
+        root_frame_id=root,
+        branch_id=branch["branch_id"],
+        checkpoint_id=checkpoint["checkpoint_id"],
+    )
+
+    rows = store.list_annotations(root)
+    assert rows, "activation restored no annotations at all"
+    for row in rows:
+        assert row["status"] != "reserved", row
+        assert row["reservation_id"] is None, row
+    store.close()

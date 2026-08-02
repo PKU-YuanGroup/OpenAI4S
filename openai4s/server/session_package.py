@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from openai4s.storage.annotations import settle_restored_annotation
 from openai4s.storage.memories import MemoryLimitError
 from openai4s.storage.plans import PLAN_STATUSES
 from openai4s.storage.snapshots import WorkspaceCAS
@@ -166,11 +167,7 @@ def restore_annotation(row: Mapping[str, Any]) -> dict[str, Any]:
     taken mid-flight. The request that held it did not survive the gap, so the
     only safe state is the one a user can act on.
     """
-    restored = dict(row)
-    if restored.get("status") == "reserved":
-        restored["status"] = "open"
-    restored["reservation_id"] = None
-    return restored
+    return settle_restored_annotation(row)
 
 
 class SessionPackageError(ValueError):

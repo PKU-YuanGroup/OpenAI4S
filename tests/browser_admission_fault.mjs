@@ -84,7 +84,7 @@ try {
     dispatched += 1;
     await route.fetch();
     storedBeforeAnswer = await page.evaluate(
-      (fid) => localStorage.getItem("openai4s.admission." + fid),
+      (fid) => outstandingAdmissions(fid),
       frameId,
     );
     await route.abort("connectionfailed");
@@ -116,9 +116,9 @@ try {
 
   note(dispatched === 1, "the turn was dispatched exactly once", `dispatched=${dispatched}`);
   note(
-    !!storedBeforeAnswer,
+    Array.isArray(storedBeforeAnswer) && storedBeforeAnswer.length === 1,
     "the admission id was durable BEFORE the answer came back",
-    String(storedBeforeAnswer),
+    JSON.stringify(storedBeforeAnswer),
   );
 
   // --- reload: the page must reconcile, not resend and not reopen ----------
@@ -159,11 +159,8 @@ try {
     JSON.stringify(reconcileBody),
   );
 
-  const cleared = await page.evaluate(
-    (fid) => localStorage.getItem("openai4s.admission." + fid),
-    frameId,
-  );
-  note(cleared === null, "a settled admission is cleared from storage", String(cleared));
+  const cleared = await page.evaluate((fid) => outstandingAdmissions(fid), frameId);
+  note(cleared.length === 0, "a settled admission is cleared from storage", JSON.stringify(cleared));
 
   const annotations = (await api(`/api/v1/frames/${frameId}/annotations`)).body;
   const row = ((annotations && annotations.annotations) || []).find(
@@ -204,6 +201,213 @@ try {
     secondRow && secondRow.status === "open",
     "a synchronous refusal leaves the pin exactly open",
     secondRow ? secondRow.status : "missing",
+  );
+
+  // --- many outstanding admissions, each independently reconcilable -------
+  //
+  // The storage this drives is the page's own. Two designs failed here before:
+  // a scalar, which a second send overwrote, and a capped JSON list, which
+  // evicted the oldest *unresolved* id to stay under its bound and lost it
+  // between two tabs by read-modify-write.
+  const storage = await page.evaluate(async (fid) => {
+    const mint = (n) => "resv-" + String(n).padStart(4, "0") + "a".repeat(20);
+
+    // 65 = the coordinator's queue cap (64) plus the running turn. This is the
+    // number of sends a user can genuinely have outstanding, and every id has
+    // to survive it -- the capped list dropped everything past its own bound.
+    const CAPACITY = 65;
+    for (let i = 0; i < CAPACITY; i++) rememberAdmission(fid, mint(i));
+    const all = outstandingAdmissions(fid);
+
+    // Settling one must not disturb any other. Under the list design this was
+    // a read-modify-write of a shared value, so it could not be true across
+    // tabs and was only accidentally true within one.
+    forgetAdmission(fid, mint(7));
+    const afterOne = outstandingAdmissions(fid);
+
+    // A concurrent tab's write, simulated at the only level it is observable:
+    // an independent key set while this tab holds its own view of the world.
+    // With a container under one key, this `setItem` would have destroyed
+    // every id above.
+    localStorage.setItem("openai4s.admission." + fid + ".resv-fromothertab000000", "1");
+    const afterOther = outstandingAdmissions(fid);
+
+    for (const id of outstandingAdmissions(fid)) forgetAdmission(fid, id);
+    const drained = outstandingAdmissions(fid);
+
+    // The scalar a tab reloading into this build can still be holding.
+    localStorage.setItem("openai4s.admission." + fid, "resv-legacyscalar00000000");
+    const migrated = outstandingAdmissions(fid);
+    const legacyGone = localStorage.getItem("openai4s.admission." + fid) === null;
+    for (const id of outstandingAdmissions(fid)) forgetAdmission(fid, id);
+
+    return {
+      capacity: CAPACITY,
+      remembered: all.length,
+      firstKept: all[0],
+      lastKept: all[all.length - 1],
+      afterOne: afterOne.length,
+      forgottenGone: !afterOne.includes(mint(7)),
+      neighboursKept: afterOne.includes(mint(6)) && afterOne.includes(mint(8)),
+      afterOther: afterOther.length,
+      otherTabVisible: afterOther.includes("resv-fromothertab000000"),
+      drained: drained.length,
+      migrated,
+      legacyGone,
+      settled: [
+        admissionSettled("sent"),
+        admissionSettled("released"),
+        admissionSettled("none"),
+        admissionSettled("pending"),
+        admissionSettled("something-new"),
+        admissionSettled(undefined),
+      ],
+    };
+  }, frameId);
+
+  note(
+    storage.remembered === storage.capacity,
+    "every outstanding admission up to the real queue capacity is kept",
+    `${storage.remembered}/${storage.capacity}, oldest=${storage.firstKept}`,
+  );
+  note(
+    storage.firstKept === "resv-0000" + "a".repeat(20) &&
+      storage.lastKept === "resv-0064" + "a".repeat(20),
+    "the OLDEST unresolved id -- the one a bound used to evict -- is still there, and first",
+    `${storage.firstKept} .. ${storage.lastKept}`,
+  );
+  note(
+    storage.afterOne === storage.capacity - 1 && storage.forgottenGone && storage.neighboursKept,
+    "settling one admission removes exactly that one",
+    JSON.stringify({ after: storage.afterOne, gone: storage.forgottenGone, kept: storage.neighboursKept }),
+  );
+  note(
+    storage.afterOther === storage.capacity && storage.otherTabVisible,
+    "a concurrent tab's admission joins the set instead of replacing it",
+    JSON.stringify({ after: storage.afterOther, visible: storage.otherTabVisible }),
+  );
+  note(storage.drained === 0, "settled admissions leave nothing behind", String(storage.drained));
+  note(
+    storage.migrated.length === 1 &&
+      storage.migrated[0] === "resv-legacyscalar00000000" &&
+      storage.legacyGone,
+    "a tab reloading with the old scalar keeps its outstanding id",
+    JSON.stringify(storage.migrated) + " legacyGone=" + storage.legacyGone,
+  );
+  note(
+    JSON.stringify(storage.settled) === JSON.stringify([true, true, true, false, false, false]),
+    "only a decided answer settles an admission",
+    JSON.stringify(storage.settled),
+  );
+
+  // --- two real sends whose answers are lost, reconciled independently -----
+  //
+  // Through the composer, so the ids are minted and stored by the code under
+  // test. The first request reaches the daemon and its response is destroyed;
+  // the second never leaves the browser. Two genuinely different outcomes --
+  // one `sent`, one that the server has never heard of -- from two ids that
+  // must both survive to the reload.
+  const pinA = (
+    await api(`/api/v1/frames/${frameId}/annotations`, {
+      method: "POST",
+      data: { artifact_id: artifactId, body: "first of two", x: 0.6, y: 0.6 },
+    })
+  ).body.annotation.annotation_id;
+
+  await page.unroute(`**/api/v1/frames/${frameId}/message`);
+  let leg = 0;
+  await page.route(`**/api/v1/frames/${frameId}/message`, async (route) => {
+    leg += 1;
+    if (leg === 1) {
+      await route.fetch();               // the server really runs this one
+      await route.abort("connectionfailed");
+    } else {
+      await route.abort("connectionfailed");   // this one never leaves
+    }
+  });
+
+  await page.goto(baseUrl);
+  await page.waitForTimeout(1200);
+  await page.evaluate(async (fid) => {
+    if (typeof openConversation === "function") await openConversation(fid);
+  }, frameId);
+  await page.waitForTimeout(1500);
+  const firstSend = await page.evaluate(async () => {
+    try { await send("first of two"); } catch {}
+    return (typeof openAnnotations === "function" ? openAnnotations() : []).length;
+  });
+  await page.waitForTimeout(2000);
+
+  const pinB = (
+    await api(`/api/v1/frames/${frameId}/annotations`, {
+      method: "POST",
+      data: { artifact_id: artifactId, body: "second of two", x: 0.7, y: 0.7 },
+    })
+  ).body.annotation.annotation_id;
+  const twoOutstanding = await page.evaluate(async (fid) => {
+    await loadAnnotations(fid);
+    try { await send("second of two"); } catch {}
+    return outstandingAdmissions(fid);
+  }, frameId);
+  await page.waitForTimeout(2000);
+
+  note(
+    twoOutstanding.length === 2,
+    "two lost sends leave TWO outstanding ids, not one overwriting the other",
+    JSON.stringify(twoOutstanding) + ` legs=${leg} pins=${firstSend}`,
+  );
+
+  await page.unroute(`**/api/v1/frames/${frameId}/message`);
+  let resentAfterTwo = 0;
+  await page.route(`**/api/v1/frames/${frameId}/message`, async (route) => {
+    resentAfterTwo += 1;
+    await route.continue();
+  });
+  const asked = [];
+  page.on("response", async (response) => {
+    const m = /\/admissions\/([^/?]+)/.exec(response.url());
+    if (m) asked.push([decodeURIComponent(m[1]), response.status()]);
+  });
+
+  await page.goto(baseUrl);
+  await page.waitForTimeout(1200);
+  await page.evaluate(async (fid) => {
+    if (typeof openConversation === "function") await openConversation(fid);
+  }, frameId);
+  await page.waitForTimeout(3000);
+
+  const askedIds = asked.map(pair => pair[0]);
+  note(
+    twoOutstanding.every(id => askedIds.includes(id)),
+    "the reloaded page asked about BOTH outstanding admissions",
+    JSON.stringify(asked),
+  );
+  note(
+    asked.some(pair => pair[1] === 200) && asked.some(pair => pair[1] === 404),
+    "the two admissions were answered independently, one known and one never sent",
+    JSON.stringify(asked.map(pair => pair[1])),
+  );
+  note(resentAfterTwo === 0, "neither turn was resent", `resent=${resentAfterTwo}`);
+
+  const leftover = await page.evaluate((fid) => outstandingAdmissions(fid), frameId);
+  note(
+    leftover.length === 0,
+    "both settled admissions were cleared, independently",
+    JSON.stringify(leftover),
+  );
+
+  const afterTwo = (await api(`/api/v1/frames/${frameId}/annotations`)).body;
+  const rowA = ((afterTwo && afterTwo.annotations) || []).find(a => a.annotation_id === pinA);
+  const rowB = ((afterTwo && afterTwo.annotations) || []).find(a => a.annotation_id === pinB);
+  note(
+    rowA && rowA.status === "sent",
+    "the pin on the turn that really ran stayed sent",
+    rowA ? rowA.status : "missing",
+  );
+  note(
+    rowB && rowB.status === "open",
+    "the pin on the turn that never left is the user's again",
+    rowB ? rowB.status : "missing",
   );
 
   // --- a genuinely held pin refuses edit and delete with 409 --------------

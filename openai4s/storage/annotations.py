@@ -7,6 +7,26 @@ import uuid
 from typing import Any, Callable
 
 
+def settle_restored_annotation(row: "Any") -> dict[str, Any]:
+    """One annotation coming back from a snapshot, with its holder settled.
+
+    Every restore path shares this rule: package import, and -- since it was
+    found missing there -- real checkpoint restore. A snapshot can capture a
+    pin mid-flight, `reserved` with a live holder. The request that held it
+    does not survive the gap, so the pair cannot be written back verbatim;
+    the only state a user can act on is `open` with no holder.
+
+    Lives here rather than in `server/` because `storage/` restores rows too
+    and must not import upward -- and because two copies of this rule is two
+    chances for a restore path to keep a holder nothing answers for.
+    """
+    settled = dict(row)
+    if settled.get("status") == "reserved":
+        settled["status"] = "open"
+    settled["reservation_id"] = None
+    return settled
+
+
 class AnnotationRepository:
     """CRUD and status transitions for figure-review annotations.
 
@@ -282,14 +302,53 @@ class AnnotationRepository:
         scope = " AND root_frame_id=?" if root_frame_id else ""
         params = (reservation_id, root_frame_id) if root_frame_id else (reservation_id,)
         with self._lock:
-            cursor = self._connection.execute(
-                f"UPDATE annotations SET status='open', reservation_id=NULL, "
-                f"updated_at={self._clock_ms()} "
-                f"WHERE reservation_id=? AND status='reserved'{scope}",
-                params,
-            )
-            self._connection.commit()
+            # Pins and ledger in one transaction, for the same reason
+            # `finalize_sent` does it: a release that commits the rows and then
+            # fails to stamp the ledger leaves `reserved` recorded against pins
+            # that are already back in the composer, and reconciliation reports
+            # an in-flight claim that no longer exists.
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = self._connection.execute(
+                    f"UPDATE annotations SET status='open', reservation_id=NULL, "
+                    f"updated_at={self._clock_ms()} "
+                    f"WHERE reservation_id=? AND status='reserved'{scope}",
+                    params,
+                )
+                self._stamp_admission_locked("released", reservation_id, root_frame_id)
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
             return int(cursor.rowcount or 0)
+
+    def _stamp_admission_locked(
+        self,
+        state: str,
+        reservation_id: str,
+        root_frame_id: str | None,
+        *,
+        request_id: str | None = None,
+        job_id: str | None = None,
+    ) -> None:
+        """The ledger half of a terminal transition. Caller holds the write
+        transaction; this never commits.
+
+        `sent` and `released` are written here and only here, alongside the row
+        change they describe, which is what makes them evidence: a pin that is
+        later resolved, dismissed or deleted does not un-send the message it
+        was sent on. Reconciliation reads them as final and derives from the
+        rows only for the non-terminal states, where the rows really are the
+        authority.
+        """
+        scope = " AND root_frame_id=?" if root_frame_id else ""
+        tail = (reservation_id, root_frame_id) if root_frame_id else (reservation_id,)
+        self._connection.execute(
+            "UPDATE annotation_admissions SET state=?, updated_at=?, "
+            "request_id=COALESCE(?,request_id), job_id=COALESCE(?,job_id) "
+            f"WHERE reservation_id=?{scope}",
+            (state, self._clock_ms(), request_id, job_id, *tail),
+        )
 
     def finalize_sent(
         self,
@@ -297,6 +356,8 @@ class AnnotationRepository:
         *,
         expected_ids: list[str] | None = None,
         root_frame_id: str | None = None,
+        request_id: str | None = None,
+        job_id: str | None = None,
     ) -> bool:
         """Consume this reservation, all of it or none of it.
 
@@ -346,6 +407,20 @@ class AnnotationRepository:
                 if changed != len(held):
                     self._connection.rollback()
                     return False
+                # Same transaction as the rows it describes. Finalising and
+                # then stamping the ledger separately is two outcomes: a fault
+                # in the gap leaves the pins consumed and the ledger still
+                # saying `reserved`, and the client that lost its 202 is told
+                # its comments are in flight when the turn already carries
+                # them. Correlation rides along so an accepted turn is
+                # identifiable from the ledger alone.
+                self._stamp_admission_locked(
+                    "sent",
+                    reservation_id,
+                    root_frame_id,
+                    request_id=request_id,
+                    job_id=job_id,
+                )
                 self._connection.commit()
             except BaseException:
                 self._connection.rollback()
