@@ -637,6 +637,50 @@ def test_worker_response_survives_native_stdout_writes(backends, worker, tmp_pat
     assert response["predictions"][0]["reactants_smiles"] == "CCO.N"
 
 
+def test_crashed_backend_stderr_does_not_publish_a_workstation_path(backends, tmp_path):
+    """Redirecting stdout to stderr must not turn it into a disclosure channel.
+
+    The host embeds the stderr tail into its ``nonzero_exit`` message, and
+    after the descriptor swap that stream carries everything a native model
+    library prints — checkpoint locations included.
+    """
+    script = tmp_path / "crashing_worker.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            import os
+            import sys
+
+            sys.path.insert(0, {str(get_config().skills_dir)!r})
+            from retrosynthesis_planning.syntheseus_worker import (
+                _reserve_protocol_stdout,
+            )
+
+            _reserve_protocol_stdout()
+            os.write(1, b"[torch] loading weights from /home/chemist/private/w.pt\\n")
+            raise SystemExit(3)
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    backend = backends.SubprocessRetrosynthesisBackend([sys.executable, str(script)])
+    with pytest.raises(backends.BackendExecutionError) as caught:
+        backend.run(
+            {
+                "schema_version": 1,
+                "request_id": "crash",
+                "operation": "capabilities",
+            }
+        )
+
+    message = str(caught.value)
+    assert caught.value.code == "nonzero_exit"
+    assert "/home/chemist" not in message
+    assert backends.REDACTED_PATH in message
+    assert "[torch] loading weights from" in message
+
+
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX fork required")
 def test_reserved_descriptor_does_not_outlive_a_forked_model_child(backends, tmp_path):
     """A forking model must not hold the host's stdout pipe open.

@@ -34,7 +34,11 @@ RetroChimera 或 Syntheseus 模型环境
 schema 校验、provenance 检查与 Harness replay
 ```
 
-stdout 只允许输出一个 JSON 对象。worker 在处理请求前会把文件描述符 1 重定向到 stderr，并保留一个私有副本用于写响应，因此直接写 stdout 的原生库（PyTorch、DGL、CUDA、RDKit 都会这样做）无法破坏协议。仅重绑 `sys.stdout` 是不够的，因为这些写入根本不经过它。该副本会在任何 fork 出的子进程中关闭，因此不 exec 直接 fork 的模型不会在自身退出后仍占住 Host 的管道。重定向发生在 worker 内部，因此无法覆盖解释器到达该处之前写出的字节——继承的 `PYTHONPATH` 上某个 `sitecustomize` 打印的启动横幅仍会破坏响应，`openai4s/kernel/worker.py` 也有同样的限制。Host 不使用 `shell=True`，限制请求和响应大小，设置超时，核对响应中的 `request_id`，并拒绝未知响应字段。
+stdout 只允许输出一个 JSON 对象。worker 在处理请求前会把文件描述符 1 重定向到 stderr，并保留一个私有副本用于写响应，因此直接写 stdout 的原生库（PyTorch、DGL、CUDA、RDKit 都会这样做）不会破坏协议。仅重绑 `sys.stdout` 是不够的，因为这些写入根本不经过它。该副本会在任何 fork 出的子进程中关闭，因此不 exec 直接 fork 的模型不会在自身退出后仍占住 Host 的管道。
+
+这里有三条限制，应当明说而非暗示。当没有可用的 stderr 供 stdout 迁移时，重定向会放弃，worker 随后在未受保护的 stdout 上作答——保护程度不比从前更好，但至少是可见的。重定向发生在 worker 内部，因此无法覆盖解释器到达该处之前写出的字节：继承的 `PYTHONPATH` 上某个 `sitecustomize` 打印的启动横幅仍会破坏响应，`openai4s/kernel/worker.py` 也有同样的限制。另外，由于模型 stdout 现在落到 stderr，而 Host 会把 stderr 引用进 `nonzero_exit` 消息，该消息在抛出前会先做路径清洗。
+
+Host 不使用 `shell=True`，限制请求和响应大小，设置超时，核对响应中的 `request_id`，并拒绝未知响应字段。
 
 ## 支持的模型类别
 
@@ -48,6 +52,8 @@ stdout 只允许输出一个 JSON 对象。worker 在处理请求前会把文件
 Adapter 将 `num_results` 明确限制在 10 以内。低排名预测不会被展示成同等可靠的候选；下游必须保留原始 rank 和 score type，不能把所有模型分数静默转换成同一种概率。
 
 ## 可信度与下载策略
+
+这里的“隔离”指的是依赖边界，而非安全边界。该 worker 只是一个普通子进程：它继承调用方的环境，不在任何 OS sandbox 下运行，自身也没有出网管控。它把 PyTorch、CUDA 和模型专属依赖挡在 OpenAI4S core 进程之外，但并不约束模型代码本身。应当把 checkpoint 及其 wrapper 视为你主动选择运行的代码。
 
 默认禁止自动下载 checkpoint。除非显式设置 `allow_model_download=True`，否则在没有 `model_dir` 的情况下调用 `single_step(...)` 会在启动外部进程前直接失败。
 

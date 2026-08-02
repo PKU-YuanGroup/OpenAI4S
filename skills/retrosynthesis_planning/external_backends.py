@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -37,6 +38,27 @@ SUPPORTED_SYNTHESEUS_MODELS = (
     "RetroKNN",
     "RootAligned",
 )
+
+
+REDACTED_PATH = "<redacted-path>"
+#: Deliberately duplicated from ``syntheseus_worker`` rather than imported: the
+#: worker has to stay standalone so it can run inside a foreign model
+#: environment that does not have this package on its path.
+_PATH_IN_TEXT = re.compile(
+    r"(?<![\w~])(?:~?/[^\s'\"<>,;)]*|[A-Za-z]:[\\/][^\s'\"<>,;)]*)"
+)
+
+
+def _scrub_paths(text: str) -> str:
+    """Strip filesystem paths out of text captured from the backend process.
+
+    The worker points its stdout at stderr, so everything a native model
+    library prints — checkpoint locations included — now arrives on the
+    stream this class embeds verbatim into a ``nonzero_exit`` message. Without
+    this the descriptor swap would trade a corrupted response for a published
+    workstation path.
+    """
+    return _PATH_IN_TEXT.sub(REDACTED_PATH, text)
 
 
 class BackendProtocolError(ValueError):
@@ -516,7 +538,9 @@ class SubprocessRetrosynthesisBackend:
                 f"backend stdout exceeded {self.max_response_bytes} bytes",
             )
         if completed.returncode != 0:
-            stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+            stderr = _scrub_paths(
+                completed.stderr.decode("utf-8", errors="replace").strip()
+            )
             if len(stderr) > 4000:
                 stderr = stderr[-4000:]
             message = f"backend exited with status {completed.returncode}"

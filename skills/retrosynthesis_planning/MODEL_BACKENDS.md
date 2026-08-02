@@ -34,7 +34,11 @@ RetroChimera or Syntheseus model environment
 schema validation, provenance checks and Harness replay
 ```
 
-Stdout is reserved for one JSON object. Before it handles a request the worker moves descriptor 1 onto stderr and keeps a private duplicate for the response, so a native library that writes to stdout directly — PyTorch, DGL, CUDA and RDKit all do — cannot corrupt the protocol. Rebinding `sys.stdout` alone would not be enough, because those writes never pass through it. The duplicate is closed in any forked child, so a model that forks without exec cannot hold the host's pipe open past its own exit. The swap happens inside the worker, so it cannot cover bytes written before the interpreter reaches it — an interpreter-startup banner from a `sitecustomize` on an inherited `PYTHONPATH` still corrupts the response, as it does for `openai4s/kernel/worker.py`. The host never uses `shell=True`, applies request and response size limits, enforces a timeout, verifies the response `request_id`, and rejects unknown response fields.
+Stdout is reserved for one JSON object. Before it handles a request the worker moves descriptor 1 onto stderr and keeps a private duplicate for the response, so a native library that writes to stdout directly — PyTorch, DGL, CUDA and RDKit all do — does not corrupt the protocol. Rebinding `sys.stdout` alone would not be enough, because those writes never pass through it. The duplicate is closed in any forked child, so a model that forks without exec cannot hold the host's pipe open past its own exit.
+
+Three limits on that, stated rather than implied. The swap declines when there is no usable stderr to move stdout onto, and the worker then answers on the unprotected stdout — no better off than before, but visibly so. It happens inside the worker, so it cannot cover bytes written before the interpreter reaches it: a startup banner from a `sitecustomize` on an inherited `PYTHONPATH` still corrupts the response, as it does for `openai4s/kernel/worker.py`. And because model stdout now arrives on stderr, which the host quotes back in a `nonzero_exit` message, that message is path-scrubbed before it is raised.
+
+The host never uses `shell=True`, applies request and response size limits, enforces a timeout, verifies the response `request_id`, and rejects unknown response fields.
 
 ## Supported model classes
 
@@ -48,6 +52,8 @@ Stdout is reserved for one JSON object. Before it handles a request the worker m
 The adapter deliberately caps `num_results` at 10. Lower-ranked predictions are not presented as equally reliable alternatives, and downstream code must preserve rank and raw score type rather than silently converting every score into a common probability.
 
 ## Trust and download policy
+
+"Isolated" here means a dependency boundary, not a security one. The worker is an ordinary subprocess: it inherits the caller's environment, runs under no OS sandbox, and has no egress control of its own. It keeps PyTorch, CUDA and model-specific packages out of the OpenAI4S core process; it does not contain the model code. Treat a checkpoint and its wrapper as code you are choosing to run.
 
 Automatic checkpoint downloading is disabled by default. Calling `single_step(...)` without `model_dir` raises before the external process is launched unless `allow_model_download=True` was set explicitly.
 
