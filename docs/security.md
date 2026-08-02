@@ -187,27 +187,47 @@ different layer from the redaction above. `redact`/`redact_text`/
 and the log keeps its richness on disk. The archive is narrower, because it is
 the thing standing between a user's disk and a public issue tracker:
 
-- a **structured** line survives only as an allowlist of validated, bounded
-  metadata — `ts`, `event`, `surface`, `exception`, `error_class`,
-  `request_id`, and a few siblings. Every other value becomes a fingerprint.
-  Pattern-based scrubbing was tried here and lost: field-wise redaction asks
-  "is this whole value a credential", and an ordinary `message` field holding a
-  sentence is never opaque, so it carried a credential and a token URL straight
-  through. The field was not called `token`, and it never will be.
+- a **structured** line survives only as an allowlist of known keys, and every
+  key is checked against a **closed set written down in source** — not against
+  a pattern. That distinction took three attempts to get right, and each wrong
+  answer was the same mistake at a smaller scale. First one shared "short
+  enough" regex, which admitted spaces, `/` and `.`: prose in `detail`, a path
+  in `surface`, a command in `status`. Then per-field *patterns*, which
+  admitted `PRIVATE_COHORT_ALPHA_SEVEN` — a legal identifier with no digits, so
+  it satisfies every identifier rule and never reads as opaque. **Syntax is not
+  provenance.** Now `event` and `surface` are the vocabularies this repository
+  emits, `exception` is a category from a named set of exception types, `level`
+  and `status` are enums, `detail` is one fixed sentence, and a variable id
+  (`request_id`, `correlation_id`) is *always* fingerprinted — even though the
+  daemon generates those, because the archive reads them out of `app.out` and a
+  line in a file can carry any 16- or 32-hex string. Support loses nothing: the
+  fingerprint of the id a user quotes matches the one in the archive.
+- a **file name** is not metadata either. Log members are numbered by the
+  archive (`logs/log-0001.json`) and the MANIFEST lists only those generated
+  names, because a log named after a token puts it in two places no content
+  scrubber looks: the ZIP member name and the listing.
 - an **unstructured** line is never shared verbatim at all. `app.out` is the
   daemon's whole stdout and stderr — every `print`, every `traceback.print_exc`,
   every dependency's chatter — and no pattern set makes arbitrary text safe. The
   archive carries a count, a classification and a fingerprint instead.
-- `report.json` goes through the same sanitizer, and its
-  `json.dumps(..., default=str)` escape hatch is gone: "stringify anything the
-  encoder does not understand" is the same *call str() and hope* that the
-  diagnostic record itself stopped doing.
+- `report.json` is built to a **declared schema** whose leaves are closed sets,
+  numbers, or reductions — never patterns. `machine` is the real architecture
+  set, `platform` and `backend` are enums, a version keeps only its parsed
+  numeric components (`6.5.0-15-generic` → `6.5`, `3.privatecohortalpha` → `3`)
+  and a migration name is fingerprinted rather than enumerated, because an
+  enumerated set of names would go stale *silently* the day someone adds one.
+  `json.dumps(..., default=str)` is gone, unknown keys are counted rather than
+  rendered, and nothing calls `str()` or `repr()` on a value **or a key**: a
+  mapping key can be an object whose `__str__` raises or returns 50 MB.
 
 `record_diagnostic` is the source, and it no longer renders the exception.
 There is no redacted rendering of `str(exc)` on the record, because a rendering
 is the one operation an unknown exception influences and it can be arbitrary,
 enormous, or itself raise. The record carries the surface, the exception's
-class name and an `error_class` fingerprint derived from the *type*, so two
+class **category** — the nearest ancestor in a set of exception types this
+repository names, so `type("PRIVATE_COHORT_ALPHA_SEVEN", (RuntimeError,), {})`
+reports `RuntimeError` and the caller's own string never appears — and an
+`error_class` fingerprint derived from the *type*, so two
 occurrences of the same failure remain recognisably the same failure and a
 support ticket quoting a `request_id` still leads somewhere. The same rule
 applies to the agent's observation when an environment switch fails, and to the

@@ -402,7 +402,9 @@ def test_the_diagnostic_keeps_the_failure_but_redacts_the_credential():
     )
 
     assert record["event"] == "unhandled_exception"
-    assert record["exception"] == "CanaryFailure"
+    # The category, not the class's own name: `CanaryFailure` is a name this
+    # file chose, and a name is not metadata for parsing as an identifier.
+    assert record["exception"] == "RuntimeError"
     assert record["request_id"] == "req-canary"
     assert record["surface"] == "test:diagnostic"
     # The failure is identifiable by (surface, error_class) -- not by quoting

@@ -234,11 +234,14 @@ def test_the_bundle_collects_the_log_the_daemon_actually_writes(cfg, tmp_path):
     target = tmp_path / "b.zip"
     result = build_bundle(cfg, target)
 
-    assert "logs/app.out" in result["included"], (
-        "the bundle skipped the only log the daemon writes: " f"{result['included']}"
-    )
+    # Named by the archive, not after the file on disk: a log's name is
+    # attacker-influenced the moment something writes one named after a token,
+    # and the member name and MANIFEST are two places no content scrubber
+    # looks.
+    members = [name for name in result["included"] if name.startswith("logs/")]
+    assert members == ["logs/log-0001.json"], result["included"]
     with zipfile.ZipFile(target) as archive:
-        shared = archive.read("logs/app.out").decode("utf-8")
+        shared = archive.read(members[0]).decode("utf-8")
     # Collected, and summarised rather than quoted: an unstructured line is
     # arbitrary text and the archive boundary is deny-by-default.
     assert "something failed" not in shared
@@ -256,7 +259,7 @@ def test_a_credential_in_the_daemon_log_never_reaches_the_bundle(cfg, tmp_path):
 
 
 def test_another_accounts_home_directory_is_collapsed_in_the_bundle(cfg, tmp_path):
-    """`_redacted_detail` collapses `$HOME` because "of an absolute path, the
+    """The diagnostic used to collapse `$HOME` because "of an absolute path, the
     username is the part that identifies a person rather than a file".
 
     That reason does not stop at this account. A path under someone else's home
@@ -355,14 +358,25 @@ def test_a_real_diagnostic_record_is_scrubbed_in_the_bundle(cfg, tmp_path):
     # Still a diagnostic: the surface and the exception type, which are
     # allowlisted metadata. Not the sentence -- `record_diagnostic` no longer
     # renders the exception at all, so there is nothing to scrub.
-    assert b"bundle:canary" in blob
-    assert b"_CanaryFailure" in blob
+    # `bundle:canary` is not a surface this repository names and
+    # `_CanaryFailure` is not an exception category it names, so both are
+    # reduced rather than echoed. A real surface travels as itself; that is
+    # asserted in tests/test_diagnostic_archive_boundary.py.
+    assert b"bundle:canary" not in blob
+    assert b"_CanaryFailure" not in blob
+    assert b"unhandled_exception" in blob
     assert b"upstream refused" not in blob
-    # ...and the line is still parseable JSON, which the identity pass runs
+    # ...and the line is still parseable JSON, which the sanitising passes run
     # over as text and must not have broken.
     with zipfile.ZipFile(target) as archive:
-        line = archive.read("logs/app.out").decode("utf-8").strip()
-    assert json.loads(line)["surface"] == "bundle:canary"
+        member = next(n for n in archive.namelist() if n.startswith("logs/"))
+        line = archive.read(member).decode("utf-8").strip()
+    parsed = json.loads(line)
+    # The surface is reduced, not echoed, because `bundle:canary` is not one
+    # this repository names. What survives is the shape of a diagnostic: a
+    # known event, and a placeholder marking where the unknown value was.
+    assert parsed["event"] == "unhandled_exception"
+    assert parsed["surface"].startswith("<omitted:")
 
 
 @pytest.mark.parametrize(

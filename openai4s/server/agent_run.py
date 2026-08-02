@@ -72,11 +72,11 @@ def _env_switch_notice(exc: BaseException) -> str:
     that category, it comes from the type rather than from ``__str__``, and it
     is what this returns.
     """
-    try:
-        kind = type(exc).__name__
-    except Exception:  # noqa: BLE001 — a broken type must not break the turn
-        kind = "unknown"
-    from openai4s.server.errors import record_diagnostic
+    from openai4s.server.errors import record_diagnostic, safe_type_name
+
+    # Even the class name is not free text: a type created at runtime carries
+    # whatever its creator put in the name, and this string goes to the model.
+    kind = safe_type_name(exc)
 
     try:
         record_diagnostic(exc, surface="agent:pending_env")

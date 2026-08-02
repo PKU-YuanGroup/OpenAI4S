@@ -296,10 +296,15 @@ def _redact_fragment(fragment: str) -> str:
                 [
                     (
                         name,
-                        f"<redacted:{fingerprint(value)}>"
-                        if value
-                        and any(bit in name.lower() for bit in CREDENTIAL_PARAMS)
-                        else value,
+                        # EVERY value, not the ones on a name denylist. `#code=`
+                        # is an authorization code and `#state=` a CSRF token;
+                        # a denylist is the rule that fails on the next name
+                        # somebody chooses, and a fragment is where a browser
+                        # puts what it does not want sent to a server -- so a
+                        # value there is a credential by position, not by name.
+                        # The parameter name stays: which parameters were
+                        # present is provenance, the value is the secret.
+                        f"<redacted:{fingerprint(value)}>" if value else value,
                     )
                     for name, value in pairs
                 ]
@@ -347,8 +352,8 @@ def redact_identities(text: str) -> str:
 
     Paths keep everything but the home segment, because the file name is what
     makes the line worth reading and the user name is what identifies a person
-    — the same trade `_redacted_detail` already makes for this account's own
-    home, applied to the shape rather than to one literal string.
+    — the same trade the operator diagnostic used to make for this account's
+    own home, applied to the shape rather than to one literal string.
 
     Run this *after* `redact_text`: the fingerprints it leaves behind contain
     no `@` and no home-shaped prefix, so the two do not interfere.

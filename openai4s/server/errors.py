@@ -12,14 +12,9 @@ instead, and gateway re-exports it so existing importers keep working.
 from __future__ import annotations
 
 import os
+from typing import Any
 
-from openai4s.observability import (
-    correlation_id,
-    fingerprint,
-    log_event,
-    redact_identities,
-    redact_text,
-)
+from openai4s.observability import correlation_id, fingerprint, log_event
 
 # Stable, machine-readable error codes. A client that has to match on English
 # prose is coupled to wording nobody thinks of as an interface, so it breaks the
@@ -137,6 +132,118 @@ _DIAGNOSTIC_CHARS = 600
 DIAGNOSTIC_DETAIL = "an unhandled exception was recorded"
 
 
+#: The exception categories this repository is willing to name, written down
+#: here rather than derived from the object.
+#:
+#: A class name looked like metadata and is not. `type("PRIVATE_COHORT_ALPHA_
+#: SEVEN", (RuntimeError,), {})` is three tokens of work, the name is a
+#: perfectly legal identifier with no digits, and it therefore satisfies every
+#: pattern a syntax check can apply -- which is the point: syntax is not
+#: provenance. Membership of a set someone wrote down is.
+#:
+#: The MRO walk is what keeps this useful rather than merely safe. A caller's
+#: `MyLibError(OSError)` reports `OSError`: the family is what tells an
+#: operator what kind of thing broke, and it comes from this set, never from
+#: the object.
+_KNOWN_EXCEPTIONS = frozenset(
+    {
+        "ArithmeticError",
+        "AssertionError",
+        "AttributeError",
+        "BaseException",
+        "BlockingIOError",
+        "BrokenPipeError",
+        "BufferError",
+        "ChildProcessError",
+        "ConnectionError",
+        "ConnectionRefusedError",
+        "ConnectionResetError",
+        "EOFError",
+        "Exception",
+        "FileExistsError",
+        "FileNotFoundError",
+        "FloatingPointError",
+        "GeneratorExit",
+        "ImportError",
+        "IndentationError",
+        "IndexError",
+        "InterruptedError",
+        "IsADirectoryError",
+        "KeyError",
+        "KeyboardInterrupt",
+        "LookupError",
+        "MemoryError",
+        "ModuleNotFoundError",
+        "NameError",
+        "NotADirectoryError",
+        "NotImplementedError",
+        "OSError",
+        "OverflowError",
+        "PermissionError",
+        "ProcessLookupError",
+        "RecursionError",
+        "ReferenceError",
+        "RuntimeError",
+        "StopAsyncIteration",
+        "StopIteration",
+        "SyntaxError",
+        "SystemError",
+        "SystemExit",
+        "TimeoutError",
+        "TypeError",
+        "UnboundLocalError",
+        "UnicodeDecodeError",
+        "UnicodeEncodeError",
+        "UnicodeError",
+        "ValueError",
+        "ZeroDivisionError",
+        # stdlib modules this daemon actually fails through
+        "JSONDecodeError",
+        "CalledProcessError",
+        "TimeoutExpired",
+        "HTTPError",
+        "URLError",
+        "OperationalError",
+        "IntegrityError",
+        "DatabaseError",
+        "BadZipFile",
+        # openai4s' own
+        "GatewayError",
+        "KernelBusyError",
+        "ExecutionCancelled",
+        "LLMError",
+        "SandboxUnavailableError",
+    }
+)
+UNKNOWN_TYPE_NAME = "unknown"
+
+
+def safe_type_name(exc: BaseException) -> str:
+    """The nearest exception category this module names, or ``unknown``.
+
+    Correlation does not depend on it: `error_class` fingerprints the fully
+    qualified name, so two failures of one private type still match each other
+    without the name ever being reproduced.
+    """
+    try:
+        mro = type(exc).__mro__
+    except Exception:  # noqa: BLE001 — a broken type must not break reporting
+        return UNKNOWN_TYPE_NAME
+    for klass in mro:
+        try:
+            name = klass.__name__
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(name, str) and name in _KNOWN_EXCEPTIONS:
+            return name
+    return UNKNOWN_TYPE_NAME
+
+
+def safe_protocol_value(value: Any, allowed: frozenset) -> str:
+    """A caller-supplied string, kept only if this repository named it."""
+    return value if isinstance(value, str) and value in allowed else UNKNOWN_TYPE_NAME
+
+
 def error_class(exc: BaseException) -> str:
     """A stable, content-free identity for a kind of failure.
 
@@ -158,37 +265,18 @@ def error_class(exc: BaseException) -> str:
     return fingerprint(name)
 
 
-def redacted_detail(exc: BaseException | str) -> str:
-    """A failure rendered for somewhere it will outlive the request.
-
-    ``redact_text`` fingerprints credential-shaped tokens but deliberately
-    leaves paths alone -- it is written for a log a human has to be able to
-    read, and a log with no paths in it is useless for the thing it exists for.
-    A diagnostic outlives the request and is shipped in the support bundle, so
-    on top of that the home directory is collapsed to ``~``: of an absolute
-    path, the username is the part that identifies a person rather than a file.
-
-    ``redact_identities`` extends that same trade to a home this process does
-    not own and to a ``user@host``; the explicit ``$HOME`` replacement stays
-    beside it, because a home directory that is not home-*shaped* -- a service
-    account at ``/opt/app``, anything a test sets -- is invisible to a pattern
-    and visible to ``os.path.expanduser``.
-
-    Public because the agent's observation needs it too. An environment switch
-    that fails has to tell the model *what* failed so it can react, and the
-    exception it has to say that with came from ``subprocess.Popen``.
-    """
-    subject = exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}"
-    text = redact_text(subject)
-    home = os.path.expanduser("~")
-    if home and home not in ("", "/"):
-        text = text.replace(home, "~")
-    return redact_identities(text)[:_DIAGNOSTIC_CHARS]
+#: `redacted_detail` lived here: it rendered an unknown exception and scrubbed
+#: the result with patterns. It is deleted rather than kept private, because a
+#: helper whose whole job is "render an arbitrary exception safely" is an entry
+#: point back to the defect -- the patterns lost to an ordinary English
+#: sentence, a `/srv` path and a command with no identity in it, and the next
+#: caller would have had no way to know that from the name. What replaced it is
+#: `DIAGNOSTIC_DETAIL` plus `error_class`: nothing rendered, correlation kept.
 
 
-#: Kept so the module's own history reads straight; the name was private when
-#: only the diagnostic used it.
-_redacted_detail = redacted_detail
+def _exact_id(value: Any) -> str:
+    """An id, or nothing. Never a stringification of something else."""
+    return value if isinstance(value, str) and value else ""
 
 
 def record_diagnostic(
@@ -217,17 +305,16 @@ def record_diagnostic(
     this line together by ``request_id`` -- that pairing is the whole reason
     the generic message is tolerable.
     """
-    try:
-        kind = type(exc).__name__
-    except Exception:  # noqa: BLE001 — a broken type must not break reporting
-        kind = "unknown"
     return log_event(
         "unhandled_exception",
-        surface=str(surface or "unknown"),
-        exception=kind,
+        # No `str()`: a surface that is not exactly a string is not a
+        # surface, and coercing one is how an object's `__str__` gets
+        # invited into a record that outlives the request.
+        surface=surface if isinstance(surface, str) and surface else "unknown",
+        exception=safe_type_name(exc),
         detail=DIAGNOSTIC_DETAIL,
         error_class=error_class(exc),
-        request_id=str(request_id or correlation_id() or ""),
+        request_id=_exact_id(request_id) or _exact_id(correlation_id()) or "",
     )
 
 
@@ -313,7 +400,9 @@ __all__ = [
     "public_exception",
     "public_failure",
     "DIAGNOSTIC_DETAIL",
+    "UNKNOWN_TYPE_NAME",
     "error_class",
+    "safe_protocol_value",
+    "safe_type_name",
     "record_diagnostic",
-    "redacted_detail",
 ]

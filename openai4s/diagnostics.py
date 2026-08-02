@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from openai4s.observability import (
+    _looks_opaque,
     fingerprint,
     redact,
     redact_identities,
@@ -61,51 +62,232 @@ _NEVER_COLLECT = (
 _LOG_PATTERNS = ("*.log*", "app.out*")
 
 
-#: The only keys a structured log line may carry into a shareable archive, and
-#: the shape each one must already be in. Deny-by-default, because the opposite
-#: rule -- scrub what looks dangerous -- was tried and lost: field-wise
-#: redaction asks "is this whole value a credential", and an ordinary `message`
-#: field holding a sentence is never opaque, so it delivered a credential and a
-#: token URL through untouched. The field was not called `token` and never will
-#: be. An allowlist does not have to guess.
-_ARCHIVE_FIELDS = (
-    "ts",
-    "event",
-    "level",
-    "correlation_id",
-    "request_id",
-    "surface",
-    "exception",
-    "error_class",
-    "error_type",
-    "status",
-    "detail",
+#: Per-field validators, and every one is a closed set, a number, a fixed
+#: literal or a fingerprint. Nothing is admitted for matching a pattern.
+#:
+#: Two rounds got this wrong the same way. First one shared "short enough"
+#: regex, which admitted spaces, `/` and `.` -- prose in `detail`, a path in
+#: `surface`, a command in `status`. Then per-field *patterns*, which admitted
+#: `PRIVATE_COHORT_ALPHA_SEVEN`: a legal identifier, no digits, so it satisfies
+#: every identifier rule and never reads as opaque. Syntax is not provenance.
+#: Membership of a set written down here is.
+
+#: The events this repository emits, from the `log_event` call sites.
+_ARCHIVE_EVENTS = frozenset(
+    {
+        "unhandled_exception",
+        "http_request",
+        "compute_ssh_command",
+        "compute_scp_upload",
+        "compute_scp_download",
+    }
 )
 
-#: What an allowlisted value may look like: short, and made of the characters
-#: an identifier, a timestamp or a fingerprint uses. `detail` is allowlisted but
-#: is only ever the fixed `errors.DIAGNOSTIC_DETAIL` sentence, so spaces are
-#: permitted and the length bound is what keeps it a label rather than a
-#: channel.
-_ARCHIVE_VALUE = re.compile(r"^[A-Za-z0-9 _.:<>@/+-]{0,120}$")
+#: The surfaces passed to `record_diagnostic`, from its call sites. Anything
+#: else is fingerprinted -- including `jobs:_run:<job id>`, whose variable half
+#: is an internal id with no business in a shared archive.
+_ARCHIVE_SURFACES = frozenset(
+    {
+        "agent:pending_env",
+        "artifact_refs:materialise",
+        "artifact_refs:read",
+        "artifacts:restore",
+        "artifacts:upload:stage",
+        "artifacts:write",
+        "cell:attempt",
+        "compute:provider",
+        "compute:refresh",
+        "connector:call",
+        "jobs:submit",
+        "kernel:restart_after_install",
+        "web",
+        "web:turn",
+        "unknown",
+    }
+)
+_ARCHIVE_LEVELS = frozenset(
+    {"debug", "info", "warning", "warn", "error", "critical", "fatal"}
+)
+_ARCHIVE_STATUSES = frozenset(
+    {"ok", "unavailable", "degraded", "failed", "skipped", "partial", "unknown"}
+)
 
+
+def _v_number(value: Any) -> Any:
+    return (
+        value
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else None
+    )
+
+
+def _v_bool(value: Any) -> Any:
+    return value if isinstance(value, bool) else None
+
+
+def _v_enum(allowed: frozenset) -> Any:
+    def check(value: Any) -> Any:
+        return value if isinstance(value, str) and value in allowed else None
+
+    return check
+
+
+def _v_lower_enum(allowed: frozenset) -> Any:
+    def check(value: Any) -> Any:
+        return value if isinstance(value, str) and value.lower() in allowed else None
+
+    return check
+
+
+def _v_identity(value: Any) -> Any:
+    """A variable id: never kept, always fingerprinted, never dropped.
+
+    Request and correlation ids ARE server-generated in the daemon, which makes
+    keeping a value that matches the server's own 16-hex shape tempting. But
+    the archive reads them out of `app.out`, and a line in a file can carry any
+    string of that shape -- a 16- or 32-hex secret among them. Dropping them
+    would lose the one thing tying a bundle to a ticket; the fingerprint keeps
+    that, because support can fingerprint the id the user quotes and match.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    return f"<redacted:{fingerprint(value)}>"
+
+
+def _v_type_name(value: Any) -> Any:
+    from openai4s.server.errors import _KNOWN_EXCEPTIONS, UNKNOWN_TYPE_NAME
+
+    if not isinstance(value, str):
+        return None
+    return value if value in _KNOWN_EXCEPTIONS or value == UNKNOWN_TYPE_NAME else None
+
+
+def _v_detail(value: Any) -> Any:
+    """Exactly the one sentence, or nothing."""
+    from openai4s.server.errors import DIAGNOSTIC_DETAIL
+
+    return value if value == DIAGNOSTIC_DETAIL else None
+
+
+def _v_fingerprint(value: Any) -> Any:
+    return (
+        value
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{6,64}", value)
+        else None
+    )
+
+
+def _v_version(value: Any) -> Any:
+    """Only the parsed numeric components, or nothing.
+
+    A version is the one genuinely variable string here that is genuinely worth
+    keeping, so it is *reduced* rather than matched: split on dots, keep the
+    leading run of all-digit components. `3.12.13` keeps its meaning,
+    `6.5.0-15-generic` becomes `6.5` (parsing stops at the first component that
+    is not a number, rather than trying to salvage the rest), and
+    `3.privatecohortalpha` becomes nothing.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    parts: list[str] = []
+    for chunk in value.split("."):
+        if chunk.isdigit() and len(chunk) <= 6:
+            parts.append(chunk)
+        else:
+            break
+    return ".".join(parts) if parts else None
+
+
+#: `platform.machine()` on the platforms this project supports.
+_ARCHITECTURES = frozenset(
+    {
+        "x86_64",
+        "amd64",
+        "arm64",
+        "aarch64",
+        "i386",
+        "i686",
+        "armv7l",
+        "armv6l",
+        "ppc64le",
+        "s390x",
+        "riscv64",
+        "",
+    }
+)
+#: `platform.system()`.
+_SYSTEMS = frozenset({"Darwin", "Linux", "Windows", "Java", ""})
+#: `sys.platform`.
+_SYS_PLATFORMS = frozenset(
+    {"darwin", "linux", "win32", "cygwin", "aix", "freebsd", "openbsd", "netbsd", ""}
+)
+#: `SecretBroker` backend names.
+_SECRET_BACKENDS = frozenset(
+    {
+        "none",
+        "macos-keychain",
+        "secret-service",
+        "env-injection",
+        "plaintext-db",
+        "memory",
+        "",
+    }
+)
+
+
+#: The posture knobs are a closed vocabulary, so they are an enum rather than a
+#: token: the value comes from the process environment, which an operator can
+#: set to anything, and echoing an unrecognised one back into a shared archive
+#: is the same "it looked short enough" mistake in a smaller place. `(default)`
+#: is the literal `security_posture` writes when the variable is unset.
+_POSTURE_MODES = frozenset(
+    {
+        "(default)",
+        "auto",
+        "enforce",
+        "off",
+        "on",
+        "keychain",
+        "plaintext",
+        "allowlist",
+        "deny",
+        "allow",
+        "0",
+        "1",
+        "true",
+        "false",
+        "yes",
+        "no",
+    }
+)
+_v_posture_mode = _v_enum(_POSTURE_MODES)
+
+
+_ARCHIVE_FIELDS: dict[str, Any] = {
+    "ts": _v_number,
+    "event": _v_enum(_ARCHIVE_EVENTS),
+    "level": _v_lower_enum(_ARCHIVE_LEVELS),
+    "correlation_id": _v_identity,
+    "request_id": _v_identity,
+    "surface": _v_enum(_ARCHIVE_SURFACES),
+    "exception": _v_type_name,
+    "error_type": _v_type_name,
+    "error_class": _v_fingerprint,
+    "status": _v_lower_enum(_ARCHIVE_STATUSES),
+    "detail": _v_detail,
+    "fields_omitted": _v_number,
+}
+
+
+#: How an unstructured line is described when it cannot be quoted. Stable
+#: labels, so two reports of the same failure look alike.
 _ARCHIVE_LINE_CLASSES = (
     ("traceback", re.compile(r"^\s*Traceback \(most recent call last\)")),
-    ("traceback_frame", re.compile(r"^\s+File \"")),
-    ("warning", re.compile(r"(?i)\bwarn(ing)?\b")),
-    ("error", re.compile(r"(?i)\berror\b|^[A-Za-z_.]+Error\b")),
+    ("traceback_frame", re.compile(r'^\s+File "')),
     ("openai4s_notice", re.compile(r"^\[openai4s\]")),
+    ("error", re.compile(r"(?i)\berror\b|^[A-Za-z_.]+Error\b")),
+    ("warning", re.compile(r"(?i)\bwarn(ing)?\b")),
 )
-
-
-def _archive_scalar(value: Any) -> Any:
-    """One allowlisted value, or a fingerprint standing where it was."""
-    if value is None or isinstance(value, bool) or isinstance(value, (int, float)):
-        return value
-    text = value if isinstance(value, str) else None
-    if text is not None and _ARCHIVE_VALUE.match(text):
-        return text
-    return f"<omitted:{fingerprint(_stable_repr(value))}>"
 
 
 def _stable_repr(value: Any) -> str:
@@ -124,15 +306,25 @@ def _stable_repr(value: Any) -> str:
         return "unknown"
 
 
+def _archive_field(key: str, value: Any) -> Any:
+    validator = _ARCHIVE_FIELDS.get(key)
+    if validator is None:
+        return f"<omitted:{fingerprint(_stable_repr(value))}>"
+    checked = validator(value)
+    if checked is None:
+        return f"<omitted:{fingerprint(_stable_repr(value))}>"
+    return checked
+
+
 def _archive_structured(record: Mapping[str, Any]) -> dict:
     """A structured log line reduced to validated, bounded metadata."""
     out: dict[str, Any] = {}
     dropped = 0
     for key, value in record.items():
-        if key in _ARCHIVE_FIELDS:
-            out[str(key)] = _archive_scalar(value)
-        else:
+        if not isinstance(key, str) or key not in _ARCHIVE_FIELDS:
             dropped += 1
+            continue
+        out[key] = _archive_field(key, value)
     if dropped:
         out["fields_omitted"] = dropped
     return out
@@ -220,23 +412,106 @@ def _safe_read_tail(path: Path, limit: int = 512 * 1024) -> str:
     return "\n".join(out)
 
 
-def archive_safe(value: Any, _depth: int = 0) -> Any:
-    """Reduce any in-process structure to what may be shared.
+#: The report is built to a declared shape rather than walked generically.
+#:
+#: A generic walk has to answer "is this value safe" with one rule, and that is
+#: the question that cannot be answered without knowing the field: a 35-char
+#: token and a version string are the same shape. So the schema names what may
+#: appear, and everything else is counted rather than rendered. Nothing here
+#: calls `str()` or `repr()` on a value or a key -- an object the encoder does
+#: not understand is dropped, not stringified, because `default=str` was
+#: exactly that bypass.
+_REPORT_SCHEMA: dict[str, Any] = {
+    "environment": {
+        "python": _v_version,
+        "platform": _v_enum(_SYSTEMS),
+        "release": _v_version,
+        "machine": _v_enum(_ARCHITECTURES),
+        "openai4s": _v_version,
+    },
+    "security": {
+        "permissions": {
+            "supported": _v_bool,
+            "platform": _v_enum(_SYS_PLATFORMS),
+            "data_dir_owner_only": _v_bool,
+            "db_owner_only": _v_bool,
+            "status": _v_lower_enum(_ARCHIVE_STATUSES),
+            "error_type": _v_type_name,
+        },
+        "schema": {
+            "version": _v_number,
+            "expected": _v_number,
+            "current": _v_bool,
+            "applied": [
+                {
+                    "version": _v_number,
+                    "applied_at": _v_number,
+                    # Variable text from a table this archive does not own. The
+                    # version number already says which migrations ran, and an
+                    # enumerated set of names would go stale *silently* the day
+                    # someone adds one.
+                    "name": _v_identity,
+                    "checksum": _v_identity,
+                }
+            ],
+            "status": _v_lower_enum(_ARCHIVE_STATUSES),
+            "error_type": _v_type_name,
+        },
+        "secret_store": {
+            "mode": _v_posture_mode,
+            "backend": _v_enum(_SECRET_BACKENDS),
+            "secure": _v_bool,
+            "persistent": _v_bool,
+            "status": _v_lower_enum(_ARCHIVE_STATUSES),
+            "error_type": _v_type_name,
+        },
+        "kernel_sandbox": _v_posture_mode,
+        "compute_confinement": _v_posture_mode,
+        "secret_store_mode": _v_posture_mode,
+        "egress": _v_posture_mode,
+        "structured_logs": _v_posture_mode,
+    },
+}
 
-    `report.json` is assembled here rather than read off disk, which is exactly
-    why it read as trusted -- but `environment_report()` and
-    `security_posture()` both reach out to the machine, and whatever they bring
-    back is free text the moment it is written into the archive.
-    """
-    if _depth > 8:
-        return "<too-deep>"
-    if isinstance(value, Mapping):
-        return {
-            str(key)[:80]: archive_safe(item, _depth + 1) for key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [archive_safe(item, _depth + 1) for item in value]
-    return _archive_scalar(value)
+
+def _archive_to_schema(value: Any, schema: Any) -> tuple[Any, int]:
+    """Project `value` onto `schema`. Returns the value and how much was cut."""
+    dropped = 0
+    if isinstance(schema, dict):
+        if not isinstance(value, Mapping):
+            return None, 1
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or key not in schema:
+                # Never `str(key)`: a mapping key can be an object whose
+                # `__str__` this report does not own.
+                dropped += 1
+                continue
+            projected, cut = _archive_to_schema(item, schema[key])
+            dropped += cut
+            if projected is not None:
+                out[key] = projected
+        if dropped:
+            out["fields_omitted"] = dropped
+        return out, 0
+    if isinstance(schema, list):
+        if not isinstance(value, (list, tuple)):
+            return None, 1
+        items = []
+        for item in value:
+            projected, cut = _archive_to_schema(item, schema[0])
+            dropped += cut
+            if projected is not None:
+                items.append(projected)
+        return items, dropped
+    checked = schema(value)
+    return (checked, 0) if checked is not None else (None, 1)
+
+
+def archive_safe(report: Mapping[str, Any]) -> dict:
+    """The shareable projection of the in-process report."""
+    projected, _dropped = _archive_to_schema(report, _REPORT_SCHEMA)
+    return projected if isinstance(projected, dict) else {}
 
 
 def environment_report() -> dict:
@@ -261,11 +536,9 @@ def _version() -> str:
 
 def _probe_failure(exc: BaseException) -> dict:
     """What a failed posture probe is allowed to say in a shareable report."""
-    try:
-        kind = type(exc).__name__
-    except Exception:  # noqa: BLE001
-        kind = "unknown"
-    return {"status": "unavailable", "error_type": kind}
+    from openai4s.server.errors import safe_type_name
+
+    return {"status": "unavailable", "error_type": safe_type_name(exc)}
 
 
 def security_posture(cfg: Any) -> dict:
@@ -358,11 +631,16 @@ def build_bundle(cfg: Any, destination: Path) -> dict:
             collected = {
                 path for pattern in _LOG_PATTERNS for path in logs_dir.glob(pattern)
             }
-            for log in sorted(collected):
+            # Numbered by the archive, never named after the file on disk. A
+            # log's *name* is attacker-influenced the moment anything writes
+            # one named after a token, and it lands in two places no content
+            # scrubber looks: the ZIP member name and the MANIFEST listing it.
+            for index, log in enumerate(sorted(collected), start=1):
                 if not log.is_file():
                     continue
-                bundle.writestr(f"logs/{log.name}", _safe_read_tail(log))
-                included.append(f"logs/{log.name}")
+                member = f"logs/log-{index:04d}.json"
+                bundle.writestr(member, _safe_read_tail(log))
+                included.append(member)
         for name in _NEVER_COLLECT:
             if (data_dir / name).exists():
                 excluded.append(
@@ -370,9 +648,7 @@ def build_bundle(cfg: Any, destination: Path) -> dict:
                 )
         bundle.writestr(
             "MANIFEST.json",
-            json.dumps(
-                archive_safe({"included": included, "excluded": excluded}), indent=2
-            ),
+            json.dumps({"included": included, "excluded": excluded}, indent=2),
         )
 
     try:
