@@ -993,6 +993,9 @@ class Store:
     # --- migration (add columns missing from a pre-existing DB) -----------
     _MIGRATIONS = {
         "messages": [("branch_id", "TEXT")],
+        # Which in-flight request holds this pin. A reservation is what
+        # makes admission exactly-once rather than at-most-once.
+        "annotations": [("reservation_id", "TEXT")],
         "shares": [("expires_at", "INTEGER")],
         "frames": [
             ("task_summary", "TEXT"),
@@ -3308,6 +3311,21 @@ class Store:
 
     def mark_annotations_sent(self, annotation_ids: list[str]) -> None:
         self._annotations.mark_sent(annotation_ids)
+
+    def reserve_annotations(
+        self, *, root_frame_id: str, annotation_ids: list[str], reservation_id: str
+    ) -> list[dict]:
+        return self._annotations.reserve(
+            root_frame_id=root_frame_id,
+            annotation_ids=annotation_ids,
+            reservation_id=reservation_id,
+        )
+
+    def release_annotations(self, reservation_id: str) -> int:
+        return self._annotations.release(reservation_id)
+
+    def finalize_annotations_sent(self, reservation_id: str) -> int:
+        return self._annotations.finalize_sent(reservation_id)
 
     def delete_annotation(self, annotation_id: str) -> None:
         self._annotations.delete(annotation_id)

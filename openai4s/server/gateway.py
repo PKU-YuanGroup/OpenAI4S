@@ -9457,21 +9457,45 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # can regenerate / edit the file accordingly.
                 ann_ids = b.get("annotation_ids") or []
                 annos: list = []
+                reservation_id = ""
                 if ann_ids:
-                    annos = [store.get_annotation(a) for a in ann_ids]
-                    annos = [a for a in annos if a and a.get("root_frame_id") == fid]
+                    # Reserved, not read. `get_annotation` filters no status and
+                    # dedupes nothing, so an already-`sent` id re-entered the
+                    # prompt, a repeated id entered twice, and two concurrent
+                    # requests both carried the same open pin. The reservation
+                    # is one atomic UPDATE, so exactly one request claims a
+                    # given pin and only what it actually claimed is quoted.
+                    reservation_id = f"resv-{uuid.uuid4().hex[:16]}"
+                    annos = store.reserve_annotations(
+                        root_frame_id=fid,
+                        annotation_ids=ann_ids,
+                        reservation_id=reservation_id,
+                    )
                     block = _format_annotations_block(annos)
                     if block:
                         req = (req + "\n\n" + block).strip() if req.strip() else block
-                job = runner.submit_message(
-                    fid,
-                    pid,
-                    req,
-                    b.get("model"),
-                    plan=bool(b.get("plan")),
-                    annos=annos,
-                    explore=bool(b.get("explore")),
-                )
+                try:
+                    job = runner.submit_message(
+                        fid,
+                        pid,
+                        req,
+                        b.get("model"),
+                        plan=bool(b.get("plan")),
+                        annos=annos,
+                        explore=bool(b.get("explore")),
+                    )
+                except BaseException:
+                    # Every synchronous refusal lands here -- the 413 on an
+                    # oversized message, a 409, a 429, and the `Thread.start`
+                    # failure that would otherwise strand the turn. The pins go
+                    # back to `open` so the composer can retry with them, and
+                    # only this request's reservation is released.
+                    if reservation_id:
+                        try:
+                            store.release_annotations(reservation_id)
+                        except Exception:  # noqa: BLE001
+                            traceback.print_exc()
+                    raise
                 # Consumed only by a message the server accepted, and that
                 # ordering is the whole guarantee. This ran *before*
                 # `submit_message`, which is where every refusal this route can
@@ -9487,8 +9511,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 #
                 # Still guarded on `annos` for the original reason: a batch
                 # filtered empty by the frame check flips nothing.
-                if annos:
-                    store.mark_annotations_sent([a["annotation_id"] for a in annos])
+                annotations_state = "none"
+                if reservation_id:
+                    annotations_state = "sent"
+                    try:
+                        store.finalize_annotations_sent(reservation_id)
+                    except Exception:  # noqa: BLE001
+                        # The turn is accepted and running. Reporting an HTTP
+                        # failure now would tell the client the message was not
+                        # taken, and it would retry -- sending the work twice.
+                        # The pins stay `reserved`, which is neither lost nor
+                        # double-spent, and the answer says so rather than
+                        # claiming they were consumed.
+                        annotations_state = "pending"
+                        traceback.print_exc()
                 if b.get("wait", True) is False:
                     snapshot = runner.executions.snapshot(fid)
                     queued = next(
@@ -9517,6 +9553,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             # to -- and it was the only one of the three that
                             # did not say.
                             "request_id": job.request_id,
+                            # What became of the pins this message carried.
+                            # `sent` means consumed exactly once; `pending`
+                            # means the turn was accepted but the consume did
+                            # not confirm, so they are still reserved -- not
+                            # lost, not double-spent, and not to be retried
+                            # blindly. The reservation id is what a reconcile
+                            # asks about.
+                            **(
+                                {
+                                    "annotations": annotations_state,
+                                    "annotation_reservation_id": reservation_id,
+                                }
+                                if reservation_id
+                                else {}
+                            ),
                         },
                         202,
                     )

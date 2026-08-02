@@ -5638,12 +5638,21 @@ async function send(text, opts) {
   }
   catch (e) {
     if (annIds.length) {
-      // POST failed → annotations were never consumed server-side. That is true
-      // now and was not when this was written: the route burned the pins to
-      // 'sent' *before* `submit_message`, which is where every refusal it can
-      // make happens, and `mark_sent` is one-way. So a 413/409/429 destroyed
-      // the comments while this comment said it had not, and the reconcile
-      // below faithfully reported the loss as success. Reconcile with the
+      // A POST that failed *synchronously* released its reservation server-side,
+      // so the pins are `open` again and this reload will say so. That is a
+      // narrower claim than the one this comment used to make. It said "the
+      // POST failed, therefore they were never consumed" -- which was false
+      // twice over. The route used to burn them to 'sent' *before*
+      // `submit_message`, where every refusal happens, so a 413/409/429
+      // destroyed them; and a failure with no response at all (a dropped
+      // connection after the server accepted) is not a refusal, so treating it
+      // as one reopens pins the running turn is already carrying.
+      //
+      // Hence: reconcile from the server rather than deciding locally, and the
+      // local revert below is only the fallback for when the server cannot be
+      // reached at all -- where leaving the comments visible is the lesser
+      // wrong, because a duplicate is recoverable and a silent loss is not.
+      // Reconcile with the
       // server if reachable; if that reload also fails, revert the optimistic
       // "sent" flip locally so the pending comments stay visible for a retry
       // instead of vanishing from the composer.

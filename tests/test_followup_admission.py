@@ -322,3 +322,170 @@ def test_an_accepted_message_still_consumes_them(client):
 
     assert status in (200, 202), status
     assert _status(client, annotation_id) == "sent"
+
+
+# --------------------------------------------------------------------------
+# exactly-once admission, not at-most-once
+# --------------------------------------------------------------------------
+
+
+def test_an_already_sent_pin_does_not_re_enter_a_prompt(client):
+    """`get_annotation` filtered no status, so a consumed pin came back."""
+    annotation_id = _pin(client)
+    status, _ = client.message("first", annotation_ids=[annotation_id])
+    assert status in (200, 202), status
+    assert _status(client, annotation_id) == "sent"
+
+    seen: list = []
+    real = client.runner.submit_message
+
+    def spy(frame, project, text, *args, **kwargs):
+        seen.append(text)
+        return real(frame, project, text, *args, **kwargs)
+
+    client.runner.submit_message = spy  # type: ignore[method-assign]
+    try:
+        client.message("second", annotation_ids=[annotation_id])
+    finally:
+        client.runner.submit_message = real  # type: ignore[method-assign]
+
+    assert seen, "the second message never reached the runner"
+    assert "look at this peak" not in seen[0], seen[0]
+
+
+def test_a_repeated_id_is_carried_once(client):
+    annotation_id = _pin(client)
+    seen: list = []
+    real = client.runner.submit_message
+
+    def spy(frame, project, text, *args, **kwargs):
+        seen.append(text)
+        return real(frame, project, text, *args, **kwargs)
+
+    client.runner.submit_message = spy  # type: ignore[method-assign]
+    try:
+        client.message(
+            "go", annotation_ids=[annotation_id, annotation_id, annotation_id]
+        )
+    finally:
+        client.runner.submit_message = real  # type: ignore[method-assign]
+
+    assert seen[0].count("look at this peak") == 1, seen[0]
+
+
+def test_two_concurrent_requests_do_not_both_carry_one_pin(client):
+    """A reservation is one atomic UPDATE, so exactly one wins the row.
+
+    Both threads are held at a barrier so they reserve as close to
+    simultaneously as the runtime allows; without the atomic claim both read
+    the same `open` row and both quote it.
+    """
+    import threading
+
+    annotation_id = _pin(client)
+    start = threading.Barrier(2)
+    carried: list[str] = []
+    lock = threading.Lock()
+    real = client.runner.submit_message
+
+    def spy(frame, project, text, *args, **kwargs):
+        with lock:
+            carried.append(text)
+        return real(frame, project, text, *args, **kwargs)
+
+    client.runner.submit_message = spy  # type: ignore[method-assign]
+
+    def send(label):
+        start.wait(timeout=5)
+        client.message(label, annotation_ids=[annotation_id])
+
+    threads = [threading.Thread(target=send, args=(f"turn-{n}",)) for n in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+    finally:
+        client.runner.submit_message = real  # type: ignore[method-assign]
+
+    with_pin = [text for text in carried if "look at this peak" in text]
+    assert len(with_pin) == 1, f"{len(with_pin)} messages carried the same pin"
+    assert _status(client, annotation_id) == "sent"
+
+
+def test_a_finalize_failure_after_acceptance_is_not_reported_as_a_refusal(
+    client, monkeypatch
+):
+    """The turn is running. Answering "not accepted" would make the client
+    retry and send the work twice; the pins stay reserved, which is neither
+    lost nor double-spent, and the answer says `pending` rather than claiming
+    they were consumed."""
+    annotation_id = _pin(client)
+
+    def boom(reservation_id):
+        raise RuntimeError("the store went away")
+
+    monkeypatch.setattr(client.store, "finalize_annotations_sent", boom)
+    status, _body = client.message("go", annotation_ids=[annotation_id])
+
+    assert status in (200, 202), status
+    assert _status(client, annotation_id) == "reserved"
+
+
+def test_a_refused_message_releases_only_its_own_reservation(client):
+    """Two pins, one carried by a refused message and one by nothing. The
+    release must put back exactly what this request claimed."""
+    mine = _pin(client)
+    theirs = _pin(client, body="somebody else's pin")
+
+    status, _ = client.message("x" * (8 * 1024 * 1024), annotation_ids=[mine])
+    assert status == 413, status
+    assert _status(client, mine) == "open"
+    assert _status(client, theirs) == "open"
+
+
+def test_an_id_that_is_not_a_string_never_reaches_the_query(client):
+    """`annotation_ids` comes from a JSON body, so it can hold a number, a
+    nested object, or anything else the client sends. A reservation must not
+    pass one of those to the store as a query parameter."""
+    annotation_id = _pin(client)
+    status, _ = client.message(
+        "go", annotation_ids=[annotation_id, 17, {"nested": "object"}, None, ""]
+    )
+
+    assert status in (200, 202), status
+    assert _status(client, annotation_id) == "sent"
+
+
+def test_the_accepted_answer_says_what_became_of_the_pins(client):
+    """A 202 says "accepted, watch elsewhere", so it is the one place a client
+    can learn whether its pins were consumed -- and whether it may retry."""
+    annotation_id = _pin(client)
+    status, body = client.message("go", annotation_ids=[annotation_id], wait=False)
+
+    assert status == 202, (status, body)
+    assert body["annotations"] == "sent"
+    assert body["annotation_reservation_id"]
+
+
+def test_a_message_with_no_pins_says_nothing_about_them(client):
+    """An absent field and a field saying "none" are different claims; the
+    second invites a client to reconcile something that never existed."""
+    status, body = client.message("go", wait=False)
+    assert status == 202, (status, body)
+    assert "annotations" not in body
+    assert "annotation_reservation_id" not in body
+
+
+def test_a_pending_consume_is_reported_as_pending(client, monkeypatch):
+    def boom(reservation_id):
+        raise RuntimeError("the store went away")
+
+    monkeypatch.setattr(client.store, "finalize_annotations_sent", boom)
+    annotation_id = _pin(client)
+    status, body = client.message("go", annotation_ids=[annotation_id], wait=False)
+
+    assert status == 202, (status, body)
+    assert body["annotations"] == "pending"
+    # ...and the id it names is the one a reconcile would ask about.
+    assert _status(client, annotation_id) == "reserved"
