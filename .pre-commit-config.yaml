@@ -14,7 +14,7 @@ repos:
       - id: isort
         args: ["--profile", "black"]
   - repo: https://github.com/psf/black
-    rev: 23.3.0
+    rev: 26.5.1
     hooks:
       - id: black
   # astral-sh is the canonical home; charliermarsh/ruff-pre-commit is a
