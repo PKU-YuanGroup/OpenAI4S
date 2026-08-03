@@ -79,6 +79,58 @@ def resolve_profile_key(store: Any, profile: Mapping[str, Any]) -> str:
         return ""
 
 
+def _probe_detail(error: Exception, public: dict) -> str:
+    """What a failed probe may say, chosen from controlled signals only.
+
+    The old line was `redact_text(f"{type(error).__name__}: {error}")[:400]`,
+    defended by a comment arguing that a rewritten message "would lose the one
+    detail that tells a user whether it is their key, their model name or their
+    network". The concern is right and this answers it -- by branching on
+    `status` and `error_code`, which `TransportError` sets deliberately
+    (`llm/models.py`), rather than on the provider's prose.
+
+    `redact_text` is not sufficient here and `errors.py` already removed it for
+    this reason. Measured on a 403 body: a credential-shaped token is replaced,
+    but `10.4.2.17:8443`, `/Users/<name>/.certs/corp-ca.pem` and
+    `org-Acme-Research-Lab` all survive. The redaction is shape-based and a
+    provider body carries more than credentials -- an absolute path with the
+    account name on it, internal network topology, private model identifiers --
+    into a 200 body and the Customize -> Models panel.
+
+    `gateway._friendly_error` solved exactly this for the turn path and its
+    docstring lays out the same reasoning. This is the surface that treatment
+    was never extended to.
+    """
+    status = getattr(error, "status", None)
+    code = str(getattr(error, "error_code", "") or "")
+    if status == 401 or code in ("invalid_api_key", "unauthorized"):
+        return (
+            "the provider rejected the credential; check the API key for this "
+            "profile in Customize -> Models"
+        )
+    if status == 403 or code == "forbidden":
+        return (
+            "the credential is valid but not permitted to use this model; "
+            "check the model name and the account's entitlements"
+        )
+    if status == 404 or code in ("model_not_found", "not_found"):
+        return "the provider does not have a model by that name at this endpoint"
+    if status == 429 or code == "rate_limited":
+        return "the provider is rate-limiting this credential; try again shortly"
+    if isinstance(status, int) and 500 <= status < 600:
+        return (
+            "the provider returned a server error; this is not a configuration problem"
+        )
+    if isinstance(error, (TimeoutError, ConnectionError, OSError)):
+        return (
+            "the endpoint could not be reached; check the base URL and this "
+            "machine's network access"
+        )
+    # Unknown provenance. `public_exception` already chose the generic sentence
+    # and wrote the original to the diagnostic log under its own surface.
+    return str(public.get("error") or "the probe failed")
+
+
 class ModelProfileService:
     """Own migration, CRUD, activation, and public projection of model profiles."""
 
@@ -184,15 +236,17 @@ class ModelProfileService:
                 max_tokens=1,
             )
         except Exception as error:  # noqa: BLE001 - reported, never raised
-            # The provider's own words, redacted. A rewritten message would
-            # lose the one detail that tells a user whether it is their key,
-            # their model name or their network.
-            from openai4s.observability import redact_text
+            from openai4s.server.errors import public_exception
 
+            public, _status = public_exception(
+                error, surface="model_profile:probe", error_code="probe_failed"
+            )
             return {
                 "reachable": False,
                 "state": "unreachable",
-                "detail": redact_text(f"{type(error).__name__}: {error}")[:400],
+                "detail": _probe_detail(error, public),
+                "code": public.get("code"),
+                "request_id": public.get("request_id"),
                 "contacted": True,
             }
         return {
