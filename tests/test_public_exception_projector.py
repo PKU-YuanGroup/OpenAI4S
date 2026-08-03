@@ -592,14 +592,20 @@ def test_an_unreadable_attachment_card_names_the_file_and_nothing_else():
     def unreadable(self, *args, **kwargs):
         raise OSError(13, "Permission denied", ABS_PATH)
 
-    original_read = artifact_refs.Path.read_bytes
+    # `open`, not `read_bytes`: `_read_snapshot` reads through a file handle so
+    # it can stop one byte past the budget. Patching `read_bytes` left this
+    # test passing on the FileNotFoundError from opening ABS_PATH -- the right
+    # assertion driven by the wrong error, on a branch it never entered.
+    original_open = artifact_refs.Path.open
     original_isfile = artifact_refs.Path.is_file
-    artifact_refs.Path.read_bytes = unreadable
+    artifact_refs.Path.open = unreadable
     artifact_refs.Path.is_file = lambda self: True
     try:
-        _text, problem = artifact_refs._read_snapshot(metadata, "notes.txt")
+        _text, problem, _sent, _cut = artifact_refs._read_snapshot(
+            metadata, "notes.txt"
+        )
     finally:
-        artifact_refs.Path.read_bytes = original_read
+        artifact_refs.Path.open = original_open
         artifact_refs.Path.is_file = original_isfile
 
     assert problem is not None

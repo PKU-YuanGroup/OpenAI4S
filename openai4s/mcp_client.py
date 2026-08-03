@@ -82,6 +82,12 @@ class _BoundedLineReader:
     object is not a frame, and returning it would desynchronise the next read.
     ``keep_partial`` is for stderr, where there is no frame to desynchronise
     and a truncated prefix is still the diagnostic the user needs.
+
+    ``frames_dropped`` / ``bytes_dropped`` exist because the refusal used to be
+    invisible. A dropped frame came back as ``""``, the read loop skipped it as
+    it skips a blank line, and the only thing the caller ever saw was its own
+    deadline expiring -- so a connector that answered promptly and too largely
+    was reported, and torn down, as one that did not answer at all.
     """
 
     def __init__(
@@ -95,10 +101,18 @@ class _BoundedLineReader:
         self._limit = int(limit)
         self._keep_partial = bool(keep_partial)
         self._buf = bytearray()
+        self.frames_dropped = 0
+        self.bytes_dropped = 0
 
-    def _finish(self, kept: bytearray, over: bool) -> str:
+    def _finish(self, kept: bytearray, over: bool, discarded: int = 0) -> str:
         if over and not self._keep_partial:
+            # The prefix goes with the rest: nothing of this frame is kept, so
+            # the loss is the whole line, not the tail that did not fit.
+            self.frames_dropped += 1
+            self.bytes_dropped += len(kept) + discarded
             return ""
+        if over:
+            self.bytes_dropped += discarded
         data = bytes(kept)
         if over:
             # A budget cut lands wherever the byte count ran out, which is
@@ -123,14 +137,17 @@ class _BoundedLineReader:
             return None
         kept = bytearray()
         over = False
+        discarded = 0
 
         def _absorb(data: bytes | bytearray) -> None:
-            nonlocal over
+            nonlocal over, discarded
             if over:
+                discarded += len(data)
                 return
             room = self._limit - len(kept)
             if len(data) > room:
                 kept.extend(data[:room])
+                discarded += len(data) - room
                 over = True
             else:
                 kept.extend(data)
@@ -140,7 +157,7 @@ class _BoundedLineReader:
             if newline >= 0:
                 _absorb(self._buf[:newline])
                 del self._buf[: newline + 1]
-                return self._finish(kept, over)
+                return self._finish(kept, over, discarded)
             _absorb(self._buf)
             # Cleared whether or not it was absorbed: past the budget the rest
             # of this line is discarded as it arrives, which is the only way the
@@ -150,7 +167,7 @@ class _BoundedLineReader:
             if not chunk:
                 if not kept and not over:
                     return None
-                return self._finish(kept, over)
+                return self._finish(kept, over, discarded)
             self._buf.extend(chunk)
 
 
@@ -231,6 +248,21 @@ class MCPTimeout(MCPError):
     """
 
 
+class MCPOversizedResponse(MCPError):
+    """The connector answered, and the answer was too large to accept.
+
+    Deliberately a sibling of `MCPTimeout` and not a subclass of it. The two
+    states differ in the one way that matters to the caller above: a connector
+    that missed its deadline is one the next caller should not inherit
+    mid-conversation, and a connector that replied promptly with four megabytes
+    is working. Reported as a timeout, the second was torn down and respawned
+    for doing its job -- and the agent was told it had waited, which is not
+    what happened and not a thing it can act on.
+    """
+
+    error_code = "response_too_large"
+
+
 def _connector_environment(
     explicit: Mapping[str, Any] | None = None,
     *,
@@ -299,6 +331,13 @@ class MCPConnection:
         self._abandoned: dict[int, None] = {}
         self._closed = threading.Event()
         self._failure: str | None = None
+        #: Set by the reader thread when it refuses a frame. `_request` reads
+        #: the timestamp, not the count: the question it has to answer is not
+        #: "did this connector ever overflow" but "did it overflow after I
+        #: sent", which is the only ordering that makes the drop *this*
+        #: request's answer rather than an earlier one's.
+        self._oversized_frames = 0
+        self._oversized_at = 0.0
         self._stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
         self._proc = subprocess.Popen(
             command,
@@ -414,11 +453,21 @@ class MCPConnection:
         stream = self._proc.stdout
         reader = _BoundedLineReader(stream)
         invalid_ids = 0
+        dropped = 0
         try:
             while True:
                 line = reader.readline()
                 if line is None:
                     break
+                if reader.frames_dropped > dropped:
+                    # Counted here rather than inferred from the `""` return:
+                    # a blank line reads as `""` too, and calling that an
+                    # oversized frame would convert an idle connector's
+                    # keepalive into a refusal nobody made.
+                    dropped = reader.frames_dropped
+                    with self._lock:
+                        self._oversized_frames = dropped
+                        self._oversized_at = time.monotonic()
                 line = line.strip()
                 if not line:
                     continue
@@ -467,6 +516,7 @@ class MCPConnection:
 
     def _request(self, method: str, params: dict | None = None) -> dict:
         deadline = time.monotonic() + self._timeout
+        sent_at = 0.0
         with self._lock:
             if self._closed.is_set():
                 raise MCPError(self._failure or "MCP server closed the connection")
@@ -497,6 +547,7 @@ class MCPConnection:
             except Exception:
                 self._pending.pop(mid, None)
                 raise
+            sent_at = time.monotonic()
         try:
             msg = waiter.get(timeout=max(0.0, deadline - time.monotonic()))
         except queue.Empty:
@@ -508,6 +559,17 @@ class MCPConnection:
                     # late reply for a live one, and an id this old stopped
                     # being plausible thousands of requests ago.
                     self._abandoned.pop(next(iter(self._abandoned)), None)
+                # Same bookkeeping either way -- the id is abandoned whether the
+                # answer never came or came and was refused. Only the state the
+                # caller is handed differs, and it differs because the two are
+                # different facts about the connector.
+                refused = self._oversized_at > sent_at
+            if refused:
+                raise MCPOversizedResponse(
+                    f"MCP connector answered {method!r} with a frame larger "
+                    f"than the {_MAX_FRAME_BYTES:,}-byte limit; the reply was "
+                    "refused, not lost"
+                ) from None
             raise MCPTimeout(
                 f"MCP request {method!r} exceeded {self._timeout:g}s"
             ) from None
@@ -786,6 +848,14 @@ class MCPManager:
                 ) from None
             raise
         except MCPError:
+            # `MCPOversizedResponse` arrives here, and deliberately has no
+            # clause of its own. What decides eviction is the connection's
+            # state, not the size of the reply the daemon refused: a connector
+            # still serving is kept -- tearing it down would turn one refused
+            # answer into a respawn, the exact mistake `_evict`'s docstring is
+            # about -- and one that emitted the frame and then exited is
+            # dropped, which a dedicated `raise` clause would have prevented.
+            # That is the whole reason the class is not a `MCPTimeout`.
             if conn.faulted():
                 self._evict(connector_id, conn)
             raise

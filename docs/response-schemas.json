@@ -9622,11 +9622,17 @@
                       "materialized_target": {
                         "type": "null"
                       },
+                      "sent_bytes": {
+                        "type": "integer"
+                      },
                       "sha256": {
                         "type": "string"
                       },
                       "source_session": {
                         "type": "string"
+                      },
+                      "truncated": {
+                        "type": "boolean"
                       },
                       "version_id": {
                         "type": "string"
@@ -9636,6 +9642,7 @@
                       "artifact_id",
                       "display_name",
                       "materialized_target",
+                      "sent_bytes",
                       "sha256",
                       "source_session",
                       "version_id"
