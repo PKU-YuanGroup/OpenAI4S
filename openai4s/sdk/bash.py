@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from openai4s.bash_capability import CAPABILITY_VERSION, command_digest
+from openai4s.execution.budget import channel_counters
 from openai4s.execution.process_group import (
     await_group_exit,
     group_alive,
@@ -39,17 +40,23 @@ class _BoundedTail:
     keeping.
     """
 
-    __slots__ = ("_budget", "_parts", "_length", "truncated")
+    __slots__ = ("_budget", "_parts", "_length", "truncated", "seen")
 
     def __init__(self, budget: int) -> None:
         self._budget = budget
         self._parts: deque[str] = deque()
         self._length = 0
         self.truncated = False
+        #: Everything that arrived, counted before anything is dropped. The
+        #: retained length alone cannot answer "was this cut?" -- it is exactly
+        #: the budget both for a command that overran it and for one that
+        #: stopped on it.
+        self.seen = 0
 
     def feed(self, text: str) -> None:
         if not text:
             return
+        self.seen += len(text)
         self._parts.append(text)
         self._length += len(text)
         while self._length > self._budget and len(self._parts) > 1:
@@ -60,6 +67,10 @@ class _BoundedTail:
             self._parts.append(head[-self._budget :])
             self._length = self._budget
             self.truncated = True
+
+    @property
+    def retained(self) -> int:
+        return self._length
 
     def value(self) -> str:
         return "".join(self._parts)
@@ -466,8 +477,29 @@ class BashExecutor:
             **consume_spec,
             "status": status,
             "exit_code": exit_code,
-            "stdout": stdout[-30000:],
-            "stderr": stderr[-8000:],
+            # Already bounded by `_BoundedTail`, so the slice was a no-op that
+            # spelled the same two budgets a second time, in digits.
+            "stdout": stdout[-_STDOUT_BUDGET_CHARS:],
+            "stderr": stderr[-_STDERR_BUDGET_CHARS:],
+            # The cut, stated. Without these the audit below recorded
+            # `chars: 30000` and a sha256 of the *tail* as the command's stdout
+            # digest -- a record indistinguishable from a command that printed
+            # thirty thousand characters, which is a wrong answer rather than a
+            # missing one. `workspace_diff` two lines down has reported its own
+            # truncation all along; the rule was stated here and applied only to
+            # the member that had not been cut.
+            **channel_counters(
+                prefix="stdout_",
+                unit="chars",
+                seen=out_sink.seen,
+                retained=out_sink.retained,
+            ),
+            **channel_counters(
+                prefix="stderr_",
+                unit="chars",
+                seen=err_sink.seen,
+                retained=err_sink.retained,
+            ),
             "duration_ms": duration_ms,
             "workspace_diff": _workspace_diff(
                 before,
@@ -488,8 +520,23 @@ class BashExecutor:
             raise launch_error
         return {
             "exit_code": exit_code,
-            "stdout": stdout[-30000:],
-            "stderr": stderr[-8000:],
+            "stdout": stdout[-_STDOUT_BUDGET_CHARS:],
+            "stderr": stderr[-_STDERR_BUDGET_CHARS:],
+            # The agent that ran the command is the reader with the most to
+            # lose: it reasons over this text and, told nothing, reasons over a
+            # tail as though it were the whole output.
+            **channel_counters(
+                prefix="stdout_",
+                unit="chars",
+                seen=out_sink.seen,
+                retained=out_sink.retained,
+            ),
+            **channel_counters(
+                prefix="stderr_",
+                unit="chars",
+                seen=err_sink.seen,
+                retained=err_sink.retained,
+            ),
             "workdir": str(cwd),
             "duration_ms": duration_ms,
             "workspace_diff": result_spec["workspace_diff"],

@@ -408,6 +408,7 @@ Object.assign(I18N.zh, {
   "cust.importing": "导入中…",
   "cust.jobs.cmdPlaceholder": "bash: 如 \"for i in 1 2 3; do echo $i; sleep 1; done\"；python: 一段脚本",
   "cust.jobs.desc": "把长命令/脚本作为后台任务运行，可查看输出、取消",
+  "cust.jobs.dropped": "· 已丢弃 {0} 字节",
   "cust.jobs.empty": "还没有任务。",
   "cust.jobs.runBtn": "运行",
   "cust.jobs.submitName": "提交任务",
@@ -1336,6 +1337,7 @@ Object.assign(I18N.en, {
   "cust.importing": "Importing…",
   "cust.jobs.cmdPlaceholder": "bash: e.g. \"for i in 1 2 3; do echo $i; sleep 1; done\"; python: a script",
   "cust.jobs.desc": "Run long commands/scripts as background jobs; view output and cancel",
+  "cust.jobs.dropped": "· {0} bytes dropped",
   "cust.jobs.empty": "No jobs yet.",
   "cust.jobs.runBtn": "Run",
   "cust.jobs.submitName": "Submit job",
@@ -8578,7 +8580,10 @@ async function refreshJobList(list) {
     if (j.status === "running" || j.status === "queued") anyRunning = true;
     const row = el("div", "cust-row"); const info = el("div", "info");
     const nm = el("div", "nm"); nm.appendChild(el("span", "job-badge " + j.status, j.status)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "job-cmd", (j.kind + "  " + j.command).slice(0, 80))); info.appendChild(nm);
-    info.appendChild(el("div", "ds", (j.duration_s != null ? j.duration_s + "s" : "") + (j.exit_code != null ? " · exit " + j.exit_code : "")));
+    // The drop, on the row. The job record has carried these counters all
+    // along and the only trace of a cut anywhere in the UI was a notice
+    // prepended inside the output modal, which a reader has to open to see.
+    info.appendChild(el("div", "ds", (j.duration_s != null ? j.duration_s + "s" : "") + (j.exit_code != null ? " · exit " + j.exit_code : "") + (j.truncated ? " " + t("cust.jobs.dropped", (j.dropped_bytes || 0).toLocaleString()) : "")));
     row.appendChild(info);
     const view = el("button", "outline-btn small", t("cust.jobs.viewOutput")); view.onclick = () => showJobOutput(j.id); row.appendChild(view);
     if (j.status === "running" || j.status === "queued") { const cx = el("button", "outline-btn small", t("common.cancel")); cx.onclick = async () => { try { await api(`/compute/jobs/${j.id}/cancel`, { method: "POST" }); await refreshJobList(list); } catch {} }; row.appendChild(cx); }

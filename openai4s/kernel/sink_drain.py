@@ -41,6 +41,8 @@ import time
 import traceback
 from typing import Callable
 
+from openai4s.execution.budget import channel_counters
+
 # How long a read waits before re-checking whether the cell is over. Deliberately
 # `select`, not `sleep`: a fixed poll interval caps throughput at one pipe buffer
 # per interval, which measured 2.3 MB/s at 5 ms and turned that 1.49 s runaway
@@ -233,21 +235,17 @@ class SinkCapture:
         stream accounted as 299,976 — so no counter recovered from it could be
         trusted. These are counted at the only place every byte passes.
         """
+        # Byte-identical to the six hand-written keys and two derived flags
+        # this used to build: it is the reference caller, so the helper is
+        # pinned to the shape that was already on the wire rather than the
+        # other way round.
         return {
-            "stdout_seen_bytes": self._out.seen,
-            "stdout_retained_bytes": self._out.retained,
-            "stdout_dropped_bytes": self._out.dropped,
-            "stderr_seen_bytes": self._err.seen,
-            "stderr_retained_bytes": self._err.retained,
-            "stderr_dropped_bytes": self._err.dropped,
-            # Stated, not left to be derived. A consumer asking "was this cut?"
-            # otherwise has to know that dropped>0 means yes, that a marker in
-            # the text means yes, and that neither is a promise -- and a cell
-            # whose output legitimately ends in the marker's own wording would
-            # answer the text question wrongly. The bytes stay for anyone who
-            # wants the magnitude; these two say the fact.
-            "stdout_truncated": self._out.dropped > 0,
-            "stderr_truncated": self._err.dropped > 0,
+            **channel_counters(
+                prefix="stdout_", seen=self._out.seen, retained=self._out.retained
+            ),
+            **channel_counters(
+                prefix="stderr_", seen=self._err.seen, retained=self._err.retained
+            ),
         }
 
     def close(self) -> None:

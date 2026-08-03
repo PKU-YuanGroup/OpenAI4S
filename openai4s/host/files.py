@@ -115,8 +115,8 @@ class BoundedTextReader:
         #: Bytes actually read from disk: the daemon-side cost of the call.
         self.bytes_read = 0
         #: Characters decoded, whether or not they completed a line or were
-        #: retained. Counted before anything is dropped, because a receipt that
-        #: reports only what survived cannot say how much did not.
+        #: retained. Counted before anything is dropped, because accounting
+        #: that reports only what survived cannot say how much did not.
         self.chars_read = 0
         self.lines_read = 0
         #: The budget ended the scan, not the file.
@@ -179,7 +179,7 @@ class BoundedSelection:
     of a million files cost a million retained entries to answer a
     thousand-entry question. The bound is on what is *held*, not on what is
     *reported*: `seen` still counts everything offered, which is what lets the
-    receipt say how much was dropped rather than only that something was.
+    counters say how much was dropped rather than only that something was.
     """
 
     def __init__(self, limit: int) -> None:
@@ -219,7 +219,7 @@ class BoundedSelection:
         return [(item[0], item[2]) for item in self._items]
 
     def counters(self, *, scan_truncated: bool = False) -> dict[str, Any]:
-        """The truncation receipt every workspace collection tool returns.
+        """The truncation accounting every workspace collection tool returns.
 
         `jobs.py`'s shape: what came back, what was seen, what was dropped, and
         whether anything was. `dropped` is derivable from the other two and is
