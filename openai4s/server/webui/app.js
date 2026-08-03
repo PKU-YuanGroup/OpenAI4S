@@ -5743,12 +5743,17 @@ async function send(text, opts) {
       if (!reloaded) setLocalAnnotationStatus(annIds, refused ? "open" : "pending");
       refreshAllStages(); updateAnnotBadge();
     }
-    // 409 `model_revision_unavailable` is the one send failure the user cannot
-    // do anything about from anywhere else in the app. It says "choose one to
-    // continue" and there was nothing to choose with: the binding is not in
-    // any PATCH allowlist, forking inherits it, and this file had zero
-    // references to the code. So the session was unsendable for good.
-    if (e && e.code === "model_revision_unavailable") {
+    // The two 409s a send can end on that the user cannot resolve from
+    // anywhere else in the app. Both say "choose one to continue" and both are
+    // answered by the same rebind: the binding is in no PATCH allowlist and
+    // forking inherits it, so without this the session is unsendable for good.
+    //
+    // `model_revision_ambiguous` was left out. It is raised when a legacy
+    // session's recorded model matches more than one profile -- the server
+    // refuses to guess, which is right, and then the only remedy was
+    // unreachable. Same predicament, same fix, one code away.
+    if (e && (e.code === "model_revision_unavailable"
+              || e.code === "model_revision_ambiguous")) {
       if (confirm(t("model.rebind.confirm"))) {
         try {
           await api(`/frames/${encodeURIComponent(S.currentId)}/model-binding`, { method: "POST" });

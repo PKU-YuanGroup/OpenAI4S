@@ -5607,6 +5607,21 @@ class SessionRunner:
                     "which configuration this session continues under",
                     "model_revision_ambiguous",
                 )
+            # Zero matches, and this is the case that fell through to the active
+            # profile below -- which is exactly what the comment above this
+            # block forbids. This session ran under a configuration that is not
+            # in the profile list any more, so nothing here knows which one it
+            # was. Binding it to whatever happens to be active now does not
+            # recover the answer; it writes a different one and stamps a
+            # revision on it, so the session's own record then claims it ran
+            # under a configuration it never used.
+            #
+            # Unbound is the honest state and an already-supported one: it is
+            # what the `active is None` branch below returns, for an install
+            # driven entirely by `.env`. The session keeps running on the
+            # global configuration and `POST /frames/{id}/model-binding` is
+            # there when the user wants to name one.
+            return {"model_profile_id": "", "model_profile_revision": 0, "bound": False}
 
         active_id = str(self.store.get_setting("active_model_profile") or "")
         active = next((item for item in profiles if item.get("id") == active_id), None)
