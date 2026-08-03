@@ -124,7 +124,14 @@ class ArtifactRef(dict):
     the local copy, and nothing said so. Six fields, because six is what it
     takes to answer "what did the model actually read":
 
-    ``artifact_id`` / ``version_id`` / ``sha256``  -- the bytes that were sent.
+    ``artifact_id`` / ``version_id`` / ``sha256``  -- the version referenced.
+                            ``sha256`` is that version's checksum, which is the
+                            bytes that were sent only when ``truncated`` is
+                            absent. This line used to read "the bytes that were
+                            sent" unconditionally, which was false for any file
+                            over the inline budget: the block read as the whole
+                            file and the digest asserted the model had seen it.
+    ``sent_bytes`` / ``truncated`` -- how much actually reached the prompt.
     ``display_name``     -- what the user called it, which need not be the
                             filename the copy landed under.
     ``source_session``   -- the session the reference named.
@@ -143,15 +150,22 @@ def _artifact_ref(
     display_name: str,
     source_session: str,
     materialized_target: str | None,
+    sent_bytes: int = 0,
+    truncated: bool = False,
 ) -> ArtifactRef:
-    return ArtifactRef(
+    ref = ArtifactRef(
         artifact_id=str(metadata.get("artifact_id") or ""),
         version_id=str(metadata.get("version_id") or ""),
         sha256=str(metadata.get("checksum") or ""),
         display_name=display_name,
         source_session=source_session,
         materialized_target=materialized_target,
+        sent_bytes=int(sent_bytes),
     )
+    # Present only when true, so an untruncated record keeps the shape it had.
+    if truncated:
+        ref["truncated"] = True
+    return ref
 
 
 def _is_binary(filename: str) -> bool:
@@ -216,15 +230,36 @@ def resolve_message_refs(
     blocks: list[str] = []
     seen: set[str] = set()
 
-    def _record(ref: dict | None) -> None:
+    def _record(ref: dict | None, token: str) -> None:
         """Announce a reference only once its bytes are in the prompt.
 
         Recording one that lost the budget race below would make the durable
         record claim the model was handed a file it never saw -- provenance
         that is wrong rather than absent, which is worse because it is
         believed.
+
+        A partial send is named here, beside `ref_budget_exhausted`, and in
+        this one place rather than in each `_resolve_*` branch -- the two
+        spellings of a reference are two ways of writing the same request and
+        must not be able to drift into telling the user different things.
         """
-        if ref is not None and on_resolved is not None:
+        if ref is None:
+            return
+        if ref.get("truncated"):
+            sent = int(ref.get("sent_bytes") or 0)
+            meta = store.version_meta(str(ref.get("version_id") or "")) or {}
+            size = int(meta.get("size_bytes") or 0)
+            whole = f"{size:,}" if size else "all its"
+            problems.append(
+                _problem(
+                    token,
+                    "ref_truncated",
+                    f"{ref.get('display_name') or token} was sent only in "
+                    f"part: the first {sent:,} of {whole} bytes. Ask the "
+                    "agent to read the rest in a cell.",
+                )
+            )
+        if on_resolved is not None:
             on_resolved(ref)
 
     pinned = [(name, version) for name, version in PINNED_REF.findall(text or "")]
@@ -269,7 +304,7 @@ def resolve_message_refs(
         elif block:
             if _afford(block):
                 blocks.append(block)
-                _record(ref)
+                _record(ref, f"{name}#{version_id}")
             else:
                 # Named, not silently dropped. A reference the user inserted
                 # and the model never received is the failure this module was
@@ -298,7 +333,7 @@ def resolve_message_refs(
         elif block:
             if _afford(block):
                 blocks.append(block)
-                _record(ref)
+                _record(ref, name)
             else:
                 problems.append(
                     _problem(
@@ -316,27 +351,51 @@ def resolve_message_refs(
     return f"{text}\n\n---\n(附:被引用的文件内容 / referenced files)\n\n{body}", problems
 
 
-def _read_snapshot(metadata: dict, name: str) -> tuple[str | None, RefProblem | None]:
-    """The frozen bytes of one version, as text, or why not.
+def _read_snapshot(
+    metadata: dict, name: str
+) -> tuple[str | None, RefProblem | None, int, bool]:
+    """The frozen bytes of one version, as text, how many, whether that is all.
 
     Reads `snapshot_path`, never the live path. The live file is whatever the
     latest cell left there; the snapshot is what this version *is*, which is
     the whole reason a pinned reference is worth having.
+
+    The last two elements are the part that was missing. Bounding the read
+    fixed what the daemon allocated and said nothing about what was handed on:
+    a file over the budget arrived as a fenced block that reads as the whole
+    thing, in a record whose own docstring calls its `sha256` "the bytes that
+    were sent". A truncation nobody is told about is a statement that is wrong
+    rather than absent.
+
+    The count is of the *file's* bytes, not of the returned string: the caller
+    appends nothing, but this function does -- and a `sent_bytes` that silently
+    included the daemon's own truncation notice would answer "how much of the
+    file did the model get" with a number larger than the budget.
     """
     snapshot = metadata.get("snapshot_path") or ""
     if not snapshot or not Path(str(snapshot)).is_file():
-        return None, _problem(
-            name,
-            "no_frozen_bytes",
-            f"{name} exists but its frozen bytes are missing, so the exact "
-            "version referenced cannot be sent",
+        return (
+            None,
+            _problem(
+                name,
+                "no_frozen_bytes",
+                f"{name} exists but its frozen bytes are missing, so the exact "
+                "version referenced cannot be sent",
+            ),
+            0,
+            False,
         )
     if _is_binary(metadata.get("filename") or name):
-        return None, _problem(
-            name,
-            "not_text",
-            f"{name} is a binary file; reference it by name and let the agent "
-            "open it in a cell rather than pasting it into the prompt",
+        return (
+            None,
+            _problem(
+                name,
+                "not_text",
+                f"{name} is a binary file; reference it by name and let the agent "
+                "open it in a cell rather than pasting it into the prompt",
+            ),
+            0,
+            False,
         )
     try:
         # Bounded at the read, not after it. `read_bytes()[:MAX_REF_BYTES]`
@@ -346,23 +405,48 @@ def _read_snapshot(metadata: dict, name: str) -> tuple[str | None, RefProblem | 
         # of. Plan section 7.4: budgets are enforced during read or
         # allocation, never on an already-materialised buffer.
         with Path(str(snapshot)).open("rb") as handle:
-            raw = handle.read(MAX_REF_BYTES)
+            # One byte past the budget, discarded. It is the only way to tell
+            # "the file ended exactly at the cap" from "there is more", without
+            # reading the more.
+            raw = handle.read(MAX_REF_BYTES + 1)
+        cut = len(raw) > MAX_REF_BYTES
+        raw = raw[:MAX_REF_BYTES]
     except OSError as error:
         # The card is rendered in the composer, so it carries the daemon's own
         # words. `strerror` here quotes the snapshot path it could not read --
         # absolute, under the data directory, and with it the username.
         record_diagnostic(error, surface="artifact_refs:read")
-        return None, _problem(name, "unreadable", f"{name} could not be read")
+        return (
+            None,
+            _problem(name, "unreadable", f"{name} could not be read"),
+            0,
+            False,
+        )
     text = raw.decode("utf-8", errors="replace")
     # A high replacement-character density means this was not text after all --
     # a suffix allowlist cannot know about every binary format.
     if text.count("�") > max(16, len(text) // 20):
-        return None, _problem(
-            name,
-            "not_text",
-            f"{name} does not decode as text; reference it by name instead",
+        return (
+            None,
+            _problem(
+                name,
+                "not_text",
+                f"{name} does not decode as text; reference it by name instead",
+            ),
+            0,
+            False,
         )
-    return text, None
+    if cut:
+        # In band, inside the fence, because the model reads the fence and not
+        # the envelope around it. `agent/runtime.py::_budgeted` states an
+        # omission the same way for the same reason.
+        size = int(metadata.get("size_bytes") or 0)
+        total = f"{size:,} bytes" if size else "more"
+        text += (
+            f"\n\n[... truncated: the first {len(raw):,} bytes of {total}. "
+            "Open the file in a cell to read the rest.]"
+        )
+    return text, None, len(raw), cut
 
 
 def _resolve_pinned(
@@ -481,7 +565,7 @@ def _resolve_pinned(
         metadata = local
         materialized_target = str(local.get("version_id") or "") or None
 
-    body, problem = _read_snapshot(dict(metadata), name)
+    body, problem, sent, truncated = _read_snapshot(dict(metadata), name)
     if problem is not None:
         return None, problem, None
     # The header names the version the user pinned *and*, when they differ, the
@@ -498,6 +582,8 @@ def _resolve_pinned(
             display_name=name,
             source_session=source_session,
             materialized_target=materialized_target,
+            sent_bytes=sent,
+            truncated=truncated,
         ),
     )
 
@@ -533,7 +619,7 @@ def _resolve_legacy(
             _problem(name, "not_found", f"{name} has no readable version"),
             None,
         )
-    body, problem = _read_snapshot(dict(metadata), name)
+    body, problem, sent, truncated = _read_snapshot(dict(metadata), name)
     if problem is not None:
         return None, problem, None
     return (
@@ -548,6 +634,8 @@ def _resolve_legacy(
             display_name=name,
             source_session=root_frame_id,
             materialized_target=None,
+            sent_bytes=sent,
+            truncated=truncated,
         ),
     )
 

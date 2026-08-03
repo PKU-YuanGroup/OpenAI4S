@@ -12014,20 +12014,27 @@ def _message_artifact_refs(message: dict) -> list[dict]:
     for ref in refs[:8]:
         if not isinstance(ref, dict):
             continue
-        projected.append(
-            {
-                "artifact_id": str(ref.get("artifact_id") or ""),
-                "version_id": str(ref.get("version_id") or ""),
-                "sha256": str(ref.get("sha256") or ""),
-                "display_name": str(ref.get("display_name") or ""),
-                "source_session": str(ref.get("source_session") or ""),
-                "materialized_target": (
-                    str(ref["materialized_target"])
-                    if ref.get("materialized_target")
-                    else None
-                ),
-            }
-        )
+        row = {
+            "artifact_id": str(ref.get("artifact_id") or ""),
+            "version_id": str(ref.get("version_id") or ""),
+            "sha256": str(ref.get("sha256") or ""),
+            "display_name": str(ref.get("display_name") or ""),
+            "source_session": str(ref.get("source_session") or ""),
+            "sent_bytes": int(ref.get("sent_bytes") or 0),
+            "materialized_target": (
+                str(ref["materialized_target"])
+                if ref.get("materialized_target")
+                else None
+            ),
+        }
+        # Only when true, mirroring the record: an absent key is "not
+        # truncated", and every untruncated ref keeps the shape it had. Without
+        # this pair the fact that the model was handed a partial file dies with
+        # the WebSocket event, which is the hole `_message_failure` above was
+        # written to close for failures.
+        if ref.get("truncated"):
+            row["truncated"] = True
+        projected.append(row)
     return projected
 
 

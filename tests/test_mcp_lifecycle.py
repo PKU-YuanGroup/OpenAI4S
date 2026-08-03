@@ -529,6 +529,13 @@ def test_an_over_budget_frame_is_dropped_and_the_next_one_still_parses():
     assert reader.readline() == "", "an over-budget frame must not be returned"
     assert reader.readline() == '{"id": 7}'
     assert reader.readline() is None
+    # The sentinel above is the resynchronisation contract and stays exactly as
+    # it was; the counters are additive. Without them the drop is
+    # indistinguishable from a blank line one layer up, which is how it came to
+    # be reported as a deadline nobody missed. 40 bytes of frame, all lost --
+    # the 10 that fit are discarded with the 30 that did not.
+    assert reader.frames_dropped == 1
+    assert reader.bytes_dropped == 40
 
 
 def test_a_line_split_across_reads_is_reassembled():
@@ -748,3 +755,87 @@ def test_the_dead_timeout_constant_is_gone():
 
     source = Path("openai4s/mcp_client.py").read_text(encoding="utf-8")
     assert "_DEFAULT_TIMEOUT = " not in source
+
+
+# -- an answer refused for its size is not an answer that never came ----------
+
+
+_OVERSIZED = (
+    "    sys.stdout.write('x' * (4 * 1024 * 1024 + 64) + chr(10))\n"
+    "    sys.stdout.flush()\n" + _HANG
+)
+
+
+def test_a_frame_too_large_is_reported_as_refused_not_as_a_deadline(tmp_path):
+    """The connector answered at once. It was reported as one that never did.
+
+    The reader drops an over-budget frame -- correctly, half a JSON object is
+    not a frame -- and returns `""`, which the read loop skips as it skips a
+    blank line. Nothing else on the channel knew, so the only thing that ever
+    surfaced was the caller's own deadline: a connector that replied in
+    milliseconds was described to the agent as one that spent sixty seconds not
+    replying, which is not a fact about it and not a thing the agent can act on.
+    """
+    config = _server(tmp_path, "toobig", body=_OVERSIZED)
+    connection = MCPConnection(config["command"], timeout=3.0)
+    try:
+        with pytest.raises(mcp_client.MCPOversizedResponse) as caught:
+            connection.list_tools()
+        # A sibling of MCPTimeout, never a subclass: the whole point is that the
+        # layer above must be able to tell them apart.
+        assert not isinstance(caught.value, MCPTimeout)
+        assert isinstance(caught.value, mcp_client.MCPError)
+        assert "refused, not lost" in str(caught.value)
+        assert connection._oversized_frames == 1
+    finally:
+        connection.close()
+
+
+def test_a_silent_connector_is_still_a_deadline(tmp_path):
+    """The negative arm. A branch that swallowed the real timeout state would
+    make every wedged connector look like an oversized one."""
+    config = _server(tmp_path, "silent", body=_HANG)
+    connection = MCPConnection(config["command"], timeout=0.3)
+    try:
+        with pytest.raises(MCPTimeout) as caught:
+            connection.list_tools()
+        assert not isinstance(caught.value, mcp_client.MCPOversizedResponse)
+    finally:
+        connection.close()
+
+
+def test_a_connector_that_overflowed_is_not_torn_down(tmp_path):
+    """The wiring, not the mechanism.
+
+    `_request` raising the right class proves nothing about what `_invoke`
+    above it does with it: eviction is keyed on the exception, and while the
+    state was `MCPTimeout` this connector was closed and respawned every time
+    it answered too largely. The pid is the assertion -- a cache entry can be
+    replaced by an object that looks the same.
+    """
+    config = _server(tmp_path, "toobig_mgr", body=_OVERSIZED)
+    manager = mcp_client.MCPManager()
+    try:
+        before = manager.get("c1", config)
+        with pytest.raises(mcp_client.MCPOversizedResponse):
+            manager.list_tools("c1", config)
+        after = manager.get("c1", config)
+        assert after is before, "the connector was evicted for answering"
+        assert after.alive()
+    finally:
+        manager.shutdown()
+
+
+def test_the_refusal_state_is_a_sibling_of_the_deadline_state(tmp_path):
+    """The class hierarchy IS the guard, so it gets its own assertion.
+
+    `MCPManager._invoke` evicts on `MCPTimeout` and keeps a connection that is
+    merely `MCPError` and still alive. Nothing else distinguishes the two, so
+    making `MCPOversizedResponse` a subclass -- the natural-looking edit, since
+    both are "the caller got nothing" -- silently restores the teardown that
+    `test_a_connector_that_overflowed_is_not_torn_down` exists to forbid, and
+    does it in a line no reviewer would read as a behaviour change.
+    """
+    del tmp_path
+    assert issubclass(mcp_client.MCPOversizedResponse, mcp_client.MCPError)
+    assert not issubclass(mcp_client.MCPOversizedResponse, MCPTimeout)

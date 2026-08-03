@@ -223,6 +223,12 @@ def test_a_resolved_reference_reports_the_six_fields_the_chip_needs(tmp_path):
     assert problems == []
     assert len(recorded) == 1
     ref = recorded[0]
+    # Exact, because this record is persisted and every reader depends on its
+    # shape. `sent_bytes` joined the six: the docstring called `sha256` "the
+    # bytes that were sent", which was false for any file over the inline
+    # budget -- the fence read as the whole file and the digest asserted the
+    # model had seen it. `truncated` is present only when it is true, so an
+    # untruncated record keeps exactly this set.
     assert set(ref) == {
         "artifact_id",
         "version_id",
@@ -230,7 +236,10 @@ def test_a_resolved_reference_reports_the_six_fields_the_chip_needs(tmp_path):
         "display_name",
         "source_session",
         "materialized_target",
+        "sent_bytes",
     }
+    assert ref["sent_bytes"] == len(payload)
+    assert "truncated" not in ref
     assert ref["display_name"] == "cohort.csv"
     assert ref["sha256"] == hashlib.sha256(payload).hexdigest()
     # The record names the session the reference came FROM and the version the
@@ -446,3 +455,173 @@ def test_metadata_is_merged_into_a_message_rather_than_replacing_it(tmp_path):
     assert merged["kept"] == "yes"
     assert merged["artifact_refs"][0]["version_id"] == "v-1"
     assert store.update_message_metadata("m-does-not-exist", {"x": 1}) is None
+
+
+def test_a_reference_over_the_budget_says_it_was_cut(tmp_path):
+    """Bounding the read fixed what the daemon allocated and nothing else.
+
+    A file over `MAX_REF_BYTES` arrived as a fenced block that reads as the
+    whole file, in a record whose `sha256` is the version's checksum -- so the
+    durable answer to "what did the model read" asserted it had read all of it.
+    That is a statement that is wrong rather than absent, which this repository
+    treats as the worse failure.
+
+    Two channels for the same fact, because they have different readers: an
+    in-band marker inside the fence, which is what the model sees, and
+    `sent_bytes`/`truncated` on the record, which is what a reopened session,
+    an export and an audit see.
+    """
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    mine = store.new_frame(kind="turn", project_id="p")
+    payload = b"x" * (artifact_refs.MAX_REF_BYTES + 5_000)
+    seeded = _seed(cfg, store, mine, "p", "big.csv", payload)
+
+    recorded: list[dict] = []
+    resolved, problems = artifact_refs.resolve_message_refs(
+        f"@big.csv#{seeded['version_id']}",
+        store=store,
+        root_frame_id=mine,
+        project_id="p",
+        materialise=lambda version_id, name: None,
+        on_resolved=recorded.append,
+    )
+
+    # Both readers told, and told the same thing. `_record` synthesises this
+    # for either ref spelling in one place so the two cannot drift.
+    assert [p["code"] for p in problems] == ["ref_truncated"]
+    assert "200,000" in problems[0]["message"]
+    assert "205,000" in problems[0]["message"]
+
+    ref = recorded[0]
+    assert ref["truncated"] is True
+    assert ref["sent_bytes"] == 200_000
+    assert ref["sent_bytes"] < len(payload)
+    # The digest still names the version; the record no longer implies it names
+    # what was sent.
+    assert ref["sha256"] == hashlib.sha256(payload).hexdigest()
+
+    assert "truncated" in resolved
+    assert "Open the file in a cell" in resolved
+
+
+def test_a_reference_at_exactly_the_budget_is_not_called_truncated(tmp_path):
+    """The +1 probe is what tells "ended at the cap" from "there is more". A
+    boundary reported as a cut is the same class of wrong answer, pointing the
+    other way."""
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    mine = store.new_frame(kind="turn", project_id="p")
+    payload = b"y" * artifact_refs.MAX_REF_BYTES
+    seeded = _seed(cfg, store, mine, "p", "exact.csv", payload)
+
+    recorded: list[dict] = []
+    artifact_refs.resolve_message_refs(
+        f"@exact.csv#{seeded['version_id']}",
+        store=store,
+        root_frame_id=mine,
+        project_id="p",
+        materialise=lambda version_id, name: None,
+        on_resolved=recorded.append,
+    )
+
+    assert "truncated" not in recorded[0]
+    assert recorded[0]["sent_bytes"] == len(payload)
+
+
+def test_the_legacy_spelling_reports_the_cut_the_same_way(tmp_path):
+    """The two spellings are two ways of writing one request.
+
+    `_read_snapshot` has two production callers and this repository's signature
+    defect is fixing one of them. A legacy `@name` that silently truncates
+    while the pinned form says so is that defect with a user-visible tell.
+    """
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    mine = store.new_frame(kind="turn", project_id="p")
+    payload = b"z" * (artifact_refs.MAX_REF_BYTES + 1_234)
+    _seed(cfg, store, mine, "p", "legacy.csv", payload)
+
+    recorded: list[dict] = []
+    resolved, problems = artifact_refs.resolve_message_refs(
+        "look at @legacy.csv",
+        store=store,
+        root_frame_id=mine,
+        project_id="p",
+        materialise=lambda version_id, name: None,
+        on_resolved=recorded.append,
+    )
+
+    assert [p["code"] for p in problems] == ["ref_truncated"]
+    assert recorded[0]["truncated"] is True
+    assert recorded[0]["sent_bytes"] == 200_000
+    assert "truncated" in resolved
+
+
+def test_the_turn_tells_the_user_its_reference_was_cut(monkeypatch, tmp_path):
+    """The wiring, not the mechanism.
+
+    `resolve_message_refs` returning a problem proves nothing about whether
+    anyone is told: the gateway is what turns a problem list into the
+    `artifact_ref_problems` event the composer renders, and it caps that list.
+    """
+    runner = _runner(monkeypatch, tmp_path)
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id="default", status="ready")
+    payload = b"w" * (artifact_refs.MAX_REF_BYTES + 7)
+    seeded = _seed(runner.cfg, store, frame_id, "default", "wide.csv", payload)
+
+    runner.run_message(
+        frame_id, "default", f"summarise @wide.csv#{seeded['version_id']}"
+    )
+
+    cards = [e for e in runner.hub.events if e.get("type") == "artifact_ref_problems"]
+    assert cards, "the turn resolved a partial reference and told nobody"
+    codes = [p["code"] for card in cards for p in card["problems"]]
+    assert "ref_truncated" in codes
+
+
+def test_reopening_a_session_still_shows_the_reference_was_partial(
+    monkeypatch, tmp_path
+):
+    """Over real HTTP, because the projection is an allowlist.
+
+    A field the record carries and the route drops leaves reopen, branch and
+    export asserting -- via a `sha256` that names the whole version -- that the
+    model read a file it only saw the front of.
+    """
+    port = _free_port()
+    runner = _runner(monkeypatch, tmp_path)
+    runner.cfg.port = port
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id="default", status="ready")
+    payload = b"q" * (artifact_refs.MAX_REF_BYTES + 99)
+    seeded = _seed(runner.cfg, store, frame_id, "default", "big.csv", payload)
+    runner.run_message(frame_id, "default", f"read @big.csv#{seeded['version_id']}")
+
+    handler = gateway_mod.make_handler(runner.cfg, runner.hub, runner)
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    token = local_auth.load_or_mint(runner.cfg.data_dir)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+        try:
+            conn.request(
+                "GET",
+                f"/api/v1/frames/{frame_id}/messages",
+                headers={local_auth.TOKEN_HEADER: token},
+            )
+            response = conn.getresponse()
+            assert response.status == 200
+            body = json.loads(response.read() or b"{}")
+        finally:
+            conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    user = [m for m in body["messages"] if m["role"] == "user"][0]
+    ref = user["artifact_refs"][0]
+    assert ref["truncated"] is True
+    assert ref["sent_bytes"] == 200_000
+    assert ref["sha256"] == hashlib.sha256(payload).hexdigest()
