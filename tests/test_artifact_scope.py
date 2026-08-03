@@ -527,3 +527,93 @@ def test_a_version_whose_frozen_bytes_are_gone_says_so(tmp_path):
     service = _materialisation_service(cfg, store, target_root, tmp_path / "ws2")
     with pytest.raises(FileNotFoundError, match="no frozen snapshot"):
         service.materialise_artifact({"version_id": seeded["version_id"]})
+
+
+# --- the capability gate in front of all of it -----------------------------
+#
+# Plan section 7.1 requires same-project cross-session access to pass an
+# explicit capability. There was none. `save_artifact` -- persisting bytes the
+# cell already had -- was in `GATEABLE_TOOLS`; `materialise_artifact`, which
+# brings in bytes from a session the caller was never given, was not. The
+# message path was worse than ungated: `_materialise_for_message` reached past
+# `HostDispatcher.__call__` for the private `_data_service`, so the copy was
+# also unaudited and produced no step event, and a `@mention` in
+# model-authored plan text reaches that path.
+#
+# Every test above drives `service.materialise_artifact` directly, which is why
+# none of them noticed: the gate is on the dispatcher, so a test that skips the
+# dispatcher tests the byte-level copy and nothing about who may ask for it.
+
+
+def _dispatcher_for(cfg, frame_id):
+    from openai4s.host_dispatch import HostDispatcher
+
+    return HostDispatcher(cfg=cfg, frame_id=frame_id)
+
+
+def test_materialise_is_refused_without_approval(tmp_path, monkeypatch):
+    """Deny-by-default is the suite's posture, so the refusal is the default."""
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "deny")
+    cfg = _config(tmp_path)
+    store = get_store(cfg.db_path)
+    source_root = store.new_frame(kind="turn", project_id="proj-a")
+    target_root = store.new_frame(kind="turn", project_id="proj-a")
+    seeded = _seed_version(cfg, store, source_root, "proj-a", "data.csv", b"col\n1\n")
+
+    dispatcher = _dispatcher_for(cfg, target_root)
+    out = dispatcher(
+        "materialise_artifact",
+        [{"version_id": seeded["version_id"], "filename": "data.csv"}],
+    )
+
+    assert isinstance(out, dict) and set(out) == {"error"}, out
+    assert "Permission denied" in out["error"]
+    store.close()
+
+
+def test_materialise_is_a_gateable_method_at_all(tmp_path):
+    """The membership itself, because the refusal above could come from
+    anywhere -- a missing artifact, a bad scope -- and still look right."""
+    from openai4s import host_dispatch
+
+    assert "materialise_artifact" in host_dispatch.GATEABLE_TOOLS
+    # And the card is readable: without a view the broker renders the bare
+    # method name, and a gate nobody can read is a gate everybody clicks
+    # through.
+    view = host_dispatch._step_begin(
+        "materialise_artifact", [{"filename": "data.csv", "version_id": "v-1"}]
+    )
+    assert view is not None
+    kind, title, meta = view
+    assert kind == "artifact"
+    assert "data.csv" in title
+    assert meta.get("filename") == "data.csv"
+
+
+def test_the_message_path_goes_through_the_dispatcher(tmp_path):
+    """`_materialise_for_message` must not reach past the gate.
+
+    Behavioural, not source-text: an earlier draft asserted `_data_service`
+    was absent from the source and tripped on the word appearing in the new
+    docstring. What matters is that the call arrives at the dispatcher, which
+    is where the permission gate, `log_host_call` and the step event live.
+    """
+    from types import SimpleNamespace
+
+    from openai4s.server.gateway import SessionRunner
+
+    seen: list = []
+
+    def fake_dispatcher(method, args):
+        seen.append((method, args))
+        return {"version_id": "v-new"}
+
+    st = SimpleNamespace(dispatcher=fake_dispatcher)
+    out = SessionRunner._materialise_for_message(
+        SimpleNamespace(), st, "v-src", "data.csv"
+    )
+
+    assert out == {"version_id": "v-new"}
+    assert seen == [
+        ("materialise_artifact", [{"version_id": "v-src", "filename": "data.csv"}])
+    ], seen

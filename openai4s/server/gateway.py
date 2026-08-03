@@ -6130,14 +6130,19 @@ class SessionRunner:
     ) -> dict:
         """Bring a sibling session's version into this one, at send time.
 
-        Goes through the same Host data service a cell would use, so the scope
-        rule and the atomic write have exactly one implementation.
+        Through the dispatcher, not through `_data_service` directly. Reaching
+        past `HostDispatcher.__call__` for the private attribute did give the
+        scope rule and the atomic write one implementation -- which is what the
+        old docstring claimed -- but it skipped everything the dispatcher is:
+        the permission gate, `log_host_call`, and the step event. So the copy
+        was unapproved and unaudited on this path even once the Host RPC path
+        was gated, and a `@mention` in model-authored plan text reaches it.
         """
-        service = getattr(st.dispatcher, "_data_service", None)
-        if service is None:
+        dispatcher = st.dispatcher
+        if dispatcher is None:
             raise RuntimeError("this session cannot materialise artifacts")
-        return service.materialise_artifact(
-            {"version_id": version_id, "filename": name}
+        return dispatcher(
+            "materialise_artifact", [{"version_id": version_id, "filename": name}]
         )
 
     def _context_archive_metadata(

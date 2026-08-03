@@ -339,7 +339,14 @@ def _read_snapshot(metadata: dict, name: str) -> tuple[str | None, RefProblem | 
             "open it in a cell rather than pasting it into the prompt",
         )
     try:
-        raw = Path(str(snapshot)).read_bytes()[:MAX_REF_BYTES]
+        # Bounded at the read, not after it. `read_bytes()[:MAX_REF_BYTES]`
+        # allocates the whole file first and then discards most of it, so the
+        # cap described what the model saw while the daemon still paid for
+        # every byte -- and this runs on a file another session chose the size
+        # of. Plan section 7.4: budgets are enforced during read or
+        # allocation, never on an already-materialised buffer.
+        with Path(str(snapshot)).open("rb") as handle:
+            raw = handle.read(MAX_REF_BYTES)
     except OSError as error:
         # The card is rendered in the composer, so it carries the daemon's own
         # words. `strerror` here quotes the snapshot path it could not read --
@@ -440,10 +447,39 @@ def _resolve_pinned(
                     ),
                     None,
                 )
+            # A refusal is a dict, not an exception. `HostDispatcher` answers a
+            # denied permission with the single-key soft-fail shape rather than
+            # raising, so `except Exception` above never sees it and the code
+            # below would have read on with `metadata` still pointing at the
+            # foreign version -- turning "denied" into "served anyway".
+            if isinstance(brought, dict) and set(brought.keys()) == {"error"}:
+                return (
+                    None,
+                    _problem(
+                        ref,
+                        "cross_session_denied",
+                        f"{name} belongs to another session and was not "
+                        "approved for copying into this one",
+                    ),
+                    None,
+                )
             local = store.version_meta(str(brought.get("version_id") or ""))
-        if local is not None:
-            metadata = local
-            materialized_target = str(local.get("version_id") or "") or None
+        if local is None:
+            # Fail closed. This used to fall through, leaving `metadata` as the
+            # *foreign* version's row, so a materialise that produced no local
+            # version still had its snapshot read and inlined from the other
+            # session's file.
+            return (
+                None,
+                _problem(
+                    ref,
+                    "materialise_failed",
+                    f"{name} could not be brought into this session",
+                ),
+                None,
+            )
+        metadata = local
+        materialized_target = str(local.get("version_id") or "") or None
 
     body, problem = _read_snapshot(dict(metadata), name)
     if problem is not None:

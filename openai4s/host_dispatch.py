@@ -234,6 +234,15 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     if method == "save_artifact":
         fn = a.get("filename") or Path(a.get("path", "")).name
         return ("artifact", f"Saving {fn}", {"filename": fn})
+    if method == "materialise_artifact":
+        # Without a view the card falls back to the bare method name, and a
+        # gate nobody can read is a gate everybody clicks through.
+        fn = a.get("filename") or a.get("version_id") or "artifact"
+        return (
+            "artifact",
+            f"Copying {fn} in from another session",
+            {"filename": fn, "version_id": a.get("version_id")},
+        )
     if method == "get_artifact_metadata":
         return (
             "artifact",
@@ -388,6 +397,14 @@ GATEABLE_TOOLS = frozenset(
         "delegate",
         "exec_background",
         "save_artifact",
+        # Writing a file into the workspace was gated and copying another
+        # session's file into it was not, which is the asymmetry backwards:
+        # `save_artifact` persists bytes the cell already had, while this brings
+        # in bytes from a session the caller was never given. Plan section 7.1
+        # requires same-project cross-session access to pass an explicit
+        # capability; there was none, on either the Host RPC or the message
+        # path.
+        "materialise_artifact",
         "credentials_set",
         "skills_edit",
         "skills_delete",
@@ -415,6 +432,11 @@ def _gate_target(method: str, args: list) -> str:
         return a.get("path", "") or ""
     if method == "save_artifact":
         return a.get("filename") or a.get("path", "") or ""
+    if method == "materialise_artifact":
+        # The destination filename, not the source version id: a version id is
+        # single-use, so a durable "always allow" keyed on one could never match
+        # a second time and the rule would read as broken rather than narrow.
+        return a.get("filename") or a.get("version_id") or ""
     if method in ("web_fetch", "web_download"):
         return _domain(a.get("url", "")) or a.get("url", "") or ""
     if method == "web_search":
