@@ -78,12 +78,16 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     # default for why this is set at all.
     monkeypatch.setenv("OPENAI4S_TELEMETRY_ENDPOINT", "https://127.0.0.1:1/v1/events")
     # A developer's git-ignored .env (loaded at import) may configure web sharing;
-    # the offline suite must never inherit it (it would try a real relay).
+    # the offline suite must never inherit it (it would try a real relay). The
+    # same rule, not the same subject: a machine that sets the MCP deadline
+    # would give every timeout assertion in the suite a different budget from
+    # CI's, which is a test that measures the developer's environment.
     for var in (
         "OPENAI4S_SHARE_RELAY_URL",
         "OPENAI4S_SHARE_AUTH_TOKEN",
         "OPENAI4S_SHARE_BASE_DOMAIN",
         "OPENAI4S_SHARE_ALLOW_INSECURE",
+        "OPENAI4S_MCP_DEADLINE_S",
     ):
         monkeypatch.delenv(var, raising=False)
     # The BYOC confinement self-test caches its verdict process-wide, keyed by

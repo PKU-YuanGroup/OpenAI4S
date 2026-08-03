@@ -686,3 +686,65 @@ def test_a_connector_that_never_reads_its_stdin_does_not_hang_the_caller():
         os.close(write_fd)
         os.close(read_fd)
     assert time.monotonic() - started < 5, "the write was not bounded by the deadline"
+
+
+# --- the deadline the decision record published and nothing read -----------
+
+
+def test_the_documented_deadline_override_exists_and_is_clamped(monkeypatch):
+    """`docs/v03-decisions.md` D6 names `OPENAI4S_MCP_DEADLINE_S` as the single
+    override for this budget. The name appeared in that table and nowhere else
+    in the tree -- a documented control that does not exist, which is worse than
+    an undocumented one because someone sets it and believes the deadline moved.
+
+    Clamped rather than trusted: zero is not "no deadline", it is a connector
+    that can never answer, and a day is the unbounded wait `DEFAULT_TIMEOUT_S`
+    was introduced to remove. Anything unusable falls back rather than refusing
+    to start -- an env var must not be able to make the daemon unbootable.
+    """
+    from openai4s import mcp_client
+
+    cases = {
+        "": mcp_client.DEFAULT_TIMEOUT_S,
+        "5": 5.0,
+        "0": mcp_client.DEFAULT_TIMEOUT_S,
+        "-3": mcp_client.DEFAULT_TIMEOUT_S,
+        "abc": mcp_client.DEFAULT_TIMEOUT_S,
+        "inf": mcp_client.DEFAULT_TIMEOUT_S,
+        "0.5": mcp_client.MIN_TIMEOUT_S,
+        "99999": mcp_client.MAX_TIMEOUT_S,
+    }
+    for raw, expected in cases.items():
+        monkeypatch.setenv(mcp_client.DEADLINE_ENV, raw)
+        assert mcp_client._deadline_default() == expected, raw
+
+    monkeypatch.delenv(mcp_client.DEADLINE_ENV, raising=False)
+    assert mcp_client._deadline_default() == mcp_client.DEFAULT_TIMEOUT_S
+
+
+def test_the_override_reaches_a_connection_and_an_argument_still_wins(monkeypatch):
+    """The wiring, not just the helper. A default nothing reads is the defect
+    this ticket is about, one layer along.
+    """
+    from openai4s import mcp_client
+
+    monkeypatch.setenv(mcp_client.DEADLINE_ENV, "7")
+    assert mcp_client._deadline_default() == 7.0
+
+    # An explicit argument is not overridden by the environment: several tests
+    # pass `timeout=0.2` and must keep it.
+    import inspect
+
+    source = inspect.getsource(mcp_client.MCPConnection.__init__)
+    assert "float(timeout) if timeout is not None else _deadline_default()" in source
+
+
+def test_the_dead_timeout_constant_is_gone():
+    """`_DEFAULT_TIMEOUT = 30.0` sat three lines above the live
+    `DEFAULT_TIMEOUT_S = 60.0` with no reader anywhere in the tree. Two
+    similarly named constants, one of them wrong and unused, is how someone
+    wires the wrong knob."""
+    from pathlib import Path
+
+    source = Path("openai4s/mcp_client.py").read_text(encoding="utf-8")
+    assert "_DEFAULT_TIMEOUT = " not in source

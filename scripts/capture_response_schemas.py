@@ -126,6 +126,27 @@ def main() -> int:
                 "diff. If it was not, the diff is the bug report."
             )
             return 1
+
+        if uncovered:
+            # A gate now, not a metric. Plan line 311 says a new or changed
+            # route must update the response schema and the response contract,
+            # and this was the only thing positioned to enforce the first half
+            # -- it printed the list and returned 0, so a route could sit in the
+            # contract with no shape indefinitely. `/frames/<id>/admissions/<id>`
+            # did, for forty-three commits.
+            #
+            # Safe to turn on today precisely because the number is 0: this
+            # cannot fail on work already done, only on work that skips the
+            # test. A route genuinely unreachable offline belongs in the
+            # contract's own exclusions with a reason, not in a list nobody
+            # reads.
+            print(
+                f"\n{len(uncovered)} routes are in the contract with no frozen "
+                "shape. Drive them from the offline suite, or say in the "
+                "contract why they cannot be."
+            )
+            return 1
+
         print("no breaking change to the frozen response shapes")
         return 0
 
