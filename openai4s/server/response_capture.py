@@ -754,14 +754,23 @@ def _drive_seeded_downloads(
     # A pending approval this session owns, so `POST /frames/<id>/decision`
     # has something real to resolve. Without it the route only ever recorded a
     # refusal.
-    store.create_permission_request(
-        decision_id=_CAPTURE_DECISION_ID,
-        tool="save_artifact",
-        target=_CAPTURE_FILENAME,
-        root_frame_id=frame_id,
-        frame_id=frame_id,
-        project_id=_CAPTURE_PROJECT,
-    )
+    # Idempotent, like `create_project` above: `drive_all_routes` runs more
+    # than once against one store during a schemas capture, and the id is fixed
+    # so a re-capture stays byte-identical. Without this the second drive hit
+    # `UNIQUE constraint failed: permission_requests.decision_id` and took four
+    # coverage tests down with it -- which passed in isolation, because each of
+    # those gets a fresh store.
+    try:
+        store.create_permission_request(
+            decision_id=_CAPTURE_DECISION_ID,
+            tool="save_artifact",
+            target=_CAPTURE_FILENAME,
+            root_frame_id=frame_id,
+            frame_id=frame_id,
+            project_id=_CAPTURE_PROJECT,
+        )
+    except Exception:  # noqa: BLE001 - already present on a re-drive
+        pass
     memory = store.add_memory(
         content="capture memory", block="general", project_id=_CAPTURE_PROJECT
     )

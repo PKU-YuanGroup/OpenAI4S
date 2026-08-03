@@ -10762,7 +10762,10 @@
                   "type": "string"
                 },
                 "updated_at": {
-                  "type": "null"
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 }
               },
               "required": [
