@@ -116,12 +116,21 @@ class Job:
         self._out: list[bytes] = []
         self._truncated = False
         self._proc: subprocess.Popen | None = None
-        #: Set by the deadline timer before it stops the group, so `_run` can
-        #: tell a job the daemon killed on time from one that failed on its own.
-        #: Without it a timeout arrives as a SIGKILL exit code and is
-        #: indistinguishable from `failed` -- which P0-4 forbids: an expiry is
-        #: its own terminal state and may not borrow another one's name.
-        self._deadline_expired = False
+        #: Which authority decided to end this job, claimed BEFORE anything is
+        #: signalled, and the terminal name that decision must publish.
+        #:
+        #: Was a `_deadline_expired` boolean, which could only answer "was it
+        #: the deadline", so every other writer had to decide the precedence
+        #: question for itself -- and they disagreed. `_run` documented the rule
+        #: ("the deadline is what actually ended this process, and a receipt
+        #: that says somebody cancelled it is the wrong account of why the work
+        #: stopped") and `cancel` then wrote `cancelled` unconditionally after
+        #: its stop ladder returned. Same file, one function stating the rule
+        #: and another overwriting it.
+        #:
+        #: First claim wins, so a deadline that fired while a cancel's SIGTERM
+        #: was in flight keeps `timeout`.
+        self._stop_reason: str | None = None
         # Read at spawn and kept: once the leader is reaped, `os.getpgid` on
         # its pid raises, and the surviving group becomes unreachable exactly
         # when it most needs signalling.
@@ -155,6 +164,50 @@ class Job:
             if total > _MAX_OUTPUT_BYTES and len(self._out) == 1:
                 self._out[0] = self._out[0][-_MAX_OUTPUT_BYTES:]
                 self._truncated = True
+
+    def _finish_locked(self, status: str, *, exit_code: int | None = None) -> str:
+        """Publish a terminal status, or keep the one already published.
+
+        The single transition primitive. `status` had eight direct writers
+        across `_run`, `_expire`, `cancel`, `close` and the abandoned-receipt
+        adoption, each re-deciding under its own lock hold whether it was
+        allowed to write -- which is how the precedence rule came to hold in one
+        of them and not the others. A terminal state is a terminal state: the
+        first one published is the account of what happened.
+
+        Returns whatever is published afterwards, so a caller can report the
+        real outcome rather than the one it proposed.
+        """
+        if self.status in TERMINAL_STATUSES:
+            return self.status
+        self.status = status
+        self.finished_at = time.time()
+        if exit_code is not None:
+            self.exit_code = exit_code
+        return status
+
+    def finish(self, status: str, *, exit_code: int | None = None) -> str:
+        with self._lock:
+            return self._finish_locked(status, exit_code=exit_code)
+
+    def _claim_stop_locked(self, reason: str) -> bool:
+        """Claim the right to end this job, before any signal is sent.
+
+        Three conditions, in this order: it is not already terminal, nobody has
+        claimed it, and there is still something to stop. The middle one is the
+        precedence rule -- a deadline that fired first keeps `timeout` even
+        though the cancel's signal is what the process finally sees.
+        """
+        if self.status in TERMINAL_STATUSES:
+            return False
+        if self._stop_reason is not None:
+            return False
+        self._stop_reason = reason
+        return True
+
+    def claim_stop(self, reason: str) -> bool:
+        with self._lock:
+            return self._claim_stop_locked(reason)
 
     def append(self, text: str) -> None:
         """Append daemon-authored text to the log, in the buffer's own units."""
@@ -519,21 +572,16 @@ class JobManager:
                 proc.wait()
             finally:
                 timer.cancel()
-            job.exit_code = proc.returncode
-            # only claim a terminal state if cancel() or the deadline didn't
-            # already win the race
+            # One lock hold, one transition. Whoever claimed the stop names
+            # the terminal state; nobody claimed it means the process ended on
+            # its own terms.
             with job._lock:
-                if job._deadline_expired:
-                    # Written even over `cancelled`: the deadline is what
-                    # actually ended this process, and a receipt that says
-                    # somebody cancelled it is the wrong account of why the
-                    # work stopped.
-                    job.status = "timeout"
-                    expired = True
-                else:
-                    expired = False
-                    if job.status != "cancelled":
-                        job.status = "done" if proc.returncode == 0 else "failed"
+                reason = job._stop_reason
+                natural = "done" if proc.returncode == 0 else "failed"
+                published = job._finish_locked(
+                    reason or natural, exit_code=proc.returncode
+                )
+                expired = published == "timeout"
             # Outside the lock. `append` takes `job._lock` itself and
             # `threading.Lock` is not reentrant, so writing this notice from
             # inside the block above deadlocked the worker against itself --
@@ -555,10 +603,9 @@ class JobManager:
                 "\n[job error] the job could not be run; the daemon diagnostics "
                 f"record the reason under job {job.id}.\n"
             )
-            with job._lock:
-                if job.status != "cancelled":
-                    job.status = "failed"
-            job.exit_code = -1
+            # Refuses over every terminal state, not just `cancelled`:
+            # `abandoned` and `timeout` are equally somebody else's account.
+            job.finish("failed", exit_code=-1)
         finally:
             job.finished_at = time.time()
             self._persist(job)
@@ -571,9 +618,12 @@ class JobManager:
         signal and leave a killed process reported as a success.
         """
         with job._lock:
-            if job.status != "running" or job._proc is None:
+            # The claim is the guard. `status != "running"` alone let the timer
+            # arm itself against a process that had already exited -- direction
+            # B, which never crosses an entry point, so no check in `cancel`
+            # could have caught it.
+            if job._proc is None or not job._claim_stop_locked("timeout"):
                 return
-            job._deadline_expired = True
             proc, pgid = job._proc, job._pgid
         _stop_process_group(proc, pgid)
 
@@ -604,7 +654,16 @@ class JobManager:
                 # Not spawned yet, and `_run` claims its transition to
                 # `running` under this same lock — so it will see this and
                 # start nothing.
-                job.status = "cancelled"
+                job._finish_locked("cancelled")
+            else:
+                # Claimed BEFORE the signal, for the same reason `_expire`
+                # claims: `_run` derives `failed` from a signal-killed exit
+                # because it does not know a signal was sent. Overriding that
+                # afterwards is what the old unconditional write did, and it
+                # could not tell `failed` (a derivation) from `timeout`
+                # (another authority's verdict). Claiming first makes `_run`
+                # publish `cancelled` itself, so there is nothing to override.
+                job._claim_stop_locked("cancelled")
         if proc is None:
             late = job._proc
             if late is not None:  # a spawn we did not expect: stop it anyway
@@ -635,9 +694,13 @@ class JobManager:
         else:
             with job._lock:
                 if stopped:
-                    # We ended it (or it is not terminal yet), which overrides
-                    # the `failed` `_run` derives from the signal-killed exit.
-                    job.status = "cancelled"
+                    # Overriding the `failed` that `_run` derives from a
+                    # signal-killed exit is the point; overriding `timeout` was
+                    # not, and this wrote unconditionally. `_finish_locked`
+                    # keeps whatever terminal state is already published, and
+                    # the deadline publishes one only when it claimed the stop
+                    # first.
+                    job._finish_locked("cancelled")
                 status = job.status
         if not stopped:
             job.append(f"\n[job] cancel failed: {detail}\n")
@@ -692,17 +755,16 @@ class JobManager:
                     # Never spawned. `_run` claims its transition to `running`
                     # under this same lock, so it will see this and start
                     # nothing -- the same interlock `cancel` relies on.
-                    job.status = "cancelled"
-                    job.finished_at = time.time()
+                    job._finish_locked("cancelled")
             if proc is None:
                 self._persist(job)
                 stopped.append(job.id)
                 continue
             ok, _detail = _stop_process_group(proc, pgid)
             with job._lock:
-                if job.status not in TERMINAL_STATUSES:
-                    job.status = "cancelled" if ok else "abandoned"
-                    job.finished_at = time.time()
+                # Already correct; routed through the primitive so the rule has
+                # one implementation rather than four that happen to agree.
+                job._finish_locked("cancelled" if ok else "abandoned")
             (stopped if ok else still_alive).append(job.id)
 
         # Join after signalling, not before: a worker blocked on `read1` returns
