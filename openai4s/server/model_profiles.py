@@ -8,7 +8,9 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from openai4s.config import Config, LLMConfig, is_placeholder_api_key
+from openai4s.endpoint_identity import normalize_endpoint
 from openai4s.llm.catalog import ModelPreset, model_presets
+from openai4s.llm.resolve import is_loopback_endpoint
 from openai4s.security.secret_broker import is_ref
 
 # Model profiles select a transport contract, not an arbitrary vendor name.
@@ -285,7 +287,18 @@ class ModelProfileService:
                 "build can dispatch",
                 "checked_endpoint": False,
             }
-        if not self.resolve_key(profile):
+        if not self.resolve_key(profile) and not is_loopback_endpoint(
+            str(profile.get("base_url") or "")
+        ):
+            # A loopback endpoint is the exception `resolve.py` already names:
+            # "demanding an API key from them is demanding a credential that
+            # does not exist". `chat()` honours it -- a keyless request is
+            # permitted when the endpoint is local -- and `doctor` honours it.
+            # This surface did not, so a working Ollama or LM Studio profile
+            # was reported `needs_key` and could not be probed at all. The UI
+            # then hand-rolled its own loopback check for the badge while still
+            # rendering the warning above it, which is what a rule wired to one
+            # of three call sites looks like from the outside.
             problems.append("needs_key")
         if not str(profile.get("model") or "").strip():
             spec = self._providers().get(provider, {})
@@ -536,7 +549,12 @@ class ModelProfileService:
             "id": profile_id,
             "name": name,
             "provider": self._protocol(body.get("provider")),
-            "base_url": str(body.get("base_url") or "").strip(),
+            # Normalised and credential-free at the point of storage. Stored
+            # raw, this string reached `GET /model-profiles` and an immutable
+            # revision with whatever userinfo or query the user typed in it --
+            # 7.2's "secrets do not enter the snapshot", violated through the
+            # endpoint rather than the key.
+            "base_url": normalize_endpoint(body.get("base_url")),
             "model": str(body.get("model") or "").strip(),
             # The blob records a reference; the key itself goes to the broker.
             "api_key": self._store_key(profile_id, clean_api_key(body.get("api_key"))),
@@ -600,7 +618,11 @@ class ModelProfileService:
                 return None
             for field in ("name", "base_url", "model"):
                 if field in body and body[field] is not None:
-                    profile[field] = str(body[field]).strip()
+                    profile[field] = (
+                        normalize_endpoint(body[field])
+                        if field == "base_url"
+                        else str(body[field]).strip()
+                    )
             if protocol is not None:
                 profile["provider"] = protocol
             if body.get("api_key"):
@@ -722,12 +744,24 @@ def migrate_provider_alias(
         if not str(store.get_setting("llm_base_url") or "").strip():
             store.set_setting("llm_base_url", base_url)
 
+    now_ms = int(time.time() * 1000)
+
     def migrate(profiles: list[dict[str, Any]]) -> None:
         for profile in profiles:
             if str(profile.get("provider") or "").strip() == old:
                 profile["provider"] = new
                 if not str(profile.get("base_url") or "").strip():
                     profile["base_url"] = base_url
+                # Both of those are `REVISIONED_FIELDS`, so this is a
+                # configuration change and has to seal one. It did not, and
+                # this runs at every daemon boot: a session pinned to the old
+                # revision kept dispatching with the retired provider id, which
+                # `provider_spec` rejects -- so the turn died with
+                # `unknown provider` instead of the 409 rebind that exists for
+                # exactly the case "the configuration you were pinned to is
+                # gone". `_seal_revision` is append-only, so the old entry
+                # still says what it said.
+                ModelProfileService._seal_revision(profile, now_ms=now_ms)
 
     store.mutate_model_profiles(migrate)
 

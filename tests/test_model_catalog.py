@@ -296,13 +296,27 @@ def test_provider_alias_migration_is_idempotent(tmp_path):
         migrate_provider_alias(store, llm.provider_specs(), old="doubao", new="ark")
     assert store.get_setting("llm_provider") == "ark"
     assert store.get_setting("llm_base_url") == llm.PROVIDERS["ark"]["base_url"]
-    assert store.list_model_profiles() == [
-        {
-            "id": "legacy",
-            "provider": "ark",
-            "base_url": llm.PROVIDERS["ark"]["base_url"],
-        }
-    ]
+    rows = store.list_model_profiles()
+    assert len(rows) == 1
+    profile = rows[0]
+    assert profile["id"] == "legacy"
+    assert profile["provider"] == "ark"
+    assert profile["base_url"] == llm.PROVIDERS["ark"]["base_url"]
+
+    # `provider` and `base_url` are `REVISIONED_FIELDS`, so rewriting them is a
+    # configuration change and has to seal a revision -- it did not, and this
+    # runs at every daemon boot, so a session pinned to the old one kept
+    # dispatching a retired provider id and died with `unknown provider`
+    # instead of the 409 rebind that exists for exactly that case.
+    #
+    # Asserted as a count rather than by whole-record equality: the record
+    # equality this used to do made "the migration seals nothing" the thing the
+    # test enforced, which is the opposite of what its name claims.
+    revisions = profile.get("revisions") or []
+    assert len(revisions) == 1, "the migration did not seal, or sealed twice"
+    assert revisions[-1]["provider"] == "ark"
+    # And that is what idempotent means here: the loop above ran it twice.
+    assert profile.get("revision") == 1
 
 
 def test_the_default_model_survives_a_daemon_restart(tmp_path):

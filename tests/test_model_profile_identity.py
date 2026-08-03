@@ -446,3 +446,102 @@ def test_a_queued_item_whose_frozen_profile_died_fails_visibly(runner):
         runner._llm_cfg(state)
     assert error.value.code == 409
     assert error.value.error_code == "model_revision_unavailable"
+
+
+# --- three mechanisms that existed, each wired to one call site ------------
+
+
+def test_an_endpoint_with_credentials_is_never_stored_published_or_sealed(runner):
+    """7.2 says secrets do not enter the snapshot. The key obeyed; the URL did not.
+
+    `base_url` was stored as typed, returned verbatim by `GET /model-profiles`,
+    and frozen verbatim into an immutable revision. Measured before this change:
+    `https://user:s3cr3t@api.internal.corp/v1?key=abc` came back from the public
+    projection with the password in it, and the sealed entry kept it for good --
+    the one field of a revision that is designed never to change.
+
+    `doctor._sanitize_endpoint` already dropped userinfo and query, and said so
+    in its docstring. It had one call site, in the diagnostics report.
+    """
+    service = _service(runner)
+    created = service.create(
+        {
+            "name": "leaky",
+            "provider": "chatgpt",
+            "api_key": "sk-test",
+            "model": "gpt-4o",
+            "base_url": "https://user:s3cr3t@api.internal.corp/v1/?key=abc",
+        }
+    )
+
+    row = next(
+        item
+        for item in runner.store.list_model_profiles()
+        if item["id"] == created["id"]
+    )
+    sealed = (row.get("revisions") or [])[-1]
+
+    for surface, value in (
+        ("stored", row["base_url"]),
+        ("published", service.public_profile(row)["base_url"]),
+        ("sealed", sealed["base_url"]),
+    ):
+        assert "s3cr3t" not in value, surface
+        assert "key=abc" not in value, surface
+        assert value == "https://api.internal.corp/v1", surface
+
+
+def test_two_spellings_of_one_endpoint_are_one_configuration(runner):
+    """A trailing slash made `https://h/v1` and `https://h/v1/` two revisions of
+    the same thing, which is the opposite of what an immutable revision is for."""
+    service = _service(runner)
+    created = service.create(
+        {
+            "name": "slash",
+            "provider": "chatgpt",
+            "api_key": "sk-test",
+            "model": "gpt-4o",
+            "base_url": "https://api.example.com/v1",
+        }
+    )
+    service.edit(created["id"], {"base_url": "https://api.example.com/v1/"})
+
+    row = next(
+        item
+        for item in runner.store.list_model_profiles()
+        if item["id"] == created["id"]
+    )
+    assert len(row.get("revisions") or []) == 1, "a trailing slash sealed a revision"
+
+
+def test_a_loopback_profile_is_ready_without_a_key(runner):
+    """`resolve.is_loopback_endpoint` says demanding a key from a local endpoint
+    "is demanding a credential that does not exist", `chat()` honours it and
+    `doctor` honours it. `readiness` did not, so a working Ollama profile read
+    `needs_key` and could not be probed -- and the UI hand-rolled its own
+    loopback check for the badge while still rendering the warning above it.
+    """
+    service = _service(runner)
+    local = service.create(
+        {
+            "name": "local",
+            "provider": "chatgpt",
+            "api_key": "",
+            "model": "llama3",
+            "base_url": "http://127.0.0.1:11434/v1",
+        }
+    )
+    remote = service.create(
+        {
+            "name": "remote",
+            "provider": "chatgpt",
+            "api_key": "",
+            "model": "gpt-4o",
+            "base_url": "https://api.example.com/v1",
+        }
+    )
+    rows = {item["id"]: item for item in runner.store.list_model_profiles()}
+
+    assert service.readiness(rows[local["id"]])["state"] == "ready"
+    # The exception is loopback, not "no key required anywhere".
+    assert service.readiness(rows[remote["id"]])["state"] == "needs_key"

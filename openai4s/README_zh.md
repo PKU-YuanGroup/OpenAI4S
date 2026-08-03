@@ -20,6 +20,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`bash_capability.py`](./bash_capability.py) | 保存语言无关的版本标记和命令摘要，短时、一次性的 shell capability 靠它们完成绑定。 |
 | [`capabilities.py`](./capabilities.py) | 通过仓储接口判定某个 capability 或 specialist profile 在给定作用域下是否启用。 |
 | [`config.py`](./config.py) | 零依赖加载 `.env`，并定义 `LLMConfig`、`SecurityConfig` 和全局 `Config` 数据类。只有 LLM 的 key、base URL 和 model id 走分层解析：先按供应商的变量，再看通用的 `OPENAI4S_LLM_*`，再退到供应商的内置默认值；key 还会最后兜底到该供应商惯用的变量（`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等）。其余字段各按自己的默认值来：端口和回合上限读一个环境变量，读不到就用字面默认值；`data_dir` 和 `skills_dir` 退回算出来的路径（`~/.openai4s` 和仓库里的 `skills/`）；`egress_allowlist` 根本不读环境变量，它直接复制自 `egress.EGRESS_GROUPS`。 |
+| [`endpoint_identity.py`](./endpoint_identity.py) | LLM endpoint 的唯一写法，以及剥离其中 secret 的唯一位置。`base_url` 原本按用户输入原样存储、由 `GET /model-profiles` 发布、并冻结进不可变 revision——所以带 userinfo 或 query token 的 URL 会把凭据同时留在这三处，这是 7.2「secret 不进 snapshot」被 endpoint 字段而非 key 字段绕过。在存储处就归一，意味着后续任何界面都不必记得去脱敏。 |
 | [`egress.py`](./egress.py) | Host 持有的出站域名允许名单。Web 与 shell 的策略边界会查它，但它要显式打开才生效：除非 `OPENAI4S_EGRESS` 被设成生效值（`allowlist`、`on`、`1`、`enforce` 等），模式就是 `off`，出站调用不做任何允许名单检查，一律放行。真正打开时，它是 OS 沙箱的补充，不是替代。 |
 | [`host_dispatch.py`](./host_dispatch.py) | 内核 `host_call` RPC 的兼容与组合 facade。一次调用要先过权限、审批、审计、回放、筛查和步骤事件策略，才会落到具体的 Host 服务上。 |
 | [`jobs.py`](./jobs.py) | 在进程内运行后台计算任务，并限制其输出缓冲的大小。任务留下的工作文件可以持久化，但注册表本身只在内存里。 |
