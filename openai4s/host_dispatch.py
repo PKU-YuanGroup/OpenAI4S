@@ -798,9 +798,20 @@ class HostDispatcher:
 
     @property
     def skill_loader(self) -> Any:
-        """The dispatcher-scoped loader shared by prompt and host retrieval."""
+        """The raw corpus. Not the prompt view -- see `skill_disclosure`."""
 
         return self._skill_service.loader
+
+    @property
+    def skill_disclosure(self) -> Any:
+        """The allowlist-aware view: what this session may be *told* exists.
+
+        Distinct from `skill_loader`, which is every skill on disk. A delegated
+        child's system prompt was rendered from the loader, so a denied skill
+        was still advertised to it by name and summary.
+        """
+
+        return self._skill_service
 
     @property
     def bash_generation_id(self) -> str | int | None:
