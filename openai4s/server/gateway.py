@@ -296,6 +296,18 @@ _API_ROOT = contract.API_ROOT
 #: never with any part of the token.
 _UNAUTHENTICATED_PATHS = frozenset({"/health", _API_ROOT + "/auth/status"})
 
+#: The release by which `OPENAI4S_REQUIRE_TOKEN=0` must be gone.
+#:
+#: "Kept for one minor release" was written in a comment below and restated in
+#: three docs, and none of the four said *which* release or would ever notice
+#: the deadline passing. The variable turns off the only credential check in
+#: front of `kernel/execute`, `compute/jobs` and `host.bash`, so an escape hatch
+#: that quietly becomes permanent is the entire cost of the decision arriving
+#: without the deadline it was granted on. `tests/test_auth_exit_matrix.py`
+#: fails once `openai4s.__version__` reaches this, which puts the decision in
+#: front of a person instead of leaving it to nobody's memory.
+LEGACY_TOKEN_OPT_OUT_REMOVED_IN = "0.2.0"
+
 
 def _wants_html(headers) -> bool:
     """Is this a person in a browser, or a script?
@@ -8108,10 +8120,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     # machine and every web page the user visits. The Host and Origin guards
     # cover the browser; they do not cover a local process.
     #
-    # `OPENAI4S_REQUIRE_TOKEN=0` is the escape hatch, and it lives for exactly
-    # one minor release. It is the same variable that used to opt *in*, with
-    # its sense reversed: a script setting it to 1 keeps working and simply
-    # asks for what is now the default.
+    # `OPENAI4S_REQUIRE_TOKEN=0` is the escape hatch, and it lives until
+    # `LEGACY_TOKEN_OPT_OUT_REMOVED_IN` above -- a version rather than "one
+    # minor release", because the second is not a date anything can check. It
+    # is the same variable that used to opt *in*, with its sense reversed: a
+    # script setting it to 1 keeps working and simply asks for what is now the
+    # default.
     #
     # It is honoured on loopback only. A non-loopback bind is reachable by
     # anything that can route to it, and there is no configuration under which

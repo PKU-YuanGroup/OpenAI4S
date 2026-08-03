@@ -229,8 +229,8 @@
       "integrated": "P0-1",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "local auth required on loopback; the DNS-rebinding Host allowlist verified on the wire against a real server, ahead of both the Origin guard and the token gate",
-      "tests": "tests/test_gateway_host_allowlist.py,tests/test_token_query_bootstrap.py",
+      "status_note": "local auth required on loopback; the DNS-rebinding Host allowlist verified on the wire against a real server, ahead of both the Origin guard and the token gate. The exit matrix itself was added later: an unauthenticated WebSocket upgrade, a sweep of every routable path from contract.http_routes(), and a cookie replayed against a handler that did not issue it -- three legs this row previously claimed without evidence.",
+      "tests": "tests/test_auth_exit_matrix.py,tests/test_gateway_host_allowlist.py,tests/test_token_query_bootstrap.py",
       "browser_evidence": "",
       "external_evidence": ""
     },
