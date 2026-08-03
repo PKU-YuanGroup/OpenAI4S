@@ -303,7 +303,21 @@ class Kernel:
                         import time as _time
 
                         _time.sleep(0.05)  # let the drain thread flush the last lines
-                        err = "".join(getattr(self, "_stderr_tail", []) or [])
+                        tail = getattr(self, "_stderr_tail", None)
+                        err = "".join(tail or [])
+                        # The tail's own accounting, which until now was
+                        # computed one attribute away and dropped on the floor.
+                        # `record_diagnostic` is the reader: an operator handed
+                        # 64 KiB of a 20 MB stream, with nothing saying so, is
+                        # reading the end of a failure as though it were the
+                        # whole of it. Redacted from the user by
+                        # `public_exception` before publication, as before.
+                        if getattr(tail, "truncated", False):
+                            err += (
+                                f" (stderr tail: {tail.retained_bytes} of "
+                                f"{tail.seen_bytes} bytes kept, "
+                                f"{tail.dropped_bytes} dropped)"
+                            )
                         raise RuntimeError(f"kernel worker exited unexpectedly: {err}")
                     ftype = frame.get("type")
                     if ftype == "response":

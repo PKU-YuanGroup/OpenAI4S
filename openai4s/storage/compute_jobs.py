@@ -42,6 +42,12 @@ _FIELDS = (
     # a job that was still running. See ComputeManager._submit_ssh.
     "pgid",
     "sandbox_id",
+    # A PROVIDER HANDLE -- a remote pid or a sandbox id (`ComputeManager`:
+    # `receipt = sandbox_id or pid`). Not a receipt in `jobs.py`'s sense, where
+    # the word means the durable record that lets the next boot name a job this
+    # daemon did not start. Two unrelated nouns, one column name; renaming it
+    # costs a migration and closes nothing, so the collision is corrected here,
+    # in the prose, which is where it actually misleads.
     "receipt",
     "outputs",
     # Which session/workspace owns this job. `_rehydrate` filters on it so a

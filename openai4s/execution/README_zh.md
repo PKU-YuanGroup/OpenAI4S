@@ -20,6 +20,7 @@ FIFO coordinator 覆盖 Agent、用户 REPL、lifecycle 和 recovery 这几类�
 | [`models.py`](./models.py) | 跨边界传递的三个数据类：`CellRequest`、`CaptureResult` 和 `CellExecutionResult`，里面不出现任何 provider 或 UI 类型。 |
 | [`watchdog.py`](./watchdog.py) | 针对一个冻结的内核 lease 的协议中立超时阶梯：先等待，超时后中断精确的 owner，中断不奏效就 kill，然后按策略重启或放弃。等待人工权限决策期间，超时预算会冻结，但取消仍然能穿透。 |
 | [`process_group.py`](./process_group.py) | 停止一个被派生的进程**组**并确认它真的停了：TERM、宽限、KILL，然后探测整个组而不是组长。与内核侧的 `host.bash` 执行器共用——后者此前把 `timeout=` 交给 `shell=True` 的 `subprocess.run`，只杀掉 shell，而 shell 启动的工作照常运行。两份实现会恰好在这个情形上产生分歧。 |
+| [`budget.py`](./budget.py) | 一条有界通道必须报告的四个数字：`seen`、`retained`、`dropped`、`truncated`。树里有七个缓冲区会为守住预算而丢弃输入，这套账目却有四种写法、其中两处干脆什么都不报——一个被执行却不被报告的上界，产生的不是缺失的信息，而是一个自信的错误答案。它是函数而非 dataclass，以免又变成一个没人填写的声明形状；放在这里而不是 `kernel/`，理由与 `process_group.py` 自己写明的相同：`sdk/bash.py` 在 worker 内部要 import 它。 |
 
 ## 并发与恢复契约
 

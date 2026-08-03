@@ -23,6 +23,7 @@ from pathlib import Path
 # One implementation of "stop this job", shared with the kernel-side bash
 # executor. Two would have disagreed about the case that matters -- the shell
 # exits, the work it started does not.
+from openai4s.execution.budget import channel_counters
 from openai4s.execution.process_group import TERM_GRACE_S as _TERM_GRACE_S
 from openai4s.execution.process_group import await_group_exit as _await_group_exit
 from openai4s.execution.process_group import group_alive as _group_alive
@@ -70,6 +71,29 @@ MAX_JOB_DEADLINE_S = 24 * 3600.0
 #: `abandoned` is terminal in exactly the same sense, and deliberately distinct
 #: from `cancelled`: nobody cancelled it, the daemon that was watching it died.
 TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled", "timeout", "abandoned"})
+
+#: What `Job.receipt` writes and `JobManager._adopt_abandoned` may read back.
+#: One tuple because the two are one contract read from opposite ends of a
+#: daemon restart, and a field present in the reader and absent from the writer
+#: is not a bug either side can see: adoption silently substitutes a default and
+#: the job comes back subtly wrong. A test walks the reader's `data.get(...)`
+#: calls and fails if any key is missing here.
+#:
+#: `pid` is deliberately absent. It was written on every persist -- a host pid,
+#: on disk, under the data dir -- and no reader ever existed: an adopted job is
+#: unconditionally marked `abandoned` and never probed.
+RECEIPT_FIELDS = (
+    "id",
+    "kind",
+    "command",
+    "cwd",
+    "status",
+    "exit_code",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "deadline_s",
+)
 
 
 def _record_diagnostic(exc: BaseException, *, surface: str) -> None:
@@ -151,8 +175,8 @@ class Job:
         if not chunk:
             return
         with self._lock:
-            # Counted before anything is dropped: a receipt that reports only what
-            # survived cannot say how much did not.
+            # Counted before anything is dropped: accounting that reports only
+            # what survived cannot say how much did not.
             self._seen_bytes += len(chunk)
             self._out.append(chunk)
             total = sum(len(part) for part in self._out)
@@ -254,24 +278,30 @@ class Job:
         }
         with self._lock:
             retained = sum(len(chunk) for chunk in self._out)
-            d["truncated"] = bool(self._truncated)
-            d["seen_bytes"] = self._seen_bytes
-            d["retained_bytes"] = retained
-            d["dropped_bytes"] = max(0, self._seen_bytes - retained)
+            # Same four keys, from the shared definition. `_truncated` stays as
+            # the drain loop's own bookkeeping; what goes on the wire is derived
+            # from the counts, so the flag and the numbers cannot disagree.
+            d.update(channel_counters(seen=self._seen_bytes, retained=retained))
         if with_output:
             d["output"] = self.output()
         return d
 
     def receipt(self) -> dict:
-        """The part of this job that survives the process that ran it.
+        """The durable record that lets the next boot name a job this daemon
+        did not start. That is the whole definition of the word here.
 
-        Deliberately not the output. A receipt exists so a job the daemon was
-        watching when it died can be *named* on the next boot rather than
-        silently vanishing from the list; the log of such a job is gone with the
-        pipe that carried it, and writing a partial one to disk on every chunk
-        would turn a bounded in-memory buffer into an unbounded file.
+        Two other things in this tree are called receipts and are not this one:
+        `compute_jobs`'s `receipt` column holds a provider handle (a remote pid
+        or a sandbox id), and `host/files.py` used the word for an item-count
+        report. Both are right in their own domain; only the shared name was
+        wrong, and it is the prose that has been corrected rather than a column.
+
+        Deliberately not the output. The log of a job the daemon was watching
+        when it died is gone with the pipe that carried it, and writing a
+        partial one to disk on every chunk would turn a bounded in-memory
+        buffer into an unbounded file.
         """
-        return {
+        values = {
             "id": self.id,
             "kind": self.kind,
             "command": self.command,
@@ -282,8 +312,8 @@ class Job:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "deadline_s": self.deadline_s,
-            "pid": self._proc.pid if self._proc is not None else None,
         }
+        return {field: values[field] for field in RECEIPT_FIELDS}
 
 
 class JobManager:

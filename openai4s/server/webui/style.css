@@ -753,6 +753,11 @@ body.layout-wide{--col:1080px}
 .job-badge.done{background:#3aa76d22;color:#3aa76d}
 .job-badge.failed{background:#8e262622;color:#8e2626}
 .job-badge.cancelled{background:#8881;color:var(--muted,#888)}
+/* `timeout` and `abandoned` are terminal statuses jobs.py declares and the
+   deadline and adoption paths reach; unstyled, they rendered as bare text
+   beside four styled siblings and read as a rendering bug. */
+.job-badge.timeout{background:#b4770022;color:#b47700}
+.job-badge.abandoned{background:#6b21a822;color:#6b21a8}
 .job-cmd{font-family:var(--mono,monospace);font-size:12px;color:var(--text-200,#333)}
 .job-output{white-space:pre-wrap;word-break:break-word;background:#0b0b0b;color:#e6e6e6;padding:14px;border-radius:10px;font:12px/1.5 var(--mono,monospace);max-height:52vh;overflow:auto;margin:0}
 
