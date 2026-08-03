@@ -41,7 +41,7 @@ seen, retained and dropped.
 
 | Channel | Initial | Override |
 | --- | --- | --- |
-| MCP request deadline | 60 s absolute | `OPENAI4S_MCP_DEADLINE_S` |
+| MCP request deadline | 60 s absolute | `OPENAI4S_MCP_DEADLINE_S`, clamped to 1–600 s; anything unparseable, non-finite or out of range falls back to 60 s |
 | MCP frame | 4 MiB | — |
 | MCP stderr tail | 200 lines | — |
 | Kernel outbound frame | 8 MiB | — |

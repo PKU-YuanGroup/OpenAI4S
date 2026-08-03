@@ -10,6 +10,7 @@ Sampling and server-initiated requests are deliberately outside this client.
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import select
@@ -23,13 +24,46 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 PROTOCOL_VERSION = "2024-11-05"
-_DEFAULT_TIMEOUT = 30.0
 
 #: Absolute deadline for one request. Previously there was none: `_read_reply`
 #: called `readline()` in a loop, so a connector that accepted a request and
 #: never answered held its caller forever -- and, because the manager takes its
 #: own lock across connect, held every other connector too.
 DEFAULT_TIMEOUT_S = 60.0
+#: The bounds an override is held to. A deadline of zero is not "no deadline",
+#: it is a connector that can never answer; one of a day is the unbounded wait
+#: this constant was introduced to remove. An out-of-range or unparseable value
+#: falls back to the default rather than refusing to start -- an env var should
+#: not be able to make the daemon unbootable.
+MIN_TIMEOUT_S = 1.0
+MAX_TIMEOUT_S = 600.0
+#: Published by `docs/v03-decisions.md` D6 as the single override for the MCP
+#: request deadline. It named a variable nothing read: the name existed in that
+#: table and nowhere else in the tree, so the decision record described a knob
+#: that was not there. A documented control that does not exist is worse than an
+#: undocumented one, because someone sets it and believes the deadline moved.
+DEADLINE_ENV = "OPENAI4S_MCP_DEADLINE_S"
+
+
+def _deadline_default() -> float:
+    """The per-request deadline, from the environment, clamped.
+
+    Read at call time rather than captured at import, so a test that sets the
+    variable does not have to reload the module -- and so `DEFAULT_TIMEOUT_S`
+    stays monkeypatchable, which several tests rely on.
+    """
+    raw = str(os.environ.get(DEADLINE_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_TIMEOUT_S
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT_S
+    if not math.isfinite(value) or value <= 0:
+        return DEFAULT_TIMEOUT_S
+    return min(max(value, MIN_TIMEOUT_S), MAX_TIMEOUT_S)
+
+
 #: Largest single JSON-RPC line accepted. `readline()` has no size bound, so one
 #: newline-free multi-gigabyte line was a single allocation in the daemon.
 _MAX_FRAME_BYTES = 4 * 1024 * 1024
@@ -282,7 +316,8 @@ class MCPConnection:
         self.command = command
         self._id = 0
         self._lock = threading.Lock()
-        self._timeout = float(timeout if timeout is not None else DEFAULT_TIMEOUT_S)
+        # An explicit argument still wins; the env only supplies the default.
+        self._timeout = float(timeout) if timeout is not None else _deadline_default()
         #: id -> the waiter that asked for it. A dedicated reader thread routes
         #: replies here instead of every caller racing on `readline`.
         self._pending: dict[int, "queue.Queue[dict]"] = {}
