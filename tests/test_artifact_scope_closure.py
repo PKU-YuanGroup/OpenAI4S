@@ -468,3 +468,96 @@ def test_agent_sql_does_not_commit_the_callers_transaction(tmp_path):
         )
     finally:
         store.close()
+
+
+# --- the path-keyed read, and the write that made it disclosure -------------
+#
+# `version_for_path` was the one artifact read keyed on a filesystem path
+# rather than an id, and it carried no scope at all: `SELECT ... WHERE path=?`
+# over `artifact_versions`, a table with no project column and no join to
+# `artifacts`, falling back to an identity scan of *every* row in the database.
+# It is reached from `builtins.open` in any Python cell through the provenance
+# hooks, and `prov_resolve_path` is in `delegation_policy._ALWAYS`, so even a
+# child with an empty capability list could call it.
+#
+# On its own that is an existence oracle. What made it disclosure is the write
+# beside it: `provenance_record` passed `input_version_ids` straight through
+# while its twin `save_artifact` validated them, so the foreign version id it
+# returned could be recorded as a lineage input -- `lineage_edges` has no
+# foreign key -- and the correctly scoped lineage reader then walked that edge
+# and returned the other project's filename and absolute path.
+
+
+def test_prov_resolve_path_refuses_a_foreign_versions_path(two_projects):
+    """Cross-project and untracked are the same answer, as P0-2 requires."""
+    _cfg, store, service, _ours, foreign = two_projects
+    foreign_path = store.version_meta(foreign["version_id"])["path"]
+
+    assert service.provenance_resolve_path(foreign_path) is None
+    assert service.provenance_resolve_path("/nowhere/at/all.csv") is None
+
+
+def test_prov_resolve_path_still_resolves_this_sessions_own_file(two_projects):
+    """The refusal must not be an outage.
+
+    Load-bearing: `provenance.py` swallows every exception from this call and
+    returns None, so a scope predicate that is merely wrong would silently kill
+    object-level lineage across the whole product without failing anything.
+    """
+    _cfg, store, service, ours, _foreign = two_projects
+    own_path = store.version_meta(ours["version_id"])["path"]
+
+    assert service.provenance_resolve_path(own_path) == ours["version_id"]
+
+
+def test_prov_record_refuses_a_foreign_lineage_input(two_projects):
+    """The write half, refused the same way `save_artifact` refuses it."""
+    cfg, _store, service, _ours, foreign = two_projects
+    output = Path(cfg.data_dir) / "ws" / "mine.csv"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("x\n", encoding="utf-8")
+
+    with pytest.raises(KeyError):
+        service.provenance_record(
+            {"path": "mine.csv", "input_version_ids": [foreign["version_id"]]}
+        )
+
+
+def test_prov_record_still_accepts_an_input_this_session_owns(two_projects):
+    cfg, _store, service, ours, _foreign = two_projects
+    output = Path(cfg.data_dir) / "ws" / "derived.csv"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("y\n", encoding="utf-8")
+
+    recorded = service.provenance_record(
+        {"path": "derived.csv", "input_version_ids": [ours["version_id"]]}
+    )
+
+    assert recorded.get("version_id")
+    inputs = service.lineage_get(recorded["version_id"]).get("inputs") or []
+    assert [row["version_id"] for row in inputs] == [ours["version_id"]]
+
+
+def test_the_whole_chain_discloses_nothing(two_projects):
+    """End to end, because each half was refused separately above.
+
+    This is the shape the defect actually had: resolve a guessed path, record
+    what comes back as an input, read the lineage. Reproduced against a real
+    Store before the fix and it returned the other project's filename and
+    absolute path.
+    """
+    cfg, store, service, _ours, foreign = two_projects
+    foreign_path = store.version_meta(foreign["version_id"])["path"]
+    output = Path(cfg.data_dir) / "ws" / "chain.csv"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("z\n", encoding="utf-8")
+
+    resolved = service.provenance_resolve_path(foreign_path)
+    assert resolved is None
+
+    # And naming the id directly -- the step the oracle was supposed to supply
+    # -- is refused too, so knowing it some other way buys nothing.
+    with pytest.raises(KeyError):
+        service.provenance_record(
+            {"path": "chain.csv", "input_version_ids": [foreign["version_id"]]}
+        )

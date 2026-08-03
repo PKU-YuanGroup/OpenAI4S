@@ -370,7 +370,10 @@ def test_listing_paths_versions_priority_and_restore_contracts(tmp_path):
     assert repository.resolve_artifact_path(first["version_id"]) == "/snap/first"
     assert repository.resolve_artifact_path(first["artifact_id"]) == str(alias)
     assert repository.resolve_artifact_path("missing") is None
-    assert repository.version_for_path(str(real)) == second["version_id"]
+    assert (
+        repository.version_for_path(str(real), root_frame_id=None, project_id="science")
+        == second["version_id"]
+    )
     versions = repository.list_versions(first["artifact_id"])
     assert [version["ordinal"] for version in versions] == [2, 1]
     assert [version["is_latest"] for version in versions] == [True, False]

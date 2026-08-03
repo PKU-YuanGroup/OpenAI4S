@@ -82,7 +82,9 @@ class HostDataStore(Protocol):
     def lineage_edges_for(self, version_id: str, direction: str) -> list[dict]:
         ...
 
-    def version_for_path(self, path: str) -> str | None:
+    def version_for_path(
+        self, path: str, *, root_frame_id: str | None, project_id: str
+    ) -> str | None:
         ...
 
 
@@ -760,7 +762,29 @@ class HostDataService:
         return result
 
     def provenance_resolve_path(self, path: str) -> Any:
-        return self._store().version_for_path(path)
+        """Which version this session's copy of `path` is, or None.
+
+        Session scope, not project scope: a foreign session's file has to be
+        materialised, never resolved in place, which is what `materialise_artifact`
+        exists for. Refusal is `None` -- the same value an untracked path already
+        returns -- because the P0-2 exit criterion is that cross-scope and absent
+        are indistinguishable, and this contract is already `str | None`. Raising
+        would answer "something is there, you may not have it".
+
+        Reached from `builtins.open` in every Python cell (the provenance hooks
+        wrap the reader), so it runs constantly and must stay cheap and quiet.
+        """
+        frame_id = self._frame_id()
+        if frame_id is None:
+            return None
+        scope = self._store().resolve_frame_scope(frame_id)
+        root_frame_id = scope.get("root_frame_id")
+        project_id = scope.get("project_id")
+        if not root_frame_id or not project_id:
+            return None
+        return self._store().version_for_path(
+            path, root_frame_id=str(root_frame_id), project_id=str(project_id)
+        )
 
     #: How much of a file is read at a time when checksumming it.
     _DIGEST_CHUNK = 1024 * 1024
@@ -800,6 +824,15 @@ class HostDataService:
         its siblings, which is what makes this an omission rather than a
         missing mechanism.
         """
+        # Before the digest and before the row, exactly where `save_artifact`
+        # validates the same field. `save_artifact` was fixed and this twin was
+        # not, so the one write path that never checked its lineage inputs was
+        # the one an agent reaches from any cell: a foreign version id went into
+        # `lineage_edges` (no foreign key), and the properly scoped reader then
+        # walked that edge and returned the other project's filename and
+        # absolute path. Refusing here means a rejected call leaves no artifact,
+        # no version and no orphan file.
+        input_version_ids = self._scoped_lineage_inputs(spec.get("input_version_ids"))
         path = spec["path"]
         try:
             output = self._resolve_path(path, must_exist=True)
@@ -836,7 +869,7 @@ class HostDataService:
             checksum=checksum,
             producing_cell_id=spec.get("producing_cell_id"),
             frame_id=self._frame_id(),
-            input_version_ids=spec.get("input_version_ids") or [],
+            input_version_ids=input_version_ids,
         )
 
 
