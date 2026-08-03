@@ -445,3 +445,90 @@ def test_a_rejected_upload_writes_nothing_to_disk_at_all(tmp_path, monkeypatch):
         ), f"the rejected upload wrote to disk before refusing: {writes}"
     finally:
         store.close()
+
+
+def test_an_in_cell_materialise_makes_one_version_not_two(project):
+    """The capture must reuse the row the materialise just wrote.
+
+    `record_cell_artifact` looks for a reusable candidate keyed on
+    `v.producing_cell_id = ?`, and `materialise_artifact_version` wrote NULL
+    there -- it took no such parameter. So the end-of-cell capture could never
+    match, and one `host.materialise_artifact` inside a cell produced two
+    versions of identical bytes.
+
+    The second one becomes the artifact head, and the source->target lineage
+    edge stays on the first. Measured before this change: two versions, and
+    `lineage_inputs(head) == []` -- an approved cross-session copy whose head
+    claims it has no inputs, which is the wrong-provenance failure this
+    subsystem exists to prevent.
+
+    The identity is plumbed the way `save_artifact` already plumbs it:
+    `worker._attach_cell_context` -> the spec -> `HostDataService` ->
+    `Store` -> the repository. Four hops, and the `Store` facade was the one
+    that had to be remembered separately.
+    """
+    _cfg_obj, store, service, _workspace, mine, _theirs, seeded = project
+    cell_id = "cell-dedup"
+
+    brought = service.materialise_artifact(
+        {
+            "version_id": seeded["version_id"],
+            "filename": "cohort.csv",
+            "execution_cell_id": cell_id,
+        }
+    )
+
+    live = Path(store.version_meta(brought["version_id"])["path"])
+    payload = live.read_bytes()
+    captured = store.record_cell_artifact(
+        path=str(live),
+        filename="cohort.csv",
+        content_type="text/csv",
+        size_bytes=len(payload),
+        checksum=hashlib.sha256(payload).hexdigest(),
+        producing_cell_id=cell_id,
+        frame_id=mine,
+    )
+
+    assert (
+        captured["version_id"] == brought["version_id"]
+    ), "the capture forked a second version"
+    assert len(store.list_versions(brought["artifact_id"])) == 1
+
+    head = store.get_artifact(brought["artifact_id"])["latest_version_id"]
+    inputs = [row["version_id"] for row in store.lineage_inputs(head)]
+    assert inputs == [seeded["version_id"]], (
+        "the head carries no inputs; the lineage edge was stranded on a "
+        "superseded version"
+    )
+
+
+def test_the_worker_gives_a_materialise_the_cell_identity_to_dedup_with():
+    """The first hop, which the test above cannot reach.
+
+    That test calls the service directly and passes `execution_cell_id`
+    itself, so it proves the service->Store->repository half and nothing about
+    where the value comes from. A cell calling `host.materialise_artifact(...)`
+    supplies no such field: `worker._attach_cell_context` injects it, and it
+    filtered on `save_artifact` alone. Reverting that filter leaves the test
+    above green and the product unfixed -- measured, which is why this exists.
+    """
+    from openai4s.kernel import worker as worker_mod
+
+    previous = worker_mod._ACTIVE_CELL_ID[0]
+    worker_mod._ACTIVE_CELL_ID[0] = "cell-from-worker"
+    try:
+        attached = worker_mod._attach_cell_context(
+            "materialise_artifact", [{"version_id": "v-src", "filename": "x.csv"}]
+        )
+        assert attached[0]["executionCellId"] == "cell-from-worker"
+
+        # And the neighbour it already covered is unchanged.
+        saved = worker_mod._attach_cell_context("save_artifact", [{"path": "x.csv"}])
+        assert saved[0]["executionCellId"] == "cell-from-worker"
+
+        # A method that writes nothing keeps its args untouched.
+        other = worker_mod._attach_cell_context("query", [{"sql": "SELECT 1"}])
+        assert "executionCellId" not in other[0]
+    finally:
+        worker_mod._ACTIVE_CELL_ID[0] = previous

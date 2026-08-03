@@ -507,6 +507,11 @@ class HostDataService:
                 frame_id=frame_id,
                 root_frame_id=root_frame_id,
                 project_id=project_id,
+                # Read the same way `save_artifact` reads it. Without it the row
+                # lands with `producing_cell_id` NULL, and the end-of-cell
+                # capture matches candidates on exactly that column.
+                producing_cell_id=spec.get("execution_cell_id")
+                or spec.get("producing_cell_id"),
             )
         except Exception:
             # The transaction rolled back, so both files describe a version that

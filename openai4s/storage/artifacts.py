@@ -678,6 +678,7 @@ class ArtifactRepository:
         frame_id: str | None,
         root_frame_id: str,
         project_id: str,
+        producing_cell_id: str | None = None,
     ) -> dict:
         """Copy another session's artifact version *into* this one, atomically.
 
@@ -773,7 +774,7 @@ class ArtifactRepository:
                         source["checksum"],
                         path,
                         snapshot_path,
-                        None,
+                        producing_cell_id,
                         frame_id,
                         now,
                         source["env_snapshot_id"],
@@ -797,7 +798,7 @@ class ArtifactRepository:
                         f"e-{uuid.uuid4().hex[:12]}",
                         source_version_id,
                         version_id,
-                        None,
+                        producing_cell_id,
                         frame_id,
                         now,
                     ),

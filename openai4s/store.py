@@ -2907,6 +2907,7 @@ class Store:
         frame_id: str | None,
         root_frame_id: str,
         project_id: str,
+        producing_cell_id: str | None = None,
     ) -> dict:
         return self._artifacts.materialise_artifact_version(
             source_version_id=source_version_id,
@@ -2918,6 +2919,7 @@ class Store:
             frame_id=frame_id,
             root_frame_id=root_frame_id,
             project_id=project_id,
+            producing_cell_id=producing_cell_id,
         )
 
     def upsert_env_snapshot(self, snapshot: dict) -> str:

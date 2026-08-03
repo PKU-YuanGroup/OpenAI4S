@@ -292,7 +292,15 @@ def _attach_cell_context(method: str, args: list) -> list:
     message type.
     """
     cell_id = _ACTIVE_CELL_ID[0]
-    if method != "save_artifact" or not cell_id or not args:
+    # `materialise_artifact` too. It writes a version like `save_artifact` does,
+    # and without the cell identity that version carries `producing_cell_id`
+    # NULL -- which is the exact column the end-of-cell capture matches on, so
+    # the capture could never reuse it and made a second version of the same
+    # bytes. The lineage edge stayed on the first, leaving the artifact head
+    # with no inputs.
+    if method not in ("save_artifact", "materialise_artifact") or not cell_id:
+        return args
+    if not args:
         return args
     spec = args[0]
     if not isinstance(spec, dict):
