@@ -19,7 +19,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from openai4s.bash_capability import CAPABILITY_VERSION, command_digest
-from openai4s.execution.process_group import stop_process_group
+from openai4s.execution.process_group import (
+    await_group_exit,
+    group_alive,
+    stop_process_group,
+)
 
 #: What the caller is shown, and now also what is retained. The tail is kept:
 #: for a command that failed, the end is what explains it.
@@ -423,9 +427,28 @@ class BashExecutor:
             ]
             for thread in drains:
                 thread.start()
+            # The deadline is on the GROUP, not the leader. `proc.wait()`
+            # answers about the leader alone -- `stop_process_group`'s own
+            # docstring says so, two files away -- and this call site believed
+            # it. Measured: `( sleep 6; ... ) & exit 0` under a 2s deadline
+            # returned from `proc.wait` in 0.00s with no TimeoutExpired, so the
+            # group was never stopped, the drain threads stayed blocked on
+            # pipes the survivor held (one leak per call), the work finished
+            # six seconds later, and `host.bash` reported `completed` rc=0 --
+            # a terminal state for a job that was still running.
+            #
+            # Spawning under `start_new_session=True` was already done for
+            # exactly this, and the comment above says why. Only the wait was
+            # never switched to match.
+            deadline = time.monotonic() + timeout_s
             try:
                 proc.wait(timeout=timeout_s)
             except subprocess.TimeoutExpired:
+                pass
+            remaining = deadline - time.monotonic()
+            if remaining > 0 and group_alive(pgid):
+                await_group_exit(proc, pgid, remaining)
+            if proc.poll() is None or group_alive(pgid):
                 status = "timed_out"
                 stop_process_group(proc, pgid)
                 timeout_error = RuntimeError(f"bash: timed out after {timeout_s:g}s")
