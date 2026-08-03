@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from openai4s.compute import states
+from openai4s.compute import registry, states
 from openai4s.compute.manager import ComputeError, ComputeManager
 from openai4s.config import Config
 from openai4s.storage.compute_jobs import IllegalTransition
@@ -38,6 +38,10 @@ from openai4s.store import get_store
 @pytest.fixture
 def cfg(tmp_path):
     (tmp_path / "skills").mkdir()
+    # See the note in the manager fixtures: an unregistered destination is
+    # refused before ssh is spawned, so a fixture that never registers one
+    # drives a state no agent can reach.
+    registry.add_host("lab", data_dir=tmp_path)
     return types.SimpleNamespace(
         data_dir=tmp_path,
         skills_dir=tmp_path / "skills",

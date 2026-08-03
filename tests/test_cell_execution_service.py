@@ -452,11 +452,20 @@ def test_r_protocol_exception_shuts_down_only_the_executing_lease(tmp_path):
     assert kernel.shutdown_calls == 1
     assert "capture" not in harness.order and harness.order[-1] == "record"
     assert harness.records[0]["state_revision"] == 1
-    assert harness.records[0]["result"]["error"] == "malformed R frame"
+    # Not `str(exc)`. A worker/protocol failure carries the drained stderr tail
+    # -- traceback, absolute paths, argv -- and this row is persisted and
+    # replayed through `notebook_cell_finished` and the execution log. The
+    # exception's own text is a `RuntimeError`, so it has unknown provenance by
+    # `public_exception`'s rule and gets the authored sentence plus a stable
+    # code; the detail goes to the diagnostic log.
+    published = harness.records[0]["result"]["error"]
+    assert published.startswith("the kernel did not finish this cell")
+    assert "kernel_execution_failed" in published
+    assert "malformed R frame" not in published
     assert events[-1]["type"] == "notebook_cell_finished"
     assert events[-1]["producing_cell_id"] == "cell-r-bad"
     assert events[-1]["status"] == "error"
-    assert events[-1]["error"] == "malformed R frame"
+    assert events[-1]["error"] == published
 
 
 def test_r_exception_from_stale_lease_does_not_close_replacement(tmp_path):
@@ -611,7 +620,9 @@ def test_worker_exception_still_finishes_allocated_attempt(tmp_path):
     }
     assert not any(item[0] in {"response", "capture"} for item in attempts)
     assert harness.records[0]["state_revision"] == 1
-    assert harness.records[0]["result"]["error"] == "worker exited"
+    published = harness.records[0]["result"]["error"]
+    assert published.startswith("the kernel did not finish this cell")
+    assert "worker exited" not in published
 
 
 def test_attempt_milestone_write_failure_still_finalizes_attempt(tmp_path):
@@ -736,3 +747,48 @@ def test_record_failure_is_not_misclassified_as_capture_failure(tmp_path):
             },
         )
     ]
+
+
+def test_a_dead_worker_does_not_publish_its_stderr():
+    """`str(exc)` for a worker death is the drained stderr tail.
+
+    `manager.py` raises `kernel worker exited unexpectedly: <tail>`, and the
+    tail is the worker's traceback, an R `system()`'s output, or anything any
+    child wrote to fd2 -- with the absolute paths and argv that come with it.
+    It reached the persisted cell row, `notebook_cell_finished` and
+    `GET /frames/{id}/execution-log`, so one crash published it three times and
+    kept it.
+    """
+    from openai4s.server.cell_run import _worker_failure_text
+    from openai4s.server.errors import public_exception
+
+    tail = (
+        "Traceback (most recent call last):\n"
+        '  File "/Users/alice/private-study/patients.py", line 3\n'
+        "RuntimeError: cohort key AK-2026-88 rejected"
+    )
+    exc = RuntimeError(f"kernel worker exited unexpectedly: {tail}")
+    public, _status = public_exception(
+        exc, surface="cell:worker", error_code="kernel_execution_failed"
+    )
+    published = _worker_failure_text(exc, public)
+
+    for leaked in ("/Users/alice", "patients.py", "AK-2026-88", "Traceback"):
+        assert leaked not in published, published
+    assert published.startswith("the kernel did not finish this cell")
+    assert "kernel_execution_failed" in published
+
+
+def test_a_timeout_still_says_the_kernel_was_reset():
+    """The refusal must not cost the user the actionable half."""
+    from openai4s.server.cell_run import _worker_failure_text
+    from openai4s.server.errors import public_exception
+
+    exc = TimeoutError("cell exceeded 120s in /srv/run/cell-9.py")
+    public, _status = public_exception(
+        exc, surface="cell:worker", error_code="cell_timeout"
+    )
+    published = _worker_failure_text(exc, public)
+
+    assert "variables from earlier cells were cleared" in published
+    assert "/srv/run" not in published

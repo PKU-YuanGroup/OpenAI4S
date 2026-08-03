@@ -175,7 +175,35 @@ GATES: tuple[Gate, ...] = LOCAL_GATES + CHECK_SUITE_GATES
 #: because no check run for them exists there. Keyed by the receipt row name.
 PLATFORM_CHECK_COMMANDS: dict[str, tuple[str, ...]] = {
     "macos-sandbox": ("uv", "run", "python", "-m", "harness.smoke.macos_sandbox"),
-    "linux-sandbox": ("uv", "run", "python", "-m", "harness.smoke.linux_sandbox"),
+}
+
+#: Platform boundaries this release cannot prove, and why. Declared rather than
+#: omitted, because the two read identically in an evidence bundle and mean
+#: opposite things.
+#:
+#: `linux-sandbox` was in `PLATFORM_CHECK_COMMANDS` and ran on `ubuntu-latest`,
+#: which is the one runner where `harness.smoke.linux_sandbox` cannot pass: a
+#: GitHub-hosted runner confines unprivileged user namespaces, so bwrap creates
+#: its network namespace and then cannot bring up loopback inside it. ci.yml
+#: says so at length and deliberately has no such job. `build` declares
+#: `needs: platform-checks`, so requiring it made every publication unreachable
+#: -- the inverse of P0-0's exit criterion, which is that a *failing* gate
+#: blocks a release, not that an unpassable one blocks all of them.
+#:
+#: Removing it silently would have been worse than leaving it red: an absent row
+#: reads as "checked, fine". The plan's rollback clause is explicit -- a platform
+#: whose evidence is missing is degraded to preview, never recorded as passed.
+#: Restoring it to CI needs a host that permits those namespaces (a self-hosted
+#: runner, or a suitably privileged container), at which point it moves back
+#: into `PLATFORM_CHECK_COMMANDS` and out of here.
+PLATFORM_CHECKS_UNAVAILABLE: dict[str, str] = {
+    "linux-sandbox": (
+        "harness.smoke.linux_sandbox requires a host that permits unprivileged "
+        "user namespaces; a GitHub-hosted runner does not, so bwrap fails with "
+        "'loopback: Failed RTM_NEWADDR: Operation not permitted'. The Linux "
+        "sandbox boundary is verified by hand on a permissive host and is not "
+        "proven by this release."
+    ),
 }
 
 

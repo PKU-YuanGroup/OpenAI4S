@@ -784,6 +784,55 @@ def test_the_release_binds_the_platform_checks_to_the_frozen_sha():
         assert "platform-checks" in jobs[name]["needs"]
 
 
+def test_the_release_declares_every_platform_it_does_not_prove():
+    """A platform leaves the matrix by being declared unprovable, or not at all.
+
+    `linux-sandbox` used to run on `ubuntu-latest`, the one runner where it
+    cannot pass: a hosted runner confines unprivileged user namespaces, so bwrap
+    cannot bring up loopback inside its new netns. ci.yml says exactly that and
+    deliberately has no such job -- but release.yml required it and `build`
+    needs `platform-checks`, so every publication was unreachable. A gate that
+    cannot pass does not block a bad release; it blocks all of them.
+
+    The fix must not be a silent deletion. An absent platform and a passing one
+    look identical in an evidence bundle, and the plan's rollback clause is that
+    missing evidence degrades a platform to preview rather than recording an
+    un-run check as success. So the two dicts together must still name every
+    platform, which is what makes dropping one a test failure rather than a
+    quiet reduction in scope.
+    """
+    from scripts import release_gates
+
+    executed = set(release_gates.PLATFORM_CHECK_COMMANDS)
+    unprovable = set(release_gates.PLATFORM_CHECKS_UNAVAILABLE)
+
+    assert executed & unprovable == set(), (
+        "a platform cannot be both executed and declared unprovable: "
+        f"{sorted(executed & unprovable)}"
+    )
+    assert executed | unprovable == {"macos-sandbox", "linux-sandbox"}, (
+        "every platform must be either executed or declared unprovable; "
+        "dropping one silently is how an un-run check comes to read as a pass"
+    )
+    assert all(
+        release_gates.PLATFORM_CHECKS_UNAVAILABLE[name].strip() for name in unprovable
+    ), "an unprovable platform must say why, or the declaration proves nothing"
+
+    # And the workflow must not quietly re-add one. A matrix entry for a check
+    # declared unprovable is the original defect coming back.
+    jobs = _workflow("release.yml")["jobs"]
+    modules = {
+        entry["module"]
+        for entry in jobs["platform-checks"]["strategy"]["matrix"]["include"]
+    }
+    for name in unprovable:
+        module = f"harness.smoke.{name.replace('-', '_')}"
+        assert module not in modules, (
+            f"{module} is declared unprovable but release.yml still runs it; "
+            "requiring a check that cannot pass makes every release unreachable"
+        )
+
+
 def test_the_evidence_bundle_and_attestation_leave_the_attach_job():
     """Item 5 and 7. The bundle has to be an uploaded artifact rather than a file
     left in a runner's working directory, and the attestation must NOT travel

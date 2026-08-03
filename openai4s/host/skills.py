@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from openai4s.config import Config
+from openai4s.host import resource_allowlist
 from openai4s.skills_loader import SkillLoader, SkillVersionService
 
 
@@ -135,6 +136,31 @@ class SkillService:
         # scored against a different corpus is not.
         return self._filter(
             self.loader.search(spec.get("query", ""), limit=int(spec.get("limit", 5)))
+        )
+
+    def system_context(self) -> str:
+        """The prompt block, filtered by this session's skill allowlist.
+
+        Lives here rather than on the loader because this is the object that
+        holds `_allowed_skills`. `HostDispatcher.skill_loader` returns the raw
+        loader, and `Agent` bound *that* for the system prompt -- so the filter
+        was armed on the service while the prompt was rendered from the corpus
+        beside it.
+        """
+        self.loader.discover()
+        return self.loader.system_context(
+            only=resource_allowlist.normalise(self._allowed_skills)
+        )
+
+    def bootstrap_code(self) -> str:
+        """The in-kernel sidecar gate, closed over this session's allowlist.
+
+        Same reason as `system_context`: the allowlist lives on this object and
+        the generator lives on the loader, so a caller holding the loader got a
+        gate that knew only about `disabled`.
+        """
+        return self.loader.bootstrap_code(
+            allowed=resource_allowlist.normalise(self._allowed_skills)
         )
 
     def list(self) -> list:

@@ -17,6 +17,7 @@ class FakeStore:
         self.artifact_rows = []
         self.query_rows = []
         self.paths = {}
+        self.path_scopes: list = []
         self.version = {
             "version_id": "v-abcdef123456",
             "artifact_id": "a-1",
@@ -112,7 +113,11 @@ class FakeStore:
         self.calls.append(("lineage_edges_for", version_id, direction))
         return self.edges.get(version_id, [])
 
-    def version_for_path(self, path):
+    def version_for_path(self, path, *, root_frame_id, project_id):
+        # Required, not defaulted, so this fake cannot keep accepting the
+        # unscoped call that production can no longer make -- which is how a
+        # fake comes to certify a signature the real store has dropped.
+        self.path_scopes.append((path, root_frame_id, project_id))
         return self.paths.get(path)
 
 

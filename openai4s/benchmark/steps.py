@@ -372,6 +372,7 @@ def remote_job(ctx: Context, inputs: dict) -> dict:
     """
     import time
 
+    from openai4s.compute import registry
     from openai4s.compute.manager import ComputeManager
 
     real_run = subprocess.run
@@ -430,6 +431,11 @@ def remote_job(ctx: Context, inputs: dict) -> dict:
     )
     try:
         manager = ComputeManager(cfg, workspace=ctx.workspace)
+        # The scenario stands in for a deployment that has this host, so it
+        # registers it. `submit` refuses an unregistered destination before it
+        # spawns ssh, and a benchmark that skipped registration would be
+        # measuring a path no agent can take.
+        registry.add_host("bench", data_dir=Path(cfg.data_dir))
         submitted = manager.submit(
             {
                 "provider": "ssh:bench",

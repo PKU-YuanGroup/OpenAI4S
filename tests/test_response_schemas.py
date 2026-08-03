@@ -678,9 +678,21 @@ def test_the_frozen_envelope_never_declares_request_id_nullable(frozen):
     null-handling that can never run. The capture substitutes a fixed synthetic
     id for a handler that has none; this asserts the substitution is still in
     place, because losing it is silent.
+
+    Scoped to `[error]`, because that is where the envelope exists:
+    `public_failure` enriches failures only, so `request_id` in an `[ok]` shape
+    is a *resource* field that happens to share the name. The admission
+    ledger's is one -- `reserve_with_admission` takes no request id, so a row
+    really is NULL between the reservation and the later stamp, and demanding
+    a string there would make the contract describe a state the server does
+    not have. The narrowing costs nothing measurable: 607 of the 611 frozen
+    shapes carrying `request_id` are `[error]`, and all four `[ok]` ones are
+    resource fields.
     """
     offenders = {}
     for route, entry in frozen["routes"].items():
+        if not route.endswith("[error]"):
+            continue
         prop = ((entry.get("schema") or {}).get("properties") or {}).get("request_id")
         if prop is None:
             continue

@@ -101,6 +101,12 @@ def _sandbox_posture() -> dict[str, Any]:
             "the posture requested on the build runner; not a measurement of the "
             "sandbox on an end user's machine"
         ),
+        # The platform boundaries this release did not prove, and why. Carried
+        # because a bundle that simply omits them is indistinguishable from one
+        # where every platform passed, and that is the reading a reader defaults
+        # to. Named here so "we could not check Linux" survives into the
+        # evidence rather than living only in a workflow comment.
+        "unproven": dict(release_gates.PLATFORM_CHECKS_UNAVAILABLE),
     }
 
 

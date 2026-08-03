@@ -2943,8 +2943,12 @@ class Store:
     def resolve_artifact_path(self, ident: str) -> str | None:
         return self._artifacts.resolve_artifact_path(ident)
 
-    def version_for_path(self, path: str) -> str | None:
-        return self._artifacts.version_for_path(path)
+    def version_for_path(
+        self, path: str, *, root_frame_id: str | None, project_id: str
+    ) -> str | None:
+        return self._artifacts.version_for_path(
+            path, root_frame_id=root_frame_id, project_id=project_id
+        )
 
     def version_meta(self, version_id: str) -> dict | None:
         return self._artifacts.version_meta(version_id)

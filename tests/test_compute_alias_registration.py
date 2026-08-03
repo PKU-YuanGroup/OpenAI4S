@@ -111,3 +111,77 @@ def test_registration_is_read_from_the_callers_data_dir(tmp_path):
 
     assert registry.is_known_alias("only-here", tmp_path) is True
     assert registry.is_known_alias("only-here", other) is False
+
+
+# --------------------------------------------------------------------------
+# the other two thirds of the same defect
+# --------------------------------------------------------------------------
+#
+# `523cab6` closed `compute_submit` and is worded as though it closed the
+# surface. It closed one of three doors. `compute_ssh` and `compute_scp` reach
+# `ssh`/`scp` with a destination the model chose, and neither is in
+# `GATEABLE_TOOLS` (host_dispatch.py), so no approval stood in front of them
+# either -- the whole refusal was one `if` on a sibling method.
+#
+# The module docstring's argument for keeping the check out of `_split` still
+# holds and is why registration is applied at the *named* destinations rather
+# than at argv construction: an alias read back out of a job record was
+# authorised when the job was written, and re-checking it would mean that
+# removing a host strands every job already running on it -- `cancel` could no
+# longer reach the process it exists to stop. Those paths keep the shape guard
+# only.
+
+
+def test_compute_ssh_refuses_an_unregistered_destination(dispatcher, no_subprocess):
+    out = dispatcher._m_compute_ssh(
+        {"provider": "ssh:not-a-host-anyone-named", "command": "id"}
+    )
+
+    assert isinstance(out, dict), out
+    assert "not registered" in str(out.get("error") or ""), out
+    assert no_subprocess == [], "the refusal happened after dialling"
+
+
+def test_compute_scp_refuses_an_unregistered_destination(dispatcher, no_subprocess):
+    out = dispatcher._m_compute_scp(
+        {
+            "provider": "ssh:not-a-host-anyone-named",
+            "direction": "down",
+            "remote": "/tmp/x",
+        }
+    )
+
+    assert isinstance(out, dict), out
+    assert "not registered" in str(out.get("error") or ""), out
+    assert no_subprocess == [], "the refusal happened after dialling"
+
+
+def test_compute_scp_applies_the_shape_guard_it_used_to_skip(
+    dispatcher, no_subprocess, tmp_path
+):
+    """No scp path reaches the process table with an option-shaped alias.
+
+    A property, not a mechanism, because there is no single line to point at:
+    `_split`, `_named_destination` and `_scp_argv` each apply `_safe_alias`, and
+    removing any one of them still leaves the other two. That redundancy is the
+    point -- `scp` used to re-derive the alias with `provider.split(":", 1)[1]`,
+    throwing away the `_safe_alias` that `_split` had just applied to the very
+    same string, and one guard was all it took to lose it.
+
+    Verified non-vacuous by removing all three, which makes this fail on the
+    `no_subprocess` assertion rather than on the message: an `-oProxyCommand=`
+    alias really does reach `scp` once nothing checks the shape. Registration
+    is not what catches this one -- the name is refused before the registry is
+    consulted at all.
+    """
+    out = dispatcher._m_compute_scp(
+        {
+            "provider": "ssh:-oProxyCommand=touch /tmp/pwned",
+            "direction": "down",
+            "remote": "/tmp/x",
+        }
+    )
+
+    assert isinstance(out, dict), out
+    assert "not a plain [user@]host name" in str(out.get("error") or ""), out
+    assert no_subprocess == [], "the refusal happened after dialling"

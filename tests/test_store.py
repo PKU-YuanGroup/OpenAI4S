@@ -401,7 +401,12 @@ def test_record_cell_artifact_rolls_back_version_when_lineage_fails(tmp_path):
         )
 
     assert store.artifact_by_filename("output.txt", frame_id, strict=True) is None
-    assert store.version_for_path(str(tmp_path / "output.txt")) is None
+    assert (
+        store.version_for_path(
+            str(tmp_path / "output.txt"), root_frame_id=None, project_id="default"
+        )
+        is None
+    )
 
 
 def test_list_versions_row_shape_ordering_and_latest_pointer(tmp_path):
@@ -471,7 +476,12 @@ def test_resolve_artifact_path_prefers_snapshot_keeps_live_path(tmp_path):
     assert store.resolve_artifact_path(rec["version_id"]) == "/frozen/file.txt"
     assert store.resolve_artifact_path(rec["artifact_id"]) == "/frozen/file.txt"
     assert store.version_meta(rec["version_id"])["path"] == "/live/file.txt"
-    assert store.version_for_path("/live/file.txt") == rec["version_id"]
+    assert (
+        store.version_for_path(
+            "/live/file.txt", root_frame_id=None, project_id="default"
+        )
+        == rec["version_id"]
+    )
     assert store.resolve_artifact_path("nope") is None
 
 
@@ -496,7 +506,12 @@ def test_version_for_path_breaks_timestamp_ties_by_newest_row(monkeypatch, tmp_p
         artifact_id=first["artifact_id"],
     )
 
-    assert store.version_for_path("/live/tied.txt") == second["version_id"]
+    assert (
+        store.version_for_path(
+            "/live/tied.txt", root_frame_id=None, project_id="default"
+        )
+        == second["version_id"]
+    )
 
 
 def test_version_for_path_resolves_legacy_relative_and_symlink_aliases(
@@ -515,7 +530,10 @@ def test_version_for_path_resolves_legacy_relative_and_symlink_aliases(
         size_bytes=4,
         checksum="relative",
     )
-    assert store.version_for_path(str(target)) == relative["version_id"]
+    assert (
+        store.version_for_path(str(target), root_frame_id=None, project_id="default")
+        == relative["version_id"]
+    )
 
     physical = tmp_path / "physical"
     physical.mkdir()
@@ -539,8 +557,16 @@ def test_version_for_path_resolves_legacy_relative_and_symlink_aliases(
         checksum="linked",
         artifact_id=exact["artifact_id"],
     )
-    assert store.version_for_path(str(real_path)) == linked["version_id"]
-    assert store.version_for_path(str(alias_path)) == linked["version_id"]
+    assert (
+        store.version_for_path(str(real_path), root_frame_id=None, project_id="default")
+        == linked["version_id"]
+    )
+    assert (
+        store.version_for_path(
+            str(alias_path), root_frame_id=None, project_id="default"
+        )
+        == linked["version_id"]
+    )
 
     external = tmp_path / "external"
     external_dir = external / "dir"
@@ -559,8 +585,18 @@ def test_version_for_path_resolves_legacy_relative_and_symlink_aliases(
         size_bytes=7,
         checksum="outside",
     )
-    assert store.version_for_path(str(external_secret)) == traversed["version_id"]
-    assert store.version_for_path(str(workspace_secret)) is None
+    assert (
+        store.version_for_path(
+            str(external_secret), root_frame_id=None, project_id="default"
+        )
+        == traversed["version_id"]
+    )
+    assert (
+        store.version_for_path(
+            str(workspace_secret), root_frame_id=None, project_id="default"
+        )
+        is None
+    )
 
 
 # --- lineage_edges -----------------------------------------------------------

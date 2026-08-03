@@ -1110,23 +1110,54 @@ class ArtifactRepository:
             ).fetchone()
         return row["p"] if row else None
 
-    def version_for_path(self, path: str) -> str | None:
+    def version_for_path(
+        self, path: str, *, root_frame_id: str | None, project_id: str
+    ) -> str | None:
+        """The version a path belongs to, within one session.
+
+        Scope is keyword-only and required, so an unscoped call is
+        unrepresentable rather than defaulted. It has to be: `artifact_versions`
+        carries no project column, this was the one artifact read keyed on a
+        filesystem path rather than an id, and the identity fallback below scans
+        *every* row in the database. An agent could hand it any absolute path
+        and learn whether another project held a version for it -- and the id it
+        got back then passed unvalidated into `prov_record`, whose lineage read
+        returns the input version's filename and path. An existence oracle that
+        escalates to disclosure.
+
+        The predicates go into both SELECTs rather than filtering afterwards.
+        Post-filtering is wrong and not merely slower: this returns one best
+        candidate, so discarding a foreign winner would answer None even when an
+        in-scope version for the same path exists further down the list.
+        """
+        root_clause = (
+            "a.root_frame_id=?"
+            if root_frame_id is not None
+            else "a.root_frame_id IS NULL"
+        )
+        root_args: tuple = (root_frame_id,) if root_frame_id is not None else ()
+        scope_args = (project_id, *root_args)
         with self._lock:
             exact = self._connection.execute(
-                "SELECT version_id,created_at,rowid AS version_rowid "
-                "FROM artifact_versions WHERE path=? "
-                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                (str(path),),
+                "SELECT v.version_id,v.created_at,v.rowid AS version_rowid "
+                "FROM artifact_versions v "
+                "JOIN artifacts a ON a.artifact_id=v.artifact_id "
+                f"WHERE a.project_id=? AND {root_clause} AND v.path=? "
+                "ORDER BY v.created_at DESC, v.rowid DESC LIMIT 1",
+                (*scope_args, str(path)),
             ).fetchone()
             identity = self._identify_file(path)
             if identity is None:
                 return exact["version_id"] if exact else None
             if exact:
                 candidates = self._connection.execute(
-                    "SELECT version_id,path FROM artifact_versions WHERE "
-                    "created_at>? OR (created_at=? AND rowid>?) "
-                    "ORDER BY created_at DESC, rowid DESC",
+                    "SELECT v.version_id,v.path FROM artifact_versions v "
+                    "JOIN artifacts a ON a.artifact_id=v.artifact_id "
+                    f"WHERE a.project_id=? AND {root_clause} AND "
+                    "(v.created_at>? OR (v.created_at=? AND v.rowid>?)) "
+                    "ORDER BY v.created_at DESC, v.rowid DESC",
                     (
+                        *scope_args,
                         exact["created_at"],
                         exact["created_at"],
                         exact["version_rowid"],
@@ -1134,8 +1165,11 @@ class ArtifactRepository:
                 ).fetchall()
             else:
                 candidates = self._connection.execute(
-                    "SELECT version_id,path FROM artifact_versions "
-                    "ORDER BY created_at DESC, rowid DESC"
+                    "SELECT v.version_id,v.path FROM artifact_versions v "
+                    "JOIN artifacts a ON a.artifact_id=v.artifact_id "
+                    f"WHERE a.project_id=? AND {root_clause} "
+                    "ORDER BY v.created_at DESC, v.rowid DESC",
+                    scope_args,
                 ).fetchall()
         for candidate in candidates:
             if self._identify_file(candidate["path"]) == identity:

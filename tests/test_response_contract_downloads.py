@@ -20,6 +20,14 @@ it.
   `j.error`, reported a failure that said nothing at all. That body was frozen
   into `docs/response-schemas.json` as the route's error contract.
 
+* The same shape, at scale, across the session surface. Most of this server's
+  routes are frame-scoped, and the sweep probes them with an id shaped like a
+  real one that names nothing -- so thirty of them published 404 as their whole
+  contract. A client generating against the artifact had no shape for the
+  Timeline, the execution queue, the branch list or the recovery journal. The
+  seeded pass now drives them against resources that exist, and the gate below
+  fails if any of them goes back to describing only its refusal.
+
 Every status asserted below goes through `_route`, never a directly called
 route method: a `GatewayError` raised out of a method call has already been
 observed reaching HTTP as a 200 elsewhere in this server.
@@ -229,3 +237,195 @@ def test_updating_a_real_annotation_still_answers_with_it(server):
     assert code == 200
     assert body["annotation"]["body"] == "revised"
     assert body["annotation"]["status"] == "resolved"
+
+
+#: The exact call each seeded success is responsible for, and what it must say.
+#:
+#: Keyed by ``METHOD route``, not by route. Aggregating over verbs let a 2xx
+#: from the *wrong* one satisfy the requirement -- and on this surface the
+#: wrong verb is never idle: the dispatcher answers all four unimplemented
+#: ones, and several routes really do serve a different resource per method.
+#: A GET's 200 is no evidence at all that the POST beside it works.
+#:
+#: The fields are the ones a client cannot do without. A 200 whose body lost
+#: the id, the list or the state it exists to carry is a passing status over a
+#: useless contract, which is the same class of defect as the refusal-only
+#: entry this gate replaced -- just harder to see.
+SUCCESS_REQUIRED: dict[str, tuple[int, frozenset[str]]] = {
+    "GET /frames/([^/]+)/action-timeline": (
+        200,
+        frozenset({"groups", "count", "root_frame_id"}),
+    ),
+    "GET /frames/([^/]+)/execution": (200, frozenset({"owner", "queue"})),
+    "GET /frames/([^/]+)/execution-queue": (200, frozenset({"owner", "queue"})),
+    "GET /frames/([^/]+)/context": (
+        200,
+        frozenset({"layers", "message_count", "token_count", "token_limit"}),
+    ),
+    "GET /frames/([^/]+)/security": (
+        200,
+        frozenset({"sandbox", "permission", "notebook"}),
+    ),
+    "GET /frames/([^/]+)/delegations": (200, frozenset({"children"})),
+    "GET /frames/([^/]+)/recovery": (
+        200,
+        frozenset({"state", "generations", "current"}),
+    ),
+    "GET /frames/([^/]+)/recovery/actions": (200, frozenset({"actions"})),
+    "GET /frames/([^/]+)/branches": (200, frozenset({"branches"})),
+    "POST /frames/([^/]+)/branches/fork": (
+        200,
+        frozenset({"branch_id", "from_checkpoint_id", "root_frame_id"}),
+    ),
+    "POST /frames/([^/]+)/branches/([^/]+)/activate": (
+        200,
+        frozenset({"ok", "checkpoint_id", "current_branch_id", "activation_state"}),
+    ),
+    "GET /frames/([^/]+)/(?:checkpoints|branches/checkpoints)": (
+        200,
+        frozenset({"checkpoints"}),
+    ),
+    "POST /frames/([^/]+)/(?:revert/preview|branches/revert-preview)": (
+        200,
+        frozenset({"preview"}),
+    ),
+    "POST /frames/([^/]+)/(?:revert/apply|branches/revert)": (
+        200,
+        frozenset({"operation", "checkpoint"}),
+    ),
+    "POST /frames/([^/]+)/revert/undo": (200, frozenset({"operation"})),
+    "GET /frames/([^/]+)/revert/operations": (200, frozenset({"operations"})),
+    "POST /frames/([^/]+)/review": (202, frozenset({"job_id", "request_id"})),
+    "GET /frames/([^/]+)/review-settings": (200, frozenset({"auto_review"})),
+    "POST /frames/([^/]+)/decision": (200, frozenset({"ok"})),
+    "GET /frames/([^/]+)/kernel/variables": (200, frozenset({"variables"})),
+    "GET /frames/([^/]+)/compute/tasks": (200, frozenset({"tasks"})),
+    "GET /frames/([^/]+)/admissions/([^/]+)": (
+        200,
+        frozenset({"reservation_id", "state", "annotations"}),
+    ),
+    "POST /artifacts/([^/]+)/edit": (200, frozenset({"artifact_id", "version_id"})),
+    "POST /artifacts/([^/]+)/rename": (200, frozenset({"ok"})),
+    "GET /artifacts/([^/]+)/renderer": (200, frozenset({"renderer"})),
+    "POST /artifacts/([^/]+)/versions/([^/]+)/restore": (
+        200,
+        frozenset({"version_id"}),
+    ),
+    "GET /projects/([^/]+)/skills/catalog": (200, frozenset({"skills"})),
+    "POST /skills": (200, frozenset({"name"})),
+    "POST /skills/import": (200, frozenset({"name"})),
+}
+
+
+def _ok_properties(driven, exact: str) -> set[str]:
+    shape = driven.shapes.get(f"{exact} [ok]") or {}
+    return set((shape.get("properties") or {}).keys())
+
+
+def test_every_seeded_route_records_a_real_success(driven):
+    """The gate. A refusal-only entry here is a failure, not a gap."""
+    problems: dict[str, str] = {}
+    for exact, (expected, required) in SUCCESS_REQUIRED.items():
+        observed = driven.kinds.get(exact)
+        if not observed:
+            problems[exact] = "recorded nothing at all"
+            continue
+        statuses = sorted(observed["statuses"])
+        if expected not in statuses:
+            problems[exact] = f"expected {expected}, recorded {statuses}"
+            continue
+        properties = _ok_properties(driven, exact)
+        if not properties:
+            problems[exact] = f"{expected} recorded, but no [ok] schema was captured"
+            continue
+        missing = required - properties
+        if missing:
+            problems[exact] = (
+                f"the success body is missing {sorted(missing)}; it carried "
+                f"{sorted(properties)}"
+            )
+    assert problems == {}, (
+        "these seeded successes did not happen, or said nothing a client can "
+        f"use: {problems}"
+    )
+
+
+def test_the_session_surface_fixture_reports_a_failure_rather_than_skipping_it(driven):
+    """A seeded step that raised, or refused, or found nothing to drive.
+
+    The four unimplemented verbs keep answering, so a step that quietly gave up
+    leaves the route looking covered at 404 -- the original defect exactly. The
+    fixture records every one of those rather than skipping, and any of them is
+    a failure here.
+    """
+    reported = {
+        key: value
+        for key, value in driven.drive_failures.items()
+        if "session surface" in key or "fixture" in key or "version)" in key
+    }
+    assert (
+        reported == {}
+    ), f"the seeded session-surface pass did not complete: {reported}"
+
+
+def test_the_frozen_contract_carries_those_successes_too(driven):
+    """The committed artifact is the deliverable, so it is checked rather than
+    trusted -- a regenerated capture and a stale file must not disagree."""
+    frozen = json.loads(CONTRACT_ARTIFACT.read_text("utf-8")).get("routes") or {}
+    stale = {}
+    for exact, (expected, _required) in SUCCESS_REQUIRED.items():
+        route = exact.split(" ", 1)[1]
+        statuses = (frozen.get(route) or {}).get("statuses") or []
+        # The frozen artifact merges verbs by design -- it answers "what kinds
+        # of response does this route give" -- so this half checks the status
+        # reached the committed file. The exact-verb claim is the test above,
+        # against the drive itself.
+        if expected not in statuses:
+            stale[exact] = statuses
+    assert stale == {}, (
+        "regenerate with `uv run python scripts/capture_response_contract.py`; "
+        f"these are frozen as refusal-only: {stale}"
+    )
+
+
+SCHEMA_ARTIFACT = Path(__file__).resolve().parents[1] / "docs" / "response-schemas.json"
+
+
+def test_the_frozen_schemas_declare_every_seeded_success(driven):
+    """The committed schema file, checked against the same allowlist.
+
+    `capture_response_schemas.py --check` treats a newly covered `[ok]` shape
+    and an added field as informational and exits 0 -- correct for a tool whose
+    job is to notice drift, and not a gate. So the artifact could stay
+    refusal-only, with only `[error]` entries for every route the seeded pass
+    now drives, while the whole suite went green: the drive-based test above
+    passes on a fresh capture, and nothing compared it to what was committed.
+
+    A client generating from this file needs two things the `[error]` entry
+    cannot give it: that a success shape exists at all, and that the fields it
+    depends on are *guaranteed* rather than merely observed once. So `required`
+    is asserted, not `properties` -- a field that appears in one capture and is
+    demoted to optional by the next is exactly the field a generated client
+    will get wrong.
+    """
+    frozen = json.loads(SCHEMA_ARTIFACT.read_text("utf-8")).get("routes") or {}
+    problems: dict[str, str] = {}
+    for exact, (_expected, required) in SUCCESS_REQUIRED.items():
+        entry = frozen.get(f"{exact} [ok]")
+        if not entry:
+            problems[exact] = (
+                "no [ok] schema is committed; regenerate with "
+                "`uv run python scripts/capture_response_schemas.py`"
+            )
+            continue
+        schema = entry.get("schema") or {}
+        declared = set(schema.get("required") or ())
+        missing = required - declared
+        if missing:
+            problems[exact] = (
+                f"{sorted(missing)} are not in `required`; the committed "
+                f"schema guarantees {sorted(declared)}"
+            )
+    assert problems == {}, (
+        "the committed response schemas do not describe these successes: " f"{problems}"
+    )
