@@ -402,3 +402,107 @@ def test_the_composer_choice_does_not_overrule_the_pinned_model(api):
     pinned = runner._llm_cfg(state).model
     state.model = "gpt-4o-mini"
     assert runner._llm_cfg(state).model == pinned
+
+
+# --- the legacy backfill, and the second 409 nothing could answer ----------
+
+
+def test_a_legacy_session_matching_no_profile_stays_unbound(api):
+    """Zero matches fell through to whatever profile happens to be active.
+
+    The comment directly above that block states the rule -- "a session that
+    already has history is a legacy one: it ran under some configuration, and
+    D2 says to recover that rather than to adopt whatever happens to be active
+    now" -- and the one-match and many-match branches both honour it. Zero
+    matches did not: it wrote the active profile's id and sealed a revision on
+    it, so the session's own record then claimed a configuration it never ran
+    under. That is the silent drift D2 exists to remove, arriving through the
+    path meant to prevent it.
+
+    Unbound is the honest answer and an already-supported state: it is what an
+    install driven entirely by `.env` gets.
+    """
+    runner, call = api
+    created = call(
+        "POST",
+        "/model-profiles",
+        {
+            "name": "active",
+            "provider": "openai_responses",
+            "api_key": "sk-test",
+            "model": "active-1",
+        },
+    )
+    call("POST", f"/model-profiles/{created['body']['id']}/activate")
+
+    project = runner.store.create_project(name="p", description="", context="")
+    if isinstance(project, dict):
+        project = project["project_id"]
+    frame_id = runner.create_session(project)
+    # A legacy session: history, and a recorded model no profile names.
+    runner.store.update_frame(frame_id, model="retired-model-9")
+    runner.store.add_message(root_frame_id=frame_id, role="user", content="hello")
+
+    result = runner.bind_model_revision(frame_id)
+
+    assert result["bound"] is False
+    assert result["model_profile_id"] == ""
+    assert result["model_profile_revision"] == 0
+
+    frame = runner.store.get_frame(frame_id)
+    assert not (
+        frame.get("model_profile_id") or ""
+    ), "the session was pinned to a profile it never ran under"
+
+
+def test_a_legacy_session_with_one_match_is_still_backfilled(api):
+    """The refusal must not be an outage: a unique match is the case the
+    backfill exists for."""
+    runner, call = api
+    created = call(
+        "POST",
+        "/model-profiles",
+        {
+            "name": "legacy",
+            "provider": "openai_responses",
+            "api_key": "sk-test",
+            "model": "legacy-1",
+        },
+    )
+    target_id = created["body"]["id"]
+    call("POST", f"/model-profiles/{target_id}/activate")
+
+    project = runner.store.create_project(name="p", description="", context="")
+    if isinstance(project, dict):
+        project = project["project_id"]
+    frame_id = runner.create_session(project)
+    runner.store.update_frame(frame_id, model="legacy-1")
+    runner.store.add_message(root_frame_id=frame_id, role="user", content="hello")
+
+    result = runner.bind_model_revision(frame_id)
+
+    assert result["bound"] is True
+    assert result.get("backfilled") is True
+    assert result["model_profile_id"] == target_id
+
+
+def test_the_client_can_act_on_the_ambiguous_refusal_too():
+    """`model_revision_ambiguous` is the same predicament as
+    `model_revision_unavailable` -- "choose one to continue" -- answered by the
+    same rebind route, and the branch that offers it named only one of the two
+    codes."""
+    from pathlib import Path as _Path
+
+    app_js = _Path("openai4s/server/webui/app.js").read_text(encoding="utf-8")
+    # In the branch CONDITION, not merely somewhere in the file. An earlier
+    # version of this test matched the bare string and stayed green when the
+    # code was removed from the `if` -- the comment above it still named it.
+    import re
+
+    guard = re.search(r"e\.code\s*===\s*[\"']model_revision_ambiguous[\"']", app_js)
+    assert guard, "the code is mentioned but nothing branches on it"
+
+    # And that branch is the rebind one.
+    window = app_js[guard.end() : guard.end() + 700]
+    assert "/model-binding" in window
+    assert "confirm(" in window
