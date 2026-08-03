@@ -7963,6 +7963,27 @@ def _environment_snapshot() -> dict:
 # --------------------------------------------------------------------------- #
 #  HTTP + WS request handler
 # --------------------------------------------------------------------------- #
+#: What each `POST /frames/<id>/decision` refusal means on the wire.
+#:
+#: They are not one status: a malformed body, a decision that belongs to another
+#: session, one already being resolved, and one whose approval was written but
+#: whose continuation failed are four different things, and a client that
+#: retries them all the same way is wrong about three.
+_DECISION_REFUSAL_STATUS = {
+    "decision_id_required": 400,
+    # Not 403. A decision for another frame and one that never existed answer
+    # identically, or the refusal is an existence oracle.
+    "decision_not_found": 404,
+    "decision_in_flight": 409,
+    "decision_already_resolved": 409,
+    "decision_immutable": 409,
+    "decision_expired": 410,
+    # The approval is recorded. `output_committed` on the body is what stops the
+    # UI offering a retry that would submit it twice.
+    "decision_continuation_failed": 500,
+}
+
+
 def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     store = get_store(cfg.db_path)
     model_discovery = LocalModelDiscoveryService()
@@ -9950,6 +9971,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             ),
                         },
                     )
+                if resolution.get("ok") is not True:
+                    # One envelope, like every other refusal on this surface.
+                    # These eight answered HTTP 200 with `{ok: false}` while the
+                    # `session not found` branch fifteen lines above already used
+                    # 404 -- the same handler, two contracts. `public_failure`
+                    # is skipped by a 2xx, so none of them carried a code, a
+                    # status or a request id, and `_json` enriches only once the
+                    # status says failure.
+                    #
+                    # The frontend needs no change to receive these: its call
+                    # site already throws on `ok !== true` and catches an
+                    # `ApiError` from `api()` in the same block. `code` and
+                    # `output_committed` ride on the payload, which
+                    # `public_failure` preserves rather than overwrites.
+                    self._json(
+                        resolution,
+                        _DECISION_REFUSAL_STATUS.get(
+                            str(resolution.get("code") or ""), 400
+                        ),
+                    )
+                    return
                 self._json(resolution)
                 return
             # ---- permission rules: list (per conversation) / upsert / delete ----

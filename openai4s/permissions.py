@@ -550,16 +550,28 @@ class PermissionBroker:
         """
 
         if not decision_id:
-            return {"ok": False, "error": "decision_id is required"}
+            return {
+                "ok": False,
+                "error": "decision_id is required",
+                "code": "decision_id_required",
+            }
         normalized_scope = _scope(scope)
         with self._lock:
             pend = self._pending.get(decision_id)
             if pend is not None:
                 pending_root = str(pend.payload.get("frame_id") or "")
                 if root_frame_id and pending_root != root_frame_id:
-                    return {"ok": False, "error": "decision does not belong to frame"}
+                    return {
+                        "ok": False,
+                        "error": "decision does not belong to frame",
+                        "code": "decision_not_found",
+                    }
                 if pend.event.is_set():
-                    return {"ok": False, "error": "decision is already resolving"}
+                    return {
+                        "ok": False,
+                        "error": "decision is already resolving",
+                        "code": "decision_in_flight",
+                    }
                 pend.allow = bool(allow)
                 pend.scope = normalized_scope
                 pend.pattern = pattern
@@ -593,7 +605,11 @@ class PermissionBroker:
                     continue
                 request_root = str(request.get("root_frame_id") or "")
                 if root_frame_id and request_root != root_frame_id:
-                    return {"ok": False, "error": "decision does not belong to frame"}
+                    return {
+                        "ok": False,
+                        "error": "decision does not belong to frame",
+                        "code": "decision_not_found",
+                    }
                 state = str(request.get("state") or "")
                 if state == "pending":
                     expires_at = request.get("expires_at")
@@ -614,7 +630,11 @@ class PermissionBroker:
                             )
                         except Exception:  # noqa: BLE001 - best-effort cleanup
                             pass
-                        return {"ok": False, "error": "approval request expired"}
+                        return {
+                            "ok": False,
+                            "error": "approval request expired",
+                            "code": "decision_expired",
+                        }
                     request = durable_store.resolve_permission_request(
                         decision_id,
                         state=terminal,
@@ -632,6 +652,7 @@ class PermissionBroker:
                     return {
                         "ok": False,
                         "error": f"decision is already {state or 'resolved'}",
+                        "code": "decision_already_resolved",
                     }
                 if _scope(request.get("scope")) != normalized_scope or (
                     request.get("pattern") or None
@@ -639,6 +660,7 @@ class PermissionBroker:
                     return {
                         "ok": False,
                         "error": "resolved decision scope or pattern cannot be changed",
+                        "code": "decision_immutable",
                     }
 
                 if not _restart_resolution_marker(
@@ -648,6 +670,11 @@ class PermissionBroker:
                         "ok": False,
                         "decision_recorded": True,
                         "error": "approval was recorded but its continuation marker failed",
+                        # The approval IS written. P0-4's `output_committed`
+                        # exists for exactly this: the UI must not offer a
+                        # retry that would submit a decision twice.
+                        "code": "decision_continuation_failed",
+                        "output_committed": True,
                         "requires_continue": False,
                         "original_action_executed": False,
                     }

@@ -4338,7 +4338,19 @@ function renderPermissionCard(m) {
       resolution = await api(`/frames/${encodeURIComponent(m.frame_id)}/decision`, { method: "POST", body: JSON.stringify(body) });
       if (!resolution || resolution.ok !== true) throw new Error((resolution && resolution.error) || "permission decision was not accepted");
     }
-    catch (e) { allow.disabled = deny.disabled = false; hint(t("toast.submitFailed", apiErrorText(e)), true); return; }
+    catch (e) {
+      // Re-enabling is the right default: the decision was refused, so the user
+      // may fix and resubmit. It is wrong for exactly one refusal --
+      // `decision_continuation_failed`, where the approval WAS written and only
+      // its continuation marker failed. Clicking Allow again there submits a
+      // decision that already took effect, which is the dangerous retry P0-4's
+      // `output_committed` exists to suppress. The turn-failure surface already
+      // reads that field; this one did not.
+      const committed = !!(e && e.body && e.body.output_committed);
+      if (!committed) allow.disabled = deny.disabled = false;
+      hint(t("toast.submitFailed", apiErrorText(e)), true);
+      return;
+    }
     markPermCard(m.decision_id, ok, scope, resolution);
   };
   allow.onclick = () => send(true);
