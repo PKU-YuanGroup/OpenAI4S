@@ -457,3 +457,48 @@ def test_a_paused_plan_with_nothing_left_completes_instead_of_running_a_turn(tmp
     assert result["resumed_steps"] == 0
     assert result["plan_status"] == "completed"
     assert store.get_plan(plan["plan_id"])["status"] == "completed"
+
+
+def test_a_skipped_step_is_settled_and_not_re_run(tmp_path):
+    """`skipped` is a more explicit decision than `failed`, and was left out.
+
+    The comment on `_SETTLED_STEP_STATUSES` argued exactly why `failed` counts
+    as a decision rather than an interruption, and then listed two members. The
+    status is in `PLAN_STEP_STATUSES`, `host.plan_update` accepts it without
+    coercion, and `app.js` gives it its own glyph -- so an agent could mark a
+    step skipped from a cell, see it rendered as skipped, and have resume run it
+    again anyway.
+    """
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _plan_with_steps(store, frame_id, ["skipped", "completed", None])
+
+    remaining = service.unfinished_steps(plan)
+    assert [step["id"] for step in remaining] == ["s3"]
+
+
+def test_the_resume_seed_names_a_skipped_step_among_the_settled(tmp_path):
+    """Settled means "do not redo", and the seed is where that is said."""
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _plan_with_steps(store, frame_id, ["skipped", None])
+
+    seed = service.resume_seed(plan, service.unfinished_steps(plan))
+    assert "s1" in seed and "不要重做" in seed
+
+
+def test_every_step_status_is_either_settled_or_deliberately_not(tmp_path):
+    """The partition has to cover the vocabulary, or the next status added is
+    unsettled by accident -- which is how `skipped` behaved for its whole life.
+
+    Asserted against `PLAN_STEP_STATUSES` rather than a second literal list, so
+    adding a status without deciding which side it falls on fails here.
+    """
+    from openai4s.host.progress import PLAN_STEP_STATUSES
+    from openai4s.server.plans import PlanService
+
+    settled = PlanService._SETTLED_STEP_STATUSES
+    unsettled = frozenset({"pending", "in_progress"})
+
+    assert settled | unsettled == frozenset(PLAN_STEP_STATUSES)
+    assert settled & unsettled == frozenset()

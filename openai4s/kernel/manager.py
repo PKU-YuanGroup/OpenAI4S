@@ -8,6 +8,7 @@ this is the inner synchronous RPC loop.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -26,6 +27,66 @@ _WORKER = Path(__file__).resolve().parent / "worker.py"
 
 # A host-call dispatcher: (method:str, args:list) -> data. Raises to signal error.
 Dispatcher = Callable[[str, list], Any]
+
+
+#: The worker's stderr tail, in bytes. Generous enough that a traceback plus a
+#: chatty R `system()` fits; the point is that it is a ceiling on what the
+#: daemon allocates, not on what the caller is shown.
+_STDERR_TAIL_BYTES = 64 * 1024
+
+
+class _StderrTail:
+    """The last N bytes of a stream, bounded as it arrives.
+
+    Bytes rather than lines, and a bound rather than a count, because the
+    producers named at the drain site emit whatever a child wrote to fd2 --
+    including one line of arbitrary length. `deque(maxlen=400)` bounded the
+    number of lines and nothing else.
+
+    Reports what it saw, kept and dropped, which is the per-channel accounting
+    plan section 7.4 asks every bounded channel for; the kernel-stderr channel
+    had none.
+    """
+
+    __slots__ = ("_budget", "_buf", "seen_bytes", "dropped_bytes")
+
+    def __init__(self, budget: int) -> None:
+        self._budget = int(budget)
+        self._buf = bytearray()
+        self.seen_bytes = 0
+        self.dropped_bytes = 0
+
+    def feed(self, data: bytes) -> None:
+        if not data:
+            return
+        self.seen_bytes += len(data)
+        self._buf.extend(data)
+        excess = len(self._buf) - self._budget
+        if excess > 0:
+            del self._buf[:excess]
+            self.dropped_bytes += excess
+
+    @property
+    def retained_bytes(self) -> int:
+        return len(self._buf)
+
+    @property
+    def truncated(self) -> bool:
+        return self.dropped_bytes > 0
+
+    def text(self) -> str:
+        # A budget cut lands wherever the byte count ran out, which is
+        # mid-character often enough to matter; `replace` keeps the tail
+        # readable rather than raising on the boundary.
+        return self._buf.decode("utf-8", "replace")
+
+    # The death path joins the tail with `"".join(...)`, which is what the
+    # deque supported. Staying iterable keeps that call site unchanged.
+    def __iter__(self):
+        return iter((self.text(),))
+
+    def __bool__(self) -> bool:
+        return bool(self._buf)
 
 
 class KernelBusyError(RuntimeError):
@@ -114,13 +175,42 @@ class Kernel:
         # uncaptured subprocess in python) fills the 64KB pipe and deadlocks
         # the cell forever — nothing used to read stderr until worker death.
         # The tail keeps the death diagnostics the old blocking read provided.
-        tail: deque[str] = deque(maxlen=400)
-        self._stderr_tail = tail
+        #
+        # Bounded in BYTES, at the read. This was `for line in stream` into a
+        # `deque(maxlen=400)`: an unbounded `readline()` whose only cap was a
+        # line COUNT applied after the allocation, so one producer emitting a
+        # single enormous line -- which is what the comment above says reaches
+        # here -- allocated all of it before any limit applied. That is the
+        # pattern `mcp_client.py` and `jobs.py` were both changed to remove,
+        # and this drain was written after those fixes without adopting them.
+        #
+        # `.buffer` because the pipe is `text=True` for the stdout protocol
+        # frames and cannot be opened per-stream; the raw reader underneath it
+        # is where a byte budget can mean bytes.
+        self._stderr_tail = _StderrTail(_STDERR_TAIL_BYTES)
+        tail = self._stderr_tail
+        # `os.read` on the descriptor, not `BufferedReader.read`. Both give
+        # bytes, and only one of them is safe here: this thread is a daemon, and
+        # a daemon parked inside a buffered read holds that buffer's lock when
+        # the interpreter finalises. The whole suite passed and then aborted
+        # with `_enter_buffered_busy: could not acquire lock ... at interpreter
+        # shutdown` -- a clean exit turned into SIGABRT by the drain alone.
+        # `os.read` also returns as soon as anything is available rather than
+        # waiting to fill the request, which is what a drain wants.
+        try:
+            stderr_fd = proc.stderr.fileno()
+        except (AttributeError, OSError, ValueError):  # pragma: no cover
+            stderr_fd = -1
 
-        def _drain(stream=proc.stderr, sink=tail) -> None:
+        def _drain(fd: int = stderr_fd, sink=tail) -> None:
+            if fd < 0:
+                return
             try:
-                for line in stream:
-                    sink.append(line)
+                while True:
+                    chunk = os.read(fd, 8192)
+                    if not chunk:
+                        return
+                    sink.feed(chunk)
             except Exception:  # noqa: BLE001 — EOF/close ends the drain
                 pass
 

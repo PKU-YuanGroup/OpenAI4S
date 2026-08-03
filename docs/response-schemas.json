@@ -10762,10 +10762,7 @@
                   "type": "string"
                 },
                 "updated_at": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
+                  "type": "null"
                 }
               },
               "required": [
@@ -22556,6 +22553,9 @@
           "ok": {
             "type": "boolean"
           },
+          "output_committed": {
+            "type": "boolean"
+          },
           "request_id": {
             "type": "string"
           },
@@ -22588,9 +22588,6 @@
           "decision_id": {
             "type": "string"
           },
-          "error": {
-            "type": "string"
-          },
           "ok": {
             "type": "boolean"
           },
@@ -22608,7 +22605,15 @@
           }
         },
         "required": [
-          "ok"
+          "allow",
+          "continuation_authorization",
+          "continuation_expires_at",
+          "decision_id",
+          "ok",
+          "original_action_executed",
+          "requires_continue",
+          "resolution_context",
+          "scope"
         ],
         "type": "object"
       }
@@ -25831,6 +25836,9 @@
     "POST /model-profiles/([^/]+)/probe [ok]": {
       "schema": {
         "properties": {
+          "code": {
+            "type": "string"
+          },
           "contacted": {
             "type": "boolean"
           },
@@ -25839,6 +25847,9 @@
           },
           "reachable": {
             "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
           },
           "state": {
             "type": "string"

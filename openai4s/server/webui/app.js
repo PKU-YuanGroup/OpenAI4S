@@ -3764,6 +3764,14 @@ function planConfLevel(c) {
   if (s.includes("low") || s.includes("低") || (!isNaN(n) && n > 0 && n < 0.4)) return "low";
   return "medium";
 }
+// The same partition `PlanService._SETTLED_STEP_STATUSES` makes, in the one
+// place the UI needs it. The paused footer counted "not completed and not
+// failed" inline, which is a second copy of a rule that had already drifted
+// once -- `skipped` was missing from both.
+const PLAN_SETTLED_STEP_STATUSES = ["completed", "failed", "skipped"];
+function planStepSettled(status) {
+  return PLAN_SETTLED_STEP_STATUSES.includes(status);
+}
 function planStepIcon(status) {
   if (status === "completed") return "check";
   if (status === "in_progress") return "circle-dot";
@@ -3830,7 +3838,7 @@ function renderPlanCard(plan, status) {
           // the backend could hold `paused`, and the only way out of it was to
           // discard the plan and start over. It reports what is left rather
           // than what is done, because that is the number the button acts on.
-          : status === "paused" ? t("plan.status.paused", done, total, (plan.steps || []).filter(x => x.status !== "completed" && x.status !== "failed").length) : "";
+          : status === "paused" ? t("plan.status.paused", done, total, (plan.steps || []).filter(x => !planStepSettled(x.status)).length) : "";
     card.appendChild(st);
     if (status === "paused") {
       const pa = el("div", "pa");
@@ -4338,7 +4346,19 @@ function renderPermissionCard(m) {
       resolution = await api(`/frames/${encodeURIComponent(m.frame_id)}/decision`, { method: "POST", body: JSON.stringify(body) });
       if (!resolution || resolution.ok !== true) throw new Error((resolution && resolution.error) || "permission decision was not accepted");
     }
-    catch (e) { allow.disabled = deny.disabled = false; hint(t("toast.submitFailed", apiErrorText(e)), true); return; }
+    catch (e) {
+      // Re-enabling is the right default: the decision was refused, so the user
+      // may fix and resubmit. It is wrong for exactly one refusal --
+      // `decision_continuation_failed`, where the approval WAS written and only
+      // its continuation marker failed. Clicking Allow again there submits a
+      // decision that already took effect, which is the dangerous retry P0-4's
+      // `output_committed` exists to suppress. The turn-failure surface already
+      // reads that field; this one did not.
+      const committed = !!(e && e.body && e.body.output_committed);
+      if (!committed) allow.disabled = deny.disabled = false;
+      hint(t("toast.submitFailed", apiErrorText(e)), true);
+      return;
+    }
     markPermCard(m.decision_id, ok, scope, resolution);
   };
   allow.onclick = () => send(true);

@@ -1068,3 +1068,69 @@ def test_recorder_never_tapes_credentials_set(tmp_path):
     assert _SYNTH_SECRET not in json.dumps(rec.records, ensure_ascii=False)
     tape_file = rec.flush()
     assert _SYNTH_SECRET not in tape_file.read_text()
+
+
+# --- the decision route's refusals are refusals on the wire too -------------
+
+
+def test_every_decision_refusal_carries_a_code_the_gateway_can_map():
+    """Eight soft failures answered HTTP 200 `{ok: false}`.
+
+    The same handler already used 404 for `session not found` fifteen lines
+    above, so one route had two contracts, and `public_failure` is skipped by a
+    2xx -- none of the eight carried a code, a status or a request id. A client
+    could only tell them apart by matching English.
+
+    Asserted as a pairing rather than a list: every code the broker can emit has
+    a status, and every status maps a code the broker emits. A new refusal added
+    without a status silently becomes 400, which is wrong for six of the eight.
+    """
+    import re
+
+    from openai4s.server.gateway import _DECISION_REFUSAL_STATUS
+
+    source = __import__("pathlib").Path("openai4s/permissions.py").read_text("utf-8")
+    emitted = set(re.findall(r'"code": "(decision_[a-z_]+)"', source))
+
+    assert emitted, "no decision refusal codes found; the grep is wrong"
+    assert emitted == set(_DECISION_REFUSAL_STATUS), (
+        f"unmapped: {sorted(emitted - set(_DECISION_REFUSAL_STATUS))}, "
+        f"stale: {sorted(set(_DECISION_REFUSAL_STATUS) - emitted)}"
+    )
+
+
+def test_a_foreign_decision_is_not_distinguishable_from_a_missing_one():
+    """404, not 403. A refusal that says "exists, but not yours" is an oracle
+    over other sessions' decision ids."""
+    from openai4s.server.gateway import _DECISION_REFUSAL_STATUS
+
+    assert _DECISION_REFUSAL_STATUS["decision_id_required"] == 400
+    assert _DECISION_REFUSAL_STATUS["decision_not_found"] == 404
+
+
+def test_the_recorded_but_uncontinued_refusal_marks_its_output_committed():
+    """The one refusal a retry must not be offered for.
+
+    The approval is written; only the continuation marker failed. Re-clicking
+    Allow submits a decision that already took effect, which is the dangerous
+    retry `output_committed` exists to suppress -- and the field was already
+    read by the turn-failure surface while this one re-enabled its buttons
+    unconditionally.
+    """
+    import re
+
+    from openai4s.server.gateway import _DECISION_REFUSAL_STATUS
+
+    assert _DECISION_REFUSAL_STATUS["decision_continuation_failed"] == 500
+
+    source = __import__("pathlib").Path("openai4s/permissions.py").read_text("utf-8")
+    block = source[source.index('"decision_continuation_failed"') :][:400]
+    assert '"output_committed": True' in block
+
+    app = __import__("pathlib").Path("openai4s/server/webui/app.js").read_text("utf-8")
+    guard = re.search(
+        r"const committed = !!\(e && e\.body && e\.body\.output_committed\);\s*"
+        r"if \(!committed\) allow\.disabled = deny\.disabled = false;",
+        app,
+    )
+    assert guard, "the decision card re-enables its buttons unconditionally"

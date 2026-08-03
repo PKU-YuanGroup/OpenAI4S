@@ -21,6 +21,7 @@ on timing, machine speed, or when a thread happens to be scheduled.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -792,3 +793,126 @@ def test_an_interrupted_cell_reports_what_the_host_had_drained(tmp_path):
         assert after["usage"]["stdout_truncated"] is False
     finally:
         kernel.shutdown()
+
+
+# --- the kernel's own stderr pipe ------------------------------------------
+
+
+def test_the_kernel_stderr_tail_is_bounded_in_bytes_not_lines():
+    """`deque(maxlen=400)` bounded the number of lines and nothing else.
+
+    The drain site's own comment names the producers that reach it -- an R
+    `system()`, an uncaptured subprocess writing to inherited fd2 -- and what
+    they emit has no newline discipline. `for line in stream` is `readline()`:
+    it allocates until it finds a newline, so one newline-free blob is
+    allocated in full *before* any cap applies, and a 400-line ceiling never
+    fires for it.
+
+    Measured: a single 20 MB line left `deque(maxlen=400)` holding 20 MB at
+    one line of four hundred, comfortably inside its limit.
+    """
+    from openai4s.kernel.manager import _STDERR_TAIL_BYTES, _StderrTail
+
+    tail = _StderrTail(_STDERR_TAIL_BYTES)
+    blob = b"x" * (20 * 1024 * 1024)
+    for offset in range(0, len(blob), 8192):
+        tail.feed(blob[offset : offset + 8192])
+
+    assert tail.retained_bytes == _STDERR_TAIL_BYTES
+    assert tail.seen_bytes == len(blob)
+    assert tail.dropped_bytes == len(blob) - _STDERR_TAIL_BYTES
+    assert tail.truncated is True
+
+    # The death path joins it; that call site is unchanged.
+    assert len("".join(tail)) == _STDERR_TAIL_BYTES
+
+
+def test_the_stderr_tail_keeps_the_end_and_reports_an_untruncated_read():
+    """The tail is what explains a death, and a short stream is not truncated."""
+    from openai4s.kernel.manager import _StderrTail
+
+    tail = _StderrTail(64)
+    tail.feed(b"a" * 40)
+    assert tail.truncated is False
+    assert tail.dropped_bytes == 0
+    assert tail.text() == "a" * 40
+
+    tail.feed(b"b" * 40)
+    assert tail.truncated is True
+    assert tail.text().endswith("b" * 40)
+    assert tail.retained_bytes == 64
+
+
+def test_the_drain_reads_the_raw_pipe_so_the_budget_is_in_real_bytes():
+    """The budget must be counted on bytes that actually arrived.
+
+    `text=True` is required for the stdout protocol frames and is per-Popen, so
+    the stderr budget has to sit on the `BufferedReader` underneath the decoder.
+    Counting characters off a decoded stream is the unit confusion `mcp_client`
+    was rewritten to remove: four million three-byte characters is twelve
+    megabytes, not four.
+
+    Behavioural rather than a source-text match -- an earlier draft asserted on
+    the source and tripped over its own variable name.
+    """
+    import subprocess
+
+    from openai4s.kernel.manager import _StderrTail
+
+    # A three-byte character per unit: a character budget would keep three
+    # times what a byte budget does.
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stderr.write('\u4e2d' * 200)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        fd = proc.stderr.fileno()
+        tail = _StderrTail(120)
+        while True:
+            chunk = os.read(fd, 8192)
+            if not chunk:
+                break
+            assert isinstance(chunk, bytes), "the drain decoded before counting"
+            tail.feed(chunk)
+    finally:
+        proc.wait(timeout=10)
+
+    # 200 characters is 600 bytes; the 120-byte budget saw all of them.
+    assert tail.seen_bytes == 600
+    assert tail.retained_bytes == 120
+    assert tail.truncated is True
+
+
+def test_the_spawn_wires_the_drain_to_the_raw_pipe():
+    """That the production drain reads the raw pipe, not just that it could.
+
+    The test above builds its own reader off `.buffer` and proves the byte
+    budget works there. Reverting `_spawn` to read the decoded `proc.stderr`
+    left it green -- it verifies the mechanism and not the wiring, which is the
+    gap this codebase keeps shipping.
+
+    Asserted on the compiled code rather than the source text: an earlier draft
+    matched a source string and broke on a variable rename, and spawning a real
+    kernel here hangs the suite.
+    """
+    from openai4s.kernel.manager import Kernel
+
+    assert "fileno" in Kernel._spawn.__code__.co_names, (
+        "the drain no longer takes the raw descriptor, so its byte budget is "
+        "counted on decoded text"
+    )
+    nested = [c for c in Kernel._spawn.__code__.co_consts if hasattr(c, "co_names")]
+    drain = [c for c in nested if "feed" in c.co_names]
+    assert drain, "the drain does not feed the bounded tail"
+    # `os.read`, not a buffered read. A daemon thread parked inside a buffered
+    # read holds that buffer's lock when the interpreter finalises: the whole
+    # suite passed and then aborted with `_enter_buffered_busy: could not
+    # acquire lock ... at interpreter shutdown`. A clean exit turned into
+    # SIGABRT by the drain alone, and only the full-suite gate saw it.
+    assert any("os" in c.co_names and "read" in c.co_names for c in drain), (
+        "the drain uses a buffered read; a daemon thread must not hold a "
+        "BufferedReader lock at interpreter shutdown"
+    )
