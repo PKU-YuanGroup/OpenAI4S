@@ -245,11 +245,21 @@ class PlanService:
             "5. 全部完成后写一段简洁的最终总结，并调用 host.submit_output(...)。"
         )
 
-    #: A step the agent explicitly gave up on. `failed` is a decision, not an
-    #: interruption: the execution seed tells the agent to mark a step failed
-    #: with a reason *and carry on*, so re-running it on resume would redo work
-    #: someone already concluded cannot be done.
-    _SETTLED_STEP_STATUSES = frozenset({"completed", "failed"})
+    #: A step is settled once the agent has recorded a *decision* about it:
+    #: done, cannot be done, or deliberately not done. It is unsettled only
+    #: while no decision exists -- `pending`, or `in_progress` when the turn
+    #: that owned it ended.
+    #:
+    #: Stated as the rule rather than as a list, because listing it is how
+    #: `skipped` was left out. The old comment argued precisely why `failed` is
+    #: a decision and not an interruption -- "the execution seed tells the agent
+    #: to mark a step failed with a reason *and carry on*, so re-running it on
+    #: resume would redo work someone already concluded cannot be done" -- and
+    #: `skipped` is a more explicit decision than `failed` is. It is in
+    #: `PLAN_STEP_STATUSES`, `host.plan_update` accepts it, and `app.js` renders
+    #: it with its own glyph; only this partition had never heard of it, so
+    #: every skipped step was re-run on resume.
+    _SETTLED_STEP_STATUSES = frozenset({"completed", "failed", "skipped"})
 
     def unfinished_steps(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
         """The steps a resume still has to run.
