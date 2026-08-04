@@ -9,8 +9,8 @@
 **一个开源的混合式科研智能体。**<br/>
 <sub>原生 JSON 工具负责编排与权限；持久 Python/R 内核负责科学执行。</sub>
 
-**由北京大学深圳研究生院—元空智能 AI Agent 联合研究实验室推出。**<br/>
-<sub>Launched by the Peking University Shenzhen Graduate School–YuanKong Intelligence AI Agent Joint Research Laboratory.</sub>
+**由北京大学—元空AI联合实验室推出。**<br/>
+<sub>Launched by the Peking University–YuanKong Intelligence AI Joint Research Laboratory.</sub>
 
 <p>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-d97706.svg"></a>
