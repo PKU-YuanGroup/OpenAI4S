@@ -84,6 +84,30 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # D2: a session binds `profile_id + revision` rather than storing a
         # model string that says which name, not which configuration.
         "frame_model_binding",
+        # The idempotency namespace was installation-wide while every other view
+        # of `compute_jobs` is per-owner, so one session's key blocked every
+        # other session's and the duplicate refusal handed back the other
+        # session's job id and status. Replacing an index is not additive, so it
+        # needs a step rather than the idempotent catch-up pass.
+        "compute_job_idem_owner",
+        # A pin is a statement about one picture; binding it to the artifact
+        # let a re-plot between the pin and the send change what the model saw.
+        "annotation_version_binding",
+        # Retention asks when a memory was last *touched*, and until there was
+        # an edit path there was nothing to record but the first write. With
+        # only `created_at`, correcting a stale instruction left the correction
+        # expiring on the original's clock.
+        "memory_updated_at",
+        # Which in-flight request holds a pin. Admission has to be exactly-once,
+        # and it cannot be without somewhere durable to record the claim -- so
+        # this is a column, not a process-local set. It arrived first in the
+        # ad-hoc add-column pass alone, which meant a fresh database had it and
+        # every database with data in it did not.
+        "annotation_reservation",
+        # A reservation column says a pin is held; it cannot say by which
+        # request, for which job, or whether the answer reached the client.
+        # After a lost response that is the only question worth asking.
+        "annotation_admission_ledger",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

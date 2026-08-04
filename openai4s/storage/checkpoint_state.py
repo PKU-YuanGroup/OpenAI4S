@@ -20,6 +20,8 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
+from openai4s.storage.annotations import settle_restored_annotation
+
 CHECKPOINT_STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS checkpoint_state_snapshots (
     checkpoint_id          TEXT PRIMARY KEY,
@@ -811,8 +813,9 @@ class CheckpointStateRepository:
         memories = [
             dict(row)
             for row in self._bounded_rows(
-                "SELECT memory_id,project_id,block,content,created_at FROM memories "
-                "WHERE project_id=? ORDER BY created_at,memory_id LIMIT ?",
+                "SELECT memory_id,project_id,block,content,created_at,updated_at "
+                "FROM memories WHERE project_id=? ORDER BY created_at,memory_id "
+                "LIMIT ?",
                 (project_id, MAX_MEMORIES + 1),
                 limit=MAX_MEMORIES,
                 label="memories",
@@ -1043,9 +1046,62 @@ class CheckpointStateRepository:
             root_frame_id,
             annotations,
         )
+        # The holders that are about to be overwritten, read BEFORE the delete.
+        #
+        # The snapshot's own holders are not the whole set. A checkpoint taken
+        # while a pin was `open` records no holder for it -- and if a turn
+        # reserves that pin afterwards and the session is then reverted to that
+        # older checkpoint, the delete below destroys the live `reserved` row
+        # while its ledger entry, which the snapshot never mentioned, stays
+        # `reserved` forever. Reserved against a pin that no longer exists:
+        # unreachable by any UI action, and permanently in flight to every
+        # recovery pass that goes looking.
+        live_holders = {
+            str(row["reservation_id"])
+            for row in self._connection.execute(
+                "SELECT DISTINCT reservation_id FROM annotations "
+                "WHERE root_frame_id=? AND reservation_id IS NOT NULL",
+                (root_frame_id,),
+            ).fetchall()
+            if row["reservation_id"]
+        }
         self._connection.execute(
             "DELETE FROM annotations WHERE root_frame_id=?", (root_frame_id,)
         )
+        # Every holder the snapshot names, settled in the same transaction as
+        # the pins.
+        #
+        # Normalising the pin alone left its ledger row at `reserved` or
+        # `pending`, so the two disagreed about the same admission: the pin was
+        # `open` and the record said a turn was still holding it. Reconcile
+        # derives from the rows while the ledger is non-terminal, so it said
+        # `released` -- correctly -- and then the moment a user resolved or
+        # dismissed that pin the derivation flipped to `sent`. The same
+        # reservation, two contradictory answers, the second one arrived at by
+        # an ordinary review action.
+        #
+        # A CAS, not an assignment: an admission that really was `sent` before
+        # the checkpoint was taken keeps saying so. `_stamp_admission_locked`
+        # would do this, but it belongs to the annotations repository and this
+        # transaction is already open here.
+        holders = live_holders | {
+            str(item.get("reservation_id"))
+            for item in annotations
+            if item.get("reservation_id")
+        }
+        # Scoped twice, in the read above and in the CAS below, and the pair is
+        # what holds: a neighbouring session's in-flight turn is none of this
+        # restore's business. Removing either alone changes nothing observable
+        # because the other still catches it -- removing both lets a revert in
+        # one session free a pin held by a live turn in another, which is what
+        # the scope test drives.
+        for holder in sorted(holders):
+            self._connection.execute(
+                "UPDATE annotation_admissions SET state='released', updated_at=? "
+                "WHERE reservation_id=? AND root_frame_id=? "
+                "AND state IN ('reserved','pending')",
+                (self._clock_ms(), holder, root_frame_id),
+            )
         for item in annotations:
             artifact = self._connection.execute(
                 "SELECT root_frame_id FROM artifacts WHERE artifact_id=?",
@@ -1053,10 +1109,28 @@ class CheckpointStateRepository:
             ).fetchone()
             if artifact is None or artifact["root_frame_id"] != root_frame_id:
                 raise ValueError("checkpoint annotation Artifact is unavailable")
+            settled = settle_restored_annotation(item)
             self._connection.execute(
+                # `version_id` and `checksum` travel. They were added by
+                # migration 12 because an annotation that names only the
+                # artifact lets a re-plot between the pin and the send change
+                # what the model is shown -- and the capture above is
+                # `SELECT *`, so they were being read and then dropped here.
+                # Every restore silently unbound every pin in the session and
+                # put the "resolve to latest" behaviour back.
+                # `reservation_id` travels too, and `status` is normalised
+                # through the same rule import uses. A checkpoint taken
+                # mid-flight captures `reserved` plus a holder; the request
+                # that held it did not survive the restore, so writing the raw
+                # pair back produced a pin that is `reserved` with a holder no
+                # live request answers for -- and the earlier code wrote the
+                # status without the id, leaving `reserved` + NULL, which
+                # `recover_stranded_admissions` cannot even find because it
+                # matches on the holder. Unresolvable by any UI action.
                 "INSERT INTO annotations(annotation_id,root_frame_id,artifact_id,"
-                "artifact_name,rel_x,rel_y,number,body,status,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "artifact_name,rel_x,rel_y,number,body,status,created_at,"
+                "updated_at,version_id,checksum,reservation_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     item["annotation_id"],
                     root_frame_id,
@@ -1066,9 +1140,12 @@ class CheckpointStateRepository:
                     float(item.get("rel_y") or 0),
                     int(item.get("number") or 0),
                     str(item.get("body") or ""),
-                    str(item.get("status") or "open"),
+                    str(settled.get("status") or "open"),
                     int(item.get("created_at") or 0),
                     int(item.get("updated_at") or item.get("created_at") or 0),
+                    item.get("version_id"),
+                    item.get("checksum"),
+                    settled.get("reservation_id"),
                 ),
             )
 
@@ -1100,14 +1177,18 @@ class CheckpointStateRepository:
         )
         for item in memories:
             self._connection.execute(
-                "INSERT INTO memories(memory_id,project_id,block,content,created_at) "
-                "VALUES(?,?,?,?,?)",
+                # `updated_at` too: retention asks when a memory was last
+                # touched, so restoring a corrected memory without it would
+                # re-expire the correction on the original's clock.
+                "INSERT INTO memories(memory_id,project_id,block,content,"
+                "created_at,updated_at) VALUES(?,?,?,?,?,?)",
                 (
                     item["memory_id"],
                     project_id,
                     item.get("block"),
                     item.get("content"),
                     int(item.get("created_at") or 0),
+                    item.get("updated_at"),
                 ),
             )
 

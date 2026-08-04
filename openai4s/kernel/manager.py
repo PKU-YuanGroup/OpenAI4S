@@ -8,6 +8,7 @@ this is the inner synchronous RPC loop.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -18,12 +19,74 @@ from pathlib import Path
 from typing import Any, Callable
 
 from openai4s.kernel.environment import build_kernel_environment
+from openai4s.kernel.sink_drain import CAP_BYTES as _SINK_CAP
+from openai4s.kernel.sink_drain import SinkCapture, SinkDirectory
 from openai4s.security.sandbox import KernelSandbox, create_kernel_sandbox
 
 _WORKER = Path(__file__).resolve().parent / "worker.py"
 
 # A host-call dispatcher: (method:str, args:list) -> data. Raises to signal error.
 Dispatcher = Callable[[str, list], Any]
+
+
+#: The worker's stderr tail, in bytes. Generous enough that a traceback plus a
+#: chatty R `system()` fits; the point is that it is a ceiling on what the
+#: daemon allocates, not on what the caller is shown.
+_STDERR_TAIL_BYTES = 64 * 1024
+
+
+class _StderrTail:
+    """The last N bytes of a stream, bounded as it arrives.
+
+    Bytes rather than lines, and a bound rather than a count, because the
+    producers named at the drain site emit whatever a child wrote to fd2 --
+    including one line of arbitrary length. `deque(maxlen=400)` bounded the
+    number of lines and nothing else.
+
+    Reports what it saw, kept and dropped, which is the per-channel accounting
+    plan section 7.4 asks every bounded channel for; the kernel-stderr channel
+    had none.
+    """
+
+    __slots__ = ("_budget", "_buf", "seen_bytes", "dropped_bytes")
+
+    def __init__(self, budget: int) -> None:
+        self._budget = int(budget)
+        self._buf = bytearray()
+        self.seen_bytes = 0
+        self.dropped_bytes = 0
+
+    def feed(self, data: bytes) -> None:
+        if not data:
+            return
+        self.seen_bytes += len(data)
+        self._buf.extend(data)
+        excess = len(self._buf) - self._budget
+        if excess > 0:
+            del self._buf[:excess]
+            self.dropped_bytes += excess
+
+    @property
+    def retained_bytes(self) -> int:
+        return len(self._buf)
+
+    @property
+    def truncated(self) -> bool:
+        return self.dropped_bytes > 0
+
+    def text(self) -> str:
+        # A budget cut lands wherever the byte count ran out, which is
+        # mid-character often enough to matter; `replace` keeps the tail
+        # readable rather than raising on the boundary.
+        return self._buf.decode("utf-8", "replace")
+
+    # The death path joins the tail with `"".join(...)`, which is what the
+    # deque supported. Staying iterable keeps that call site unchanged.
+    def __iter__(self):
+        return iter((self.text(),))
+
+    def __bool__(self) -> bool:
+        return bool(self._buf)
 
 
 class KernelBusyError(RuntimeError):
@@ -41,6 +104,7 @@ class Kernel:
         env_name: str | None = None,
         argv: list[str] | None = None,
         sandbox: KernelSandbox | None = None,
+        capture_sinks: bool = False,
     ):
         self.dispatcher = dispatcher
         self.mode = mode
@@ -69,9 +133,19 @@ class Kernel:
         self._action_context_local = threading.local()
         self.generation = 0  # bumped on every (re)spawn
         self.authorization_generation = f"kernel:{uuid.uuid4()}"
+        # A worker that cannot bound its own output between top-level
+        # expressions (r_worker.R) sinks to a fifo per cell and lets the host
+        # do the bounding. Created here, so a temp directory where fifos cannot
+        # be made refuses the kernel instead of producing one whose cells
+        # silently have no cap.
+        self._sinks: "SinkDirectory | None" = None
+        if capture_sinks:
+            self._sinks = SinkDirectory(self._sandbox.status.temp_dir)
         try:
             self._proc = self._spawn()
         except Exception:
+            if self._sinks is not None:
+                self._sinks.close()
             self._sandbox.close()
             raise
 
@@ -101,13 +175,42 @@ class Kernel:
         # uncaptured subprocess in python) fills the 64KB pipe and deadlocks
         # the cell forever — nothing used to read stderr until worker death.
         # The tail keeps the death diagnostics the old blocking read provided.
-        tail: deque[str] = deque(maxlen=400)
-        self._stderr_tail = tail
+        #
+        # Bounded in BYTES, at the read. This was `for line in stream` into a
+        # `deque(maxlen=400)`: an unbounded `readline()` whose only cap was a
+        # line COUNT applied after the allocation, so one producer emitting a
+        # single enormous line -- which is what the comment above says reaches
+        # here -- allocated all of it before any limit applied. That is the
+        # pattern `mcp_client.py` and `jobs.py` were both changed to remove,
+        # and this drain was written after those fixes without adopting them.
+        #
+        # `.buffer` because the pipe is `text=True` for the stdout protocol
+        # frames and cannot be opened per-stream; the raw reader underneath it
+        # is where a byte budget can mean bytes.
+        self._stderr_tail = _StderrTail(_STDERR_TAIL_BYTES)
+        tail = self._stderr_tail
+        # `os.read` on the descriptor, not `BufferedReader.read`. Both give
+        # bytes, and only one of them is safe here: this thread is a daemon, and
+        # a daemon parked inside a buffered read holds that buffer's lock when
+        # the interpreter finalises. The whole suite passed and then aborted
+        # with `_enter_buffered_busy: could not acquire lock ... at interpreter
+        # shutdown` -- a clean exit turned into SIGABRT by the drain alone.
+        # `os.read` also returns as soon as anything is available rather than
+        # waiting to fill the request, which is what a drain wants.
+        try:
+            stderr_fd = proc.stderr.fileno()
+        except (AttributeError, OSError, ValueError):  # pragma: no cover
+            stderr_fd = -1
 
-        def _drain(stream=proc.stderr, sink=tail) -> None:
+        def _drain(fd: int = stderr_fd, sink=tail) -> None:
+            if fd < 0:
+                return
             try:
-                for line in stream:
-                    sink.append(line)
+                while True:
+                    chunk = os.read(fd, 8192)
+                    if not chunk:
+                        return
+                    sink.feed(chunk)
             except Exception:  # noqa: BLE001 — EOF/close ends the drain
                 pass
 
@@ -169,18 +272,27 @@ class Kernel:
                 if action_context is not None
                 else inherited_context or {}
             )
+            capture: SinkCapture | None = None
             try:
                 if not self.is_alive():
                     raise RuntimeError("kernel worker is not alive")
                 cell_id = str(cell_id or uuid.uuid4())
-                self._send(
-                    {
-                        "type": "execute",
-                        "id": cell_id,
-                        "code": code,
-                        "origin": origin,
-                    }
-                )
+                request: dict[str, Any] = {
+                    "type": "execute",
+                    "id": cell_id,
+                    "code": code,
+                    "origin": origin,
+                }
+                if self._sinks is not None:
+                    # Opened before the request is sent, so the worker's
+                    # blocking open finds a reader already waiting and never
+                    # blocks on one that has not arrived.
+                    capture = self._sinks.open(
+                        cap=_SINK_CAP, on_chunk=on_chunk if on_chunk else None
+                    )
+                    request["sink_out"] = capture.out_path
+                    request["sink_err"] = capture.err_path
+                self._send(request)
 
                 stdout_chunks: list[str] = []
                 while True:
@@ -191,11 +303,42 @@ class Kernel:
                         import time as _time
 
                         _time.sleep(0.05)  # let the drain thread flush the last lines
-                        err = "".join(getattr(self, "_stderr_tail", []) or [])
+                        tail = getattr(self, "_stderr_tail", None)
+                        err = "".join(tail or [])
+                        # The tail's own accounting, which until now was
+                        # computed one attribute away and dropped on the floor.
+                        # `record_diagnostic` is the reader: an operator handed
+                        # 64 KiB of a 20 MB stream, with nothing saying so, is
+                        # reading the end of a failure as though it were the
+                        # whole of it. Redacted from the user by
+                        # `public_exception` before publication, as before.
+                        if getattr(tail, "truncated", False):
+                            err += (
+                                f" (stderr tail: {tail.retained_bytes} of "
+                                f"{tail.seen_bytes} bytes kept, "
+                                f"{tail.dropped_bytes} dropped)"
+                            )
                         raise RuntimeError(f"kernel worker exited unexpectedly: {err}")
                     ftype = frame.get("type")
                     if ftype == "response":
-                        if stdout_chunks and not frame.get("stdout"):
+                        if capture is not None and frame.get("sink_capture"):
+                            # The worker declares it sank to the host's fifos,
+                            # so the host — not the worker — is what has the
+                            # cell's output. A worker that did not (the R
+                            # protocol fixture) keeps its own fields.
+                            frame["stdout"], frame["stderr"] = capture.finish()
+                            # What was read and what was kept, reported rather
+                            # than inferred. A capped `stdout` looks the same
+                            # whether the host read 300 MB and declined 299 of
+                            # them or the worker quietly dropped them before
+                            # they were ever written — R's fifo() defaults to
+                            # non-blocking, and that second reading is what it
+                            # produces. These are the only fields that tell
+                            # those two apart.
+                            usage = frame.get("usage")
+                            if isinstance(usage, dict):
+                                usage.update(capture.counters())
+                        elif stdout_chunks and not frame.get("stdout"):
                             frame["stdout"] = "".join(stdout_chunks)
                         # Host-side annotation, not a protocol field: the
                         # observation formatter needs somewhere inside the
@@ -217,6 +360,11 @@ class Kernel:
                         # diagnostic from worker; ignore or log
                         pass
             finally:
+                if capture is not None:
+                    # Unconditional: an interrupt, a dead worker or a raising
+                    # host call all leave a fifo and two reader threads behind,
+                    # and the reader is what keeps a blocked writer moving.
+                    capture.close()
                 if previous_context is marker:
                     try:
                         del self._active_action_context
@@ -425,6 +573,8 @@ class Kernel:
                     stream and stream.close()
                 except Exception:  # noqa: BLE001
                     pass
+            if self._sinks is not None:
+                self._sinks.close()
             self._sandbox.close()
 
     def __enter__(self) -> "Kernel":

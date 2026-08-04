@@ -365,8 +365,17 @@ class Skill:
         }
 
 
-def _bootstrap_runtime_code(manifest: dict, roots: list[str]) -> str:
-    """Generate the in-kernel import gate/tracker for one manifest snapshot."""
+def _bootstrap_runtime_code(
+    manifest: dict, roots: list[str], denied: frozenset[str] = frozenset()
+) -> str:
+    """Generate the in-kernel import gate/tracker for one manifest snapshot.
+
+    `denied` is the capability allowlist's complement, by directory name.
+    The gate knew only `disabled` -- the user's own on/off switch -- so a
+    skill a Specialist policy withheld was still importable inside the
+    child's cell. The allowlist closed the Host RPC and left the sidecar,
+    which is the half that runs code.
+    """
 
     entries = manifest.get("entries") or []
     known = {
@@ -398,6 +407,7 @@ def _bootstrap_runtime_code(manifest: dict, roots: list[str]) -> str:
         "__openai4s_skill_bootstrap_manifest__['entries']\n"
         "}\n"
         f"_o4s_disabled_skills = {disabled!r}\n"
+        f"_o4s_denied_skills = {set(denied)!r}\n"
         "for _o4s_root in reversed(_o4s_skill_roots):\n"
         "    if _o4s_root not in _o4s_sys.path:\n"
         "        _o4s_sys.path.insert(0, _o4s_root)\n"
@@ -471,6 +481,10 @@ def _bootstrap_runtime_code(manifest: dict, roots: list[str]) -> str:
         "        entry = _o4s_skill_entries.get(top)\n"
         "        if entry is None:\n"
         "            return None\n"
+        "        if top in _o4s_denied_skills:\n"
+        "            raise ModuleNotFoundError(\n"
+        '                f"skill sidecar {top!r} is not available to this agent"\n'
+        "            )\n"
         "        if top in _o4s_disabled_skills:\n"
         "            raise ModuleNotFoundError(\n"
         '                f"skill sidecar {top!r} is disabled by capability policy"\n'
@@ -734,16 +748,30 @@ class SkillLoader:
         self._last_manifest = manifest
         return manifest
 
-    def bootstrap_code(self) -> str:
-        """Return a scoped sidecar import path, deny gate, and truthful tracker."""
+    def bootstrap_code(self, *, allowed: frozenset[str] | None = None) -> str:
+        """Return a scoped sidecar import path, deny gate, and truthful tracker.
+
+        `allowed` is by skill *name*; the gate keys on directory, so the
+        complement is computed here from the manifest rather than reimplemented
+        in the generator. `None` means unrestricted and yields the previous
+        bytes exactly -- `bootstrap_manifest_id` is a durable recovery key, so
+        the manifest itself must not move.
+        """
 
         manifest = self.bootstrap_manifest()
+        denied: frozenset[str] = frozenset()
+        if allowed is not None:
+            denied = frozenset(
+                str(entry.get("directory"))
+                for entry in (manifest.get("entries") or [])
+                if entry.get("directory") and entry.get("name") not in allowed
+            )
         roots = [str(self.skills_dir)]
         project_root = self.project_skills_dir()
         if project_root is not None:
             roots.append(str(project_root))
         roots.append(str(self.user_skills_dir()))
-        return _bootstrap_runtime_code(manifest, roots)
+        return _bootstrap_runtime_code(manifest, roots, denied)
 
     def record_sidecar_loaded(
         self,
@@ -830,15 +858,25 @@ class SkillLoader:
             for s in self.skills(include_disabled=include_disabled).values()
         ]
 
-    def system_context(self) -> str:
+    def system_context(self, *, only: frozenset[str] | None = None) -> str:
         """Progressive-disclosure block for the system prompt.
 
         Only skill NAMES + one-line summaries go here — NOT the full docs.
         The agent calls host.search_skills(query) to pull a skill's full recipe
         on demand: analytic tasks retrieve skills lazily instead of
         front-loading every doc into context.
+
+        `only` is the caller's allowlist, and `None` means unrestricted, so the
+        default output is byte-identical to before. It exists because a
+        delegated child's prompt was rendered from the raw corpus: the exit
+        criterion for the Specialist allowlist names the *prompt* as one of the
+        surfaces an unlisted resource must be absent from, and advertising a
+        skill the child cannot load is both a disclosure and an instruction to
+        attempt something that will be refused.
         """
         skills = self.skills()
+        if only is not None:
+            skills = {name: skill for name, skill in skills.items() if name in only}
         if not skills:
             return ""
         lines = [

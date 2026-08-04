@@ -25,10 +25,10 @@ REPLACE the list it inherited: restricted to one Skill, ask for three, get
 three. Arming a lock that delegation walks around is the same defect wearing a
 fix. Inheritance now narrows.
 
-Not fixed here, and recorded rather than implied: there is no connector
-allowlist mechanism at all — no `set_allowed_connectors`, nothing to arm. That
-is a build, not a wiring gap, and `docs/next-version-progress.md` is corrected
-to stop claiming otherwise.
+The connector half was a build, not a wiring gap: there was no
+`set_allowed_connectors` and nothing to arm. It is built now and armed at the
+same call site, so the two halves cannot drift apart again — its contract lives
+in `test_specialist_connector_allowlist.py`.
 """
 
 from __future__ import annotations
@@ -223,15 +223,26 @@ def test_an_empty_child_list_survives_the_merge():
 # --------------------------------------------------------------------------
 
 
-def test_the_connector_allowlist_has_no_mechanism_to_arm():
-    """Recorded, not implied. `connectors` is stored, inherited and merged the
-    same way `skill_names` is, and there is no `set_allowed_connectors` for a
-    caller to reach — so the skills fix does not silently imply this half
-    works. The day someone adds the setter, this test tells them to wire it.
+def test_the_connector_half_is_armed_at_the_same_choke_point(dispatcher):
+    """This used to assert the opposite — that `connectors` had no mechanism to
+    arm — because it did not: stored, inherited and merged exactly like
+    `skill_names`, and enforced nowhere. Both halves now hang off the one call,
+    which is what keeps a future reader from re-splitting them. The connector
+    contract itself is in `test_specialist_connector_allowlist.py`.
     """
-    from openai4s.host import skills as skills_mod
+    dispatcher.store.upsert_connector(
+        connector_id="keep", name="Keep", command=["python", "-c", "pass"]
+    )
+    dispatcher.store.upsert_connector(
+        connector_id="drop", name="Drop", command=["python", "-c", "pass"]
+    )
+    assert sorted(row["id"] for row in dispatcher._m_mcp_list()) == ["drop", "keep"]
 
-    assert not hasattr(skills_mod.SkillService, "set_allowed_connectors")
+    _apply(
+        dispatcher,
+        {"unrestricted": False, "capabilities": ["mcp"], "connectors": ["keep"]},
+    )
+    assert [row["id"] for row in dispatcher._m_mcp_list()] == ["keep"]
 
 
 def test_the_dispatcher_is_where_the_arming_happens():
@@ -243,3 +254,113 @@ def test_the_dispatcher_is_where_the_arming_happens():
 
     source = inspect.getsource(HostDispatcher.set_child_execution_policy)
     assert "set_allowed_skills" in source
+
+
+# --------------------------------------------------------------------------
+# the allowlist is armed now; three ways it still did not bind
+# --------------------------------------------------------------------------
+#
+# Measured on this branch before the fix:
+#   (c) row {skill_names: ["only-this"], connectors: [], unrestricted: False}
+#       + call {skill_names: [3 names]}  -> the child got all three.
+#       + call {connectors: ["anything"]} -> enabled, despite [] meaning denied.
+#       + call {unrestricted: True}       -> True.
+#   (a) a child restricted to one skill still had all 34 rendered into its
+#       system prompt, by name and summary.
+#   (b) a denied skill's `kernel.py` was still importable in the child's cell:
+#       the in-kernel gate knew `disabled` (the user's switch) and had no
+#       concept of `denied` (the policy's).
+#
+# (c) is the one that makes the other two moot on their own: if the caller
+# chooses the allowlist, filtering the prompt and the import gate against it
+# filters against a value the caller picked.
+
+
+def _profile_merge(spec: dict, row: dict) -> dict:
+    from openai4s.host.delegation import _with_profile_overrides
+
+    return _with_profile_overrides(dict(spec), dict(row))
+
+
+_ROW = {"skill_names": ["only-this"], "connectors": [], "unrestricted": False}
+
+
+def test_a_call_site_cannot_widen_the_stored_skill_allowlist():
+    merged = _profile_merge({"skill_names": ["only-this", "and-this", "more"]}, _ROW)
+    assert merged["skill_names"] == ["only-this"]
+
+
+def test_a_call_site_cannot_reopen_a_denied_connector_set():
+    """`[]` is not "unset". It is the tri-state's deny."""
+    merged = _profile_merge({"connectors": ["anything"]}, _ROW)
+    assert merged["connectors"] == []
+
+
+def test_a_call_site_cannot_lift_its_own_restriction():
+    merged = _profile_merge({"unrestricted": True}, _ROW)
+    assert merged["unrestricted"] is False
+
+
+def test_narrowing_and_inheriting_still_work():
+    """The refusal must not be an outage: a child may still tighten, and a
+    call that names nothing inherits rather than escaping."""
+    assert _profile_merge({"skill_names": []}, _ROW)["skill_names"] == []
+    assert _profile_merge({}, _ROW)["skill_names"] == ["only-this"]
+    # A row that restricts nothing leaves a caller free to restrict itself.
+    assert _profile_merge({"skill_names": ["a"]}, {})["skill_names"] == ["a"]
+
+
+def test_the_prompt_lists_only_permitted_skills(tmp_path):
+    """The exit criterion names the prompt as a surface, and it was rendered
+    from the raw corpus: `HostDispatcher.skill_loader` is every skill on disk,
+    and `Agent` bound that."""
+    from openai4s.config import Config
+    from openai4s.host.skills import SkillService
+
+    cfg = Config(data_dir=tmp_path)
+    cfg.ensure_dirs()
+    service = SkillService(cfg)
+    service.loader.discover()
+    names = sorted(service.loader.skills())
+    assert len(names) > 5, "an empty corpus would make this pass vacuously"
+
+    unrestricted = service.system_context()
+    assert all(name in unrestricted for name in names[:3])
+
+    service.set_allowed_skills([names[0]])
+    restricted = service.system_context()
+    assert names[0] in restricted
+    assert not any(name in restricted for name in names[1:]), restricted
+
+
+def test_the_kernel_import_gate_knows_about_denied_not_only_disabled(tmp_path):
+    from openai4s.config import Config
+    from openai4s.host.skills import SkillService
+
+    cfg = Config(data_dir=tmp_path)
+    cfg.ensure_dirs()
+    service = SkillService(cfg)
+    service.loader.discover()
+    names = sorted(service.loader.skills())
+
+    assert "_o4s_denied_skills = set()" in service.bootstrap_code()
+
+    service.set_allowed_skills([names[0]])
+    gated = service.bootstrap_code()
+    denied_line = gated.split("_o4s_denied_skills = ", 1)[1].split("\n", 1)[0]
+    assert denied_line != "set()", "the gate was generated with nothing denied"
+    assert "is not available to this agent" in gated
+
+
+def test_the_dispatcher_exposes_the_filtered_view_not_the_corpus(tmp_path):
+    """`skill_disclosure` and `skill_loader` must be different objects, or the
+    wiring change is cosmetic."""
+    from openai4s.config import Config
+    from openai4s.host_dispatch import HostDispatcher
+
+    cfg = Config(data_dir=tmp_path)
+    cfg.ensure_dirs()
+    dispatcher = HostDispatcher(cfg=cfg, frame_id="f-x")
+
+    assert dispatcher.skill_disclosure is not dispatcher.skill_loader
+    assert hasattr(dispatcher.skill_disclosure, "set_allowed_skills")

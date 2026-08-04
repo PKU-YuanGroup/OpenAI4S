@@ -36,10 +36,12 @@ import functools
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import uuid
 from typing import Any, Callable
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 # The id for the unit of work currently in flight. A ContextVar rather than a
 # thread-local because within one thread it survives into everything that thread
@@ -192,11 +194,172 @@ def redact_text(text: str) -> str:
     for word in str(text).split(" "):
         # Punctuation commonly abuts a token in prose ("key=sk-…," / "(sk-…)").
         stripped = word.strip("\"'`,;:()[]{}<>")
-        if stripped and _looks_opaque(stripped):
+        if stripped.startswith(("http://", "https://", "ws://", "wss://")):
+            # A URL has no spaces, so word-scanning sees the whole thing at
+            # once — and `_looks_opaque` deliberately answers False for it,
+            # because redacting every URL would gut the log. The credential is
+            # *inside*, in a query value or a path segment, so it needs the
+            # structural pass instead. The daemon's own startup banner is this
+            # exact shape: `listening at http://127.0.0.1:8760/?token=…`,
+            # printed to stdout, which every packaged launcher redirects into
+            # the file the support bundle collects.
+            out.append(word.replace(stripped, redact_url(stripped)))
+        elif stripped and _looks_opaque(stripped):
             out.append(word.replace(stripped, f"<redacted:{fingerprint(stripped)}>"))
         else:
             out.append(word)
     return " ".join(out)
+
+
+#: A home directory by *shape*, whoever owns it. `str.replace($HOME, "~")`
+#: only ever sees this process's own, and a diagnostic bundle is shipped to
+#: someone else: a path under a collaborator's home, a shared machine or a
+#: mounted volume names a person exactly as squarely.
+_HOME_SHAPED = re.compile(
+    r"(?:/Users/|/home/|[A-Za-z]:\\Users\\)[^/\\\s:\"'`,;()\[\]{}<>]+",
+    re.IGNORECASE,
+)
+#: An account on a machine. Deliberately not "a shell command": there is no
+#: boundary between a command quoted inside a failure message and the rest of
+#: that message, so a rule wide enough to remove one removes the description
+#: the log exists to carry. The identity inside it is separable, and is the
+#: part that is worth removing.
+#:
+#: The right-hand side has to look like a host and not merely like text after
+#: an `@`, or this eats `pkg@1.2.3` — a package spec, which the daemon logs on
+#: every environment build and which is exactly the sort of line someone opens
+#: a bundle to read. Address, or dotted name ending in a TLD, or `localhost`.
+#: Residual, stated rather than hidden: a bare single-label host (`user@build`)
+#: does not match, because nothing separates it from the false positives.
+_USER_AT_HOST = re.compile(
+    r"\b[\w.+-]+@(?:"
+    r"(?:\d{1,3}\.){3}\d{1,3}"
+    r"|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"
+    r"|localhost"
+    r")\b"
+)
+
+
+#: Query parameters that hold credentials on real scientific APIs. Matched by
+#: substring so `apikey`, `api_key` and `X-Api-Key` all land.
+CREDENTIAL_PARAMS = ("key", "token", "secret", "password", "auth", "signature", "sig")
+
+
+def _redact_path(path: str) -> str:
+    """Fingerprint any path segment that looks like a credential.
+
+    `redact_text` splits on spaces, and a URL has none — so a key embedded in
+    the path (`/v1/sk-live-.../records`) arrives as a single "word" whose
+    slashes and dots stop it reading as opaque, and it survives untouched. That
+    is not hypothetical: path-style keys are ordinary in scientific APIs, and
+    the test for it is what found this. Segments are the right unit because
+    each one is exactly the kind of token the opacity check was written for.
+    """
+    return "/".join(
+        f"<redacted:{fingerprint(segment)}>" if _looks_opaque(segment) else segment
+        for segment in path.split("/")
+    )
+
+
+def _redact_netloc(netloc: str) -> str:
+    """Userinfo is a credential by definition when it has a password."""
+    if "@" not in netloc:
+        return netloc
+    userinfo, _, host = netloc.rpartition("@")
+    user, sep, secret = userinfo.partition(":")
+    if sep and secret:
+        return f"{user}:<redacted:{fingerprint(secret)}>@{host}"
+    if _looks_opaque(userinfo):
+        return f"<redacted:{fingerprint(userinfo)}>@{host}"
+    return netloc
+
+
+def _redact_fragment(fragment: str) -> str:
+    """The half of a URL that never reaches a server, and therefore holds the
+    credentials that are not supposed to.
+
+    OAuth's implicit flow puts the access token after the `#` precisely so it
+    stays in the browser -- which means a fragment token appearing in a local
+    log is one the browser handed to this machine. It was passed through
+    untouched while the query beside it was scrubbed.
+
+    Parsed as a query when it looks like one, since that is what the flow
+    produces; otherwise judged whole, so a bare opaque fragment is not missed
+    for want of an `=`.
+    """
+    if not fragment:
+        return fragment
+    if "=" in fragment:
+        pairs = parse_qsl(fragment, keep_blank_values=True)
+        if pairs:
+            return urlencode(
+                [
+                    (
+                        name,
+                        # EVERY value, not the ones on a name denylist. `#code=`
+                        # is an authorization code and `#state=` a CSRF token;
+                        # a denylist is the rule that fails on the next name
+                        # somebody chooses, and a fragment is where a browser
+                        # puts what it does not want sent to a server -- so a
+                        # value there is a credential by position, not by name.
+                        # The parameter name stays: which parameters were
+                        # present is provenance, the value is the secret.
+                        f"<redacted:{fingerprint(value)}>" if value else value,
+                    )
+                    for name, value in pairs
+                ]
+            )
+    if _looks_opaque(fragment):
+        return f"<redacted:{fingerprint(fragment)}>"
+    return fragment
+
+
+def redact_url(raw: str) -> str:
+    """Return the URL with credential-bearing query parameters fingerprinted.
+
+    The parameter is kept and its *value* replaced, because "which parameters
+    were sent" is provenance and the value is the secret. Dropping the
+    parameter entirely would quietly change what the URL claims to have been.
+    """
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return "<unparseable url>"
+    # No early return for a URL without a query. An earlier version had one,
+    # and it meant the path and userinfo redaction below never ran for exactly
+    # the URLs that carry a path-style key -- which is the shape that has no
+    # query by construction. The test for it is what found that.
+    cleaned = []
+    for name, value in parse_qsl(parts.query, keep_blank_values=True):
+        if value and any(bit in name.lower() for bit in CREDENTIAL_PARAMS):
+            cleaned.append((name, f"<redacted:{fingerprint(value)}>"))
+        else:
+            cleaned.append((name, value))
+    rebuilt = urlunsplit(
+        (
+            parts.scheme,
+            _redact_netloc(parts.netloc),
+            _redact_path(parts.path),
+            urlencode(cleaned),
+            _redact_fragment(parts.fragment),
+        )
+    )
+    return rebuilt
+
+
+def redact_identities(text: str) -> str:
+    """Collapse who and where, keeping what.
+
+    Paths keep everything but the home segment, because the file name is what
+    makes the line worth reading and the user name is what identifies a person
+    — the same trade the operator diagnostic used to make for this account's
+    own home, applied to the shape rather than to one literal string.
+
+    Run this *after* `redact_text`: the fingerprints it leaves behind contain
+    no `@` and no home-shaped prefix, so the two do not interfere.
+    """
+    out = _HOME_SHAPED.sub("~", str(text))
+    return _USER_AT_HOST.sub(lambda m: f"<redacted:{fingerprint(m.group(0))}>", out)
 
 
 def enabled() -> bool:
@@ -234,8 +397,11 @@ __all__ = [
     "fingerprint",
     "log_event",
     "new_correlation_id",
+    "CREDENTIAL_PARAMS",
     "redact",
+    "redact_identities",
     "redact_text",
+    "redact_url",
     "reset_correlation_id",
     "set_correlation_id",
 ]

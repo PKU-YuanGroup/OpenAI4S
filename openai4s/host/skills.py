@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from openai4s.config import Config
+from openai4s.host import resource_allowlist
 from openai4s.skills_loader import SkillLoader, SkillVersionService
 
 
@@ -137,6 +138,31 @@ class SkillService:
             self.loader.search(spec.get("query", ""), limit=int(spec.get("limit", 5)))
         )
 
+    def system_context(self) -> str:
+        """The prompt block, filtered by this session's skill allowlist.
+
+        Lives here rather than on the loader because this is the object that
+        holds `_allowed_skills`. `HostDispatcher.skill_loader` returns the raw
+        loader, and `Agent` bound *that* for the system prompt -- so the filter
+        was armed on the service while the prompt was rendered from the corpus
+        beside it.
+        """
+        self.loader.discover()
+        return self.loader.system_context(
+            only=resource_allowlist.normalise(self._allowed_skills)
+        )
+
+    def bootstrap_code(self) -> str:
+        """The in-kernel sidecar gate, closed over this session's allowlist.
+
+        Same reason as `system_context`: the allowlist lives on this object and
+        the generator lives on the loader, so a caller holding the loader got a
+        gate that knew only about `disabled`.
+        """
+        return self.loader.bootstrap_code(
+            allowed=resource_allowlist.normalise(self._allowed_skills)
+        )
+
     def list(self) -> list:
         self.loader.discover()
         return self._filter(self.loader.catalog())
@@ -168,6 +194,16 @@ class SkillService:
 
     def edit(self, spec: dict) -> dict:
         name = spec["name"]
+        # The allowlist gated the three READ paths and none of the three write
+        # paths, so a child restricted to `["a"]` could not read skill `b` and
+        # could overwrite, publish or delete it. That is the worse half: the
+        # parent goes on to *execute* the recipe a restricted child rewrote, so
+        # an unreadable Skill was a writable one. A name that is not permitted
+        # does not exist for this caller, and it must not be creatable either —
+        # authoring a new name outside the allowlist would be the same escape
+        # with an extra step.
+        if not self._permits(str(name or "")):
+            raise KeyError(f"no such skill: {name!r}")
         relative = spec.get("path", "SKILL.md")
         content = spec.get("content", "")
         old_string = spec.get("old_string")
@@ -247,6 +283,8 @@ class SkillService:
         return result
 
     def publish(self, name: str) -> dict:
+        if not self._permits(str(name or "")):
+            raise KeyError(f"no such skill: {name!r}")
         self.loader.discover()
         skill = self.loader.get(name, include_disabled=True)
         if skill is None:
@@ -257,6 +295,8 @@ class SkillService:
         return {"ok": True, "origin": "personal"}
 
     def delete(self, name: str) -> dict:
+        if not self._permits(str(name or "")):
+            raise KeyError(f"no such skill: {name!r}")
         self.loader.discover()
         skill = self.loader.get(name, include_disabled=True)
         if skill is None:

@@ -436,43 +436,40 @@ def test_real_r_reports_no_peak_rss_rather_than_zero(tmp_path):
 
 
 @pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
-def test_real_r_slurp_reads_at_most_the_cap(tmp_path):
-    """Drive `.oai4s_slurp` itself, because the capped output looks the same
-    either way.
+def test_real_r_refuses_an_execute_frame_with_no_host_sinks(tmp_path):
+    """No sinks means no capture, and the worker must refuse before it runs.
 
-    The helper is lifted out of the real worker file and evaluated on its own —
-    sourcing the whole file would start the protocol loop. Lifting keeps the
-    code under test the shipped code rather than a copy of it, which is the
-    hazard a hand-written stand-in would introduce.
+    The R worker's output is bounded by the host draining two fifos, so a cell
+    started without them would execute for real and then report nothing at all
+    -- which reads to a user as "the code printed nothing" rather than as the
+    protocol break it is. The refusal has to land BEFORE the side effect, so
+    the cell offered here writes a file: the file's absence is the assertion.
+
+    Driven through a Kernel built without sink capture rather than by hand-
+    writing a frame, because what is under test is the worker's response to the
+    frame the manager actually sends when capture is off.
     """
-    import re
-    import subprocess
-    from pathlib import Path
+    from openai4s.kernel.manager import Kernel
+    from openai4s.kernel.r_kernel import r_argv
 
-    worker = Path("openai4s/kernel/r_worker.R").read_text(encoding="utf-8")
-    match = re.search(r"\.oai4s_slurp <- function.*?\n\}", worker, re.S)
-    assert match, "the helper this test drives is no longer in the worker"
+    evidence = tmp_path / "the-cell-ran"
+    kernel = Kernel(
+        dispatcher=None,
+        cwd=str(tmp_path),
+        mode="r",
+        argv=r_argv(_REAL_R),
+        capture_sinks=False,
+    )
+    try:
+        result = kernel.execute(f"writeLines('x', {str(evidence)!r})")
+    finally:
+        kernel.shutdown()
 
-    big = tmp_path / "big.txt"
-    big.write_bytes(b"A" * (8 * 1024 * 1024))  # 8 MiB, well past the 1 MB cap
-    script = (
-        ".oai4s_MAX_OUTPUT <- 1000000\n"
-        + match.group(0)
-        + f"\ncat(nchar(.oai4s_slurp('{big}'), type='bytes'), '\\n')\n"
-    )
-    result = subprocess.run(
-        [_REAL_R, "--vanilla", "-e", script],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert result.returncode == 0, result.stderr[:300]
-    read_bytes = int(result.stdout.strip().split()[-1])
+    assert result["error"] is not None
+    assert "capture sinks" in result["error"], result["error"]
     assert (
-        read_bytes <= 1_000_001
-    ), f"slurp read {read_bytes:,} bytes of an 8 MiB file to keep 1 MB of it"
-    # ...and it read enough to fill the cap and know it was cut.
-    assert read_bytes == 1_000_001
+        not evidence.exists()
+    ), "the cell ran anyway; the refusal is after the side effect"
 
 
 @pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
@@ -484,12 +481,12 @@ def test_real_r_streams_stdout_while_the_cell_runs(tmp_path):
     A long R cell showed nothing at all until it finished, while the same cell
     in Python reported as it went.
 
-    Streaming happens between top-level expressions, which the evaluator was
-    already looping over. Mid-expression streaming would need C-level work: R
-    is single-threaded, `addTaskCallback` does not fire inside an expression,
-    and a connection callback cannot be written in R. So a chatty `for` loop
-    still arrives in one piece — that limit is real and is stated in the
-    worker rather than implied.
+    This used to say a chatty `for` loop "still arrives in one piece", because
+    the worker could only flush between top-level expressions. That stopped
+    being true when the host began draining the fifo: the drain sees bytes as
+    R's connection buffer empties, which happens *inside* an expression too.
+    The worker-side flush remains, for the expression that ends without
+    filling that buffer.
     """
     kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
     try:

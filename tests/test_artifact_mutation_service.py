@@ -125,15 +125,25 @@ def test_edit_rejects_missing_binary_and_write_failure(tmp_path, monkeypatch):
     )
     text = harness.artifact("write.txt", b"old", "text/plain")
 
+    canary = "/Users/canary/Documents/embargoed.csv"
+
     def fail_write(self, data, encoding=None, errors=None, newline=None):
-        raise OSError("disk full")
+        raise OSError(28, "No space left on device", canary)
 
     monkeypatch.setattr(Path, "write_text", fail_write)
+    # The `strerror` no longer travels. A real `OSError` from this write carries
+    # the absolute path it failed on -- under the data directory, so the
+    # account's username -- and a 500 body is a public surface. The original
+    # goes to the operator diagnostic instead.
     raised_operation(
         lambda: harness.manager.edit(text["artifact_id"], "new"),
         500,
-        "write failed: disk full",
+        "write failed",
     )
+    with pytest.raises(ArtifactOperationError) as caught:
+        harness.manager.edit(text["artifact_id"], "new")
+    assert canary not in str(caught.value)
+    assert canary not in repr(caught.value.__dict__)
 
 
 def test_log_extension_preserves_legacy_text_editability(tmp_path):

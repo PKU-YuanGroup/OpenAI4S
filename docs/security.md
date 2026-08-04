@@ -164,6 +164,82 @@ right for a field and wrong for a log line where a token sits mid-sentence. An
 earlier version of the bundle passed the structured lines and leaked the plain
 one.
 
+The log tail it collects is `logs/app.out` — the file every packaged launcher
+redirects the daemon's stdout and stderr into, and therefore where structured
+events land, since they are written to stderr. An earlier version globbed
+`*.log*`, which matches no file the product writes, so a bundle from a real
+install carried postures and versions and *no logs at all*, with a manifest
+that listed what it did include and so read as complete.
+
+A credential inside a **URL** needs its own pass. `redact_text` scans word by
+word and a URL has no spaces, so the whole thing arrives as one word — and
+`_looks_opaque` deliberately answers "not a credential" for anything starting
+`http://`, because fingerprinting every URL would gut the log. The secret is
+*inside*, in a query value or a path segment, so URL-shaped words go through
+`observability.redact_url`, which keeps the parameter name as provenance and
+fingerprints the value. The daemon's own startup banner is exactly this shape —
+`listening at http://127.0.0.1:8760/?token=…`, printed to stdout, which the
+launchers redirect into `app.out`, which the bundle collects.
+
+What leaves in the bundle is decided **deny-by-default**, and that is a
+different layer from the redaction above. `redact`/`redact_text`/
+`redact_identities`/`redact_url` make the *local* operator log safer to read,
+and the log keeps its richness on disk. The archive is narrower, because it is
+the thing standing between a user's disk and a public issue tracker:
+
+- a **structured** line survives only as an allowlist of known keys, and every
+  key is checked against a **closed set written down in source** — not against
+  a pattern. That distinction took three attempts to get right, and each wrong
+  answer was the same mistake at a smaller scale. First one shared "short
+  enough" regex, which admitted spaces, `/` and `.`: prose in `detail`, a path
+  in `surface`, a command in `status`. Then per-field *patterns*, which
+  admitted `PRIVATE_COHORT_ALPHA_SEVEN` — a legal identifier with no digits, so
+  it satisfies every identifier rule and never reads as opaque. **Syntax is not
+  provenance.** Now `event` and `surface` are the vocabularies this repository
+  emits, `exception` is a category from a named set of exception types, `level`
+  and `status` are enums, `detail` is one fixed sentence, and a variable id
+  (`request_id`, `correlation_id`) is *always* fingerprinted — even though the
+  daemon generates those, because the archive reads them out of `app.out` and a
+  line in a file can carry any 16- or 32-hex string. Support loses nothing: the
+  fingerprint of the id a user quotes matches the one in the archive.
+- a **file name** is not metadata either. Log members are numbered by the
+  archive (`logs/log-0001.json`) and the MANIFEST lists only those generated
+  names, because a log named after a token puts it in two places no content
+  scrubber looks: the ZIP member name and the listing.
+- an **unstructured** line is never shared verbatim at all. `app.out` is the
+  daemon's whole stdout and stderr — every `print`, every `traceback.print_exc`,
+  every dependency's chatter — and no pattern set makes arbitrary text safe. The
+  archive carries a count, a classification and a fingerprint instead.
+- `report.json` is built to a **declared schema** whose leaves are closed sets,
+  numbers, or reductions — never patterns. `machine` is the real architecture
+  set, `platform` and `backend` are enums, a version keeps only its parsed
+  numeric components (`6.5.0-15-generic` → `6.5`, `3.privatecohortalpha` → `3`)
+  and a migration name is fingerprinted rather than enumerated, because an
+  enumerated set of names would go stale *silently* the day someone adds one.
+  `json.dumps(..., default=str)` is gone, unknown keys are counted rather than
+  rendered, and nothing calls `str()` or `repr()` on a value **or a key**: a
+  mapping key can be an object whose `__str__` raises or returns 50 MB.
+
+`record_diagnostic` is the source, and it no longer renders the exception.
+There is no redacted rendering of `str(exc)` on the record, because a rendering
+is the one operation an unknown exception influences and it can be arbitrary,
+enormous, or itself raise. The record carries the surface, the exception's
+class **category** — the nearest ancestor in a set of exception types this
+repository names, so `type("PRIVATE_COHORT_ALPHA_SEVEN", (RuntimeError,), {})`
+reports `RuntimeError` and the caller's own string never appears — and an
+`error_class` fingerprint derived from the *type*, so two
+occurrences of the same failure remain recognisably the same failure and a
+support ticket quoting a `request_id` still leads somewhere. The same rule
+applies to the agent's observation when an environment switch fails, and to the
+two posture probes in `security_posture`, which report an `error_type` rather
+than an exception message.
+
+An earlier version of this section said a shell command quoted inside a failure
+was "deliberately not removed" because the bundle is operator-facing. That was
+wrong on its own evidence: the same change made `app.out` the file the bundle
+collects, and once an artifact leaves the machine "operator-facing" is not a
+property it still has.
+
 ### Credentials at rest
 
 Model and search credentials are held by a **SecretBroker**
@@ -276,13 +352,15 @@ printed at startup as a URL you open once to set the cookie. Scripts send it as
 `Authorization: Bearer <token>` or `X-OpenAI4S-Token`.
 
 The `?token=` form in that startup URL works for one thing only: opening the
-app. It is refused on `/api/v1/*`, on `/static/*` and on every mutation,
-because a URL with a credential in it is a credential you can paste into chat —
-and on a data path that single link hands over the data itself, with no
-redirect and no cookie exchange in between.
+app at `/`. Every other path refuses it — including `/preview/<id>`, which
+answers with artifact bytes and used to be bootstrappable because the rule was
+written as "not `/api/v1/*` and not `/static/*`" rather than as an allowlist. A
+mutation carrying `?token=` is refused outright, cookie or no cookie: a URL
+with a credential in it is a credential you can paste into chat, and one that
+still works is one nobody notices they leaked.
 
-`OPENAI4S_REQUIRE_TOKEN=0` turns the gate off on loopback for one minor
-release. Weigh it against what the daemon exposes: `kernel/execute`,
+`OPENAI4S_REQUIRE_TOKEN=0` turns the gate off on loopback, until the version
+named by `gateway.LEGACY_TOKEN_OPT_OUT_REMOVED_IN`. Weigh it against what the daemon exposes: `kernel/execute`,
 `compute/jobs` and `host.bash` all execute code, and "local" includes every
 other process on the machine. The Host and Origin guards stop a malicious web
 page; they do nothing about a local process.

@@ -47,6 +47,47 @@ def _never_cancelled() -> bool:
     return False
 
 
+def _env_switch_notice(exc: BaseException) -> str:
+    """What the model is told when a pending environment switch failed.
+
+    This used to interpolate ``{exc}`` and the raiser is not an author writing
+    for a reader: ``apply_pending`` reaches ``_apply_pending_env`` and on to
+    ``_spawn_kernel`` -> ``subprocess.Popen``, so the text is whatever the OS
+    produced -- an interpreter path under someone's home, the argv of a failed
+    spawn, and, when the failure came from a broker or a provider probe, a
+    token. Two sinks carry it out of this process: it is appended to the
+    model's message history, which goes to the provider on the next turn and
+    into the exported session package, and to the observation the Timeline
+    renders.
+
+    An earlier pass sent it through ``redacted_detail`` and called that enough.
+    It is not: redaction is a set of patterns and an exception message is
+    arbitrary, so an ordinary English sentence, a ``/srv`` path and a command
+    with no identity in it all came through every pattern intact. The message
+    is not a bounded thing that happens to need scrubbing; it is unbounded, and
+    the only safe amount of it to forward is none.
+
+    What the agent needs is the *category*, not the prose: whether to try a
+    different environment, re-run, or give up. The exception's class name is
+    that category, it comes from the type rather than from ``__str__``, and it
+    is what this returns.
+    """
+    from openai4s.server.errors import record_diagnostic, safe_type_name
+
+    # Even the class name is not free text: a type created at runtime carries
+    # whatever its creator put in the name, and this string goes to the model.
+    kind = safe_type_name(exc)
+
+    try:
+        record_diagnostic(exc, surface="agent:pending_env")
+    except Exception:  # noqa: BLE001 — a diagnostic must not break the turn
+        pass
+    return (
+        f"pending environment switch failed ({kind}); "
+        "the environment was not changed and the previous one is still active"
+    )
+
+
 def _is_action_fence(fence_char: str, info: str) -> bool:
     """Match the fence kinds understood by the action/legacy routers."""
     return fence_char == "`" and info in {"", "python", "py", "r", "tool"}
@@ -524,7 +565,7 @@ class WebActionExecutor:
             self.apply_pending()
             return outcome
         except Exception as exc:  # noqa: BLE001 — keep native history replayable
-            notice = f"[Tool error] pending environment switch failed: {exc}"
+            notice = f"[Tool error] {_env_switch_notice(exc)}"
             history = [dict(message) for message in outcome.history_messages]
             if history:
                 target = next(
@@ -554,14 +595,14 @@ class WebActionExecutor:
                 try:
                     text, _ok = self._invoke_native(call)
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"pending environment switch failed: {exc}")
+                    errors.append(_env_switch_notice(exc))
                     break
                 parts.append(text)
             if not self.cancelled():
                 try:
                     self.apply_pending()
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"pending environment switch failed: {exc}")
+                    errors.append(_env_switch_notice(exc))
             observation = finalize_tool_batch(parts, len(calls), errors)
         elif has_incomplete_code_block(reply.content):
             observation = INCOMPLETE_CELL_NUDGE

@@ -39,7 +39,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 from openai4s import memory_budget
@@ -96,10 +96,13 @@ from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.server.completions import completion_message, response_language
 from openai4s.server.errors import (
     ERROR_CODES,
+    INTERNAL_ERROR_MESSAGE,
     GatewayError,
     error_code_for,
     gateway_error_payload,
+    public_exception,
     public_failure,
+    record_diagnostic,
 )
 from openai4s.server.execution_coordinator import (
     ExecutionCancelled,
@@ -153,6 +156,9 @@ from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
 from openai4s.storage.connectors import public_connector
+from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
+from openai4s.storage.memories import GLOBAL_SCOPE as MEMORY_GLOBAL_SCOPE
+from openai4s.storage.memories import MemoryLimitError
 from openai4s.store import Store, get_store
 from openai4s.tools import control_tool_specs, get_tool
 
@@ -226,9 +232,12 @@ _TOKEN_HEADER = local_auth.TOKEN_HEADER
 def _strip_token_from_url(path: str, query: str) -> str:
     """The same URL without the `token` parameter.
 
-    The redirect used to go to "/" unconditionally, so opening a bookmarked
-    deep link with a token landed the user on the dashboard rather than at
-    what they asked for.
+    Only the credential is dropped, not the whole query string: the bootstrap
+    URL may carry the caller's own parameters alongside the token, and
+    discarding them would silently rewrite where the page thinks it was opened.
+    The entire point of the redirect is that the address bar, the history entry
+    and every later Referer hold a URL with no secret in it, so anything that
+    leaves `token` behind here defeats it.
     """
     remaining = [
         (key, value)
@@ -243,6 +252,12 @@ def _strip_token_from_url(path: str, query: str) -> str:
 _ERROR_CODES = ERROR_CODES
 _error_code_for = error_code_for
 _public_failure = public_failure
+
+#: Hard ceiling on one message page. The route is walked page by page by a
+#: client now, so an unbounded ``limit`` is an invitation to project an entire
+#: branch -- the whole conversation, in one response -- from a query string.
+#: 1000 is well past any page the UI asks for and is still a bound.
+MAX_MESSAGE_PAGE = 1000
 
 
 def _encode_frame_cursor(created_at: int, frame_id: str) -> str:
@@ -280,6 +295,18 @@ _API_ROOT = contract.API_ROOT
 #: is not allowed to read -- and the route answers with a mode string only,
 #: never with any part of the token.
 _UNAUTHENTICATED_PATHS = frozenset({"/health", _API_ROOT + "/auth/status"})
+
+#: The release by which `OPENAI4S_REQUIRE_TOKEN=0` must be gone.
+#:
+#: "Kept for one minor release" was written in a comment below and restated in
+#: three docs, and none of the four said *which* release or would ever notice
+#: the deadline passing. The variable turns off the only credential check in
+#: front of `kernel/execute`, `compute/jobs` and `host.bash`, so an escape hatch
+#: that quietly becomes permanent is the entire cost of the decision arriving
+#: without the deadline it was granted on. `tests/test_auth_exit_matrix.py`
+#: fails once `openai4s.__version__` reaches this, which puts the decision in
+#: front of a person instead of leaving it to nobody's memory.
+LEGACY_TOKEN_OPT_OUT_REMOVED_IN = "0.2.0"
 
 
 def _wants_html(headers) -> bool:
@@ -329,6 +356,22 @@ _MAX_JSON_BODY_BYTES = MAX_ARCHIVE_BYTES
 #: the part it needs instead of carrying all of it in every later prompt.
 MAX_MESSAGE_CHARS = 200_000
 
+#: How much of a queued message the FIFO projection repeats back. A queue entry
+#: has to be recognisable -- "which of the three did I want to drop" is the only
+#: question a cancel control ever answers -- but the queue snapshot is broadcast
+#: to every subscriber of the session on every queue change, so carrying the
+#: whole 200,000-character message there would multiply it across the wire.
+QUEUE_PREVIEW_CHARS = 160
+
+
+def queue_preview(text: str) -> str:
+    """One line of a queued message, short enough to broadcast repeatedly."""
+
+    collapsed = " ".join(str(text or "").split())
+    if len(collapsed) <= QUEUE_PREVIEW_CHARS:
+        return collapsed
+    return collapsed[: QUEUE_PREVIEW_CHARS - 1] + "…"
+
 
 def _skill_result_status(payload: object) -> int:
     """The status a Customize skill result should be answered with.
@@ -364,17 +407,57 @@ def _skill_result_status(payload: object) -> int:
 MAX_ATTACHED_IMAGES = 8
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024
+#: The three budgets above bound what leaves this process. This one bounds what
+#: enters it: the pinned bytes must be read whole to be hashed against the
+#: version's recorded checksum, so without a source cap a 2 GiB file named
+#: `figure.png` is loaded into memory before any of the other limits can look
+#: at it.
+MAX_SOURCE_IMAGE_BYTES = 64 * 1024 * 1024
 
 
-def _is_navigation(path: str) -> bool:
-    """Does this path serve the SPA shell rather than data?
+#: One definition for both of the places that ask "does this request change
+#: state": the Origin/CSRF guard and the query-string credential refusal below.
+#: They were two literal tuples one edit apart from disagreeing, and a method
+#: that counts as mutating for one guard and not the other is a hole in
+#: whichever of them forgot it.
+#: A client-generated admission id: long enough not to collide across
+#: sessions or restarts, and narrow enough to be safe as a key.
+_CLIENT_RESERVATION = re.compile(r"[A-Za-z0-9_-]{24,96}")
 
-    Only these may bootstrap from `?token=`. Everything else -- the API, the
-    static assets -- must present a cookie or a header, because a URL with a
-    credential in it gets pasted into chat, logged by a proxy, and kept in
-    history, and on a data path that single link hands over the data itself.
+# Written in the same transaction as the pins they describe, so they are
+# evidence rather than a cached guess, and reconciliation does not re-derive
+# them from rows that have since moved on.
+_TERMINAL_ADMISSION_STATES = frozenset({"sent", "released"})
+# A pin that has been sent, and everything a review action can do to it
+# afterwards. All of them mean the same thing to a lost 202: consumed.
+_CONSUMED_ANNOTATION_STATES = frozenset({"sent", "resolved", "dismissed"})
+
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+#: The only paths a `?token=` may be traded for a cookie on -- an allowlist,
+#: not a subtraction. The rule used to be "anything that is not `/api/v1/` and
+#: not `/static/`", which its own docstring described as "paths that serve the
+#: SPA shell". `/preview/<id>` is neither: it answers with artifact bytes, so
+#: `/preview/<id>?token=...` was a link that set a durable cookie and then
+#: handed the file to whoever held the link -- precisely the thing that
+#: docstring promised could not happen. A subtractive rule re-opens that hole
+#: every time a non-API route is added; an allowlist fails closed, and the root
+#: page is the only URL this product ever hands to a person (`openai4s url`,
+#: the startup banner, the .app).
+_BOOTSTRAP_PATHS = frozenset({"/", "/index.html"})
+
+
+def _is_bootstrap_path(path: str) -> bool:
+    """May a `?token=` here be exchanged for the cookie?
+
+    Root page only. The cost of being wrong is asymmetric: on the root page the
+    link buys an empty SPA shell and the 303 strips the credential before
+    anything renders, while on a path that answers with data the link *is* the
+    data. Deep-link bootstrapping was the convenience being paid for, and
+    nothing in the product ever generated such a link -- `_url()` builds the
+    origin and `/?token=`.
     """
-    return not (path.startswith(_API_PREFIX) or path.startswith("/static/"))
+    return path in _BOOTSTRAP_PATHS
 
 
 def _presented_token(headers: Any) -> str | None:
@@ -798,6 +881,7 @@ class WSHub:
         events: list[dict],
         *,
         scope: str,
+        execution_id: str = "",
     ) -> dict:
         prepared: list[dict] = []
         sizes: list[int] = []
@@ -813,6 +897,11 @@ class WSHub:
             "active_cells": {},
             "active_cell_sizes": {},
             "scope": scope,
+            # Which execution this window belongs to. Stated rather than
+            # inferred from the last event that happened to arrive: the whole
+            # problem is that events arrive out of order, so the last one is
+            # exactly the wrong thing to trust.
+            "execution_id": str(execution_id or ""),
         }
 
     def _ensure_live_accounting(self, buf: dict) -> None:
@@ -858,6 +947,46 @@ class WSHub:
         buf["event_sizes"] = kept_sizes
         buf["event_bytes"] = sum(kept_sizes)
 
+    #: Event types that belong to ONE turn's stream. Everything else -- kernel
+    #: status, permission cards, metadata deltas -- is frame state that no
+    #: execution owns, and withholding those would break surfaces that have
+    #: nothing to do with turn ordering.
+    _TURN_SCOPED_TYPES = frozenset({"text_reset", "text_chunk", "frame_update"})
+
+    def _refuses_event_locked(self, rid: str, obj: dict) -> bool:
+        """Should this event be withheld from the buffer AND from live sockets?
+
+        Dropping it from the resume window alone is not enough. `broadcast`
+        still delivered it, and a tab that joined during B has no stored
+        identity for A -- so its own filter reads "one side silent", which
+        means current, and A's late terminal closes B. The hub is the only
+        place that knows both identities, so the fence has to be here.
+        """
+        t = obj.get("type")
+        if t not in self._TURN_SCOPED_TYPES:
+            return False
+        if t == "frame_update" and obj.get("status") == "processing":
+            # A boundary announces a new execution; it is never stale against
+            # the one it replaces.
+            return False
+        return self._is_stale_for_buffer(
+            self._live.get(rid), str(obj.get("execution_id") or "")
+        )
+
+    @staticmethod
+    def _is_stale_for_buffer(buf: dict | None, event_execution: str) -> bool:
+        """Does this event belong to an execution the live window has moved on from?
+
+        Both sides must name one. A daemon that predates execution ids on the
+        wire, and the identity-less stream events a current turn still emits
+        between its `processing` and its terminal, both fall through as current
+        -- which is the only answer that cannot strand a running turn.
+        """
+        if not buf or not buf.get("running") or not event_execution:
+            return False
+        active = str(buf.get("execution_id") or "")
+        return bool(active) and active != event_execution
+
     def _record(self, rid: str, obj: dict) -> None:
         t = obj.get("type")
         # Approval cards have their own durable replay source.  In particular,
@@ -866,24 +995,57 @@ class WSHub:
         if t in {"await_permission", "permission_resolved"}:
             return
         buf = self._live.get(rid)
-        if t == "text_reset":
-            # a new turn begins — start a fresh buffer
-            self._install_live_buffer(
-                rid,
-                self._new_live_buffer([obj], scope="turn"),
-            )
-            return
+        event_execution = str(obj.get("execution_id") or "")
+        # A `processing` naming a new execution is a BOUNDARY, and it has to be
+        # read before the staleness test -- which would otherwise judge it
+        # against the window it is replacing and drop it, leaving the previous
+        # execution's window live forever.
         if (
             t == "frame_update"
             and obj.get("status") == "processing"
-            and (buf is None or not buf.get("running"))
+            and (
+                buf is None
+                or not buf.get("running")
+                or (
+                    event_execution
+                    and str(buf.get("execution_id") or "") != event_execution
+                )
+            )
         ):
             # A manual Reviewer (or another activity without a text stream)
-            # starts after the prior turn's buffer has ended. Give it a fresh
-            # resume window so reconnecting clients can replay its step events.
+            # starts after the prior turn's buffer has ended; a queued turn
+            # starts while the previous one is still unwinding. Either way this
+            # is the live window now.
             self._install_live_buffer(
                 rid,
-                self._new_live_buffer([obj], scope="turn"),
+                self._new_live_buffer(
+                    [obj], scope="turn", execution_id=event_execution
+                ),
+            )
+            return
+        if self._is_stale_for_buffer(buf, event_execution):
+            # This event is the tail of an execution that is no longer the live
+            # one. The client-side filter is not enough on its own: the resume
+            # buffer is what a RECONNECTING client replays and what
+            # `is_running` answers from, so a late `text_reset` replacing the
+            # window -- or a late terminal clearing `running` -- makes the turn
+            # that is genuinely still running look finished to every client
+            # that arrives afterwards, including the one that reconnects.
+            return
+        if t == "text_reset":
+            # A new turn begins -- but the identity is INHERITED when the event
+            # does not name one. The stream events a running turn emits carry
+            # no execution id today, so taking the field verbatim would wipe
+            # the id the `processing` boundary just established and hand the
+            # window straight back to whichever late event arrived next.
+            self._install_live_buffer(
+                rid,
+                self._new_live_buffer(
+                    [obj],
+                    scope="turn",
+                    execution_id=event_execution
+                    or (str(buf.get("execution_id") or "") if buf else ""),
+                ),
             )
             return
         if t == "notebook_cell_start" and (buf is None or not buf.get("running")):
@@ -1170,6 +1332,11 @@ class WSHub:
                 # two producers interleave and hand out a sequence that does not
                 # match delivery order — which is the one thing a resume cursor
                 # cannot tolerate.
+                if self._refuses_event_locked(root_frame_id, obj):
+                    # Not recorded, not delivered, and NOT given a sequence
+                    # number: it is not part of this frame's stream, so it must
+                    # not advance a cursor either.
+                    return
                 obj["seq"] = self._next_seq_locked(root_frame_id)
                 self._record(root_frame_id, obj)
             # ``send_json`` only performs JSON encoding + a non-blocking queue
@@ -1268,6 +1435,12 @@ class SessionState:
         self.project_id = project_id
         self.branch_id = branch_id or root_frame_id
         self.workspace = workspace
+        #: `(profile_id, revision)` this turn was ACCEPTED under, when it came
+        #: through the queue. `_pinned_llm_config` prefers it over the frame's
+        #: current pin, because the frame's pin is mutable by design and an item
+        #: already in the FIFO must not follow it. `None` for a direct turn, where
+        #: the frame is the freshest answer there is.
+        self.frozen_model_binding: tuple[str, int] | None = None
         # One owner for both persistent execution channels.  ``Kernel`` keeps
         # sole ownership of protocol I/O; the supervisor only coordinates
         # lifecycle and exact-worker identity across cancellation/watchdogs.
@@ -1388,13 +1561,72 @@ class MessageJob:
         # Captured here, on the request thread that constructs the job. The
         # failure a user reads and the log line for the work that failed have
         # to be the same id, or the id ties nothing to anything.
-        self.request_id: str = correlation_id()
+        # `or new_correlation_id()`: a direct submit -- the CLI, a recovery
+        # replay -- has no HTTP request behind it, and an empty id here made
+        # the 202 and the job result nameless while `run_message` minted its
+        # own for the socket. Two ids for one turn is worse than none.
+        self.request_id: str = correlation_id() or new_correlation_id()
+        # The model configuration this job was ACCEPTED under. `submit_message`
+        # froze the identity at send, but onto the *frame* -- and the frame's pin
+        # is mutable by design, because `POST /frames/{id}/model-binding` is the
+        # answer to a dangling one. So an item accepted under P and still in the
+        # FIFO was re-resolved from the frame at dequeue and could run on Q, with
+        # the client already told 202 under P. Frozen on the ticket, the item
+        # cannot drift no matter what the frame says later.
+        self.model_profile_id: str = ""
+        self.model_profile_revision: int = 0
+        # Set by `project` below. A job failure is read back over HTTP 200
+        # (`{"status": "failed", ...}` is the result, not an error envelope),
+        # so `Handler._json` never enriches it and the code has to be carried
+        # here or it does not exist on this surface at all.
+        self.error_code: str = ""
+        #: Whether the failure happened after output was already committed --
+        #: bytes streamed, or a tool run. `llm/models.py` calls it the retry
+        #: veto; it is kept here so the socket and the job query can both say
+        #: so, which is what stops the UI offering a retry that would duplicate
+        #: work that already happened.
+        self.output_committed: bool = False
+        #: The branch this turn was accepted on, resolved at submit time while
+        #: the Store is known to be working. Resolving it again during a
+        #: failure is the wrong moment: the failure is frequently the Store,
+        #: and a lookup that falls back to the root frame yields a *different*
+        #: key from the one the turn filed its note under.
+        self.branch_id: str = ""
 
     def finish(self, result: dict | None = None, error: str | None = None) -> None:
         self.result = result
         self.error = error
         self.finished_at = time.time()
         self.done.set()
+
+    def project(self, exc: BaseException, surface: str) -> str:
+        """Record the diagnostic once, and return the one sentence this failure
+        is allowed to say.
+
+        The three spawners each did `job.finish(error=str(e))`, and the message
+        turn additionally streamed the same `str(e)` into a `text_chunk` — so a
+        `PermissionError` naming a path under $HOME, or a provider error
+        echoing the credential it was sent, reached the browser twice over two
+        different transports. Projecting here rather than at each call site
+        means the WebSocket chunk and the job result cannot disagree about what
+        happened, and the original is written to the operator diagnostic once
+        rather than once per surface.
+        """
+        body, _status = public_exception(
+            exc, surface=surface, request_id=self.request_id
+        )
+        self.error_code = str(body.get("code") or "internal_error")
+        # OR, never assign. Both handlers can fire for one turn -- `_loop`
+        # fails and the inner one records it, then the tail fails and leaves
+        # through the outer one -- and the second exception is usually an
+        # ordinary one. Assigning let it *downgrade* the veto the first had
+        # earned, so a turn that had already run a tool went back to being
+        # offered a retry. A veto is a fact about the request, not about
+        # whichever exception was projected last.
+        self.output_committed = self.output_committed or bool(
+            body.get("output_committed")
+        )
+        return str(body.get("error") or INTERNAL_ERROR_MESSAGE)
 
     def wait_result(self) -> dict:
         self.done.wait()
@@ -1404,13 +1636,21 @@ class MessageJob:
             "status": "failed",
             "frame_id": self.root_frame_id,
             "job_id": self.job_id,
-            "error": self.error or "message job failed",
+            "error": self.error or INTERNAL_ERROR_MESSAGE,
+            "code": self.error_code or "internal_error",
         }
         # Only when there is one. A null field here would read as "this request
         # had no id", when what it means is that the job was built outside a
         # request -- and the error envelope already distinguishes those.
         if self.request_id:
             failure["request_id"] = self.request_id
+        if self.execution_id:
+            # The id that tells this failure from a later turn's. A poll and
+            # the socket must agree about which execution ended, or a client
+            # that missed the event cannot reconstruct what the socket said.
+            failure["execution_id"] = self.execution_id
+        if self.output_committed:
+            failure["output_committed"] = True
         return failure
 
 
@@ -1802,6 +2042,20 @@ class SessionRunner:
         self.skills = SkillLoader(cfg=cfg)
         self._sessions: dict[str, SessionState] = {}
         self._jobs: dict[str, MessageJob] = {}
+        #: The row an in-flight turn has already written as its terminal
+        #: failure, so the *outer* handler for the same turn amends it rather
+        #: than appending a second one.
+        #:
+        #: Keyed by job id and cleared when that job's function returns, which
+        #: is the only lifetime that is correct. Keyed by request id it was a
+        #: leak with teeth: only the outer handler consumed a note, so an
+        #: ordinary inner failure left one behind forever, and a client reusing
+        #: `X-Request-Id` -- which clients do -- had its next unrelated failure
+        #: amend a finished turn's message and record nothing of its own.
+        self._terminal_failures: dict[str, dict] = {}
+        #: Which job the current thread is running, so `run_message` can file
+        #: its note without being handed the ticket.
+        self._turn_scope = threading.local()
         self._lock = threading.Lock()
         self._closed = False
         self._deleting_projects: set[str] = set()
@@ -2008,6 +2262,29 @@ class SessionRunner:
         if start_idle_sweeper:
             self.recovery.start()
             self._share_boot_restore()
+            self._recover_stranded_admissions()
+
+    def _recover_stranded_admissions(self) -> int:
+        """Release pins held by a request that did not survive the process.
+
+        A daemon that dies between reserving and finalising leaves `reserved`
+        rows nothing will ever release: not sent, not available, and invisible
+        in the composer forever. At startup no request is in flight by
+        definition, so anything still held is stranded. Best-effort, because a
+        recovery pass must not be the reason a daemon fails to boot.
+        """
+        try:
+            recovered = self.store.recover_stranded_admissions()
+        except Exception:  # noqa: BLE001 - never block startup
+            traceback.print_exc()
+            return 0
+        if recovered:
+            print(
+                f"[openai4s] released {recovered} pinned comment(s) held by a "
+                "request that did not finish",
+                file=sys.stderr,
+            )
+        return recovered
 
     def _live_delegation_child(self, root_frame_id: str, child_id: str):
         """The live child a control action can actually reach, or a refusal.
@@ -2114,10 +2391,17 @@ class SessionRunner:
         """Contact the remote for ONE job, because a person asked.
 
         `ComputeManager.result()` is the probe, and in this system the probe is
-        also the harvest: it pulls output files back into the workspace,
-        registers artifacts, and closes the job. There is no read-only way to
-        ask a provider how a job is doing, which is the whole reason the
-        listing beside this does not poll.
+        also the harvest: it pulls output files back into the workspace and
+        closes the job. There is no read-only way to ask a provider how a job is
+        doing, which is the whole reason the listing beside this does not poll.
+
+        The manager does **not** register artifacts -- this docstring used to say
+        it did, and nothing on this route took a snapshot, so a person clicking
+        Refresh got the bytes published into `hpc/<job_id>/` and no Artifact
+        version, no Timeline entry and no lineage. Capture is bracketed around the
+        harvest here, the same way the native control-tool wrapper does it for
+        `compute_result`; the mtime diff needs a `before` taken while the files do
+        not exist yet, so it cannot be added after the fact.
 
         The manager is built with this session's workspace, so its owner scope
         is the same one the listing reads. A job id belonging to another
@@ -2132,9 +2416,20 @@ class SessionRunner:
         try:
             manager = dispatcher.compute
         except Exception as error:  # noqa: BLE001 - no provider configured
+            # The reason used to be interpolated in. It is raised by provider
+            # shim code loaded from `skills/remote-compute-<id>/provider.py`,
+            # so its text is whatever a third party wrote -- routinely the
+            # config path it read and the env var it could not find.
+            record_diagnostic(
+                error, surface="compute:provider", request_id=correlation_id()
+            )
             raise GatewayError(
-                503, f"remote compute is not available here: {error}", "no_provider"
+                503, "remote compute is not available here", "no_provider"
             ) from error
+        st = self._state(root_frame_id, "default")
+        emit = self.hub.emitter(root_frame_id)
+        before = self.artifacts.snapshot(workspace)
+        self.artifacts.protect_latest(st)
         try:
             outcome = manager.result({"job_id": job_id})
         except Exception as error:  # noqa: BLE001
@@ -2143,7 +2438,48 @@ class SessionRunner:
             code = getattr(error, "kind", "") or getattr(error, "code", "")
             if str(code) == "not_found":
                 raise GatewayError(404, f"no such job {job_id}", "not_found") from error
-            raise GatewayError(502, str(error), "refresh_failed") from error
+            # The provider's own text does not go in. A remote SDK's error
+            # quotes the endpoint it called, the credential prefix it used and
+            # the *provider's* request id -- and that last one is the worst of
+            # the three, because it reads like the id to quote in a support
+            # ticket while naming a request neither the user nor this daemon
+            # can look up. `public_exception` answers with this daemon's local
+            # correlation id instead, and the original reaches the operator
+            # diagnostic only.
+            record_diagnostic(
+                error, surface="compute:refresh", request_id=correlation_id()
+            )
+            raise GatewayError(
+                502, "remote compute refresh failed", "refresh_failed"
+            ) from error
+        finally:
+            # In `finally`, not after: a harvest that extracted some outputs and
+            # then failed has still written real bytes into the workspace, and
+            # leaving those unregistered is the same gap on a narrower path.
+            try:
+                self.artifacts.capture(
+                    st,
+                    st.cell_index,
+                    None,
+                    before,
+                    emit,
+                    language="native",
+                    # The one path whose files genuinely came from another
+                    # machine, and the only capture call that was not draining.
+                    # Two consequences, both of them the failure this subsystem
+                    # exists to prevent. A harvested artifact was stamped with
+                    # the *local* environment and carried no record of the host
+                    # that produced it. And because the drain never ran here,
+                    # the remote entry stayed buffered and was attached to
+                    # whatever cell wrote a file next -- the fold in cell 3
+                    # becoming the provenance of a figure from cell 7, which
+                    # the comment in `capture` describes as already fixed.
+                    drain_remote_provenance=self._remote_provenance_drain(st),
+                )
+            except Exception:  # noqa: BLE001
+                # Capture must not convert a successful harvest into an error;
+                # the files remain on disk and the next capture will see them.
+                pass
         # Project the durable record rather than the call's return value, so
         # the refreshed row and the listing beside it are the same shape from
         # the same source. `hasattr`-guarding this would have hidden the fact
@@ -2446,8 +2782,19 @@ class SessionRunner:
             jobs = list(self._jobs.values())
         for job in jobs:
             thread = job.thread
-            if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=5.0)
+            if thread is None or thread is threading.current_thread():
+                continue
+            # `is_alive()` before `join()`, because a thread that was never
+            # started raises "cannot join thread before it is started" -- and
+            # `_spawn_job` registers a job *before* calling `start()`, so a
+            # refused spawn leaves exactly that. Shutdown is the worst possible
+            # place to discover it: nothing can be done about the exception and
+            # every job after this one in the list goes unjoined. A finished
+            # thread reports not-alive too, and joining one is a no-op, so the
+            # guard costs nothing on the normal path.
+            if not thread.is_alive():
+                continue
+            thread.join(timeout=5.0)
         with self._lock:
             self._jobs.clear()
 
@@ -3062,8 +3409,16 @@ class SessionRunner:
         execution_id: str | None = None,
         language: str | None = None,
         reason: str,
+        metadata: Mapping[str, Any] | None = None,
     ):
-        """Submit after any already-reserved Stop, without holding a long lock."""
+        """Submit after any already-reserved Stop, without holding a long lock.
+
+        ``metadata`` rides on the ticket and therefore appears in every queue
+        snapshot and ``execution_queue`` broadcast. It is the only place a
+        *queued* item can describe itself: the ticket is all that exists until
+        the item is admitted, so anything the client needs in order to name the
+        item it wants cancelled has to be frozen here, at submit.
+        """
 
         while True:
             st.stop_finished.wait()
@@ -3082,7 +3437,7 @@ class SessionRunner:
                             "workspace",
                             f"kernel:{language or 'control'}",
                         ),
-                        metadata={"reason": reason},
+                        metadata={"reason": reason, **dict(metadata or {})},
                     )
                 except QueueDepthExceeded as error:
                     # A full queue surfaced as HTTP 500 `internal_error`, which
@@ -3184,10 +3539,10 @@ class SessionRunner:
         # long-term memory: inject saved memory blocks when the feature is on
         try:
             if self.store.get_setting("memory_enabled", "0") == "1":
-                # This session's project, never every project. `or "all"` here
-                # meant a session with a falsy project_id seeded its system
-                # prompt with the whole installation's remembered context.
-                # "default" matches where an unscoped write lands and what
+                # This session's project plus the global tier it inherits, and
+                # never every project. `or "all"` here meant a session with a
+                # falsy project_id seeded its system prompt with the whole
+                # installation's remembered context; "default" matches what
                 # `resolve_frame_scope` falls back to, so the two agree.
                 mems = self.store.list_memories(project_id=st.project_id or "default")
                 if mems:
@@ -3882,8 +4237,18 @@ class SessionRunner:
             try:
                 self.restart_kernel(root_frame_id, project_id or "default")
                 res["restarted"] = True
-            except Exception as e:  # noqa: BLE001
-                res["restart_error"] = str(e)
+            except Exception as error:  # noqa: BLE001
+                # `POST /frames/<id>/kernel/install` returns this dict straight
+                # to the client, so `str(e)` was a public body. A restart fails
+                # through the kernel spawn and the sandbox setup, and an
+                # `OSError` from either names the interpreter it tried to run
+                # and the workspace directory it tried to run it in -- an
+                # absolute path, and with it the account's username. The
+                # install itself succeeded; what the caller needs to know is
+                # that the restart did not, and that is what it now says.
+                record_diagnostic(error, surface="kernel:restart_after_install")
+                res["restart_error"] = "the kernel could not be restarted"
+                res["restart_error_code"] = "kernel_restart_failed"
         if root_frame_id:
             emit = self.hub.emitter(root_frame_id)
             emit(
@@ -4336,6 +4701,7 @@ class SessionRunner:
         plan: bool = False,
         annos: list | None = None,
         explore: bool = False,
+        on_admitted: Callable[[MessageJob], None] | None = None,
     ) -> MessageJob:
         """Start a user turn in a background thread.
 
@@ -4372,14 +4738,33 @@ class SessionRunner:
         #    turn finally runs meant a follow-up sitting in the queue adopted
         #    whatever the profile said by then. `run_message` still calls this --
         #    it is idempotent, and other callers (plans) come in that way.
-        self.bind_model_revision(root_frame_id)
+        #
+        #    Frozen onto the *ticket* as well, not only onto the frame. The frame's
+        #    pin is mutable by design -- `POST /frames/{id}/model-binding` rewrites
+        #    it, which is the documented answer to a dangling pin -- so an item
+        #    accepted under P and still in the FIFO was re-resolved from the frame
+        #    at dequeue and could run on Q. The client was told 202 under P.
+        frozen = self.freeze_model_binding(root_frame_id)
 
         job = MessageJob(f"job-{uuid.uuid4().hex[:12]}", root_frame_id)
+        job.model_profile_id = frozen["model_profile_id"]
+        job.model_profile_revision = frozen["model_profile_revision"]
         ticket = self._queue_execution(
             st,
             owner="agent",
             owner_id=job.job_id,
             reason="user message",
+            # What the browser needs to show a queued follow-up and to name the
+            # one it wants dropped. Read off the ticket rather than re-derived:
+            # the profile pair below is the one this item was *accepted* under,
+            # and the frame's pin -- the only other place it is written -- is
+            # rewritable while the item waits, so re-reading it at render time
+            # would show a queued item running under a configuration it is not.
+            metadata={
+                "preview": queue_preview(text),
+                "model_profile_id": job.model_profile_id,
+                "model_profile_revision": job.model_profile_revision,
+            },
         )
         job.execution_id = ticket.execution_id
         job.execution_owner = ticket.owner.as_dict()
@@ -4394,67 +4779,258 @@ class SessionRunner:
             for jid in done:
                 self._jobs.pop(jid, None)
             self._jobs[job.job_id] = job
+        # The branch this turn was admitted on, taken from the ticket that
+        # admitted it. No second lookup: the ticket already resolved this, and
+        # asking the Store again during a failure is precisely the query most
+        # likely to fail alongside it.
+        job.branch_id = ticket.branch_id or st.branch_id or ""
 
         def _target() -> None:
+            # The scope wraps the handlers as well as the call: the note exists
+            # so the `except` below can amend the row `run_message` already
+            # wrote, and a context manager closing as the exception unwinds
+            # would take it away a moment before that handler runs.
+            self._enter_turn_scope(job.job_id)
+            # The turn runs on this thread under the id its ticket was issued
+            # with. `carry_context` copies whatever the request thread had --
+            # which is nothing for a direct submit -- so without this
+            # `run_message` mints a second id and the socket disagrees with the
+            # 202 about which request just failed.
+            token = set_correlation_id(job.request_id)
+            #: Filled inside the lease, published after it. Both halves
+            #: matter: the side effects must happen while this turn still owns
+            #: the session, and the completion must not become visible while
+            #: its ticket is still active -- `runner.is_running` reads both, so
+            #: finishing inside the lease opens a window where a done job and a
+            #: live ticket disagree.
+            outcome: dict = {}
             try:
+                # Every durable and broadcast effect this turn owes -- the
+                # projection, the persisted row, the frame's status, the prose
+                # and the terminal event -- happens while the lease is still
+                # held. `job.finish` deliberately does NOT: publishing the
+                # outcome inside the lease would set `job.done` while the
+                # ticket is still active, and `runner.is_running` reads both.
+                # The side effects used to run after the `with` closed, so the
+                # next turn was already promoted and had written `processing`
+                # when A's `update_frame(status="failed")` landed: the durable
+                # status said failed while B was running, `/status` and the
+                # session list contradicted the socket, and crash recovery
+                # would have treated B as the failure.
+                #
+                # An owner check before the write cannot fix it -- B can be
+                # promoted between the check and the write. Only holding the
+                # lease can.
                 with self.executions.admitted(ticket, cancel_event=st.cancel):
-                    result = self.run_message(
-                        root_frame_id,
-                        project_id,
-                        user_text,
-                        model,
-                        plan,
-                        annos,
-                        explore,
-                    )
-                result.setdefault("job_id", job.job_id)
-                result.setdefault("execution_id", ticket.execution_id)
-                result.setdefault("owner", ticket.owner.as_dict())
-                job.finish(result=result)
+                    try:
+                        result = self.run_message(
+                            root_frame_id,
+                            project_id,
+                            user_text,
+                            model,
+                            plan,
+                            annos,
+                            explore,
+                            # What this item was accepted under, carried from the
+                            # request thread rather than re-read from the frame.
+                            frozen_binding=(
+                                (job.model_profile_id, job.model_profile_revision)
+                                if job.model_profile_id
+                                else None
+                            ),
+                        )
+                        result.setdefault("job_id", job.job_id)
+                        result.setdefault("execution_id", ticket.execution_id)
+                        result.setdefault("owner", ticket.owner.as_dict())
+                        outcome["result"] = result
+                    except ExecutionCancelled:
+                        # Handled once, outside the lease. A cancellation raised
+                        # *by* `admitted` -- a queued item stopped before it was
+                        # ever admitted -- never reaches this clause at all, so
+                        # projecting here would either miss that case or do it
+                        # twice.
+                        raise
+                    except Exception as e:  # noqa: BLE001
+                        traceback.print_exc()
+                        emit = self.hub.emitter(root_frame_id)
+                        message = job.project(e, "web:message")
+                        self._persist_outer_failure(root_frame_id, job, message)
+                        self._best_effort(
+                            "frame_status",
+                            lambda: self.store.update_frame(
+                                root_frame_id, status="failed"
+                            ),
+                        )
+                        self._best_effort(
+                            "prose",
+                            lambda: (
+                                emit(
+                                    {
+                                        "type": "text_reset",
+                                        "frame_id": root_frame_id,
+                                        # Same identity as the terminal event: a
+                                        # failure that arrives after the next turn has
+                                        # started would otherwise wipe that turn's
+                                        # stream and print its predecessor's error into
+                                        # it.
+                                        **(
+                                            {"execution_id": job.execution_id}
+                                            if job.execution_id
+                                            else {}
+                                        ),
+                                    }
+                                ),
+                                emit(
+                                    {
+                                        "type": "text_chunk",
+                                        "frame_id": root_frame_id,
+                                        "block_type": "text",
+                                        "chunk": f"\n\n_Error: {message}_\n",
+                                        **(
+                                            {"execution_id": job.execution_id}
+                                            if job.execution_id
+                                            else {}
+                                        ),
+                                    }
+                                ),
+                            ),
+                        )
+                        self._best_effort(
+                            "terminal",
+                            lambda: emit(
+                                self._terminal_failure_event(root_frame_id, job)
+                            ),
+                        )
+                        outcome["error"] = message
+                        # Re-raised after the side effects, so the coordinator
+                        # marks this ticket FAILED. Swallowing it left the lease
+                        # exiting cleanly: the execution log read
+                        # queued -> running -> completed while the job and the
+                        # socket both said failed.
+                        outcome["handled"] = e
+                        raise
             except ExecutionCancelled as e:
-                job.finish(
-                    result={
-                        "status": "cancelled",
-                        "frame_id": root_frame_id,
-                        "job_id": job.job_id,
-                        "execution_id": ticket.execution_id,
-                        "owner": ticket.owner.as_dict(),
-                        "reason": str(e),
-                    }
-                )
+                # First: `ExecutionCancelled` is an `Exception`, so the generic
+                # clause below would otherwise swallow every cancellation and
+                # report it as a failure.
+                if not job.done.is_set():
+                    job.finish(
+                        result={
+                            "status": "cancelled",
+                            "frame_id": root_frame_id,
+                            "job_id": job.job_id,
+                            "execution_id": ticket.execution_id,
+                            "owner": ticket.owner.as_dict(),
+                            "reason": str(e),
+                        }
+                    )
             except Exception as e:  # noqa: BLE001
-                traceback.print_exc()
-                emit = self.hub.emitter(root_frame_id)
-                try:
-                    self.store.update_frame(root_frame_id, status="failed")
-                    emit({"type": "text_reset", "frame_id": root_frame_id})
-                    emit(
-                        {
-                            "type": "text_chunk",
-                            "frame_id": root_frame_id,
-                            "block_type": "text",
-                            "chunk": f"\n\n_Error: {e}_\n",
-                        }
-                    )
-                    emit(
-                        {
-                            "type": "frame_update",
-                            "frame_id": root_frame_id,
-                            "status": "failed",
-                        }
-                    )
-                except Exception:
-                    pass
-                job.finish(error=str(e))
+                if outcome.get("handled") is not e:
+                    # Not ours. The lease itself refused, or something outside
+                    # the inner handler failed -- project it once, here.
+                    outcome["error"] = job.project(e, "web:message")
+            finally:
+                if not job.done.is_set():
+                    # The ticket is released by now, so `runner.is_running`
+                    # and `job.done` cannot disagree.
+                    if "result" in outcome:
+                        job.finish(result=outcome["result"])
+                    elif outcome.get("error"):
+                        job.finish(error=outcome["error"])
+                self._exit_turn_scope(job.job_id)
+                reset_correlation_id(token)
 
-        t = threading.Thread(
-            target=carry_context(_target),
-            name=f"openai4s-turn-{root_frame_id}",
-            daemon=True,
-        )
-        job.thread = t
-        t.start()
+        try:
+            # Durable correlation BEFORE the worker exists.
+            #
+            # The admission ledger used to be stamped with this turn's request
+            # and job ids *after* `submit_message` returned -- so a transient
+            # write failure produced a 202 and a running turn whose ledger row
+            # still carried no correlation at all. That is byte-for-byte the
+            # shape a synchronous refusal leaves, and it is the one distinction
+            # a client whose 202 was lost has to make: resending is the right
+            # answer to a refusal and the wrong answer to an accepted turn.
+            #
+            # Here, and inside this `try`, so a failure takes the same
+            # unstarted-job path as a failed `Thread.start`: nothing runs, the
+            # pins go back, and the caller is told the turn was not accepted
+            # rather than being handed an accepted-but-uncorrelated job.
+            if on_admitted is not None:
+                on_admitted(job)
+            t = threading.Thread(
+                target=carry_context(_target),
+                name=f"openai4s-turn-{root_frame_id}",
+                daemon=True,
+            )
+            job.thread = t
+            t.start()
+        except BaseException as error:
+            self._abort_unstarted_job(job, ticket, error)
+            raise
         return job
+
+    def reconcile_admission(
+        self, root_frame_id: str, reservation_id: str
+    ) -> dict | None:
+        """What happened to one admission, for a client whose answer was lost.
+
+        Scoped by frame: a reservation id travels in a response, so it is a
+        value a caller holds rather than a capability. Returns None when this
+        session has no such admission, which is the same answer a caller
+        guessing an id deserves.
+        """
+        record = self.store.get_admission(reservation_id, root_frame_id=root_frame_id)
+        if record is None:
+            return None
+        # Derived from the pins, not read off the ledger.
+        #
+        # The ledger records intent and is written by the same request that can
+        # fail: an update fault after the consume leaves it saying `reserved`
+        # while the pins are already `sent`, and a client asking "what
+        # happened" would be told the opposite of the truth. The annotations
+        # are the authority -- they are what the turn actually consumed -- so
+        # the state is computed from them, and the ledger supplies correlation.
+        ids = list(record["annotation_ids"] or [])
+        state = record["state"]
+        if state not in _TERMINAL_ADMISSION_STATES and ids:
+            # Row-derived, and only here. The terminal states are written in
+            # the same transaction as the row change they describe, so they are
+            # evidence about what the *turn* did and stay true afterwards: a
+            # pin that was sent and is later resolved, dismissed or deleted
+            # does not un-send the message it went out on. Deriving `sent` from
+            # `status == 'sent'` reported exactly that as `released`, telling a
+            # client its comments were never taken when the model had already
+            # answered them.
+            #
+            # `reserved` and `pending` are the states a fault can leave stale,
+            # and there the rows really are the authority.
+            present = [
+                row for row in (self.store.get_annotation(a) for a in ids) if row
+            ]
+            if any(
+                row.get("reservation_id") == reservation_id
+                and row.get("status") == "reserved"
+                for row in present
+            ):
+                state = "pending"
+            elif not present:
+                state = "unknown"
+            elif all(
+                row.get("status") in _CONSUMED_ANNOTATION_STATES for row in present
+            ):
+                state = "sent"
+            elif all(row.get("status") == "open" for row in present):
+                state = "released"
+            else:
+                state = "unknown"
+        return {
+            "state_from_ledger": record["state"],
+            "reservation_id": record["reservation_id"],
+            "state": state,
+            "annotations": ids,
+            "request_id": record["request_id"],
+            "job_id": record["job_id"],
+        }
 
     def submit_review(self, root_frame_id: str, project_id: str) -> MessageJob:
         return self.reviews.submit(root_frame_id, project_id)
@@ -4655,21 +5231,34 @@ class SessionRunner:
         )
 
     def _pinned_llm_config(self, st: "SessionState | None"):
-        """The configuration this session named, or None to use the active one.
+        """The configuration this session named, or None when it named none.
 
-        Conservative on purpose: anything unresolvable — no binding, a profile
-        that went away, a revision that is not in the history, a missing
-        credential — returns None and leaves the previous behaviour in place.
-        A pin that cannot be honoured must not become a turn that cannot run,
-        and `bind_model_revision` already refuses the cases a user should be
-        asked about.
+        `None` now means exactly one thing: there is no pin, so the active
+        profile is the right answer. It used to also mean "there is a pin and it
+        cannot be honoured", and the caller could not tell the two apart -- so a
+        profile that went away, a revision missing from the history or a revoked
+        credential silently ran the turn on whichever profile happens to be
+        active, while the frame went on recording the pinned one. Recorded as A,
+        executed as B. That is precisely what D2 exists to prevent, and being
+        "conservative" about it meant preferring a wrong answer to a refusal.
+
+        A pin that cannot be honoured now raises `GatewayError(409,
+        model_revision_unavailable)`, which `POST /frames/{id}/model-binding`
+        already answers.
         """
         if st is None or not getattr(st, "root_frame_id", ""):
             return None
         try:
-            frame = self.store.get_frame(st.root_frame_id) or {}
-            profile_id = str(frame.get("model_profile_id") or "")
-            revision = int(frame.get("model_profile_revision") or 0)
+            frozen = getattr(st, "frozen_model_binding", None)
+            if frozen:
+                # What this turn was accepted under. Read before the frame on
+                # purpose: an item that has been sitting in the queue must not
+                # adopt a pin the user changed after it was admitted.
+                profile_id, revision = str(frozen[0] or ""), int(frozen[1] or 0)
+            else:
+                frame = self.store.get_frame(st.root_frame_id) or {}
+                profile_id = str(frame.get("model_profile_id") or "")
+                revision = int(frame.get("model_profile_revision") or 0)
             if not profile_id or revision <= 0:
                 return None
             profile = next(
@@ -4680,69 +5269,96 @@ class SessionRunner:
                 ),
                 None,
             )
+            unavailable = GatewayError(
+                409,
+                "this session is pinned to a model configuration that is no "
+                "longer usable; rebind it to continue",
+                "model_revision_unavailable",
+            )
             if profile is None:
-                return None
+                raise unavailable
             recorded = ModelProfileService.revision_config(profile, revision)
             if not recorded:
-                return None
+                raise unavailable
             service = ModelProfileService(
                 self.store, self.cfg, providers=lambda: PROVIDERS
             )
             api_key = service.resolve_key(profile)
             if not api_key:
-                return None
+                # A revoked or cleared key. Falling through to the active profile
+                # here is the substitution this method exists to stop.
+                raise unavailable
             from dataclasses import replace
 
             return replace(
                 self.cfg.llm,
                 provider=str(recorded.get("provider") or "") or self.cfg.llm.provider,
                 base_url=str(recorded.get("base_url") or "") or None,
-                # The composer's per-session choice is an explicit act by the
-                # user and still wins over the recorded model name.
-                model=str(st.model or recorded.get("model") or ""),
+                # The recorded model, not `st.model`. This used to prefer
+                # `st.model` -- the request's bare `model` string, which the
+                # browser sends on *every* message -- so provider, endpoint and
+                # credential came from the pin while the model name came from the
+                # header selector: a configuration that exists in no profile.
+                # Changing model is a rebind, not a field on a message.
+                model=str(recorded.get("model") or ""),
                 api_key=api_key,
             )
-        except Exception:  # noqa: BLE001 — never let provenance break a turn
-            return None
+        except GatewayError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            # Not swallowed: an unreadable pin is a pin that cannot be honoured,
+            # and the previous blanket `return None` turned every one of those
+            # into a silent dispatch somewhere else.
+            raise GatewayError(
+                409,
+                "this session's pinned model configuration could not be read; "
+                "rebind it to continue",
+                "model_revision_unavailable",
+            ) from error
 
     @staticmethod
-    def _friendly_error(exc: Exception) -> str:
-        """Turn a raw LLM/tool exception into human-readable text + next step."""
-        msg = str(exc)
-        low = msg.lower()
-        if (
-            "401" in msg
-            or "invalid_api_key" in low
-            or "unauthorized" in low
-            or "invalid api key" in low
-        ):
+    def _friendly_error(exc: Exception, safe: dict | None = None) -> str:
+        """The next step to offer, chosen from CONTROLLED signals only.
+
+        This used to classify by substring-matching `str(exc)` and to end with
+        `f"**这一轮出错了。** {msg[:300]}"`. Both halves are the leak Plan item
+        16 is about, and the tail is the worse one: it reaches a `text_chunk`,
+        the persisted assistant message, and `GET /frames/{id}/messages`, so a
+        provider error echoing a credential, a `PermissionError` naming an
+        absolute path, or a subprocess failure carrying an argv was published
+        on three surfaces and then kept forever.
+
+        Branches now read the exception's type and its `status`/`error_code` --
+        fields this codebase sets deliberately. The fallback is the projector's
+        own sentence, which is author-written (a `GatewayError`) or generic by
+        construction, never the exception's text.
+        """
+        from openai4s.llm.models import LLMError, TransportError
+
+        status = getattr(exc, "status", None)
+        code = str(getattr(exc, "error_code", "") or "")
+        if status == 401 or code in ("invalid_api_key", "unauthorized"):
             return (
                 "**LLM 认证失败(API Key 无效或缺失)。** 请在 Customize → Models "
                 "填写有效的 API Key,或在 `.env` 设置 `OPENAI4S_LLM_API_KEY` 后重启。"
             )
-        if "timed out" in low or "timeout" in low:
+        if status == 429 or code == "rate_limit":
+            return "**触发限流(429)。** 请稍后重试或更换模型。"
+        if status == 408:
             return (
                 "**LLM 请求超时。** 可能是网络不稳或模型响应慢——请重试;必要时在 "
                 "`.env` 调大 `OPENAI4S_LLM_TIMEOUT`。"
             )
-        if (
-            "connection" in low
-            or "failed to establish" in low
-            or "getaddrinfo" in low
-            or "name or service not known" in low
-        ):
+        if isinstance(exc, TransportError) and status is None:
+            # A transport error with no HTTP status never reached the service:
+            # it is a connect, DNS, or read failure by construction.
             return (
-                "**无法连接到 LLM 服务。** 请检查网络与 `OPENAI4S_LLM_BASE_URL` "
-                "(Customize → Network 可确认联网是否开启)。"
+                "**无法连接到 LLM 服务(或请求中断)。** 请检查网络与 "
+                "`OPENAI4S_LLM_BASE_URL`(Customize → Network 可确认联网是否开启)。"
             )
-        if "429" in msg or "rate limit" in low:
-            return "**触发限流(429)。** 请稍后重试或更换模型。"
-        if "no api key" in low or "api key" in low:
-            return (
-                "**未配置 API Key。** 请在 Customize → Models 填写,或设置 "
-                "`OPENAI4S_LLM_API_KEY`。"
-            )
-        return f"**这一轮出错了。** {msg[:300]}"
+        if isinstance(exc, LLMError):
+            return "**LLM 调用失败。** 请在 Customize → Models 确认模型与 API Key " "配置后重试。"
+        return "**这一轮出错了。** " + str((safe or {}).get("error") or INTERNAL_ERROR_MESSAGE)
 
     def _auto_review_enabled(self, root_frame_id: str) -> bool:
         return self.reviews.auto_enabled(root_frame_id)
@@ -4797,7 +5413,13 @@ class SessionRunner:
         try:
             from openai4s import llm
 
-            if not llm.supports_vision(self._llm_cfg(st).provider):
+            # The exact provider+endpoint+model triple, not the provider. A
+            # provider-level answer describes the provider's DEFAULT model, so a
+            # session pinned to a text-only model on a vision-capable provider
+            # passed this pre-flight and was then refused by chat()'s own
+            # _guard_vision -- losing the whole turn instead of falling back to
+            # the text the user actually wrote.
+            if not llm.supports_vision_for(self._llm_cfg(st)):
                 return text
         except Exception:  # noqa: BLE001 — never break a turn over the image
             return text
@@ -4816,11 +5438,16 @@ class SessionRunner:
                 )
                 continue
             try:
-                path = self.store.resolve_artifact_path(art_id)
-                if not path or not _is_raster_image(path):
+                raw, problem = _pinned_image_bytes(self.store, pins)
+                if problem:
+                    dropped.append({"name": name, **problem})
                     continue
-                data, mime = _figure_with_pins(path, pins)
+                data, mime = _figure_with_pins(raw, pins)
                 if not data:
+                    # PIL absent, or bytes that sniffed as a raster and still
+                    # would not decode. Reported rather than skipped: the pin
+                    # existed, so its absence has to be accounted for.
+                    dropped.append({"name": name, "reason": "decode_failed"})
                     continue
                 # Measured after the pin markers are drawn, because that is
                 # what actually goes on the wire -- the re-encode can be larger
@@ -4847,7 +5474,6 @@ class SessionRunner:
                     continue
                 attached += 1
                 total_bytes += size
-                name = pins[0].get("artifact_name") or "figure"
                 parts.append(
                     {
                         "type": "text",
@@ -4860,6 +5486,7 @@ class SessionRunner:
                 parts.append({"type": "image", "data": data, "mime": mime})
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
+                dropped.append({"name": name, "reason": "decode_failed"})
         if dropped:
             # Told to the user, and told to the model. The user needs to know
             # their pin was not sent; the model needs to know the picture it is
@@ -4872,14 +5499,24 @@ class SessionRunner:
                     "problems": dropped[:8],
                 }
             )
-            names = "、".join(item["name"] for item in dropped[:8])
+            # The reason travels with the name. The note used to assert a budget
+            # overrun for every case, so a figure the user had deleted, or one
+            # overwritten after it was pinned, was reported to the model as "too
+            # big" -- a wrong explanation, which is worse than none because the
+            # model then relays it to the user.
+            names = "、".join(
+                f"{item['name']}({item['reason']})" for item in dropped[:8]
+            )
             parts.append(
                 {
                     "type": "text",
                     "text": (
-                        "[System note: the following pinned figures exceeded "
-                        f"this turn's attachment budget and were NOT sent: {names}. "
-                        "Do not describe them; say they were not received.]"
+                        "[System note: the following pinned figures were NOT "
+                        f"sent, each with the reason: {names}. Do not describe "
+                        "them; say they were not received. `version_changed` "
+                        "means the file was overwritten after the user pinned "
+                        "it, so the image they annotated no longer exists; ask "
+                        "before acting on those pins.]"
                     ),
                 }
             )
@@ -4913,13 +5550,26 @@ class SessionRunner:
             profile = next(
                 (item for item in profiles if item.get("id") == bound_id), None
             )
-            usable = (
-                profile is not None
-                and ModelProfileService.revision_config(
-                    profile, int(bound_revision or 0)
-                )
-                is not None
+            recorded = (
+                ModelProfileService.revision_config(profile, int(bound_revision or 0))
+                if profile is not None
+                else None
             )
+            usable = profile is not None and recorded is not None
+            if usable and not profile.get("deleted_at"):
+                # The credential too, not just the revision's existence. Without
+                # this a revoked key passed the bind and was only discovered at
+                # dispatch, where the old code answered by silently using the
+                # active profile instead.
+                service = ModelProfileService(
+                    self.store, self.cfg, providers=lambda: PROVIDERS
+                )
+                if not service.resolve_key(profile):
+                    usable = False
+            elif usable:
+                # A tombstoned profile keeps its revisions so history stays
+                # readable, but it may not be bound to going forward.
+                usable = False
             if not usable:
                 raise GatewayError(
                     409,
@@ -4969,6 +5619,21 @@ class SessionRunner:
                     "which configuration this session continues under",
                     "model_revision_ambiguous",
                 )
+            # Zero matches, and this is the case that fell through to the active
+            # profile below -- which is exactly what the comment above this
+            # block forbids. This session ran under a configuration that is not
+            # in the profile list any more, so nothing here knows which one it
+            # was. Binding it to whatever happens to be active now does not
+            # recover the answer; it writes a different one and stamps a
+            # revision on it, so the session's own record then claims it ran
+            # under a configuration it never used.
+            #
+            # Unbound is the honest state and an already-supported one: it is
+            # what the `active is None` branch below returns, for an install
+            # driven entirely by `.env`. The session keeps running on the
+            # global configuration and `POST /frames/{id}/model-binding` is
+            # there when the user wants to name one.
+            return {"model_profile_id": "", "model_profile_revision": 0, "bound": False}
 
         active_id = str(self.store.get_setting("active_model_profile") or "")
         active = next((item for item in profiles if item.get("id") == active_id), None)
@@ -5002,6 +5667,20 @@ class SessionRunner:
             "bound": True,
         }
 
+    def freeze_model_binding(self, root_frame_id: str) -> dict:
+        """Bind if needed and return the exact pair to carry on a ticket.
+
+        `bind_model_revision` already returns this, but going through a named
+        method makes the freeze a thing callers ask for rather than a side effect
+        they have to remember to read -- which is how the queued case came to have
+        the binding written to the frame and nowhere the item could see it.
+        """
+        binding = self.bind_model_revision(root_frame_id)
+        return {
+            "model_profile_id": str(binding.get("model_profile_id") or ""),
+            "model_profile_revision": int(binding.get("model_profile_revision") or 0),
+        }
+
     def run_message(
         self,
         root_frame_id: str,
@@ -5011,16 +5690,37 @@ class SessionRunner:
         plan: bool = False,
         annos: list | None = None,
         explore: bool = False,
+        frozen_binding: tuple[str, int] | None = None,
     ) -> dict:
         st = self._state(root_frame_id, project_id)
-        # Before anything runs: a session continues under a configuration it
-        # names, or it stops and asks. Raises 409 for a dangling pin.
-        self.bind_model_revision(root_frame_id)
+        if frozen_binding:
+            # A queued item runs under what it was admitted with. Re-binding here
+            # is what let a follow-up adopt a pin the user changed after 202 was
+            # returned; the frame is no longer consulted for this turn.
+            st.frozen_model_binding = (
+                str(frozen_binding[0]),
+                int(frozen_binding[1]),
+            )
+        else:
+            st.frozen_model_binding = None
+            # A direct turn: the frame is the freshest answer there is. Raises 409
+            # for a dangling pin, before anything runs.
+            self.bind_model_revision(root_frame_id)
         if model:
             st.model = model
         st.plan = bool(plan)
         # plan mode wins: a plan turn never executes, so explore is meaningless
         st.explore = bool(explore) and not st.plan
+        # Frozen above the `processing` event rather than in the failure
+        # handler, because that event is how a *queued* turn announces itself:
+        # its 202 resolved while an earlier turn still owned the screen, so the
+        # socket is the only place its id can become current.
+        # `or new_correlation_id()`: a direct call -- the CLI, a recovery
+        # replay, a test -- has no HTTP request behind it, and an empty id on
+        # the `processing` and terminal events is a field a client must special
+        # case. Under a job this is the contextvar the 202 already read, so the
+        # two are the same string by construction.
+        turn_request_id = correlation_id() or new_correlation_id()
         emit = self.hub.emitter(root_frame_id)
         with self._session_execution(
             st,
@@ -5028,6 +5728,7 @@ class SessionRunner:
             owner_id=f"direct-{uuid.uuid4().hex[:12]}",
             reason="user message",
         ) as execution:
+            self._bind_execution_to_turn(getattr(execution, "execution_id", ""))
             self.recovery.touch(st)
             # Tool-only and plan turns need the control plane and provider
             # history, not a scientific worker.  A CodeCell acquires its kernel
@@ -5040,6 +5741,19 @@ class SessionRunner:
                     "type": "frame_update",
                     "frame_id": root_frame_id,
                     "status": "processing",
+                    # The same id the 202 returned. A queued follow-up's 202
+                    # resolves while the previous turn still owns the screen,
+                    # so this event -- "your turn is running now" -- is the
+                    # moment its id becomes the current one.
+                    "request_id": turn_request_id,
+                    # And which execution it is, so a terminal event arriving
+                    # out of order can be told from this turn's own. A client
+                    # may reuse `X-Request-Id`; execution ids are minted here.
+                    **(
+                        {"execution_id": execution.execution_id}
+                        if getattr(execution, "execution_id", "")
+                        else {}
+                    ),
                 }
             )
             # first user message names the session. The truncation is set at once
@@ -5070,7 +5784,19 @@ class SessionRunner:
                 branch_id=st.branch_id,
             )
             # resolve @filename references → inject the artifact content (M4)
-            resolved = self._resolve_mentions(st, user_text)
+            resolved, message_refs = self._resolve_mentions(st, user_text)
+            if message_refs:
+                # Stamped after the row exists, not passed at INSERT: resolving
+                # can materialise a sibling session's file into this workspace,
+                # and the message plus its fork checkpoint above are the branch
+                # point that has to be durable before anything writes. Durable
+                # here is what makes the chip survive reopen, branch and export
+                # -- and what records which version the model actually read,
+                # which the `@name#v-id` text cannot say after a copy.
+                self.store.update_message_metadata(
+                    stored_user_message["message_id"],
+                    {"artifact_refs": message_refs},
+                )
             remote_ctx = _remote_gpu_runtime_context(user_text)
             if remote_ctx:
                 resolved = (
@@ -5116,6 +5842,22 @@ class SessionRunner:
             assistant_visible: list[dict] = []
             status = "completed"
             err_text: str | None = None
+            # What a client needs to act on a failure, captured where the
+            # failure actually lands. `run_message` catches its own exceptions
+            # and *returns* a failed dict, so `MessageJob.project` -- which is
+            # where these three were being filled in -- never runs for any
+            # failure a user can reach. Only a fault outside this try reached
+            # it, which is to say almost none of them.
+            # Frozen at the top of the turn, not inside a handler. The Plan
+            # asks every HTTP/WS/job/message response to carry a local request
+            # id, and a turn can end `failed` with no exception at all --
+            # `max_turns` is the common one -- so deriving the id from an
+            # `except` clause would leave the most ordinary failure in the
+            # product with nothing to quote on any of its three surfaces.
+            # Filled only by the exception path: a code the projector chose,
+            # and the retry veto if it read one. The id above is not in here,
+            # because it exists whether or not anything was raised.
+            failure_meta: dict[str, object] = {}
             loop_reason: str | None = None
             try:
                 st.dispatcher.last_output = None
@@ -5136,6 +5878,9 @@ class SessionRunner:
                 )
                 if loop_reason == "max_turns":
                     status = "failed"
+                    # A stable, non-exception code: this failure is a product
+                    # outcome, not an error, and it must still be nameable.
+                    failure_meta["code"] = "max_turns"
                     err_text = (
                         "Agent reached its configured turn limit without calling "
                         "host.submit_output(...)."
@@ -5156,7 +5901,25 @@ class SessionRunner:
                     )
             except Exception as e:  # noqa: BLE001
                 status = "failed"
-                err_text = self._friendly_error(e)
+                # Projected ONCE, before anything is shown or stored, and every
+                # public field below is built from what it returned. The
+                # projector is the only place that decides a code, reads the
+                # retry veto, and writes the operator diagnostic -- calling it
+                # after composing the prose would mean the prose came from
+                # somewhere else, which is exactly how `str(exc)` got onto
+                # three surfaces.
+                safe, _status_code = public_exception(
+                    e, surface="web:turn", request_id=correlation_id()
+                )
+                err_text = self._friendly_error(e, safe)
+                failure_meta = {
+                    "request_id": str(safe.get("request_id") or correlation_id()),
+                    "code": str(safe.get("code") or "internal_error"),
+                }
+                if safe.get("output_committed"):
+                    # Only when true. Absent is "no claim"; `False` would
+                    # assert a safety nothing here can know.
+                    failure_meta["output_committed"] = True
                 try:
                     action_ledger.append_terminal(
                         "runtime_error",
@@ -5235,6 +5998,21 @@ class SessionRunner:
             # one of the prose blocks — persist it as a trailing assistant message
             # (stamped now, so it lands after the last step) so it survives reload.
             # C2: an error must never be silent on reload.
+            # One id on every terminal surface, a code whenever this turn
+            # failed for any reason. `output_committed` only ever appears when
+            # the projector actually read it -- absent is "no claim".
+            turn_identity: dict[str, object] = {
+                "request_id": turn_request_id,
+                **(
+                    {"execution_id": execution.execution_id}
+                    if getattr(execution, "execution_id", "")
+                    else {}
+                ),
+            }
+            if status == "failed":
+                turn_identity["code"] = str(failure_meta.get("code") or "turn_failed")
+                if failure_meta.get("output_committed"):
+                    turn_identity["output_committed"] = True
             tail = ""
             if status == "failed" and err_text:
                 tail = err_text
@@ -5243,13 +6021,34 @@ class SessionRunner:
             elif status == "completed" and loop_reason != "submitted" and not had_prose:
                 tail = "_(no textual response)_"
             if tail:
-                self.store.add_message(
+                tail_row = self.store.add_message(
                     root_frame_id=root_frame_id,
                     branch_id=st.branch_id,
                     role="assistant",
                     content=tail,
                     frame_id=root_frame_id,
+                    # Reopening a session rebuilt the failure from this row's
+                    # prose alone, so the support id and the retry veto were
+                    # lost the moment the socket event scrolled away -- and a
+                    # user who closes a tab after a failure is the likeliest
+                    # person to need both. Three scalar fields the projector
+                    # already decided are safe to publish; nothing derived from
+                    # the exception itself goes in here.
+                    metadata=(
+                        {"failure": dict(turn_identity)} if status == "failed" else None
+                    ),
                 )
+                if status == "failed":
+                    # So the outer handler amends this row instead of adding a
+                    # second one. Keyed by request *and* branch: "some failure
+                    # already exists" is a different question, and answering it
+                    # would swallow a genuinely separate failure on a sibling.
+                    self._remember_terminal_failure(
+                        turn_request_id,
+                        st.branch_id or root_frame_id,
+                        tail_row.get("message_id"),
+                        turn_identity,
+                    )
             if (
                 auto_review
                 and status == "completed"
@@ -5281,6 +6080,13 @@ class SessionRunner:
                     else f"persisting {status} result"
                 ),
             )
+            if status == "failed":
+                # While the lease is still held. A turn that fails inside this
+                # method returns normally -- the handler above caught the
+                # exception and reported it -- so without this the coordinator
+                # saw a clean exit and logged `completed` for a turn every
+                # other surface calls failed.
+                self.executions.mark_failed(execution, reason="the turn failed")
             self.recovery.touch(st)
             response = {
                 "status": status,
@@ -5288,14 +6094,24 @@ class SessionRunner:
                 "execution_id": execution.execution_id,
                 "owner": execution.owner.as_dict(),
                 "error": err_text if status == "failed" else None,
+                **turn_identity,
             }
         # For direct (non-MessageJob) calls the coordinator completes while the
         # context exits. Keep the historical terminal frame event last; queued
         # MessageJobs still complete their outer ticket immediately afterward.
-        emit({"type": "frame_update", "frame_id": root_frame_id, "status": status})
+        emit(
+            {
+                "type": "frame_update",
+                "frame_id": root_frame_id,
+                "status": status,
+                # The stream is the surface the user is watching, and it is the
+                # one that said only "failed".
+                **turn_identity,
+            }
+        )
         return response
 
-    def _resolve_mentions(self, st: SessionState, text: str) -> str:
+    def _resolve_mentions(self, st: SessionState, text: str) -> tuple[str, list[dict]]:
         """Append the content of any @-referenced artifact to the prompt.
 
         The resolution itself lives in `server/artifact_refs.py`. What used to
@@ -5305,7 +6121,14 @@ class SessionRunner:
         about a file the model never received.
 
         A failed reference is now surfaced to the session rather than swallowed.
+
+        The second return value is the structured record of what was actually
+        sent -- one `ArtifactRef` per reference whose bytes reached the prompt.
+        It exists because the token in the message text is not enough: it names
+        the version the *user* picked, which is not the version the model read
+        once a sibling session's file has been copied in.
         """
+        sent: list[dict] = []
         resolved, problems = artifact_refs.resolve_message_refs(
             text,
             store=self.store,
@@ -5314,6 +6137,7 @@ class SessionRunner:
             materialise=lambda version_id, name: self._materialise_for_message(
                 st, version_id, name
             ),
+            on_resolved=sent.append,
         )
         if problems:
             # Emitted, not raised: the turn should still run. A user who
@@ -5326,21 +6150,26 @@ class SessionRunner:
                     "problems": problems[:8],
                 }
             )
-        return resolved
+        return resolved, sent
 
     def _materialise_for_message(
         self, st: SessionState, version_id: str, name: str
     ) -> dict:
         """Bring a sibling session's version into this one, at send time.
 
-        Goes through the same Host data service a cell would use, so the scope
-        rule and the atomic write have exactly one implementation.
+        Through the dispatcher, not through `_data_service` directly. Reaching
+        past `HostDispatcher.__call__` for the private attribute did give the
+        scope rule and the atomic write one implementation -- which is what the
+        old docstring claimed -- but it skipped everything the dispatcher is:
+        the permission gate, `log_host_call`, and the step event. So the copy
+        was unapproved and unaudited on this path even once the Host RPC path
+        was gated, and a `@mention` in model-authored plan text reaches it.
         """
-        service = getattr(st.dispatcher, "_data_service", None)
-        if service is None:
+        dispatcher = st.dispatcher
+        if dispatcher is None:
             raise RuntimeError("this session cannot materialise artifacts")
-        return service.materialise_artifact(
-            {"version_id": version_id, "filename": name}
+        return dispatcher(
+            "materialise_artifact", [{"version_id": version_id, "filename": name}]
         )
 
     def _context_archive_metadata(
@@ -6030,9 +6859,16 @@ class SessionRunner:
         return self.plans.execution_seed(plan)
 
     def run_plan_execution(
-        self, root_frame_id: str, project_id: str, model: str | None = None
+        self,
+        root_frame_id: str,
+        project_id: str,
+        model: str | None = None,
+        *,
+        claimed_plan_id: str | None = None,
     ) -> dict:
-        return self.plans.run_execution(root_frame_id, project_id, model)
+        return self.plans.run_execution(
+            root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
+        )
 
     def run_plan_revision(
         self,
@@ -6044,24 +6880,72 @@ class SessionRunner:
         return self.plans.run_revision(root_frame_id, project_id, changes, model)
 
     def submit_plan_approval(
-        self, root_frame_id: str, project_id: str, model: str | None = None
+        self,
+        root_frame_id: str,
+        project_id: str,
+        model: str | None = None,
+        *,
+        claimed_plan_id: str | None = None,
     ) -> "MessageJob":
         return self._spawn_job(
             root_frame_id,
-            lambda: self.run_plan_execution(root_frame_id, project_id, model),
+            lambda: self.run_plan_execution(
+                root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
+            ),
+            project_id=project_id,
+            reason="plan approval",
+            claimed_plan_id=claimed_plan_id,
+            # What the route claimed *from*, which is where a never-started
+            # worker has to put it back. `cancelled_plan_status` is the
+            # cancellation terminal and is a different question: rolling an
+            # approved plan back to `paused` would strand it, because approve
+            # swaps against `draft`.
+            claimed_from_status="draft",
+            # Approving a draft and then cancelling leaves work to finish, so
+            # the plan is paused rather than back to `draft`: the steps it has
+            # already run are real, and resume is the operation that continues
+            # them. `run_execution` draws the same line once the turn started.
+            cancelled_plan_status="paused",
         )
 
+    def claim_plan_approval(self, root_frame_id: str) -> dict:
+        """Compare-and-swap the draft into `executing` for exactly one caller."""
+        return self.plans.claim_approval(root_frame_id)
+
+    def claim_plan_resume(self, root_frame_id: str) -> dict:
+        """Compare-and-swap the plan into `executing` for exactly one caller."""
+        return self.plans.claim_resume(root_frame_id)
+
     def run_plan_resume(
-        self, root_frame_id: str, project_id: str, model: str | None = None
+        self,
+        root_frame_id: str,
+        project_id: str,
+        model: str | None = None,
+        *,
+        claimed_plan_id: str | None = None,
     ) -> dict:
-        return self.plans.resume_execution(root_frame_id, project_id, model)
+        return self.plans.resume_execution(
+            root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
+        )
 
     def submit_plan_resume(
-        self, root_frame_id: str, project_id: str, model: str | None = None
+        self,
+        root_frame_id: str,
+        project_id: str,
+        model: str | None = None,
+        *,
+        claimed_plan_id: str | None = None,
     ) -> "MessageJob":
         return self._spawn_job(
             root_frame_id,
-            lambda: self.run_plan_resume(root_frame_id, project_id, model),
+            lambda: self.run_plan_resume(
+                root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
+            ),
+            project_id=project_id,
+            reason="plan resume",
+            claimed_plan_id=claimed_plan_id,
+            claimed_from_status="paused",
+            cancelled_plan_status="paused",
         )
 
     def submit_plan_revision(
@@ -6074,12 +6958,328 @@ class SessionRunner:
         return self._spawn_job(
             root_frame_id,
             lambda: self.run_plan_revision(root_frame_id, project_id, changes, model),
+            project_id=project_id,
+            reason="plan revision",
+            # Revising claims nothing: the row stays a draft throughout, and a
+            # failed revision leaves the draft the user already had.
         )
 
-    def _spawn_job(self, root_frame_id: str, fn) -> "MessageJob":
+    def _settle_claimed_plan(
+        self, root_frame_id: str, plan_id: str | None, status: str
+    ) -> None:
+        """Move a row the route claimed out of `executing`, or leave it alone.
+
+        The approve and resume routes compare-and-swap the plan into
+        `executing` before answering 202, because a status read taken inside
+        the background thread cannot decide who owns the execution. That is
+        right, and it hands the background thread an obligation: the row it was
+        given has to reach a settled status no matter how the turn ends.
+
+        A failure before the turn reached `run_message` -- the Store refusing
+        the re-read, `emit_ready` throwing, the seed builder raising -- met no
+        settle point at all, and the row stayed `executing` with nothing
+        running. That state is unrecoverable rather than merely wrong: approve
+        swaps against `draft` and resume against `paused`, so both lose
+        forever, and `get_by_frame` prefers the newest non-discarded plan, so
+        the stuck row also shadows every draft the session makes afterwards.
+        One failed turn took planning away from the session permanently.
+
+        Compare-and-swap, not a write, and only ever from `executing`: by the
+        time this runs the plan path may have settled the row itself, and
+        overwriting a `completed` with `failed` would be this function causing
+        the damage it exists to prevent.
+        """
+        if not plan_id:
+            return
+        try:
+            moved = self.store.compare_and_set_plan_status(
+                plan_id, expected="executing", new_status=status
+            )
+        except Exception:  # noqa: BLE001 - the original failure is the news
+            traceback.print_exc()
+            return
+        if not moved:
+            return
+        self._best_effort(
+            "plan_ready",
+            lambda: self.plans.emit_ready(
+                self.hub.emitter(root_frame_id),
+                root_frame_id,
+                self.store.get_plan(plan_id),
+            ),
+        )
+
+    @staticmethod
+    def _best_effort(step: str, action) -> None:
+        """Run one terminal-failure side effect, and never let it stop the next.
+
+        These were a single `try`, so the first one to fail cancelled the rest:
+        an `OperationalError` from `update_frame` skipped the terminal
+        `frame_update` entirely, and the client -- which had been told 202 and
+        was watching the socket -- was left with a turn that never ended. The
+        frame's stored status, the prose, and the terminal event are three
+        independent obligations to three different readers.
+        """
+        try:
+            action()
+        except Exception:  # noqa: BLE001 - the original failure is the news
+            traceback.print_exc()
+
+    def _terminal_failure_event(self, root_frame_id: str, job: "MessageJob") -> dict:
+        """The one terminal `frame_update` a failed turn owes the socket."""
+        return {
+            "type": "frame_update",
+            "frame_id": root_frame_id,
+            "status": "failed",
+            # The same local id the submit 202 and the job query carry.
+            "request_id": job.request_id,
+            # Which *execution* this is the end of. A request id is not enough
+            # to tell a stale terminal from a current one: a client may reuse
+            # `X-Request-Id`, and the ordering that produced this bug --
+            # processing(A), processing(B), failed(A) -- then looks like B's
+            # own terminal event and closes B's turn.
+            **({"execution_id": job.execution_id} if job.execution_id else {}),
+            "code": job.error_code or "internal_error",
+            # Only when true: absent means "no claim", and a false would
+            # assert a safety this cannot know.
+            **({"output_committed": True} if job.output_committed else {}),
+        }
+
+    def _remember_terminal_failure(
+        self,
+        request_id: str,
+        branch_id: str,
+        message_id: str | None,
+        identity: dict,
+    ) -> None:
+        """Note which row is this TURN's authoritative terminal failure."""
+        job_id = getattr(self._turn_scope, "job_id", "")
+        if not job_id or not request_id or not message_id:
+            return
+        with self._lock:
+            self._terminal_failures[job_id] = {
+                "message_id": message_id,
+                "identity": dict(identity),
+                "request_id": request_id,
+                "branch_id": branch_id,
+            }
+
+    def _take_terminal_failure(self, job_id: str, request_id: str) -> dict | None:
+        """The note this job filed, if it is for this request.
+
+        The job id is already unique, and the note froze its own branch, so
+        there is nothing left to re-derive. Matching on a branch resolved
+        *during* the failure was worse than useless: a failed lookup fell back
+        to the root frame, which is a different key from the one the note was
+        filed under, so the correct hand-off was dropped and a duplicate row
+        written -- the exact defect this exists to prevent.
+        """
+        with self._lock:
+            note = self._terminal_failures.get(job_id)
+            if not note:
+                return None
+            if note.get("request_id") != request_id:
+                # A different request is a different failure, not this one
+                # seen twice. Left in place: it belongs to this job either way
+                # and the outermost `finally` will clear it.
+                return None
+            return self._terminal_failures.pop(job_id)
+
+    def _bind_execution_to_turn(self, execution_id: str) -> None:
+        """Give this thread's ticket the execution the turn actually got.
+
+        The message spawner already knows it -- it holds the coordinator ticket
+        -- so this is a no-op there. The plan spawner does not, and its job
+        carried a synthetic id until this line. The two are never both in
+        flight: the synthetic one is only ever emitted by a failure that
+        happened before the turn reached an execution at all.
+        """
+        job_id = getattr(self._turn_scope, "job_id", "")
+        if not job_id or not execution_id:
+            return
+        with self._lock:
+            job = self._jobs.get(job_id)
+        if job is not None:
+            job.execution_id = execution_id
+
+    def _enter_turn_scope(self, job_id: str) -> None:
+        """Bind this thread's turn to `job_id`."""
+        self._turn_scope.job_id = job_id
+
+    def _exit_turn_scope(self, job_id: str) -> None:
+        """Drop the binding and whatever note this turn left behind.
+
+        Called from the outermost `finally` of the job target -- after the
+        outer handler has had its chance to consume the note, after the socket
+        event, after `job.finish`. Anywhere earlier and the hand-off is taken
+        away from the handler it was filed for; anywhere later and there is no
+        `anywhere later`.
+        """
+        self._turn_scope.job_id = ""
+        with self._lock:
+            self._terminal_failures.pop(job_id, None)
+
+    def _persist_outer_failure(
+        self, root_frame_id: str, job: "MessageJob", message: str
+    ) -> None:
+        """Store the tail of a failure that never reached `run_message`.
+
+        The outer catches are real paths -- a fault before the turn is entered,
+        or after it returns, and for the plan spawner anything its `fn` raises
+        outside `run_message`. They were given the live surfaces (the socket
+        event and the job result) and nothing durable, so the identity survived
+        exactly as long as the tab did: `GET /frames/{id}/messages` had no row
+        to project and a reopened session showed a failure with no support id
+        and no retry veto.
+
+        `job.project` has already run the projector once -- it is what produced
+        `message`, `error_code` and `output_committed` -- so nothing here calls
+        it again. A second call would write a second operator diagnostic for
+        one failure, which is how two records of the same event drift apart.
+        """
+        try:
+            self._persist_outer_failure_inner(root_frame_id, job, message)
+        except Exception:  # noqa: BLE001
+            # NOTHING here may escape. This runs inside the outer handler, on
+            # the job thread, and an exception leaving it kills that thread
+            # before `job.finish` -- so the socket stays silent, `wait_result`
+            # blocks forever, and a poll never terminates. The original failure
+            # is frequently the Store being unavailable, which is exactly when
+            # the branch lookup and the insert below are most likely to fail
+            # too, so this is the expected case rather than the exotic one.
+            traceback.print_exc()
+
+    def _persist_outer_failure_inner(
+        self, root_frame_id: str, job: "MessageJob", message: str
+    ) -> None:
+        prior = self._take_terminal_failure(job.job_id, job.request_id)
+        # Frozen at submit, or carried on the note. Either way this path asks
+        # the Store nothing to decide where the row goes.
+        branch_id = (prior or {}).get("branch_id") or job.branch_id or root_frame_id
+        if prior:
+            # The inner handler already wrote this request's terminal row. Two
+            # exceptions, one thing that happened to the user -- so this amends
+            # rather than appends, and the veto is OR-ed: an ordinary tail
+            # failure must not un-say that a tool had already run.
+            merged = dict(prior["identity"])
+            if job.output_committed:
+                merged["output_committed"] = True
+            job.output_committed = bool(merged.get("output_committed"))
+            job.error_code = str(merged.get("code") or job.error_code)
+            self.store.update_message_metadata(prior["message_id"], {"failure": merged})
+            return
+        identity: dict[str, object] = {
+            "request_id": job.request_id,
+            "code": job.error_code or "internal_error",
+        }
+        if job.output_committed:
+            # Only when true; absent is "no claim".
+            identity["output_committed"] = True
+        # Unguarded on purpose: `_persist_outer_failure` holds the single
+        # catch for this whole operation. Nested try/excepts here made that
+        # outer one unreachable, which reads as defence and is decoration --
+        # no test can tell whether it is still there.
+        self.store.add_message(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            role="assistant",
+            content=message,
+            frame_id=root_frame_id,
+            metadata={"failure": identity},
+        )
+
+    #: What a caller waiting on a job whose worker never started is told.
+    #: Fixed, like the ticket's reason: the original exception reaches the
+    #: submitter by being re-raised, and a waiter gets a sentence rather than
+    #: a rendering of something that may refuse to render.
+    UNSTARTED_WORKER_MESSAGE = "the worker for this turn could not be started"
+
+    def _abort_unstarted_job(
+        self, job, ticket, error, *, claimed_plan_id=None, rollback_status=None
+    ) -> None:
+        """Undo everything a submission did once its worker refused to start.
+
+        Order matters. The ticket goes back first, because it is what holds the
+        session and blocks every later turn; then the job, because `is_running`
+        answers from `_jobs` and would otherwise report a running turn for a
+        session with nothing in it; then the plan row, back to the status its
+        own route can claim again.
+
+        Each step is independently guarded: a failure to undo one must not stop
+        the others, or a thread-start failure becomes a session that is wedged
+        in a *different* way.
+        """
+        for step, action in (
+            ("ticket", lambda: self.executions.abort_unstarted(ticket, error)),
+            # Terminalised, not merely forgotten. `wait_result()` blocks on
+            # `job.done`, which only `finish` sets -- so popping the job left
+            # any caller already waiting (the `wait:true` branch of the message
+            # route is exactly that) blocked forever on an event nobody would
+            # set, for a job the registry had already discarded.
+            ("wake", lambda: job.finish(error=self.UNSTARTED_WORKER_MESSAGE)),
+            ("job", lambda: self._jobs.pop(job.job_id, None)),
+            (
+                "plan",
+                lambda: self._settle_claimed_plan(
+                    job.root_frame_id, claimed_plan_id, rollback_status
+                )
+                if claimed_plan_id and rollback_status
+                else None,
+            ),
+        ):
+            try:
+                action()
+            except Exception:  # noqa: BLE001 — every undo runs, whatever failed
+                print(
+                    f"openai4s: could not undo {step} for an unstarted worker",
+                    file=sys.stderr,
+                )
+                traceback.print_exc()
+
+    def _spawn_job(
+        self,
+        root_frame_id: str,
+        fn,
+        *,
+        project_id: str = "default",
+        reason: str = "plan turn",
+        claimed_plan_id: str | None = None,
+        cancelled_plan_status: str = "paused",
+        claimed_from_status: str | None = None,
+    ) -> "MessageJob":
         """Run `fn` in a background daemon thread as a tracked MessageJob (shared
-        machinery behind submit_message / plan approve / plan revise)."""
+        machinery behind submit_message / plan approve / plan revise).
+
+        ``claimed_plan_id`` is the row the *route* already compare-and-swapped
+        into `executing` before answering 202. Handing it to the spawner is
+        what turns that claim into something the background thread can settle:
+        see `_settle_claimed_plan`.
+        """
+        st = self._state(root_frame_id, project_id)
         job = MessageJob(f"job-{uuid.uuid4().hex[:12]}", root_frame_id)
+        # A real ticket, taken here rather than deep inside `run_message`.
+        # This spawner used to mint `plan-<job id>` and hand it to the client on
+        # the 202, which is not an execution at all: the FIFO had never heard of
+        # it, so a plan turn was not queued behind the running one, did not hold
+        # the session while it wrote its own outcome, and named a different id
+        # on the 202 than the socket carried a moment later. `run_message`
+        # reuses whatever `executions.current` finds, so taking the ticket at
+        # submit gives the whole turn -- seed, agent loop, plan row, terminal
+        # event -- one identity and one lease.
+        ticket = self._queue_execution(
+            st,
+            owner="agent",
+            owner_id=job.job_id,
+            reason=reason,
+        )
+        job.execution_id = ticket.execution_id
+        job.execution_owner = ticket.owner.as_dict()
+        # Resolved by the ticket, on the submitting thread, while the Store is
+        # known to work. The helper used to fall back to the root frame when
+        # this was missing, which writes the failure onto the wrong branch
+        # whenever the active one is a sibling -- a user on a fork would see
+        # nothing and the trunk would grow a failure that never happened there.
+        job.branch_id = ticket.branch_id or st.branch_id or ""
         with self._lock:
             done = [
                 jid
@@ -6091,48 +7291,138 @@ class SessionRunner:
             self._jobs[job.job_id] = job
 
         def _target() -> None:
+            self._enter_turn_scope(job.job_id)
+            token = set_correlation_id(job.request_id)
+            #: Filled inside the lease, published after it -- the same split
+            #: `submit_message` makes, and for the same reason: `job.done` and
+            #: an active ticket must never disagree, because `is_running`
+            #: reads both.
+            outcome: dict = {}
             try:
-                result = fn() or {}
-                result.setdefault("job_id", job.job_id)
-                job.finish(result=result)
+                # The lease covers `fn` *and* everything the failure path owes.
+                # A plan turn writes its outcome after `run_message` returns --
+                # the plan row's final status, a `plan_ready`, and on failure
+                # the frame's status and the terminal event -- and holding no
+                # lease meant all of it landed while the next queued turn was
+                # already `processing`.
+                with self.executions.admitted(ticket, cancel_event=st.cancel):
+                    try:
+                        result = fn() or {}
+                        result.setdefault("job_id", job.job_id)
+                        result.setdefault("execution_id", ticket.execution_id)
+                        result.setdefault("owner", ticket.owner.as_dict())
+                        outcome["result"] = result
+                    except ExecutionCancelled as e:
+                        # Cancelling is not failing. Without this clause a
+                        # cancelled plan turn fell into the catch-all below and
+                        # wrote `status="failed"` onto the frame -- so a user
+                        # who pressed stop was shown an error, and the session
+                        # carried a failure it never had. `submit_message` has
+                        # always distinguished the two; the plan approve/revise
+                        # path shares this spawner and did not.
+                        self._settle_claimed_plan(
+                            root_frame_id, claimed_plan_id, cancelled_plan_status
+                        )
+                        outcome["result"] = {
+                            "status": "cancelled",
+                            "frame_id": root_frame_id,
+                            "job_id": job.job_id,
+                            "execution_id": ticket.execution_id,
+                            "owner": ticket.owner.as_dict(),
+                            "reason": str(e),
+                        }
+                        outcome["handled"] = e
+                        raise
+                    except Exception as e:  # noqa: BLE001
+                        traceback.print_exc()
+                        message = job.project(e, "web:plan")
+                        self._persist_outer_failure(root_frame_id, job, message)
+                        emit = self.hub.emitter(root_frame_id)
+                        self._settle_claimed_plan(
+                            root_frame_id, claimed_plan_id, "failed"
+                        )
+                        self._best_effort(
+                            "frame_status",
+                            lambda: self.store.update_frame(
+                                root_frame_id, status="failed"
+                            ),
+                        )
+                        # Separately guarded, for the same reason as the message
+                        # turn: a Store that cannot record the status must not
+                        # also cost the client its terminal event.
+                        self._best_effort(
+                            "terminal",
+                            lambda: emit(
+                                self._terminal_failure_event(root_frame_id, job)
+                            ),
+                        )
+                        outcome["error"] = message
+                        # Re-raised after the side effects so the coordinator
+                        # marks this ticket FAILED. Swallowing it left the lease
+                        # exiting cleanly and the execution log reading
+                        # queued -> running -> completed for a failed turn.
+                        outcome["handled"] = e
+                        raise
             except ExecutionCancelled as e:
-                # Cancelling is not failing. Without this clause a cancelled
-                # plan turn fell into the catch-all below and wrote
-                # `status="failed"` onto the frame -- so a user who pressed
-                # stop was shown an error, and the session carried a failure it
-                # never had. `submit_message` has always distinguished the two;
-                # the plan approve/revise path shares this spawner and did not.
-                job.finish(
-                    result={
+                if outcome.get("handled") is not e:
+                    # Raised BY `admitted`, not by `fn`: the item was cancelled
+                    # while it was still queued -- a session Stop drains the
+                    # FIFO -- so the turn never ran and the inner handler never
+                    # saw it. The route had already claimed the row, though, so
+                    # without this the plan is stranded `executing` by the one
+                    # action a user takes expecting nothing to be left behind.
+                    self._settle_claimed_plan(
+                        root_frame_id, claimed_plan_id, cancelled_plan_status
+                    )
+                    outcome["result"] = {
                         "status": "cancelled",
                         "frame_id": root_frame_id,
                         "job_id": job.job_id,
+                        "execution_id": ticket.execution_id,
+                        "owner": ticket.owner.as_dict(),
                         "reason": str(e),
                     }
-                )
             except Exception as e:  # noqa: BLE001
-                traceback.print_exc()
-                try:
-                    emit = self.hub.emitter(root_frame_id)
-                    self.store.update_frame(root_frame_id, status="failed")
-                    emit(
-                        {
-                            "type": "frame_update",
-                            "frame_id": root_frame_id,
-                            "status": "failed",
-                        }
-                    )
-                except Exception:
-                    pass
-                job.finish(error=str(e))
+                if outcome.get("handled") is not e:
+                    # Not ours: the lease itself refused, or something outside
+                    # the inner handler failed. Project it once, here -- and
+                    # settle the claim, which is the case the row would
+                    # otherwise be stranded `executing` by.
+                    outcome["error"] = job.project(e, "web:plan")
+                    self._settle_claimed_plan(root_frame_id, claimed_plan_id, "failed")
+            finally:
+                if not job.done.is_set():
+                    # After the lease, so `job.done` and the ticket agree.
+                    if "result" in outcome:
+                        job.finish(result=outcome["result"])
+                    else:
+                        job.finish(error=outcome.get("error") or INTERNAL_ERROR_MESSAGE)
+                self._exit_turn_scope(job.job_id)
+                reset_correlation_id(token)
 
-        t = threading.Thread(
-            target=carry_context(_target),
-            name=f"openai4s-plan-{root_frame_id}",
-            daemon=True,
-        )
-        job.thread = t
-        t.start()
+        # Constructed *and* started inside the guard. `Thread(...)` allocates,
+        # so it can fail too, and a failure there leaves exactly the same
+        # wreckage as a failure in `start()`.
+        try:
+            t = threading.Thread(
+                target=carry_context(_target),
+                name=f"openai4s-plan-{root_frame_id}",
+                daemon=True,
+            )
+            job.thread = t
+            t.start()
+        except BaseException as error:
+            self._abort_unstarted_job(
+                job,
+                ticket,
+                error,
+                claimed_plan_id=claimed_plan_id,
+                rollback_status=claimed_from_status,
+            )
+            # Re-raised, never swallowed into a 202: "accepted, it is running"
+            # is the one answer a caller cannot recover from here, because it
+            # will wait for a terminal event nobody will emit.
+            raise
         return job
 
     def run_repl(
@@ -6290,15 +7580,23 @@ class SessionRunner:
                 )
             except Exception as error:  # noqa: BLE001 - job owns its failure
                 traceback.print_exc()
-                job.finish(error=str(error))
+                # A *kernel* error is not this path: a traceback from the
+                # user's own cell arrives as a normal result and is the whole
+                # point of a REPL. This clause only fires when the machinery
+                # around the cell threw, which is machinery detail.
+                job.finish(error=job.project(error, "web:repl"))
 
-        thread = threading.Thread(
-            target=carry_context(target),
-            name=f"openai4s-repl-{root_frame_id}",
-            daemon=True,
-        )
-        job.thread = thread
-        thread.start()
+        try:
+            thread = threading.Thread(
+                target=carry_context(target),
+                name=f"openai4s-repl-{root_frame_id}",
+                daemon=True,
+            )
+            job.thread = thread
+            thread.start()
+        except BaseException as error:
+            self._abort_unstarted_job(job, ticket, error)
+            raise
         return job
 
 
@@ -6430,6 +7728,39 @@ from openai4s.egress import EGRESS_GROUPS as _NETWORK_GROUPS
 
 def _memory_enabled(store) -> bool:
     return store.get_setting("memory_enabled", "0") == "1"
+
+
+def _memory_scope(store, raw: Any) -> str:
+    """Where a memory write lands, named by the caller and never guessed.
+
+    The default used to be the literal string ``"default"``. Nothing on this
+    installation creates a project by that name -- every Web session belongs to
+    a real ``proj_*`` -- and injection reads *the session's* project. So a save
+    from the Memory pane went to a scope no session has ever read: the pane
+    listed it, the toggle said Enabled, and not one turn ever saw it. Refusing
+    an unnamed scope is the only version of this that cannot come back, because
+    a default is exactly what was wrong.
+    """
+    scope = str(raw or "").strip()
+    if not scope:
+        raise GatewayError(
+            400,
+            f"memory writes require project_id: {MEMORY_GLOBAL_SCOPE!r} for "
+            "every project, or one project id",
+            "memory_scope_required",
+        )
+    if scope == MEMORY_ALL_PROJECTS:
+        raise GatewayError(
+            400,
+            f"{MEMORY_ALL_PROJECTS!r} is a read-only view; write to "
+            f"{MEMORY_GLOBAL_SCOPE!r} or to one project",
+            "memory_scope_invalid",
+        )
+    if scope != MEMORY_GLOBAL_SCOPE and store.get_project(scope) is None:
+        # A memory addressed to a project that does not exist is the original
+        # defect with a different spelling: accepted, stored, never read.
+        raise GatewayError(400, f"unknown project {scope!r}", "memory_scope_unknown")
+    return scope
 
 
 # --- user skill authoring helpers ------------------------------------------
@@ -6659,6 +7990,27 @@ def _environment_snapshot() -> dict:
 # --------------------------------------------------------------------------- #
 #  HTTP + WS request handler
 # --------------------------------------------------------------------------- #
+#: What each `POST /frames/<id>/decision` refusal means on the wire.
+#:
+#: They are not one status: a malformed body, a decision that belongs to another
+#: session, one already being resolved, and one whose approval was written but
+#: whose continuation failed are four different things, and a client that
+#: retries them all the same way is wrong about three.
+_DECISION_REFUSAL_STATUS = {
+    "decision_id_required": 400,
+    # Not 403. A decision for another frame and one that never existed answer
+    # identically, or the refusal is an existence oracle.
+    "decision_not_found": 404,
+    "decision_in_flight": 409,
+    "decision_already_resolved": 409,
+    "decision_immutable": 409,
+    "decision_expired": 410,
+    # The approval is recorded. `output_committed` on the body is what stops the
+    # UI offering a retry that would submit it twice.
+    "decision_continuation_failed": 500,
+}
+
+
 def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     store = get_store(cfg.db_path)
     model_discovery = LocalModelDiscoveryService()
@@ -6711,6 +8063,32 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             return history
         return {**history, "status": service.status(name)}
 
+    def _require_canonical_session_root(frame_id: str) -> dict:
+        """The frame a pin or an admission may be written against.
+
+        Both routes took the id on trust. `store.get_frame(fid) or {}` meant a
+        frame that does not exist fell through to project `default` and reached
+        the reservation, so a request naming nothing wrote a real admission
+        ledger row -- an orphan, because `submit_message` refuses afterwards
+        and the refusal path only releases. A child frame did the same and was
+        worse: the row named the child as its root, and the deletion cascade
+        walks canonical roots, so deleting the session left it behind.
+
+        Checked before anything is written rather than after, because the write
+        is what has to not happen.
+        """
+        frame = store.get_frame(frame_id)
+        if not frame:
+            raise GatewayError(404, "session not found")
+        canonical = str(frame.get("root_frame_id") or frame.get("frame_id") or "")
+        if canonical != frame_id:
+            raise GatewayError(
+                404,
+                "comments belong to a Session, not to one of its sub-frames",
+                "not_a_session_root",
+            )
+        return frame
+
     def _require_session_writable(root_frame_id: str, operation: str) -> None:
         """Keep old lightweight test adapters compatible without weakening quarantine."""
 
@@ -6742,10 +8120,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     # machine and every web page the user visits. The Host and Origin guards
     # cover the browser; they do not cover a local process.
     #
-    # `OPENAI4S_REQUIRE_TOKEN=0` is the escape hatch, and it lives for exactly
-    # one minor release. It is the same variable that used to opt *in*, with
-    # its sense reversed: a script setting it to 1 keeps working and simply
-    # asks for what is now the default.
+    # `OPENAI4S_REQUIRE_TOKEN=0` is the escape hatch, and it lives until
+    # `LEGACY_TOKEN_OPT_OUT_REMOVED_IN` above -- a version rather than "one
+    # minor release", because the second is not a date anything can check. It
+    # is the same variable that used to opt *in*, with its sense reversed: a
+    # script setting it to 1 keeps working and simply asks for what is now the
+    # default.
     #
     # It is honoured on loopback only. A non-loopback bind is reachable by
     # anything that can route to it, and there is no configuration under which
@@ -7118,8 +8498,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # Browsers always send Origin on WS upgrades; non-browser clients
                 # send none and pass.
                 if path == _API_WS or (
-                    method in ("POST", "PUT", "PATCH", "DELETE")
-                    and path.startswith(_API_PREFIX)
+                    method in _MUTATING_METHODS and path.startswith(_API_PREFIX)
                 ):
                     origin = self.headers.get("Origin")
                     if origin:
@@ -7143,28 +8522,69 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     header_token = _presented_token(self.headers)
                     qtok = parse_qs(parsed.query).get("token", [None])[0]
+                    if qtok is not None and method in _MUTATING_METHODS:
+                        # Refused outright, before any other credential is even
+                        # consulted. The gate already declined to *authenticate*
+                        # a mutation from the query string -- but a request that
+                        # also carried a valid cookie sailed straight through
+                        # with the credential still sitting in its URL, which is
+                        # accepted-with-a-warning nobody reads. That URL is in
+                        # the browser history, the proxy log and the next
+                        # Referer, so honouring it normalises the leak: the
+                        # caller has no way to find out they are shipping a
+                        # secret, because it works. Failing is what makes it
+                        # discoverable, and the remedy is always the same one.
+                        self.close_connection = True
+                        self._json(
+                            {
+                                "error": (
+                                    "a credential in the query string is refused "
+                                    f"on {method}; send {_TOKEN_HEADER} or "
+                                    "Authorization: Bearer instead"
+                                )
+                            },
+                            401,
+                        )
+                        return
                     if have_cookie or local_auth.matches(header_token, _auth_token):
                         pass  # already authenticated
                     elif (
                         local_auth.matches(qtok, _auth_token)
                         and method == "GET"
-                        and _is_navigation(path)
+                        and _is_bootstrap_path(path)
                     ):
-                        # Browser navigation: set the cookie and redirect to the
-                        # same path with the token stripped. It used to redirect
-                        # to "/" unconditionally, so every bookmarked deep link
-                        # landed on the dashboard instead of its target.
+                        # The root-page bootstrap: set the cookie and redirect
+                        # to the same page with the credential stripped, so it
+                        # survives in neither the address bar, the history
+                        # entry, nor the next Referer.
                         #
-                        # Restricted to paths that serve the SPA shell. A URL
-                        # carrying a credential is a shareable credential, and
-                        # on an API or download path it is worse than on a
-                        # navigation: the response *is* the data, delivered
-                        # straight to whoever holds the link, with no redirect
-                        # and no cookie hand-off in between. Here the only thing
-                        # the link buys is the bootstrap it was minted for.
+                        # Restricted to `_BOOTSTRAP_PATHS`. A URL carrying a
+                        # credential is a shareable credential, and on a path
+                        # that answers with data it is worse than on the shell:
+                        # the response *is* the data, delivered straight to
+                        # whoever holds the link, with no redirect and no cookie
+                        # hand-off in between. Here the link buys an empty page.
                         scrubbed = _strip_token_from_url(path, parsed.query)
+                        # Recorded for the access log in the `finally` below,
+                        # which reads `_last_status`. Only `_send` sets it and
+                        # this branch writes its own status line, so the single
+                        # most security-relevant request the daemon serves was
+                        # logged as `status=None` -- indistinguishable from a
+                        # request that died before answering.
+                        self._last_status = 303
                         self.send_response(303)
-                        self.send_header("Location", scrubbed)
+                        # The one `send_header` in this file that did not go
+                        # through the sanitiser its five siblings use. It is
+                        # safe today because CPython's `urlsplit` strips
+                        # \t\r\n (`_UNSAFE_URL_BYTES_TO_REMOVE`, guaranteed by
+                        # `requires-python >= 3.10`) before the path reaches
+                        # here — but that is a property of the stdlib two
+                        # layers away, and `_strip_token_from_url` returns the
+                        # path completely raw when `token` is the only query
+                        # parameter, which is exactly the bootstrap URL. Making
+                        # the guarantee local costs nothing and stops the next
+                        # reader having to rediscover the stdlib detail.
+                        self.send_header("Location", _sanitize_header_value(scrubbed))
                         self.send_header(
                             "Set-Cookie",
                             f"os_token={_auth_token}; Path=/; HttpOnly; "
@@ -7273,7 +8693,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
                 try:
-                    self._json({"error": str(e)}, 500)
+                    # Projected, not enveloped. `_json` adds `code`/`status`/
+                    # `request_id` to whatever body it is handed, so a raw
+                    # `str(e)` used to be shipped with a tidy `code` bolted on
+                    # -- the envelope made the leak look deliberate. Anything
+                    # that reaches this clause is by definition a failure
+                    # nobody wrote a message for, so it gets the generic one
+                    # and the original goes to the operator diagnostic.
+                    body, status = public_exception(
+                        e,
+                        surface=f"http:{method}",
+                        request_id=getattr(self, "_correlation_id", ""),
+                    )
+                    self._json(body, status)
                 except (BrokenPipeError, ConnectionResetError):
                     self.close_connection = True
             finally:
@@ -7680,11 +9112,35 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if method == "GET":
                     self._json({"default_model_id": _default_model["id"]})
                 else:
-                    _default_model["id"] = (
-                        self._body().get("model_id") or _default_model["id"]
-                    )
-                    # persist so the override actually applies to LLM calls (C1)
-                    store.set_setting("llm_model", _default_model["id"])
+                    chosen = str(self._body().get("model_id") or "").strip()
+                    if chosen:
+                        _default_model["id"] = chosen
+                    # The selector's option value is now a `profile_id`, because
+                    # deduping the list by bare model name made two profiles
+                    # sharing a model against different providers indistinguishable
+                    # -- and unreachable, since only one survived. Choosing an
+                    # entry therefore activates a *configuration*, which is what
+                    # the header control has always meant.
+                    #
+                    # A value that is not a known profile id is still written to
+                    # `llm_model`: `.env`-configured installs and older clients
+                    # name a model directly and must keep working.
+                    known = {
+                        str(p.get("id") or ""): p
+                        for p in store.list_model_profiles()
+                        if not p.get("deleted_at")
+                    }
+                    if chosen in known:
+                        try:
+                            _payload, effective = model_profiles.activate(chosen)
+                        except ModelProfileError as exc:
+                            self._json({"error": str(exc)}, exc.status_code)
+                            return
+                        _default_model["id"] = chosen
+                        if effective:
+                            store.set_setting("llm_model", effective)
+                    elif chosen:
+                        store.set_setting("llm_model", chosen)
                     self._json({"default_model_id": _default_model["id"]})
                 return
 
@@ -8030,8 +9486,23 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/frames/([^/]+)/messages", sub)
             if m and method == "GET":
                 fid = m.group(1)
-                start = int((q.get("from") or ["0"])[0])
-                limit = int((q.get("limit") or ["300"])[0])
+                # Validated like the session list's, and for the same reason:
+                # both ends of this were wrong once a client walked it page by
+                # page. `?limit=banana` raised ValueError out of the route and
+                # reached the browser as a 500 `internal_error`, which a paging
+                # client cannot tell from a broken server -- while the sibling
+                # `before_seq=banana` on this very route already answered 400.
+                # `?limit=-5` was worse: 200, an empty page, and
+                # `has_earlier: false`, which reads as "this is the start of
+                # history" and silently ends the walk.
+                try:
+                    start = max(0, int((q.get("from") or ["0"])[0]))
+                    limit = int((q.get("limit") or ["300"])[0])
+                except (TypeError, ValueError):
+                    raise GatewayError(
+                        400, "from and limit must be integers", "invalid_limit"
+                    )
+                limit = max(1, min(MAX_MESSAGE_PAGE, limit))
                 branch_id = (q.get("branch_id") or [None])[0]
                 # `before_seq` opts into latest-first. Absent, the response is
                 # exactly what it always was: oldest-first from `from`. A long
@@ -8067,6 +9538,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "created_at": _iso(mm["created_at"]),
                             "seq": mm.get("seq"),
                             "fork_checkpoint_id": mm.get("fork_checkpoint_id"),
+                            # What this message was actually sent with. Reopen
+                            # used to hand the client the raw `@name#v-id`
+                            # text and nothing else, so the composer chip could
+                            # only be guessed at by re-parsing prose -- and a
+                            # cross-session reference could not be reconstructed
+                            # at all, because the text names the source version
+                            # and the model read the local copy.
+                            "artifact_refs": _message_artifact_refs(mm),
+                            # Absent unless the turn failed, so an ordinary
+                            # message is not given a null field to interpret.
+                            **(
+                                {"failure": _message_failure(mm)}
+                                if _message_failure(mm)
+                                else {}
+                            ),
                         }
                         for mm in msgs
                     ]
@@ -8150,7 +9636,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 job = runner.submit_review(fid, frame.get("project_id") or "default")
                 self._json(
-                    {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
+                    {
+                        "status": "accepted",
+                        "frame_id": fid,
+                        "job_id": job.job_id,
+                        "request_id": job.request_id,
+                        # The plan spawner holds no coordinator ticket, so this
+                        # is synthetic until the turn reaches a real execution.
+                        # It is still the id a pre-run failure will be reported
+                        # under, and a client needs it to tell that failure
+                        # from the next turn's.
+                        "execution_id": job.execution_id,
+                    },
                     202,
                 )
                 return
@@ -8168,26 +9665,203 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # can regenerate / edit the file accordingly.
                 ann_ids = b.get("annotation_ids") or []
                 annos: list = []
+                reservation_id = ""
                 if ann_ids:
-                    annos = [store.get_annotation(a) for a in ann_ids]
-                    annos = [a for a in annos if a and a.get("root_frame_id") == fid]
+                    # Before the reservation, not after it. The admission is a
+                    # durable row, and a request naming a missing or child
+                    # frame used to write one and only then be refused.
+                    _require_canonical_session_root(fid)
+                    # Reserved, not read. `get_annotation` filters no status and
+                    # dedupes nothing, so an already-`sent` id re-entered the
+                    # prompt, a repeated id entered twice, and two concurrent
+                    # requests both carried the same open pin. The reservation
+                    # is one atomic UPDATE, so exactly one request claims a
+                    # given pin and only what it actually claimed is quoted.
+                    # Client-generated, because the case this whole mechanism
+                    # exists for is the one where the client never sees the
+                    # response. A server-minted id is unknown to a browser
+                    # whose 202 was lost, so there is nothing for it to ask
+                    # about. The client stores its own id *before* dispatch and
+                    # reconciles with it afterwards.
+                    #
+                    # That makes the id untrusted input, so it is validated for
+                    # shape and claimed rather than upserted: a second request
+                    # naming an existing id is a replay, not an adoption.
+                    supplied = b.get("annotation_reservation_id")
+                    if supplied is not None:
+                        if type(
+                            supplied
+                        ) is not str or not _CLIENT_RESERVATION.fullmatch(supplied):
+                            raise GatewayError(
+                                400,
+                                "annotation_reservation_id must be 24-96 chars "
+                                "of [A-Za-z0-9_-]",
+                                "invalid_reservation_id",
+                            )
+                        reservation_id = supplied
+                    else:
+                        # Full 128 bits. A truncated id collides across
+                        # sessions and restarts, and what it keys is a claim
+                        # on somebody's unpublished comment.
+                        reservation_id = f"resv-{uuid.uuid4().hex}"
+                    admitted, annos = store.reserve_with_admission(
+                        reservation_id=reservation_id,
+                        root_frame_id=fid,
+                        annotation_ids=ann_ids,
+                    )
+                    if not admitted:
+                        raise GatewayError(
+                            409,
+                            "this admission id has already been used",
+                            "admission_replayed",
+                        )
+
                     block = _format_annotations_block(annos)
                     if block:
                         req = (req + "\n\n" + block).strip() if req.strip() else block
-                    # Only burn annotations to 'sent' when we actually have
-                    # some to deliver — else a filtered-empty batch flips
-                    # nothing yet loses the pins forever (never back to 'open').
-                    if annos:
-                        store.mark_annotations_sent([a["annotation_id"] for a in annos])
-                job = runner.submit_message(
-                    fid,
-                    pid,
-                    req,
-                    b.get("model"),
-                    plan=bool(b.get("plan")),
-                    annos=annos,
-                    explore=bool(b.get("explore")),
-                )
+                # The job id the refusal path must be able to retract,
+                # recorded BEFORE the write rather than after it.
+                #
+                # A commit whose outcome is unknown to the caller is the whole
+                # problem: wrapping the write and raising *after* it committed
+                # leaves the correlation durable while a flag set on the return
+                # path never gets set. Cleanup then falls back to a plain
+                # release and the row keeps its request and job ids -- still
+                # wearing the signature of accepted work. So the candidate is
+                # written down first and retracted unconditionally, by CAS on
+                # that exact id: if the write never landed the CAS matches
+                # nothing and the exact release runs instead.
+                correlated: dict = {}
+
+                def _persist_correlation(started_job) -> None:
+                    """Which request and job this admission belongs to, durable
+                    before the worker starts.
+
+                    Raising here is the point: `submit_message` runs this
+                    inside the same guard as `Thread.start`, so a failure
+                    aborts the unstarted turn instead of producing a 202 whose
+                    ledger row is indistinguishable from a refusal's.
+                    """
+                    if not reservation_id:
+                        return
+                    correlated["job_id"] = started_job.job_id
+                    if not store.update_admission(
+                        reservation_id,
+                        root_frame_id=fid,
+                        request_id=started_job.request_id,
+                        job_id=started_job.job_id,
+                    ):
+                        raise GatewayError(
+                            500,
+                            "the admission could not be recorded; the turn was "
+                            "not started",
+                            "admission_not_recorded",
+                        )
+
+                try:
+                    job = runner.submit_message(
+                        fid,
+                        pid,
+                        req,
+                        b.get("model"),
+                        plan=bool(b.get("plan")),
+                        annos=annos,
+                        explore=bool(b.get("explore")),
+                        on_admitted=_persist_correlation,
+                    )
+                except BaseException:
+                    # Every synchronous refusal lands here -- the 413 on an
+                    # oversized message, a 409, a 429, and the `Thread.start`
+                    # failure that would otherwise strand the turn. The pins go
+                    # back to `open` so the composer can retry with them, and
+                    # only this request's reservation is released.
+                    if reservation_id:
+                        try:
+                            # Two shapes of refusal, and they are not the
+                            # same cleanup.
+                            #
+                            # Refused before correlation: nothing was written,
+                            # so releasing the pins is the whole job, and the
+                            # absent job id is what marks it a refusal.
+                            #
+                            # Refused *after* correlation -- a `Thread.start`
+                            # that fails once the ids are already durable --
+                            # needs those ids retracted too. Left behind they
+                            # read as `released` with a request and a job,
+                            # which is the signature of accepted work, and a
+                            # reconcile would tell the client not to resend a
+                            # turn that never ran.
+                            retracted = False
+                            candidate = correlated.get("job_id")
+                            if candidate:
+                                retracted = store.abandon_admission(
+                                    reservation_id,
+                                    root_frame_id=fid,
+                                    job_id=candidate,
+                                )
+                            if not retracted:
+                                store.release_annotations(
+                                    reservation_id, root_frame_id=fid
+                                )
+                        except Exception:  # noqa: BLE001
+                            traceback.print_exc()
+                    raise
+                # Consumed only by a message the server accepted, and that
+                # ordering is the whole guarantee. This ran *before*
+                # `submit_message`, which is where every refusal this route can
+                # make happens -- its own docstring says so, and the
+                # oversized-text 413 is one of them. `mark_sent` is one-way
+                # (`WHERE status='open'`, with nothing to set it back), so a
+                # message that was never accepted destroyed the user's pinned
+                # comments: not on a turn, because there was no turn, and not
+                # in the composer either. The browser told them the opposite in
+                # as many words -- "POST failed → annotations were never
+                # consumed server-side" -- and reconciled against the server on
+                # that basis, so the UI reported the loss as success.
+                #
+                # Still guarded on `annos` for the original reason: a batch
+                # filtered empty by the frame check flips nothing.
+                annotations_state = "none"
+                if reservation_id and annos:
+                    annotations_state = "sent"
+                    try:
+                        if not store.finalize_annotations_sent(
+                            reservation_id,
+                            expected_ids=[a["annotation_id"] for a in annos],
+                            root_frame_id=fid,
+                            request_id=job.request_id,
+                            job_id=job.job_id,
+                        ):
+                            # The set moved underneath the reservation. Neither
+                            # consumed nor free: say so rather than claim it.
+                            annotations_state = "pending"
+                    except Exception:  # noqa: BLE001
+                        # The turn is accepted and running. Reporting an HTTP
+                        # failure now would tell the client the message was not
+                        # taken, and it would retry -- sending the work twice.
+                        # The pins stay `reserved`, which is neither lost nor
+                        # double-spent, and the answer says so rather than
+                        # claiming they were consumed.
+                        annotations_state = "pending"
+                        traceback.print_exc()
+                if reservation_id and annotations_state == "pending":
+                    # The only state this line still moves.
+                    #
+                    # Correlation is already durable -- `_persist_correlation`
+                    # wrote it before the worker started, which is what makes
+                    # an accepted turn distinguishable from a refusal even when
+                    # the 202 never arrives. `sent` and `released` are written
+                    # in the same transaction as the rows they describe. That
+                    # leaves `pending`: the consume neither confirmed nor
+                    # failed, which is the one outcome no other writer knows
+                    # about. It is a CAS in the Store, so it cannot overwrite a
+                    # terminal state that landed in between.
+                    try:
+                        store.update_admission(
+                            reservation_id, root_frame_id=fid, state="pending"
+                        )
+                    except Exception:  # noqa: BLE001
+                        traceback.print_exc()
                 if b.get("wait", True) is False:
                     snapshot = runner.executions.snapshot(fid)
                     queued = next(
@@ -8209,11 +9883,44 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "execution_id": job.execution_id,
                             "owner": job.execution_owner,
                             "queue_position": (queued or {}).get("queue_position"),
+                            # The id the socket event and the job query will
+                            # both name for this turn. A 202 says "accepted,
+                            # watch elsewhere", so it is the one place a client
+                            # can learn which request the later failure belongs
+                            # to -- and it was the only one of the three that
+                            # did not say.
+                            "request_id": job.request_id,
+                            # What became of the pins this message carried.
+                            # `sent` means consumed exactly once; `pending`
+                            # means the turn was accepted but the consume did
+                            # not confirm, so they are still reserved -- not
+                            # lost, not double-spent, and not to be retried
+                            # blindly. The reservation id is what a reconcile
+                            # asks about.
+                            **(
+                                {
+                                    "annotations": annotations_state,
+                                    "annotation_reservation_id": reservation_id,
+                                }
+                                if reservation_id
+                                else {}
+                            ),
                         },
                         202,
                     )
                 else:
-                    self._json(job.wait_result())
+                    # The same admission facts on both branches. `wait:true` is
+                    # the branch a script uses and the one with no socket to
+                    # reconcile from later, so telling it *less* about its own
+                    # pins than the async branch gets is exactly backwards.
+                    waited = job.wait_result()
+                    if reservation_id and isinstance(waited, dict):
+                        waited = {
+                            **waited,
+                            "annotations": annotations_state,
+                            "annotation_reservation_id": reservation_id,
+                        }
+                    self._json(waited)
                 return
             m = re.fullmatch(r"/frames/([^/]+)/cancel", sub)
             if m and method == "POST":
@@ -8293,6 +10000,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             ),
                         },
                     )
+                if resolution.get("ok") is not True:
+                    # One envelope, like every other refusal on this surface.
+                    # These eight answered HTTP 200 with `{ok: false}` while the
+                    # `session not found` branch fifteen lines above already used
+                    # 404 -- the same handler, two contracts. `public_failure`
+                    # is skipped by a 2xx, so none of them carried a code, a
+                    # status or a request id, and `_json` enriches only once the
+                    # status says failure.
+                    #
+                    # The frontend needs no change to receive these: its call
+                    # site already throws on `ok !== true` and catches an
+                    # `ApiError` from `api()` in the same block. `code` and
+                    # `output_committed` ride on the payload, which
+                    # `public_failure` preserves rather than overwrites.
+                    self._json(
+                        resolution,
+                        _DECISION_REFUSAL_STATUS.get(
+                            str(resolution.get("code") or ""), 400
+                        ),
+                    )
+                    return
                 self._json(resolution)
                 return
             # ---- permission rules: list (per conversation) / upsert / delete ----
@@ -8383,28 +10111,91 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 pid = f.get("project_id") or "default"
                 model = b.get("model")
                 if action == "approve":
-                    job = runner.submit_plan_approval(fid, pid, model)
+                    # Claimed here, synchronously, for the same reason `resume`
+                    # below is: this route answers 202 and then runs the plan on
+                    # a background thread, so a status check made inside that
+                    # thread cannot decide who owns the execution. Two POSTs
+                    # both read `draft`, both were accepted, and both turns ran
+                    # the same steps against the same session.
+                    claim = runner.claim_plan_approval(fid)
+                    if not claim.get("ok"):
+                        # 404 when there is no plan at all, 409 when there is
+                        # one and it is in the wrong state. They are different
+                        # answers to different questions -- "you are looking at
+                        # nothing" and "somebody else already has this" -- and
+                        # collapsing them makes the second unrecognisable.
+                        if claim.get("plan_id") is None:
+                            raise GatewayError(404, claim["error"], "plan_not_found")
+                        raise GatewayError(409, claim["error"], "plan_not_draft")
+                    # The claim already moved the row to `executing`, which is
+                    # what makes the 202 mean something. If the job then never
+                    # starts -- a process that cannot make another thread is
+                    # the realistic case -- the plan is left `executing` with
+                    # nothing running, and it is stuck there permanently:
+                    # every later approve compare-and-swaps against `draft` and
+                    # every later resume against `paused`, so both lose
+                    # forever. Releasing the claim is what keeps it a claim
+                    # rather than a one-way door.
+                    try:
+                        job = runner.submit_plan_approval(
+                            fid, pid, model, claimed_plan_id=claim["plan_id"]
+                        )
+                    except Exception:
+                        store.compare_and_set_plan_status(
+                            claim["plan_id"], expected="executing", new_status="draft"
+                        )
+                        raise
                     self._json(
-                        {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
+                        {
+                            "status": "accepted",
+                            "frame_id": fid,
+                            "job_id": job.job_id,
+                            "request_id": job.request_id,
+                            # The coordinator's own id, taken at submit --
+                            # the same one the socket, the poll and a pre-run
+                            # failure all name.
+                            "execution_id": job.execution_id,
+                        },
                         202,
                     )
                 elif action == "resume":
-                    # Refused synchronously when the plan is not paused, so the
-                    # caller learns why now rather than from a job that
-                    # accepts, starts nothing and reports a failure later.
-                    plan = store.get_plan_by_frame(fid) or {}
-                    if plan.get("status") != "paused":
-                        raise GatewayError(
-                            409,
-                            (
-                                "only a paused plan can resume; this one is "
-                                f"{plan.get('status') or 'absent'}"
-                            ),
-                            "plan_not_paused",
+                    # The paused -> executing transition *is* the acceptance,
+                    # so it happens here, before the 202, and it is a
+                    # compare-and-swap rather than a status read. It used to be
+                    # a read here plus an unconditional write in the job this
+                    # spawns -- and since the job runs on a background thread,
+                    # two POSTs on the threading server both read `paused`,
+                    # both were accepted, and both turns executed the same
+                    # steps. Now exactly one caller wins the swap; the other is
+                    # refused synchronously with the status it lost to.
+                    claim = runner.claim_plan_resume(fid)
+                    if not claim.get("ok"):
+                        # Same split as `approve` above.
+                        if claim.get("plan_id") is None:
+                            raise GatewayError(404, claim["error"], "plan_not_found")
+                        raise GatewayError(409, claim["error"], "plan_not_paused")
+                    # Same one-way door as `approve` above, and only a
+                    # `paused` row can be resumed.
+                    try:
+                        job = runner.submit_plan_resume(
+                            fid, pid, model, claimed_plan_id=claim["plan_id"]
                         )
-                    job = runner.submit_plan_resume(fid, pid, model)
+                    except Exception:
+                        store.compare_and_set_plan_status(
+                            claim["plan_id"], expected="executing", new_status="paused"
+                        )
+                        raise
                     self._json(
-                        {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
+                        {
+                            "status": "accepted",
+                            "frame_id": fid,
+                            "job_id": job.job_id,
+                            "request_id": job.request_id,
+                            # The coordinator's own id, taken at submit --
+                            # the same one the socket, the poll and a pre-run
+                            # failure all name.
+                            "execution_id": job.execution_id,
+                        },
                         202,
                     )
                 elif action == "revise":
@@ -8414,7 +10205,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         return
                     job = runner.submit_plan_revision(fid, pid, changes, model)
                     self._json(
-                        {"status": "accepted", "frame_id": fid, "job_id": job.job_id},
+                        {
+                            "status": "accepted",
+                            "frame_id": fid,
+                            "job_id": job.job_id,
+                            "request_id": job.request_id,
+                            # The coordinator's own id, taken at submit --
+                            # the same one the socket, the poll and a pre-run
+                            # failure all name.
+                            "execution_id": job.execution_id,
+                        },
                         202,
                     )
                 else:  # discard
@@ -8436,6 +10236,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if not body_text or not art_id:
                     self._json({"error": "artifact_id and body required"}, 400)
                     return
+                # A pin is Session-scoped, and `add_annotation` writes whatever
+                # root it is handed. A comment filed against a child frame is
+                # unreachable from the Session that owns it and survives that
+                # Session's deletion.
+                _require_canonical_session_root(fid)
+                # Bind the pin to the version on screen right now, not to the
+                # artifact. The client is not asked for it: a version id it
+                # supplied would be a claim about what it was displaying, and
+                # the point of the binding is that it is the server's own
+                # record. See `_pinned_image_bytes` for why re-resolving the
+                # artifact at send time is the wrong answer.
+                bound = store.get_artifact(str(art_id)) or {}
                 anno = store.add_annotation(
                     root_frame_id=fid,
                     artifact_id=str(art_id),
@@ -8443,8 +10255,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     rel_x=b.get("x", b.get("rel_x", 0)),
                     rel_y=b.get("y", b.get("rel_y", 0)),
                     body=body_text,
+                    version_id=bound.get("latest_version_id"),
+                    checksum=bound.get("checksum"),
                 )
                 self._json({"annotation": _annotation_json(anno)}, 201)
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/admissions/([^/]+)", sub)
+            if m and method == "GET":
+                # What a client asks after its 202 never arrived. Without this
+                # its only options are to resend (double work) or abandon the
+                # comments (silent loss).
+                # The frame first. A deleted session takes its pins and its
+                # ledger with it, but a client holding the old frame id and a
+                # reservation id would still have been answered 200 from
+                # whatever survived -- a session that no longer exists
+                # reporting on comments that no longer exist.
+                if store.get_frame(m.group(1)) is None:
+                    raise GatewayError(404, "no such session")
+                record = runner.reconcile_admission(m.group(1), m.group(2))
+                if record is None:
+                    raise GatewayError(404, "no such admission")
+                self._json(record)
                 return
             m = re.fullmatch(r"/annotations/([^/]+)", sub)
             if m and method in ("PATCH", "POST", "PUT"):
@@ -8455,13 +10286,39 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         "editing Session annotations",
                     )
                 b = self._body()
-                anno = store.update_annotation(
-                    m.group(1), body=b.get("body"), status=b.get("status")
-                )
-                self._json(
-                    {"annotation": _annotation_json(anno) if anno else None},
-                    200 if anno else 404,
-                )
+                # No `annotation_is_reserved()` first. The check and the write
+                # have to be one statement: `Store`'s lock is per instance and
+                # the daemon has more than one instance on one file, so a read
+                # here and a write below is a real race -- measured, it left a
+                # row `open` with its `reservation_id` still set.
+                try:
+                    anno = store.update_annotation(
+                        m.group(1),
+                        body=b.get("body"),
+                        status=b.get("status"),
+                    )
+                except ValueError as invalid:
+                    raise GatewayError(
+                        400, "unsupported annotation status", "invalid_status"
+                    ) from invalid
+                if anno is None and store.get_annotation(m.group(1)) is not None:
+                    raise GatewayError(
+                        409,
+                        "this comment is being sent with a turn already in "
+                        "flight; wait for that turn to finish",
+                        "annotation_reserved",
+                    )
+                if anno is None:
+                    # The one refusal on this surface that did not carry the
+                    # PublicFailure envelope: `{"annotation": null}` with a 404
+                    # has no `error`, no stable `code`, no `request_id`. The
+                    # UI's own `api()` builds an ApiError out of `j.error` for
+                    # every non-2xx, so this arrived as a failure with nothing
+                    # in it -- and the frozen contract published that as the
+                    # route's error shape. Raising is what the rest of the
+                    # gateway does, and the dispatcher enriches it.
+                    raise GatewayError(404, "annotation not found")
+                self._json({"annotation": _annotation_json(anno)})
                 return
             if m and method == "DELETE":
                 current_annotation = store.get_annotation(m.group(1))
@@ -8470,7 +10327,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         str(current_annotation["root_frame_id"]),
                         "deleting Session annotations",
                     )
-                store.delete_annotation(m.group(1))
+                existed = store.get_annotation(m.group(1)) is not None
+                if not store.delete_unreserved_annotation(m.group(1)) and existed:
+                    raise GatewayError(
+                        409,
+                        "this comment is being sent with a turn already in "
+                        "flight; wait for that turn to finish",
+                        "annotation_reserved",
+                    )
                 self._json({"ok": True})
                 return
             m = re.fullmatch(r"/frames/([^/]+)/artifacts\.zip", sub)
@@ -8827,9 +10691,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     "python",
                     "r",
                     "bundle",
+                    # A reading form, not a re-running one: both languages in
+                    # execution order in one document, for an issue or a
+                    # methods section. It rides this route rather than a new
+                    # one because it answers the same question about the same
+                    # branch, and a second route would be a second place for
+                    # "which cells belong to this branch" to be decided.
+                    "markdown",
                 }:
                     self._json(
-                        {"error": "notebook language must be python, r, or bundle"},
+                        {
+                            "error": (
+                                "notebook language must be python, r, bundle, "
+                                "or markdown"
+                            )
+                        },
                         400,
                     )
                     return
@@ -9303,7 +11179,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         )
                     )
                 except Exception as e:  # noqa: BLE001
-                    self._json({"error": str(e)}, 200)
+                    # 502, not the 200 this answered with. An MCP server is a
+                    # subprocess this daemon spawned and talked to; when that
+                    # conversation fails the request did not succeed, and
+                    # `api()` in app.js only rejects on a non-2xx -- so a
+                    # connector that never ran was reported as one that did.
+                    # The message was `str(e)` from a third-party server whose
+                    # errors routinely quote the argv and env it was launched
+                    # with, which is the launch command and its secrets.
+                    body, status = public_exception(
+                        e,
+                        surface="connector:call",
+                        request_id=getattr(self, "_correlation_id", ""),
+                        status=502,
+                        error_code="connector_failed",
+                    )
+                    self._json(body, status)
                 return
             m = re.fullmatch(r"/connectors/([^/]+)", sub)
             if m and method == "DELETE":
@@ -9424,6 +11315,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         b.get("command") or b.get("code") or "",
                         kind=b.get("kind") or "bash",
                         cwd=b.get("cwd"),
+                        # Optional, and bounded by the manager. Omitting it
+                        # takes the default deadline rather than the unbounded
+                        # run this route used to give every caller.
+                        deadline_s=b.get("deadline_s"),
                     )
                 )
                 return
@@ -9538,13 +11433,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
             if sub == "/memory" and method == "POST":
                 b = self._body()
-                self._json(
-                    store.add_memory(
+                scope = _memory_scope(store, b.get("project_id"))
+                try:
+                    # Refused before the row exists, not trimmed after: see
+                    # MemoryRepository.add. The code travels so a client can
+                    # tell "too long" from "this scope is full" without
+                    # matching on English.
+                    saved = store.add_memory(
                         content=b.get("content") or "",
                         block=b.get("block") or "general",
-                        project_id=b.get("project_id") or "default",
+                        project_id=scope,
                     )
-                )
+                except MemoryLimitError as error:
+                    raise GatewayError(400, str(error), error.code) from error
+                self._json(saved)
                 return
             if sub in ("/memory/categories", "/memory/context") and method == "GET":
                 # Explicit or scoped: the cross-project view is a real
@@ -9559,8 +11461,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # never receives -- a preview that is wrong in the one
                     # direction that matters, since it is the surface a user
                     # checks precisely when they suspect something was lost.
-                    mems = store.list_memories(project_id=pid)
-                    kept, dropped = memory_budget.select(mems)
+                    resolved = store.resolve_memories(pid)
+                    kept, dropped = memory_budget.select(resolved["memories"])
                     self._json(
                         {
                             "context": memory_budget.render(kept, dropped),
@@ -9573,12 +11475,82 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 }
                                 for item in dropped
                             ],
+                            # Which scope this preview is for, and what the
+                            # global tier contributed to it. A pane that shows
+                            # only the merged text cannot distinguish "no such
+                            # memory" from "this project overrode that block",
+                            # and those call for opposite actions.
+                            "project_id": pid,
+                            "inherited_count": resolved["inherited"],
+                            "overridden_count": resolved["overridden"],
                         }
                     )
                 return
+            # `[^/]+` matches `categories`, `context` and `enabled` too, and
+            # those are sub-resources of `/memory`, not memory ids. Their GET
+            # handlers run above, so a GET was always answered correctly -- but
+            # every other verb fell through to here and was interpreted as an
+            # operation on a memory called "categories". A `DELETE
+            # /memory/categories` was answered "memory deletes require a
+            # project_id" rather than 404, which reads as "supply one and this
+            # will work"; it would not have, and the shape of the reply said it
+            # would. Reserved names 404 like any unknown path.
             m = re.fullmatch(r"/memory/([^/]+)", sub)
+            if m and m.group(1) in ("categories", "context", "enabled"):
+                m = None
+            if m and method == "PATCH":
+                # Scoped exactly like the DELETE below, and for the same
+                # reason: an id-only edit would rewrite a memory belonging to
+                # whichever project happens to own it. Correcting standing
+                # context used to mean delete-and-rewrite, which loses the
+                # row's place in the newest-first order and can leave the user
+                # with neither version if the second call hits the scope cap.
+                b = self._body()
+                scope = (q.get("project_id") or [""])[0].strip()
+                if not scope:
+                    raise GatewayError(
+                        400,
+                        "memory edits require a project_id query parameter "
+                        f"({MEMORY_GLOBAL_SCOPE!r} or a project id)",
+                        "memory_scope_required",
+                    )
+                try:
+                    edited = store.update_memory(
+                        m.group(1),
+                        content=b.get("content"),
+                        block=b.get("block"),
+                        project_id=scope,
+                    )
+                except MemoryLimitError as error:
+                    raise GatewayError(400, str(error), error.code) from error
+                if edited is None:
+                    raise GatewayError(
+                        404,
+                        f"no memory {m.group(1)!r} in scope {scope!r}",
+                        "memory_not_found",
+                    )
+                self._json(edited)
+                return
             if m and method == "DELETE":
-                store.delete_memory(m.group(1))
+                # Scoped, and the scope is the caller's to state. An id-only
+                # delete removes a memory from whichever project happens to own
+                # it, so a stale tab listing another project's rows could delete
+                # across the boundary and be answered {"ok": true} either way.
+                scope = (q.get("project_id") or [""])[0].strip()
+                if not scope:
+                    raise GatewayError(
+                        400,
+                        "memory deletes require a project_id query parameter "
+                        f"({MEMORY_GLOBAL_SCOPE!r}, a project id, or "
+                        f"{MEMORY_ALL_PROJECTS!r} for the cross-project view)",
+                        "memory_scope_required",
+                    )
+                if not store.delete_memory(m.group(1), project_id=scope):
+                    raise GatewayError(
+                        404,
+                        f"no memory {m.group(1)!r} in scope {scope!r}",
+                        "memory_not_found",
+                    )
                 self._json({"ok": True})
                 return
 
@@ -9944,6 +11916,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 conn.close()  # stop the writer thread + mark dead
                 hub.remove(conn)
 
+    # Published on the class so `server_close` can reach it. The manager owns
+    # real process trees, and it lived only in this closure -- so the daemon
+    # exiting left them running, reparented, with nothing recording that they
+    # existed. The server owns the socket and the runner; it has to own this
+    # too, which is what P0-3 means by "server-owned close".
+    Handler.jobs_manager = _jobs_mgr
+
     return Handler
 
 
@@ -9990,6 +11969,89 @@ def _project_json(p: dict) -> dict:
     }
 
 
+def _message_failure(message: dict) -> dict | None:
+    """The failure identity stored on one message, projected safely.
+
+    Same allowlist discipline as `_message_artifact_refs`, and for the same
+    reason -- but this one exists because a reopened session had no way to
+    recover either fact. The socket event that carried them is gone once the
+    tab closes, and the row's prose is a sentence, not an id. So a user coming
+    back to a failed turn could neither quote a support id nor learn that
+    retrying would re-run a tool that already ran.
+
+    Three scalars, each already published on the live surfaces. Never the
+    exception, never a path.
+    """
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(raw, dict):
+        return None
+    failure = raw.get("failure")
+    if not isinstance(failure, dict):
+        return None
+    out: dict = {}
+    request_id = failure.get("request_id")
+    if isinstance(request_id, str) and request_id:
+        out["request_id"] = request_id
+    code = failure.get("code")
+    if isinstance(code, str) and code:
+        out["code"] = code
+    # Only ever True, the same contract the wire carries.
+    if failure.get("output_committed") is True:
+        out["output_committed"] = True
+    return out or None
+
+
+def _message_artifact_refs(message: dict) -> list[dict]:
+    """The structured references stored on one message, projected safely.
+
+    An allowlist rather than the raw blob: the metadata column is shared, and
+    handing a client everything anyone ever stamped on a message is how an
+    internal field becomes a published contract by accident.
+    """
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw, dict):
+        return []
+    refs = raw.get("artifact_refs")
+    if not isinstance(refs, list):
+        return []
+    projected: list[dict] = []
+    for ref in refs[:8]:
+        if not isinstance(ref, dict):
+            continue
+        row = {
+            "artifact_id": str(ref.get("artifact_id") or ""),
+            "version_id": str(ref.get("version_id") or ""),
+            "sha256": str(ref.get("sha256") or ""),
+            "display_name": str(ref.get("display_name") or ""),
+            "source_session": str(ref.get("source_session") or ""),
+            "sent_bytes": int(ref.get("sent_bytes") or 0),
+            "materialized_target": (
+                str(ref["materialized_target"])
+                if ref.get("materialized_target")
+                else None
+            ),
+        }
+        # Only when true, mirroring the record: an absent key is "not
+        # truncated", and every untruncated ref keeps the shape it had. Without
+        # this pair the fact that the model was handed a partial file dies with
+        # the WebSocket event, which is the hole `_message_failure` above was
+        # written to close for failures.
+        if ref.get("truncated"):
+            row["truncated"] = True
+        projected.append(row)
+    return projected
+
+
 def _artifact_json(a: dict) -> dict:
     return {
         "id": a["artifact_id"],
@@ -10033,28 +12095,108 @@ def _annotation_json(a: dict | None) -> dict | None:
         "number": a.get("number"),
         "body": a.get("body"),
         "status": a.get("status", "open"),
+        # The version this pin was taken against, so a client can tell a pin on
+        # the figure now on screen from one taken before the agent re-plotted.
+        "version_id": a.get("version_id"),
         "created_at": _iso(a.get("created_at")),
         "updated_at": _iso(a.get("updated_at") or a.get("created_at")),
     }
 
 
-_RASTER_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+#: Magic numbers, not filenames. A pinned artifact holds whatever the cell wrote
+#: to that path: `figure.png` containing a PDF used to reach PIL and be dropped
+#: with no reason given, while a genuine PNG written as `figure.dat` was skipped
+#: because its extension was not on a list. Neither the extension nor the
+#: recorded content_type is evidence about bytes -- both are declarations.
+_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
 
 
-def _is_raster_image(path: str) -> bool:
-    return str(path).lower().endswith(_RASTER_EXT)
+def _sniff_image_mime(raw: bytes) -> str | None:
+    """Return the MIME type these BYTES are, or None if they are not a raster."""
+    for magic, mime in _IMAGE_MAGIC:
+        if raw.startswith(magic):
+            return mime
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    # "BM" on its own is two bytes and matches plenty of ordinary text, so the
+    # BMP header's own total-size field is checked against the real length.
+    if raw[:2] == b"BM" and len(raw) >= 26:
+        if int.from_bytes(raw[2:6], "little") == len(raw):
+            return "image/bmp"
+    return None
 
 
-def _figure_with_pins(path: str, pins: list) -> tuple[str | None, str]:
+def _pinned_image_bytes(store, pins: list) -> tuple[bytes | None, dict | None]:
+    """Read the exact artifact VERSION a pin was taken against.
+
+    A pin is a statement about one picture: the user clicked a point on the
+    image that was in front of them. Resolving `artifact_id` at send time
+    answered "whatever that file holds now" instead, so an agent that re-plotted
+    between the pin and the send changed what the model received while the pin
+    coordinates still described the old figure -- wrong rather than absent, and
+    invisible to everyone involved.
+
+    So the annotation records `version_id` + `checksum` when it is created and
+    this reads *that* version: its immutable snapshot when one exists, otherwise
+    the live path verified against the recorded checksum. A live file that no
+    longer hashes to what was pinned is refused, never substituted.
+
+    Returns ``(raw_bytes, None)`` or ``(None, problem)`` -- exactly one is set.
+    The problem is the dict the UI card and the model note both read, so a
+    refusal carries its own numbers rather than being reconstructed by either.
+    """
+    head = pins[0] if pins else {}
+    version_id = str((head or {}).get("version_id") or "")
+    checksum = str((head or {}).get("checksum") or "")
+    # Annotations pinned before the binding columns existed carry neither, and
+    # nothing can reconstruct which version they meant. Refusing them would
+    # discard a user's pending pins on upgrade, so they keep the old
+    # artifact-latest resolution -- the only case where "whatever it holds now"
+    # is still the best available answer.
+    ident = version_id or str((head or {}).get("artifact_id") or "")
+    if not ident:
+        return None, {"reason": "not_found"}
+    path = store.resolve_artifact_path(ident)
+    if not path:
+        return None, {"reason": "not_found"}
+    try:
+        size = os.path.getsize(path)
+        if size > MAX_SOURCE_IMAGE_BYTES:
+            return None, {
+                "reason": "too_large",
+                "bytes": size,
+                "limit": MAX_SOURCE_IMAGE_BYTES,
+            }
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        # Deleted, moved, or unreadable underneath the pin.
+        return None, {"reason": "not_found"}
+    if checksum and hashlib.sha256(raw).hexdigest() != checksum:
+        return None, {"reason": "version_changed"}
+    if _sniff_image_mime(raw) is None:
+        return None, {"reason": "unsupported_type"}
+    return raw, None
+
+
+def _figure_with_pins(raw: bytes, pins: list) -> tuple[str | None, str]:
     """Composite a numbered red marker at each pin's (rel_x, rel_y) onto a COPY
     of the figure; return (base64_png, "image/png"). The original file is never
-    touched. Returns (None, "") if PIL is unavailable or the image can't open."""
+    touched -- and is never re-opened either: these are the bytes already
+    verified against the pinned version's checksum, so nothing can change
+    between the check and the draw. Returns (None, "") if PIL is unavailable or
+    the bytes will not decode."""
     try:
         from PIL import Image, ImageDraw
 
-        with Image.open(path) as _src:
+        with Image.open(io.BytesIO(raw)) as _src:
             im = _src.convert("RGB")
-    except Exception:  # noqa: BLE001 — missing PIL / unreadable → text-only
+    except Exception:  # noqa: BLE001 — missing PIL / undecodable → reported
         return None, ""
     draw = ImageDraw.Draw(im)
     w, h = im.size
@@ -10138,7 +12280,16 @@ class _GatewayHTTPServer(ThreadingHTTPServer):
         try:
             self.runner.close()
         finally:
-            super().server_close()
+            try:
+                # Local jobs are process groups this daemon started. Closed in
+                # its own `finally` so a runner that raises on the way down
+                # cannot leave them orphaned, and after the runner because a
+                # cell may still be watching one.
+                manager = getattr(self.RequestHandlerClass, "jobs_manager", None)
+                if manager is not None:
+                    manager.close()
+            finally:
+                super().server_close()
 
 
 def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:

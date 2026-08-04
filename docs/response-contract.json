@@ -1,5 +1,5 @@
 {
-  "note": "Captured by driving every known route against a real handler, not written by hand. Regenerate with scripts/capture_response_contract.py. `kinds` is derived from the status and content type the handler actually sent; a route absent here is one nothing could drive, which is a gap in the tests.",
+  "note": "Captured by driving every known route against a real handler, not written by hand. Regenerate with scripts/capture_response_contract.py. `kinds` is derived from the status and content type the handler actually sent; a route absent here is one nothing could drive, which is a gap in the tests. `content_types` is what was observed and not a closed set: an artifact download echoes whatever media type its stored file has, so the entry names one the capture served rather than all of them.",
   "routes": {
     "/": {
       "content_types": [
@@ -61,9 +61,11 @@
     },
     "/artifacts/(.+)": {
       "content_types": [
-        "application/json"
+        "application/json",
+        "application/octet-stream"
       ],
       "kinds": [
+        "binary",
         "json"
       ],
       "statuses": [
@@ -91,6 +93,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -138,6 +141,7 @@
         "json"
       ],
       "statuses": [
+        200,
         400,
         404
       ]
@@ -150,6 +154,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -173,6 +178,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -483,6 +489,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -494,6 +501,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -505,6 +513,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -516,6 +525,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -527,6 +537,19 @@
         "json"
       ],
       "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/admissions/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
         404
       ]
     },
@@ -588,6 +611,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -599,6 +623,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -610,6 +635,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -633,6 +659,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -655,6 +682,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -666,6 +694,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -677,6 +706,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -723,6 +753,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -746,6 +777,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -877,6 +909,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -889,6 +922,7 @@
       ],
       "statuses": [
         200,
+        202,
         404
       ]
     },
@@ -918,12 +952,16 @@
     },
     "/frames/([^/]+)/notebook/export": {
       "content_types": [
-        "application/json"
+        "application/json",
+        "application/x-ipynb+json",
+        "application/zip"
       ],
       "kinds": [
+        "binary",
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -971,6 +1009,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -982,6 +1021,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -1004,6 +1044,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -1015,6 +1056,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -1026,6 +1068,7 @@
         "json"
       ],
       "statuses": [
+        202,
         404
       ]
     },
@@ -1037,6 +1080,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -1048,17 +1092,21 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
     "/frames/([^/]+)/session/export": {
       "content_types": [
-        "application/json"
+        "application/json",
+        "application/vnd.openai4s.session+zip"
       ],
       "kinds": [
+        "binary",
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -1107,6 +1155,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -1190,6 +1239,7 @@
       ],
       "statuses": [
         200,
+        400,
         404
       ]
     },
@@ -1202,6 +1252,7 @@
       ],
       "statuses": [
         200,
+        400,
         404
       ]
     },
@@ -1237,7 +1288,8 @@
         "json"
       ],
       "statuses": [
-        200
+        200,
+        404
       ]
     },
     "/model-endpoints/discover": {
@@ -1522,6 +1574,7 @@
         "json"
       ],
       "statuses": [
+        200,
         404
       ]
     },
@@ -1652,6 +1705,7 @@
         "json"
       ],
       "statuses": [
+        200,
         400,
         404
       ]
@@ -1724,6 +1778,7 @@
         "json"
       ],
       "statuses": [
+        200,
         400,
         404
       ]

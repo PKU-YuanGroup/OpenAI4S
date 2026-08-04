@@ -14,8 +14,11 @@ that grows with the fixtures rather than with the surface.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -214,6 +217,27 @@ class Recorder:
         self.paused = False
         self._patterns = _patterns()
 
+    def _declared(self, route: str | None) -> str | None:
+        """A driver's declared route, but only if the inventory has that entry.
+
+        Declaring the entry is the only way to tell two entries apart when both
+        match the same concrete path -- ``/artifacts/{id}`` is matched by
+        ``/artifacts/(.+)`` and ``/artifacts/([^/]+)``, and only the first one
+        serves the bytes.
+
+        But the declaration is a hand-written string in a driver table, and a
+        stale or mistyped one names no entry at all. Honouring that verbatim
+        files a real observation under a route the contract does not have: the
+        entry that served the response then looks like it never answered, and
+        the coverage line still says 152/152 because the count is of entries
+        driven, not of entries attributed. Falling back to matching the path is
+        what the recorder did before any driver declared anything, so an
+        unrecognised declaration costs nothing.
+        """
+        if route is None:
+            return None
+        return route if any(route == known for _, known in self._patterns) else None
+
     def observe(
         self,
         method: str,
@@ -233,7 +257,7 @@ class Recorder:
         # `/frames/[^/]+/shares` are both real entries, and only one of them
         # can ever win a lookup, so the other would be permanently unattributed
         # and counted as uncovered forever.
-        route = route or route_for(path, self._patterns)
+        route = self._declared(route) or route_for(path, self._patterns)
         if route is None:
             self.unmatched.add(f"{method} {path}")
             return
@@ -269,7 +293,7 @@ class Recorder:
         """
         if self.paused:
             return
-        route = route or route_for(path, self._patterns)
+        route = self._declared(route) or route_for(path, self._patterns)
         if route is None:
             self.unmatched.add(f"{method} {path}")
             return
@@ -408,6 +432,10 @@ def install(gateway_module, recorder: Recorder):
                             # a property of the API.
                             getattr(self, "_correlation_id", "") or _CAPTURE_REQUEST_ID,
                         ),
+                        # Absent for a real server request, where matching the
+                        # path is the only option; present for a probe, which
+                        # named its entry up front.
+                        route=getattr(self, "_capture_route", None),
                     )
                 except Exception:  # noqa: BLE001 - never break a response
                     pass
@@ -418,7 +446,14 @@ def install(gateway_module, recorder: Recorder):
 
             def observing_send(code, body, ctype, extra=None):
                 try:
-                    recorder.observe_raw(method, sub, code, ctype, len(body or b""))
+                    recorder.observe_raw(
+                        method,
+                        sub,
+                        code,
+                        ctype,
+                        len(body or b""),
+                        route=getattr(self, "_capture_route", None),
+                    )
                 except Exception:  # noqa: BLE001 - never break a response
                     pass
                 return raw(code, body, ctype, extra)
@@ -540,6 +575,816 @@ def unroutable(route: str) -> bool:
         return True
 
 
+def _probe_handler(
+    recorder: "Recorder",
+    handler_class,
+    method: str,
+    path: str,
+    route: str,
+    headers: dict[str, str] | None = None,
+    query: dict[str, list[str]] | None = None,
+    body: dict | None = None,
+):
+    """A handler whose three response writers report into ``recorder``.
+
+    Shared by the parameterless sweep and the seeded pass below, because a
+    second copy of "how a probe answers" is how one of them comes to record a
+    route the other cannot.
+    """
+    handler = object.__new__(handler_class)
+    # The inventory entry this probe means to exercise. Without it the
+    # recorder re-derives the entry by matching the *path*, and several
+    # frame sub-resources are matched by two entries at once -- the specific
+    # one and the broad workbench alternation. Only one can win a lookup, so
+    # `/frames/<id>/checkpoints` had its real 200 filed under the broad entry
+    # and its own entry kept only the sweep's 404: a success the surface
+    # really serves, published as if it did not exist. The driver knows which
+    # entry it is driving; the path does not.
+    handler._capture_route = route
+    handler._query = lambda: dict(query or {})
+    handler._body = lambda: dict(body or {})
+    # The driver calls `_api` directly, so the token gate in `_route`
+    # is not on its path today. The credential is presented anyway: the
+    # gate is one refactor from moving, and a driver that only works
+    # while authentication happens to be elsewhere would fail as a wall
+    # of 401s at exactly the moment the contract mattered most.
+    handler.headers = dict(headers or {})
+    # Deterministic and non-empty. `_route` gives every real request a
+    # correlation id (an inbound X-Request-Id, else `new_correlation_id()`),
+    # so `request_id` is a string on the wire and never null. Leaving
+    # this "" made `public_failure` emit null, and the frozen schema
+    # would then have declared the field's type as `null` -- describing
+    # the driver rather than the server. A fixed literal keeps the
+    # artifact byte-identical across runs.
+    handler._correlation_id = _CAPTURE_REQUEST_ID
+    handler._last_status = 0
+    handler._json = lambda value, code=200: recorder.observe(
+        method,
+        path,
+        code,
+        public_failure(value, code, _CAPTURE_REQUEST_ID),
+        route=route,
+    )
+    handler._send = lambda code, body, ctype, extra=None: recorder.observe_raw(
+        method, path, code, ctype, len(body or b""), route=route
+    )
+
+    # The third writer, and the one whose absence published a lie.
+    # `_stream_file` builds its own headers straight on the
+    # BaseHTTPRequestHandler instead of going through `_json`/`_send`,
+    # so on the synthetic handler built here it raised inside
+    # `send_response` (no `requestline`) and the caller's `except Exception`
+    # swallowed it. The route was not left blank, though: the four
+    # *unimplemented* verbs still produced the dispatcher's 404, so both
+    # `artifacts.zip` routes were published as `kinds: ["json"],
+    # statuses: [404]` — a download endpoint documented as a JSON error,
+    # with the coverage gate reporting it as covered. It is also why no
+    # route ever recorded STREAM or BINARY despite the module deriving
+    # both kinds.
+    #
+    # Mirrors the real method exactly, including its own 404: a file it
+    # cannot open is a JSON error there too, not a stream.
+    def _stub_stream(file_path, ctype, extra=None):
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            recorder.observe(method, path, 404, {"error": "not found"}, route=route)
+            return
+        recorder.observe_raw(method, path, 200, ctype, size, route=route)
+
+    handler._stream_file = _stub_stream
+    return handler
+
+
+#: What a seeded capture writes. Fixed rather than generated: the artifacts it
+#: feeds are committed and diffed, so anything varying per run is drift.
+_CAPTURE_PROJECT = "contract-capture"
+_CAPTURE_FILENAME = "capture.bin"
+_CAPTURE_BYTES = b"contract-capture\n"
+_CAPTURE_TEXT_FILENAME = "capture.txt"
+_CAPTURE_HISTORY_FILENAME = "capture-history.txt"
+# Fixed owner ids, so the captured projection is byte-identical across runs
+# and the fixture can assert which ticket it is looking at.
+_CAPTURE_OWNER_ID = "capture-owner"
+_CAPTURE_QUEUED_ID = "capture-queued"
+_CAPTURE_TEXT_BYTES = b"contract capture, editable\n"
+# Fixed, so a re-capture produces a byte-identical artifact. Long enough
+# to satisfy the route's own 24-character floor for a client-supplied id.
+_CAPTURE_RESERVATION = "resv-contractcapture000000001"
+#: Fixed, so the resolved decision is byte-identical across runs.
+_CAPTURE_DECISION_ID = "dec-contractcapture0001"
+#: How long the seeded pass waits for the turns its 202s accepted. Not a budget
+#: for the turn -- it fails immediately without a provider -- but a ceiling, so
+#: a gate can never block on one.
+_SEEDED_JOB_WAIT_S = 30.0
+
+
+def _drive_seeded_downloads(
+    recorder: "Recorder",
+    handler_class,
+    runner,
+    headers: dict[str, str] | None = None,
+) -> None:
+    """Record the success of routes the parameterless sweep can only refuse.
+
+    A notebook export, a Session package and an artifact download each need
+    something to serve, so against a probe id every one of them 404s. That left
+    them worse than uncovered: the four unimplemented verbs still recorded the
+    dispatcher's 404, so a download endpoint was published as
+    `kinds: ["json"], statuses: [404]` — a contract describing only how the
+    route refuses — and the coverage gate counted it.
+
+    The same shape reaches beyond downloads, which is why this is no longer
+    only about bytes. Any route whose success needs a row to exist first
+    freezes as refusal-only, and the two here were found by auditing the
+    contract for exactly that: `POST /frames/<id>/plan/approve` needs a draft
+    plan, and `PATCH /memory/<id>` needs a memory. Nothing about either
+    success was written down.
+
+    These are real successes, not stubbed ones: a seeded draft really is
+    approved, and the 202 is written before the turn it spawns — that turn then
+    fails on the capture environment's absent provider, which is the same thing
+    it does for every other route here and is not what is being recorded. A
+    fabricated 200 would be worse than an absent one, because it would be
+    believed.
+
+    One frame, one file, one plan and one memory is the whole fixture, created
+    *after* the sweep so the unknown-resource 404s it froze are unchanged. Both
+    callers hand this a Store in a temp directory that is removed on the way
+    out.
+
+    A failure here is recorded, never swallowed: the seeded pass exists because
+    a silently skipped success republishes the refusal-only contract it was
+    written to replace.
+    """
+    store = runner.store
+    # A real project row. Without one every project-scoped route answers
+    # "project not found", which is a fact about the fixture rather than about
+    # the surface.
+    try:
+        store.create_project(name="contract capture", project_id=_CAPTURE_PROJECT)
+    except Exception:  # noqa: BLE001 - already present on a re-drive
+        pass
+    frame_id = store.new_frame(kind="turn", project_id=_CAPTURE_PROJECT, status="ready")
+    blob = runner.workspace_for(frame_id) / _CAPTURE_FILENAME
+    blob.write_bytes(_CAPTURE_BYTES)
+    artifact = store.save_artifact(
+        path=str(blob),
+        filename=_CAPTURE_FILENAME,
+        # Opaque bytes on purpose. This route echoes the stored artifact's own
+        # content type, so seeding a `text/plain` would freeze a fact about the
+        # fixture; `application/octet-stream` is what the route promises when it
+        # knows nothing about the file, which is the honest general case.
+        content_type="application/octet-stream",
+        size_bytes=len(_CAPTURE_BYTES),
+        checksum=hashlib.sha256(_CAPTURE_BYTES).hexdigest(),
+        frame_id=frame_id,
+        root_frame_id=frame_id,
+        project_id=_CAPTURE_PROJECT,
+    )
+    store.create_plan(
+        frame_id=frame_id,
+        project_id=_CAPTURE_PROJECT,
+        title="capture",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "step", "detail": "", "deliverables": []}],
+        status="draft",
+    )
+    # A pending approval this session owns, so `POST /frames/<id>/decision`
+    # has something real to resolve. Without it the route only ever recorded a
+    # refusal.
+    # Idempotent, like `create_project` above: `drive_all_routes` runs more
+    # than once against one store during a schemas capture, and the id is fixed
+    # so a re-capture stays byte-identical. Without this the second drive hit
+    # `UNIQUE constraint failed: permission_requests.decision_id` and took four
+    # coverage tests down with it -- which passed in isolation, because each of
+    # those gets a fresh store.
+    try:
+        store.create_permission_request(
+            decision_id=_CAPTURE_DECISION_ID,
+            tool="save_artifact",
+            target=_CAPTURE_FILENAME,
+            root_frame_id=frame_id,
+            frame_id=frame_id,
+            project_id=_CAPTURE_PROJECT,
+        )
+    except Exception:  # noqa: BLE001 - already present on a re-drive
+        pass
+    memory = store.add_memory(
+        content="capture memory", block="general", project_id=_CAPTURE_PROJECT
+    )
+    artifact_id = artifact["artifact_id"]
+    probes: tuple[tuple[str, str, dict[str, list[str]]], ...] = (
+        # Both notebook forms. The default is a zip *bundle* and a named
+        # language is an `.ipynb`; a contract saying only "binary" cannot tell a
+        # client which of the two it asked for.
+        (
+            r"/frames/([^/]+)/notebook/export",
+            f"/frames/{frame_id}/notebook/export",
+            {},
+        ),
+        (
+            r"/frames/([^/]+)/notebook/export",
+            f"/frames/{frame_id}/notebook/export",
+            {"language": ["python"]},
+        ),
+        (r"/frames/([^/]+)/session/export", f"/frames/{frame_id}/session/export", {}),
+        # `(.+)`, because that is the entry that serves the bytes:
+        # `gateway.py` dispatches the download from `/artifacts/(.+)` ->
+        # `_serve_artifact`, while `/artifacts/([^/]+)` is DELETE and the
+        # sub-resources. Both entries matched this concrete path, and the
+        # capture used to record every probe twice -- once under the declared
+        # route, once under whichever pattern the path matched first -- so the
+        # frozen contract credited `binary` to both. Only one of them ever
+        # served it.
+        (r"/artifacts/(.+)", f"/artifacts/{artifact_id}", {}),
+    )
+    # Re-driven with a row present. The parameterless sweep runs before this
+    # fixture exists, so it observes `memories: []` -- and an empty array
+    # teaches the recorder nothing about what an element looks like, so the
+    # published contract for a *populated* list was silently no contract at
+    # all. `merge` widens across observations, so driving them again here adds
+    # the element shape rather than replacing anything.
+    probes = probes + (
+        (r"/memory", "/memory", {"project_id": ["all"]}),
+        (r"/memory/categories", "/memory/categories", {"project_id": ["all"]}),
+        (r"/memory/context", "/memory/context", {"project_id": [_CAPTURE_PROJECT]}),
+    )
+    for route, path, query in probes:
+        handler = _probe_handler(
+            recorder, handler_class, "GET", path, route, headers, query
+        )
+        try:
+            handler._api("GET", path)
+        except Exception as error:  # noqa: BLE001
+            recorder.drive_failures[
+                f"GET {route} (seeded)"
+            ] = f"{type(error).__name__}: {error}"
+
+    # A pin to send. Created here rather than reused, so the capture does not
+    # depend on some other seeded step having left one `open`.
+    annotation_id = runner.store.add_annotation(
+        root_frame_id=frame_id,
+        # The real Artifact, not a literal. A pin naming an artifact id that
+        # does not exist is accepted here and then fails every path that
+        # validates the pair -- a checkpoint capture takes it, and the restore
+        # refuses the whole snapshot with "checkpoint annotation Artifact is
+        # unavailable", which took revert/apply, revert/undo and branch
+        # activation out of the capture entirely.
+        artifact_id=artifact_id,
+        artifact_name=_CAPTURE_FILENAME,
+        rel_x=0.5,
+        rel_y=0.5,
+        body="capture pin",
+    )["annotation_id"]
+
+    writes: tuple[tuple[str, str, str, dict[str, list[str]], dict], ...] = (
+        (
+            "POST",
+            r"/frames/([^/]+)/plan/(approve|resume|revise|discard)",
+            f"/frames/{frame_id}/plan/approve",
+            {},
+            {},
+        ),
+        (
+            "PATCH",
+            r"/memory/([^/]+)",
+            f"/memory/{memory['memory_id']}",
+            {"project_id": [_CAPTURE_PROJECT]},
+            {"content": "capture memory, corrected"},
+        ),
+        # A real `wait:false` turn carrying a real pin. The 202 grows two
+        # fields when annotations ride along (`annotations`,
+        # `annotation_reservation_id`), and a probe that never sends one
+        # freezes the shape without them -- publishing a contract for a
+        # response the server does not send in the case that needs it most.
+        (
+            "POST",
+            r"/frames/([^/]+)/message",
+            f"/frames/{frame_id}/message",
+            {},
+            {
+                "request": "capture turn with a pinned comment",
+                "wait": False,
+                "annotation_ids": [annotation_id],
+            },
+        ),
+    )
+    for method, route, path, query, body in writes:
+        handler = _probe_handler(
+            recorder, handler_class, method, path, route, headers, query, body
+        )
+        try:
+            handler._api(method, path)
+        except Exception as error:  # noqa: BLE001
+            recorder.drive_failures[
+                f"{method} {route} (seeded)"
+            ] = f"{type(error).__name__}: {error}"
+
+    _drive_session_surface(recorder, handler_class, runner, frame_id, artifact, headers)
+
+    # A 202 means work was accepted, and the work really starts: `approve`
+    # spawns a background turn that writes into the Store and the workspace.
+    # The callers here run against a temp directory they delete on the way out,
+    # and without this wait the delete raced a live thread and failed with
+    # "Directory not empty" -- the capture succeeding and the harness crashing
+    # afterwards. Bounded, because a hung turn must not hang the gate; the turn
+    # itself fails fast on the capture environment's absent provider.
+    deadline = time.monotonic() + _SEEDED_JOB_WAIT_S
+    for job in list(getattr(runner, "_jobs", {}).values()):
+        job.done.wait(max(0.0, deadline - time.monotonic()))
+
+
+def _drive_session_surface(
+    recorder: "Recorder",
+    handler_class,
+    runner,
+    frame_id: str,
+    artifact: dict,
+    headers: dict[str, str] | None = None,
+) -> None:
+    """The session surface, asked against resources that exist.
+
+    Most of this file's routes are frame-scoped, and the parameterless sweep
+    probes them with an id shaped like a real one that names nothing. Every one
+    of them answered 404, and 404 became their published contract -- so the
+    artifact described how thirty routes refuse and said nothing about what
+    they return. A client generating against it would have had no shape for the
+    Timeline, the execution queue, the branch list or the recovery journal.
+
+    The fixture is the one `_drive_seeded_downloads` already built, extended
+    with the rows each group needs, and every response here is a real one: a
+    real checkpoint over a real workspace tree, a real fork, a real revert and
+    its real undo. Nothing is stubbed, because a fabricated 200 in a file whose
+    entire claim is "captured from real responses" is worse than an absent one.
+
+    What is deliberately *not* here, and why -- each needs something this
+    process cannot honestly produce, so their refusal-only entries stand as the
+    truth about what can be observed offline rather than being papered over:
+
+    * `compute/tasks/<id>/refresh` contacts a real BYOC provider. There is no
+      read-only probe; the refresh *is* the harvest.
+    * `delegations/<id>/stop` and `/steer` resolve a live in-process delegation
+      runner, which exists only during a real LLM turn.
+    * `kernel/*` answers 403 under the deny-by-default posture, and that 403 is
+      the contract for an unapproved session rather than a gap in it.
+    * `artifacts/promote` needs a cell that really executed.
+    """
+    artifact_id = artifact["artifact_id"]
+    store = runner.store
+
+    # A text artifact, because `edit` refuses anything it cannot treat as text
+    # and the octet-stream fixture above is deliberately opaque.
+    text_path = runner.workspace_for(frame_id) / _CAPTURE_TEXT_FILENAME
+    text_path.write_bytes(_CAPTURE_TEXT_BYTES)
+    text_artifact = store.save_artifact(
+        path=str(text_path),
+        filename=_CAPTURE_TEXT_FILENAME,
+        content_type="text/plain",
+        size_bytes=len(_CAPTURE_TEXT_BYTES),
+        checksum=hashlib.sha256(_CAPTURE_TEXT_BYTES).hexdigest(),
+        frame_id=frame_id,
+        root_frame_id=frame_id,
+        project_id=_CAPTURE_PROJECT,
+    )
+    # Through the domain service, not the repository: it snapshots the real
+    # workspace into the CAS, so the checkpoint names a tree that exists. A
+    # hand-written tree id parses and then fails the lookup, which is how an
+    # earlier attempt at this produced KeyError instead of a contract.
+    checkpoint = runner.session_domain.create_checkpoint(frame_id, reason="capture")
+    checkpoint_id = checkpoint["checkpoint_id"]
+    branch = runner.session_domain.fork_branch(
+        root_frame_id=frame_id,
+        from_checkpoint_id=checkpoint_id,
+        name="capture branch",
+    )
+
+    reservation = _CAPTURE_RESERVATION
+    pin = store.add_annotation(
+        root_frame_id=frame_id,
+        artifact_id=artifact_id,
+        artifact_name=_CAPTURE_FILENAME,
+        rel_x=0.25,
+        rel_y=0.25,
+        body="capture pin, reserved",
+    )["annotation_id"]
+    store.reserve_with_admission(
+        reservation_id=reservation,
+        root_frame_id=frame_id,
+        annotation_ids=[pin],
+    )
+
+    # Two real coordinator tickets, so the execution projections describe a
+    # session that is genuinely busy.
+    #
+    # Without them these two routes answered 200 by accident: the seeded plan
+    # and message turns above leave short-lived background jobs holding real
+    # tickets, and whether the capture caught one was a race with how fast they
+    # failed on the absent provider. On a slower or faster host the same run
+    # publishes an empty projection -- a contract for the idle case, frozen as
+    # the contract for the route, with nothing saying which one it is.
+    #
+    # The first ticket is held by a barrier for the length of the reads, so it
+    # is unambiguously the owner; the second is submitted behind it and is
+    # unambiguously queued. Released in `finally`, because a held ticket
+    # outliving this function blocks everything the rest of the capture
+    # submits.
+    # Submitted in this order and no other: the coordinator promotes the first
+    # ticket a session receives, so whichever is submitted first is the active
+    # one. This was `owner_ticket = None` with only the second submit present,
+    # which inverted the whole fixture: the ticket named "queued" became the
+    # active one 25ms after submit, `admitted(None)` raised and killed the
+    # holder thread on its first statement, and `drain_queued` in the `finally`
+    # cancels *queued* tickets only -- so the active one was never released and
+    # every later write waited on an admission that could not arrive.
+    owner_ticket = runner.executions.submit(
+        frame_id, owner="user", owner_id=_CAPTURE_OWNER_ID, language="python"
+    )
+    # Submitted for its effect, not its value: it exists so the queue
+    # projection below has an entry to describe. `drain_queued` in the
+    # `finally` cancels it by session, so nothing here needs to hold it.
+    runner.executions.submit(
+        frame_id, owner="user", owner_id=_CAPTURE_QUEUED_ID, language="python"
+    )
+    holding = threading.Event()
+    finished = threading.Event()
+
+    def _hold_owner() -> None:
+        try:
+            with runner.executions.admitted(
+                owner_ticket, cancel_event=threading.Event(), timeout=_SEEDED_JOB_WAIT_S
+            ):
+                holding.set()
+                finished.wait(_SEEDED_JOB_WAIT_S)
+        except BaseException as error:  # noqa: BLE001
+            recorder.drive_failures[
+                "execution fixture (owner ticket)"
+            ] = f"{type(error).__name__}: {error}"
+            holding.set()
+
+    holder = threading.Thread(target=_hold_owner, name="capture-owner", daemon=True)
+    holder.start()
+    if not holding.wait(_SEEDED_JOB_WAIT_S):
+        recorder.drive_failures[
+            "execution fixture (owner ticket)"
+        ] = "the owner ticket never reached running"
+    # `snapshot` names the active ticket `owner`, not `running`. Reading the
+    # wrong key reported a fixture failure on a correct fixture -- and the
+    # assertion is the only thing standing between "the projection describes a
+    # busy session" and "the projection happened to be empty".
+    projection = runner.executions.snapshot(frame_id)
+    active = projection.get("owner") or {}
+    if str((active.get("owner") or {}).get("id") or "") != _CAPTURE_OWNER_ID:
+        recorder.drive_failures[
+            "execution fixture (owner ticket)"
+        ] = f"the held ticket is not the active one: {active!r}"
+    if not any(
+        str((item.get("owner") or {}).get("id") or "") == _CAPTURE_QUEUED_ID
+        for item in projection.get("queue") or []
+    ):
+        recorder.drive_failures[
+            "execution fixture (queued ticket)"
+        ] = f"the second ticket is not queued: {projection.get('queue')!r}"
+
+    base = f"/frames/{frame_id}"
+    reads: tuple[tuple[str, str], ...] = (
+        (r"/frames/([^/]+)/action-timeline", f"{base}/action-timeline"),
+        (r"/frames/([^/]+)/execution", f"{base}/execution"),
+        (r"/frames/([^/]+)/execution-queue", f"{base}/execution-queue"),
+        (r"/frames/([^/]+)/context", f"{base}/context"),
+        (r"/frames/([^/]+)/security", f"{base}/security"),
+        (r"/frames/([^/]+)/delegations", f"{base}/delegations"),
+        (r"/frames/([^/]+)/recovery", f"{base}/recovery"),
+        (r"/frames/([^/]+)/recovery/actions", f"{base}/recovery/actions"),
+        (r"/frames/([^/]+)/branches", f"{base}/branches"),
+        # One inventory entry covers both spellings; there is no bare
+        # `/frames/<id>/checkpoints` pattern, and naming one would publish a
+        # route the surface does not have.
+        (
+            r"/frames/([^/]+)/(?:checkpoints|branches/checkpoints)",
+            f"{base}/checkpoints",
+        ),
+        (
+            r"/frames/([^/]+)/(?:checkpoints|branches/checkpoints)",
+            f"{base}/branches/checkpoints",
+        ),
+        (r"/frames/([^/]+)/review-settings", f"{base}/review-settings"),
+        (r"/frames/([^/]+)/kernel/variables", f"{base}/kernel/variables"),
+        (r"/frames/([^/]+)/compute/tasks", f"{base}/compute/tasks"),
+        (r"/frames/([^/]+)/revert/operations", f"{base}/revert/operations"),
+        (
+            r"/frames/([^/]+)/admissions/([^/]+)",
+            f"{base}/admissions/{reservation}",
+        ),
+        (r"/artifacts/([^/]+)/renderer", f"/artifacts/{artifact_id}/renderer"),
+        (
+            r"/projects/([^/]+)/skills/catalog",
+            f"/projects/{_CAPTURE_PROJECT}/skills/catalog",
+        ),
+        # The one entry whose pattern is deliberately broad: it matches every
+        # frame sub-resource above, and only one inventory entry can win a
+        # lookup, so it is driven explicitly or it stays uncovered forever.
+        (
+            r"/frames/([^/]+)/(?:action-timeline|execution-queue|context|security"
+            r"|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?"
+            r"|branches(?:/(?:checkpoints|fork|revert-preview|revert"
+            r"|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo"
+            r"|operations)|notebook/export|session/export|kernel/variables"
+            r"|execution)",
+            f"{base}/execution",
+        ),
+    )
+    try:
+        for route, path in reads:
+            # "GET", because that is what is dispatched on the next line.
+            # `_probe_handler` installs its own `_json` collector bound to this
+            # argument, and `install()`'s wrapper records under the method it
+            # dispatches and *then* calls that collector -- so every probed
+            # response is filed twice, and a mismatch here files the second
+            # copy under a verb the route does not serve. Passing "DELETE"
+            # published `[ok]` shapes for DELETE on eighteen GET-only frame
+            # sub-resources: a contract promising deletes that 405 in reality.
+            handler = _probe_handler(
+                recorder, handler_class, "GET", path, route, headers
+            )
+            try:
+                handler._api("GET", path)
+            except Exception as error:  # noqa: BLE001
+                recorder.drive_failures[
+                    f"GET {route} (session surface)"
+                ] = f"{type(error).__name__}: {error}"
+    finally:
+        # In `finally`, because a held ticket that outlives this block stops
+        # everything below from being admitted at all. One raised read would
+        # otherwise have taken the rest of the capture with it.
+        runner.executions.drain_queued(frame_id, reason="contract capture")
+        finished.set()
+        holder.join(timeout=_SEEDED_JOB_WAIT_S)
+        if holder.is_alive():
+            recorder.drive_failures[
+                "execution fixture (owner ticket)"
+            ] = "the held ticket was never released"
+
+    # Checked rather than assumed, and checked *outside* the `finally` so it
+    # cannot mask an in-flight exception. The writes below wait on an admission
+    # with no deadline, so a fixture that failed to release is not a failed row
+    # -- it is a capture that never returns. Refusing here keeps the gate
+    # falsifiable: a gate that goes red is evidence, a gate that blocks forever
+    # is not.
+    stranded = (runner.executions.snapshot(frame_id) or {}).get("owner") or {}
+    if stranded:
+        raise RuntimeError(
+            "the execution fixture left "
+            f"{((stranded.get('owner') or {}).get('id'))!r} active; every write "
+            "below would wait on an admission that cannot arrive"
+        )
+
+    writes: list[tuple[str, str, str, dict]] = [
+        (
+            "POST",
+            r"/artifacts/([^/]+)/rename",
+            f"/artifacts/{artifact_id}/rename",
+            {"filename": "renamed.bin"},
+        ),
+        (
+            "POST",
+            r"/artifacts/([^/]+)/edit",
+            f"/artifacts/{text_artifact['artifact_id']}/edit",
+            {"content": "capture, edited\n"},
+        ),
+        (
+            "POST",
+            r"/frames/([^/]+)/branches/fork",
+            f"{base}/branches/fork",
+            {"from_checkpoint_id": checkpoint_id, "name": "second capture branch"},
+        ),
+        (
+            "POST",
+            r"/frames/([^/]+)/branches/([^/]+)/activate",
+            f"{base}/branches/{branch['branch_id']}/activate",
+            {"checkpoint_id": checkpoint_id},
+        ),
+        (
+            "POST",
+            r"/frames/([^/]+)/(?:revert/preview|branches/revert-preview)",
+            f"{base}/revert/preview",
+            {"target_checkpoint_id": checkpoint_id},
+        ),
+        (
+            "POST",
+            r"/frames/[^/]+/(?:revert/preview|branches/revert-preview)",
+            f"{base}/branches/revert-preview",
+            {"target_checkpoint_id": checkpoint_id},
+        ),
+        (
+            "POST",
+            r"/frames/([^/]+)/decision",
+            f"{base}/decision",
+            # A real decision id, resolved through the durable path. The body
+            # used to be `{"decision": "approve"}` -- no `decision_id` at all --
+            # so this route answered `decision_id is required` every time, and
+            # because that refusal was HTTP 200 the contract froze a FAILURE as
+            # the route's success shape. `(200, {"ok"})` was satisfied by
+            # `{"ok": false}`. The success shape had never been captured.
+            {"decision_id": _CAPTURE_DECISION_ID, "allow": True, "scope": "once"},
+        ),
+        ("POST", r"/frames/([^/]+)/review", f"{base}/review", {}),
+        (
+            "POST",
+            r"/skills",
+            "/skills",
+            {
+                "name": "capture-skill",
+                "description": "created by the contract capture",
+                "body": "# capture-skill\n\nA real authored Skill.\n",
+            },
+        ),
+        (
+            "POST",
+            r"/skills/import",
+            "/skills/import",
+            {
+                "name": "capture-import",
+                "content": "# capture-import\n\nAn imported Skill document.\n",
+            },
+        ),
+    ]
+    for method, route, path, body in writes:
+        handler = _probe_handler(
+            recorder, handler_class, method, path, route, headers, {}, body
+        )
+        try:
+            handler._api(method, path)
+        except Exception as error:  # noqa: BLE001
+            recorder.drive_failures[
+                f"{method} {route} (session surface)"
+            ] = f"{type(error).__name__}: {error}"
+
+    # Edit and restore, back to back, on an artifact of their own.
+    #
+    # The route takes a *historical, non-current* version, so an artifact with
+    # one version answers 404 -- which is what the first attempt recorded, and
+    # silently, by skipping when it found nothing to restore. Reusing the
+    # edited artifact from the table above does not work either: the branch
+    # activation and revert in between roll its versions back, so by the time
+    # the restore ran there was again nothing historical to name. Adjacent, on
+    # a private artifact, with nothing scheduled between them.
+    history_bytes = b"contract capture, versioned\n"
+    history_path = runner.workspace_for(frame_id) / _CAPTURE_HISTORY_FILENAME
+    history_path.write_bytes(history_bytes)
+    history_artifact = store.save_artifact(
+        path=str(history_path),
+        filename=_CAPTURE_HISTORY_FILENAME,
+        content_type="text/plain",
+        size_bytes=len(history_bytes),
+        checksum=hashlib.sha256(history_bytes).hexdigest(),
+        frame_id=frame_id,
+        root_frame_id=frame_id,
+        project_id=_CAPTURE_PROJECT,
+    )
+    # Edited twice, because the route restores a version that has an immutable
+    # snapshot and the one `save_artifact` mints does not have one. With a
+    # single edit the only historical version is that original, and the route
+    # refuses it -- correctly, and with a message about snapshots that says
+    # nothing about the case a client actually hits.
+    edit_path = f"/artifacts/{history_artifact['artifact_id']}/edit"
+    for revision in ("second", "third"):
+        handler = _probe_handler(
+            recorder,
+            handler_class,
+            "POST",
+            edit_path,
+            r"/artifacts/([^/]+)/edit",
+            headers,
+            {},
+            {"content": f"contract capture, {revision} version\n"},
+        )
+        try:
+            handler._api("POST", edit_path)
+        except Exception as error:  # noqa: BLE001
+            recorder.drive_failures[
+                f"POST /artifacts/([^/]+)/edit ({revision} version)"
+            ] = f"{type(error).__name__}: {error}"
+    # Newest first, so the most recent non-current version is the one the
+    # second edit displaced -- an edit-made version, which has a snapshot.
+    history = [
+        version
+        for version in store.list_versions(history_artifact["artifact_id"])
+        if not version.get("is_latest") and version.get("version_id")
+    ]
+    restore_route = r"/artifacts/([^/]+)/versions/([^/]+)/restore"
+    if not history:
+        recorder.drive_failures[
+            f"POST {restore_route} (session surface)"
+        ] = "the edit above minted no second version, so nothing is restorable"
+    else:
+        path = (
+            f"/artifacts/{history_artifact['artifact_id']}"
+            f"/versions/{history[0]['version_id']}/restore"
+        )
+        handler = _probe_handler(
+            recorder, handler_class, "POST", path, restore_route, headers, {}, {}
+        )
+        seen: dict = {}
+        observing = handler._json
+        handler._json = lambda payload, code=200, *a, **k: (
+            seen.update({"code": code, "payload": payload}),
+            observing(payload, code, *a, **k),
+        )[1]
+        try:
+            handler._api("POST", path)
+            if int(seen.get("code") or 0) >= 400:
+                # Recorded, not swallowed: a refusal here means the fixture did
+                # not reach the state the route needs, and a silent 404 would
+                # republish the refusal-only contract this pass exists to
+                # replace.
+                recorder.drive_failures[
+                    f"POST {restore_route} (session surface)"
+                ] = f"{seen.get('code')}: {seen.get('payload')}"
+        except Exception as error:  # noqa: BLE001
+            recorder.drive_failures[
+                f"POST {restore_route} (session surface)"
+            ] = f"{type(error).__name__}: {error}"
+
+    # Apply, then undo the exact operation apply minted. `undo` needs the id
+    # from the apply response, so this pair cannot be driven from the table
+    # above -- and driving `undo` with a guessed id records a 400 and calls the
+    # route covered.
+    applied = _capture_json(
+        recorder,
+        handler_class,
+        "POST",
+        r"/frames/([^/]+)/(?:revert/apply|branches/revert)",
+        f"{base}/revert/apply",
+        headers,
+        {"target_checkpoint_id": checkpoint_id},
+    )
+    # The *revert* checkpoint, not the undo target. `undo_revert` reads
+    # `undo_checkpoint_id` out of the named checkpoint's own metadata, so
+    # handing it the undo id asks it to undo the thing being undone.
+    reverted = (applied or {}).get("checkpoint") or {}
+    undo_id = reverted.get("checkpoint_id") if isinstance(reverted, dict) else None
+    if undo_id:
+        handler = _probe_handler(
+            recorder,
+            handler_class,
+            "POST",
+            f"{base}/revert/undo",
+            r"/frames/([^/]+)/revert/undo",
+            headers,
+            {},
+            {"revert_checkpoint_id": undo_id},
+        )
+        try:
+            handler._api("POST", f"{base}/revert/undo")
+        except Exception as error:  # noqa: BLE001
+            recorder.drive_failures[
+                "POST /frames/([^/]+)/revert/undo (session surface)"
+            ] = f"{type(error).__name__}: {error}"
+    else:
+        recorder.drive_failures[
+            "POST /frames/([^/]+)/revert/undo (session surface)"
+        ] = "revert/apply named no revert checkpoint"
+
+
+def _capture_json(
+    recorder: "Recorder",
+    handler_class,
+    method: str,
+    route: str,
+    path: str,
+    headers: dict[str, str] | None,
+    body: dict,
+) -> dict | None:
+    """Drive one route and keep its decoded body, still observing it.
+
+    The recorder wraps `_json`, so reading the payload means wrapping the
+    wrapper rather than replacing it -- replacing it would take the
+    observation with it and silently drop the route from the contract.
+    """
+    handler = _probe_handler(
+        recorder, handler_class, method, path, route, headers, {}, body
+    )
+    captured: dict = {}
+    observing = handler._json
+
+    def _both(payload, code=200, *args, **kwargs):
+        if isinstance(payload, dict):
+            captured.update(payload)
+        return observing(payload, code, *args, **kwargs)
+
+    handler._json = _both
+    try:
+        handler._api(method, path)
+    except Exception as error:  # noqa: BLE001
+        recorder.drive_failures[
+            f"{method} {route} (session surface)"
+        ] = f"{type(error).__name__}: {error}"
+        return None
+    return captured
+
+
 def drive_all_routes(
     recorder: "Recorder",
     make_handler,
@@ -570,67 +1415,9 @@ def drive_all_routes(
     for route in sorted(contract.http_routes()):
         path = concrete_path(route)
         for method in PROBE_METHODS:
-            handler = object.__new__(handler_class)
-            handler._query = lambda: {}
-            handler._body = lambda: {}
-            # The driver calls `_api` directly, so the token gate in `_route`
-            # is not on its path today. The credential is presented anyway: the
-            # gate is one refactor from moving, and a driver that only works
-            # while authentication happens to be elsewhere would fail as a wall
-            # of 401s at exactly the moment the contract mattered most.
-            handler.headers = dict(authenticated_headers or {})
-            # Deterministic and non-empty. `_route` gives every real request a
-            # correlation id (an inbound X-Request-Id, else `new_correlation_id()`),
-            # so `request_id` is a string on the wire and never null. Leaving
-            # this "" made `public_failure` emit null, and the frozen schema
-            # would then have declared the field's type as `null` -- describing
-            # the driver rather than the server. A fixed literal keeps the
-            # artifact byte-identical across runs.
-            handler._correlation_id = _CAPTURE_REQUEST_ID
-            handler._last_status = 0
-            handler._json = (
-                lambda value, code=200, _m=method, _p=path, _r=route: recorder.observe(
-                    _m,
-                    _p,
-                    code,
-                    public_failure(value, code, _CAPTURE_REQUEST_ID),
-                    route=_r,
-                )
+            handler = _probe_handler(
+                recorder, handler_class, method, path, route, authenticated_headers
             )
-            handler._send = (
-                lambda code, body, ctype, extra=None, _m=method, _p=path, _r=route: (
-                    recorder.observe_raw(
-                        _m, _p, code, ctype, len(body or b""), route=_r
-                    )
-                )
-            )
-
-            # The third writer, and the one whose absence published a lie.
-            # `_stream_file` builds its own headers straight on the
-            # BaseHTTPRequestHandler instead of going through `_json`/`_send`,
-            # so on the synthetic handler built here it raised inside
-            # `send_response` (no `requestline`) and the `except Exception`
-            # below swallowed it. The route was not left blank, though: the four
-            # *unimplemented* verbs still produced the dispatcher's 404, so both
-            # `artifacts.zip` routes were published as `kinds: ["json"],
-            # statuses: [404]` — a download endpoint documented as a JSON error,
-            # with the coverage gate reporting it as covered. It is also why no
-            # route ever recorded STREAM or BINARY despite the module deriving
-            # both kinds.
-            #
-            # Mirrors the real method exactly, including its own 404: a file it
-            # cannot open is a JSON error there too, not a stream.
-            def _stub_stream(
-                file_path, ctype, extra=None, _m=method, _p=path, _r=route
-            ):
-                try:
-                    size = file_path.stat().st_size
-                except OSError:
-                    recorder.observe(_m, _p, 404, {"error": "not found"}, route=_r)
-                    return
-                recorder.observe_raw(_m, _p, 200, ctype, size, route=_r)
-
-            handler._stream_file = _stub_stream
             try:
                 handler._api(method, path)
             except GatewayError as error:
@@ -659,6 +1446,7 @@ def drive_all_routes(
                     f"{method} {route}"
                 ] = f"{type(error).__name__}: {error}"
                 continue
+    _drive_seeded_downloads(recorder, handler_class, runner, authenticated_headers)
 
 
 def load(path: Path | None = None) -> dict[str, Any]:

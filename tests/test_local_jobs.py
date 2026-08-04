@@ -420,7 +420,7 @@ def test_a_truncated_job_log_says_so():
     what survived: a marker at the end would sit after the last line and imply
     the loss happened there.
     """
-    from openai4s.jobs import _MAX_OUTPUT, Job
+    from openai4s.jobs import _MAX_OUTPUT_BYTES, Job
 
     job = Job("bash", "echo hi", "/tmp")
 
@@ -428,17 +428,21 @@ def test_a_truncated_job_log_says_so():
     assert job.output() == "short output\n"
     assert "dropped" not in job.output()
 
-    job.append("A" * (_MAX_OUTPUT + 500))
+    job.append("A" * (_MAX_OUTPUT_BYTES + 500))
     seen = job.output()
     assert seen.startswith("...(earlier output dropped")
     assert "short output" not in seen
     # Still bounded, and still the tail.
     assert seen.rstrip().endswith("A")
-    assert len(seen) <= _MAX_OUTPUT + len(_TRUNCATION_NOTICE_LEN_PROBE) + 8
+    assert len(seen) <= _MAX_OUTPUT_BYTES + len(_TRUNCATION_NOTICE_LEN_PROBE) + 8
 
 
+# The cap is bytes now, not characters -- the pipe is read as bytes so that a
+# line with no newline in it cannot be allocated whole before being trimmed.
+# ASCII above, so the two units coincide and this assertion still measures the
+# same thing.
 _TRUNCATION_NOTICE_LEN_PROBE = (
-    "...(earlier output dropped; showing the last 200000 characters)\n"
+    "...(earlier output dropped; showing the last 200000 bytes)\n"
 )
 
 
@@ -476,3 +480,111 @@ def test_pruning_does_not_promote_a_running_job_to_newest():
     assert listed[0] != live.id
     assert live.id in listed, "a running job must never be evicted"
     assert listed[-1] == live.id
+
+
+# --- one job, one terminal state -------------------------------------------
+#
+# `_run` stated the precedence rule -- "the deadline is what actually ended
+# this process, and a receipt that says somebody cancelled it is the wrong
+# account of why the work stopped" -- and `cancel` overwrote it sixty lines
+# away. Measured before the fix: `running -> timeout -> cancelled` on 5/5
+# trials, with the persisted receipt ending at `cancelled`. The deadline
+# account was destroyed every time.
+#
+# The rule had eight direct writers across `_run`, `_expire`, `cancel` and
+# `close`, each deciding for itself whether it was allowed to write. It now has
+# one: `Job._finish_locked`, plus `_claim_stop_locked` for the intent, claimed
+# before any signal so `_run` publishes the claimer's name rather than deriving
+# `failed` from a signal it did not know was sent.
+
+
+def test_a_cancel_cannot_rewrite_a_timeout_published_while_it_stopped(
+    tmp_path, monkeypatch
+):
+    """Direction A, at the only width it actually has.
+
+    Sleeping past the deadline does not reach it: `cancel` opens with a terminal
+    check, so a `timeout` already published sends it home before it can write.
+    A first version of this test slept 1.15s, passed against the unfixed code,
+    and measured nothing -- the window is between that check and the post-stop
+    write, while `_stop_process_group` is running.
+
+    So the interleaving is forced rather than raced for: the stop ladder is
+    replaced by one that publishes `timeout` the way `_expire` would, mid-call.
+    Everything else is the real manager.
+    """
+    import openai4s.jobs as jobs_mod
+
+    manager = JobManager(tmp_path)
+    try:
+        job_id = manager.submit("sleep 30", deadline_s=60.0)["id"]
+        time.sleep(0.3)
+        job = manager._jobs[job_id]
+
+        # The deadline got there first: it claimed and signalled, and `_run`
+        # has not published yet. The status is still `running`, so `cancel`'s
+        # opening terminal check waves it through -- which is the only way into
+        # the window at all.
+        with job._lock:
+            assert job._claim_stop_locked("timeout") is True
+        real_stop = jobs_mod._stop_process_group
+
+        def _stop_then_publish(proc, pgid=None):
+            outcome = real_stop(proc, pgid)
+            job.finish("timeout")  # what `_run` does with the claim
+            return outcome
+
+        monkeypatch.setattr(jobs_mod, "_stop_process_group", _stop_then_publish)
+
+        result = manager.cancel(job_id)
+        time.sleep(0.3)
+
+        assert (
+            manager.get(job_id)["status"] == "timeout"
+        ), "cancel overwrote a terminal state the deadline had already earned"
+        assert result["status"] == "timeout"
+    finally:
+        manager.close()
+
+
+def test_an_ordinary_cancel_is_still_cancelled(tmp_path):
+    """The refusal must not be an outage.
+
+    `_run` derives `failed` from a signal-killed exit because it does not know a
+    signal was sent, and the old unconditional write existed to correct that.
+    Claiming the stop first is what preserves the correction without also
+    overwriting a terminal state somebody else earned.
+    """
+    manager = JobManager(tmp_path)
+    try:
+        job_id = manager.submit("sleep 30", deadline_s=60.0)["id"]
+        time.sleep(0.3)
+
+        result = manager.cancel(job_id)
+        time.sleep(0.4)
+
+        assert result["status"] == "cancelled"
+        assert manager.get(job_id)["status"] == "cancelled"
+    finally:
+        manager.close()
+
+
+def test_the_first_claim_wins_and_a_terminal_state_is_final(tmp_path):
+    """The primitive itself, at both layers.
+
+    Direction B never crosses an entry point -- `_expire` is a Timer callback --
+    so a guard added inside `cancel` could not have caught it. The claim and the
+    transition are on `Job` for that reason.
+    """
+    from openai4s.jobs import Job
+
+    job = Job("bash", "true", str(tmp_path))
+    assert job.claim_stop("timeout") is True
+    assert job.claim_stop("cancelled") is False, "the second claim overrode the first"
+    assert job._stop_reason == "timeout"
+
+    assert job.finish("timeout") == "timeout"
+    # Every later transition is refused, and reports what stands.
+    for later in ("cancelled", "failed", "done", "abandoned"):
+        assert job.finish(later) == "timeout", later
+    assert job.status == "timeout"

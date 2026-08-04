@@ -77,7 +77,92 @@ from typing import Any, Callable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 
+if str(ROOT) not in sys.path:
+    # `python scripts/release_pipeline.py` puts `scripts/` on the path, not the
+    # checkout root, so the sibling import below needs the root added. Tests and
+    # `run_quality_gates.py` already import through the `scripts` package.
+    sys.path.insert(0, str(ROOT))
+
+from scripts import release_gates, release_receipts  # noqa: E402
+from scripts.release_gates import GateManifestError  # noqa: E402
+
+
+def _sandbox_posture() -> dict[str, Any]:
+    """The sandbox posture this build was produced under, as a fact not a claim.
+
+    Read from the environment rather than probed: the release runner is not the
+    machine the product will run on, so "enforce was requested here" is the only
+    honest statement available. Recorded because the evidence bundle is supposed
+    to carry it and carried nothing.
+    """
+    return {
+        "requested": os.environ.get("OPENAI4S_KERNEL_SANDBOX", "auto"),
+        "note": (
+            "the posture requested on the build runner; not a measurement of the "
+            "sandbox on an end user's machine"
+        ),
+        # The platform boundaries this release did not prove, and why. Carried
+        # because a bundle that simply omits them is indistinguishable from one
+        # where every platform passed, and that is the reading a reader defaults
+        # to. Named here so "we could not check Linux" survives into the
+        # evidence rather than living only in a workflow comment.
+        "unproven": dict(release_gates.PLATFORM_CHECKS_UNAVAILABLE),
+    }
+
+
+#: One name, because the writer and the collector disagreeing about it is
+#: exactly how the SBOM came to be built on every release and carried on none.
+SBOM_NAME = "sbom.cdx.json"
+
+
+def dmg_present(assets: Sequence[Path]) -> bool:
+    """Whether this release carries a macOS image at all.
+
+    An omitted DMG is a supported release shape, so the `macos` build receipt is
+    required only when there is an image to bind to a commit.
+    """
+    return any(Path(a).suffix == ".dmg" for a in assets)
+
+
+#: What names an asset as belonging to a receipt kind. Derived from the file, so
+#: adding a platform to the release means adding a row here and a receipt step
+#: to its build job -- rather than the previous arrangement, where a new
+#: platform simply had no receipt and nothing said so.
+_RECEIPT_KIND_SUFFIXES = (
+    ("macos", (".dmg",)),
+    ("windows", ("-windows-x86_64.zip", "-windows-arm64.zip")),
+    ("linux", ("-linux-x86_64.tar.gz", "-linux-aarch64.tar.gz")),
+)
+
+
+def required_receipt_kinds(assets: Sequence[Path]) -> tuple[str, ...]:
+    """The receipt kinds this particular set of assets must carry.
+
+    `("dist", "macos")` was the whole list, so the Linux tarball and the Windows
+    zip were staged with no document binding their bytes to the frozen commit --
+    covered only by the in-run `incoming` digests, which attest that `attach`
+    downloaded what it downloaded, not that it was built from these sources.
+
+    Computed from the assets rather than fixed, because an omitted platform is a
+    supported release shape and demanding a receipt for an artifact that is not
+    there would refuse every partial release.
+    """
+    kinds = ["dist"]
+    names = [Path(a).name for a in assets]
+    for kind, suffixes in _RECEIPT_KIND_SUFFIXES:
+        if any(name.endswith(suffix) for name in names for suffix in suffixes):
+            kinds.append(kind)
+    return tuple(kinds)
+
+
 #: The ordered pipeline. Named here so the order itself is testable.
+#:
+#: `verify` and `evidence` sit *before* `checksums` on purpose. The evidence
+#: bundle has to record the signing and notarization facts `verify` establishes,
+#: and `SHA256SUMS` has to cover the evidence bundle -- a bundle outside the
+#: checksum manifest is an asset the release publishes without hashing. Sealing
+#: the bundle after `upload`, as this used to, produced a record of a release
+#: that had already left.
 STEPS = (
     "build",
     "test",
@@ -85,8 +170,9 @@ STEPS = (
     "smoke",
     "sbom",
     "provenance",
-    "checksums",
     "verify",
+    "evidence",
+    "checksums",
     "draft",
     "upload",
     "reverify",
@@ -112,18 +198,24 @@ DEVELOPER_ID_AUTHORITY = "Developer ID Application"
 #: to infer the answer, and a reader who infers it wrongly is exactly who this
 #: is for.
 #:
-#: `verified` is currently **unreachable**, and that is the honest finding
-#: rather than a gap in the implementation. It requires a Developer ID
-#: signature *and* a completed notarization; `build_macos_dmg.sh` only ad-hoc
-#: signs, and this pipeline never attempts notarization because doing so needs
-#: a paid Apple identity nobody has configured. So the macOS asset has no
-#: publishable path in this version. Saying that plainly is the point; leaving
-#: it looking merely untested is the failure mode.
+#: `verified` requires a Developer ID signature *and* a stapled notarization
+#: ticket, both read from the macOS job's receipt. It is **reachable** — that is
+#: the change: it used to be described as unreachable, but the reason given was
+#: that `notarized` was hardcoded `None`, which is a statement about this file
+#: rather than about the image. Meanwhile `step_verify` gated on the signature
+#: alone, so once the signing-certificate secret exists (the workflow already
+#: imports it into a keychain) a correctly signed, un-notarized image published.
+#: "Unreachable" was documenting the absence of the check as if it were the
+#: absence of the capability.
+#:
+#: With no notary credentials configured the state of a built image is `preview`
+#: (ad-hoc), and the supported release shape is to omit the DMG. That is a real
+#: outcome rather than a label on a published artifact.
 SIGNING_STATES = {
     # Developer ID signature, notarization confirmed. The only publishable one.
     "verified",
-    # Developer ID signature, notarization not established. Publishable only by
-    # a decision this pipeline does not make.
+    # Developer ID signature, no stapled notarization ticket. Gatekeeper refuses
+    # this on a user's machine, so a public release must not carry it.
     "not_notarized",
     # Ad-hoc signature: verifies happily, says nothing about who produced it.
     # What the build script produces, and what a local or CI build is.
@@ -144,8 +236,8 @@ def signing_state(signature: Mapping[str, Any] | None) -> str:
     if not isinstance(signature, Mapping) or signature.get("error"):
         return "not_configured"
     if signature.get("developer_id"):
-        # Notarization is never attempted here, so this is as far as the
-        # evidence can currently reach.
+        # `notarized` is derived in `read_signature` from a stapler result bound
+        # to this image's digest, not from a configured secret or an intent.
         return "verified" if signature.get("notarized") else "not_notarized"
     if signature.get("adhoc"):
         return "preview"
@@ -487,38 +579,41 @@ def build_provenance(assets: list[Path], *, version: str, source: dict) -> dict:
 
 
 #: Name of the receipt the quality job writes and staging verifies.
-QUALITY_RECEIPT_NAME = "quality-receipt.json"
+QUALITY_RECEIPT_NAME = release_gates.RECEIPT_NAME
 
 
-def build_quality_receipt(source_sha: str, gates: list[dict]) -> dict:
+def build_quality_receipt(
+    source_sha: str,
+    gates: list[dict],
+    checks: list[dict] | None = None,
+    *,
+    platform_checks: list[dict] | None = None,
+) -> dict:
     """The document a quality run leaves behind.
 
-    Deliberately boring: the SHA the gates ran against, and one row per gate
-    with its exit code. Nothing here is a judgement -- the consumer decides
-    what passing means, so a receipt cannot flatter itself.
+    Thin on purpose: the shape and every rule about it live in
+    `scripts/release_gates.py`, so the producer and the consumer cannot describe
+    two different gate lists. They previously did — the producer owned a `GATES`
+    tuple and the consumer compared nothing but exit codes.
     """
-    return {
-        "format": "openai4s-quality-receipt",
-        "schema_version": 1,
-        "source_sha": str(source_sha),
-        "gates": [
-            {
-                "name": str(gate["name"]),
-                "command": list(gate.get("command") or []),
-                "returncode": int(gate["returncode"]),
-            }
-            for gate in gates
-        ],
-    }
+    return release_gates.build_receipt(
+        source_sha,
+        gates,
+        checks or [],
+        platform_checks=platform_checks or [],
+    )
 
 
 def verify_quality_receipt(path: Path, *, expected_sha: str) -> dict:
     """Read a receipt and refuse everything about it that is not proof.
 
-    The binding is the whole value. A receipt that records *a* SHA proves
-    nothing unless the consumer re-derives the SHA it is actually releasing and
-    compares -- otherwise it degrades into another `identity_configured`: a
-    field that reads as evidence and decides nothing.
+    The binding is the whole value, and it has two halves. The SHA half: a
+    receipt that records *a* SHA proves nothing unless the consumer re-derives
+    the SHA it is actually releasing and compares. The manifest half: a receipt
+    that records *some* gates proves nothing unless the consumer requires
+    exactly the canonical ones, with the argv they were declared with — the
+    check this used to be missing entirely, which let a two-row document with
+    the argv `["pytest"]` stage a release.
 
     Raises ``ReleaseError`` rather than returning a verdict, because every
     caller here treats "cannot prove it" as "do not release".
@@ -532,36 +627,12 @@ def verify_quality_receipt(path: Path, *, expected_sha: str) -> dict:
         document = json.loads(path.read_text("utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ReleaseError(f"quality receipt is unreadable: {error}") from error
-    if not isinstance(document, dict):
-        raise ReleaseError("quality receipt is not an object")
-    if document.get("format") != "openai4s-quality-receipt":
-        raise ReleaseError("quality receipt has an unrecognised format")
-    recorded = str(document.get("source_sha") or "")
-    if not recorded:
-        raise ReleaseError("quality receipt names no source SHA")
-    if not expected_sha:
-        raise ReleaseError(
-            "cannot determine the source SHA being released, so a receipt "
-            "cannot be bound to it"
+    try:
+        return release_gates.verify_receipt_document(
+            document, expected_sha=expected_sha
         )
-    if recorded != expected_sha:
-        raise ReleaseError(
-            f"quality receipt is for {recorded[:12]} but this release is "
-            f"{expected_sha[:12]}; the gates did not run on these sources"
-        )
-    gates = document.get("gates")
-    if not isinstance(gates, list) or not gates:
-        raise ReleaseError("quality receipt records no gates")
-    failed = [
-        str(gate.get("name"))
-        for gate in gates
-        if not isinstance(gate, dict) or int(gate.get("returncode", 1)) != 0
-    ]
-    if failed:
-        raise ReleaseError(
-            "quality receipt records failing gates: " + ", ".join(sorted(failed))
-        )
-    return document
+    except GateManifestError as error:
+        raise ReleaseError(str(error)) from error
 
 
 def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, Any]:
@@ -597,6 +668,20 @@ def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, An
         names_developer_id = any(
             DEVELOPER_ID_AUTHORITY in authority for authority in authorities
         )
+        # Notarization, from evidence. `xcrun stapler validate` on the image is
+        # the only local check that a notarization ticket is actually attached,
+        # and it is what Gatekeeper consults offline. It has to be recorded where
+        # the image is built -- the staging host is Linux and has no `xcrun` --
+        # and it is required to agree with the digest just like the signature is,
+        # so a stapler result copied from another image proves nothing here.
+        stapler_rc = payload.get("stapler_returncode")
+        notarized = (
+            bool(payload.get("notarized"))
+            and stapler_rc == 0
+            and names_developer_id
+            and verify_rc == 0
+            and digest_matches
+        )
         return {
             "source": "receipt",
             "authorities": authorities,
@@ -604,6 +689,8 @@ def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, An
             "verify_returncode": verify_rc,
             "image_digest_matches": digest_matches,
             "adhoc": bool(payload.get("adhoc")),
+            "notarized": notarized,
+            "stapler_returncode": stapler_rc,
         }
     if not shutil.which("codesign"):
         return {
@@ -656,10 +743,22 @@ class Pipeline:
         pypi_check: Callable[[str, str], bool] | None = None,
         pypi_digests: Callable[[str, str], dict[str, str]] | None = None,
         smoke: Callable[[Path], str] | None = None,
+        source_sha: str = "",
+        attestation: Path | None = None,
     ) -> None:
         self.version = version
         self.mode = mode
         self.dry_run = dry_run
+        #: The SHA the workflow froze once, before any job checked anything out.
+        #: When supplied it is not trusted as a label: `_frozen_sha` requires the
+        #: working tree to actually *be* that commit. Every job used to check out
+        #: the mutable `inputs.tag` independently, so the gates, the wheel and the
+        #: DMG could each be a different commit with nothing comparing them.
+        self.source_sha = str(source_sha or "")
+        #: Where the finalize job finds the staging job's attestation. Outside the
+        #: draft, because a document stored in the draft can be replaced by
+        #: whatever replaced the asset it vouches for.
+        self.attestation = Path(attestation) if attestation else None
         # Absolute at construction: `_run` executes subprocesses from ROOT
         # (the checkout), while the staging job passes `--assets-dir assets`
         # as a *sibling* of the checkout. A relative path would make pip in
@@ -707,6 +806,15 @@ class Pipeline:
         # does, so the two build paths agree.
         if self.assets_dir.exists():
             for stale in self.assets_dir.glob("*"):
+                # The quality receipt is an *input* to this run, not an output
+                # of it: it is written by the job that ran the eight gates at
+                # the frozen SHA, and this directory is where that job hands it
+                # over. Sweeping it with the stale artifacts made a release run
+                # destroy the only document proving its own gates -- and then
+                # `step_test` could only fall back to a local pytest, which is
+                # how that path came to have no source quality proof at all.
+                if stale.name == QUALITY_RECEIPT_NAME:
+                    continue
                 if stale.is_file() and stale.suffix in (
                     *DISTRIBUTION_SUFFIXES,
                     ".json",
@@ -746,7 +854,7 @@ class Pipeline:
             # verifies the wheel's metadata. The sentence was not a shortcut,
             # it was false, and it was the only thing standing between a
             # release and "tests gated this".
-            head = self._head_sha()
+            head = self._frozen_sha()
             receipt = verify_quality_receipt(
                 self.assets_dir / QUALITY_RECEIPT_NAME, expected_sha=head
             )
@@ -757,7 +865,61 @@ class Pipeline:
                 {
                     "from_artifacts": True,
                     "source_sha": head,
+                    "manifest_digest": receipt.get("manifest_digest", ""),
+                    "builder": receipt.get("builder", {}),
                     "gates": [gate["name"] for gate in receipt["gates"]],
+                    # The check-run and workflow-run ids travel into the
+                    # evidence bundle: an attestation nobody can go and look at
+                    # is not evidence, so the pointers have to survive the hop.
+                    "checks": [
+                        {
+                            "name": row["name"],
+                            "check_run_id": row["check_run_id"],
+                            "run_id": row["run_id"],
+                            "url": row["url"],
+                        }
+                        for row in receipt.get("checks", [])
+                    ],
+                    "platform_checks": receipt.get("platform_checks", []),
+                },
+            )
+        if self.mode == "release":
+            # The third path, and the one nothing held to the source quality
+            # proof. `--from-artifacts` cannot bypass it and `--dry-run` reaches
+            # nothing that publishes, but a plain `--mode release` ran `pytest`
+            # alone -- no pre-commit, no mypy, no README check, no harness tier,
+            # no response schema or contract, no secret scan, no browser or
+            # Python-matrix attestation -- and then went on to stage assets onto
+            # the draft. Only the final flip was blocked, and only because
+            # `step_publish` requires PyPI to already hold matching digests.
+            #
+            # A local suite is not eight gates run at a frozen SHA on a machine
+            # nobody can quietly reconfigure, and the difference is the whole
+            # point of the receipt.
+            head = self._frozen_sha()
+            receipt = verify_quality_receipt(
+                self.assets_dir / QUALITY_RECEIPT_NAME, expected_sha=head
+            )
+            return StepResult(
+                "test",
+                True,
+                f"quality receipt verified for {head[:12]}",
+                {
+                    "from_artifacts": False,
+                    "source_sha": head,
+                    "manifest_digest": receipt.get("manifest_digest", ""),
+                    "builder": receipt.get("builder", {}),
+                    "gates": [gate["name"] for gate in receipt["gates"]],
+                    "checks": [
+                        {
+                            "name": row["name"],
+                            "check_run_id": row["check_run_id"],
+                            "run_id": row["run_id"],
+                            "url": row["url"],
+                        }
+                        for row in receipt.get("checks", [])
+                    ],
+                    "platform_checks": receipt.get("platform_checks", []),
                 },
             )
         if self.dry_run:
@@ -772,6 +934,32 @@ class Pipeline:
         if completed.returncode != 0:
             return ""
         return (completed.stdout or b"").decode().strip()
+
+    def _frozen_sha(self) -> str:
+        """The one commit this release is, refusing to guess between two answers.
+
+        `--source-sha` is the workflow's frozen value, resolved once from the
+        annotated tag before any job ran. It is checked against the checkout
+        rather than believed: a job that checked out a tag which has since moved
+        would otherwise carry the frozen SHA as a label while building different
+        sources. When the flag is absent this falls back to the checkout, which
+        is what a local `--mode local` run has.
+        """
+        head = self._head_sha()
+        if not self.source_sha:
+            return head
+        if not head:
+            raise ReleaseError(
+                "a frozen source SHA was supplied but this is not a work tree, so "
+                "it cannot be checked against the sources being released"
+            )
+        if head != self.source_sha:
+            raise ReleaseError(
+                f"this checkout is {head[:12]} but the release was frozen at "
+                f"{self.source_sha[:12]}; the tag moved between jobs and the "
+                f"artifacts would not all be the same commit"
+            )
+        return head
 
     def step_assets(self) -> StepResult:
         if self.dry_run:
@@ -930,7 +1118,7 @@ class Pipeline:
 
     def step_sbom(self) -> StepResult:
         if self.dry_run:
-            return StepResult("sbom", True, "would write sbom.cdx.json")
+            return StepResult("sbom", True, f"would write {SBOM_NAME}")
         packages: list[dict[str, str]] = []
         for wheel in [a for a in self.assets if a.suffix == ".whl"]:
             packages.extend(wheel_components(wheel))
@@ -939,7 +1127,7 @@ class Pipeline:
         document = build_sbom(
             self.assets, version=self.version, packages=packages, unread=unread
         )
-        target = self.assets_dir / "sbom.cdx.json"
+        target = self.assets_dir / SBOM_NAME
         target.write_text(json.dumps(document, indent=2, sort_keys=True), "utf-8")
         self.assets.append(target)
         return StepResult(
@@ -970,6 +1158,87 @@ class Pipeline:
             True,
             str(target.name),
             {"subjects": len(document["subject"]), "source_uri": uri},
+        )
+
+    def step_evidence(self) -> StepResult:
+        """Seal the release's own claims, before anything leaves.
+
+        This used to run after `publish`, wrapped in `except Exception: print(...)`
+        and documented as best-effort so it "cannot fail a good release". Three
+        things followed from that. A bundle sealed after the upload describes a
+        release that has already gone out, so nothing could have been prevented
+        by it. A seal that cannot fail is a seal that can be absent from a
+        release nobody notices is missing one. And it was called with no `files=`
+        argument at all, so the archive contained a single `release-report.json`
+        and none of the artifacts, receipts or checksums it claimed to be
+        evidence for.
+
+        So it is a step: it runs before `checksums` (which then covers it) and
+        before `upload`, and a failure stops the release. The bundle carries the
+        frozen source SHA, the complete gate receipt including the attested
+        check-run ids, every artifact digest, the builder platform/interpreter,
+        the sandbox posture and the signing/notarization facts.
+        """
+        if self.dry_run:
+            return StepResult("evidence", True, "would seal the evidence bundle")
+
+        payload = self.report(planned=STEPS, sealing=True)
+        carried = [
+            path
+            for path in (
+                self.assets_dir / QUALITY_RECEIPT_NAME,
+                # `step_sbom` writes `sbom.cdx.json`; this asked for
+                # `sbom.spdx.json`, a file nothing in this repository has ever
+                # produced. The `if path.is_file()` filter below then dropped it
+                # without a word, so every evidence bundle shipped without the
+                # SBOM while the step that built it reported success -- an
+                # absence that reads, to anyone opening the zip, as "this
+                # release has no SBOM" rather than "the collector asked for the
+                # wrong name".
+                self.assets_dir / SBOM_NAME,
+                self.assets_dir / "provenance.intoto.json",
+                *sorted(
+                    self.assets_dir.glob(
+                        f"{release_receipts.BUILD_RECEIPT_PREFIX}*.json"
+                    )
+                ),
+                *sorted(self.assets_dir.glob(f"*{SIGNATURE_RECEIPT_SUFFIX}")),
+            )
+            if path.is_file()
+        ]
+        destination = self.assets_dir / f"openai4s-{self.version}-evidence.zip"
+        try:
+            manifest = seal_evidence_bundle(destination, payload, files=carried)
+        except Exception as error:  # noqa: BLE001
+            raise ReleaseError(
+                f"could not seal the evidence bundle: {error}; refusing to publish "
+                f"a release whose claims are not recorded"
+            ) from error
+        # Read it straight back with the product's own verifier. Sealing and
+        # then never opening it is how a corrupt archive ships looking sealed.
+        try:
+            from openai4s import evidence as evidence_module
+
+            verdict = evidence_module.verify_package(destination)
+        except Exception as error:  # noqa: BLE001
+            raise ReleaseError(
+                f"the evidence bundle could not be verified after sealing: {error}"
+            ) from error
+        if not verdict.get("ok"):
+            raise ReleaseError(
+                "the evidence bundle failed its own verifier: "
+                + "; ".join(verdict.get("problems") or ["no reason given"])
+            )
+        self.assets.append(destination)
+        return StepResult(
+            "evidence",
+            True,
+            destination.name,
+            {
+                "files": [entry["path"] for entry in manifest["files"]],
+                "manifest_sha256": manifest["manifest_sha256"],
+                "verified_by": "openai4s.evidence.verify_package",
+            },
         )
 
     def step_checksums(self) -> StepResult:
@@ -1011,21 +1280,71 @@ class Pipeline:
                 f"distributions changed after they were collected: {drifted}; "
                 f"GitHub and PyPI would receive different bytes for one version"
             )
+        receipts = sorted(
+            self.assets_dir.glob(f"{release_receipts.BUILD_RECEIPT_PREFIX}*.json")
+        )
+        build_receipts: dict[str, Any] = {}
+        if self.from_artifacts or self.mode == "release":
+            # Staging is the only place every artifact is together, so it is the
+            # only place "the wheel and the DMG are the same commit" can be
+            # checked. Nothing checked it: each build job checked out the mutable
+            # tag on its own.
+            #
+            # `or self.mode == "release"` because the binding is a property of
+            # what is being published, not of how the bytes arrived. Guarded on
+            # `from_artifacts` alone, a plain `--mode release` staged every asset
+            # with no document tying any of them to the frozen commit -- the same
+            # hole one layer down from the quality receipt above.
+            try:
+                build_receipts = release_receipts.verify_build_receipts(
+                    receipts,
+                    expected_sha=self._frozen_sha(),
+                    assets_dir=self.assets_dir,
+                    required_kinds=required_receipt_kinds(self.assets),
+                )
+            except release_receipts.ReceiptError as error:
+                raise ReleaseError(str(error)) from error
+
         dmgs = [a for a in self.assets if a.suffix == ".dmg"]
         signatures = {dmg.name: read_signature(dmg, self._run) for dmg in dmgs}
-        unsigned = [
-            name for name, info in signatures.items() if not info.get("developer_id")
-        ]
-        if self.mode == "release" and unsigned:
-            # Fail closed on evidence, not on configuration. Reading a
-            # non-empty OPENAI4S_MACOS_SIGNING_IDENTITY as "signed" meant that
-            # setting the secret made an ad-hoc image — the only kind the build
-            # script produces — pass this gate as Developer-ID-signed.
-            raise ReleaseError(
-                f"no {DEVELOPER_ID_AUTHORITY} signature could be established "
-                f"for {unsigned}; refusing to publish. "
-                + json.dumps(signatures, sort_keys=True)
+        states = {name: signing_state(info) for name, info in signatures.items()}
+        if self.mode == "release":
+            # Two separate refusals, because they have different remedies.
+            #
+            # `unsigned` (ad-hoc or unreadable) is D11's original gate, unchanged.
+            unsigned = sorted(
+                name
+                for name, info in signatures.items()
+                if not info.get("developer_id")
             )
+            if unsigned:
+                raise ReleaseError(
+                    f"no {DEVELOPER_ID_AUTHORITY} signature could be established "
+                    f"for {unsigned}; refusing to publish. "
+                    + json.dumps(signatures, sort_keys=True)
+                )
+            # `not_notarized` is the gap D11 left open. A Developer-ID signature
+            # satisfied this gate, and `notarized` was hardcoded `None` and read
+            # by nothing -- so once the signing certificate secret exists (the
+            # workflow already imports it), a correctly signed but un-notarized
+            # image publishes. Gatekeeper rejects that image on a user's machine,
+            # which is the outcome a release gate is for.
+            #
+            # There is no downgrade path here on purpose: the remedy is to
+            # notarize the image, or to not ship a DMG at all. An omitted macOS
+            # asset is recorded below as `macos_asset: omitted`.
+            not_notarized = sorted(
+                name for name, state in states.items() if state != "verified"
+            )
+            if not_notarized:
+                raise ReleaseError(
+                    f"{not_notarized} carry a {DEVELOPER_ID_AUTHORITY} signature "
+                    f"but no completed notarization, so Gatekeeper will refuse "
+                    f"them on a user's machine. Notarize and staple the image, or "
+                    f"omit the macOS asset from this release; a public release "
+                    f"must not carry an un-notarized image. "
+                    + json.dumps(states, sort_keys=True)
+                )
         return StepResult(
             "verify",
             True,
@@ -1033,34 +1352,41 @@ class Pipeline:
             {
                 "signatures": signatures,
                 # One named state per image, so a reader does not have to infer
-                # it from four fields and get it wrong. `verified` is currently
-                # unreachable -- see SIGNING_STATES -- which is the finding, not
-                # an omission.
-                "signing_states": {
-                    name: signing_state(info) for name, info in signatures.items()
-                },
+                # it from four fields and get it wrong.
+                "signing_states": states,
                 "identity_configured": bool(
                     os.environ.get(SIGNING_IDENTITY_VAR, "").strip()
                 ),
-                # Never claimed. Notarization needs Apple's service and a paid
-                # identity; asserting it here without one would be a confident
-                # wrong answer about the thing users check.
-                "notarized": None,
-                "notarization_note": (
-                    "not attempted by this pipeline; requires an Apple "
-                    "Developer identity and the notary service"
-                ),
-                # Stated rather than implied. `verified` needs a Developer ID
-                # signature and a completed notarization; the build script only
-                # ad-hoc signs and notarization is never attempted, so no macOS
-                # image can reach a publishable state in this version. A reader
-                # should learn that here, not by noticing an absence.
-                "macos_publishable": False,
+                # Read from evidence -- `xcrun stapler validate` on the image, via
+                # the macOS job's receipt -- rather than asserted. It was
+                # hardcoded `None` and gated nothing, which is how a
+                # Developer-ID-signed, un-notarized image could publish.
+                "notarized": {
+                    name: bool(info.get("notarized"))
+                    for name, info in signatures.items()
+                },
+                # An absent DMG is a release with no macOS asset, which is a
+                # supported outcome and the honest one while notarization
+                # credentials do not exist. Named so a reader learns it here
+                # rather than by noticing an absence.
+                "macos_asset": "present" if dmgs else "omitted",
+                "macos_publishable": bool(dmgs)
+                and all(state == "verified" for state in states.values()),
                 "macos_publishable_note": (
-                    "no macOS image can reach `verified` in this version: the "
-                    "build ad-hoc signs and notarization is not attempted. "
-                    "This is a stated limitation, not an untested path."
+                    "a public release requires every macOS image to be Developer-ID "
+                    "signed AND notarized (stapled). Without notary credentials the "
+                    "supported path is to omit the DMG, not to publish it labelled."
                 ),
+                "build_receipts": {
+                    kind: {
+                        "source_sha": document.get("source_sha", ""),
+                        "builder": document.get("builder", {}),
+                        "artifacts": [
+                            row.get("name") for row in document.get("artifacts", [])
+                        ],
+                    }
+                    for kind, document in build_receipts.items()
+                },
             },
         )
 
@@ -1187,11 +1513,26 @@ class Pipeline:
             raise ReleaseError(
                 f"uploaded bytes do not match what was verified: {mismatched}"
             )
+        # The record the finalize job will compare the draft against. It has to
+        # leave through a channel the draft does not control: `step_publish` used
+        # to re-hash the draft against the draft's own `SHA256SUMS`, and anything
+        # able to replace an asset can replace that manifest in the same motion.
+        attestation = release_receipts.build_stage_attestation(
+            version=self.version,
+            source_sha=self._frozen_sha(),
+            assets=[a for a in self.assets if a.is_file()],
+        )
+        target = self.assets_dir / release_receipts.STAGE_ATTESTATION_NAME
+        target.write_text(json.dumps(attestation, indent=2, sort_keys=True), "utf-8")
         return StepResult(
             "reverify",
             True,
             f"{len(checked)} asset(s) re-hashed from the release",
-            {"digests": checked},
+            {
+                "digests": checked,
+                "attestation": target.name,
+                "attested_assets": [row["name"] for row in attestation["assets"]],
+            },
         )
 
     def _download_asset(self, name: str, dest_dir: Path) -> Path:
@@ -1219,14 +1560,25 @@ class Pipeline:
         return path
 
     def _revalidate_draft_from_checksums(self) -> dict[str, str]:
-        """Re-hash the draft's current assets against its own SHA256SUMS.
+        """Re-hash the draft's current assets against an out-of-band attestation.
 
         ``step_publish`` runs standalone in the finalize job (``--only publish``),
-        so it cannot trust in-process state from staging. A draft asset deleted
-        or replaced between attach and the flip would otherwise be published
-        unverified. SHA256SUMS is the persisted digest manifest (itself an
-        uploaded asset): this requires the draft's asset set to match it exactly
-        and re-hashes every covered asset before the draft may go public.
+        so it cannot trust in-process state from staging. It used to compare the
+        draft against the draft's own ``SHA256SUMS`` -- a document that is itself
+        one of the assets, so anything able to replace an asset could replace the
+        manifest in the same motion and the check would pass. It was a document
+        vouching for itself.
+
+        The staging job's attestation travels through the workflow's artifact
+        store instead, which the draft cannot reach. When it is present it is
+        authoritative: the draft's asset set and every digest must match it
+        exactly. ``SHA256SUMS`` is still cross-checked, so a disagreement between
+        the two is itself a refusal rather than a silent preference.
+
+        Without an attestation (a hand-run ``--only publish``) this falls back to
+        the old self-referential check and says so, because refusing outright
+        would remove the documented manual recovery path -- but it is a weaker
+        claim and is reported as one.
         """
         completed = self._gh(
             ["release", "view", f"v{self.version}", "--json", "assets"]
@@ -1243,12 +1595,55 @@ class Pipeline:
                 "the draft has no SHA256SUMS manifest; refusing to publish an "
                 "unverifiable release"
             )
+
+        attested: dict[str, str] | None = None
+        if self.attestation is not None:
+            if not self.attestation.is_file():
+                raise ReleaseError(
+                    f"no stage attestation at {self.attestation}; the finalize job "
+                    f"cannot verify the draft against anything the draft does not "
+                    f"itself contain"
+                )
+            try:
+                attested = release_receipts.verify_stage_attestation(
+                    self.attestation, version=self.version
+                )
+            except release_receipts.ReceiptError as error:
+                raise ReleaseError(str(error)) from error
+            unexpected = sorted(present - set(attested))
+            missing_attested = sorted(set(attested) - present)
+            if missing_attested or unexpected:
+                raise ReleaseError(
+                    f"the draft is not the release that was staged: missing "
+                    f"{missing_attested}, unexpected {unexpected}; refusing to "
+                    f"publish"
+                )
+
         checked: dict[str, str] = {}
         with tempfile.TemporaryDirectory(prefix="openai4s-publish-verify-") as temp:
             sums = self._download_asset("SHA256SUMS", Path(temp))
             expected = parse_checksums(sums.read_text("utf-8"))
             if not expected:
                 raise ReleaseError("SHA256SUMS was empty; nothing to verify")
+            if attested is not None:
+                # A replaced asset *and* a replaced manifest is the attack the
+                # attestation exists for: the two would agree with each other and
+                # disagree with this.
+                drifted = sorted(
+                    name
+                    for name, digest in expected.items()
+                    if name in attested and attested[name] != digest
+                )
+                if drifted:
+                    raise ReleaseError(
+                        f"the draft's SHA256SUMS disagrees with the staging "
+                        f"attestation for {drifted}; both the asset and its "
+                        f"manifest were changed after staging. Refusing to publish."
+                    )
+                # Digests are taken from the attestation, not the draft.
+                expected = {
+                    name: attested[name] for name in expected if name in attested
+                }
             # Exact set: every covered asset plus the manifest itself, no more.
             want = set(expected) | {"SHA256SUMS"}
             missing = sorted(want - present)
@@ -1421,41 +1816,40 @@ class Pipeline:
             except ReleaseError as error:
                 self.results.append(StepResult(name, False, str(error)))
                 failed = self.report(stopped_at=name, planned=planned)
-                # A stopped run is the one somebody most wants the record of.
-                self._seal_evidence(failed)
+                # A stopped run is the one somebody most wants the record of, so
+                # it is still sealed -- but best-effort *here*, because the run
+                # has already failed and a second failure cannot make it worse.
+                # The good path seals through `step_evidence`, where a failure
+                # does stop the release.
+                self._seal_stopped_run(failed)
                 return failed
             self.performed.append(name)
             self.results.append(result)
-        report = self.report(planned=planned)
-        self._seal_evidence(report)
-        return report
+        return self.report(planned=planned)
 
-    def _seal_evidence(self, report: Mapping[str, Any]) -> None:
-        """Freeze this run's claims where someone can check them later.
-
-        Best-effort on purpose: a release that succeeded must not be reported
-        as failed because a directory was read-only. The bundle is evidence
-        *about* the release, not a step of it -- and a missing bundle is
-        visibly missing, whereas a pipeline that fails at the last moment for a
-        reason unrelated to the artifacts is a worse outcome than no bundle.
-        """
+    def _seal_stopped_run(self, report: Mapping[str, Any]) -> None:
+        """Record a run that stopped, without being able to fail it further."""
         if self.dry_run:
-            # Every other step short-circuits here and writes nothing --
-            # `--dry-run` is documented as performing no external call and is
-            # how the *ordering* is tested. A dry run that left a real evidence
-            # bundle on disk would be a dry run with a side effect, and the
-            # next real run would find a stale one beside its artifacts.
+            # `--dry-run` is documented as performing no external call and is how
+            # the ordering is tested; a dry run that left a real bundle beside
+            # the artifacts would be a dry run with a side effect.
             return
         try:
-            destination = self.assets_dir / f"openai4s-{self.version}-evidence.zip"
+            destination = (
+                self.assets_dir / f"openai4s-{self.version}-evidence-stopped.zip"
+            )
             seal_evidence_bundle(destination, dict(report))
         except Exception as error:  # noqa: BLE001
-            print(f"[release] could not seal the evidence bundle: {error}")
+            print(f"[release] could not seal the stopped run's evidence: {error}")
 
     def report(
-        self, stopped_at: str | None = None, planned: Sequence[str] = STEPS
+        self,
+        stopped_at: str | None = None,
+        planned: Sequence[str] = STEPS,
+        *,
+        sealing: bool = False,
     ) -> dict[str, Any]:
-        return {
+        document: dict[str, Any] = {
             "version": self.version,
             "mode": "dry-run" if self.dry_run else self.mode,
             "ok": stopped_at is None,
@@ -1468,6 +1862,19 @@ class Pipeline:
             and "publish" in planned,
             "steps": [result.public() for result in self.results],
         }
+        if sealing:
+            # Only when sealing: `_frozen_sha` runs git and can raise, and the
+            # ordinary report is also built on the failure path where raising
+            # would replace the real reason with a git error.
+            document["source_sha"] = self.source_sha or self._head_sha()
+            document["builder"] = release_gates.builder_facts()
+            document["artifacts"] = {
+                asset.name: sha256_file(asset)
+                for asset in sorted(self.assets)
+                if asset.is_file()
+            }
+            document["sandbox"] = _sandbox_posture()
+        return document
 
 
 def seal_evidence_bundle(
@@ -1590,6 +1997,25 @@ def main() -> int:
     )
     parser.add_argument("--stop-after", choices=STEPS)
     parser.add_argument("--only", choices=STEPS)
+    parser.add_argument(
+        "--source-sha",
+        default="",
+        help=(
+            "the full commit SHA the release workflow froze once, before any job "
+            "checked anything out. Checked against this checkout rather than "
+            "believed: a job holding a tag that has since moved is refused."
+        ),
+    )
+    parser.add_argument(
+        "--attestation",
+        type=Path,
+        default=None,
+        help=(
+            "the staging job's stage-attestation.json, delivered out of band. "
+            "The finalize job compares the draft against this rather than "
+            "against the draft's own SHA256SUMS."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -1601,6 +2027,8 @@ def main() -> int:
         from_artifacts=args.from_artifacts,
         stop_after=args.stop_after,
         only=args.only,
+        source_sha=args.source_sha,
+        attestation=args.attestation,
     )
     report = pipeline.run()
     if args.json:

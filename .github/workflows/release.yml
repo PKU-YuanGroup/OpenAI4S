@@ -44,6 +44,66 @@ permissions:
   contents: read
 
 jobs:
+  # Resolve the tag to ONE commit, once, before anything else starts, and hand
+  # that SHA to every other job.
+  #
+  # Every job used to do `ref: ${{ inputs.tag || github.ref }}` on its own. A tag
+  # is mutable, so five jobs resolved it five times: the gates could run on one
+  # commit while the wheel was built from a second and the DMG from a third, with
+  # nothing recording or comparing where any of them came from. The pipeline's
+  # receipt check compared the quality receipt against the *attach* job's own
+  # re-derived HEAD, which happens to catch quality-versus-attach drift and
+  # cannot see build-versus-attach drift at all.
+  #
+  # This job also owns the annotated-tag and ancestor-of-main assertions, which
+  # used to live inside `build` under `if: inputs.publish` -- proving the object
+  # type and then discarding the peeled commit.
+  freeze:
+    name: Freeze the source SHA
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.peel.outputs.sha }}
+    steps:
+      - name: Checkout enough history to peel the tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Peel the tag to a full commit SHA
+        id: peel
+        env:
+          TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ -n "$TAG" ]; then
+            # `^{commit}` peels an annotated tag to the commit it points at; for
+            # a lightweight tag it is a no-op. Either way the result is a full
+            # 40-character commit SHA and not a ref name.
+            SHA="$(git rev-parse --verify "${TAG}^{commit}")"
+            if [ "$PUBLISH" = "true" ]; then
+              if [ "$(git cat-file -t "$TAG")" != "tag" ]; then
+                echo "::error::Release tags must be annotated."
+                exit 1
+              fi
+              git fetch --no-tags origin main
+              if ! git merge-base --is-ancestor "$SHA" origin/main; then
+                echo "::error::$TAG ($SHA) is not an ancestor of origin/main."
+                exit 1
+              fi
+            fi
+          else
+            SHA="$(git rev-parse --verify HEAD)"
+          fi
+          case "$SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo "::error::refusing to release a ref that did not peel to a full commit SHA: $SHA"; exit 1 ;;
+          esac
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "frozen at $SHA"
+
   guard:
     name: Require an existing draft release
     if: inputs.publish
@@ -71,13 +131,14 @@ jobs:
 
   quality:
     name: Quality gates at the release SHA
+    needs: [freeze]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Checkout the immutable release tag
+      - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.freeze.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Install uv
@@ -86,6 +147,23 @@ jobs:
           python-version: "3.12"
       - name: Install dev dependencies
         run: uv sync --locked
+      # The browser matrix and the Python support matrix already ran on the push
+      # to `main` that this tag points at, and cost more than the rest of the
+      # release combined. So they are proven from GitHub's own check runs *pinned
+      # to this exact commit* rather than re-executed. `attest_check_runs`
+      # requires each required check to be the latest attempt, to have concluded
+      # `success`, and to name this SHA as its `head_sha` -- without that last
+      # condition it would degrade into "some run somewhere was green".
+      - name: Collect the check runs recorded against the frozen SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.freeze.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${GH_REPO}/commits/${SHA}/check-runs?per_page=100" \
+            > check-runs.json
       - name: Run every offline gate and record what happened
         env:
           # The runner has no keychain and no session bus, which is exactly the
@@ -93,7 +171,10 @@ jobs:
           # browser job sets the same thing for the same reason; without it the
           # suite fails on a policy that is working correctly.
           OPENAI4S_SECRET_STORE: plaintext
-        run: uv run python scripts/run_quality_gates.py --output quality-receipt.json
+        run: |
+          uv run python scripts/run_quality_gates.py \
+            --output quality-receipt.json \
+            --check-runs check-runs.json
       - name: Upload the receipt for staging to verify
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -102,16 +183,59 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # The platform checks cannot be attested: the nightly sandbox jobs in ci.yml
+  # run only on `schedule`/`workflow_dispatch`, so no check run for them exists at
+  # a release SHA and requiring one would make every release unreachable. They are
+  # executed here instead, against the frozen SHA.
+  platform-checks:
+    name: Sandbox enforcement at the release SHA (${{ matrix.platform }})
+    needs: [freeze]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            runner: macos-14
+            module: harness.smoke.macos_sandbox
+          # No linux leg. `harness.smoke.linux_sandbox` cannot pass on a
+          # GitHub-hosted runner -- ci.yml explains why and deliberately has no
+          # such job -- and `build` needs this one, so requiring it made every
+          # release unreachable. It is declared unprovable in
+          # `release_gates.PLATFORM_CHECKS_UNAVAILABLE`, which the evidence
+          # bundle carries, rather than dropped. Adding it back here without
+          # removing it there fails `test_the_release_declares_every_platform`.
+    steps:
+      - name: Checkout the frozen release SHA
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.freeze.outputs.sha }}
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+      - name: Install bubblewrap
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Install the zero-dependency runtime
+        run: uv sync --locked
+      - name: Require a real enforced sandbox and child-env scrubbing
+        env:
+          OPENAI4S_KERNEL_SANDBOX: enforce
+        run: uv run python -m ${{ matrix.module }}
+
   build:
     name: Build verified distributions
-    needs: [quality]
+    needs: [freeze, quality, platform-checks]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout the immutable release tag
+      - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.freeze.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Install uv
@@ -127,22 +251,22 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
         run: uv run --locked python scripts/verify_release_tag.py "$TAG"
-      - name: Require an annotated tag on main
-        if: inputs.publish
-        env:
-          TAG: ${{ inputs.tag }}
-        run: |
-          if [ "$(git cat-file -t "$TAG")" != "tag" ]; then
-            echo "::error::Release tags must be annotated."
-            exit 1
-          fi
-          git merge-base --is-ancestor HEAD origin/main
       - name: Scan release sources
         run: uv run --locked python scripts/source_secret_scan.py
       - name: Build wheel and source distribution
         run: uv build --no-sources --out-dir dist --clear
       - name: Verify metadata and packaged runtime resources
         run: uv run --locked python scripts/verify_release_artifacts.py dist
+      # Binds these exact bytes to the frozen commit and records what built them.
+      # Nothing did: `attach` hashed whatever it downloaded and treated that as
+      # the baseline, so an artifact built from a moved tag was indistinguishable
+      # from one built from the released sources.
+      - name: Receipt the distributions against the frozen SHA
+        env:
+          SHA: ${{ needs.freeze.outputs.sha }}
+        run: |
+          uv run --locked python scripts/release_receipts.py \
+            --kind dist --source-sha "$SHA" dist/*.whl dist/*.tar.gz
       - name: Upload the exact distributions for publication
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -153,7 +277,7 @@ jobs:
 
   macos-app:
     name: Build the macOS app image (arm64)
-    needs: [quality]
+    needs: [freeze, quality, platform-checks]
     # The DMG embeds a relocatable CPython plus the native science wheels, so it
     # cannot be cross-built: this must run on an Apple Silicon runner.
     runs-on: macos-14
@@ -164,10 +288,10 @@ jobs:
     env:
       HAS_SIGNING_CERT: ${{ secrets.MACOS_SIGNING_CERTIFICATE != '' }}
     steps:
-      - name: Checkout the immutable release tag
+      - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.freeze.outputs.sha }}
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -214,12 +338,21 @@ jobs:
         # stack, a missing Web UI / R worker, a broken signature, or any
         # credential material swept into the bundle.
         run: python3 scripts/verify_macos_bundle.py dist/*.dmg
-      - name: Record what actually signed the image, and what is inside it
-        # The staging job runs on Linux and has no `codesign`, so the evidence
-        # has to be produced here and travel with the image. Without it the
-        # gate had nothing to read and fell back to "the identity variable is
-        # set", which an ad-hoc image satisfies.
+      - name: Record what actually signed the image, whether it is notarized, and what is inside it
+        # The staging job runs on Linux and has neither `codesign` nor `xcrun`, so
+        # the evidence has to be produced here and travel with the image. Without
+        # it the gate had nothing to read and fell back to "the identity variable
+        # is set", which an ad-hoc image satisfies. The notarization half is newer:
+        # `notarized` was hardcoded `None` in the pipeline and gated nothing, so a
+        # Developer-ID-signed image with no stapled ticket passed -- and Gatekeeper
+        # refuses exactly that image on a user's machine.
         run: python3 scripts/describe_macos_image.py dist/*.dmg
+      - name: Receipt the image against the frozen SHA
+        env:
+          SHA: ${{ needs.freeze.outputs.sha }}
+        run: |
+          python3 scripts/release_receipts.py \
+            --kind macos --source-sha "$SHA" dist/*.dmg
       - name: Upload the verified app image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -228,6 +361,7 @@ jobs:
             dist/*.dmg
             dist/*.dmg.codesign.json
             dist/*.dmg.components.json
+            dist/build-receipt-macos.json
           if-no-files-found: error
           retention-days: 1
 
@@ -243,14 +377,20 @@ jobs:
     # has vouched for, and the Windows package is a wrapper around this exact
     # tarball, so letting it start early would put an unvouched payload inside
     # a second artifact too.
-    needs: [quality]
+    #
+    # `freeze` is in the list for the ref below, not for ordering: `quality`
+    # already depends on it. This job arrived on a branch that had no `freeze`
+    # job and checked out `inputs.tag || github.ref`, which is a moving ref --
+    # a tag can be repointed between the gate and the build, and P0-0's whole
+    # claim is that every artifact came from one immutable SHA.
+    needs: [freeze, quality]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - name: Checkout the immutable release tag
+      - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.freeze.outputs.sha }}
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -261,6 +401,16 @@ jobs:
         # stack, a missing Web UI / R worker, a desktop entry that launches
         # nothing, or any credential material swept into the archive.
         run: python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+      # Same binding the wheel and the DMG get. Without it the tarball was
+      # staged with no document tying its bytes to the frozen commit -- covered
+      # only by the in-run `incoming` digests, which say "these are the bytes
+      # `attach` downloaded", not "these are the bytes built from this source".
+      - name: Receipt the bundle against the frozen SHA
+        env:
+          SHA: ${{ needs.freeze.outputs.sha }}
+        run: |
+          uv run --locked python scripts/release_receipts.py \
+            --kind linux --source-sha "$SHA" dist/OpenAI4S-*-linux-x86_64.tar.gz
       - name: Upload the verified bundle
         # The .sha256 sidecar travels because `windows-package` embeds it in the
         # zip, so the digest the Windows launcher checks against is the one this
@@ -272,6 +422,7 @@ jobs:
           path: |
             dist/OpenAI4S-*-linux-x86_64.tar.gz
             dist/OpenAI4S-*-linux-x86_64.tar.gz.sha256
+            dist/build-receipt-*.json
           if-no-files-found: error
           retention-days: 1
 
@@ -285,14 +436,15 @@ jobs:
     # It consumes `linux-app`'s artifact rather than rebuilding: that is what
     # makes the payload byte-identical to the Linux bundle this same release
     # publishes, instead of a second build that merely ought to match.
-    needs: linux-app
+    # `freeze` for the ref, `linux-app` for the payload: same reason as above.
+    needs: [freeze, linux-app]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Checkout the immutable release tag
+      - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.freeze.outputs.sha }}
           persist-credentials: false
       - name: Download the verified Linux bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -306,6 +458,12 @@ jobs:
         # matches its checksum, macOS resource-fork litter, or a launcher that
         # has grown a native Windows execution path.
         run: python3 scripts/verify_windows_zip.py dist/OpenAI4S-*-windows-x86_64.zip
+      - name: Receipt the package against the frozen SHA
+        env:
+          SHA: ${{ needs.freeze.outputs.sha }}
+        run: |
+          uv run --locked python scripts/release_receipts.py \
+            --kind windows --source-sha "$SHA" dist/OpenAI4S-*-windows-x86_64.zip
       - name: Upload the verified package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -313,6 +471,7 @@ jobs:
           path: |
             dist/OpenAI4S-*-windows-x86_64.zip
             dist/OpenAI4S-*-windows-x86_64.zip.sha256
+            dist/build-receipt-*.json
           if-no-files-found: error
           retention-days: 1
 
@@ -385,7 +544,7 @@ jobs:
     # Staging only. This job never makes anything public: the flip lives in
     # `finalize`, after PyPI.
     if: inputs.publish
-    needs: [guard, quality, build, macos-app, linux-app, windows-package, windows-launcher]
+    needs: [freeze, guard, quality, build, macos-app, linux-app, windows-package, windows-launcher]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -418,10 +577,10 @@ jobs:
         with:
           name: quality-receipt
           path: assets/
-      - name: Check out the pipeline
+      - name: Check out the pipeline at the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.freeze.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
           path: source
@@ -429,11 +588,15 @@ jobs:
       # `pytest`: its inputs are the artifacts the earlier jobs produced and
       # verified, and rebuilding here would put different bytes on GitHub than
       # PyPI receives. `--stop-after reverify` is what stops it from publishing.
+      # `--source-sha` is checked against this checkout rather than believed, so
+      # a job holding a tag that has since moved is refused here too and not only
+      # by the workflow's `needs` graph.
       - name: Stage, prove and verify the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
+          SHA: ${{ needs.freeze.outputs.sha }}
         # Run from inside the checkout: the pipeline asks git which commit it
         # is releasing, and outside a work tree that question has no answer --
         # which the receipt check correctly refuses to guess at.
@@ -443,9 +606,31 @@ jobs:
             --version "${TAG#v}" \
             --mode release \
             --from-artifacts \
+            --source-sha "$SHA" \
             --stop-after reverify \
             --assets-dir ../assets \
             --json
+      # The attestation must leave through the workflow's artifact store, not
+      # through the draft. `step_publish` used to re-hash the draft against the
+      # draft's own `SHA256SUMS` -- a document that is itself one of the assets,
+      # so anything able to replace an asset could replace the manifest in the
+      # same motion and the check passed.
+      - name: Upload the staging attestation for finalize to verify against
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stage-attestation
+          path: assets/stage-attestation.json
+          if-no-files-found: error
+          retention-days: 7
+      # The evidence bundle is a mandatory product of the run, so it is kept
+      # where a reader can find it even if the release never goes public.
+      - name: Upload the sealed evidence bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-evidence
+          path: assets/openai4s-*-evidence*.zip
+          if-no-files-found: error
+          retention-days: 90
 
   pypi:
     name: Publish to PyPI with OIDC
@@ -488,21 +673,29 @@ jobs:
     # `release_pipeline.py --only publish` by hand. Do not bump the version and
     # do not rebuild — the artifacts on the draft are the ones PyPI has.
     if: inputs.publish
-    needs: [attach, pypi]
+    needs: [freeze, attach, pypi]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
     steps:
-      - name: Check out the pipeline
+      - name: Check out the pipeline at the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.freeze.outputs.sha }}
           # This job holds `contents: write` and then runs a script out of the
           # checked-out tag. Every other checkout here disables credential
           # persistence; these two did not.
           persist-credentials: false
           path: source
+      # The record the draft cannot rewrite. Downloaded rather than re-derived:
+      # the whole point is that this job's view of "what was staged" does not
+      # come from the mutable thing it is about to publish.
+      - name: Download the staging attestation
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: stage-attestation
+          path: attestation/
       - name: Publish, once PyPI has the version
         env:
           GH_TOKEN: ${{ github.token }}
@@ -513,4 +706,5 @@ jobs:
             --version "${TAG#v}" \
             --mode release \
             --only publish \
+            --attestation attestation/stage-attestation.json \
             --json

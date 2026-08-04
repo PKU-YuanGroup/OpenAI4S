@@ -284,3 +284,47 @@ def test_an_empty_acknowledgement_is_still_an_observed_one():
             item.get("type") == "object" and not item.get("properties")
             for item in observed
         ), f"{route} is on the empty-ack list but never answered with an empty object"
+
+
+def test_a_route_with_no_frozen_shape_fails_the_gate():
+    """Plan line 311: a new or changed route must update both frozen files.
+
+    `capture_response_schemas.py --check` was the only thing positioned to
+    enforce the schema half and it printed the uncovered list and returned 0, so
+    a route could sit in the contract with no shape indefinitely --
+    `/frames/<id>/admissions/<id>` did, for forty-three commits.
+
+    Asserted on the script's own control flow rather than by running it: the
+    check re-runs the whole suite, which cannot be nested here. What matters is
+    that the uncovered branch reaches a non-zero return.
+    """
+    import ast
+    from pathlib import Path
+
+    source = Path("scripts/capture_response_schemas.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    main = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+
+    guarded = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "uncovered"
+    ]
+    assert guarded, "nothing branches on `uncovered`"
+
+    returns_nonzero = any(
+        isinstance(inner, ast.Return)
+        and isinstance(inner.value, ast.Constant)
+        and inner.value.value != 0
+        for branch in guarded
+        for inner in ast.walk(branch)
+    )
+    assert (
+        returns_nonzero
+    ), "an uncovered route is reported and then the gate returns success"

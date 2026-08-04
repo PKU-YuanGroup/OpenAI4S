@@ -448,6 +448,7 @@ def test_the_key_the_sdk_sends_actually_deduplicates(tmp_path, monkeypatch):
     import subprocess
     import types
 
+    from openai4s.compute import registry
     from openai4s.compute.manager import ComputeError, ComputeManager
     from openai4s.config import Config
 
@@ -475,6 +476,10 @@ def test_the_key_the_sdk_sends_actually_deduplicates(tmp_path, monkeypatch):
             self.returncode = -9
 
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc(), raising=True)
+    # Registered because `submit` refuses an unregistered destination
+    # before it spawns ssh; without it this drives a state the product
+    # does not have.
+    registry.add_host("lab", data_dir=cfg.data_dir)
     manager = ComputeManager(cfg)
 
     def host_call(op, args):

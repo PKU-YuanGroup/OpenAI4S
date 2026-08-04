@@ -82,7 +82,9 @@ class HostDataStore(Protocol):
     def lineage_edges_for(self, version_id: str, direction: str) -> list[dict]:
         ...
 
-    def version_for_path(self, path: str) -> str | None:
+    def version_for_path(
+        self, path: str, *, root_frame_id: str | None, project_id: str
+    ) -> str | None:
         ...
 
 
@@ -161,11 +163,19 @@ class HostDataService:
         return source() if callable(source) else source
 
     def query(self, spec: dict) -> Any:
-        rows = self._store().query(
+        store = self._store()
+        # The caller's own scope, so the `my_*` views resolve to this session's
+        # rows. `spec["scope"]` -- what the SDK sends -- is deliberately *not*
+        # read: it is caller-supplied, and a value the caller chooses cannot be
+        # what confines the caller. The scope is derived from the frame instead.
+        # It used to be dropped entirely, so the views did not exist and the base
+        # tables were readable directly, across every project.
+        rows = store.query(
             spec.get("sql", ""),
             params=spec.get("params"),
             limit=spec.get("limit"),
             timeout_s=5.0,
+            scope=store.resolve_frame_scope(self._frame_id()),
         )
         if spec.get("df"):
             columns = list(rows[0].keys()) if rows else []
@@ -196,11 +206,20 @@ class HostDataService:
         return {"count": len(items), "artifacts": items}
 
     def _scoped_artifact(self, artifact_id: str) -> dict:
-        """Resolve one Artifact without allowing cross-session enumeration."""
+        """Resolve one Artifact without allowing cross-session enumeration.
+
+        Out of scope raises the *same* KeyError as missing, for the reason
+        `_scoped_version` states below. This used to raise `PermissionError` for
+        a foreign artifact and `KeyError` for an absent one -- two helpers twelve
+        lines apart implementing contradictory rules, and the difference in
+        exception type alone is a working existence oracle: a cell that guesses
+        an id learns whether it names a real artifact in someone else's project.
+        """
         store = self._store()
+        unknown = KeyError(f"no artifact {artifact_id!r} in the current session")
         artifact = store.get_artifact(artifact_id)
         if artifact is None:
-            raise KeyError(f"no artifact {artifact_id!r} in the current session")
+            raise unknown
         frame_id = self._frame_id()
         scope = store.resolve_frame_scope(frame_id)
         if (
@@ -208,9 +227,7 @@ class HostDataService:
             or artifact.get("root_frame_id") != scope.get("root_frame_id")
             or artifact.get("project_id") != scope.get("project_id")
         ):
-            raise PermissionError(
-                f"artifact {artifact_id!r} is outside the current session scope"
-            )
+            raise unknown
         return artifact
 
     def _scoped_version(self, version_id: str) -> dict:
@@ -423,27 +440,61 @@ class HostDataService:
                 f"artifact version {source_version_id!r} has no frozen snapshot"
             )
 
+        # Every refusal ahead of every mutation. Two of these used to live only
+        # inside the transaction, which ran *after* the live file had already been
+        # unlinked -- so a call that was going to be refused destroyed the
+        # caller's working file on its way to refusing.
+        if str(parent.get("root_frame_id") or "") == root_frame_id:
+            raise ValueError("artifact version already belongs to this session")
+
         filename = str(spec.get("filename") or metadata.get("filename") or "artifact")
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "artifact"
+        live = self._resolve_path(filename, must_exist=False)
+        if live.exists() or live.is_symlink():
+            # This used to be `live.unlink()`: a silent, unlogged deletion of
+            # whatever the session already had under that name, on the *success*
+            # path, with no snapshot backfill -- so unsaved work disappeared
+            # without a word. Refusing and naming the remedy is the only version
+            # of this that does not lose data the caller did not offer up.
+            raise FileExistsError(
+                f"{filename!r} already exists in this session's workspace; "
+                f"materialising would overwrite it. Pass filename= to choose "
+                f"another name."
+            )
+
         version_id = f"v-{uuid.uuid4().hex[:12]}"
         config = self._config()
         versions_dir = Path(config.data_dir) / "artifact-versions"
         versions_dir.mkdir(parents=True, exist_ok=True)
         destination = versions_dir / f"{version_id}__{safe}"
+        # Snapshot to snapshot: a hardlink is safe here and is the optimisation
+        # worth having -- both names are immutable by contract, so a materialised
+        # multi-gigabyte dataset costs a directory entry.
         try:
             os.link(str(snapshot), str(destination))
         except OSError:
             shutil.copyfile(str(snapshot), str(destination))
 
-        # The live file too, so the cell can just open it by name.
-        live = self._resolve_path(filename, must_exist=False)
+        # The live file is a real COPY, never a link. Hardlinking it made the
+        # borrowing session's *writable* working file share an inode with two
+        # immutable snapshots, so one ordinary truncating write through the live
+        # name rewrote the source session's frozen bytes -- and
+        # `write_version_snapshot` returns early when the file exists, so nothing
+        # would ever re-freeze them. The source row's checksum then described
+        # bytes that no longer existed. The old docstring's "immutable by
+        # contract" is true of the snapshot names and false of the live one.
+        #
+        # Staged, then moved: `os.replace` onto a name proven absent above is
+        # atomic, so a cell never observes a half-written deliverable.
         live.parent.mkdir(parents=True, exist_ok=True)
+        staged = live.with_name(f"{live.name}.{version_id}.part")
         try:
-            if live.exists():
-                live.unlink()
-            os.link(str(destination), str(live))
-        except OSError:
-            shutil.copyfile(str(destination), str(live))
+            shutil.copyfile(str(destination), str(staged))
+            os.replace(str(staged), str(live))
+        except Exception:
+            staged.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            raise
 
         try:
             return store.materialise_artifact_version(
@@ -456,21 +507,70 @@ class HostDataService:
                 frame_id=frame_id,
                 root_frame_id=root_frame_id,
                 project_id=project_id,
+                # Read the same way `save_artifact` reads it. Without it the row
+                # lands with `producing_cell_id` NULL, and the end-of-cell
+                # capture matches candidates on exactly that column.
+                producing_cell_id=spec.get("execution_cell_id")
+                or spec.get("producing_cell_id"),
             )
         except Exception:
-            # The transaction rolled back, so the two links describe a version
-            # that does not exist. Removing them keeps the versions directory
-            # from accumulating files no row will ever name.
+            # The transaction rolled back, so both files describe a version that
+            # does not exist. Removing them is safe precisely because the live
+            # name was proven absent before anything was written: there is no
+            # pre-existing file here to lose, which is what made the old
+            # one-sided rollback (snapshot only) destructive.
+            staged.unlink(missing_ok=True)
+            live.unlink(missing_ok=True)
             destination.unlink(missing_ok=True)
             raise
 
+    def _scoped_lineage_inputs(self, raw: Any) -> list[str]:
+        """Validate declared lineage inputs before anything is written.
+
+        `record_cell_artifact` skips only empty, self and duplicate ids and then
+        INSERTs the edge; `lineage_edges` declares no foreign key, so an id from
+        another project -- or one that never existed -- was accepted. One
+        `save_artifact` call therefore wrote an edge the scoping model says cannot
+        exist, and the properly scoped readers then walked it and republished the
+        other project's filename and absolute path through it.
+
+        Validation happens here, before the copy and before the row, so a refused
+        call leaves no artifact, no version and no orphan file behind. Foreign and
+        absent raise the same KeyError as everywhere else on these paths.
+        """
+        if not raw:
+            return []
+        if isinstance(raw, str):
+            raw = [raw]
+        inputs: list[str] = []
+        for candidate in raw:
+            version_id = str(candidate or "").strip()
+            if not version_id:
+                continue
+            # Raises the shared unknown-version KeyError for foreign, dangling
+            # and malformed alike.
+            self._scoped_version(version_id)
+            if version_id not in inputs:
+                inputs.append(version_id)
+        return inputs
+
     def save_artifact(self, spec: dict) -> dict:
+        # Before the copy: a refused lineage declaration must not leave a file in
+        # the artifacts directory that no row will ever name.
+        input_version_ids = self._scoped_lineage_inputs(spec.get("input_version_ids"))
         source = self._resolve_path(str(spec["path"]), must_exist=True)
         if not source.is_file():
             raise FileNotFoundError(f"save_artifact: no such file: {source}")
         filename = str(spec.get("filename") or source.name)
-        data = source.read_bytes()
-        checksum = hashlib.sha256(data).hexdigest()
+        # Streamed, exactly like `provenance_record` below. This was
+        # `source.read_bytes()` purely to checksum: registering a 64 MB output
+        # measured a 64 MB peak in the daemon that also serves every other
+        # session, and a real trajectory or alignment is orders of magnitude
+        # past that -- the copy underneath never needed the bytes in Python at
+        # all. Two passes beat one pass that has to hold the file: `copy2`
+        # takes the kernel's copy fast path, so the second read costs I/O, not
+        # memory.
+        checksum, size_bytes = self._digest_file(source)
         version_stub = uuid.uuid4().hex[:12]
         safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
         config = self._config()
@@ -486,12 +586,12 @@ class HostDataService:
                 path=str(source),
                 filename=filename,
                 content_type=spec.get("content_type"),
-                size_bytes=len(data),
+                size_bytes=size_bytes,
                 checksum=checksum,
                 producing_cell_id=execution_cell_id,
                 frame_id=self._frame_id(),
                 snapshot_path=str(destination),
-                input_version_ids=spec.get("input_version_ids") or [],
+                input_version_ids=input_version_ids,
                 source=spec.get("source"),
                 reuse_policy="provisional",
             )
@@ -518,9 +618,16 @@ class HostDataService:
         version_id = spec.get("version_id")
         path = spec.get("path")
         if version_id and not path:
-            # Store-derived: an artifact snapshot legitimately lives outside
-            # the workspace, under the data dir. Its scope check belongs with
-            # the rest of the artifact read paths, not here.
+            # Store-derived: an artifact snapshot legitimately lives outside the
+            # workspace, under the data dir -- so the workspace resolver cannot
+            # be the check here, and scope has to be.
+            #
+            # This used to say the scope check "belongs with the rest of the
+            # artifact read paths, not here" and pass the id straight to
+            # `resolve_artifact_path`. No artifact read path performed it, so the
+            # check was deferred to nowhere: any version id from any project
+            # rendered, and the reply carried the resolved absolute path.
+            self._scoped_version(str(version_id))
             resolved = self._store().resolve_artifact_path(version_id)
             if not resolved or not Path(resolved).exists():
                 raise FileNotFoundError(f"view_image: no such image: {resolved!r}")
@@ -660,10 +767,52 @@ class HostDataService:
         return result
 
     def provenance_resolve_path(self, path: str) -> Any:
-        return self._store().version_for_path(path)
+        """Which version this session's copy of `path` is, or None.
+
+        Session scope, not project scope: a foreign session's file has to be
+        materialised, never resolved in place, which is what `materialise_artifact`
+        exists for. Refusal is `None` -- the same value an untracked path already
+        returns -- because the P0-2 exit criterion is that cross-scope and absent
+        are indistinguishable, and this contract is already `str | None`. Raising
+        would answer "something is there, you may not have it".
+
+        Reached from `builtins.open` in every Python cell (the provenance hooks
+        wrap the reader), so it runs constantly and must stay cheap and quiet.
+        """
+        frame_id = self._frame_id()
+        if frame_id is None:
+            return None
+        scope = self._store().resolve_frame_scope(frame_id)
+        root_frame_id = scope.get("root_frame_id")
+        project_id = scope.get("project_id")
+        if not root_frame_id or not project_id:
+            return None
+        return self._store().version_for_path(
+            path, root_frame_id=str(root_frame_id), project_id=str(project_id)
+        )
 
     #: How much of a file is read at a time when checksumming it.
     _DIGEST_CHUNK = 1024 * 1024
+
+    def _digest_file(self, path: Path) -> tuple[str, int]:
+        """Return ``(sha256, size)`` for a file, one chunk at a time.
+
+        Shared by `save_artifact` and `provenance_record` so the two cannot
+        drift apart again: both register a file the agent produced, and the
+        files worth registering are exactly the ones too large to hold. It
+        raises `OSError` -- each caller reports an unreadable path in its own
+        established shape.
+        """
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(self._DIGEST_CHUNK)
+                if not chunk:
+                    break
+                size_bytes += len(chunk)
+                digest.update(chunk)
+        return digest.hexdigest(), size_bytes
 
     def provenance_record(self, spec: dict) -> dict:
         """Register a file this cell produced as an artifact of this session.
@@ -680,6 +829,15 @@ class HostDataService:
         its siblings, which is what makes this an omission rather than a
         missing mechanism.
         """
+        # Before the digest and before the row, exactly where `save_artifact`
+        # validates the same field. `save_artifact` was fixed and this twin was
+        # not, so the one write path that never checked its lineage inputs was
+        # the one an agent reaches from any cell: a foreign version id went into
+        # `lineage_edges` (no foreign key), and the properly scoped reader then
+        # walked that edge and returned the other project's filename and
+        # absolute path. Refusing here means a rejected call leaves no artifact,
+        # no version and no orphan file.
+        input_version_ids = self._scoped_lineage_inputs(spec.get("input_version_ids"))
         path = spec["path"]
         try:
             output = self._resolve_path(path, must_exist=True)
@@ -691,20 +849,14 @@ class HostDataService:
             # for something outside its workspace.
             return {"error": f"prov_record: {error}"}
 
-        # Streamed rather than `read_bytes()`. Every other artifact path in
-        # this codebase streams; this one materialised the whole file in the
-        # daemon to checksum it, so recording a 4 GB output cost 4 GB of
-        # daemon memory in a process that also serves every other session.
-        digest = hashlib.sha256()
-        size_bytes = 0
+        # Streamed rather than `read_bytes()`, through the helper `save_artifact`
+        # also uses. This one materialised the whole file in the daemon to
+        # checksum it, so recording a 4 GB output cost 4 GB of daemon memory in
+        # a process that also serves every other session; `save_artifact` was
+        # still doing exactly that, which is why the loop now lives in one
+        # place instead of two.
         try:
-            with open(output, "rb") as handle:
-                while True:
-                    chunk = handle.read(self._DIGEST_CHUNK)
-                    if not chunk:
-                        break
-                    size_bytes += len(chunk)
-                    digest.update(chunk)
+            checksum, size_bytes = self._digest_file(output)
         except FileNotFoundError:
             # Reported the same way whether the resolver enforced existence or
             # the open did. A caller with a pass-through resolver would
@@ -719,10 +871,10 @@ class HostDataService:
             filename=spec.get("filename") or output.name,
             content_type=spec.get("content_type"),
             size_bytes=size_bytes,
-            checksum=digest.hexdigest(),
+            checksum=checksum,
             producing_cell_id=spec.get("producing_cell_id"),
             frame_id=self._frame_id(),
-            input_version_ids=spec.get("input_version_ids") or [],
+            input_version_ids=input_version_ids,
         )
 
 

@@ -63,7 +63,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from openai4s.compute import manifest, states
+from openai4s.compute import manifest, registry, states
 from openai4s.compute.safe_archive import UnsafeArchiveError, safe_extract_tar
 
 # Repo-root openai4s_compute_provider (the confined helper package).
@@ -1426,7 +1426,9 @@ class ComputeManager:
         if self._store is None:
             return job_id
         if idempotency_key:
-            existing = self._store.compute_job_by_idempotency_key(idempotency_key)
+            existing = self._store.compute_job_by_idempotency_key(
+                idempotency_key, self._owner_key
+            )
             if existing is not None:
                 raise ComputeError(
                     f"a job for idempotency key {idempotency_key!r} already "
@@ -1452,7 +1454,12 @@ class ComputeManager:
             # duplicate job with no durable row (unrecoverable after restart).
             # A UNIQUE violation must REFUSE, naming the winner — not degrade.
             if idempotency_key:
-                winner = self._store.compute_job_by_idempotency_key(idempotency_key)
+                # Scoped: the raced winner under a per-owner index is by
+                # construction this owner's own row, and naming another owner's
+                # job here would reintroduce the leak the scoping closed.
+                winner = self._store.compute_job_by_idempotency_key(
+                    idempotency_key, self._owner_key
+                )
                 if winner is not None:
                     raise ComputeError(
                         f"a job for idempotency key {idempotency_key!r} already "
@@ -1639,11 +1646,60 @@ class ComputeManager:
                 "invalid_request",
             )
         if fam == "ssh":
-            # Every ssh/scp argv in this module takes its destination from
-            # here, so this one check covers all of them -- rather than each
-            # call site remembering.
             rest = _safe_alias(rest)
         return fam, rest
+
+    def _named_destination(self, alias: str) -> str:
+        """A destination an *agent* just named, or a refusal.
+
+        Two checks, and they answer different questions. `_safe_alias` is shape:
+        the name cannot be read as an option or a second word.
+        `registry.is_known_alias` is authorisation: the user has actually
+        offered this host, through the registry or their own `~/.ssh/config`.
+
+        The second had exactly one call site in the whole tree -- on the submit
+        path, in `host_dispatch` -- so `compute_ssh` and `compute_scp` dialled
+        whatever string an agent put after `ssh:`, and neither is in
+        `GATEABLE_TOOLS`, so no approval stood in front of them either.
+        `523cab6` closed submit and is worded as though it closed the surface;
+        it closed one of three doors.
+
+        Only for aliases that arrive with the call. An alias read back out of a
+        job record was authorised when the job was written, and re-checking it
+        would mean that de-registering a host strands every job already running
+        on it -- `cancel` could no longer reach the process it exists to stop.
+        Those paths get `_ssh_argv`/`_scp_argv`, which keep the shape guard.
+        """
+        safe = _safe_alias(alias)
+        if not registry.is_known_alias(safe, Path(self.cfg.data_dir)):
+            raise ComputeError(
+                f"ssh alias {safe!r} is not registered with this daemon; add it "
+                "with `openai4s host add` or to your ~/.ssh/config before an "
+                "agent can reach it",
+                "unknown_alias",
+            )
+        return safe
+
+    def _ssh_argv(self, alias: str, *rest: str) -> list[str]:
+        """`ssh <destination> <args...>`, shape-checked.
+
+        Every ssh argv in this module is built here, so the guarantee is
+        structural rather than remembered at nine call sites -- which is what
+        `_split`'s comment claimed and `scp` disproved.
+        """
+        return ["ssh", _safe_alias(alias), *rest]
+
+    def _scp_argv(
+        self, alias: str, *, remote: str, local: str, upload: bool
+    ) -> list[str]:
+        """`scp` in either direction, shape-checked.
+
+        `-O` and `-q` ride along because both call sites had them; a caller
+        assembling its own flags would be a third spelling to keep in sync.
+        """
+        target = f"{_safe_alias(alias)}:{remote}"
+        pair = (local, target) if upload else (target, local)
+        return ["scp", "-O", "-q", *pair]
 
     def _byoc(self, pid: str) -> dict:
         p = self._providers.get(pid)
@@ -1907,7 +1963,14 @@ class ComputeManager:
                     {"live": self._live_count(), "limit": self._limit},
                 )
         if fam == "ssh":
-            return self._submit_ssh(rest, kw)
+            # Authorised in the manager, not only in `host_dispatch`. The one
+            # `is_known_alias` call in the tree lived at `_m_compute_submit`, so
+            # the guarantee held for exactly one door into this method and any
+            # other caller -- a route, a test, a future adapter -- inherited
+            # none of it. Checking here means the record a job is written from
+            # was authorised, which is what lets the harvest and cancel paths
+            # trust it later.
+            return self._submit_ssh(self._named_destination(rest), kw)
         return self._submit_byoc(rest, kw)
 
     def _stage_inputs(
@@ -2151,7 +2214,7 @@ class ComputeManager:
         )
         try:
             proc = _run_capped(
-                ["ssh", alias, remote],
+                self._ssh_argv(alias, remote),
                 input=script.encode("utf-8"),
                 timeout=60,
             )
@@ -2548,7 +2611,7 @@ class ComputeManager:
             f"else echo NORC; fi"
         )
         try:
-            check = _run_capped(["ssh", alias, probe], timeout=30)
+            check = _run_capped(self._ssh_argv(alias, probe), timeout=30)
         except (subprocess.TimeoutExpired, OSError) as e:
             return self._ssh_unknown(job, f"status probe failed to run: {e}")
         if check.returncode != 0:
@@ -2846,7 +2909,7 @@ class ComputeManager:
         patterns = list(exclude_patterns or [])
         script = _ssh_harvest_script(workdir, HARVEST_MAX_FILE_BYTES, patterns)
         try:
-            proc = _run_capped(["ssh", alias, script], timeout=300)
+            proc = _run_capped(self._ssh_argv(alias, script), timeout=300)
         except (subprocess.TimeoutExpired, OSError) as e:
             return f"harvest failed to run on {alias}: {e}", [], [], True
         if proc.returncode != 0:
@@ -2966,7 +3029,7 @@ class ComputeManager:
         """
         remote = f"{workdir}/{_HARVEST_ARCHIVE}"
         proc = subprocess.Popen(
-            ["ssh", alias, f"cat -- {remote}"],
+            self._ssh_argv(alias, f"cat -- {remote}"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -3068,12 +3131,14 @@ class ComputeManager:
                 "transient",
             )
 
-    @staticmethod
-    def _cleanup_remote_archive(alias: str, workdir: str) -> None:
+    # Not a `@staticmethod` any more: it builds an ssh argv, and those are
+    # built in one place so the shape guard is structural. Both call sites
+    # already invoked it through the instance.
+    def _cleanup_remote_archive(self, alias: str, workdir: str) -> None:
         """Best effort: the staged tarball doubles the job's remote footprint."""
         try:
             _run_capped(
-                ["ssh", alias, f"rm -f {workdir}/{_HARVEST_ARCHIVE}"],
+                self._ssh_argv(alias, f"rm -f {workdir}/{_HARVEST_ARCHIVE}"),
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -3097,7 +3162,7 @@ class ComputeManager:
             )
         try:
             proc = _run_capped(
-                ["ssh", job["alias"], _ssh_cancel_script(pgid, pid)],
+                self._ssh_argv(job["alias"], _ssh_cancel_script(pgid, pid)),
                 timeout=self._CANCEL_TIMEOUT_S,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -3379,13 +3444,17 @@ class ComputeManager:
         cmd = kw["command"]
         timeout_s = int(kw.get("timeout_seconds") or 60)
         if fam == "ssh":
+            # `-t` goes between the program and the destination, so this one
+            # cannot use `_ssh_argv` verbatim -- but it must not skip the check
+            # either, which is how `scp` came to bypass even the shape guard.
+            destination = self._named_destination(rest)
             shell = ["ssh"]
             if kw.get("login_shell"):
                 shell += ["-t"]
-            shell += [rest, cmd]
+            shell += [destination, cmd]
             # Audited before it runs, not after: a command that hangs or kills
             # the daemon must still leave a record that it was attempted.
-            self._audit("compute_ssh_command", alias=rest, command=cmd[:2000])
+            self._audit("compute_ssh_command", alias=destination, command=cmd[:2000])
             # The 64 KiB slices below bound what the *caller* sees; they did
             # nothing about what the daemon allocated to produce them, which on
             # a chatty or hostile alias is everything the link can deliver
@@ -3428,9 +3497,17 @@ class ComputeManager:
         call is audited. Previously it forwarded an agent-supplied string
         straight to `scp`.
         """
-        if self._split(kw["provider"])[0] != "ssh":
+        # Both halves of `_split`, not just the family. Re-deriving the alias
+        # with `provider.split(":", 1)[1]` discarded the `_safe_alias` that
+        # `_split` had just applied to the very same string, so this surface
+        # was looser than every other one in the module -- an alias beginning
+        # with `-` reached `scp` as an option here and nowhere else.
+        fam, alias = self._split(kw["provider"])
+        if fam != "ssh":
             raise ComputeError("download/upload is ssh-only", "invalid_request")
-        alias = kw["provider"].split(":", 1)[1]
+        # The alias arrives with the call, so it is authorised here rather than
+        # trusted the way a job record's is.
+        alias = self._named_destination(alias)
         remote = _safe_remote_path(kw.get("remote"), label="remote path")
 
         if kw["direction"] == "down":
@@ -3439,7 +3516,7 @@ class ComputeManager:
             )
             self._audit("compute_scp_download", alias=alias, remote=remote)
             self._run_scp(
-                ["scp", "-O", "-q", f"{alias}:{remote}", str(local)],
+                self._scp_argv(alias, remote=remote, local=str(local), upload=False),
                 f"download {remote!r} from {alias}",
             )
             self._enforce_transfer_cap(local)
@@ -3449,7 +3526,7 @@ class ComputeManager:
         self._enforce_transfer_cap(local)
         self._audit("compute_scp_upload", alias=alias, remote=remote)
         self._run_scp(
-            ["scp", "-O", "-q", str(local), f"{alias}:{remote}"],
+            self._scp_argv(alias, remote=remote, local=str(local), upload=True),
             f"upload to {remote!r} on {alias}",
         )
         return {"remote": remote}

@@ -270,7 +270,18 @@ class Agent:
             self._recorder = TapeRecorder(self.cfg.tape_path)
             self.dispatcher.recorder = self._recorder
         self.dispatcher.set_capability_scope(self.frame_id)
-        self._skill_loader = self.dispatcher.skill_loader if self.use_skills else None
+        # The allowlist-aware view, not the raw corpus. The attribute name
+        # stays `_skill_loader` because tests assert on it by name; only the
+        # object changes, from every skill on disk to the ones this session
+        # may be told about.
+        self._skill_loader = (
+            (
+                getattr(self.dispatcher, "skill_disclosure", None)
+                or self.dispatcher.skill_loader
+            )
+            if self.use_skills
+            else None
+        )
 
     def _log(self, *a: object) -> None:
         if self.verbose:

@@ -444,7 +444,9 @@ def test_notebook_export_and_renderer_routes_return_immutable_descriptors(tmp_pa
         query={"language": ["javascript"]},
     )
     assert code == 400
-    assert error == {"error": "notebook language must be python, r, or bundle"}
+    assert error == {
+        "error": "notebook language must be python, r, bundle, or markdown"
+    }
 
     binary = _call(
         handler,

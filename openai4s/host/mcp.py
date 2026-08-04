@@ -38,6 +38,44 @@ class MCPService:
     ) -> None:
         self.store = store
         self._manager_factory = manager_factory
+        #: Tri-state connector allowlist: None inherits, [] denies everything,
+        #: a list is exactly those. Armed by
+        #: `HostDispatcher.set_child_execution_policy`, the choke point every
+        #: delegated child passes through.
+        self._allowed_connectors: object = None
+
+    def set_allowed_connectors(self, allowed: object) -> None:
+        """Restrict this service to these connectors. Only narrows.
+
+        Composed through `resource_allowlist.narrow` for the reason the Skill
+        half is: a delegation chain applies a policy per hop, and a hop that
+        could widen is the way out of the one before it. `None` inherits the
+        existing restriction rather than clearing it.
+        """
+        from openai4s.host import resource_allowlist
+
+        self._allowed_connectors = resource_allowlist.narrow(
+            self._allowed_connectors, allowed
+        )
+
+    def _permits(self, connector: dict) -> bool:
+        """Whether this specialist may reach one resolved connector row.
+
+        Matched against the id *and* the display name because `connector()`
+        accepts either: an allowlist that understood only one spelling would
+        deny access the user granted, or — worse — grant the spelling of a
+        name the user denied.
+        """
+        from openai4s.host import resource_allowlist
+
+        if resource_allowlist.normalise(self._allowed_connectors) is None:
+            return True
+        return any(
+            resource_allowlist.permits(
+                self._allowed_connectors, str(connector.get(key) or "")
+            )
+            for key in ("connector_id", "name")
+        )
 
     def _resolve_manager_factory(self) -> Callable[[], Any]:
         if self._manager_factory is not None:
@@ -50,13 +88,22 @@ class MCPService:
         return manager
 
     def connector(self, server: str) -> dict | None:
-        """Resolve by connector id first, then by exact display name."""
+        """Resolve by connector id first, then by exact display name.
+
+        Allowlist-filtered here rather than in each of the six RPC entry
+        points: this is the single lookup all of them share, and the launch
+        config is built out of the row it returns. A connector this specialist
+        may not reach therefore cannot have its process started — there is no
+        command to start it with, which is stronger than refusing at each call
+        site and forgetting one. Reported as absent rather than refused, so a
+        distinct refusal cannot be used to enumerate what exists.
+        """
         connector = self.store.get_connector(server)
         if connector:
-            return connector
+            return connector if self._permits(connector) else None
         for candidate in self.store.list_connectors():
             if candidate.get("name") == server:
-                return candidate
+                return candidate if self._permits(candidate) else None
         return None
 
     def _config(self, connector: dict) -> dict:
@@ -73,7 +120,15 @@ class MCPService:
         return config
 
     def list(self) -> list:
-        """Return the public projection of enabled connectors only."""
+        """Return the public projection of enabled, permitted connectors only.
+
+        The catalogue is filtered as well as the call. A name the agent can see
+        is a name it will ask for, and this listing is what the model's
+        connector catalogue is built from: gating only the invocation would
+        still advertise every connector on the host to a specialist restricted
+        to one, and an advertised-but-unreachable name is both a leak and a
+        dead end.
+        """
         return [
             {
                 "id": connector["connector_id"],
@@ -81,7 +136,7 @@ class MCPService:
                 "description": connector.get("description"),
             }
             for connector in self.store.list_connectors()
-            if connector.get("enabled")
+            if connector.get("enabled") and self._permits(connector)
         ]
 
     def tools(self, server: str) -> Any:

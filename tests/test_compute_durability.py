@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from openai4s.compute import registry
 from openai4s.compute.manager import ComputeError, ComputeManager
 from openai4s.config import Config
 from openai4s.store import get_store
@@ -32,6 +33,10 @@ from openai4s.store import get_store
 @pytest.fixture
 def cfg(tmp_path):
     (tmp_path / "skills").mkdir()
+    # See the note in the manager fixtures: an unregistered destination is
+    # refused before ssh is spawned, so a fixture that never registers one
+    # drives a state no agent can reach.
+    registry.add_host("lab", data_dir=tmp_path)
     return types.SimpleNamespace(
         data_dir=tmp_path,
         skills_dir=tmp_path / "skills",
@@ -278,11 +283,14 @@ def test_a_concurrent_same_key_submit_is_refused_not_duplicated(cfg, monkeypatch
     real_lookup = manager._store.compute_job_by_idempotency_key
     calls = {"n": 0}
 
-    def racing_lookup(key):
+    def racing_lookup(key, owner_key=None, *, scoped=True):
+        # The lookup is owner-scoped now: the idempotency namespace was
+        # installation-wide while every other view of `compute_jobs` is
+        # per-owner, so one session's key blocked every other session's.
         calls["n"] += 1
         if calls["n"] == 1:
             return None
-        return real_lookup(key)
+        return real_lookup(key, owner_key, scoped=scoped)
 
     monkeypatch.setattr(manager._store, "compute_job_by_idempotency_key", racing_lookup)
 

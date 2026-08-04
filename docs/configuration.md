@@ -93,9 +93,10 @@ file under the data dir is not readable by the calling user (a daemon running
 under another account). Normally unset: the CLI reads the file.
 
 `OPENAI4S_REQUIRE_TOKEN` (`1`) — `0` turns the local access-token gate off, and
-only on a loopback bind. Kept for one minor release; see
-[Security](security.md) for what the daemon exposes to an unauthenticated
-caller.
+only on a loopback bind. Kept until the version named by
+`gateway.LEGACY_TOKEN_OPT_OUT_REMOVED_IN`, which a test fails on rather than a
+sentence nobody re-reads; see [Security](security.md) for what the daemon
+exposes to an unauthenticated caller.
 
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
 

@@ -81,7 +81,10 @@ of it is unaccounted for. Read it back and confirm every accession is there:
 
 ```python
 attached = json.loads(host.query(
-    "SELECT source FROM artifact_versions WHERE version_id = ?",
+    # `my_artifact_versions`, not `artifact_versions`: the base table is closed to
+    # agent SQL by a SQLite authorizer, and this view is the same rows confined to
+    # this session's scope. Reading the base table returned every project's.
+    "SELECT source FROM my_artifact_versions WHERE version_id = ?",
     [raw["version_id"]],
 )[0]["source"])
 covered = {envelope["request_url"] for envelope in attached["sources"]}

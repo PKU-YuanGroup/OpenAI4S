@@ -42,6 +42,12 @@ _FIELDS = (
     # a job that was still running. See ComputeManager._submit_ssh.
     "pgid",
     "sandbox_id",
+    # A PROVIDER HANDLE -- a remote pid or a sandbox id (`ComputeManager`:
+    # `receipt = sandbox_id or pid`). Not a receipt in `jobs.py`'s sense, where
+    # the word means the durable record that lets the next boot name a job this
+    # daemon did not start. Two unrelated nouns, one column name; renaming it
+    # costs a migration and closes nothing, so the collision is corrected here,
+    # in the prose, which is where it actually misleads.
     "receipt",
     "outputs",
     # Which session/workspace owns this job. `_rehydrate` filters on it so a
@@ -207,15 +213,35 @@ class ComputeJobRepository:
             ).fetchone()
         return self._decode(row)
 
-    def by_idempotency_key(self, key: str) -> dict | None:
+    def by_idempotency_key(
+        self, key: str, owner_key: str | None = None, *, scoped: bool = True
+    ) -> dict | None:
+        """The caller's own job for this key, not the installation's.
+
+        This was `WHERE idempotency_key=?` with no owner predicate, while
+        `live(scoped=True)` and `for_owner` both scope — and `for_owner`'s own
+        docstring calls an optional scope flag "exactly the shape that leaks".
+        The consequence was two-sided: the duplicate refusal handed session B
+        session A's `job_id` and status, and B could not use a key A happened to
+        pick, for work B's own `job_history` and `reconcile` cannot even see.
+
+        `scoped=False` is the deliberate installation-wide read, used by the
+        UNIQUE-violation recovery path where the winner may legitimately be
+        another owner's row and the caller only needs to know a row exists.
+        """
         if not key:
             return None
+        sql = f"SELECT {','.join(_FIELDS)} FROM compute_jobs WHERE idempotency_key=?"
+        params: tuple = (key,)
+        if scoped:
+            if owner_key is None:
+                # NULL is the CLI / global context, and `= NULL` is never true.
+                sql += " AND owner_key IS NULL"
+            else:
+                sql += " AND owner_key=?"
+                params = (key, owner_key)
         with self._lock:
-            row = self._connection.execute(
-                f"SELECT {','.join(_FIELDS)} FROM compute_jobs "
-                f"WHERE idempotency_key=?",
-                (key,),
-            ).fetchone()
+            row = self._connection.execute(sql, params).fetchone()
         return self._decode(row)
 
     def live(self, owner_key: str | None = None, scoped: bool = False) -> list[dict]:

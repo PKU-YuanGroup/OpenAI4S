@@ -1308,6 +1308,24 @@ def _apply_parent_execution_ceiling(
         combined[key] = decision
     if combined:
         merged["permissions"] = combined
+
+    # Resource allowlists are narrowed here too, not only in `_normalize_item`.
+    # The two narrow against different things and only this one bounds a
+    # grandchild: `_normalize_item` narrows an item against the *delegate()
+    # call's own kwargs*, while this runs on the nested path and narrows
+    # against the parent CHILD's spec. Without it, a child restricted to one
+    # Skill or connector could delegate a grandchild that named three and get
+    # three — the same widening the `_normalize_item` fix closed, one level
+    # further down.
+    from openai4s.host import resource_allowlist
+
+    for key in ("skill_names", "connectors"):
+        if key in merged or key in parent_spec:
+            narrowed = resource_allowlist.narrow(parent_spec.get(key), merged.get(key))
+            if narrowed is None:
+                merged.pop(key, None)
+            else:
+                merged[key] = sorted(narrowed)
     return merged
 
 

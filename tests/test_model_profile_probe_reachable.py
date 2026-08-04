@@ -228,13 +228,28 @@ def test_a_provider_failure_comes_back_as_a_report_not_an_error(api, monkeypatch
     profile_id = created["body"]["id"]
 
     def _fail(*_a, **_k):
-        raise RuntimeError("401 invalid_api_key")
+        # What the transport actually raises. The stub used to throw a bare
+        # `RuntimeError("401 invalid_api_key")` and the assertion then
+        # text-matched that string -- a shape the product does not produce,
+        # certifying a contract nothing serves. `transport.py` always sets
+        # `status` and `error_code` on an HTTP failure, and those are the
+        # fields the detail is now chosen from.
+        from openai4s.llm.models import TransportError
+
+        raise TransportError(
+            "LLM HTTP 401: {'error': 'Incorrect API key'}",
+            provider="openai_responses",
+            status=401,
+            error_code="invalid_api_key",
+        )
 
     monkeypatch.setattr("openai4s.llm.chat", _fail)
     result = call("POST", f"/model-profiles/{profile_id}/probe")
     assert result["code"] == 200
     assert result["body"]["reachable"] is False
-    assert "invalid_api_key" in result["body"]["detail"]
+    # The cause is named, in the daemon's words rather than the provider's.
+    assert "rejected the credential" in result["body"]["detail"]
+    assert result["body"]["code"] == "probe_failed"
 
 
 # --------------------------------------------------------------------------

@@ -410,6 +410,53 @@ def test_a_timed_out_command_takes_its_children_with_it(tmp_path, monkeypatch):
         )
 
 
+def test_a_shell_that_exits_first_does_not_escape_the_deadline(tmp_path, monkeypatch):
+    """The half the test above does not reach: the shell exits, the work does not.
+
+    `sleep 120 & ...; wait` makes the shell outlive its child, so
+    `proc.wait(timeout=)` raises and the group ladder runs. `... & exit 0` does
+    the opposite, and the deadline evaporated: measured before this change, the
+    wait returned in 0.00s with no `TimeoutExpired`, so the group was never
+    signalled, the drain threads stayed blocked on pipes the survivor held --
+    one leaked thread per call -- the work finished six seconds past a
+    two-second deadline, and `host.bash` reported `completed` with rc=0. A
+    terminal state for a job that was still running.
+
+    `start_new_session=True` was already there for exactly this, and
+    `stop_process_group`'s docstring already said "both `proc.poll()` and
+    `proc.wait()` answer about the leader alone". Only the wait was never
+    switched to match.
+
+    Real processes, for the same reason as the test above.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI4S_WORKSPACE", str(tmp_path))
+    marker = tmp_path / "survived.txt"
+    host = build_host(
+        lambda method, args: None, bash_authorizer=_real_authorizer(tmp_path)
+    )
+
+    started = time.time()
+    with pytest.raises(RuntimeError, match="timed out"):
+        host.bash(f"( sleep 6; echo survived > {marker} ) & exit 0", timeout=1.5)
+    elapsed = time.time() - started
+
+    # It waited for the deadline rather than returning the instant the shell
+    # exited, which is what made the old behaviour look like a fast success.
+    assert elapsed >= 1.4, f"returned in {elapsed:.2f}s; the deadline was not held"
+
+    # And the work the shell left behind is gone. Polled rather than slept on
+    # once: the assertion is that it never completes, so give it longer than it
+    # would have needed.
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if marker.exists():
+            raise AssertionError(
+                "the abandoned child outlived the deadline and finished its work"
+            )
+        time.sleep(0.1)
+
+
 def test_command_output_is_bounded_as_it_is_produced(tmp_path, monkeypatch):
     """`capture_output=True` held both whole streams before any slice ran.
 

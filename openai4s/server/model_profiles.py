@@ -8,7 +8,9 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from openai4s.config import Config, LLMConfig, is_placeholder_api_key
+from openai4s.endpoint_identity import normalize_endpoint
 from openai4s.llm.catalog import ModelPreset, model_presets
+from openai4s.llm.resolve import is_loopback_endpoint
 from openai4s.security.secret_broker import is_ref
 
 # Model profiles select a transport contract, not an arbitrary vendor name.
@@ -77,6 +79,58 @@ def resolve_profile_key(store: Any, profile: Mapping[str, Any]) -> str:
         return clean_api_key(store.secrets.get(raw))
     except Exception:  # noqa: BLE001 - an unreadable secret is an absent one
         return ""
+
+
+def _probe_detail(error: Exception, public: dict) -> str:
+    """What a failed probe may say, chosen from controlled signals only.
+
+    The old line was `redact_text(f"{type(error).__name__}: {error}")[:400]`,
+    defended by a comment arguing that a rewritten message "would lose the one
+    detail that tells a user whether it is their key, their model name or their
+    network". The concern is right and this answers it -- by branching on
+    `status` and `error_code`, which `TransportError` sets deliberately
+    (`llm/models.py`), rather than on the provider's prose.
+
+    `redact_text` is not sufficient here and `errors.py` already removed it for
+    this reason. Measured on a 403 body: a credential-shaped token is replaced,
+    but `10.4.2.17:8443`, `/Users/<name>/.certs/corp-ca.pem` and
+    `org-Acme-Research-Lab` all survive. The redaction is shape-based and a
+    provider body carries more than credentials -- an absolute path with the
+    account name on it, internal network topology, private model identifiers --
+    into a 200 body and the Customize -> Models panel.
+
+    `gateway._friendly_error` solved exactly this for the turn path and its
+    docstring lays out the same reasoning. This is the surface that treatment
+    was never extended to.
+    """
+    status = getattr(error, "status", None)
+    code = str(getattr(error, "error_code", "") or "")
+    if status == 401 or code in ("invalid_api_key", "unauthorized"):
+        return (
+            "the provider rejected the credential; check the API key for this "
+            "profile in Customize -> Models"
+        )
+    if status == 403 or code == "forbidden":
+        return (
+            "the credential is valid but not permitted to use this model; "
+            "check the model name and the account's entitlements"
+        )
+    if status == 404 or code in ("model_not_found", "not_found"):
+        return "the provider does not have a model by that name at this endpoint"
+    if status == 429 or code == "rate_limited":
+        return "the provider is rate-limiting this credential; try again shortly"
+    if isinstance(status, int) and 500 <= status < 600:
+        return (
+            "the provider returned a server error; this is not a configuration problem"
+        )
+    if isinstance(error, (TimeoutError, ConnectionError, OSError)):
+        return (
+            "the endpoint could not be reached; check the base URL and this "
+            "machine's network access"
+        )
+    # Unknown provenance. `public_exception` already chose the generic sentence
+    # and wrote the original to the diagnostic log under its own surface.
+    return str(public.get("error") or "the probe failed")
 
 
 class ModelProfileService:
@@ -184,15 +238,17 @@ class ModelProfileService:
                 max_tokens=1,
             )
         except Exception as error:  # noqa: BLE001 - reported, never raised
-            # The provider's own words, redacted. A rewritten message would
-            # lose the one detail that tells a user whether it is their key,
-            # their model name or their network.
-            from openai4s.observability import redact_text
+            from openai4s.server.errors import public_exception
 
+            public, _status = public_exception(
+                error, surface="model_profile:probe", error_code="probe_failed"
+            )
             return {
                 "reachable": False,
                 "state": "unreachable",
-                "detail": redact_text(f"{type(error).__name__}: {error}")[:400],
+                "detail": _probe_detail(error, public),
+                "code": public.get("code"),
+                "request_id": public.get("request_id"),
                 "contacted": True,
             }
         return {
@@ -231,7 +287,18 @@ class ModelProfileService:
                 "build can dispatch",
                 "checked_endpoint": False,
             }
-        if not self.resolve_key(profile):
+        if not self.resolve_key(profile) and not is_loopback_endpoint(
+            str(profile.get("base_url") or "")
+        ):
+            # A loopback endpoint is the exception `resolve.py` already names:
+            # "demanding an API key from them is demanding a credential that
+            # does not exist". `chat()` honours it -- a keyless request is
+            # permitted when the endpoint is local -- and `doctor` honours it.
+            # This surface did not, so a working Ollama or LM Studio profile
+            # was reported `needs_key` and could not be probed at all. The UI
+            # then hand-rolled its own loopback check for the badge while still
+            # rendering the warning above it, which is what a rule wired to one
+            # of three call sites looks like from the outside.
             problems.append("needs_key")
         if not str(profile.get("model") or "").strip():
             spec = self._providers().get(provider, {})
@@ -290,31 +357,55 @@ class ModelProfileService:
         appears, resolved through its protocol's default.
         """
         live = self.store.get_setting("llm_model") or self.cfg.llm.model or "default"
-        seen: set[str] = set()
         models: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
 
-        def add(model_id: Any, name: Any, description: Any) -> None:
-            normalized = str(model_id or "").strip()
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                models.append(
-                    {
-                        "id": normalized,
-                        "name": str(name or normalized),
-                        "description": str(description or ""),
-                    }
-                )
+        def add(entry_id: Any, name: Any, description: Any, **extra: Any) -> None:
+            normalized = str(entry_id or "").strip()
+            if not normalized or normalized in seen_ids:
+                return
+            seen_ids.add(normalized)
+            models.append(
+                {
+                    "id": normalized,
+                    "name": str(name or normalized),
+                    "description": str(description or ""),
+                    **extra,
+                }
+            )
 
         add(
             live,
             live,
             f"{self.store.get_setting('llm_provider') or self.cfg.llm.provider} (当前)",
         )
+        # One entry per profile, keyed on `profile_id`. This deduped on a
+        # `seen: set[str]` of bare model *names*, so two profiles naming the same
+        # model against different providers collapsed to one and the second
+        # endpoint was simply unreachable from the selector -- and the value the
+        # browser persisted was that bare name, which cannot say which profile
+        # was meant. The model name is a display field; the identity is the id.
         for profile in self.store.list_model_profiles():
+            if profile.get("deleted_at"):
+                continue
+            profile_id = str(profile.get("id") or "").strip()
+            if not profile_id:
+                continue
             model_id = self.effective_model_id(
                 profile.get("provider"), profile.get("model")
             )
-            add(model_id, model_id, profile.get("name") or "profile")
+            provider = str(profile.get("provider") or "")
+            base_url = str(profile.get("base_url") or "")
+            add(
+                profile_id,
+                profile.get("name") or model_id or "profile",
+                # Enough for a human to tell two same-named models apart.
+                " · ".join(part for part in (provider, model_id, base_url) if part),
+                profile_id=profile_id,
+                model=model_id,
+                provider=provider,
+                base_url=base_url,
+            )
         return {"models": {"default": models}, "default_model_id": default_model_id}
 
     def profiles_payload(self) -> tuple[dict[str, Any], str | None]:
@@ -352,7 +443,13 @@ class ModelProfileService:
                 self.store.set_setting("active_model_profile", "")
             self.store.set_setting("builtin_profiles_removed", "1")
 
-        profiles = self.store.list_model_profiles()
+        # Tombstoned profiles stay in the store so a session pinned to one keeps
+        # its audit answer, but they are not offered anywhere a user chooses from.
+        profiles = [
+            profile
+            for profile in self.store.list_model_profiles()
+            if not profile.get("deleted_at")
+        ]
         return (
             {
                 "profiles": [self.public_profile(profile) for profile in profiles],
@@ -452,7 +549,12 @@ class ModelProfileService:
             "id": profile_id,
             "name": name,
             "provider": self._protocol(body.get("provider")),
-            "base_url": str(body.get("base_url") or "").strip(),
+            # Normalised and credential-free at the point of storage. Stored
+            # raw, this string reached `GET /model-profiles` and an immutable
+            # revision with whatever userinfo or query the user typed in it --
+            # 7.2's "secrets do not enter the snapshot", violated through the
+            # endpoint rather than the key.
+            "base_url": normalize_endpoint(body.get("base_url")),
             "model": str(body.get("model") or "").strip(),
             # The blob records a reference; the key itself goes to the broker.
             "api_key": self._store_key(profile_id, clean_api_key(body.get("api_key"))),
@@ -466,11 +568,15 @@ class ModelProfileService:
             (
                 item
                 for item in self.store.list_model_profiles()
-                if item.get("id") == profile_id
+                if item.get("id") == profile_id and not item.get("deleted_at")
             ),
             None,
         )
         if profile is None:
+            # A tombstoned profile is `not found` here on purpose. Its row stays so
+            # sessions pinned to it keep their audit answer, and its credential is
+            # already gone -- activating it would copy an empty key into the live
+            # settings and read as a working configuration.
             raise ModelProfileError("profile not found", 404)
         for field, setting in (
             ("provider", "llm_provider"),
@@ -512,7 +618,11 @@ class ModelProfileService:
                 return None
             for field in ("name", "base_url", "model"):
                 if field in body and body[field] is not None:
-                    profile[field] = str(body[field]).strip()
+                    profile[field] = (
+                        normalize_endpoint(body[field])
+                        if field == "base_url"
+                        else str(body[field]).strip()
+                    )
             if protocol is not None:
                 profile["provider"] = protocol
             if body.get("api_key"):
@@ -550,28 +660,43 @@ class ModelProfileService:
         return self.public_profile(profile), selected_model
 
     def delete(self, profile_id: str) -> None:
-        removed: list[dict[str, Any]] = []
+        """Tombstone the profile, keeping the revisions history depends on.
 
-        def drop(profiles: list[dict[str, Any]]) -> None:
-            removed.extend(p for p in profiles if p.get("id") == profile_id)
-            profiles[:] = [p for p in profiles if p.get("id") != profile_id]
+        This used to remove the row outright and then NULL the pin on every
+        frame that named it. Both halves lost information that cannot be
+        recovered: a pin is the audit answer to "what configuration did this
+        session run under", and the revisions live in the row's own JSON blob, so
+        deleting the row deleted the history of every session that ran on it. The
+        justification given was that a session pinned to a deleted profile "must
+        not be left unsendable" -- but the remedy for that already exists and is
+        explicit: 409 `model_revision_unavailable` plus
+        `POST /frames/{id}/model-binding`. Clearing the pin instead made the next
+        send silently re-pin somewhere else, which is the silent substitution D2
+        is about.
 
-        self.store.mutate_model_profiles(drop)
-        # Deleting the row must delete the credential. Otherwise a profile the
-        # user removed leaves its key sitting in the keychain forever, with
-        # nothing left in the app that refers to it.
-        for profile in removed:
+        The credential is still destroyed: a profile the user removed must not
+        leave its key in the keychain. That makes the tombstone unbindable by
+        construction as well as by the `deleted_at` check, since `bind_model_revision`
+        now requires the key to resolve.
+        """
+        tombstoned: list[dict[str, Any]] = []
+        now = int(time.time() * 1000)
+
+        def mark(profiles: list[dict[str, Any]]) -> None:
+            for profile in profiles:
+                if profile.get("id") != profile_id or profile.get("deleted_at"):
+                    continue
+                tombstoned.append(dict(profile))
+                profile["deleted_at"] = now
+                # The key goes; the identity, the revisions and the non-secret
+                # provider/endpoint/model fields stay so history reads correctly.
+                profile["api_key"] = ""
+
+        self.store.mutate_model_profiles(mark)
+        for profile in tombstoned:
             self._forget_key(profile)
         if self.store.get_setting("active_model_profile") == profile_id:
             self.store.set_setting("active_model_profile", "")
-        # A session pinned to this profile must not be left unsendable. The
-        # pin's whole purpose is to record what a session ran under; once the
-        # profile is gone there is nothing left to name, and refusing forever
-        # is the one outcome that helps nobody.
-        try:
-            self.store.release_model_binding(profile_id)
-        except Exception:  # noqa: BLE001 — the profile is already deleted
-            pass
 
     def migrate_profile_keys(self) -> dict:
         """Move any plaintext profile key behind a reference.
@@ -619,12 +744,24 @@ def migrate_provider_alias(
         if not str(store.get_setting("llm_base_url") or "").strip():
             store.set_setting("llm_base_url", base_url)
 
+    now_ms = int(time.time() * 1000)
+
     def migrate(profiles: list[dict[str, Any]]) -> None:
         for profile in profiles:
             if str(profile.get("provider") or "").strip() == old:
                 profile["provider"] = new
                 if not str(profile.get("base_url") or "").strip():
                     profile["base_url"] = base_url
+                # Both of those are `REVISIONED_FIELDS`, so this is a
+                # configuration change and has to seal one. It did not, and
+                # this runs at every daemon boot: a session pinned to the old
+                # revision kept dispatching with the retired provider id, which
+                # `provider_spec` rejects -- so the turn died with
+                # `unknown provider` instead of the 409 rebind that exists for
+                # exactly the case "the configuration you were pinned to is
+                # gone". `_seal_revision` is append-only, so the old entry
+                # still says what it said.
+                ModelProfileService._seal_revision(profile, now_ms=now_ms)
 
     store.mutate_model_profiles(migrate)
 

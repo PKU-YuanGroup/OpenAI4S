@@ -225,6 +225,12 @@ class ChildExecutionPolicy:
     #: stayed None and a specialist locked to one Skill saw all 34 and could
     #: read any of them.
     skill_names: frozenset[str] | None = None
+    #: The same tri-state for MCP connectors. It rode on the spec — stored,
+    #: inherited, merged, echoed back by the API — with no field to carry it
+    #: into the runtime and no setter to enforce it, so a specialist whose row
+    #: read connectors=['a'] still listed every enabled connector and could
+    #: `mcp_call` any of them straight through Host RPC.
+    connector_names: frozenset[str] | None = None
 
     def allows(self, method: str, tool: Any | None = None) -> bool:
         method = _name(method)
@@ -343,24 +349,35 @@ def child_execution_policy(spec: Mapping[str, Any]) -> ChildExecutionPolicy:
                     f"permission {key!r} must be allow, ask, or deny"
                 )
             permissions[key] = decision
-    raw_skills = spec.get("skill_names")
-    if raw_skills is None:
-        skill_names = None
-    elif isinstance(raw_skills, str) or not isinstance(raw_skills, Sequence):
-        raise DelegationPolicyError("skill_names must be a list of Skill names")
-    else:
-        # Not `if not raw_skills` — Python spells "deny everything" false, and
-        # collapsing it to None is the fail-open this allowlist exists to
-        # avoid. An empty list is a decision.
-        skill_names = frozenset(str(item or "").strip() for item in raw_skills)
-        skill_names = frozenset(item for item in skill_names if item)
+    skill_names = _allowlist(spec.get("skill_names"), "skill_names", "Skill")
+    connector_names = _allowlist(spec.get("connectors"), "connectors", "connector")
 
     return ChildExecutionPolicy(
         restricted=restricted,
         allowed=capabilities,
         permissions=MappingProxyType(permissions),
         skill_names=skill_names,
+        connector_names=connector_names,
     )
+
+
+def _allowlist(raw: Any, field: str, noun: str) -> frozenset[str] | None:
+    """Parse one tri-state resource allowlist: None inherits, [] denies all.
+
+    Shared by `skill_names` and `connectors` rather than written twice. The two
+    halves had already drifted once — Skills parsed here and enforced,
+    connectors carried on the spec and enforced nowhere — and a second copy of
+    this rule is how the falsy collapse gets reintroduced on the copy nobody
+    is looking at.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str) or not isinstance(raw, Sequence):
+        raise DelegationPolicyError(f"{field} must be a list of {noun} names")
+    # Not `if not raw` — Python spells "deny everything" false, and collapsing
+    # it to None is the fail-open this allowlist exists to avoid. An empty list
+    # is a decision.
+    return frozenset(name for name in (str(item or "").strip() for item in raw) if name)
 
 
 def _name(value: str) -> str:
