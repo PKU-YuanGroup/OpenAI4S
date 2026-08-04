@@ -135,8 +135,8 @@ Origin, token or header defences.
   survives restarts; it used to be per-boot, which invalidated every cookie
   already issued. The CLI reads the same file, or `OPENAI4S_TOKEN` when the
   daemon runs under another account.
-- `OPENAI4S_REQUIRE_TOKEN=0` disables the gate **on loopback only**, for one
-  minor release. It is the same variable that used to opt *in*, with its sense
+- `OPENAI4S_REQUIRE_TOKEN=0` disables the gate **on loopback only**, until the
+  version named by `gateway.LEGACY_TOKEN_OPT_OUT_REMOVED_IN`. It is the same variable that used to opt *in*, with its sense
   reversed. Off loopback it is ignored: a bind anything can route to has no
   configuration under which it should answer without a credential.
 - `GET /api/v1/auth/status` is reachable unauthenticated so a client can
