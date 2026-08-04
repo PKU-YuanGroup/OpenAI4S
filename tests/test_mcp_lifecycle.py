@@ -839,3 +839,218 @@ def test_the_refusal_state_is_a_sibling_of_the_deadline_state(tmp_path):
     del tmp_path
     assert issubclass(mcp_client.MCPOversizedResponse, mcp_client.MCPError)
     assert not issubclass(mcp_client.MCPOversizedResponse, MCPTimeout)
+
+
+# -- the wrong-ID flood: the one fault arm whose budget nothing guarded --------
+
+
+_WRONG_ID_FLOOD = (
+    "    for k in range(200):\n"
+    "        sys.stdout.write(json.dumps("
+    "{'jsonrpc': '2.0', 'id': 900000 + k, 'result': {}}) + chr(10))\n"
+    "    sys.stdout.flush()\n" + _HANG
+)
+
+_A_FEW_WRONG_IDS = (
+    "    for k in range(10):\n"
+    "        sys.stdout.write(json.dumps("
+    "{'jsonrpc': '2.0', 'id': 900000 + k, 'result': {}}) + chr(10))\n"
+    "    sys.stdout.flush()\n" + _answer()
+)
+
+
+def test_a_server_answering_ids_nobody_asked_for_is_dropped(tmp_path):
+    """`_MAX_INVALID_IDS` had zero call sites outside production.
+
+    Six fault arms are named in the exit criteria and five had tests; deleting
+    this budget entirely would have turned nothing red. A desynchronised server
+    is not a slow one -- it is answering promptly, with answers that belong to
+    nobody -- so the failure it produces has to be its own state and has to
+    arrive without waiting out a deadline.
+
+    The generous timeout is the assertion. If the budget never fires, the waiter
+    sits until 30 s and raises `MCPTimeout`; the run is red either way, but the
+    *shape* of the red says which. `pytest -q` finishing this test in well under
+    a second is the observable that the budget, not the clock, ended it.
+    """
+    config = _server(tmp_path, "wrongid", body=_WRONG_ID_FLOOD)
+    started = time.monotonic()
+    connection = MCPConnection(config["command"], timeout=30.0)
+    try:
+        with pytest.raises(MCPError) as caught:
+            connection.list_tools()
+    finally:
+        connection.close()
+    elapsed = time.monotonic() - started
+
+    assert not isinstance(
+        caught.value, MCPTimeout
+    ), "reported as a deadline; the budget never fired and the clock did"
+    assert "desynchronised" in str(caught.value), str(caught.value)
+    assert "unrequested ids" in str(caught.value)
+    assert elapsed < 15, f"took {elapsed:.1f}s: this was the deadline, not the budget"
+
+
+def test_the_desynchronised_connector_does_not_survive_the_verdict(tmp_path):
+    """Detaching used to be the whole response: the read loop returned and the
+    child kept running, holding its pipes, while the manager handed the same
+    dead connection to every later caller. A channel declared desynchronised
+    must take its process with it."""
+    config = _server(tmp_path, "wrongid_proc", body=_WRONG_ID_FLOOD)
+    connection = MCPConnection(config["command"], timeout=30.0)
+    try:
+        with pytest.raises(MCPError):
+            connection.list_tools()
+        pid = _pids(config)[0]
+        assert _wait_gone(pid), "the desynchronised connector was left running"
+    finally:
+        connection.close()
+
+
+def test_a_few_unrequested_ids_are_not_a_desynchronised_channel(tmp_path):
+    """The negative arm, and the reason the budget is a budget and not a switch.
+
+    A late reply to an abandoned request, a duplicate, a notification carrying an
+    id -- all produce an unmatched id and none of them means the channel has
+    lost its framing. A guard that dropped the connector on the first one would
+    turn every timed-out request into a respawn, which is the failure
+    `_abandoned` exists to prevent.
+    """
+    config = _server(tmp_path, "fewids", body=_A_FEW_WRONG_IDS)
+    connection = MCPConnection(config["command"], timeout=15.0)
+    try:
+        assert connection.list_tools() == [{"name": "ok"}]
+    finally:
+        connection.close()
+
+
+def test_an_abandoned_request_answered_late_does_not_count_against_the_budget(
+    tmp_path,
+):
+    """The interaction the two mechanisms have to get right together.
+
+    A request that timed out leaves its id in `_abandoned`; the server answering
+    it afterwards is the *expected* behaviour of a slow connector, not evidence
+    of desynchronisation. Counting those would make a connector that is merely
+    slow indistinguishable from one that has lost framing, and the budget would
+    fire on the healthy case.
+    """
+    body = (
+        "    if served == 1:\n"
+        "        time.sleep(3)\n"
+        "        sys.stdout.write(json.dumps("
+        "{'jsonrpc': '2.0', 'id': mid, 'result': {'tools': []}}) + chr(10))\n"
+        "        sys.stdout.flush()\n"
+        "        continue\n" + _answer()
+    )
+    config = _server(tmp_path, "lateid", body=body)
+    connection = MCPConnection(config["command"], timeout=0.4)
+    try:
+        with pytest.raises(MCPTimeout):
+            connection.list_tools()
+        # id 1 was `initialize`; the timed-out call is the next one.
+        assert list(connection._abandoned) == [2]
+
+        time.sleep(4)  # the late answer to id 1 arrives while nobody waits
+
+        # The connection is still usable, and the late reply was discarded
+        # rather than counted.
+        connection._timeout = 15.0
+        assert connection.list_tools() == [{"name": "ok"}]
+        assert connection.failure() is None
+    finally:
+        connection.close()
+
+
+def test_a_flood_of_late_answers_to_abandoned_ids_is_not_desynchronisation(
+    tmp_path, monkeypatch
+):
+    """The `continue` that makes `_abandoned` and the budget compatible.
+
+    A single late reply cannot distinguish the two: one increment is far below
+    any threshold, so removing the `continue` changes nothing observable. It
+    takes more late answers than the budget allows -- which is exactly the
+    shape of a connector that is *slow*, answering a backlog after its callers
+    gave up. Without the `continue` that connector is declared desynchronised
+    and torn down for eventually answering, and the budget fires hardest on the
+    case `_abandoned` was written to protect.
+
+    The budget is lowered rather than the backlog raised: 65 real timeouts is
+    seconds of wall clock to assert a relationship between two numbers, and the
+    relationship is what this pins.
+    """
+    monkeypatch.setattr(mcp_client, "_MAX_INVALID_IDS", 4)
+    rounds = 8
+    config = _server(
+        tmp_path,
+        "latebacklog",
+        preamble="pending = []",
+        body=(
+            "    pending.append(mid)\n"
+            f"    if served < {rounds}:\n"
+            "        continue\n"
+            "    for old in pending:\n"
+            "        sys.stdout.write(json.dumps("
+            "{'jsonrpc': '2.0', 'id': old, 'result': {'tools': []}}) + chr(10))\n"
+            "    sys.stdout.flush()\n"
+            "    pending = []\n"
+            "    continue\n"
+        ),
+    )
+    connection = MCPConnection(config["command"], timeout=0.3)
+    try:
+        for _ in range(rounds - 1):
+            with pytest.raises(MCPTimeout):
+                connection.list_tools()
+        assert len(connection._abandoned) == rounds - 1
+
+        # The request that triggers the flush. Its own answer is in the
+        # backlog, so it succeeds -- unless the backlog was counted, in which
+        # case the channel is declared desynchronised before this reply is read.
+        connection._timeout = 15.0
+        assert connection.list_tools() == []
+        assert connection.failure() is None
+    finally:
+        connection.close()
+
+
+# -- the kernel's own stderr channel, which is not the MCP one ----------------
+
+
+def test_a_kernel_flooding_its_own_stderr_stays_bounded_and_keeps_serving(tmp_path):
+    """A distinct channel from the MCP stderr flood, and the arm with no test.
+
+    `tests/test_producer_output_budgets.py` feeds `_StderrTail` by hand and
+    `tests/test_channel_counter_contract.py` drives a worker that floods and
+    then *dies*. Neither covers the case the exit criteria actually name: a
+    worker that floods fd2 and keeps running. That is the one where an unbounded
+    tail is a live leak rather than a one-off allocation -- the cell finishes,
+    the kernel stays up, and the daemon is holding every byte the child wrote.
+
+    Ten megabytes, sustained, and then the kernel has to still answer.
+    """
+    from openai4s.kernel.manager import _STDERR_TAIL_BYTES, Kernel
+
+    flood = 10 * 1024 * 1024
+    kernel = Kernel(cwd=str(tmp_path))
+    try:
+        result = kernel.execute(
+            "import os\n" f"os.write(2, b'F' * {flood})\n" "print('cell finished')\n"
+        )
+        assert "cell finished" in result["stdout"]
+
+        # The bound is on what the daemon holds, not on what the child wrote.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if kernel._stderr_tail.seen_bytes >= flood:
+                break
+            time.sleep(0.05)
+        tail = kernel._stderr_tail
+        assert tail.seen_bytes >= flood, tail.seen_bytes
+        assert tail.retained_bytes <= _STDERR_TAIL_BYTES
+        assert tail.dropped_bytes >= flood - _STDERR_TAIL_BYTES
+
+        # ...and the kernel is still the same one, still serving.
+        assert kernel.execute("print(2 + 2)")["stdout"].strip() == "4"
+    finally:
+        kernel.shutdown()
