@@ -311,6 +311,12 @@ jobs:
             # -- but it has to run somewhere, because a browser file no gate
             # invokes is not evidence of anything.
             node tests/browser_admission_fault.mjs
+            # The P1-A/P1-B controls. Chromium-only for the same reason as the
+            # two above, and listed here because the audit's finding was not
+            # "these controls are broken" but "no browser file mentions them" --
+            # a file this job does not invoke would reproduce that finding
+            # exactly, with a green tick on top.
+            node tests/browser_p1_controls.mjs
           fi
           node tests/browser_matrix.mjs --browser=${{ matrix.engine }}
       - name: Show daemon log after a failure

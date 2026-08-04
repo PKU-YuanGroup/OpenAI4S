@@ -18,6 +18,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | --- | --- |
 | [`conftest.py`](conftest.py) | 建立 import 路径，给每个测试一份独立的数据目录，配好 fake LLM 的配置与 key，用完清理 `Store`，并存放共享的 pytest fixture。 |
 | [`browser_auth.mjs`](browser_auth.mjs) | 两个浏览器测试共用的凭据获取。守护进程现在默认要求 access token，loopback 上也一样；如果测试还是直接打开 `/` 而不带凭据，每一项检查都会因为 401 失败，并且看起来像是产品坏了。它按 CLI 的同一条路径、从同一个文件读 token，并且用真实用户的方式登录——打开启动时打印的 `?token=` URL 一次，让 303 把 Cookie 设上——所以这条 bootstrap 和 Cookie 交接是被真正跑到的，而不是被绕开的。 |
+| [`browser_p1_controls.mjs`](browser_p1_controls.mjs) | P1-A/P1-B 的控件，跑在真实浏览器里。现有三个 `browser_*.mjs` 对这八个关键词——`before_seq`、`newest_first`、chip、profile、attachment、delegation、steer、memory——命中全为 **0**，整组只靠 43 个提交之前的一次手工走查。分页用客户端自己的 fetch helper 打真实路由来验（缺陷就在于“发到线上的是哪个 query string”，DOM 断言看不见）；其余调用真实的 render 函数进真实 DOM。夹具由测试自己创建，绝不假定开发机数据库里有什么。 |
 | [`browser_smoke.mjs`](browser_smoke.mjs) | 用真实浏览器驱动运行中的 Gateway UI 与流式交互路径。本地要和 pytest 分开调用；普通 PR CI workflow 会自动跑它。 |
 | [`scientific_renderers_smoke.cjs`](scientific_renderers_smoke.cjs) | 一个轻依赖的 Node 运行器，按契约检查 Web UI 里那些 UMD 科学 Artifact 解析器。 |
 
