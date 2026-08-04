@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import sys
+import types
 from pathlib import Path
 
 import pytest
 
 from harness.cli import main
+from harness.evals.retrosynthesis_backends import evaluate_backend_replays
 from harness.faults import FakeClock, FakeUUIDFactory, FaultSchedule
 from harness.normalize import normalized_trace_bytes
 from harness.providers.scripted_llm import ScriptedLLM, ScriptedProviderError
@@ -19,12 +23,20 @@ from harness.schema import (
     ScenarioValidationError,
     load_scenario,
 )
+from openai4s.config import get_config
 
 _SCENARIOS = Path(__file__).resolve().parents[1] / "harness" / "scenarios"
 
 
 def _scenario_paths() -> list[Path]:
     return sorted(_SCENARIOS.rglob("*.json"))
+
+
+def _skill_module(name: str):
+    skills_dir = str(get_config().skills_dir)
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
+    return importlib.import_module(name)
 
 
 def test_pr_offline_baseline_has_at_least_three_versioned_scenarios():
@@ -271,3 +283,123 @@ def test_offline_runner_rejects_external_scenario():
     }
     with pytest.raises(ValueError, match="not eligible"):
         run_scenario(Scenario.from_dict(raw), offline=True)
+
+
+def test_retrosynthesis_manifest_and_capabilities_are_offline(tmp_path):
+    backend_module = _skill_module("retrosynthesis_planning.external_backends")
+    manifest = backend_module.ModelManifest(
+        provider="Microsoft Research",
+        model="RetroChimera",
+        model_version="1.2.0",
+        checkpoint_id="synthetic-checkpoint",
+        checkpoint_sha256="a" * 64,
+        training_dataset="synthetic fixture",
+        code_license="MIT",
+        checkpoint_license="MIT",
+        source_url="https://github.com/microsoft/retrochimera",
+    )
+    assert manifest.provenance_status == "complete"
+    assert len(manifest.fingerprint) == 64
+    with pytest.raises(backend_module.BackendProtocolError, match="SHA-256"):
+        backend_module.ModelManifest(
+            provider="Microsoft Research",
+            model="RetroChimera",
+            model_version="1.2.0",
+            checkpoint_id="bad",
+            checkpoint_sha256="not-a-digest",
+            training_dataset="synthetic fixture",
+            code_license="MIT",
+            checkpoint_license="MIT",
+        )
+
+    backend = backend_module.SyntheseusBackend(
+        model="RetroChimera",
+        model_dir=tmp_path / "checkpoint",
+        manifest=manifest,
+    )
+    capabilities = backend.capabilities(request_id="capabilities-test")
+    assert capabilities["ok"] is True
+    assert capabilities["operation"] == "capabilities"
+    assert "RetroChimera" in capabilities["capabilities"]["models"]
+
+    no_checkpoint = backend_module.SyntheseusBackend(model="RetroChimera")
+    with pytest.raises(ValueError, match="automatic checkpoint downloads"):
+        no_checkpoint.single_step("CCO")
+
+
+def test_retrosynthesis_worker_runs_behind_fake_optional_modules(monkeypatch):
+    backend_module = _skill_module("retrosynthesis_planning.external_backends")
+    worker = _skill_module("retrosynthesis_planning.syntheseus_worker")
+
+    class FakeMolecule:
+        def __init__(self, smiles):
+            self.smiles = smiles
+
+    class FakePrediction:
+        reactants_str = "CCO.N"
+        reaction_smiles = "CCO.N>>CCON"
+        metadata = {
+            "probability": 0.7,
+            "checkpoint_path": "/private/path/must-not-escape",
+        }
+
+    class FakeRetroChimeraModel:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __call__(self, molecules, num_results):
+            assert molecules[0].smiles == "CCON"
+            assert num_results == 3
+            return [[FakePrediction()]]
+
+    syntheseus = types.ModuleType("syntheseus")
+    syntheseus.Molecule = FakeMolecule
+    retrochimera = types.ModuleType("retrochimera")
+    retrochimera.RetroChimeraModel = FakeRetroChimeraModel
+    monkeypatch.setitem(sys.modules, "syntheseus", syntheseus)
+    monkeypatch.setitem(sys.modules, "retrochimera", retrochimera)
+
+    manifest = backend_module.ModelManifest(
+        provider="Microsoft Research",
+        model="RetroChimera",
+        model_version="1.2.0",
+        checkpoint_id="synthetic-checkpoint",
+        checkpoint_sha256="b" * 64,
+        training_dataset="synthetic fixture",
+        code_license="MIT",
+        checkpoint_license="MIT",
+    )
+    response = worker.handle_request(
+        {
+            "schema_version": 1,
+            "request_id": "fake-worker-test",
+            "operation": "single_step",
+            "target_smiles": "CCON",
+            "model": "RetroChimera",
+            "model_dir": "/synthetic/checkpoint",
+            "num_results": 3,
+            "allow_model_download": False,
+            "model_manifest": manifest.to_dict(),
+        }
+    )
+    normalized = backend_module.normalize_external_backend_response(
+        response, expected_request_id="fake-worker-test"
+    )
+    assert normalized["ok"] is True
+    assert normalized["predictions"][0]["reactants_smiles"] == "CCO.N"
+    assert normalized["predictions"][0]["score"] == 0.7
+    assert "checkpoint_path" not in normalized["predictions"][0]["metadata"]
+    assert normalized["provenance_status"] == "complete"
+    assert "experimental success probabilities" in normalized["scientific_disclaimer"]
+
+
+def test_retrosynthesis_backend_replays_are_deterministic():
+    first = evaluate_backend_replays()
+    second = evaluate_backend_replays()
+    assert first["accuracy"] == 1.0
+    assert first["complete_provenance_rate"] == 1.0
+    assert first["prediction_count"] == 2
+    assert first["scored_prediction_rate"] == 1.0
+    assert [case["normalized_sha256"] for case in first["cases"]] == [
+        case["normalized_sha256"] for case in second["cases"]
+    ]
