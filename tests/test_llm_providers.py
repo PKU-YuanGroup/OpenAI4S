@@ -10,6 +10,7 @@ assert, deterministically, that:
  * text-only providers reject image parts with a clear LLMError,
  * the auth headers differ per wire (Bearer / x-api-key / x-goog-api-key).
 """
+
 import pytest
 
 from openai4s import llm

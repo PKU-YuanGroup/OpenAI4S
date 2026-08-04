@@ -17,6 +17,7 @@ What these pin, in order of how much they would cost to get wrong:
   * provenance names the repository this source actually lives in;
   * a failure stops the pipeline — the steps after it must not run.
 """
+
 from __future__ import annotations
 
 import json
@@ -276,9 +277,11 @@ def _gh_for(assets: Path, *, is_draft=True, corrupt=None, drop=None, extra=None)
             listing = [
                 {
                     "name": name,
-                    "size": (assets / name).stat().st_size
-                    if (assets / name).is_file()
-                    else 0,
+                    "size": (
+                        (assets / name).stat().st_size
+                        if (assets / name).is_file()
+                        else 0
+                    ),
                 }
                 for name in sorted(_uploaded_names())
             ]

@@ -12,6 +12,7 @@ is launched with — straight to the browser. `POST /connectors` echoed the same
 row back because upsert re-reads it. The model-profile path already had the
 right shape (`public_profile`), so this pins the connector side to it.
 """
+
 import json
 
 import pytest
@@ -123,9 +124,11 @@ def test_connectors_payload_never_contains_the_canary(store):
     payload = [
         {
             **public_connector(c),
-            "command_display": " ".join(c["command"])
-            if isinstance(c.get("command"), list)
-            else str(c.get("command")),
+            "command_display": (
+                " ".join(c["command"])
+                if isinstance(c.get("command"), list)
+                else str(c.get("command"))
+            ),
         }
         for c in store.list_connectors()
     ]

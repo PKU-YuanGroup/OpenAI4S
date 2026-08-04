@@ -1,4 +1,5 @@
 """Offline tests for the protein-mutation-enhancement workflow skill."""
+
 import importlib
 import sys
 

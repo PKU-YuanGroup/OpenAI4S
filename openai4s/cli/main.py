@@ -1,14 +1,15 @@
 """openai4s CLI: serve / status / stop / url / run / init / setup.
 
-  openai4s serve    start the daemon (foreground; use & or nohup to background)
-  openai4s status   is the daemon up? (reads pidfile + /health)
-  openai4s stop     stop the running daemon
-  openai4s url      print the local web UI url
-  openai4s run "<task>"   run one Code-as-Action task (in-process, no daemon)
-  openai4s init     guided first-run model configuration
-  openai4s setup    create/update conda envs from envs/*.yml
-  openai4s jupyter  describe/export/install the optional Jupyter bridge
+openai4s serve    start the daemon (foreground; use & or nohup to background)
+openai4s status   is the daemon up? (reads pidfile + /health)
+openai4s stop     stop the running daemon
+openai4s url      print the local web UI url
+openai4s run "<task>"   run one Code-as-Action task (in-process, no daemon)
+openai4s init     guided first-run model configuration
+openai4s setup    create/update conda envs from envs/*.yml
+openai4s jupyter  describe/export/install the optional Jupyter bridge
 """
+
 from __future__ import annotations
 
 import argparse

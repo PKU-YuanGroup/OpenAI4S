@@ -126,9 +126,7 @@ class ScienceConnectorService:
         self,
         # A fetch may answer with the content alone, or with a mapping that
         # also describes the raw response bytes. See _retrieve.
-        fetch: (
-            Callable[[str, str, float, int], str | Mapping[str, Any]] | None
-        ) = None,
+        fetch: Callable[[str, str, float, int], str | Mapping[str, Any]] | None = None,
     ) -> None:
         self._fetch = fetch or self._default_fetch
         # Upstream responses observed during the call in flight. Reset per

@@ -19,6 +19,7 @@ SKILL.md may start with a YAML-ish frontmatter block:
 lifecycle/display metadata; the configured discovery root, not frontmatter,
 determines whether a skill is writable.
 """
+
 from __future__ import annotations
 
 import hashlib

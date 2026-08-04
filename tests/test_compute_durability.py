@@ -16,6 +16,7 @@ Two properties carry the design:
     running, and guessing wrong costs either a duplicate charge or a lost
     result. The honest move is to surface it with its receipt.
 """
+
 import io
 import subprocess
 import time

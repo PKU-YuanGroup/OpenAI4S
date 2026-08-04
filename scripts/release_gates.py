@@ -42,6 +42,7 @@ Deliberately *not* a gate: the nightly macOS/Linux sandbox jobs. They only run o
 and requiring one would make every release unreachable. The release workflow runs
 those checks itself, at the frozen SHA — see `PLATFORM_CHECK_COMMANDS`.
 """
+
 from __future__ import annotations
 
 import hashlib

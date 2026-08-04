@@ -24,6 +24,7 @@ coordinator to cancel the exact queued ticket, and only if that says "not
 queued" does it fail the exact active one. The coordinator arbitrates, and the
 maps are cleared by the terminal event either branch emits.
 """
+
 from __future__ import annotations
 
 import threading

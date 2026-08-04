@@ -11,6 +11,7 @@ hit a circular import, and the daemon failed at *boot*, not at request time.
 So this is a prerequisite, not a cleanup: without it the first extraction
 discovers the cycle, and so does every extraction after it.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -26,14 +27,12 @@ from openai4s.server.errors import ERROR_CODES, GatewayError, error_code_for
 def test_a_sibling_module_can_import_the_error_without_a_cycle():
     """The whole point. Run in a fresh interpreter: importing `errors` first and
     `gateway` second must work, which is the order a route module forces."""
-    program = textwrap.dedent(
-        """
+    program = textwrap.dedent("""
         from openai4s.server.errors import GatewayError
         import openai4s.server.gateway as gateway
         assert gateway.GatewayError is GatewayError
         print("ok")
-        """
-    )
+        """)
     result = subprocess.run(
         [sys.executable, "-c", program], capture_output=True, text=True
     )

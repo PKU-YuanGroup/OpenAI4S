@@ -19,6 +19,7 @@ The contract here is enumerate-then-extract:
 Rejection is all-or-nothing and raises ``UnsafeArchiveError``. Callers map that
 to a failed harvest — never to a partial success.
 """
+
 from __future__ import annotations
 
 import shutil

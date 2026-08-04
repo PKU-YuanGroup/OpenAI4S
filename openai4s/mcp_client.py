@@ -7,6 +7,7 @@ connector id so repeated calls reuse the same server.
 
 Sampling and server-initiated requests are deliberately outside this client.
 """
+
 from __future__ import annotations
 
 import json

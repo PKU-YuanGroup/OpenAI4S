@@ -19,6 +19,7 @@ The manifest is deliberately plain: for each harvested file its path relative
 to the harvest root, its size, and its SHA-256. Relative paths keep the record
 portable and keep the data directory out of it.
 """
+
 from __future__ import annotations
 
 import fnmatch

@@ -29,6 +29,7 @@ Every test drives the real `HostDispatcher`/`HostDataService` over a real `Store
 A fake would have to reimplement the scope rule to be useful, and a fake that got
 it subtly wrong would pass while the real one leaked.
 """
+
 from __future__ import annotations
 
 import hashlib

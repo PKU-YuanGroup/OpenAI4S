@@ -16,6 +16,7 @@ These use real processes. A mocked ``Popen`` cannot show either bug: the first
 needs a process that outlives the signal, and the second needs a real child of
 a real shell.
 """
+
 import os
 import shlex
 import signal

@@ -26,6 +26,7 @@ Deliberately not in default pytest collection -- it requires `bwrap`, which a
 laptop may not have, and a check that quietly skips is the thing the frozen
 decision refuses.
 """
+
 from __future__ import annotations
 
 import platform

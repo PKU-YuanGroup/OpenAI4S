@@ -27,6 +27,7 @@ recovered from it. Both failures are absent here: first bytes reach the host in
 
 Stdlib only, like the rest of the kernel.
 """
+
 from __future__ import annotations
 
 import codecs

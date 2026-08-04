@@ -17,6 +17,7 @@ so that editing the bootstrap cannot silently break the page: the header
 follows the file. `webui/` is served live from the tree with no build step,
 which is exactly the condition under which a hardcoded hash would drift.
 """
+
 from __future__ import annotations
 
 import base64

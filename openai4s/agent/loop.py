@@ -6,6 +6,7 @@ channels: native JSON tools for orchestration and persistent Python/R cells for
 scientific execution. Structured finalization closes control-only work, while
 ``host.submit_output(...)`` remains the completion signal for scientific cells.
 """
+
 from __future__ import annotations
 
 import os

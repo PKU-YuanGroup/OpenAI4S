@@ -7,6 +7,7 @@ Also keeps regression coverage for the arXiv /abs/ bug where
 <blockquote class="abstract">) and the author list (<a> links inside
 <div class="authors">), returning only the title plus page boilerplate.
 """
+
 import json
 from pathlib import Path
 from urllib.parse import urlparse

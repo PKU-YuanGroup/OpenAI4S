@@ -24,6 +24,7 @@ thread and a process, and nothing ever stops one: a local job can run forever.
 The cwd confinement is lexical (`normpath`), so a symlink inside the jobs root
 resolves outside it after the check has passed.
 """
+
 from __future__ import annotations
 
 import os

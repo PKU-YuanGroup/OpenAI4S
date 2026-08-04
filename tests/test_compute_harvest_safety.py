@@ -14,6 +14,7 @@ Two P1s from the second review, plus one P2, all in the compute manager:
     empty pattern set, which ``reconcile`` read as "nothing declared" and
     featured every harvested file, surfacing the diagnostics the caller hid.
 """
+
 from __future__ import annotations
 
 import io

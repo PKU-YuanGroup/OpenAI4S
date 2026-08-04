@@ -11,6 +11,7 @@ This package is pure stdlib and imports nothing from the engine (no
 host_dispatch / loop / gateway) at module load, so it stays importable with
 zero side effects. Wiring into the agent loops happens elsewhere.
 """
+
 from openai4s.tools.artifacts import (
     GetArtifactMetadataTool,
     ListArtifactsTool,

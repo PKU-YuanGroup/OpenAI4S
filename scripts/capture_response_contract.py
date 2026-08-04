@@ -20,6 +20,7 @@ so most answer 4xx. That is deliberate and it is not a way to tick a box: an
 error response is a promise too, and a route that cannot answer at all shows up
 as a missing entry rather than as an entry full of nothing.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -84,9 +85,10 @@ def _deterministic_secret_store():
 
 
 def drive() -> dict[str, dict]:
-    with tempfile.TemporaryDirectory(
-        prefix="openai4s-contract-"
-    ) as temp, _deterministic_secret_store():
+    with (
+        tempfile.TemporaryDirectory(prefix="openai4s-contract-") as temp,
+        _deterministic_secret_store(),
+    ):
         config = Config(
             data_dir=Path(temp),
             llm=LLMConfig(provider="deepseek", api_key="capture-only"),

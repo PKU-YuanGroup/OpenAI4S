@@ -12,6 +12,7 @@ Connectors feature has a real server to attach to and exercise end-to-end:
 
 Run: `python3 -m openai4s.mcp_servers.example_server` (stdin/stdout are the wire).
 """
+
 from __future__ import annotations
 
 import ast

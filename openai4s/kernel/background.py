@@ -14,6 +14,7 @@ Each background job owns its OWN kernel subprocess (so a long cell never blocks
 the foreground kernel). stdout is streamed live into a thread-safe buffer that
 exec_peek reads at any time.
 """
+
 from __future__ import annotations
 
 import threading

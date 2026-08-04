@@ -26,6 +26,7 @@ of the tests above can be satisfied by deleting the feature:
 ``OPENAI4S_SEED_DEMO=1`` must still start the seed. A test suite that only
 forbids things eventually passes on an empty program.
 """
+
 import socket
 import sqlite3
 import subprocess

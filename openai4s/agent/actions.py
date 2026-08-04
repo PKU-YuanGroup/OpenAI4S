@@ -24,6 +24,7 @@ declarative ```tool surface.
 Pure stdlib; imports only openai4s.tools (itself pure stdlib, zero side
 effects on import).
 """
+
 from __future__ import annotations
 
 import ast

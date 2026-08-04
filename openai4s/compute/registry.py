@@ -24,6 +24,7 @@ A host is an SSH *alias* the user already has in ``~/.ssh/config`` — the
 transport is plain ``ssh <alias>`` (see ``openai4s.compute.manager``). The
 registry never stores secrets; auth stays in the user's ssh config/agent.
 """
+
 from __future__ import annotations
 
 import json

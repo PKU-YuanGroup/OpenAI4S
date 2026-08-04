@@ -19,6 +19,7 @@ directory, because the exclusion being tested lives in that script's ``find``
 expression and nothing else can prove it. The end-to-end residency case lives
 in ``test_compute_trust_boundary.py``, where it runs under three real shells.
 """
+
 import subprocess
 import tempfile
 import threading

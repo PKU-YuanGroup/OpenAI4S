@@ -31,6 +31,7 @@ The invariant these tests assert is the one the plan states: after an induced
 failure, old live bytes, the Artifact head, checksum, version count, lineage edges
 and event count are all unchanged.
 """
+
 from __future__ import annotations
 
 import hashlib

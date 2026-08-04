@@ -349,9 +349,7 @@ class SkillCustomizationService:
             item_scope = (
                 "bundled"
                 if distribution == "bundled"
-                else "project"
-                if distribution == "project"
-                else "personal"
+                else "project" if distribution == "project" else "personal"
             )
             # The loader computes both of these and this projection dropped
             # them, so the Web catalogue could not tell a GPU-only Skill from
@@ -387,13 +385,15 @@ class SkillCustomizationService:
                 {
                     "name": name,
                     "displayName": (
-                        item.get("displayName") or item.get("title") or name
-                    )
-                    if isinstance(item, dict)
-                    else name,
-                    "description": (item.get("description") or "")
-                    if isinstance(item, dict)
-                    else "",
+                        (item.get("displayName") or item.get("title") or name)
+                        if isinstance(item, dict)
+                        else name
+                    ),
+                    "description": (
+                        (item.get("description") or "")
+                        if isinstance(item, dict)
+                        else ""
+                    ),
                     "origin": origin,
                     "scope": item_scope,
                     "editable": editable.get(name, origin == "user"),

@@ -8,6 +8,7 @@ and the in-kernel audit hook: it refuses a handful of obviously-catastrophic
 literal commands. It is not a sandbox and does not attempt to defeat
 obfuscation. Pure stdlib (it runs in the worker process).
 """
+
 from __future__ import annotations
 
 import re

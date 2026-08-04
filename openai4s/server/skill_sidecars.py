@@ -18,8 +18,7 @@ RESULT_KEY = "skill_sidecar_loads"
 
 
 class SidecarGenerationStore(Protocol):
-    def get_kernel_generation(self, generation_id: str) -> dict | None:
-        ...
+    def get_kernel_generation(self, generation_id: str) -> dict | None: ...
 
     def compare_and_swap_kernel_bootstrap(
         self,
@@ -28,8 +27,7 @@ class SidecarGenerationStore(Protocol):
         expected_manifest_id: str | None,
         bootstrap: Any,
         at: int | None = None,
-    ) -> dict | None:
-        ...
+    ) -> dict | None: ...
 
 
 class GenerationSidecarRecorder:

@@ -16,6 +16,16 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    groups:
+      # The only pre-commit ecosystem left ungrouped, which is why one Monday
+      # produced two separate hook PRs. Batch the half that is normally inert
+      # against the rule sets pinned in pyproject.toml, and deliberately leave
+      # majors out of the group: a major hook bump is a style or lint-policy
+      # change that has to be read on its own, not merged as one row of a
+      # version table (black 23.3.0 -> 26.5.1 reformatted 234 files).
+      hook-versions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 3
 
   - package-ecosystem: "github-actions"

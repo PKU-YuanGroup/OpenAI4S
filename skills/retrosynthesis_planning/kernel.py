@@ -4,6 +4,7 @@ The helpers in this module are intentionally pure stdlib. They normalize route
 exports from retrosynthesis backends, rank candidate routes, and render compact
 HTML/Markdown artifacts for human review.
 """
+
 from __future__ import annotations
 
 import base64
@@ -785,9 +786,11 @@ def _candidate_match_level(value: Any) -> str:
         "class": "reaction_class",
     }.get(
         normalized,
-        normalized
-        if normalized in {"exact_substrate", "close_analog", "reaction_class"}
-        else "unknown",
+        (
+            normalized
+            if normalized in {"exact_substrate", "close_analog", "reaction_class"}
+            else "unknown"
+        ),
     )
 
 
@@ -1633,9 +1636,11 @@ def normalize_reaction_evidence(
         pairs = (
             (
                 key,
-                _evidence_entries_from_item(value)
-                if isinstance(value, dict)
-                else value,
+                (
+                    _evidence_entries_from_item(value)
+                    if isinstance(value, dict)
+                    else value
+                ),
             )
             for key, value in source.items()
         )
@@ -2474,18 +2479,18 @@ def _interactive_andor_payload(
             details["Validation plan"] = validation_plan
         details["Annotation key"] = annotation_key
         details["Evidence status"] = evidence_summary["status"]
-        details[
-            "Evidence coverage"
-        ] = f"{evidence_summary['coverage']}/100 heuristic coverage"
+        details["Evidence coverage"] = (
+            f"{evidence_summary['coverage']}/100 heuristic coverage"
+        )
         if evidence_summary["records"]:
             details["Supporting evidence"] = [
                 _evidence_detail_record(record)
                 for record in evidence_summary["records"]
             ]
         else:
-            details[
-                "Evidence caveat"
-            ] = "No external evidence record is attached. LLM-generated conditions or yields remain hypotheses."
+            details["Evidence caveat"] = (
+                "No external evidence record is attached. LLM-generated conditions or yields remain hypotheses."
+            )
         note = _unrecognized_reaction_note(backend_class)
         if note:
             details["Backend caveat"] = note
@@ -2820,11 +2825,15 @@ def _reaction_evidence_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     status = (
         "Verified exact-substrate evidence"
         if has_verified_exact
-        else "Verified analogue or class evidence"
-        if has_verified
-        else "Retrieved source candidates need review"
-        if has_candidates
-        else "Unverified evidence supplied"
+        else (
+            "Verified analogue or class evidence"
+            if has_verified
+            else (
+                "Retrieved source candidates need review"
+                if has_candidates
+                else "Unverified evidence supplied"
+            )
+        )
     )
     return {"coverage": coverage, "status": status, "records": normalized}
 
@@ -3429,9 +3438,9 @@ def _layout_svg_tree(
             "meta": _node_meta_label(item, depth),
             "class": _node_visual_class(item, depth, bool(children)),
             "full": _node_display_label(item),
-            "structure_src": structure_sources["primary"]
-            if structure_sources
-            else None,
+            "structure_src": (
+                structure_sources["primary"] if structure_sources else None
+            ),
             "structure_fallback_src": (
                 structure_sources["fallback"] if structure_sources else None
             ),

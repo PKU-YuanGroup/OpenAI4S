@@ -18,6 +18,7 @@ it is why every assertion below is about ALLOCATION rather than about the
 returned length: `tracemalloc` peak is the observable, and it does not depend
 on timing, machine speed, or when a thread happens to be scheduled.
 """
+
 from __future__ import annotations
 
 import json

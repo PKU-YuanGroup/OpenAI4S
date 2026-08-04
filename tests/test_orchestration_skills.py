@@ -13,6 +13,7 @@ A regression from this suite caught a real bug: endpoints.register allocated a
 fresh random port on every call, so a byte-identical re-registration wrongly
 tripped the approval card (port is the name's mutex and must be reused).
 """
+
 import json
 import shutil
 import sqlite3

@@ -40,6 +40,7 @@ last of those at all.
 
 All timestamps are epoch-ms. Booleans are 0/1. One DB per data_dir.
 """
+
 from __future__ import annotations
 
 import json
@@ -1607,9 +1608,11 @@ class Store:
                 "UPDATE env_snapshots SET generation_confidence=? "
                 "WHERE snapshot_id=?",
                 (
-                    "verified"
-                    if expected == row["snapshot_id"]
-                    else "legacy_unverified",
+                    (
+                        "verified"
+                        if expected == row["snapshot_id"]
+                        else "legacy_unverified"
+                    ),
                     row["snapshot_id"],
                 ),
             )

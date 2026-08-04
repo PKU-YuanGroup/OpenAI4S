@@ -15,6 +15,7 @@ So the test that matters is not "does it raise" but **"does it raise before it
 spawns"**. A refusal after `Popen` would satisfy a naive test and none of the
 intent.
 """
+
 from __future__ import annotations
 
 import re

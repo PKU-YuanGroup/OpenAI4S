@@ -21,6 +21,7 @@ Nothing in this module opens a socket or starts a thread. Reading it must stay
 cheap enough that the caller has no excuse to cache the answer, because a
 cached "enabled" survives a revocation.
 """
+
 from __future__ import annotations
 
 import json

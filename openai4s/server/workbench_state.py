@@ -17,8 +17,7 @@ from openai4s.llm.capabilities import get_model_capabilities
 
 
 class WorkbenchStore(Protocol):
-    def get_frame(self, frame_id: str) -> dict | None:
-        ...
+    def get_frame(self, frame_id: str) -> dict | None: ...
 
     def latest_kernel_generation(
         self,
@@ -26,17 +25,15 @@ class WorkbenchStore(Protocol):
         language: str,
         *,
         branch_id: str | None = None,
-    ) -> dict | None:
-        ...
+    ) -> dict | None: ...
 
-    def active_session_branch(self, root_frame_id: str) -> str:
-        ...
+    def active_session_branch(self, root_frame_id: str) -> str: ...
 
-    def list_compaction_archives(self, frame_id: str, *, limit: int = 50) -> list[dict]:
-        ...
+    def list_compaction_archives(
+        self, frame_id: str, *, limit: int = 50
+    ) -> list[dict]: ...
 
-    def delegation_tree(self, root_frame_id: str) -> dict:
-        ...
+    def delegation_tree(self, root_frame_id: str) -> dict: ...
 
 
 StateProvider = Callable[[str], Any | None]
@@ -185,12 +182,12 @@ class SessionWorkbenchStateService:
             "recovery_pointer": item.get("recovery_pointer"),
             "generation_id": str(item.get("generation_id") or "")[:120],
             "message_count": int(item.get("n_messages") or 0),
-            "tokens_before": int(before.get("total") or 0)
-            if isinstance(before, Mapping)
-            else 0,
-            "tokens_after": int(after.get("total") or 0)
-            if isinstance(after, Mapping)
-            else 0,
+            "tokens_before": (
+                int(before.get("total") or 0) if isinstance(before, Mapping) else 0
+            ),
+            "tokens_after": (
+                int(after.get("total") or 0) if isinstance(after, Mapping) else 0
+            ),
             "artifact_refs": [
                 {
                     "artifact_id": str(ref.get("artifact_id") or "")[:120],

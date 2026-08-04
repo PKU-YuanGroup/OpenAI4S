@@ -14,6 +14,7 @@ kernel cell, an `ssh` from the compute manager -- is outside any in-process
 guard by construction, which is what the sandbox is for, and no telemetry code
 runs there (asserted below).
 """
+
 from __future__ import annotations
 
 import socket

@@ -17,11 +17,9 @@ from typing import Any, Protocol
 
 
 class ActionTimelineStore(Protocol):
-    def list_action_groups(self, root_frame_id: str, **filters: Any) -> list[dict]:
-        ...
+    def list_action_groups(self, root_frame_id: str, **filters: Any) -> list[dict]: ...
 
-    def list_execution_attempts(self, **filters: Any) -> list[dict]:
-        ...
+    def list_execution_attempts(self, **filters: Any) -> list[dict]: ...
 
 
 class ActionTimelineService:

@@ -25,6 +25,7 @@ A revoke also drops whatever is still queued. A payload waiting here was sealed
 under an identity that no longer exists, and the sender would refuse it anyway;
 discarding it is simply the earlier and more honest place to say so.
 """
+
 from __future__ import annotations
 
 import contextlib

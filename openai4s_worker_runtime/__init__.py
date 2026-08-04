@@ -28,6 +28,7 @@ working unchanged.
 
 Stdlib-only, like the package it aliases.
 """
+
 from __future__ import annotations
 
 from openai4s_compute_provider import (

@@ -17,6 +17,7 @@ The retry is deliberately narrow, and the two halves matter equally:
 Tests inject `sleep` rather than actually sleeping; the delay is asserted as a
 value, which is also the only way to pin the Retry-After/backoff precedence.
 """
+
 import io
 import urllib.error
 

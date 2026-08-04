@@ -8,6 +8,7 @@ remote compute/jobs. Jobs run in a per-job workspace under the data dir.
 Kept intentionally simple + stdlib-only: threads + subprocess.Popen, in-memory
 registry (bounded), live output capture.
 """
+
 from __future__ import annotations
 
 import json

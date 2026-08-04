@@ -29,6 +29,7 @@ Prompts and research data are never logged by this module. There is no
 likely to carry a user's unpublished work, and the safe default is that they do
 not leave the process through this path at all.
 """
+
 from __future__ import annotations
 
 import contextvars

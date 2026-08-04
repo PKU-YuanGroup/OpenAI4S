@@ -5,6 +5,7 @@ A provider shim (``skills/remote-compute-<id>/provider.py``) exports
 this surface. Kept separate from the resident so a shim can import the contract
 without pulling in the hardening/lifecycle machinery.
 """
+
 from __future__ import annotations
 
 import re
@@ -18,8 +19,7 @@ class ExecResult(Protocol):
     stdout: Iterable[bytes]
     stderr: Iterable[bytes]
 
-    def wait(self) -> int:
-        ...
+    def wait(self) -> int: ...
 
 
 class ByocProvider(Protocol):
@@ -31,14 +31,11 @@ class ByocProvider(Protocol):
     secret_env_prefixes: tuple[str, ...]
     token_scrub_regex: re.Pattern[str]
 
-    def import_and_patch(self) -> None:
-        ...
+    def import_and_patch(self) -> None: ...
 
-    def apply_auth(self, creds: dict[str, str]) -> None:
-        ...
+    def apply_auth(self, creds: dict[str, str]) -> None: ...
 
-    def install_unauth_hook(self, on_expired: Callable[[], NoReturn]) -> None:
-        ...
+    def install_unauth_hook(self, on_expired: Callable[[], NoReturn]) -> None: ...
 
     def create_sandbox(
         self, spec: dict[str, Any], install_id: str, tags: dict[str, str] | None = None
@@ -59,17 +56,13 @@ class ByocProvider(Protocol):
         stdin: Iterable[bytes] | None = None,
         env: dict[str, str] | None = None,
         timeout: int | None = None,
-    ) -> ExecResult:
-        ...
+    ) -> ExecResult: ...
 
-    def list_owned(self, install_id: str) -> list[dict[str, Any]]:
-        ...
+    def list_owned(self, install_id: str) -> list[dict[str, Any]]: ...
 
-    def read_owner(self, sandbox_id: str) -> str | None:
-        ...
+    def read_owner(self, sandbox_id: str) -> str | None: ...
 
-    def terminate(self, sandbox_id: str) -> None:
-        ...
+    def terminate(self, sandbox_id: str) -> None: ...
 
     def list_dir(
         self, root: str, path: str, *, limit: int | None = None

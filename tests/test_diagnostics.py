@@ -15,6 +15,7 @@ whole value a credential", which is right for a field and wrong for a log line,
 where a token sits mid-sentence surrounded by spaces. A first version of this
 bundle passed the structured lines and leaked the plain one.
 """
+
 import json
 import zipfile
 

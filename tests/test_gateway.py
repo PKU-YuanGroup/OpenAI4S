@@ -840,7 +840,8 @@ def test_gateway_projects_submit_only_result_as_live_and_persisted_final_message
     final_text_index = max(
         index
         for index, event in enumerate(hub.events)
-        if event.get("type") == "text_chunk" and "已完成真实数据分析" in event.get("chunk", "")
+        if event.get("type") == "text_chunk"
+        and "已完成真实数据分析" in event.get("chunk", "")
     )
     terminal_index = max(
         index

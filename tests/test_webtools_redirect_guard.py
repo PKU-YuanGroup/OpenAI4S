@@ -139,9 +139,11 @@ def test_a_redirect_to_a_blocked_target_is_refused(redirect_server, monkeypatch)
     monkeypatch.setattr(
         builtins,
         "__import__",
-        lambda name, *a, **k: (_ for _ in ()).throw(ImportError())
-        if name == "requests"
-        else real_import(name, *a, **k),
+        lambda name, *a, **k: (
+            (_ for _ in ()).throw(ImportError())
+            if name == "requests"
+            else real_import(name, *a, **k)
+        ),
     )
 
     with pytest.raises(webtools.SSRFBlocked):

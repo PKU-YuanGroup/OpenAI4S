@@ -10,6 +10,7 @@ denylist is not evidence of that. So the tests below assert on *values* leaving
 the process, not on field names: a secret under an unremarkable key is exactly
 the one a name rule misses.
 """
+
 import json
 
 import pytest

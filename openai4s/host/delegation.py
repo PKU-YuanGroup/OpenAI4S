@@ -8,8 +8,7 @@ from openai4s.host import resource_allowlist
 
 
 class AgentProfileStore(Protocol):
-    def get_agent(self, name: str, **kwargs) -> dict | None:
-        ...
+    def get_agent(self, name: str, **kwargs) -> dict | None: ...
 
 
 Delegate = Callable[[dict], Any]

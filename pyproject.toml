@@ -142,6 +142,31 @@ markers = [
     "browser: requires a real browser session",
 ]
 
+[tool.black]
+# Same reason as the [tool.ruff.lint] block below: state the setting instead of
+# inheriting whatever the pinned formatter happens to compute. Until now there
+# was no [tool.black] section at all, so the formatting target was per-file
+# autodetection -- and autodetection is not a property of the repository, it is
+# a property of the interpreter that runs the hook. black 26.5.1 infers a range
+# reaching py315 for files with no version-distinguishing syntax, then reports
+# on the 3.12 lint runner:
+#
+#   Warning: Python 3.12 cannot parse code formatted for Python 3.15. ...
+#   Black's safety check verifies equivalence by parsing the AST, which fails
+#   when the running Python is older than the target version.
+#
+# That is the formatter rewriting 234 files with its AST-equivalence check
+# unable to run. Naming the floor from `requires-python` puts the check back in
+# reach and keeps the target off the interpreter.
+#
+# Pinned separately from, and ahead of, the 23.3.0 -> 26.5.1 bump so the two are
+# not confused: this block changes no output. `--check` is clean under 23.3.0
+# with it, and the 26.5.1 reformat is byte-identical across autodetect@3.12,
+# autodetect@3.14, and target-version py310. line-length is black's own default
+# and is restated here for the same reason as the target.
+target-version = ["py310"]
+line-length = 88
+
 [tool.ruff.lint]
 # State the rule set instead of inheriting whatever the pinned ruff calls its
 # default. Until now there was no [tool.ruff] section at all, so the rule set

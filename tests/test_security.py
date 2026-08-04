@@ -7,6 +7,7 @@ Covers the four layers, all offline (LLM mocked):
   * the biosecurity trajectory screener + calibrated-accountability prompt;
   * their integration into the agent loop and the config toggles.
 """
+
 import os
 import sqlite3
 import subprocess

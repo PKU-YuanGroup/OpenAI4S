@@ -4,6 +4,7 @@ This tiny module is imported by both the Host issuer and the kernel-side SDK.
 Keeping it outside ``openai4s.host`` prevents a worker import from executing the
 host service package's composition imports.
 """
+
 from __future__ import annotations
 
 import hashlib

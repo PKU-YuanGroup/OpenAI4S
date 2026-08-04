@@ -115,13 +115,13 @@ class CompactionPolicy:
     cfg: Any
     log: LogFn = _null_log
     metadata_provider: Callable[[RunState], Mapping[str, Any] | None] | None = None
-    tool_schema_provider: Callable[
-        [RunState], Sequence[Mapping[str, Any]]
-    ] | None = None
+    tool_schema_provider: Callable[[RunState], Sequence[Mapping[str, Any]]] | None = (
+        None
+    )
     context_budget_provider: Callable[[RunState], int | None] | None = None
-    artifact_archiver: Callable[
-        [Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]
-    ] | None = None
+    artifact_archiver: (
+        Callable[[Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]] | None
+    ) = None
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None
     minimum_yield_ratio: float = 0.10
     max_low_yield_attempts: int = 2

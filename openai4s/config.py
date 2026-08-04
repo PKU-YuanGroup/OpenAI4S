@@ -8,6 +8,7 @@ Data-dir layout (~/.openai4s):
         compaction-history/
         openai4s.db          (reserved, not used in v0.1)
 """
+
 from __future__ import annotations
 
 import os

@@ -10,6 +10,7 @@ Molecule depictions come from RDKit when it is importable, and from the
 transparent placeholder SVG otherwise. Install RDKit before regenerating if you
 want the example to show real structures.
 """
+
 from __future__ import annotations
 
 import json

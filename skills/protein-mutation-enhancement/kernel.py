@@ -5,6 +5,7 @@ joins model/assay score tables, computes lightweight property heuristics, ranks
 candidates, and decides whether an iterative design loop should continue.
 Heavy ESM and structure prediction jobs are orchestrated by separate skills.
 """
+
 from __future__ import annotations
 
 import csv

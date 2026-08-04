@@ -348,7 +348,10 @@ def resolve_message_refs(
     if not blocks:
         return text, problems
     body = "\n\n".join(blocks)
-    return f"{text}\n\n---\n(附:被引用的文件内容 / referenced files)\n\n{body}", problems
+    return (
+        f"{text}\n\n---\n(附:被引用的文件内容 / referenced files)\n\n{body}",
+        problems,
+    )
 
 
 def _read_snapshot(

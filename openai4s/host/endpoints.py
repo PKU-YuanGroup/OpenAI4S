@@ -15,11 +15,9 @@ from typing import Callable, Protocol
 
 
 class EndpointStore(Protocol):
-    def list_endpoints(self) -> list[dict]:
-        ...
+    def list_endpoints(self) -> list[dict]: ...
 
-    def upsert_endpoint(self, name: str, **fields) -> None:
-        ...
+    def upsert_endpoint(self, name: str, **fields) -> None: ...
 
 
 _FALLBACK_PORT_LOCK = threading.Lock()

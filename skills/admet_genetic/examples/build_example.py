@@ -6,6 +6,7 @@ files, rebuilds the self-contained dashboard, and writes an audit report.
 
     python skills/admet_genetic/examples/build_example.py
 """
+
 from __future__ import annotations
 
 import argparse

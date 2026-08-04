@@ -14,6 +14,7 @@ These tests pin that contract so neither name can silently drift:
 
 All offline; no Docker, GPU, network, or secrets involved.
 """
+
 import openai4s_compute_provider as legacy
 import openai4s_worker_runtime as alias
 

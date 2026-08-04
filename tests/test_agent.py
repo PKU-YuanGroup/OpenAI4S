@@ -1,4 +1,5 @@
 """Agent loop + delegation + compaction tests, with the LLM mocked offline."""
+
 import json
 from pathlib import Path
 

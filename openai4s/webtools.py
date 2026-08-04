@@ -10,6 +10,7 @@ the arXiv API); fetch downloads a URL and converts HTML to readable markdown/tex
 Networking can be globally gated by ``OPENAI4S_ALLOW_NETWORK`` (default on);
 the daemon's Customize → Network panel flips this.
 """
+
 from __future__ import annotations
 
 import base64
@@ -762,9 +763,9 @@ def _arxiv_lookup(arxiv_id: str, timeout: float) -> list[dict]:
         out.append(
             {
                 "title": title,
-                "url": link_m.group(1)
-                if link_m
-                else f"https://arxiv.org/abs/{arxiv_id}",
+                "url": (
+                    link_m.group(1) if link_m else f"https://arxiv.org/abs/{arxiv_id}"
+                ),
                 "snippet": _tag("summary")[:500],
             }
         )

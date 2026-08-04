@@ -20,6 +20,7 @@ Neither file makes a claim this script did not observe. An unsigned image gets
 a receipt saying so; a runtime whose distributions cannot be read gets an empty
 list and a reason.
 """
+
 from __future__ import annotations
 
 import hashlib

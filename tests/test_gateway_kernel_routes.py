@@ -24,6 +24,7 @@ Ten of the twelve routes answer 200 for a frame id that does not exist, and
 siblings are. Changing either is a behaviour change; this file's job is to
 notice if the move makes one by accident.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace

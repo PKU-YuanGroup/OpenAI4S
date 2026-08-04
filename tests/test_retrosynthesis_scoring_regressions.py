@@ -560,8 +560,7 @@ def test_backend_rejects_a_manifest_the_worker_altered(backends, tmp_path):
     """Provenance that the worker can quietly rewrite is not provenance."""
     tampering_worker = tmp_path / "tampering_worker.py"
     tampering_worker.write_text(
-        textwrap.dedent(
-            """
+        textwrap.dedent("""
             import json
             import sys
 
@@ -588,8 +587,7 @@ def test_backend_rejects_a_manifest_the_worker_altered(backends, tmp_path):
                     }
                 )
             )
-            """
-        ),
+            """),
         encoding="utf-8",
     )
 
@@ -713,8 +711,7 @@ def test_worker_response_survives_native_stdout_writes(backends, worker, tmp_pat
     """
     script = tmp_path / "noisy_worker.py"
     script.write_text(
-        textwrap.dedent(
-            f"""
+        textwrap.dedent(f"""
             import os
             import sys
             import types
@@ -753,8 +750,7 @@ def test_worker_response_survives_native_stdout_writes(backends, worker, tmp_pat
             from retrosynthesis_planning.syntheseus_worker import main
 
             raise SystemExit(main())
-            """
-        ),
+            """),
         encoding="utf-8",
     )
 
@@ -786,8 +782,7 @@ def test_crashed_backend_stderr_does_not_publish_a_workstation_path(backends, tm
     """
     script = tmp_path / "crashing_worker.py"
     script.write_text(
-        textwrap.dedent(
-            f"""
+        textwrap.dedent(f"""
             import os
             import sys
 
@@ -799,8 +794,7 @@ def test_crashed_backend_stderr_does_not_publish_a_workstation_path(backends, tm
             _reserve_protocol_stdout()
             os.write(1, b"[torch] loading weights from /home/chemist/private/w.pt\\n")
             raise SystemExit(3)
-            """
-        ),
+            """),
         encoding="utf-8",
     )
 
@@ -832,8 +826,7 @@ def test_reserved_descriptor_does_not_outlive_a_forked_model_child(backends, tmp
     """
     script = tmp_path / "forking_worker.py"
     script.write_text(
-        textwrap.dedent(
-            f"""
+        textwrap.dedent(f"""
             import os
             import sys
             import time
@@ -879,8 +872,7 @@ def test_reserved_descriptor_does_not_outlive_a_forked_model_child(backends, tmp
             from retrosynthesis_planning.syntheseus_worker import main
 
             raise SystemExit(main())
-            """
-        ),
+            """),
         encoding="utf-8",
     )
 

@@ -1,4 +1,5 @@
 """Isolated JSON worker for optional Syntheseus and RetroChimera inference."""
+
 from __future__ import annotations
 
 import contextlib

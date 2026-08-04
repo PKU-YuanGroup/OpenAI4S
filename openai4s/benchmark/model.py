@@ -8,6 +8,7 @@ The fields are the ones the proposal names — inputs, steps, permissions,
 artifacts, failure conditions, expected outcome — plus a version, because a
 benchmark whose cases can change silently measures nothing across time.
 """
+
 from __future__ import annotations
 
 import json

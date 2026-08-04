@@ -85,9 +85,9 @@ class CellExecutionPorts:
     allocate_attempt: Callable[
         [CellSession, CellRequest, str, str | None], str | None
     ] = _no_attempt_allocate
-    bind_attempt_generation: Callable[
-        [str, CellSession, str], None
-    ] = _no_attempt_generation
+    bind_attempt_generation: Callable[[str, CellSession, str], None] = (
+        _no_attempt_generation
+    )
     mark_attempt_started: Callable[[str], None] = _no_attempt_milestone
     mark_attempt_response: Callable[[str], None] = _no_attempt_milestone
     mark_attempt_capture: Callable[[str], None] = _no_attempt_milestone

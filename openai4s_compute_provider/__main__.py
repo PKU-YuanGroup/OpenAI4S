@@ -15,6 +15,7 @@ provider-agnostic baseline scrub runs
 HERE, before ``exec_module`` loads provider.py; the resident prologue then
 re-scrubs with the loaded provider's own declared ``secret_env_prefixes``
 before the credential is read from stdin/fd-3."""
+
 import importlib.util
 import os
 import sys

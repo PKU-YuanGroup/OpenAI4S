@@ -18,6 +18,7 @@ Each prompt is exposed BOTH as a constant and via `build(name, **ctx)` which
 returns the ready-to-send system string (some prompts splice dynamic context).
 The `render()` helper wraps a micro-call into a chat() invocation.
 """
+
 from __future__ import annotations
 
 # --- summary fork (context compaction) -----------------------------------

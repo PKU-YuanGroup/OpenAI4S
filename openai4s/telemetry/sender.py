@@ -15,6 +15,7 @@ There is no queue that survives a revoke, no retry that outlives one, and no
 flush at exit. Buffered-then-flushed telemetry would send events recorded
 *before* consent, which is the opposite of what consent means.
 """
+
 from __future__ import annotations
 
 import os

@@ -36,6 +36,7 @@ information worth keeping:
 the remote operation may or may not have taken effect, which is precisely the
 case that needs reconciling rather than retrying.
 """
+
 from __future__ import annotations
 
 # --- the vocabulary -------------------------------------------------------

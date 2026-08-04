@@ -17,6 +17,7 @@ exercising. The properties, in the order they matter:
   * rollback moves a pointer and rebuilds nothing;
   * an applied generation is never rewritten.
 """
+
 from __future__ import annotations
 
 import json

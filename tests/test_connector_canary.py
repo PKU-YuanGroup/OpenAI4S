@@ -14,6 +14,7 @@ outage and the canary gets muted; stay quiet on drift and it was pointless. So
 these tests drive the classifier with an injected fetch -- no network -- through
 both, and a couple of ways an outage can disguise itself as drift.
 """
+
 from __future__ import annotations
 
 import json

@@ -8,6 +8,7 @@ a sitecustomize hook from reading the daemon's credentials out of the
 environment, touching daemon files, or reaching the network. The probe must run
 under the same scrubbed child environment and OS boundary a kernel cell gets.
 """
+
 from __future__ import annotations
 
 import json
@@ -51,14 +52,12 @@ def test_a_foreign_interpreter_probe_cannot_read_a_daemon_secret(tmp_path, monke
     spy = tmp_path / "bin" / "python"
     spy.parent.mkdir(parents=True)
     spy.write_text(
-        textwrap.dedent(
-            """\
+        textwrap.dedent("""\
             #!/usr/bin/env python3
             import json, os
             leaked = {k: v for k, v in os.environ.items() if "secret" in v.lower()}
             print(json.dumps([{"name": k, "version": "1"} for k in leaked]))
-            """
-        ),
+            """),
         encoding="utf-8",
     )
     spy.chmod(0o755)

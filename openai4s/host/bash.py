@@ -11,6 +11,7 @@ worker generation, challenge, and session frame remain present in this
 service's in-memory issuance table.  Restarting the daemon invalidates every
 outstanding capability, which is the safe recovery behaviour for shell work.
 """
+
 from __future__ import annotations
 
 import fnmatch

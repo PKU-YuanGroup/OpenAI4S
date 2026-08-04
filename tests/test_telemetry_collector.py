@@ -13,6 +13,7 @@ client that ignores it. Everything else here is the boring, necessary refusal:
 body caps before the read, a Host allowlist, a rate limit, and storing counts
 rather than a per-install log.
 """
+
 from __future__ import annotations
 
 import json

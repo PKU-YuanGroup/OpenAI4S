@@ -3,6 +3,7 @@
 Uses fake conda-env directories under a temp OPENAI4S_ENV_ROOTS so the tests
 are deterministic and do not depend on the developer's installed conda envs.
 """
+
 import os
 import sys
 from pathlib import Path

@@ -7,6 +7,7 @@ is thin, all real work is host-side.
 v0.1 surface: host.llm, host.artifacts, host.artifact_path, host.delegate,
 host.submit_output. Enough to prove the Code-as-Action loop end-to-end.
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable

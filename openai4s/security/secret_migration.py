@@ -21,6 +21,7 @@ Nothing here logs a secret. Progress is reported as references and a short hash
 prefix, which is enough to correlate an entry with a row and useless to anyone
 who obtains the log.
 """
+
 from __future__ import annotations
 
 import hashlib

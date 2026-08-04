@@ -23,6 +23,7 @@ Key points:
 
 Pure stdlib, so it runs unchanged inside the `python -I -S` control kernel.
 """
+
 from __future__ import annotations
 
 import json

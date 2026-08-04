@@ -16,6 +16,7 @@ These tests drive the real ``openai4s.llm.chat`` facade rather than the
 transport directly, because the transport's own tests already passed while
 production was unwired — proving the seam, not the plumbing, is the point.
 """
+
 import io
 import urllib.error
 

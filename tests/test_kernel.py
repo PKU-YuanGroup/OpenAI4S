@@ -1,5 +1,6 @@
 """Kernel tests: persistent namespace, print capture, error attribution,
 usage accounting, and host_call RPC round-trip (dispatcher stubbed)."""
+
 import os
 import threading
 

@@ -57,6 +57,7 @@ Notarization is never reported as verified here. It needs Apple's service and a
 paid identity; a pipeline that printed "notarized: ok" without one would be the
 kind of confident wrong answer this codebase spends its time removing.
 """
+
 from __future__ import annotations
 
 import argparse

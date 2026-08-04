@@ -20,6 +20,7 @@ wrapped in a link to the person's GitHub profile.
 Run by the daily local automation; runnable manually for a preview with
 ``GITHUB_TOKEN`` set or a ``gh auth`` session. Requires Pillow.
 """
+
 from __future__ import annotations
 
 import io

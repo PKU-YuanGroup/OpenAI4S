@@ -13,11 +13,9 @@ from typing import Any, Callable, Protocol
 class MCPStore(Protocol):
     """Minimal connector persistence used by :class:`MCPService`."""
 
-    def get_connector(self, connector_id: str) -> dict | None:
-        ...
+    def get_connector(self, connector_id: str) -> dict | None: ...
 
-    def list_connectors(self) -> list[dict]:
-        ...
+    def list_connectors(self) -> list[dict]: ...
 
 
 def _disabled(server: Any) -> str:

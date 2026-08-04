@@ -3,6 +3,7 @@
 Pure-stdlib descriptive statistics. Imported by the agent inside a kernel cell
 via `from example_stats.kernel import summary, quantile, zscore, correlation`.
 """
+
 from __future__ import annotations
 
 import math

@@ -18,6 +18,7 @@ Two pieces:
 
 Both fail open: with no model configured, `screen_trajectory` returns ALLOW.
 """
+
 from __future__ import annotations
 
 import json

@@ -17,6 +17,7 @@ by a cursor at all. That case is reported (`gap: true`) rather than papered
 over, because silently starting mid-stream would leave a hole the client cannot
 see.
 """
+
 import pytest
 
 from openai4s.server.gateway import WSHub

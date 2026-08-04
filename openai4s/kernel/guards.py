@@ -13,6 +13,7 @@ corrupt the next. We replicate the two load-bearing ones:
 
 These are cheap best-effort probes: if a library is absent the guard no-ops.
 """
+
 from __future__ import annotations
 
 import os

@@ -13,6 +13,7 @@ absent. Absence gets noticed; a confident wrong answer gets believed. The
 kernel generation already recorded the runtime, the interpreter and the
 environment name -- nothing read them.
 """
+
 from __future__ import annotations
 
 import sys

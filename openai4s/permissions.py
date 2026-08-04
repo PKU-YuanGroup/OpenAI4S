@@ -17,6 +17,7 @@ background cells) and any nested/delegated dispatcher all gate uniformly and
 their prompts surface in the one conversation the user is watching — without the
 delegation subsystem needing to know anything about the gate.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -732,15 +733,17 @@ class PermissionBroker:
                     ),
                     "continuation_authorization": (
                         (
-                            "consumed"
-                            if once_consumed
-                            else ("expired" if once_expired else "once")
+                            (
+                                "consumed"
+                                if once_consumed
+                                else ("expired" if once_expired else "once")
+                            )
+                            if allow and normalized_scope == "once"
+                            else "standing_rule"
                         )
-                        if allow and normalized_scope == "once"
-                        else "standing_rule"
-                    )
-                    if allow
-                    else None,
+                        if allow
+                        else None
+                    ),
                 }
             except Exception:  # noqa: BLE001 — try another registered store
                 continue

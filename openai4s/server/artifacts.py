@@ -1136,9 +1136,9 @@ class ArtifactManager:
             # applicable".
             snapshot["packages"] = []
             snapshot["package_count"] = 0
-            snapshot[
-                "packages_unavailable"
-            ] = f"{runtime} kernel: Python distribution metadata does not apply"
+            snapshot["packages_unavailable"] = (
+                f"{runtime} kernel: Python distribution metadata does not apply"
+            )
         return snapshot
 
     def invalidate_freeze_cache(self) -> None:

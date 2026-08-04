@@ -16,6 +16,7 @@ The V2 helpers make the policy's previously implicit contracts explicit:
 Only JSON-compatible values are archived.  This module deliberately has no
 Store, Gateway, provider, or kernel dependency.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -327,7 +328,7 @@ def _has_code_action(message: Mapping[str, Any]) -> bool:
 
 
 def segment_messages(
-    messages: Sequence[Mapping[str, Any]]
+    messages: Sequence[Mapping[str, Any]],
 ) -> tuple[ContextSegment, ...]:
     """Partition messages into atomic replay/compaction segments.
 
@@ -463,10 +464,9 @@ def externalize_large_outputs(
     threshold_chars: int = DEFAULT_LARGE_OUTPUT_CHARS,
     preview_chars: int = DEFAULT_PREVIEW_CHARS,
     archive_metadata: Mapping[str, Any] | CompactionArchiveMetadata | None = None,
-    artifact_archiver: Callable[
-        [Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]
-    ]
-    | None = None,
+    artifact_archiver: (
+        Callable[[Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]] | None
+    ) = None,
 ) -> list[dict]:
     """Archive oversized outputs and return context-safe message copies.
 
@@ -641,10 +641,9 @@ def compact(
     archive_dir: Path | str | None = None,
     archive_metadata: Mapping[str, Any] | CompactionArchiveMetadata | None = None,
     large_output_chars: int = DEFAULT_LARGE_OUTPUT_CHARS,
-    artifact_archiver: Callable[
-        [Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]
-    ]
-    | None = None,
+    artifact_archiver: (
+        Callable[[Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]] | None
+    ) = None,
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None,
     tool_schemas: Iterable[Mapping[str, Any]] = (),
 ) -> list[dict]:

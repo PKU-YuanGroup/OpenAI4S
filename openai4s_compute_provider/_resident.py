@@ -17,6 +17,7 @@ environment. run_oneshot self-enforces confinement
 (exit 71) before touching stdin; run_repl reports it via {ready, confined} for
 the host to gate.
 """
+
 from __future__ import annotations
 
 import ctypes

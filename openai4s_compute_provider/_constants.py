@@ -3,6 +3,7 @@
 Kept in one place so the resident, the control channel, and any provider shim
 all agree on the same wire limits, exit codes, and sandbox paths.
 """
+
 from __future__ import annotations
 
 import re

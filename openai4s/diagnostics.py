@@ -18,6 +18,7 @@ Unbounded logs are not a neutral default — they are a slow disk-full that
 arrives at the least convenient moment, and on a long-lived daemon they also
 accumulate an ever-larger record of activity nobody decided to keep.
 """
+
 from __future__ import annotations
 
 import json

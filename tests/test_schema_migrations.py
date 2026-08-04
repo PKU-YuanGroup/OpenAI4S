@@ -22,6 +22,7 @@ it safe to define version 1 as "the legacy baseline has run" and stamp it,
 without reconstructing which ALTERs an existing install had already applied —
 history that is simply not recorded anywhere.
 """
+
 import re
 import sqlite3
 from pathlib import Path

@@ -19,6 +19,7 @@ helper started — a profile that looked stricter and confined nothing, because
 nothing ran. `file-read-data` is the correct granularity, and the difference is
 invisible without running it.
 """
+
 from __future__ import annotations
 
 import json

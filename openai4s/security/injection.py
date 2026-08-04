@@ -15,6 +15,7 @@ Two tiers, matching the rest of the layer:
 
 Fails open: any error or unconfigured model -> not flagged.
 """
+
 from __future__ import annotations
 
 import json

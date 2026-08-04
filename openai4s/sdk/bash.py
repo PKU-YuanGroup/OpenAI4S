@@ -6,6 +6,7 @@ the executor obtains a host-issued capability over the existing synchronous
 and asks the host to atomically consume it.  A missing or legacy dispatcher is
 therefore a clear fail-closed error, never an implicit authorization.
 """
+
 from __future__ import annotations
 
 import math

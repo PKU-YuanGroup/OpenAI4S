@@ -167,9 +167,9 @@ class BoundedTextReader:
                 pending += decoder.decode(b"", True)
                 if pending:
                     self.lines_read += 1
-                    yield pending.splitlines()[0] if _is_terminated(
-                        pending
-                    ) else pending
+                    yield (
+                        pending.splitlines()[0] if _is_terminated(pending) else pending
+                    )
 
 
 class BoundedSelection:

@@ -24,6 +24,7 @@ data it does the opposite of what is wanted: it passes an absolute path through
 untouched and redacts a harmless environment name. A gate that looks like
 protection and is not is worse than no gate.
 """
+
 from __future__ import annotations
 
 from typing import Any

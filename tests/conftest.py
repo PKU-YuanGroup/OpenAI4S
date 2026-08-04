@@ -1,4 +1,5 @@
 """Pytest fixtures + path setup for the openai4s test suite."""
+
 import os
 import sys
 from pathlib import Path

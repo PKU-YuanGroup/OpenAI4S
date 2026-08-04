@@ -10,6 +10,7 @@ dict merged into the case's result. Raising is how a step reports that the
 workflow could not proceed; the runner decides whether that matches what the
 case declared.
 """
+
 from __future__ import annotations
 
 import hashlib

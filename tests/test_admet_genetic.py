@@ -1,4 +1,5 @@
 """Offline tests for the admet_genetic skill."""
+
 from __future__ import annotations
 
 import csv

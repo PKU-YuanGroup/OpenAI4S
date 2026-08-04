@@ -12,6 +12,7 @@ proved nothing looked like a receipt that proved something.
 Each case below is one mutation of a good receipt. A mutation the consumer
 accepts is a forgery the pipeline accepts.
 """
+
 from __future__ import annotations
 
 import copy
