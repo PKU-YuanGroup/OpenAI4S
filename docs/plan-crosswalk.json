@@ -25,7 +25,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "3d1e3cfe3c84a13fa791f23b256ca53b5218f01289b7b9e0dbba451eff13b818"
+      "evidence_digest": "fec549e06ae523cd7a2adc054c1245dc5074f33a21831df3daf27de5db381a73"
     },
     {
       "source": "R1",
@@ -135,7 +135,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "3d1e3cfe3c84a13fa791f23b256ca53b5218f01289b7b9e0dbba451eff13b818"
+      "evidence_digest": "fec549e06ae523cd7a2adc054c1245dc5074f33a21831df3daf27de5db381a73"
     },
     {
       "source": "R2",
@@ -149,7 +149,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_harvest_safety.py,tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "d551086dacebeb09892147f1de459abdf43949a6e92659d9ed8f15f0ca805dd5"
+      "evidence_digest": "19b6f70152132f5040cbb1c5389ee3b22913eeb3b763d9bba2339133fc53449b"
     },
     {
       "source": "R2",
@@ -163,7 +163,7 @@
       "tests": "tests/test_host_network_capability.py,tests/test_egress_surface.py,tests/test_egress.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4d2fe5cb4077d37c587ccfb9484816e4942a6d4478490ff64ae38d5155da3697"
+      "evidence_digest": "0de531dca21c66d291f0d165aca92f8bb993c3e2abc6ceb92f5552c635c1db5c"
     },
     {
       "source": "R2",
@@ -205,7 +205,7 @@
       "tests": "tests/test_producer_output_budgets.py,tests/test_workspace_streaming_budgets.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "d1c2de8bb5757b129a8e86355dc1a8ec34fae6a11569a63e50fd689d68d459f0"
+      "evidence_digest": "4facd0b849c43e0ec8fc4eda8564a8b426f69a9b54d12567ba87240de1afb4ff"
     },
     {
       "source": "R2",
@@ -232,7 +232,7 @@
       "tests": "tests/test_retrieval_source.py,tests/test_retrieval_provenance.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "50d4f58ef91a10f7fd9d0e5f415b48c53163081b94c5b0f2b0e0c4266ee4ba1e"
+      "evidence_digest": "d13e86658f7b7ac7d9fd2b135b9739468a24b76d049772fb3c112592c24d3485"
     },
     {
       "source": "R3",
@@ -260,7 +260,7 @@
       "tests": "tests/test_startup_no_implicit_side_effects.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6de44405f033dbf85bfde79d47bdb3bc79e855a85166de78088237f581251f5e"
+      "evidence_digest": "92fcaed7df234df1e19416cd70e7e2f759b3a6434c04cd112c42b8c2be2f222a"
     },
     {
       "source": "R3",
@@ -315,7 +315,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "a8819fc5035aa87572293c0c84b75c51b68af3b1579c708d14a1a07bdb0cef8c"
+      "evidence_digest": "b7fcd8955392ed5c449ddb66ec4b22bc92a1df542c89bb6293ab5fb553932b18"
     },
     {
       "source": "R3",
@@ -384,7 +384,7 @@
       "tests": "tests/test_producer_output_budgets.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "75a6a1f454e476c982a7484ea03f9c7a8a6f640485d4c84cc6aed6c2414c28d2"
+      "evidence_digest": "da32b79b84674baad7fcc31350a146a3dc42d16c8e66c30a29af4be0f9af9413"
     },
     {
       "source": "R4",
@@ -398,7 +398,7 @@
       "tests": "tests/test_materialisation_atomicity.py,tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6b618d12d06555ad08208cae7304b836d5d2b7a90b70748663c5b4c90a5392d9"
+      "evidence_digest": "2e71eac36c7206f2d4ee30795b92bd9e74d682fedfa23751e6ad67386f7d3f3b"
     },
     {
       "source": "R4",
@@ -412,7 +412,7 @@
       "tests": "tests/test_model_profile_identity.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "2398dde80eecebb0bb859eb8f21bac1a789ea5987694d170d8ceb7a1ae7d6743"
+      "evidence_digest": "c9c16c6f06026d8c5d96a7117dae13417c43e5d70b7f72d5d6c0f855fc9195cf"
     },
     {
       "source": "R4",
@@ -482,7 +482,7 @@
       "tests": "tests/test_compute_alias_registration.py,tests/test_compute_trust_boundary.py,tests/test_compute_durability.py,tests/test_sdk_compute.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "3bad022f75f1cd5742c75cbc91e5c3097d937e86858c03eeea62699591622a12"
+      "evidence_digest": "0165194064a87c01c89d8757733dbddbec3c02c3eb5fc4a51d49fbd1c54680bf"
     },
     {
       "source": "R5",
@@ -524,7 +524,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "d7e39dd711f02c314bf93414bbffb0062c65547aab16aac50cf27ec2e5e0b454"
+      "evidence_digest": "92da810153009db01ab24290271b79e876c8e9eaf2cfa271bf618c803d733ad6"
     },
     {
       "source": "R5",
@@ -538,7 +538,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_revision_binding.py,tests/test_model_binding_recovery.py,tests/test_model_catalog.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "b6700c8cf0ba4e34d3e655954806bac2a165057037a01ff3e07959eaabb89290"
+      "evidence_digest": "89274c78c714cb30e2515b3a2626fb97119ebac085ac468f05173094a1e8843a"
     },
     {
       "source": "R5",
@@ -579,7 +579,7 @@
       "tests": "tests/test_local_job_envelope.py,tests/test_local_job_lifecycle.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "cc8450d303424a2adbb505c6c7c2957bc264c3ea8effd4a1590342ccf7c3b146"
+      "evidence_digest": "cfc98145bfddbc6a8622d4d10a54976b87d5ec538ad40f99788a7f5ef4032d20"
     },
     {
       "source": "R6",
@@ -593,7 +593,7 @@
       "tests": "tests/test_artifact_scope_closure.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "dcc12c2d49bdccc350d9e65021311046a017b59fe3e7f758751ef366f17afa1e"
+      "evidence_digest": "6ff1c40ca39b790d222a7862af38c1cc5d394f55c2538c6a1b79f7a454e380cd"
     },
     {
       "source": "R6",
@@ -607,7 +607,7 @@
       "tests": "tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_model_profile_identity.py,tests/test_compute_owner_and_harvest.py,tests/test_upload_scope_resolution.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "ec6534f4244e58117802071a7629938b1312bd089f922eafc72a717ce85e74b6"
+      "evidence_digest": "3c0604623579d7eba42bb5043c9925174d3d9f1866b6b15b7aa3217aa4b07fd7"
     },
     {
       "source": "R6",
@@ -621,7 +621,7 @@
       "tests": "tests/test_model_profile_identity.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "2398dde80eecebb0bb859eb8f21bac1a789ea5987694d170d8ceb7a1ae7d6743"
+      "evidence_digest": "c9c16c6f06026d8c5d96a7117dae13417c43e5d70b7f72d5d6c0f855fc9195cf"
     },
     {
       "source": "R6",
@@ -635,7 +635,7 @@
       "tests": "tests/test_materialisation_atomicity.py,tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6b618d12d06555ad08208cae7304b836d5d2b7a90b70748663c5b4c90a5392d9"
+      "evidence_digest": "2e71eac36c7206f2d4ee30795b92bd9e74d682fedfa23751e6ad67386f7d3f3b"
     },
     {
       "source": "R6",
@@ -690,7 +690,7 @@
       "tests": "tests/test_startup_no_implicit_side_effects.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6de44405f033dbf85bfde79d47bdb3bc79e855a85166de78088237f581251f5e"
+      "evidence_digest": "92fcaed7df234df1e19416cd70e7e2f759b3a6434c04cd112c42b8c2be2f222a"
     },
     {
       "source": "R7",
@@ -704,7 +704,7 @@
       "tests": "tests/test_local_job_lifecycle.py,tests/test_local_job_envelope.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "cc8450d303424a2adbb505c6c7c2957bc264c3ea8effd4a1590342ccf7c3b146"
+      "evidence_digest": "cfc98145bfddbc6a8622d4d10a54976b87d5ec538ad40f99788a7f5ef4032d20"
     },
     {
       "source": "R7",
@@ -718,7 +718,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "d7e39dd711f02c314bf93414bbffb0062c65547aab16aac50cf27ec2e5e0b454"
+      "evidence_digest": "92da810153009db01ab24290271b79e876c8e9eaf2cfa271bf618c803d733ad6"
     },
     {
       "source": "R7",
@@ -732,7 +732,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "3d1e3cfe3c84a13fa791f23b256ca53b5218f01289b7b9e0dbba451eff13b818"
+      "evidence_digest": "fec549e06ae523cd7a2adc054c1245dc5074f33a21831df3daf27de5db381a73"
     },
     {
       "source": "R7",
