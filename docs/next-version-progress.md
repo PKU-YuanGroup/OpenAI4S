@@ -507,7 +507,7 @@ real and previously missing floor -- it rules out the whole class of failure whe
 a change to `app.js` breaks the page on load -- but it is a floor, not a
 demonstration that these controls do what they say.
 
-## 15. This batch (2026-08-01) — merge with main, then the Plan's remaining gaps
+## 17. This batch (2026-08-01) — merge with main, then the Plan's remaining gaps
 
 Ordered as it happened, because the merge is what made the rest possible.
 
@@ -556,7 +556,7 @@ during browser acceptance. Closed by `tests/test_upload_scope_resolution.py`.
 changes that: the YAML is asserted against the parsed workflow graph, and one
 real `workflow_dispatch` is still the missing run.
 
-## 17. Browser evidence (2026-08-01)
+## 18. Browser evidence (2026-08-01)
 
 Run against a real daemon at `2947bec9786633359e0a693ba9d6f5e637ecfdeb`, with
 the auth gate on — the daemon answered `401` to an unauthenticated `GET /`, and
@@ -617,4 +617,86 @@ survival and the `unknown`-is-not-failure rendering.
 
 One defect was found by this run rather than by any test: `POST /uploads`
 answered `500` for every session outside the `default` project. It is fixed and
-recorded in §15.
+recorded in §17.
+
+## 19. The audit backlog, T0–T5 (2026-08-03)
+
+Recorded here because §18 above was the last entry and it stops at
+`2947bec9786633359e0a693ba9d6f5e637ecfdeb`. **Sixty-seven non-merge commits
+landed after it and none of them appeared in this file** -- the admission
+ledger, the diagnostics-bundle redaction, R-cell truncation, the eight-refusal
+permission fix, and everything in T1–T5 below. A progress record whose last
+section is two months of work behind does not read as incomplete; it reads as
+"nothing has happened since", which is a statement rather than a gap.
+
+Audited at `39bc788aa01d`, the same commit `plan-crosswalk.json` now declares.
+This is a *grouped* record, not one row per commit: the per-item detail lives in
+the commit messages, and restating sixty-seven of them here would be a second
+copy that drifts from the first.
+
+### T0 — clearing the floor
+
+Uncommitted work landed; the Linux-sandbox release gate that could never pass --
+it required a `harness.smoke.linux_sandbox` run no GitHub-hosted runner can
+perform, so it blocked every release rather than a bad one -- was declared
+unprovable in `release_gates.PLATFORM_CHECKS_UNAVAILABLE` and carried in the
+evidence bundle instead of dropped.
+
+### T1 — the security boundary an agent can actually reach
+
+Five closures, each on a call chain reachable from a cell: an agent could name
+any SSH destination and the daemon dialled it (fixed in three places, not one);
+`prov_resolve_path` answered existence questions across every project;
+cross-session artifact reads had no capability gate and the inline cap sliced a
+buffer that had already been read whole; the Specialist allowlist missed the
+prompt surface its own exit criteria named; and two public surfaces still
+printed exception text.
+
+### T2 — lifecycle and resource correctness
+
+`host.bash`'s deadline bound the shell and not the process group it left behind;
+the kernel manager's stderr was an unbounded `readline`; `cancel` could overwrite
+a published `timeout`; materialisation and capture double-registered, putting the
+lineage edge on a superseded version; plan resume re-ran every step the agent had
+deliberately skipped; and the decision route was a second, unstructured failure
+shape.
+
+### T3 — contract completion
+
+A legacy session that matched no profile was silently pinned to whatever was
+active; an endpoint's credentials were stored, published by `GET /model-profiles`
+and sealed into an immutable revision; a `docs/v03-decisions.md` env override
+nothing read; and the two channels that bounded their input correctly and then
+described the result wrongly -- an artifact reference cut to fit that reached the
+model reading as the whole file, and an MCP connector that answered promptly and
+too largely being reported, and evicted, as one that had timed out.
+
+### T4 — evidence and coverage
+
+The implementations were right; the proofs were not. P0-1's exit matrix had no
+unauthenticated WebSocket upgrade, a one-route REST "matrix", and a
+cookie-across-restart case that asserted token-file stability. The MCP wrong-ID
+flood budget had zero call sites outside production. All eight P1-A/P1-B controls
+had zero browser coverage. Four of the nine CI gates were steps inside another
+job and so could not fail on their own. And the release evidence bundle was
+missing build receipts for two of four artifact kinds, compared three of four
+interpreters, let a plain `--mode release` stage assets on a local `pytest`
+alone, and shipped without the SBOM it built every time.
+
+### T5 — documentation honesty
+
+`plan-crosswalk.json` re-audited: one paragraph had been pasted onto four
+`closed` rows, three of which it did not describe; `browser_evidence` was empty
+on all 56 rows; and 25 of the 48 closed rows rested on a test file modified after
+the audit the document declared. Each closed row now carries a digest of its
+evidence and `scripts/reaudit_crosswalk.py` is the only thing that moves it. This
+file's own duplicate `## 15` -- with `## 16` sitting between the two, and a `§15`
+cross-reference that could mean either -- is fixed, and
+`tests/test_progress_document.py` keeps both properties.
+
+### What this section does not claim
+
+It does not upgrade any status above. The five `implemented_unverified` rows
+still wait on one real `workflow_dispatch`; the macOS notarization still waits on
+a certificate; `platform_checks` receipt rows are still `[]`; and BYOC state is
+still absent from the release evidence. Those are named in §12 and remain there.
