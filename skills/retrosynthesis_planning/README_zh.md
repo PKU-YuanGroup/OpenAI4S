@@ -46,7 +46,7 @@ audit = audit_routes(routes)
 
 `AiZynthSearchSpec` 结构化暴露 `aizynthcli` 已公开的 policy、filter、stock、聚类、多进程、checkpoint 以及前后处理参数。搜索算法、深度、reward 和 bond constraint 仍然写在 AiZynthFinder 的 `config.yml` 中；这个封装不会暗中改写配置文件。
 
-`extra_args` 是留给该类未建模开关的逃生舱。它会排在类型化开关之前，并且必须以自己的开关开头——因为 `--policy`、`--filter`、`--stocks` 和 `--post_processing` 都是变长参数，否则紧随其后的裸值会被它们吞掉。它既不允许重复、也不允许缩写封装已管理的开关——`aizynthcli` 使用 argparse 默认的 `allow_abbrev=True` 构建解析器，只拦 `--output` 而放行 `--out` 等于什么都没拦——因此无法悄悄改写目标、配置或输出路径。该保证属于 `AiZynthSearchSpec`：`kernel.build_aizynth_command` 仍会不加校验地接受原始 `extra_args`，所以应优先使用 workflow 层入口。
+`extra_args` 是留给该类未建模开关的逃生舱。它会排在类型化开关之前，并且必须以自己的开关开头——因为 `--policy`、`--filter`、`--stocks` 和 `--post_processing` 都是变长参数，否则紧随其后的裸值会被它们吞掉。它既不允许重复、也不允许缩写封装已管理的开关——`aizynthcli` 使用 argparse 默认的 `allow_abbrev=True` 构建解析器，只拦 `--output` 而放行 `--out` 等于什么都没拦——因此无法悄悄改写目标、配置或输出路径。`kernel.build_aizynth_command` 对它自己拥有的三个开关执行同样的规则，因此直接调用底层入口的调用方同样受保护。
 
 `prepare_routes(...)` 先沿用现有排序逻辑，再合并完全相同的路线树并保留原始排名来源，最后基于反应、产物和前体特征选出更有差异的审阅集合。为了维持固定 dashboard 数量而重新补入相似路线时，路线会标记 `diversity_relaxed=True`，避免把它误解为独立证据。
 

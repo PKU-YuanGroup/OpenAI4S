@@ -651,7 +651,21 @@ class SyntheseusBackend:
             "allow_model_download": self.allow_model_download,
             "model_manifest": self.manifest.to_dict() if self.manifest else None,
         }
-        return self.process.run(payload)
+        response = self.process.run(payload)
+        # The fingerprint is only provenance if it identifies the manifest that
+        # was actually reviewed. The host recomputes it from whatever the worker
+        # echoes, so a worker that rewrote the manifest — or dropped it — would
+        # otherwise publish a provenance record for a document nobody approved.
+        if self.manifest is not None and response.get("ok"):
+            returned = response.get("manifest_fingerprint")
+            if returned != self.manifest.fingerprint:
+                raise BackendExecutionError(
+                    "manifest_mismatch",
+                    "backend returned a model manifest that is not the one it "
+                    f"was given (expected {self.manifest.fingerprint}, got "
+                    f"{returned!r})",
+                )
+        return response
 
 
 __all__ = [

@@ -176,11 +176,29 @@ def _score_from_metadata(
 
 
 def _normalize_manifest(value: Any) -> dict[str, Any] | None:
+    """Echo the caller's manifest back without rewriting it.
+
+    Deliberately not passed through `_json_safe`. The manifest is authored by
+    the operator, is contractually path-free, and the host recomputes
+    `manifest_fingerprint` from whatever comes back — so filtering it here
+    would mean the published fingerprint no longer reproduces from the
+    reviewed manifest file, and two manifests differing only in a filtered
+    field would publish the same fingerprint. Redaction belongs on
+    model-reported metadata, which the worker does not control.
+    """
     if value is None:
         return None
     if not isinstance(value, Mapping):
         raise RequestError("invalid_manifest", "model_manifest must be an object")
-    return _json_safe(dict(value))
+    try:
+        copied = json.loads(json.dumps(dict(value), sort_keys=True))
+    except (TypeError, ValueError) as exc:
+        raise RequestError(
+            "invalid_manifest", "model_manifest must be JSON serializable"
+        ) from exc
+    if not isinstance(copied, dict):
+        raise RequestError("invalid_manifest", "model_manifest must be an object")
+    return copied
 
 
 def _load_model_class(model_name: str) -> type[Any]:

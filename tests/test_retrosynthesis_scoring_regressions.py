@@ -476,6 +476,139 @@ def test_extra_args_reject_managed_switches_and_leading_bare_values(
         workflow.AiZynthSearchSpec(extra_args=extra_args)
 
 
+@pytest.mark.parametrize("switch", ["--output", "--out", "--conf", "--sm", "--config"])
+def test_kernel_command_rejects_extra_args_that_override_its_own_switches(
+    kernel, switch
+):
+    """The guard has to live where SKILL.md sends the agent.
+
+    ``build_aizynth_command`` is the entry point the Skill documents, and it
+    appends extra_args after the switches it set itself.
+    """
+    with pytest.raises(ValueError, match="must not repeat or abbreviate"):
+        kernel.build_aizynth_command(
+            "CCO",
+            config_path="real.yml",
+            output_path="real.json",
+            extra_args=[switch, "/tmp/elsewhere"],
+        )
+
+
+def test_kernel_command_still_accepts_unmanaged_extra_args(kernel):
+    command = kernel.build_aizynth_command(
+        "CCO",
+        config_path="real.yml",
+        output_path="real.json",
+        extra_args=["--route_distance_model", "distance.ckpt"],
+    )
+
+    assert command[-2:] == ["--route_distance_model", "distance.ckpt"]
+
+
+def test_managed_switches_cover_everything_the_command_layer_owns(workflow, kernel):
+    """The two layers must not drift apart as switches are added."""
+    assert kernel.COMMAND_OWNED_SWITCHES <= workflow.MANAGED_SWITCHES
+
+
+def test_manifest_is_echoed_faithfully_so_the_fingerprint_reproduces(worker, backends):
+    """A filtered echo makes the published fingerprint identify nothing.
+
+    Two manifests differing only in a filtered metadata field would otherwise
+    collapse onto the same fingerprint.
+    """
+
+    def manifest_with(metadata):
+        return backends.ModelManifest(
+            provider="Test Provider",
+            model="RetroChimera",
+            model_version="1.2.0",
+            checkpoint_id="synthetic",
+            checkpoint_sha256="c" * 64,
+            training_dataset="synthetic fixture",
+            code_license="MIT",
+            checkpoint_license="MIT",
+            metadata=metadata,
+        )
+
+    first = manifest_with({"review_record": "review-a", "eval_files": 12})
+    second = manifest_with({"review_record": "review-b", "eval_files": 12})
+
+    echoed_first = worker._normalize_manifest(first.to_dict())
+    echoed_second = worker._normalize_manifest(second.to_dict())
+
+    # The echo is faithful, so the fingerprint the host recomputes from it is
+    # the fingerprint of the manifest the operator actually reviewed.
+    assert echoed_first == first.to_dict()
+    assert (
+        backends.ModelManifest.from_mapping(echoed_first).fingerprint
+        == first.fingerprint
+    )
+    assert (
+        backends.ModelManifest.from_mapping(echoed_second).fingerprint
+        != first.fingerprint
+    )
+
+
+def test_backend_rejects_a_manifest_the_worker_altered(backends, tmp_path):
+    """Provenance that the worker can quietly rewrite is not provenance."""
+    tampering_worker = tmp_path / "tampering_worker.py"
+    tampering_worker.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import sys
+
+            request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+            manifest = dict(request["model_manifest"])
+            manifest["checkpoint_id"] = "something-else-entirely"
+            print(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "request_id": request["request_id"],
+                        "backend": "syntheseus",
+                        "operation": "single_step",
+                        "ok": True,
+                        "target_smiles": request["target_smiles"],
+                        "model": request["model"],
+                        "predictions": [
+                            {"rank": 1, "reactants_smiles": "CCO.N", "metadata": {}}
+                        ],
+                        "model_manifest": manifest,
+                        "runtime": {},
+                        "warnings": [],
+                        "elapsed_seconds": 0.0,
+                    }
+                )
+            )
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = backends.ModelManifest(
+        provider="Test Provider",
+        model="RetroChimera",
+        model_version="1.2.0",
+        checkpoint_id="the-reviewed-checkpoint",
+        checkpoint_sha256="d" * 64,
+        training_dataset="synthetic fixture",
+        code_license="MIT",
+        checkpoint_license="MIT",
+    )
+    backend = backends.SyntheseusBackend(
+        model="RetroChimera",
+        model_dir=tmp_path / "checkpoint",
+        manifest=manifest,
+        worker_path=tampering_worker,
+    )
+
+    with pytest.raises(backends.BackendExecutionError) as caught:
+        backend.single_step("CCON", num_results=1, request_id="tamper-check")
+
+    assert caught.value.code == "manifest_mismatch"
+
+
 def test_worker_metadata_redacts_paths_by_value_not_by_key_name(worker):
     safe = worker._json_safe(
         {

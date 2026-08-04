@@ -277,6 +277,33 @@ def canonicalize_smiles(smiles: str) -> str:
     return Chem.MolToSmiles(mol, canonical=True)
 
 
+#: Switches this function emits itself. ``extra_args`` may not repeat or
+#: abbreviate one: ``aizynthcli`` builds its parser with argparse's default
+#: ``allow_abbrev=True`` and applies last-value-wins, so a later ``--out`` or
+#: ``--conf`` silently redirects the export or the configuration the caller
+#: believes it set. Prefix matching is what makes the check hold — an
+#: exact-match check would block ``--output`` while waving ``--out`` through.
+COMMAND_OWNED_SWITCHES = frozenset({"--config", "--smiles", "--output"})
+
+
+def reject_owned_switches(
+    extra_args: Iterable[str], *, owned: Iterable[str] = COMMAND_OWNED_SWITCHES
+) -> None:
+    """Raise if an extra argument would override a switch the caller set."""
+    owned_set = frozenset(owned)
+    for value in extra_args:
+        switch = str(value).strip().split("=", 1)[0]
+        if not switch.startswith("-"):
+            continue
+        conflicting = sorted(item for item in owned_set if item.startswith(switch))
+        if conflicting:
+            raise ValueError(
+                f"extra_args entry {switch} must not repeat or abbreviate "
+                + " / ".join(conflicting)
+                + "; pass it through the dedicated argument instead"
+            )
+
+
 def build_aizynth_command(
     smiles: str,
     config_path: str,
@@ -296,7 +323,9 @@ def build_aizynth_command(
     if output_path:
         command.extend(["--output", str(Path(output_path).expanduser())])
     if extra_args:
-        command.extend(str(arg) for arg in extra_args)
+        extras = [str(arg) for arg in extra_args]
+        reject_owned_switches(extras)
+        command.extend(extras)
     if conda_env:
         return ["conda", "run", "-n", conda_env, *command]
     return command

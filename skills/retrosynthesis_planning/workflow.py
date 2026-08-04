@@ -5,7 +5,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from .kernel import build_aizynth_command, normalize_routes, rank_routes
+from .kernel import (
+    COMMAND_OWNED_SWITCHES,
+    build_aizynth_command,
+    normalize_routes,
+    rank_routes,
+)
 from .route_review import deduplicate_routes, route_signature, select_diverse_routes
 from .structural_audit import audit_route_structure, audit_routes
 
@@ -25,17 +30,14 @@ def _clean_names(values: Iterable[str], *, field_name: str) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
-#: Switches ``build_aizynth_search_command`` already emits, directly or through
-#: ``build_aizynth_command``. Repeating one through ``extra_args`` would silently
-#: win under argparse's last-value-wins rule and rewrite a target, config or
-#: output path the caller believes it set. ``kernel.build_aizynth_command`` does
-#: not enforce this on its own; the guarantee holds for callers that go through
-#: ``AiZynthSearchSpec``.
-MANAGED_SWITCHES = frozenset(
+#: Switches ``build_aizynth_search_command`` already emits. Repeating one through
+#: ``extra_args`` would silently win under argparse's last-value-wins rule and
+#: rewrite a target, config or output path the caller believes it set. The three
+#: ``build_aizynth_command`` owns are taken from it rather than restated, so the
+#: two layers cannot drift; that lower layer enforces its own three
+#: independently, for callers who reach it without going through this class.
+MANAGED_SWITCHES = COMMAND_OWNED_SWITCHES | frozenset(
     {
-        "--config",
-        "--smiles",
-        "--output",
         "--policy",
         "--filter",
         "--stocks",

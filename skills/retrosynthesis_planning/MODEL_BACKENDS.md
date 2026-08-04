@@ -107,7 +107,7 @@ A model manifest is public provenance, not an environment configuration file. It
 }
 ```
 
-`provenance_status` is `complete` only when a checkpoint SHA-256 is present, the training dataset is identified, and both code and checkpoint licenses are explicit rather than `unknown`, `unspecified` or `review-required`. A manifest fingerprint is computed from canonical JSON so a changed manifest is visible even when the human-readable checkpoint ID stays the same.
+`provenance_status` is `complete` only when a checkpoint SHA-256 is present, the training dataset is identified, and both code and checkpoint licenses are explicit rather than `unknown`, `unspecified` or `review-required`. A manifest fingerprint is computed from canonical JSON so a changed manifest is visible even when the human-readable checkpoint ID stays the same. The worker echoes the manifest back untouched — redaction applies to model-reported metadata, never to the operator's own document, because filtering it would mean the published fingerprint no longer reproduces from the reviewed file. `SyntheseusBackend` compares the fingerprint it gets back against the manifest it sent and raises `manifest_mismatch` if they differ, so a worker cannot quietly substitute a provenance record nobody approved.
 
 ## Usage
 

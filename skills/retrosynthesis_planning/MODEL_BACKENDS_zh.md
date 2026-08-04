@@ -107,7 +107,7 @@ Model manifest 是公开 provenance，不是环境配置文件。它不能包含
 }
 ```
 
-只有在 checkpoint SHA-256 存在、训练数据集已明确，并且代码与 checkpoint 许可证不是 `unknown`、`unspecified` 或 `review-required` 时，`provenance_status` 才会是 `complete`。系统会基于 canonical JSON 计算 manifest fingerprint，因此即使人类可读 checkpoint ID 不变，manifest 的修改仍然可见。
+只有在 checkpoint SHA-256 存在、训练数据集已明确，并且代码与 checkpoint 许可证不是 `unknown`、`unspecified` 或 `review-required` 时，`provenance_status` 才会是 `complete`。系统会基于 canonical JSON 计算 manifest fingerprint，因此即使人类可读 checkpoint ID 不变，manifest 的修改仍然可见。worker 会原样回显 manifest——清洗只作用于模型返回的 metadata，绝不作用于操作者自己的文档，因为一旦过滤，公布的 fingerprint 就无法从被审阅的文件复算出来。`SyntheseusBackend` 会把回传的 fingerprint 与自己发出的 manifest 比对，不一致时抛出 `manifest_mismatch`，因此 worker 无法悄悄替换一份没有人批准的 provenance 记录。
 
 ## 使用方法
 
