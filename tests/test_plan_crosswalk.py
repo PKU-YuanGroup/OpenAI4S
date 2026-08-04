@@ -140,3 +140,220 @@ def test_the_crosswalk_records_what_it_was_audited_against(crosswalk):
     statement about nothing."""
     assert len(crosswalk["baseline"]) == 40
     assert len(crosswalk["audited_at"]) == 40
+
+
+# -- the re-audit's own mechanisms -------------------------------------------
+#
+# Everything above checks the crosswalk's *shape*. What it could not see is the
+# three ways the content went wrong:
+#
+#   * `audited_at` was checked for being 40 characters long. Forty characters is
+#     not a commit, and the field's whole job is to say which tree the 48
+#     `closed` claims are about.
+#   * four `closed` rows carried one verbatim `status_note` and one verbatim
+#     four-file `tests` list. The note describes an SQL/artifact-scope closure;
+#     the rows it was pasted onto are a bundled-skill network boundary, an SSH
+#     alias closure, and model-profile identity. Three of the four rows were
+#     therefore documented with another row's evidence, and every assertion
+#     above passed on all of them.
+#   * `browser_evidence` was empty on all 56 rows while nine `closed` notes
+#     asserted a UI call site -- a field that exists, is required, and decides
+#     nothing.
+
+
+def _git(*args: str) -> tuple[int, str] | None:
+    """`(exit code, stdout)`, or None when this is not a usable checkout.
+
+    The exit code is returned, not folded away, because `git merge-base
+    --is-ancestor` answers *only* through it: it prints nothing whether the
+    answer is yes or no. A helper that collapsed both to the empty string made
+    the ordering assertion below unfailable -- the first version of it did
+    exactly that, and the mutation written to prove it could fail came back
+    green.
+    """
+    import subprocess
+
+    try:
+        completed = subprocess.run(
+            ["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - no git
+        return None
+    return completed.returncode, completed.stdout.strip()
+
+
+def _git_says(*args: str) -> bool:
+    """True when git exited 0. Used for the predicate subcommands."""
+    result = _git(*args)
+    return result is not None and result[0] == 0
+
+
+@pytest.fixture(scope="module")
+def in_a_checkout() -> bool:
+    return _git_says("rev-parse", "--git-dir")
+
+
+def test_the_audited_commits_are_commits_in_this_repository(crosswalk, in_a_checkout):
+    """Forty characters was the whole check.
+
+    A status is a statement about a tree. A `baseline`/`audited_at` that names
+    no commit in this history is a statement about a tree nobody can produce --
+    and it reads, to every consumer of this file, exactly like one that can.
+    """
+    if not in_a_checkout:
+        pytest.skip("not a git checkout")
+    for field in ("baseline", "audited_at"):
+        sha = crosswalk[field]
+        assert len(sha) == 40, f"{field} is not a full SHA: {sha!r}"
+        result = _git("cat-file", "-t", sha)
+        assert result is not None and result == (
+            0,
+            "commit",
+        ), f"{field}={sha} is not a commit in this repository"
+
+
+def test_the_audit_is_ordered_and_reachable(crosswalk, in_a_checkout):
+    """`baseline` is where the plan started and `audited_at` is where it was
+    last read. An audit that predates its own baseline, or that sits on a commit
+    this branch cannot reach, is describing a different history."""
+    if not in_a_checkout:
+        pytest.skip("not a git checkout")
+    baseline, audited = crosswalk["baseline"], crosswalk["audited_at"]
+    assert _git_says(
+        "merge-base", "--is-ancestor", baseline, audited
+    ), f"baseline {baseline[:12]} is not an ancestor of audited_at {audited[:12]}"
+    assert _git_says("merge-base", "--is-ancestor", audited, "HEAD"), (
+        f"audited_at {audited[:12]} is not reachable from HEAD; this crosswalk "
+        "was audited against a tree this branch does not contain"
+    )
+
+
+def test_no_two_closed_rows_share_a_verbatim_note(crosswalk):
+    """A shared note is only honest when the reason is genuinely shared.
+
+    Two groups here share one: three `deferred_p2` rows parked by decision D8,
+    and five `implemented_unverified` rows waiting on the same single
+    `workflow_dispatch`. Both are one fact about several rows.
+
+    `closed` is different. It claims a specific thing was proved about a
+    specific subject, so two closed rows with the same sentence means at least
+    one of them is documented with the other's evidence -- which is what
+    happened: one SQL/artifact-scope paragraph on four rows, three of which are
+    about something else entirely.
+    """
+    from collections import defaultdict
+
+    notes = defaultdict(list)
+    for item in crosswalk["items"]:
+        if item["status"] != "closed":
+            continue
+        notes[item["status_note"].strip()].append(
+            f"{item['source']}/{item['original_id']}"
+        )
+    shared = {note: keys for note, keys in notes.items() if len(keys) > 1}
+    assert not shared, "closed rows sharing one note: " + "; ".join(
+        f"{keys} -> {note[:70]}..." for note, keys in shared.items()
+    )
+
+
+def test_every_named_test_file_is_actually_a_test_file(crosswalk):
+    """Existence was the check, and a path that exists is not evidence.
+
+    A row could name `tests/README.md` or a helper module and pass. What makes a
+    named file evidence is that pytest can fail on it.
+    """
+    for item in crosswalk["items"]:
+        for path in [p.strip() for p in item["tests"].split(",") if p.strip()]:
+            assert path.startswith("tests/"), (
+                f"{item['source']}/{item['original_id']} names {path}, which is "
+                "not under tests/"
+            )
+            target = ROOT / path
+            assert target.is_file(), f"{path} does not exist"
+            assert "def test_" in target.read_text("utf-8"), (
+                f"{item['source']}/{item['original_id']} names {path}, which "
+                "defines no test"
+            )
+
+
+def test_a_row_does_not_name_the_same_test_twice(crosswalk):
+    """Four files, one of them listed twice, is three files and a longer
+    sentence."""
+    for item in crosswalk["items"]:
+        named = [p.strip() for p in item["tests"].split(",") if p.strip()]
+        duplicates = sorted({p for p in named if named.count(p) > 1})
+        assert (
+            not duplicates
+        ), f"{item['source']}/{item['original_id']} names {duplicates} twice"
+
+
+def test_browser_evidence_names_a_browser_file_that_exists(crosswalk):
+    """The field is declared, required on every row, and was empty on all 56.
+
+    Nine `closed` notes assert a UI call site. Five of them are now driven by a
+    browser file and name it; the other four are not driven by one and stay
+    empty, which is the honest answer rather than the tidy one. What this check
+    forbids is the field pointing at something that is not browser evidence.
+    """
+    populated = 0
+    for item in crosswalk["items"]:
+        evidence = item["browser_evidence"].strip()
+        if not evidence:
+            continue
+        populated += 1
+        for path in [p.strip() for p in evidence.split(",") if p.strip()]:
+            assert path.startswith("tests/browser_") and path.endswith(".mjs"), (
+                f"{item['source']}/{item['original_id']} names {path} as browser "
+                "evidence, which is not a browser harness"
+            )
+            assert (ROOT / path).is_file(), f"{path} does not exist"
+    assert populated, (
+        "no row carries browser evidence; the field is declared, required and "
+        "decides nothing -- which is the state this check was written for"
+    )
+
+
+def test_no_closed_row_rests_on_evidence_that_has_since_changed():
+    """The claim's shelf life, which nothing was measuring.
+
+    When this was written, 25 of the 48 `closed` rows named a test file that had
+    been modified since the audit the document itself declares -- one of them
+    across twelve commits. Every assertion above passed on all 25, because
+    "names a file that exists" is a statement about the filesystem, not about
+    the tree the claim was made against.
+
+    Bumping `audited_at` once would reproduce that state over the next fifty
+    commits, silently, which is how it arrived. So the digest is per row and
+    over file *content*: a commit SHA cannot be checked from inside the commit
+    that re-audits, which is precisely why the previous arrangement had no such
+    check.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import reaudit_crosswalk
+    finally:
+        sys.path.pop(0)
+
+    document = json.loads(CROSSWALK.read_text("utf-8"))
+    drifted = reaudit_crosswalk.stale_rows(document)
+    assert not drifted, (
+        f"{len(drifted)} closed row(s) rest on evidence that has changed since "
+        f"they were audited: {[key for key, _r, _o in drifted]}. Read them "
+        "against their tests, then re-record with "
+        "`uv run python scripts/reaudit_crosswalk.py`."
+    )
+
+
+def test_only_closed_rows_carry_an_evidence_digest():
+    """`implemented_unverified` and `deferred_p2` claim nothing was proved, so
+    there is nothing for a digest to attest. A digest on one of them would read
+    as evidence and mean nothing -- the field's original failure mode, one
+    column over."""
+    for item in json.loads(CROSSWALK.read_text("utf-8"))["items"]:
+        has_digest = bool(item.get("evidence_digest"))
+        assert has_digest == (item["status"] == "closed"), (
+            f"{item['source']}/{item['original_id']} is {item['status']} and "
+            f"{'carries' if has_digest else 'lacks'} an evidence digest"
+        )

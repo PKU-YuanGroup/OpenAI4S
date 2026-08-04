@@ -34,6 +34,7 @@
 | `run_quality_gates.py` | 跑完全部离线门禁，并写出一份绑定到当前 checkout SHA 的收据。发布流水线此前回答「not run: the suite gated the build that produced these artifacts」，而构建 job 根本没跑任何测试；现在 staging 会校验这份收据，并且自己重新推导提交号，而不是相信收据里写的那个。 |
 | `release_gates.py` | 发布质量门禁的唯一权威清单，由 `run_quality_gates.py`（负责执行）与 `release_pipeline.py`（要求收据与之完全一致）共同导入。此前生产方私有持有这份列表，而消费方只比较退出码，因此一份只有两行、把 `pytest` 的命令写成 `["pytest"]` 的收据也能通过 staging。现在校验是精确匹配：缺失、重复、未知或被替换命令的 gate，以及不同的 schema 版本和不同的 manifest 摘要，都会硬失败。同时承载 check-suite 证明——浏览器矩阵与 Python 支持矩阵由 GitHub 自身、绑定到发布 `head_sha` 的 check run 证明并记录 run id，而不是重新执行一遍。 |
 | `release_receipts.py` | 构建收据与 staging 证明，以及构建 job 调用的 CLI。构建收据把某个 job 的产物绑定到被冻结的源码 SHA，并记录构建机的 OS/架构/解释器，因此 staging 能够检查 wheel 与 DMG 是否来自同一个提交——此前每个 job 各自 checkout 可变 tag，没有任何东西做过比较。staging 证明记录了被暂存资产的精确集合与摘要，并通过 workflow 制品通道传递，因为 `step_publish` 此前是拿 draft 自己的 `SHA256SUMS` 去重新校验 draft：这是一份自我担保的文件，任何能替换资产的人都能在同一动作里把它一起替换。 |
+| `reaudit_crosswalk.py` | 为 [`docs/plan-crosswalk.json`](../docs/plan-crosswalk.json) 里每个 `closed` 行记录它所指证据文件的内容摘要；`--check` 会在任何一份证据变动后拒绝通过。此前 48 个 closed 行中有 25 个所指的测试文件在文档自称的审计点之后又被改过（其中一个跨了 12 个提交），而现有断言全部通过——因为它们检查的是文件“存在”。用内容摘要而不是 commit SHA：做这次重新审计的那个提交，无法在自身内部校验自己的 SHA。 |
 | `capture_response_contract.py` | 通过驱动离线测试套件、记录每个 route 实际返回什么，来重新生成 [`docs/response-contract.json`](../docs/response-contract.json) 的抓取侧。手写的契约是由人签字的那一侧；这一侧回答的是服务端是否还与它一致。 |
 
 ## 子目录
