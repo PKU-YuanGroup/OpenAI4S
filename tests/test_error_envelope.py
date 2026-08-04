@@ -244,3 +244,69 @@ def test_the_dispatcher_itself_enriches_not_a_copy_of_it(recorder, monkeypatch):
     )
     out = recorder.json({"error": "nope"}, 404)
     assert "code" not in out and "request_id" not in out
+
+
+def test_the_decision_route_answers_a_refusal_with_its_mapped_status(tmp_path):
+    """The hop the other tests cannot see: that the route *uses* the table.
+
+    `tests/test_permissions.py` asserts the codes and the status map agree, and
+    that the card honours `output_committed`. Deleting the route's projection
+    entirely -- so every refusal goes back to HTTP 200 `{ok: false}` -- left all
+    of them green. Measured, then covered here.
+
+    Driven through `response_capture._probe_handler`, which is the in-tree way
+    to build a handler complete enough for `_api`; `_Recorder` above only ever
+    needed `_json`.
+    """
+    import openai4s.permissions as perms
+    from openai4s.server import gateway as gateway_mod
+    from openai4s.server import response_capture
+
+    cfg = Config(data_dir=tmp_path, llm=LLMConfig(provider="deepseek", api_key="k"))
+    cfg.ensure_dirs()
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler_class = gateway_mod.make_handler(cfg, _Hub(), runner)
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id="default")
+
+    cases = [
+        ({"code": "decision_id_required"}, 400),
+        ({"code": "decision_not_found"}, 404),
+        ({"code": "decision_in_flight"}, 409),
+        ({"code": "decision_expired"}, 410),
+        ({"code": "decision_continuation_failed", "output_committed": True}, 500),
+        ({}, 400),  # no code at all still leaves 2xx behind
+    ]
+
+    recorder = response_capture.Recorder()
+    original = getattr(perms, "_BROKER", None)
+    try:
+        for extra, expected_status in cases:
+            resolution = {"ok": False, "error": "refused", **extra}
+
+            class _Broker:
+                def resolve_result(self, *a, **k):
+                    return dict(resolution)
+
+            perms._BROKER = _Broker()
+            path = f"/frames/{frame_id}/decision"
+            handler = response_capture._probe_handler(
+                recorder,
+                handler_class,
+                "POST",
+                path,
+                r"/frames/([^/]+)/decision",
+                {},
+                None,
+                {"decision_id": "d-1", "allow": True},
+            )
+            seen = {}
+            handler._json = lambda payload, code=200, **k: seen.update(
+                body=payload, code=code
+            )
+            handler._api("POST", path)
+
+            assert seen.get("code") == expected_status, (extra, seen.get("code"))
+            assert seen["body"].get("ok") is False
+    finally:
+        perms._BROKER = original

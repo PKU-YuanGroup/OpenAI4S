@@ -116,20 +116,27 @@ Origin, token or header defences.
   or `curl -H` reaches for), or `X-OpenAI4S-Token` (for when something upstream
   already owns `Authorization`). Neither header is preferred; the scheme is
   compared caselessly per RFC 7235 and the value in constant time.
-- **`?token=` bootstraps a navigation only.** A `GET` for a path that serves
-  the SPA shell responds `303` with the cookie set, redirecting to the *same*
-  path with only the token stripped — so deep links survive. It is refused on
-  `/api/v1/*`, on `/static/*`, and on every non-GET. A URL carrying a
-  credential is a shareable credential: pasted into chat, logged by proxies,
-  kept in history, leaked by `Referer`. On a navigation the link buys only the
-  bootstrap it was minted for; on a data path the response *is* the payload,
-  delivered to whoever holds the link with no cookie hand-off in between.
+- **`?token=` bootstraps the root page only.** A `GET` for `/` or
+  `/index.html` responds `303` with the cookie set, redirecting to the same
+  page with only the token stripped (any other query parameters survive).
+  Everywhere else it is refused — deep links included. They used to bootstrap,
+  because the rule was "any path that is not `/api/v1/*` or `/static/*`", and
+  `/preview/<id>` is neither: a link carrying a token there set the cookie and
+  then served the artifact bytes. A URL carrying a credential is a shareable
+  credential: pasted into chat, logged by proxies, kept in history, leaked by
+  `Referer`. On the root page the link buys an empty SPA shell; on a data path
+  the response *is* the payload.
+- **A `token` query parameter on a mutating request is refused outright** with
+  `401`, even when the request also carries a valid cookie or header. Ignoring
+  it meant the leaked URL worked, so the caller never discovered they were
+  shipping a secret in a URL. Send `Authorization: Bearer <token>` or
+  `X-OpenAI4S-Token` instead.
 - The token is minted once under the data dir (`access-token`, owner-only) and
   survives restarts; it used to be per-boot, which invalidated every cookie
   already issued. The CLI reads the same file, or `OPENAI4S_TOKEN` when the
   daemon runs under another account.
-- `OPENAI4S_REQUIRE_TOKEN=0` disables the gate **on loopback only**, for one
-  minor release. It is the same variable that used to opt *in*, with its sense
+- `OPENAI4S_REQUIRE_TOKEN=0` disables the gate **on loopback only**, until the
+  version named by `gateway.LEGACY_TOKEN_OPT_OUT_REMOVED_IN`. It is the same variable that used to opt *in*, with its sense
   reversed. Off loopback it is ignored: a bind anything can route to has no
   configuration under which it should answer without a credential.
 - `GET /api/v1/auth/status` is reachable unauthenticated so a client can
@@ -153,12 +160,21 @@ Origin, token or header defences.
 - The frontend `api()` helper reads `j.error || j.detail`, so the Gateway's
   error text is shown. `detail` remains accepted for compatibility with
   external adapters.
-- Some handlers return errors **inside a 200 body** instead of an error
-  status: `POST /api/connectors/{id}/call` returns `{"error": str(e)}` with
-  HTTP 200 on exception, and `POST
-  /api/artifacts/{aid}/versions/{vid}/restore` maps a soft
+- An **unhandled** exception never puts its own text on the wire. It is
+  projected through `errors.public_exception` into `{"error": "internal
+  error", "code": "internal_error", "status", "request_id"}`, and the original
+  goes to the redacted `unhandled_exception` diagnostic that
+  `diagnostics.build_bundle` collects. A `GatewayError`'s message is
+  author-written and is passed through unchanged. Quote `request_id` in a
+  support report: it is this daemon's own correlation id, never an upstream
+  provider's.
+- Some handlers still return errors **inside a 200 body** instead of an error
+  status: `POST /api/artifacts/{aid}/versions/{vid}/restore` maps a soft
   `{"error": …}` result to 404 but other handlers pass soft errors through as
-  200. Do not assume "2xx ⇒ no `error` key".
+  200. Do not assume "2xx ⇒ no `error` key". `POST /api/connectors/{id}/call`
+  used to be in this list and now answers `502 connector_failed`: `api()` in
+  the web client only rejects on a non-2xx, so a connector that never ran was
+  reported to the user as one that did.
 
 ### JSON routes vs raw-bytes routes
 
@@ -172,7 +188,7 @@ or stored `Content-Type`:
 | `GET /api/artifacts/{ident}` | artifact bytes | `ident` may be a **version_id, artifact_id, or filename** (in that resolution order: `store.resolve_artifact_path` tries `artifact_versions.version_id` first, then `artifacts.artifact_id` → its latest version; the handler falls back to a filename lookup). `Content-Type` comes from stored metadata, else guessed from the filename. |
 | `GET /api/frames/{fid}/artifacts.zip` | ZIP bytes | Current Artifact versions for one session. |
 | `GET /api/projects/{pid}/artifacts.zip` | ZIP bytes | Current Artifact versions across one project. |
-| `GET /api/frames/{fid}/notebook/export?language=` | `.ipynb` or ZIP bytes | `python`/`r` returns one Notebook; omitted/`bundle` returns both plus a manifest. |
+| `GET /api/frames/{fid}/notebook/export?language=` | `.ipynb`, ZIP or Markdown bytes | `python`/`r` returns one Notebook; omitted/`bundle` returns both plus a manifest; `markdown` returns one `.md` with both languages in execution order. |
 | `GET /api/frames/{fid}/session/export` | Session ZIP bytes | Deterministic `application/vnd.openai4s.session+zip`; carries schema and SHA-256 headers. |
 | `GET /preview/{ident}` | artifact bytes | Same resolution, but `Content-Type` is **forced** to `text/html; charset=utf-8` (sandboxed iframe preview). Not under `/api`. |
 | `GET /ketcher` | HTML | Static placeholder page. |
@@ -308,12 +324,14 @@ its live path, and says in the injected block that it is unpinned.
 | `GET /frames/{fid}` | Frame JSON, or `{}` when not found. |
 | `PATCH /frames/{fid}` | Updates `name`/`task_summary`, broadcasts `frame_update` → frame JSON. |
 | `DELETE /frames/{fid}` | `{"ok":true}`. |
-| `GET /frames/{fid}/messages?from=&limit=&branch_id=` | Branch-projected `{"messages":[{message_id,role,content,created_at,fork_checkpoint_id}…]}`. Omitted `branch_id` selects the durable active branch; its inherited prefix and post-Revert continuation are included, while sibling/abandoned rows remain only in the audit source. `from` (default 0) and `limit` (default 300) are real slice parameters. **Latest-first paging:** `?newest_first=1` returns the newest page and adds `next_before_seq` + `has_earlier`; `?before_seq=<seq>` walks backwards. Without either, the response is exactly what it always was — oldest-first from `from`, and no cursor keys. It mattered because a 640-message session returned messages 0–299: the *oldest* page, with the newest 340 absent. The cursor is a `seq` bound rather than an offset, because newest-first plus OFFSET shifts on every arriving message. `has_earlier` is observed, not inferred from a short page — the branch projection can hide rows, which a client cannot tell from the end of history. `before_seq` that is not an integer is `400 invalid_cursor`. |
+| `GET /frames/{fid}/messages?from=&limit=&branch_id=` | Branch-projected `{"messages":[{message_id,role,content,created_at,fork_checkpoint_id,artifact_refs,failure?}…]}`. `failure` is present only on a message that recorded one, and carries `{request_id,code,output_committed?}` — an allowlisted projection of the row's metadata, never the exception. It exists because reopening otherwise lost both the support id and the retry veto: the socket event is gone once the tab closes and the stored row is a sentence. `output_committed` appears only when true; absent is "no claim". Omitted `branch_id` selects the durable active branch; its inherited prefix and post-Revert continuation are included, while sibling/abandoned rows remain only in the audit source. `from` (default 0) and `limit` (default 300) are real slice parameters. **Latest-first paging:** `?newest_first=1` returns the newest page and adds `next_before_seq` + `has_earlier`; `?before_seq=<seq>` walks backwards. Without either, the response is exactly what it always was — oldest-first from `from`, and no cursor keys. It mattered because a 640-message session returned messages 0–299: the *oldest* page, with the newest 340 absent. The cursor is a `seq` bound rather than an offset, because newest-first plus OFFSET shifts on every arriving message. `has_earlier` is observed, not inferred from a short page — the branch projection can hide rows, which a client cannot tell from the end of history. `before_seq` that is not an integer is `400 invalid_cursor`. |
 | `GET /frames/{fid}/steps` | `{"steps":[…]}` (persisted semantic steps). |
-| `POST /frames/{fid}/message` | Starts a turn. Body `{request}` (or `{input_data:{request}}`), optional `model`, `plan`, `explore`, `annotation_ids`. With `wait:false` → `202 {"status":"accepted","frame_id","job_id","execution_id","owner":{"kind","id"},"queue_position"}`; default (`wait` omitted/true) blocks for the turn result. A valid sole `finalize_response` is an Engine completion (even if an earlier step ran a Cell); `host.submit_output(...)` is the only completion emitted from inside a Python Cell. Ordinary prose/results and max-turn exhaustion are not success. |
+| `POST /frames/{fid}/message` | Starts a turn. Body `{request}` (or `{input_data:{request}}`), optional `model`, `plan`, `explore`, `annotation_ids`. With `wait:false` → `202 {"status":"accepted","frame_id","job_id","execution_id","owner":{"kind","id"},"queue_position","request_id"}`; `request_id` is the local id this turn will be named by everywhere else — the failure `frame_update`, the job result, the persisted assistant message and `GET /frames/{fid}/messages` all carry the same one, and a `wait:false` client has no other synchronous chance to learn it; default (`wait` omitted/true) blocks for the turn result.
+
+When `annotation_ids` are sent, **both** branches additionally carry `annotations` and `annotation_reservation_id`. Admission is exactly-once: the pins named are claimed atomically, only what was actually claimed is quoted into the prompt, and `annotations` says what became of them — `sent` (consumed), `pending` (the turn was accepted but the consume did not confirm; they are still reserved, so neither retry them nor treat them as gone) or `none` (this request claimed nothing, because a concurrent turn won the race, and they are still the user's to send). The fields are **absent** when no pins were sent: an absent field and a field saying "none" are different claims. `annotation_reservation_id` is what `GET /frames/{fid}/admissions/{reservation_id}` is asked about after a lost response — a dropped connection, a closed tab, a reload — and it is scoped to the frame, so it is a value a client holds rather than a capability. A synchronous refusal (413/409/429, or a worker that could not be started) releases the reservation and leaves the pins `open`; a failure with **no** response is not a refusal and must not be treated as one. A valid sole `finalize_response` is an Engine completion (even if an earlier step ran a Cell); `host.submit_output(...)` is the only completion emitted from inside a Python Cell. Ordinary prose/results and max-turn exhaustion are not success. |
 | `GET /frames/{fid}/execution` | Authoritative FIFO snapshot: `{root_frame_id,owner,queue,queued_count,active_count,closed,close_reason}`. Owner/queue entries include `execution_id`, `{kind,id}` owner, status, position, branch/language/generation and resource keys when known. |
 | `POST /frames/{fid}/cancel` | Scoped cancellation. Body `{execution_id,owner:{kind,id}}` (or `owner_kind` + `owner_id`) and optional `reason` → `{ok,execution_id,owner,scope,…}`. Missing identity returns HTTP 400 with `error`; stale/mismatched identity returns `ok:false`. A queued cancellation does not affect the active owner. |
-| `GET /frames/{fid}/status` | `{"frame_id","running",kernel:{…kernel status…}}`. |
+| `GET /frames/{fid}/status` | `{"frame_id","running","status",kernel:{…kernel status…}}`. `status` is the **frame's** stored status, which `running` cannot express: `running:false` is equally true of a session that completed, one that was cancelled and one that failed, so a client reopening a session could not tell which and could not restore a failure that had already ended. |
 | `POST /frames/{fid}/feedback` | Body `{key,rating}` → `{"ok":true}`. |
 | `GET /frames/{fid}/feedback` | `{"feedback":[…]}`. |
 | `GET /frames/{fid}/session/export` | Raw deterministic Session-package ZIP with `X-Content-SHA256` and `X-OpenAI4S-Session-Schema`. It contains branch-owned messages, complete sanitized provider groups/wire state, Notebook and Artifact/lineage records, Revert cursors, evidence reviews and checkpoint plan/review/memory snapshots; secret material is rejected. |
@@ -325,9 +343,9 @@ its live path, and says in the injected block that it is unpinned.
 | Method & path | Behavior |
 | --- | --- |
 | `GET /frames/{fid}/plan` | `{"frame_id","plan_id","status","plan"}` (nulls when no plan). |
-| `POST /frames/{fid}/plan/approve` | `202 {"status":"accepted","frame_id","job_id"}` — auto-execution runs in the background. |
-| `POST /frames/{fid}/plan/resume` | `202 {"status":"accepted","frame_id","job_id"}` — runs only the plan's **unfinished** steps. `409 plan_not_paused` when the plan is any other status, refused synchronously so the caller is not handed a job that accepts and then reports a failure. A step counts as settled when it is `completed` or `failed`: `failed` is a decision the agent made and moved on from, while `in_progress` was interrupted with no record of how far it got, so it is re-run. The resume seed names the settled steps and instructs the agent not to redo them. A paused plan with nothing unfinished is marked `completed` without running a turn. |
-| `POST /frames/{fid}/plan/revise` | Body `{changes}` (or `{feedback}`); empty → `400 {"error":"changes required"}`; else `202` accepted. |
+| `POST /frames/{fid}/plan/approve` | `202 {"status":"accepted","frame_id","job_id","request_id","execution_id"}` — auto-execution runs in the background; `request_id` correlates with the failure surfaces exactly as the message route's does. `execution_id` is a real coordinator execution taken at submit, so the 202, the job poll, the socket and any failure all name the same one; a plan turn is queued behind the running turn and holds the session until it has written its own outcome, exactly like a message turn. The approve/resume routes claim the plan row before answering, and the background turn always settles that claim — `failed` when it faults, `paused` when it is cancelled, including a cancellation that arrives while it is still queued. |
+| `POST /frames/{fid}/plan/resume` | `202 {"status":"accepted","frame_id","job_id","request_id","execution_id"}` — runs only the plan's **unfinished** steps. `409 plan_not_paused` when the plan is any other status, refused synchronously: the `paused` → `executing` transition is a compare-and-swap performed *before* the 202, so of two concurrent resumes exactly one is accepted and the other is refused with the status it lost to, instead of both being handed a job that runs the same steps. A step counts as settled when it is `completed` or `failed`: `failed` is a decision the agent made and moved on from, while `in_progress` was interrupted with no record of how far it got, so it is re-run. The resume seed names the settled steps and instructs the agent not to redo them. A paused plan with nothing unfinished is marked `completed` without running a turn. |
+| `POST /frames/{fid}/plan/revise` | Body `{changes}` (or `{feedback}`); empty → `400 {"error":"changes required"}`; else `202 {"status":"accepted","frame_id","job_id","request_id","execution_id"}`. |
 | `POST /frames/{fid}/plan/discard` | Result of `runner.discard_plan` (synchronous). |
 
 ### Permissions
@@ -345,9 +363,10 @@ its live path, and says in the injected block that it is unpinned.
 | Method & path | Behavior |
 | --- | --- |
 | `GET /frames/{fid}/annotations?artifact_id=` | `{"annotations":[annotation…]}`. |
-| `POST /frames/{fid}/annotations` | Body `{artifact_id,body` (or `text`)`,artifact_name?,x?,y?}` (`x`/`y` are 0–1 fractions; `rel_x`/`rel_y` accepted as aliases). Missing artifact_id/body → 400 → else `201 {"annotation":…}`. |
-| `PATCH|POST|PUT /annotations/{aid}` | Body `{body?,status?}` → `{"annotation":…}` or `404 {"annotation":null}`. |
-| `DELETE /annotations/{aid}` | `{"ok":true}`. |
+| `GET /frames/{fid}/admissions/{reservation_id}` | `{"reservation_id","state","annotations":[id…],"request_id","job_id"}`, or `404` when this session has no such admission. What a client asks after its 202 was lost. Scoped to the frame: a reservation id travels in a response, so it is a value a client holds and not a capability. |
+| `POST /frames/{fid}/annotations` | Body `{artifact_id,body` (or `text`)`,artifact_name?,x?,y?}` (`x`/`y` are 0–1 fractions; `rel_x`/`rel_y` accepted as aliases). Missing artifact_id/body → 400 → else `201 {"annotation":…}`. The server binds the pin to the artifact's **current version id + checksum**; a client may not supply them. On send, that exact version's bytes are read (its immutable snapshot, else the live path verified against the checksum) — a file overwritten after the pin is refused as `version_changed`, never substituted. |
+| `PATCH\|POST\|PUT /annotations/{aid}` | Body `{body?,status?}` → `{"annotation":…}`, `404`, `400 invalid_status`, or `409 annotation_reserved`. `status` is a whitelist (`open`/`sent`/`resolved`/`dismissed`); `reserved` is not publicly writable, because that state is entered only together with its holder and a row holding nothing is released by nothing. A pin currently held by an in-flight turn refuses with 409 — the check and the write are one statement, so a reservation taken concurrently is respected rather than raced. |
+| `DELETE /annotations/{aid}` | `{"ok":true}`, or `409 annotation_reserved` while a turn holds the pin. Same single-statement guard as PATCH. |
 
 ### Kernel / notebook (per-session)
 
@@ -413,7 +432,7 @@ These routes are thin Gateway adapters over `SessionDomainService` and
 | `GET /frames/{fid}/recovery/actions` | Describes enabled/disabled reasons for `restore`, `retry`, and `restart_fresh` on the current root branch. |
 | `POST /frames/{fid}/recovery/actions/{restore\|retry\|restart_fresh}` | Runs the advertised verified-recovery action under an exact recovery execution ticket. `restart_fresh` requires `{"confirm":true}` and never claims namespace restoration. |
 | `GET /frames/{fid}/kernel/variables?language=python|r` | Bounded idle-only Variable Inspector projection. It never starts a stopped language worker and returns explicit Busy/Restoring/Ended/Not Started states. |
-| `GET /frames/{fid}/notebook/export?language=` | Raw deterministic `.ipynb` for `python`/`r`; omitted or `bundle` returns a stable ZIP containing both plus a manifest. Includes `Content-Disposition` and `X-Content-SHA256`. |
+| `GET /frames/{fid}/notebook/export?language=` | Raw deterministic `.ipynb` for `python`/`r`; omitted or `bundle` returns a stable ZIP containing both plus a manifest. `markdown` returns a `text/markdown` rendering of the branch — both languages in execution order, because the interleaving is the record the split forms lose — with every cell's index, language and state revision in a citable heading, and failed cells kept and labelled. Anything else is 400. Includes `Content-Disposition` and `X-Content-SHA256`. |
 | `GET /frames/{fid}/session/export` | Raw deterministic, manifest-hashed Session package. |
 | `GET /renderers` | Safe scientific renderer descriptor catalog. |
 | `GET /artifacts/{aid}/renderer?version=&root_frame_id=` | Selects a version-bound renderer descriptor plus immutable checksum/size/provenance metadata; it never executes Artifact content. |
@@ -503,7 +522,7 @@ change published behaviour for no stated benefit. Branch on `code`.
 | `GET /connectors/directory` | `{"directory":[…]}` — the curated install list. |
 | `PUT|PATCH /connectors/{id}/enabled` | `{"ok":true}`. |
 | `POST /connectors/{id}/probe` | Spawns the server, lists tools; unknown id → 404. |
-| `POST /connectors/{id}/call` | Body `{tool,args}` → tool result; **exceptions are returned as `{"error":…}` with HTTP 200**. |
+| `POST /connectors/{id}/call` | Body `{tool,args}` → tool result; a failing call answers `502` with `code: "connector_failed"` (the MCP server's own message is not echoed — it quotes the argv and env it was launched with). |
 | `DELETE /connectors/{id}` | Disconnect + delete → `{"ok":true}`. |
 
 ### Session sharing (`shares`)
@@ -531,9 +550,20 @@ the route index so the surface is discoverable from one place.
 | `GET /compute/providers` | `{"providers":[…]}`. |
 | `GET /compute/local/hostinfo` | Host info snapshot. |
 | `GET /compute/jobs` | `{"jobs":[…]}`. |
-| `POST /compute/jobs` | Body `{command|code,kind("bash"),cwd?}` → job row. **Local code-exec endpoint** — protected only by the Origin check + loopback bind. |
+| `POST /compute/jobs` | Body `{command|code,kind("bash"),cwd?,deadline_s?}` → job row. `deadline_s` defaults to one hour and is refused above 24 h with `job_bad_deadline`; there is no unbounded run. **Local code-exec endpoint** — protected only by the Origin check + loopback bind. |
 | `POST /compute/jobs/{id}/cancel` | Cancel result. |
-| `GET /compute/jobs/{id}` | Job row. |
+| `GET /compute/jobs/{id}` | Job row, plus `output`. |
+
+A job row carries `status` from `queued|running|done|failed|cancelled|timeout|abandoned`.
+The last two are distinct on purpose: `timeout` is the daemon stopping a job that
+outlived its deadline, and `abandoned` is a job the previous daemon was running
+when it died — read from its receipt on the next boot, never revived, and never
+reported as `failed` (which would blame the job's own command) or `cancelled`
+(which would claim somebody meant to stop it).
+
+Output is bounded in bytes as it is read, not trimmed afterwards, so every row
+carries `seen_bytes`, `retained_bytes`, `dropped_bytes` and `truncated`. What is
+kept is the tail; `output` is prefixed with a notice when anything was dropped.
 | `GET /environments/status` | `{"environments":[{language,status,python_version,package_count,packages,preinstall}]}`. |
 | `GET /environments` | Same shape as `GET /frames/{fid}/environments`, without a session. |
 | `GET /kernel/packages` | `{"packages":[…],"preinstall":{…}}`. |
@@ -550,7 +580,14 @@ the route index so the surface is discoverable from one place.
 | `POST /memory` | Body `{content,block?("general"),project_id?}` → memory row. |
 | `GET /memory/categories?project_id=` | `{"categories":[…]}`. |
 | `GET /memory/context?project_id=` | `{"context":"- …\n- …"}`. |
+| `PATCH /memory/{id}?project_id=` | Body `{content?,block?}` → the edited row. `project_id` is required and is not defaulted, exactly as for the DELETE: an id is not authority over a project, and a cross-scope edit answers 404 rather than succeeding. Refuses empty or over-long content before the write (`memory_empty`, `memory_too_long`), and refuses a request that changes nothing (`memory_no_change`). Sets `updated_at`, which is what retention measures — an edit is a touch, so a corrected memory does not expire on the clock of the one it replaced. |
 | `DELETE /memory/{id}` | `{"ok":true}`. |
+
+`POST /memory` refuses on two distinct codes when a scope is full.
+`memory_scope_full` counts memories still inside the retention window;
+`memory_scope_full_expired` is the ceiling on rows *stored*, live or not. They
+are separate because the remedies are: one asks the user to delete a memory they
+are still using, the other rows that are not being injected at all.
 | `GET|PUT|PATCH|POST /network/status` | Write toggles `OPENAI4S_ALLOW_NETWORK` (process env + setting); always returns `{"enabled":bool}`. |
 | `GET /preferences/builtin-allowlist` | `{"enabled","egress_mode","granted":[domains],"groups"}`. |
 | `GET|PUT|PATCH|POST /search/config` | Tavily key config; write accepts `{api_key}` or `{clear_api_key}`; always returns `{"endpoint":"https://api.tavily.com/search","api_key_configured":bool}` — the key itself is never echoed. |
@@ -604,7 +641,7 @@ m.frame_id`.
 | `plan_progress` | `frame_id`, `plan_id`, `step_id`, `status`, `note` | A plan step ticked during auto-execution. |
 | `await_permission` | `frame_id`, `decision_id`, `tool`, `kind`, `title`, `input`, `target`, `suggested_patterns`, `scopes`, `sub_agent` | A tool call is blocked awaiting user approval (answer via `POST /api/frames/{fid}/decision`). Emitted from `openai4s/permissions.py`. |
 | `permission_resolved` | `frame_id`, `decision_id`, `allow`, `scope`, and after restart: `resolution_context`, `requires_continue`, `original_action_executed`, `continuation_expires_at`, `continuation_authorization` | The pending prompt was answered / timed out. An after-restart event explicitly says the old operation did not execute and whether the user must start a fresh continuation. |
-| `frame_update` | `frame_id`, `status`, `task_summary` (only with `status:"titled"`) | Turn/session lifecycle. Emitted statuses: `processing`, `completed`, `failed`, `cancelled`, `success` (REPL cell), `updated` (rename/PATCH), and `titled` — the background auto-title thread's upgrade of the placeholder session title, which carries an extra `task_summary` field (the new title) that no other status has. The frontend treats `completed|failed|cancelled|success|done` as terminal — note `done` is in the frontend's terminal set but is **never emitted** by the gateway as a `frame_update` status (it is only the *stored* frame status for a completed turn). |
+| `frame_update` | `frame_id`, `status`, `request_id`, `code` + `output_committed?` (terminal turn events), `task_summary` (only with `status:"titled"`) | Turn/session lifecycle. Emitted statuses: `processing`, `completed`, `failed`, `cancelled`, `success` (REPL cell), `updated` (rename/PATCH), and `titled` — the background auto-title thread's upgrade of the placeholder session title, which carries an extra `task_summary` field (the new title) that no other status has. Every turn event — `processing`, both terminal forms, and the outer handler's `text_reset`/`text_chunk` — also carries `execution_id`, and that is the field a client filters on. A request id cannot separate two turns: clients may reuse `X-Request-Id`, and the ordering that matters (`processing(A)`, `processing(B)`, `failed(A)` — A unwinding after B was promoted out of the queue) then looks like B's own terminal event. A terminal whose `execution_id` differs from the running turn's must not close it. When one side names no execution the pair falls back to `request_id`, and when neither names anything the event is treated as current: that is the pre-identity contract, and anything stricter strands every turn against an older daemon. The `processing` event carries `request_id` too, and it is the one a queued follow-up depends on: that turn's 202 resolved while an earlier turn still owned the screen, so `processing` — "your turn is running now" — is the first moment its id is current. Under an HTTP job it is the same string the 202 returned; a direct call (CLI, recovery replay) mints one rather than emitting an empty field. A terminal turn event also carries `request_id` — the same id the submit 202 returned — and, when the turn failed, a stable `code` (`max_turns` for turn-limit exhaustion, otherwise the projector's, defaulting to `turn_failed`). `output_committed:true` is added only when the failure happened after bytes were streamed or a tool ran: `llm/models.py` calls it the retry veto, because a transparent retry there duplicates visible output or re-fires a side effect however retryable the status looks. It is never emitted as `false` — absent is "no claim", and a `false` would assert a safety the projector cannot know. The frontend treats `completed|failed|cancelled|success|done` as terminal — note `done` is in the frontend's terminal set but is **never emitted** by the gateway as a `frame_update` status (it is only the *stored* frame status for a completed turn). |
 | `kernel_status` | `frame_id`, `status` ∈ `restarted|stopped|started|env_changed|packages_installed|ended`, plus per-status extras (`generation`, `env`, `installed`, `ok`, `state`, `ended_reason`, `requires_kernel_recovery`) | Kernel lifecycle changes. A successful branch revert emits `ended` after invalidating both language slots. |
 | `execution_state` | `frame_id`, `execution_id`, `owner:{kind,id}`, `status` (`queued|running|finalizing|completed|failed|cancelled`), `queue_position`, `reason` | One exact ticket changed state. |
 | `execution_queue` | authoritative snapshot fields from `GET /frames/{fid}/execution` | Queue/position projection; also sent immediately after `view_session`. |
@@ -671,7 +708,9 @@ timestamps are ISO-8601 strings (or null).
 - **Note** (`_note_json`): `{note_id, id, content, created_at, updated_at}`.
 - **Annotation** (`_annotation_json`): `{id, annotation_id, root_frame_id,
   artifact_id, artifact_name, x, y` (0–1 fractions)`, number, body,
-  status("open"|"sent"), created_at, updated_at}`.
+  status("open"|"sent"), version_id, created_at, updated_at}`. `version_id` is
+  the artifact version the pin was taken against (`null` on pins created before
+  the binding existed, which fall back to the artifact's latest version).
 
 The duplicated-key pattern (`id` + a typed id) is deliberate frontend
 compatibility; keep both when touching these serializers.
@@ -689,8 +728,7 @@ compatibility; keep both when touching these serializers.
   (§2).
 - Missing resources are inconsistently signaled: some routes 404 with
   `{error}`, others return `{}` (frame/project GET), `{"ok":true}`
-  (idempotent deletes), a nulls-filled 200 (`/artifacts/{aid}/lineage`), or a
-  200 body containing `{error}` (`/connectors/{id}/call`).
+  (idempotent deletes), or a nulls-filled 200 (`/artifacts/{aid}/lineage`).
 - Malformed JSON request bodies are rejected with `400 malformed_json`.
 - Raw-bytes artifact routes return JSON bodies on 404.
 - Skill enable-disable state is durable; the legacy built-in-agent roster

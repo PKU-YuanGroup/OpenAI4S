@@ -29,6 +29,11 @@ class Renderer:
         return asdict(self)
 
 
+#: A capability name here is a promise to whoever reads the artifact that the
+#: viewer can do that thing with it.  ``compare_versions`` was declared on five
+#: renderers while no version-comparison UI exists anywhere, so it is removed
+#: rather than left standing as an aspiration: a wrong claim about scientific
+#: output is worse than a missing one, because it is believed.
 DEFAULT_RENDERERS: tuple[Renderer, ...] = (
     Renderer(
         "molecule-3d",
@@ -46,7 +51,7 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
         content_types=("chemical/x-mdl-sdfile", "chemical/x-mdl-molfile"),
         extensions=(".mol", ".mol2", ".sdf", ".smi", ".smiles"),
         interactive=True,
-        capabilities=("view", "annotate", "compare_versions"),
+        capabilities=("view", "annotate"),
     ),
     Renderer(
         "genome-track",
@@ -54,7 +59,7 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
         kinds=("genome_track", "genomics"),
         extensions=(".bed", ".bedgraph", ".gff", ".gff3", ".gtf", ".vcf"),
         interactive=True,
-        capabilities=("view", "zoom", "annotate", "compare_versions"),
+        capabilities=("view", "zoom", "annotate"),
     ),
     Renderer(
         "sequence",
@@ -76,9 +81,16 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
         "Data table",
         kinds=("table", "dataframe", "dataset"),
         content_types=("text/csv", "text/tab-separated-values"),
-        extensions=(".csv", ".tsv", ".parquet", ".arrow"),
+        # Delimited text only.  ``.parquet``/``.arrow`` were listed here with no
+        # parser for either anywhere in the tree, so the viewer promised a table
+        # and then dropped to a download card once the bytes turned out to be
+        # binary.  Naming them download-only up front is the honest answer; the
+        # alternative keeps the claim and hopes the fallback covers for it.
+        extensions=(".csv", ".tsv"),
         interactive=True,
-        capabilities=("view", "sort", "filter", "compare_versions"),
+        # ``sort``/``filter`` had no implementation -- the viewer draws one
+        # static, capped table -- so they are removed rather than documented.
+        capabilities=("view",),
     ),
     Renderer(
         "image",
@@ -87,7 +99,7 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
         content_types=("image/png", "image/jpeg", "image/webp", "image/svg+xml"),
         extensions=(".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"),
         interactive=True,
-        capabilities=("view", "zoom", "annotate", "compare_versions"),
+        capabilities=("view", "zoom", "annotate"),
     ),
     Renderer(
         "pdf",
@@ -133,13 +145,25 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
         kinds=("text", "log", "code"),
         content_types=("text/plain", "application/json"),
         extensions=(".txt", ".log", ".json", ".jsonl", ".py", ".r"),
-        capabilities=("view", "search", "copy", "compare_versions"),
+        capabilities=("view", "search", "copy"),
     ),
     Renderer(
         "download",
         "Binary artifact",
         kinds=("binary", "model", "checkpoint"),
-        extensions=(".pt", ".pth", ".ckpt", ".onnx", ".bin", ".npz"),
+        # Columnar binary formats live here, not on the table renderer: with no
+        # parser in-tree the only true statement about them is "download".
+        extensions=(
+            ".pt",
+            ".pth",
+            ".ckpt",
+            ".onnx",
+            ".bin",
+            ".npz",
+            ".parquet",
+            ".arrow",
+            ".feather",
+        ),
         interactive=False,
         capabilities=("metadata", "versions", "provenance"),
     ),

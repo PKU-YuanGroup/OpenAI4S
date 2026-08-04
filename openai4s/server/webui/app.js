@@ -269,6 +269,8 @@ Object.assign(I18N.zh, {
   "annot.save.err": "标注保存失败：{0}",
   "annot.save.err404": "保存失败：后端未加载标注接口，请重启服务（python3 -m openai4s serve）",
   "annot.status.open": "待发送",
+  "annot.status.pending": "发送中",
+  "annot.status.unknown": "状态未知",
   "annot.status.resolved": "已处理",
   "annot.status.sent": "已发送",
   "app.title": "OpenAI4S",
@@ -319,6 +321,15 @@ Object.assign(I18N.zh, {
   "composer.option.specialist": "专家",
   "composer.model": "模型",
   "composer.placeholder": "输入任何内容 — @ 引用制品，# 引用会话，/ 使用技能，⌘K 搜索…",
+  "composer.placeholderQueue": "当前任务运行中 — 现在发送将排入队列…",
+  "queue.accepted": "已排入队列，将在当前任务之后运行",
+  "queue.waiting": "{0} 条排队中",
+  "queue.noPreview": "（无文本）",
+  "queue.underProfile": "配置 {0} · 版本 {1}",
+  "queue.onBranch": "分支 {0}",
+  "queue.cancelOne": "取消这一条（不影响正在运行的任务）",
+  "queue.cancelled": "已取消该排队消息",
+  "queue.cancelFailed": "取消排队消息失败：{0}",
   "composer.planMode": "计划模式",
   "composer.exploreMode": "自主探索",
   "composer.voice": "语音输入",
@@ -326,6 +337,9 @@ Object.assign(I18N.zh, {
   "conv.dockToggle": "侧栏面板",
   "conv.jumpLast": "跳到最后一条",
   "conv.jumpLastLabel": "最新",
+  "conv.loadEarlier": "加载更早的消息",
+  "conv.loadEarlierFailed": "加载更早的消息失败：{0}",
+  "conv.exportTruncated": "（导出被长度上限截断：更早的消息未包含在内）",
   "output.binaryElided": "已省略二进制输出（{0}）",
   "skill.invokeDirective": "请使用技能「{0}」：先调用 host.load_skill(\"{0}\") 载入其完整协议，然后严格按照该协议完成任务。",
   "skill.useInChat": "在对话中使用",
@@ -394,6 +408,7 @@ Object.assign(I18N.zh, {
   "cust.importing": "导入中…",
   "cust.jobs.cmdPlaceholder": "bash: 如 \"for i in 1 2 3; do echo $i; sleep 1; done\"；python: 一段脚本",
   "cust.jobs.desc": "把长命令/脚本作为后台任务运行，可查看输出、取消",
+  "cust.jobs.dropped": "· 已丢弃 {0} 字节",
   "cust.jobs.empty": "还没有任务。",
   "cust.jobs.runBtn": "运行",
   "cust.jobs.submitName": "提交任务",
@@ -407,6 +422,10 @@ Object.assign(I18N.zh, {
   "cust.memory.empty": "还没有记忆。添加后会在启用时注入每次会话。",
   "cust.memory.enableName": "启用记忆",
   "cust.memory.enabledDesc": "已启用 — 保存的记忆会注入每次会话",
+  "cust.memory.injectedCounts": "已注入 {0} 条 · 省略 {1} 条 · 继承自全局 {2} 条 · 被本项目同类记忆覆盖 {3} 条",
+  "cust.memory.injectedInto": "注入到 {0}",
+  "cust.memory.scope.global": "全局（所有项目）",
+  "cust.memory.scopeName": "范围",
   "cust.memory.title": "记忆",
   "cust.models.activePill": "当前",
   "cust.models.addBtn": "新增",
@@ -438,8 +457,9 @@ Object.assign(I18N.zh, {
   "cust.models.modelPlaceholder2": "模型 id（留空用该协议默认）",
   "cust.models.namePlaceholder": "名称（如 DeepSeek 生产 / 本地 vLLM）",
   "cust.models.local.title": "本地推理服务",
-  "cust.models.local.desc": "自动扫描本机固定端口上的 Ollama、LM Studio、vLLM 与 llama.cpp；扫描不会修改当前模型，未知能力默认走保守的 Code-as-Action。",
-  "cust.models.local.scan": "重新扫描",
+  "cust.models.local.desc": "点击下方按钮扫描本机固定端口上的 Ollama、LM Studio、vLLM 与 llama.cpp；扫描不会修改当前模型，未知能力默认走保守的 Code-as-Action。",
+  "cust.models.local.scan": "扫描本机",
+  "cust.models.local.idle": "尚未扫描。点击上方按钮检测本机的 Ollama、LM Studio、vLLM 与 llama.cpp。",
   "cust.models.local.scanning": "正在扫描本机…",
   "cust.models.local.none": "没有发现可用的本地 OpenAI-compatible endpoint。",
   "cust.models.local.models": "{0} 个模型",
@@ -452,6 +472,8 @@ Object.assign(I18N.zh, {
   "cust.models.protocol.openai": "OpenAI 兼容协议",
   "cust.models.protocol.anthropic": "Anthropic 兼容协议",
   "cust.models.protocol.ark": "ark 兼容协议",
+  "cust.models.protocol.gemini": "Gemini 兼容协议",
+  "cust.models.protocol.openaiResponses": "OpenAI Responses 协议",
   "cust.search.name": "搜索 API Key（Tavily）",
   "cust.search.desc": "用于联网搜索的 Tavily 密钥；接入点固定为 api.tavily.com。",
   "cust.search.set": "已配置",
@@ -516,6 +538,9 @@ Object.assign(I18N.zh, {
   "dash.sessions.empty": "还没有会话。",
   "ac.fromOtherSession": "来自其他会话，发送时会复制进来",
   "refs.problemsTitle": "有 {0} 处引用没能解析（这一轮仍在继续）",
+  "refs.unresolvedChip": "这个引用现在解析不到任何文件；发送后这一轮会照常继续。",
+  "cust.memory.edited": "已修改",
+  "cust.memory.editPrompt": "修改这条记忆的内容：",
   "versions.retrievalSource": "数据来源（只读）",
   "versions.retrievalTruncated": "以下字段过长已截断：{0}",
   "versions.retrievalWithheld": "另有 {0} 个字段未展示",
@@ -740,6 +765,10 @@ Object.assign(I18N.zh, {
   "attach.tooLarge": "单张 {0}，超过上限 {1}；请缩小分辨率后重新钉图。",
   "attach.budget": "本轮图片总量已达上限 {0}；请减少图钉数量或分几轮发送。",
   "attach.tooMany": "本轮最多附带 {0} 张图。",
+  "attach.versionChanged": "图钉之后该图被重新绘制覆盖，你标注的那一版已不存在——请在新图上重新钉图。",
+  "attach.notFound": "该图文件已被删除或移动，无法随本轮发送。",
+  "attach.unsupported": "该文件的实际内容不是位图（按文件头判断），无法作为图片发送。",
+  "attach.decodeFailed": "该图无法解码（文件损坏，或服务端缺少 Pillow）。",
   "delegation.stop": "停止这个子代理及其下级",
   "delegation.steer": "在下一个回合边界给它一句话",
   "delegation.steerPrompt": "要在下一个回合边界告诉这个子代理什么？",
@@ -954,6 +983,7 @@ Object.assign(I18N.zh, {
   "prov.exec.downloadNotebook": "下载 Notebook（打包）",
   "prov.exec.downloadPython": "只下载 Python Notebook (.ipynb)",
   "prov.exec.downloadR": "只下载 R Notebook (.ipynb)",
+  "prov.exec.downloadMarkdown": "下载 Markdown 记录 (.md)",
   "prov.exec.downloadMore": "其他导出格式",
   "prov.exec.noRecords": "暂无执行记录。",
   "prov.msg.loadFailed": "无法加载对话：{0}",
@@ -978,6 +1008,8 @@ Object.assign(I18N.zh, {
   "session.badge.runningTip": "任务仍在后台运行 — 点击恢复",
   "session.duplicateSuffix": "（副本）",
   "session.empty.label": "还没有会话",
+  "session.loadMore": "加载更多会话",
+  "session.loadMoreLimit": "已达列表上限，更早的会话请用搜索查找",
   "session.menu.tip": "会话操作",
   "session.newFolder": "＋ 文件夹",
   "session.untitled": "未命名会话",
@@ -999,6 +1031,8 @@ Object.assign(I18N.zh, {
   "skill.label.name": "名称",
   "skill.namePlaceholder": "技能名（英文短横线，如 my-analysis）",
   "skill.newTitle": "新建技能",
+  "skill.readiness.needsSetup": "本机缺少：{0}",
+  "skill.readiness.unknown": "本机无法确认：{0}",
   "skill.saveBtn": "保存技能",
   "skill.historyBtn": "版本历史",
   "skill.historyTitle": "技能版本 — {0}",
@@ -1099,6 +1133,8 @@ Object.assign(I18N.zh, {
   "toolLabel.searchSkills": "搜索技能中",
   "toolLabel.writeFile": "写入文件中",
   "turn.failed": "这一轮失败了，请重试。",
+  "turn.failedCommitted": "这一轮失败了，但它已经产出了输出或执行过工具——直接重试会重复已经发生的操作。请先检查结果再决定。",
+  "turn.supportId": "支持 ID：{0}",
   "upload.dropping": "正在上传拖入的文件…",
   "upload.failed": "上传失败：{0}",
   "upload.pasting": "正在上传粘贴的文件…",
@@ -1130,6 +1166,7 @@ Object.assign(I18N.zh, {
   "viewer.renderer.version": "版本 {0}",
   "viewer.sequence.omitted": "为保持界面流畅，其余 {0} 个残基未展开。",
   "viewer.sequence.summary": "{0} 条序列 · {1} 个残基 · {2}",
+  "viewer.table.shape": "共 {0} 行 × {1} 列",
   "ws.nav.files": "文件",
   "ws.nav.new": "新建",
   "ws.sidebar.collapse": "收起侧栏 (⌘B)",
@@ -1161,6 +1198,8 @@ Object.assign(I18N.en, {
   "annot.save.err": "Annotation save failed: {0}",
   "annot.save.err404": "Save failed: backend annotation API not loaded, please restart the service (python3 -m openai4s serve)",
   "annot.status.open": "Pending",
+  "annot.status.pending": "Sending",
+  "annot.status.unknown": "Unknown",
   "annot.status.resolved": "Resolved",
   "annot.status.sent": "Sent",
   "app.title": "OpenAI4S",
@@ -1211,6 +1250,15 @@ Object.assign(I18N.en, {
   "composer.option.specialist": "Specialist",
   "composer.model": "Model",
   "composer.placeholder": "Ask anything — @ for artifacts, # for sessions, / for skills, ⌘K to search…",
+  "composer.placeholderQueue": "A turn is running — sending now queues this behind it…",
+  "queue.accepted": "Queued — it will run after the current turn",
+  "queue.waiting": "{0} queued",
+  "queue.noPreview": "(no text)",
+  "queue.underProfile": "profile {0} · rev {1}",
+  "queue.onBranch": "branch {0}",
+  "queue.cancelOne": "Drop this queued message (the running turn keeps going)",
+  "queue.cancelled": "Queued message dropped",
+  "queue.cancelFailed": "Could not drop the queued message: {0}",
   "composer.planMode": "Plan mode",
   "composer.exploreMode": "Explore mode",
   "composer.voice": "Voice input",
@@ -1218,6 +1266,9 @@ Object.assign(I18N.en, {
   "conv.dockToggle": "Side panel",
   "conv.jumpLast": "Jump to latest",
   "conv.jumpLastLabel": "Latest",
+  "conv.loadEarlier": "Load earlier messages",
+  "conv.loadEarlierFailed": "Could not load earlier messages: {0}",
+  "conv.exportTruncated": "(Export stopped at the walk limit; earlier messages are not included.)",
   "output.binaryElided": "Binary output elided ({0})",
   "skill.invokeDirective": "Use the \"{0}\" skill: call host.load_skill(\"{0}\") to load its full protocol, then follow it exactly.",
   "skill.useInChat": "Use in chat",
@@ -1286,6 +1337,7 @@ Object.assign(I18N.en, {
   "cust.importing": "Importing…",
   "cust.jobs.cmdPlaceholder": "bash: e.g. \"for i in 1 2 3; do echo $i; sleep 1; done\"; python: a script",
   "cust.jobs.desc": "Run long commands/scripts as background jobs; view output and cancel",
+  "cust.jobs.dropped": "· {0} bytes dropped",
   "cust.jobs.empty": "No jobs yet.",
   "cust.jobs.runBtn": "Run",
   "cust.jobs.submitName": "Submit job",
@@ -1299,6 +1351,10 @@ Object.assign(I18N.en, {
   "cust.memory.empty": "No memories yet. Once added, they are injected into each session when enabled.",
   "cust.memory.enableName": "Enable memory",
   "cust.memory.enabledDesc": "Enabled — saved memories are injected into every session",
+  "cust.memory.injectedCounts": "{0} injected · {1} omitted · {2} inherited from global · {3} hidden by this project's own blocks",
+  "cust.memory.injectedInto": "Injected into {0}",
+  "cust.memory.scope.global": "Global (all projects)",
+  "cust.memory.scopeName": "Scope",
   "cust.memory.title": "Memory",
   "cust.models.activePill": "Active",
   "cust.models.addBtn": "Add",
@@ -1330,8 +1386,9 @@ Object.assign(I18N.en, {
   "cust.models.modelPlaceholder2": "Model id (leave blank for the protocol default)",
   "cust.models.namePlaceholder": "Name (e.g. DeepSeek Prod / Local vLLM)",
   "cust.models.local.title": "Local inference servers",
-  "cust.models.local.desc": "Automatically scans fixed loopback ports for Ollama, LM Studio, vLLM, and llama.cpp. Scanning never changes the active model; unknown capabilities default to conservative Code-as-Action.",
-  "cust.models.local.scan": "Scan again",
+  "cust.models.local.desc": "Press the button below to scan fixed loopback ports for Ollama, LM Studio, vLLM, and llama.cpp. Scanning never changes the active model; unknown capabilities default to conservative Code-as-Action.",
+  "cust.models.local.scan": "Scan this machine",
+  "cust.models.local.idle": "Not scanned yet. Press the button above to look for Ollama, LM Studio, vLLM, and llama.cpp on this machine.",
   "cust.models.local.scanning": "Scanning this machine…",
   "cust.models.local.none": "No local OpenAI-compatible endpoint was detected.",
   "cust.models.local.models": "{0} models",
@@ -1344,6 +1401,8 @@ Object.assign(I18N.en, {
   "cust.models.protocol.openai": "OpenAI-compatible protocol",
   "cust.models.protocol.anthropic": "Anthropic-compatible protocol",
   "cust.models.protocol.ark": "Ark-compatible protocol",
+  "cust.models.protocol.gemini": "Gemini-compatible protocol",
+  "cust.models.protocol.openaiResponses": "OpenAI Responses protocol",
   "cust.search.name": "Search API key (Tavily)",
   "cust.search.desc": "Tavily key for web search; the endpoint is fixed to api.tavily.com.",
   "cust.search.set": "Configured",
@@ -1408,6 +1467,9 @@ Object.assign(I18N.en, {
   "dash.sessions.empty": "No sessions yet.",
   "ac.fromOtherSession": "from another session — copied in on send",
   "refs.problemsTitle": "{0} reference(s) did not resolve (the turn still ran)",
+  "refs.unresolvedChip": "This reference resolves to nothing right now; the turn will still run.",
+  "cust.memory.edited": "edited",
+  "cust.memory.editPrompt": "Edit this memory:",
   "versions.retrievalSource": "Retrieved from (read-only)",
   "versions.retrievalTruncated": "clipped for length: {0}",
   "versions.retrievalWithheld": "{0} further field(s) not shown",
@@ -1632,6 +1694,10 @@ Object.assign(I18N.en, {
   "attach.tooLarge": "{0}, over the {1} per-image limit — downscale it and pin again.",
   "attach.budget": "this turn's {0} image budget is spent — pin fewer figures, or split across turns.",
   "attach.tooMany": "at most {0} images may be attached to one turn.",
+  "attach.versionChanged": "the figure was re-plotted over after you pinned it — the version you annotated no longer exists; pin again on the new one.",
+  "attach.notFound": "the file was deleted or moved, so it could not be sent.",
+  "attach.unsupported": "the file's actual contents are not a raster image (judged by its header), so it cannot be sent as one.",
+  "attach.decodeFailed": "the image could not be decoded (corrupt file, or Pillow missing on the server).",
   "delegation.stop": "Stop this sub-agent and everything under it",
   "delegation.steer": "Send it a message at its next turn boundary",
   "delegation.steerPrompt": "What should this sub-agent be told at its next turn boundary?",
@@ -1846,6 +1912,7 @@ Object.assign(I18N.en, {
   "prov.exec.downloadNotebook": "Download notebooks (zip)",
   "prov.exec.downloadPython": "Python notebook only (.ipynb)",
   "prov.exec.downloadR": "R notebook only (.ipynb)",
+  "prov.exec.downloadMarkdown": "Markdown record (.md)",
   "prov.exec.downloadMore": "Other export formats",
   "prov.exec.noRecords": "No execution records yet.",
   "prov.msg.loadFailed": "Failed to load conversation: {0}",
@@ -1870,6 +1937,8 @@ Object.assign(I18N.en, {
   "session.badge.runningTip": "Task still running in the background — click to resume",
   "session.duplicateSuffix": "(Copy)",
   "session.empty.label": "No sessions yet",
+  "session.loadMore": "Load more sessions",
+  "session.loadMoreLimit": "List limit reached — search for older sessions",
   "session.menu.tip": "Session actions",
   "session.newFolder": "＋ Folder",
   "session.untitled": "Untitled session",
@@ -1891,6 +1960,8 @@ Object.assign(I18N.en, {
   "skill.label.name": "Name",
   "skill.namePlaceholder": "Skill name (lowercase-hyphenated, e.g. my-analysis)",
   "skill.newTitle": "New skill",
+  "skill.readiness.needsSetup": "Not available on this machine: {0}",
+  "skill.readiness.unknown": "Cannot be verified on this machine: {0}",
   "skill.saveBtn": "Save skill",
   "skill.historyBtn": "Version history",
   "skill.historyTitle": "Skill versions — {0}",
@@ -1991,6 +2062,8 @@ Object.assign(I18N.en, {
   "toolLabel.searchSkills": "Searching skills",
   "toolLabel.writeFile": "Writing file",
   "turn.failed": "This turn failed. Please try again.",
+  "turn.failedCommitted": "This turn failed after it had already produced output or run a tool — retrying would repeat work that already happened. Check the result before deciding.",
+  "turn.supportId": "Support ID: {0}",
   "upload.dropping": "Uploading dropped files…",
   "upload.failed": "Upload failed: {0}",
   "upload.pasting": "Uploading pasted files…",
@@ -2022,6 +2095,7 @@ Object.assign(I18N.en, {
   "viewer.renderer.version": "Version {0}",
   "viewer.sequence.omitted": "{0} additional residues are collapsed to keep the viewer responsive.",
   "viewer.sequence.summary": "{0} sequences · {1} residues · {2}",
+  "viewer.table.shape": "{0} rows × {1} columns",
   "ws.nav.files": "Files",
   "ws.nav.new": "New",
   "ws.sidebar.collapse": "Collapse sidebar (⌘B)",
@@ -2243,6 +2317,14 @@ function mergeActionTimelines(current, incoming, direction = "latest") {
     running: direction === "before" ? !!current.running : !!incoming.running
   };
 }
+function queueMetadata(raw) {
+  const m = raw || {};
+  const rev = +m.model_profile_revision;
+  return {
+    preview: publicText(m.preview, 160), model_profile_id: publicText(m.model_profile_id, 96),
+    model_profile_revision: Number.isFinite(rev) && rev > 0 ? rev : null
+  };
+}
 function sanitizeExecutionQueue(payload) {
   const source = payload && (payload.execution || payload.payload || payload) || {};
   const ticket = item => item ? {
@@ -2251,7 +2333,12 @@ function sanitizeExecutionQueue(payload) {
     branch_id: publicText(item.branch_id, 96), language: publicText(item.language, 24),
     generation_id: publicText(item.generation_id, 96), resource_keys: publicList(item.resource_keys),
     queue_position: Number.isFinite(+item.queue_position) ? +item.queue_position : null,
-    queued_at: item.queued_at, started_at: item.started_at, cancel_requested: !!item.cancel_requested
+    queued_at: item.queued_at, started_at: item.started_at, cancel_requested: !!item.cancel_requested,
+    // The ticket's own frozen description of the work. A queued item has no
+    // frame row and no message row yet, so this is the only thing that can say
+    // what the item is — and it is frozen at admission, so it keeps saying the
+    // same thing while the frame's model pin is rewritten underneath it.
+    metadata: queueMetadata(item.metadata)
   } : null;
   return {
     owner: ticket(source.owner), queue: (source.queue || []).slice(0, 100).map(ticket).filter(Boolean),
@@ -2266,7 +2353,63 @@ function rememberExecutionQueue(payload) {
   S.executionIdentity = ticket && ticket.execution_id && ticket.owner && ticket.owner.kind && ticket.owner.id ? {
     execution_id: ticket.execution_id, owner: { kind: ticket.owner.kind, id: ticket.owner.id }
   } : null;
+  renderQueueStrip();
   return S.executionQueue;
+}
+// ---- queued follow-ups -----------------------------------------------------
+// The composer stays usable while a turn runs, so the FIFO queue is now
+// something the user can see rather than an internal detail. Every row is drawn
+// from the server projection alone: position, preview and the frozen
+// profile/branch all come off the ticket, so a repaint after any queue change
+// cannot disagree with what the server will actually run.
+function queueRowLabel(item) {
+  const meta = item.metadata || {};
+  const bits = [];
+  if (meta.model_profile_id) bits.push(t("queue.underProfile", meta.model_profile_id, meta.model_profile_revision == null ? "?" : meta.model_profile_revision));
+  if (item.branch_id) bits.push(t("queue.onBranch", item.branch_id));
+  bits.push(item.execution_id);
+  return bits.join(" · ");
+}
+function renderQueueStrip() {
+  const box = $("#queue-strip"); if (!box) return;
+  const queue = ((S.executionQueue || {}).queue || []).filter(item => (item.owner || {}).kind === "agent");
+  box.innerHTML = "";
+  box.classList.toggle("hidden", !queue.length);
+  if (!queue.length) return;
+  box.appendChild(el("div", "queue-head", t("queue.waiting", queue.length)));
+  queue.forEach(item => {
+    const row = el("div", "queue-row");
+    row.appendChild(el("span", "queue-pos", "#" + (item.queue_position == null ? "?" : item.queue_position)));
+    row.appendChild(el("span", "queue-preview", item.metadata.preview || t("queue.noPreview")));
+    const meta = el("span", "queue-meta", queueRowLabel(item));
+    meta.title = queueRowLabel(item);
+    row.appendChild(meta);
+    const drop = el("button", "icon-ghost queue-cancel");
+    drop.title = t("queue.cancelOne");
+    drop.appendChild(iconEl("x", 13));
+    // One item, by its own id AND its own owner. The server refuses a
+    // half-matching pair, which is what keeps this from ever reaching the
+    // running turn or a sibling that happens to sit at the same position.
+    drop.onclick = () => cancelQueuedExecution(item);
+    row.appendChild(drop);
+    box.appendChild(row);
+  });
+}
+async function cancelQueuedExecution(item) {
+  const fid = S.currentId;
+  if (!fid || !item || !item.execution_id || !(item.owner || {}).id) return;
+  try {
+    const r = await api(`/frames/${fid}/cancel`, { method: "POST", body: JSON.stringify({
+      execution_id: item.execution_id, owner: { kind: item.owner.kind, id: item.owner.id }, reason: "queued follow-up dropped by user"
+    }) });
+    if (!r || r.ok !== true) { hint(t("queue.cancelFailed", (r && r.reason) || ""), true); return; }
+    // Mark the optimistic bubble this item was sent as, rather than removing
+    // it: a message the user typed and can still see is easier to re-send than
+    // one that vanished, and the transcript should not silently lose a turn.
+    const bubble = [...document.querySelectorAll(".msg.user")].find(n => n.dataset.executionId === item.execution_id);
+    if (bubble) bubble.classList.add("cancelled");
+    hint(t("queue.cancelled"));
+  } catch (e) { hint(t("queue.cancelFailed", apiErrorText(e)), true); }
 }
 function rememberExecutionState(event) {
   const status = String(event && event.status || "").toLowerCase();
@@ -3168,7 +3311,10 @@ function onEvent(m) {
   else if (m.type === "attachment_problems") {
     if (mine(fid)) renderAttachmentProblems(m.problems || []);
   }
-  else if (m.type === "text_reset") { if (mine(fid)) startStream(); }
+  // A late failure's prose is addressed to the turn that produced it. Without
+  // this it wipes the running turn's stream and prints its predecessor's error
+  // into it.
+  else if (m.type === "text_reset") { if (mine(fid) && !isStaleTurnEvent(m)) startStream(); }
   else if (m.type === "notebook_cell_draft") { if (mine(fid)) nbCellDraft(m); }
   else if (m.type === "notebook_cell_start") { if (mine(fid)) nbCellStart(m); }
   else if (m.type === "notebook_cell_chunk") { if (mine(fid)) nbCellChunk(m); }
@@ -3205,7 +3351,7 @@ function onEvent(m) {
     scheduleWorkbenchRefresh(60); if (S.activeTab === "timeline") renderActionTimeline();
   } }
   else if (["sandbox", "sandbox_status", "security_status"].includes(m.type)) { if (mine(fid)) { S.securityState = sanitizeSecurity(m); if (S.activeTab === "timeline") renderActionTimeline(); } }
-  else if (m.type === "text_chunk") { if (mine(fid)) feed(m.block_type || "text", m.chunk || "", m); }
+  else if (m.type === "text_chunk") { if (mine(fid) && !isStaleTurnEvent(m)) feed(m.block_type || "text", m.chunk || "", m); }
   else if (m.type === "step") { if (mine(fid)) addLiveStep(m); }
   else if (m.type === "step_update") { if (mine(fid)) updateLiveStep(m); }
   else if (m.type === "plan_ready") { if (mine(fid)) renderPlanCard(m.plan, m.status); }
@@ -3214,8 +3360,20 @@ function onEvent(m) {
   else if (m.type === "permission_resolved") { if (mine(fid)) { resolvePermissionCard(m); scheduleWorkbenchRefresh(); } }
   else if (m.type === "frame_update") {
     if (mine(m.frame_id) || mine(fid)) {
+      // Unconditional, and deliberately outside the `!S.running` guard below:
+      // when a queued follow-up starts, `S.running` is already true from the
+      // turn that just ended, and that is precisely the hand-off this exists
+      // for.
+      if (m.status === "processing") activateTurnTicket(m.request_id, m.execution_id);
       if (m.status === "processing" && !S.running) { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); resumeWatch(fid, S._openGen); }  // a turn observed on the WS (e.g. started from another tab) — watchdog covers a missed terminal event
-      if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) { turnDone(m.status); scheduleWorkbenchRefresh(); }
+      if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) {
+        // A terminal event for a turn that is no longer on screen may not
+        // close the one that is: no hint, no teardown, no ticket cleared. The
+        // workbench still refreshes, because the artifacts and cells that turn
+        // produced are real.
+        if (isStaleTurnEvent(m)) scheduleWorkbenchRefresh();
+        else { turnDone(m.status, m); scheduleWorkbenchRefresh(); }
+      }
     }
     loadSessions();
   }
@@ -3404,13 +3562,179 @@ function feed(kind, chunk, event) {
   } else { st.text += chunk; st.full += chunk; st.md.classList.add("cursor"); scheduleRender(st); return; }
   down();
 }
-function turnDone(status) {
+// A turn's request ticket, guarded by a generation.
+//
+// The job runs on its own thread and can fail before the handler has even
+// returned the 202. So the terminal WS event -- and `turnDone` with it -- can
+// arrive *first*, clear the ticket, and then `send`'s POST promise resolves
+// and writes the finished turn's id back into the slot. The next turn then
+// quotes a support id belonging to the previous one, which is worse than
+// showing none: it sends an operator to the wrong request.
+//
+// `openTurnTicket` takes the generation before the POST; `closeTurnTicket`
+// invalidates it (turn end, session switch); `commitTurnTicket` writes only if
+// the generation is still the one it took AND the turn is still running.
+function openTurnTicket() {
+  S.turnTicket = (S.turnTicket || 0) + 1;
+  return S.turnTicket;
+}
+function commitTurnTicket(token, accepted) {
+  if (!accepted || !accepted.request_id) return false;
+  if (token !== S.turnTicket) return false;   // a newer turn owns the slot
+  if (!S.running) return false;               // this turn already ended
+  S.pendingRequestId = String(accepted.request_id);
+  // The 202 names the execution too, and it is the id the stale filter
+  // actually compares -- a reused request id cannot tell two turns apart.
+  if (accepted.execution_id) S.pendingExecutionId = String(accepted.execution_id);
+  return true;
+}
+// A turn has started running server-side: it owns the slot from now on.
+//
+// This is the hand-off a queued follow-up depends on. Its 202 resolved while
+// the previous turn still owned the screen, so it could not take the slot then
+// -- and if it had, the earlier turn's own failure would have quoted the
+// follow-up's id. The `processing` event is the first moment the id is
+// current, and it carries it for exactly this reason.
+//
+// Bumping the generation here is what makes a late 202 from ANY earlier turn
+// unable to write: it is stale by definition once another turn is running.
+// Whether the server says this submission was QUEUED, whatever the client
+// believed when it started.
+//
+// `queueing` is a snapshot taken at the top of `send`, and several awaits run
+// before the POST -- the skills catalogue, sometimes creating the frame. In
+// that window another tab, or a recovered turn, can take ownership, so a send
+// that began idle can be answered with `queue_position: 1`. The 202 is the
+// authoritative answer and the local snapshot is only a hint.
+// Does THIS send still own the UI's current turn?
+//
+// `queueing`, read at the top of `send`, is a snapshot: several awaits follow
+// before the POST, and another tab -- or a recovered turn -- can change who
+// owns the session in that window. Deciding anything later from that snapshot
+// is how a rejected follow-up tore down a turn that had started meanwhile.
+// The provisional token is the honest question: it exists only for a send that
+// began as the active turn, and it stops matching the moment any other turn is
+// activated.
+function ownsTurnTicket(token) {
+  return token != null && token === S.turnTicket;
+}
+// Claim the slot for this submission, if the server says it is the one running.
+//
+// `queue_position === 0` is the ONLY proof of that. Greater than zero is
+// queued behind someone else; absent means the snapshot could not be taken --
+// typically a job that finished before it was read -- and an unknown is not a
+// yes. Neither may write, or the running turn's failure quotes the wrong id.
+function acceptTurnTicket(token, accepted) {
+  // Ownership is `commitTurnTicket`'s question and it already asks it; asking
+  // again here would be a branch no test can reach, which reads as care and is
+  // decoration. What this adds is the server's answer.
+  if (!accepted || !accepted.request_id) return false;
+  if (accepted.queue_position !== 0) return false;
+  return commitTurnTicket(token, accepted);
+}
+// This send is not the running turn after all: kill its provisional ticket so
+// a later resolution cannot claim the slot with it. Deliberately leaves
+// `pendingRequestId` alone -- if we no longer own the generation, whatever is
+// in there belongs to somebody else's turn.
+// Is this event the tail of a turn that is no longer the one on screen?
+//
+// The ordering is real and reproducible: `processing(A)`, `processing(B)`,
+// then `failed(A)` -- A fails inside the turn, persists its row, and only
+// finishes unwinding after B has been promoted out of the queue. Acting on
+// A's terminal there closes B's turn, unlocks the composer under a running
+// turn, and prints A's error into B's transcript.
+//
+// Filtered on the EXECUTION, not the request: a client may reuse
+// `X-Request-Id`, so A and B can legitimately share one. Request id is the
+// fallback for a daemon old enough not to send an execution id, and when
+// neither side offers any identity at all the event is treated as current --
+// the pre-identity behaviour, which is the only safe default for a client
+// talking to an older server.
+function isStaleTurnEvent(event) {
+  const incomingExec = (event && event.execution_id) || "";
+  if (incomingExec && S.pendingExecutionId) return incomingExec !== S.pendingExecutionId;
+  if (incomingExec || S.pendingExecutionId) return false;   // one side is silent
+  const incomingReq = (event && event.request_id) || "";
+  if (incomingReq && S.pendingRequestId) return incomingReq !== S.pendingRequestId;
+  return false;
+}
+function retireTurnTicket(token) {
+  if (!ownsTurnTicket(token)) return false;
+  S.turnTicket = (S.turnTicket || 0) + 1;
+  return true;
+}
+function activateTurnTicket(requestId, executionId) {
+  // The generation always advances: another turn is running now, so every
+  // ticket in flight is stale whether or not this event named itself.
+  S.turnTicket = (S.turnTicket || 0) + 1;
+  // The identities are only *overwritten* by an event that carries them. An
+  // older daemon sends `processing` with neither, and clearing on that would
+  // throw away the ids the 202 had already given us -- leaving the running
+  // turn's own failure with nothing to quote and nothing to filter on.
+  if (requestId) S.pendingRequestId = String(requestId).slice(0, 96);
+  if (executionId) S.pendingExecutionId = String(executionId).slice(0, 96);
+  return S.turnTicket;
+}
+function closeTurnTicket() {
+  S.turnTicket = (S.turnTicket || 0) + 1;
+  S.pendingRequestId = null;
+  S.pendingExecutionId = null;
+}
+// The sentence a failed turn shows, from whichever source has the facts.
+//
+// Two of them exist and they have to agree: the `frame_update` a live client
+// receives, and the `failure` metadata `GET /frames/{id}/messages` projects
+// when the same client reopens the session later. Before this, reopening lost
+// both the support id and the retry veto -- the socket event was gone and the
+// stored row was a sentence, so the user most likely to need them (the one who
+// closed the tab on a failure) was the one who could not get them.
+// The stored failure, shown on its own message. Text only -- these three
+// fields are what the projector already published, and nothing here is derived
+// from the exception.
+// The failure on the LAST message, or null if the transcript does not end in
+// one. Read from the DOM the render just produced rather than from a second
+// fetch, so the two cannot disagree about what the newest message is.
+function lastTerminalFailure() {
+  const rows = [...document.querySelectorAll("#messages .msg")];
+  const last = rows[rows.length - 1];
+  if (!last) return null;
+  const box = last.querySelector(".msg-failure-meta");
+  return box ? { request_id: box.dataset.requestId || "", output_committed: box.dataset.committed === "1" } : null;
+}
+function failureMeta(failure) {
+  const box = el("div", "msg-failure-meta");
+  const bits = [];
+  if (failure.output_committed) bits.push(t("turn.failedCommitted"));
+  if (failure.request_id) bits.push(t("turn.supportId", String(failure.request_id).slice(0, 96)));
+  box.textContent = bits.join(" ");
+  box.dataset.requestId = failure.request_id ? String(failure.request_id).slice(0, 96) : "";
+  if (failure.output_committed) box.dataset.committed = "1";
+  return box;
+}
+function failureHint(detail) {
+  const committed = !!(detail && detail.output_committed);
+  const base = t(committed ? "turn.failedCommitted" : "turn.failed");
+  const raw = (detail && detail.request_id) || S.pendingRequestId || "";
+  const id = raw ? String(raw).slice(0, 96) : "";
+  return id ? base + " " + t("turn.supportId", id) : base;
+}
+function turnDone(status, detail) {
   S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");  clearTimeout(S._resumeTimer); S._resumeTok = (S._resumeTok || 0) + 1;  // retire the resume-watchdog (incl. any in-flight tick) so it can't bleed into the next turn
   if (S.stream) { flushRender(S.stream, true); S.stream.md.classList.remove("cursor"); addMsgActions(S.stream.wrap, S.stream.full || S.stream.text); }
   // Belt-and-suspenders: a completed turn must leave nothing blinking, even on
   // text blocks orphaned earlier by a tool/step that started mid-stream.
   const mm = $("#messages"); if (mm) mm.querySelectorAll(".md.cursor").forEach(n => n.classList.remove("cursor"));
-  hint(status === "failed" ? t("turn.failed") : "", status === "failed");
+  // "please retry" is the wrong advice once output has been committed. The
+  // server sets `output_committed` when the failure happened after bytes were
+  // streamed or a tool ran, and `llm/models.py` calls it the retry veto: a
+  // transparent retry there duplicates visible output or re-fires a side
+  // effect, however retryable the status looks. Saying "retry" anyway is how a
+  // UI turns one failed turn into two executions of the same tool.
+  hint(status === "failed" ? failureHint(detail) : "", status === "failed");
+  // Retired with the turn it belonged to, and the generation moved on so a
+  // 202 still in flight cannot write it back. Kept only as the fallback above,
+  // for a terminal event that arrives without an id.
+  closeTurnTicket();
   invalidateKernelCache();  // the kernel just went turn_running → idle; re-read promptly
   if (S.currentId) { loadArtifacts(S.currentId); loadExecutionLog(S.currentId); }
   S.stream = null; S.liveCells = []; S._liveCell = null;
@@ -3441,6 +3765,14 @@ function planConfLevel(c) {
   if (s.includes("high") || s.includes("高") || (!isNaN(n) && n >= 0.75)) return "high";
   if (s.includes("low") || s.includes("低") || (!isNaN(n) && n > 0 && n < 0.4)) return "low";
   return "medium";
+}
+// The same partition `PlanService._SETTLED_STEP_STATUSES` makes, in the one
+// place the UI needs it. The paused footer counted "not completed and not
+// failed" inline, which is a second copy of a rule that had already drifted
+// once -- `skipped` was missing from both.
+const PLAN_SETTLED_STEP_STATUSES = ["completed", "failed", "skipped"];
+function planStepSettled(status) {
+  return PLAN_SETTLED_STEP_STATUSES.includes(status);
 }
 function planStepIcon(status) {
   if (status === "completed") return "check";
@@ -3508,7 +3840,7 @@ function renderPlanCard(plan, status) {
           // the backend could hold `paused`, and the only way out of it was to
           // discard the plan and start over. It reports what is left rather
           // than what is done, because that is the number the button acts on.
-          : status === "paused" ? t("plan.status.paused", done, total, (plan.steps || []).filter(x => x.status !== "completed" && x.status !== "failed").length) : "";
+          : status === "paused" ? t("plan.status.paused", done, total, (plan.steps || []).filter(x => !planStepSettled(x.status)).length) : "";
     card.appendChild(st);
     if (status === "paused") {
       const pa = el("div", "pa");
@@ -3533,20 +3865,54 @@ function updatePlanProgress(m) {
   if (foot && S.planReady) { const done = (S.planReady.steps || []).filter(s => s.status === "completed").length; const total = (S.planReady.steps || []).length; foot.textContent = t("plan.status.executing", done, total); }
   down();
 }
+// One generation-owned dispatch for every plan turn.
+//
+// Each of these used to lock the UI *after* awaiting its 202 (revise locked
+// first, but took no ticket). A plan can fail before the POST is answered, so
+// the terminal event arrives first, `turnDone` unlocks -- and then the await
+// resolves and locks the composer again against a turn that has already ended.
+// The session is stuck until reload. The mirror case is just as bad: while the
+// await is outstanding another turn can start, and a rejected plan POST then
+// tears *that* turn down.
+//
+// So: take the generation and lock before the POST; commit the 202's ids only
+// if the generation still stands; and let only the owner tear anything down.
+async function dispatchPlanTurn(path, body, runningHint, failedKey) {
+  // Refuse outright while a turn is running -- including this one, if the
+  // user double-clicks. Taking a second ticket makes the newer request the
+  // owner: a 409 then tears down the turn that is actually running, and an
+  // acceptance replaces the running turn's identity with a queued plan's, so
+  // that turn's own terminal event is judged stale and never closes it.
+  if (!S.currentId || S.running) return false;
+  const token = openTurnTicket();
+  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden");
+  hint(runningHint, false, true);
+  try {
+    const accepted = await api(`/frames/${S.currentId}${path}`, { method: "POST", body: JSON.stringify(body) });
+    // A terminal event that beat the 202 has already closed this generation.
+    // Re-locking, storing its ids or re-arming the watchdog here would revive
+    // a turn that is over.
+    if (!ownsTurnTicket(token)) return true;
+    commitTurnTicket(token, accepted || {});
+    resumeWatch(S.currentId, S._openGen);  // 202 returns at once; only the WS unlocks us
+    return true;
+  } catch (e) {
+    hint(t(failedKey, apiErrorText(e)), true);
+    // Only our own turn. If another one took over while we were awaiting, this
+    // failure is ours to report and not theirs to end.
+    if (ownsTurnTicket(token)) turnDone("failed");
+    return false;
+  }
+}
 async function approvePlan() {
-  if (!S.currentId) return;
-  try { await api(`/frames/${S.currentId}/plan/approve`, { method: "POST", body: JSON.stringify({ model: S.defaultModel }) }); }
-  catch (e) { hint(t("plan.approveFailed", apiErrorText(e)), true); return; }
-  S.planMode = false; const pt = $("#plan-toggle"); if (pt) pt.classList.remove("on");
-  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("plan.autoExecuting"), false, true);
-  resumeWatch(S.currentId, S._openGen);  // /plan/approve returns 202 immediately — only the WS unlocks us; watchdog covers a missed terminal event
+  // The mode toggle follows acceptance, as it always has: an approved plan is
+  // no longer being drafted.
+  if (await dispatchPlanTurn("/plan/approve", { model: S.defaultModelName }, t("plan.autoExecuting"), "plan.approveFailed")) {
+    S.planMode = false; const pt = $("#plan-toggle"); if (pt) pt.classList.remove("on");
+  }
 }
 async function resumePlan() {
-  if (!S.currentId) return;
-  try { await api(`/frames/${S.currentId}/plan/resume`, { method: "POST", body: JSON.stringify({ model: S.defaultModel }) }); }
-  catch (e) { hint(t("plan.resumeFailed", apiErrorText(e)), true); return; }
-  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("plan.resuming"), false, true);
-  resumeWatch(S.currentId, S._openGen);  // 202 immediately, same as approve — only the WS unlocks us
+  await dispatchPlanTurn("/plan/resume", { model: S.defaultModelName }, t("plan.resuming"), "plan.resumeFailed");
 }
 async function discardPlan() {
   if (!S.currentId) return;
@@ -3555,10 +3921,7 @@ async function discardPlan() {
   S.planReady = null; S.planStatus = "discarded"; S.planPending = false; hint(t("toast.planDiscarded"));
 }
 async function revisePlan(changes) {
-  if (!S.currentId) return;
-  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.planRevising"), false, true);
-  try { await api(`/frames/${S.currentId}/plan/revise`, { method: "POST", body: JSON.stringify({ changes, model: S.defaultModel }) }); resumeWatch(S.currentId, S._openGen); }
-  catch (e) { hint(t("toast.reviseFailed", apiErrorText(e)), true); if (S.running) turnDone("failed"); }
+  await dispatchPlanTurn("/plan/revise", { changes, model: S.defaultModelName }, t("toast.planRevising"), "toast.reviseFailed");
 }
 
 /* ---------- semantic activity steps (plan / search / env / skill / …) ---------- */
@@ -3889,6 +4252,10 @@ function updateLiveStep(m) {
 function renderStoredStep(s) {
   const handle = buildStepCard(s);
   if (s.step_id) (S.stepEls = S.stepEls || {})[s.step_id] = handle;
+  // Same stamp as a stored message: steps are fetched whole while messages are
+  // paged, so a later page of older messages has to be able to sort against
+  // the step cards already on screen.
+  handle.card.dataset.ts = String(s.created_at || 0);
   $("#messages").appendChild(handle.card);
 }
 
@@ -3981,7 +4348,19 @@ function renderPermissionCard(m) {
       resolution = await api(`/frames/${encodeURIComponent(m.frame_id)}/decision`, { method: "POST", body: JSON.stringify(body) });
       if (!resolution || resolution.ok !== true) throw new Error((resolution && resolution.error) || "permission decision was not accepted");
     }
-    catch (e) { allow.disabled = deny.disabled = false; hint(t("toast.submitFailed", apiErrorText(e)), true); return; }
+    catch (e) {
+      // Re-enabling is the right default: the decision was refused, so the user
+      // may fix and resubmit. It is wrong for exactly one refusal --
+      // `decision_continuation_failed`, where the approval WAS written and only
+      // its continuation marker failed. Clicking Allow again there submits a
+      // decision that already took effect, which is the dangerous retry P0-4's
+      // `output_committed` exists to suppress. The turn-failure surface already
+      // reads that field; this one did not.
+      const committed = !!(e && e.body && e.body.output_committed);
+      if (!committed) allow.disabled = deny.disabled = false;
+      hint(t("toast.submitFailed", apiErrorText(e)), true);
+      return;
+    }
     markPermCard(m.decision_id, ok, scope, resolution);
   };
   allow.onclick = () => send(true);
@@ -4334,27 +4713,90 @@ async function deleteProject(id) {
 //
 // The rows come back descending, so they are sorted back into reading order
 // here rather than at each call site.
+const MESSAGE_PAGE_SIZE = 300;       // one page of history per request
+const MESSAGE_WALK_MAX_PAGES = 200;  // 60k messages: a bound on a pathological session, not a feature cap
 async function fetchRecentMessages(fid, limit) {
   const data = await api(`/frames/${encodeURIComponent(fid)}/messages?newest_first=1&limit=${limit}`);
   const rows = (data && data.messages) || [];
   rows.sort((a, b) => (a.seq || 0) - (b.seq || 0));
   return { ...data, messages: rows };
 }
+// One page OLDER than `beforeSeq`, sorted back into reading order.
+//
+// `before_seq` is a keyset bound on a monotonic `seq`, not an offset, so a
+// message arriving while the reader walks back cannot shift the page under
+// them — with an offset, every arrival would repeat or skip a row.
+async function fetchOlderMessages(fid, beforeSeq, limit) {
+  const data = await api(`/frames/${encodeURIComponent(fid)}/messages?limit=${limit}&before_seq=${encodeURIComponent(beforeSeq)}`);
+  const rows = (data && data.messages) || [];
+  rows.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+  return { ...data, messages: rows };
+}
+// The WHOLE conversation, walked newest page first and returned oldest-first.
+//
+// The Markdown export asked the newest-page helper for 500 messages and wrote
+// the result under a heading naming the session: a 640-message session exported
+// its last 500 messages and said nothing about the first 140. `complete` is
+// reported so the caller can say so when the walk hits its bound, rather than
+// producing a short export that looks whole.
+async function fetchAllMessages(fid) {
+  const first = await fetchRecentMessages(fid, MESSAGE_PAGE_SIZE);
+  let rows = first.messages || [];
+  let cursor = first.next_before_seq, earlier = !!first.has_earlier, pages = 1;
+  while (earlier && cursor != null && pages < MESSAGE_WALK_MAX_PAGES) {
+    const older = await fetchOlderMessages(fid, cursor, MESSAGE_PAGE_SIZE);
+    rows = (older.messages || []).concat(rows);
+    cursor = older.next_before_seq; earlier = !!older.has_earlier; pages += 1;
+  }
+  return { messages: rows, complete: !earlier };
+}
 
+const SESSION_PAGE_SIZE = 100;   // the route's own page cap is 200; this leaves headroom
+const SESSION_MAX_PAGES = 50;    // 5000 sessions held in the sidebar at once
 async function loadSessions() {
-  // Scoped to the open project. This fetched the 100 most recent sessions
-  // across ALL projects and filtered by project in the browser, so a project
-  // whose sessions sat outside that global page appeared to have none — and
-  // `openProject` reads "none" as a reason to call `newSession()`. Switching
-  // to a quiet project therefore created a blank session instead of showing
-  // the work that was sitting in SQLite the whole time.
+  // Scoped to the open project, and paged with the cursor the route has always
+  // returned. This fetched the 100 most recent sessions across ALL projects and
+  // filtered by project in the browser, so a project whose sessions sat outside
+  // that global page appeared to have none — and `openProject` reads "none" as
+  // a reason to call `newSession()`. Switching to a quiet project therefore
+  // created a blank session instead of showing the work sitting in SQLite.
   //
-  // The server has supported `project_id` (and cursor paging) all along; this
-  // was one unused query parameter.
+  // It was also a hard stop at 100: `next_cursor` and `has_more` had no
+  // consumer anywhere in this file, so session 101 of 260 was unreachable by
+  // any control the UI offered.
+  //
+  // A refresh re-walks from the newest page instead of appending, because
+  // `loadSessions()` runs on every `frame_update`. Re-walking is exact:
+  // `(created_at, frame_id)` is a value bound, so a session created — or
+  // deleted — between two page requests cannot make the walk repeat or skip a
+  // row. That is the property an offset does not have, and it is why a live
+  // arrival does not disturb a reader who has paged several pages deep.
   const scope = S.project ? `&project_id=${encodeURIComponent(S.project)}` : "";
-  try { const f = await api(`/frames?limit=100${scope}`); S.sessions = (f.frames || []).filter(x => !x.parent_frame_id); } catch { S.sessions = []; }
+  if (S._sessionScope !== (S.project || "")) { S._sessionScope = S.project || ""; S.sessionPages = 1; }
+  const want = Math.min(SESSION_MAX_PAGES, Math.max(1, S.sessionPages || 1));
+  const rows = []; const seen = new Set();
+  let cursor = null, hasMore = false, walked = 0;
+  try {
+    while (walked < want) {
+      const f = await api(`/frames?limit=${SESSION_PAGE_SIZE}${scope}` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""));
+      walked += 1;
+      ((f && f.frames) || []).forEach(x => { if (!x.parent_frame_id && !seen.has(x.id)) { seen.add(x.id); rows.push(x); } });
+      hasMore = !!(f && f.has_more); cursor = (f && f.next_cursor) || null;
+      if (!hasMore || !cursor) break;
+    }
+    S.sessions = rows; S.sessionPages = Math.max(1, walked); S.sessionsHasMore = hasMore;
+  } catch { S.sessions = []; S.sessionPages = 1; S.sessionsHasMore = false; }
   await loadFolders();
   renderSessions(); syncCurrentTitle(); if (!$("#dashboard").classList.contains("hidden")) loadDashboard();
+}
+// One more page, by re-walking one page deeper. Guarded because `loadSessions`
+// is also fired by `frame_update`, and two overlapping walks would render the
+// shorter one's result last.
+async function loadMoreSessions() {
+  if (S._sessionsLoadingMore || !S.sessionsHasMore) return;
+  if ((S.sessionPages || 1) >= SESSION_MAX_PAGES) return;
+  S._sessionsLoadingMore = true; S.sessionPages = (S.sessionPages || 1) + 1; renderSessions();
+  try { await loadSessions(); } finally { S._sessionsLoadingMore = false; renderSessions(); }
 }
 // Keep the open conversation's header in sync with the server title (e.g. the
 // background-generated summary that replaces the first-message placeholder).
@@ -4405,6 +4847,20 @@ function renderSessions() {
   const ungrouped = ss.filter(f => !f.folder_id || !(S.folders || []).some(x => x.folder_id === f.folder_id));
   let lastBucket = null;
   ungrouped.forEach(f => { const b = dateBucket(f.updated_at); if (b !== lastBucket) { lastBucket = b; frag.appendChild(el("div", "side-label", b)); } frag.appendChild(sessionRow(f)); });
+  // The control that makes the cursor reachable. Without it `has_more` is a
+  // field nothing acts on, and the list simply ends at the first page with no
+  // sign that it was cut rather than finished.
+  if (S.sessionsHasMore && (S.sessionPages || 1) >= SESSION_MAX_PAGES) {
+    // Say the walk stopped, rather than offer a button that cannot go deeper.
+    // The bound exists because a refresh re-walks every held page, and a dead
+    // control is worse than a sentence — it looks like the feature is broken.
+    frag.appendChild(el("div", "side-label", t("session.loadMoreLimit")));
+  } else if (S.sessionsHasMore) {
+    const more = el("button", "outline-btn small", S._sessionsLoadingMore ? t("common.loading") : t("session.loadMore"));
+    more.id = "session-more"; more.disabled = !!S._sessionsLoadingMore;
+    more.style.margin = "10px 8px"; more.onclick = loadMoreSessions;
+    frag.appendChild(more);
+  }
   list.appendChild(frag);
 }
 async function newFolder() {
@@ -4419,7 +4875,7 @@ function folderMenu(anchor, fold) {
 }
 async function assignFolder(fid, folder_id) { try { await api(`/frames/${fid}/folder`, { method: "POST", body: JSON.stringify({ folder_id }) }); await loadSessions(); hint(folder_id ? t("folder.assigned.in") : t("folder.assigned.out")); } catch (e) { hint(t("folder.move.failed", apiErrorText(e)), true); } }
 async function newSession() {
-  try { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModel }) });
+  try { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModelName }) });
     await loadSessions(); openConversation(f.id, S.project); $("#composer").focus();
   } catch (e) { hint(t("folder.create.failed", apiErrorText(e)), true); }
 }
@@ -4464,6 +4920,8 @@ async function openConversation(fid, pid) {
   showWorkspace(); showConv(); renderProjMenu();
   if (mqMobile.matches) setSidebar(true);  // collapse the mobile drawer so the conversation is visible
   S.currentId = fid; $("#messages").innerHTML = ""; S.stream = null;
+  closeTurnTicket();  // a ticket belongs to the session that issued it
+  S.msgCursor = null; S.msgHasEarlier = false; S._msgEarlierLoading = false;  // the history window restarts at the newest page
   S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");
   clearTimeout(S._resumeTimer);  // stop any resume-watchdog from the previously open session
   const gen = S._openGen = (S._openGen || 0) + 1;  // guard async continuations against fast session-switching
@@ -4490,11 +4948,13 @@ async function openConversation(fid, pid) {
   let msgCount = 0;
   try {
     const [d, sd] = await Promise.all([
-      fetchRecentMessages(fid, 300),
+      fetchRecentMessages(fid, MESSAGE_PAGE_SIZE),
       api(`/frames/${fid}/steps`).catch(() => ({ steps: [] })),
     ]);
     if (gen !== S._openGen) return;
     const msgs = (d && d.messages) || []; msgCount = msgs.length;
+    S.msgCursor = (d && d.next_before_seq != null) ? d.next_before_seq : null;
+    S.msgHasEarlier = !!(d && d.has_earlier);
     const steps = (sd && sd.steps) || [];
     // interleave stored messages + activity steps by timestamp (steps carry seq
     // for a stable tie-break) so a reopened session re-renders the full activity.
@@ -4503,10 +4963,19 @@ async function openConversation(fid, pid) {
     steps.forEach(s => items.push({ t: s.created_at || 0, seq: s.seq || 0, kind: "step", v: s }));
     items.sort((a, b) => (a.t - b.t) || (a.seq - b.seq));
     items.forEach(it => { if (it.kind === "msg") renderStored(it.v); else renderStoredStep(it.v); });
+    paintEarlierControl();
   } catch {}
   if (gen !== S._openGen) return;
   if (!msgCount) renderEmptySession();
-  loadArtifacts(fid); loadExecutionLog(fid); loadAnnotations(fid); loadWorkbenchState(fid); down(true); updateJumpPill();
+  loadArtifacts(fid); loadExecutionLog(fid); loadWorkbenchState(fid); down(true); updateJumpPill();
+  // Sequenced, not raced. `reconcileLastAdmission` reads the server's view and
+  // then reloads annotations; firing it alongside `loadAnnotations` meant the
+  // two replies could land in either order, so a reload sometimes showed the
+  // stale pre-turn state and sometimes the reconciled one.
+  (async () => {
+    await loadAnnotations(fid);
+    await reconcileLastAdmission(fid);
+  })();
   // Resume: subscribe AFTER history renders so a replayed in-flight turn streams
   // below it. If a turn is still running server-side (survived our last close),
   // lock the composer and let the WS replay rebuild the live stream + notebook.
@@ -4514,6 +4983,15 @@ async function openConversation(fid, pid) {
     const stt = await api(`/frames/${fid}/status`);
     if (gen !== S._openGen) return;
     if (stt && stt.running) { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("conv.resuming.hint"), false, true); resumeWatch(fid, gen); }
+    // The global hint is restored ONCE, and only when the session's current
+    // state is a failure -- the frame says so, and the failure is the last
+    // thing in the transcript. Any other reading (any stored failure anywhere,
+    // as an earlier draft had it) would let a turn that has since been
+    // succeeded by three good ones present itself as the state of the session.
+    else if (stt && stt.status === "failed") {
+      const last = lastTerminalFailure();
+      if (last) hint(failureHint(last), true);
+    }
   } catch {}
   // Resume a pending/executing/completed plan review card (drafts survive a reopen).
   try {
@@ -4537,14 +5015,177 @@ function renderEmptySession() {
   STARTERS.forEach(s => { const chip = el("button", "es-chip"); chip.appendChild(el("div", "es-chip-t", s.t)); chip.appendChild(el("div", "es-chip-p", s.p)); chip.onclick = () => { const c = $("#composer"); c.value = s.p; grow(); c.focus(); }; chips.appendChild(chip); });
   wrap.appendChild(chips); m.appendChild(wrap);
 }
-function renderStored(m) {
+function renderStored(m, target) {
   const text = Array.isArray(m.content) ? m.content.map(b => (b && b.text) || "").join("") : (m.content || "");
-  if (!text.trim()) return;
+  if (!text.trim()) return null;
   const w = el("div", "msg " + (m.role === "user" ? "user" : "assistant"));
-  if (m.role === "user") { const b = el("div", "bubble"); b.textContent = text; w.appendChild(b); }
-  else { const md = el("div", "md"); md.innerHTML = renderMd(text); w.appendChild(md); }
-  $("#messages").appendChild(w);
+  if (m.role === "user") { const b = el("div", "bubble"); b.textContent = text; w.appendChild(b); renderMessageRefChips(w, m.artifact_refs); }
+  else {
+    const md = el("div", "md"); md.innerHTML = renderMd(text); w.appendChild(md);
+    // Inline on the message it belongs to, never the global hint. A session
+    // is rendered oldest-first and older pages are prepended later, so calling
+    // hint() here would let any past failure -- including one several
+    // successful turns ago, or one on a page the reader scrolled back to --
+    // become the current state of the whole UI.
+    if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
+  }
+  // Stamped with its own time so a page of OLDER messages can be put where it
+  // belongs. Activity steps are fetched whole while messages are paged, so the
+  // column already holds step cards older than the newest message page;
+  // prepending an older page at the very top would put message 0 above a step
+  // from the turn that produced it.
+  w.dataset.ts = String(new Date(m.created_at).getTime() || 0);
+  (target || $("#messages")).appendChild(w);
   if (m.role !== "user") addMsgActions(w, text);
+  return w;
+}
+// Put one restored message in time order among what is already rendered.
+function insertMessageByTime(node) {
+  const host = $("#messages"); if (!host || !node) return;
+  const ts = Number(node.dataset.ts || 0);
+  const kids = host.children;
+  for (let i = 0; i < kids.length; i++) {
+    const kid = kids[i];
+    if (kid.id === "msgs-earlier") continue;  // the control stays pinned to the top
+    const kidTs = Number(kid.dataset && kid.dataset.ts);
+    if (Number.isFinite(kidTs) && kidTs > ts) { host.insertBefore(node, kid); return; }
+  }
+  host.appendChild(node);
+}
+// Reaching the part of a long conversation that is not on screen.
+//
+// `fetchRecentMessages` asks for the NEWEST page and the route answers with
+// `next_before_seq` / `has_earlier` beside it. Nothing in this file read
+// either, so in a 640-message session messages 0-339 existed, were paged for,
+// and could not be reached by scrolling or by any control. This is the half
+// that was missing.
+function paintEarlierControl() {
+  const host = $("#messages"); if (!host) return;
+  let bar = document.getElementById("msgs-earlier");
+  if (!S.msgHasEarlier) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = el("div", "msgs-earlier"); bar.id = "msgs-earlier";
+    bar.style.textAlign = "center"; bar.style.padding = "8px 0";
+    const btn = el("button", "outline-btn small", t("conv.loadEarlier"));
+    btn.onclick = loadEarlierMessages; bar.appendChild(btn);
+  }
+  const btn = bar.querySelector("button");
+  if (btn) { btn.disabled = !!S._msgEarlierLoading; btn.textContent = S._msgEarlierLoading ? t("common.loading") : t("conv.loadEarlier"); }
+  if (host.firstChild !== bar) host.insertBefore(bar, host.firstChild);
+}
+async function loadEarlierMessages() {
+  if (!S.currentId || !S.msgHasEarlier || S.msgCursor == null || S._msgEarlierLoading) return;
+  const host = $("#messages"); if (!host) return;
+  const fid = S.currentId, gen = S._openGen;
+  S._msgEarlierLoading = true; paintEarlierControl();
+  try {
+    const data = await fetchOlderMessages(fid, S.msgCursor, MESSAGE_PAGE_SIZE);
+    if (gen !== S._openGen) return;  // the reader switched sessions mid-request
+    // Hold the reading position. Leaving `scrollTop` alone moves the page by
+    // exactly the height of what was inserted above it, and scrolling to the
+    // top loses the message the reader was on; adding back the height the
+    // prepend introduced keeps the same message under the same pixel.
+    const beforeHeight = host.scrollHeight, beforeTop = host.scrollTop;
+    const holder = document.createDocumentFragment();
+    (data.messages || []).forEach(mm => insertMessageByTime(renderStored(mm, holder)));
+    host.scrollTop = beforeTop + (host.scrollHeight - beforeHeight);
+    S.msgCursor = data.next_before_seq != null ? data.next_before_seq : null;
+    S.msgHasEarlier = !!data.has_earlier;
+  } catch (e) { hint(t("conv.loadEarlierFailed", apiErrorText(e)), true); }
+  finally { S._msgEarlierLoading = false; paintEarlierControl(); }
+}
+
+// The chips a restored message was sent with. Reopening a session used to show
+// only the words the user typed: the `@name#v-id` token is inside that prose,
+// so the reference was there to read but not to see, and after a cross-session
+// copy the token names a version this session cannot resolve — the model read
+// the local one. The server now stores the six fields and the conversation
+// route returns them, so what is drawn here is the record, not a re-parse.
+function renderMessageRefChips(host, refs) {
+  if (!Array.isArray(refs) || !refs.length) return;
+  const row = el("div", "msg-refs");
+  refs.slice(0, 8).forEach(r => {
+    const name = String((r && r.display_name) || "");
+    if (!name) return;
+    const chip = el("span", "msg-ref-chip");
+    chip.appendChild(iconEl("file-text", 11));
+    chip.appendChild(el("span", null, publicText(name, 60)));
+    // Facts, not a sentence: the version actually sent, the head of its digest,
+    // and — when the file was copied in — the session it came from. Deliberately
+    // language-neutral, so this needs no translation key and cannot drift out of
+    // step with one.
+    const parts = [String(r.version_id || "")];
+    if (r.sha256) parts.push("sha256:" + String(r.sha256).slice(0, 12));
+    if (r.materialized_target) parts.push("↗ " + String(r.source_session || "").slice(0, 12));
+    chip.title = parts.filter(Boolean).join(" · ");
+    // Only opens what this client actually has. Synthesising an artifact
+    // object out of the ref would hand the viewer a filename with no content
+    // type and let it guess at the renderer.
+    const full = (S.artifacts || []).find(x => (x.artifact_id || x.id) === r.artifact_id);
+    if (full) { chip.classList.add("clickable"); chip.onclick = () => openViewer(full); }
+    row.appendChild(chip);
+  });
+  if (row.children.length) host.appendChild(row);
+}
+
+// The same six facts as `renderMessageRefChips`, drawn *before* the send.
+//
+// A pinned reference was invisible until the turn came back. The autocomplete
+// inserts `@name#v-...` and then it is prose in a textarea: nothing says which
+// version was pinned, nothing says a file is coming from another conversation
+// and will be copied in, and a token typed or pasted by hand -- or one whose
+// artifact was since deleted -- looks exactly like one that resolves. The user
+// found out by reading the answer.
+//
+// Resolved against the artifacts this client already holds, so this adds no
+// route and no fetch. A token that resolves to nothing is drawn as unresolved
+// rather than dropped: "this will not do what you think" is the whole reason to
+// show it early, and hiding it would put the surprise back where it was.
+function renderComposerRefChips() {
+  const host = $("#composer-refs");
+  if (!host) return;
+  host.innerHTML = "";
+  const text = (($("#composer") || {}).value) || "";
+  // `@name` or `@name#version`, ended by whitespace. Same shape the server's
+  // resolver accepts; deliberately not a second, cleverer grammar.
+  const found = [];
+  const seen = new Set();
+  const re = /(?:^|\s)@([^\s@#]+)(?:#(v-[A-Za-z0-9_-]+))?/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const key = m[1] + "#" + (m[2] || "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.push({ name: m[1], version: m[2] || "" });
+    if (found.length >= 8) break;
+  }
+  if (!found.length) { host.classList.add("hidden"); return; }
+  const pool = [...(S.artifacts || []), ...((_acFiles && _acFiles.list) || [])];
+  found.forEach(ref => {
+    const match = pool.find(a => a && a.filename === ref.name
+      && (!ref.version || String(a.version_id || "") === ref.version));
+    const chip = el("span", "msg-ref-chip" + (match ? "" : " unresolved"));
+    chip.appendChild(iconEl(match ? "file-text" : "alert-triangle", 11));
+    chip.appendChild(el("span", null, publicText(ref.name, 60)));
+    if (!match) {
+      chip.title = t("refs.unresolvedChip");
+      host.appendChild(chip);
+      return;
+    }
+    // Facts, not a sentence, and in the same order the message chip uses --
+    // the two are read one above the other and must not disagree.
+    const parts = [String(ref.version || match.version_id || "")];
+    if (match.checksum) parts.push("sha256:" + String(match.checksum).slice(0, 12));
+    const elsewhere = match.root_frame_id && S.currentId
+      && match.root_frame_id !== S.currentId;
+    if (elsewhere) parts.push("\u2197 " + String(match.root_frame_id).slice(0, 12));
+    chip.title = parts.filter(Boolean).join(" \u00b7 ");
+    if (elsewhere) chip.classList.add("elsewhere");
+    chip.classList.add("clickable");
+    chip.onclick = () => openViewer(match);
+    host.appendChild(chip);
+  });
+  host.classList.remove("hidden");
 }
 
 /* ---------- session title / actions ---------- */
@@ -4845,11 +5486,12 @@ function moveToFolderAt(anchor, fid) {
 async function exportSession(fid) {
   try {
     const [d, arts] = await Promise.all([
-      fetchRecentMessages(fid, 500),
+      fetchAllMessages(fid),
       api(`/frames/${fid}/artifacts`).catch(() => []),
     ]);
     const f = S.sessions.find(x => x.id === fid) || {};
     let md = "# " + (f.name || f.task_summary || t("conv.title.default")) + "\n\n";
+    if (d.complete === false) md += "> " + t("conv.exportTruncated") + "\n\n";
     (d.messages || []).forEach(m => { const who = m.role === "user" ? "🧑 User" : "🤖 Assistant"; const txt = Array.isArray(m.content) ? m.content.map(b => b.text || "").join("") : (m.content || ""); md += `## ${who}\n\n${txt}\n\n`; });
     if ((arts || []).length) { md += "## 产物 Artifacts\n\n"; arts.forEach(a => md += `- ${a.filename} (${a.content_type || ""})\n`); }
     const blob = new Blob([md], { type: "text/markdown" }); const url = URL.createObjectURL(blob); const link = document.createElement("a");
@@ -4870,7 +5512,7 @@ async function deleteSession(fid) {
 async function duplicateSession(fid) {
   const f = S.sessions.find(x => x.id === fid) || {};
   try {
-    const nf = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: f.project_id || S.project || undefined, model: S.defaultModel }) });
+    const nf = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: f.project_id || S.project || undefined, model: S.defaultModelName }) });
     const nm = (f.name || f.task_summary || t("conv.title.default")) + t("session.duplicateSuffix");
     try { await api("/frames/" + nf.id, { method: "PATCH", body: JSON.stringify({ name: nm }) }); } catch {}
     await loadSessions(); openConversation(nf.id, f.project_id);
@@ -4931,7 +5573,11 @@ async function cancelTurn() {
 /* ---------- send ---------- */
 async function send(text, opts) {
   text = (text || "").trim(); opts = opts || {};
-  if (S.running) return;
+  // Sending mid-turn queues instead of being dropped on the floor. The old
+  // `if (S.running) return;` silently discarded the message — no error, no
+  // hint, just a composer that had already been cleared — even though the
+  // server's FIFO admission has always accepted a follow-up here.
+  const queueing = S.running;
   const runtime = runtimeSummary();
   if (S.currentId && runtime.viewOnly && runtime.trustState === "quarantined") {
     hint(t("runtime.quarantineHint"), true);
@@ -4955,11 +5601,12 @@ async function send(text, opts) {
       if (hits.length) skillDirective = "\n\n" + hits.map(n => t("skill.invokeDirective", n)).join("\n");
     } catch {}
   }
-  if (!S.currentId) { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModel }) }); S.currentId = f.id; sub(f.id); await loadSessions(); }
+  if (!S.currentId) { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModelName }) }); S.currentId = f.id; sub(f.id); await loadSessions(); }
   const g = $(".generated"); if (g) g.remove();
   const es = $(".empty-session"); if (es) es.remove();
   const w = el("div", "msg user"); const b = el("div", "bubble"); b.textContent = text || t("send.imageAnnotationFallback"); w.appendChild(b);
   if (anns.length) w.appendChild(annotAttachment(anns));
+  if (queueing) w.classList.add("queued");
   $("#messages").appendChild(w); down(true);
   let payload = text;
   if (planNow) {
@@ -4972,9 +5619,47 @@ async function send(text, opts) {
     S.planPending = true;
   }
   if (skillDirective) payload += skillDirective;
-  S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true);
-  $("#composer").value = ""; grow(); const annIds = anns.map(x => x.id);
-  if (annIds.length) { setLocalAnnotationStatus(annIds, "sent"); refreshAllStages(); updateAnnotBadge(); }
+  // Queueing must not restate the turn banner: the running turn owns the hint
+  // and the Stop button, and re-announcing "Running…" here would make the Stop
+  // control read as belonging to the item just typed rather than to the one it
+  // would actually interrupt.
+  // Read AFTER every await above and BEFORE this send touches `S.running`.
+  // The snapshot at the top of `send` is only good enough to decide how the
+  // bubble looks: the skills catalogue and, on a first message, creating the
+  // frame all await, and another tab or a recovered turn can take ownership in
+  // that window. Reading it any later is worse than useless -- by then this
+  // very send has set it to true and every observation says "queued".
+  const sawRunningAtDispatch = S.running;
+  const turnTicket = sawRunningAtDispatch ? null : openTurnTicket();
+  // Declared out here, not inside the `try`: the catch needs it, and a
+  // block-scoped `const` would have made that a ReferenceError.
+  if (!turnTicket) hint(t("queue.accepted"));
+  else { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true); }
+  $("#composer").value = ""; grow(); renderComposerRefChips();
+  const annIds = anns.map(x => x.id);
+  // The admission id is generated HERE and stored BEFORE the request goes out.
+  //
+  // That ordering is the whole mechanism. The case this exists for is the one
+  // where the client never sees the response -- a dropped connection, a closed
+  // tab, a reload mid-flight -- and a server-minted id is unknown to a browser
+  // in exactly that case, so there is nothing left to ask about. Storing it
+  // after the promise resolves covers only the case that needed no help.
+  //
+  // 128 bits from the platform CSPRNG: it keys a claim on the user's own
+  // unpublished comments, and it has to survive collision across sessions and
+  // restarts.
+  let admissionId = "";
+  if (annIds.length) {
+    const bytes = new Uint8Array(16);
+    (self.crypto || window.crypto).getRandomValues(bytes);
+    admissionId = "resv-" + [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
+    rememberAdmission(S.currentId, admissionId);
+    // Optimistically "pending", never "sent". The server decides whether a pin
+    // was consumed, and it can answer `pending` -- accepted, but the consume
+    // did not confirm -- in which case the comment is neither gone nor
+    // available and must not be shown as either.
+    setLocalAnnotationStatus(annIds, "pending"); refreshAllStages(); updateAnnotBadge();
+  }
   sub(S.currentId);  // guarantee this client is subscribed BEFORE the POST spawns the
                      // turn thread. On the FIRST turn opened via newSession(), S.currentId
                      // is already set so the block above is skipped and openConversation's
@@ -4983,37 +5668,119 @@ async function send(text, opts) {
                      // drops them (server replay is gated on is_running, which is already
                      // false once the blocking POST returns). Idempotent set add.
   try {
-    await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, model: S.defaultModel, plan: planNow, explore: exploreNow, annotation_ids: annIds, wait: false }) });
-    // The optimistic status above clears the badge immediately; reload once the turn POST finishes to reconcile with the server.
-    if (annIds.length) { try { await loadAnnotations(S.currentId); } catch {} refreshAllStages(); updateAnnotBadge(); }
+    // No `model:` field. It carried the header selector's value on every single
+    // message, and the server preferred it over the session's pinned revision --
+    // so provider, endpoint and credential came from the pin while the model name
+    // came from here, a configuration that exists in no profile. Changing model is
+    // now activating a profile (PUT /models/default), which the session then binds.
+    const accepted = await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, plan: planNow, explore: exploreNow, annotation_ids: annIds, annotation_reservation_id: admissionId || undefined, wait: false }) });
+    // Tie the optimistic bubble to the ticket the 202 named, so cancelling that
+    // exact queued item can mark the message the user is looking at. Nothing
+    // else in the transcript carries an execution id.
+    if (accepted && accepted.execution_id) w.dataset.executionId = accepted.execution_id;
+    // The id this turn will be blamed under. `wait:false` means the 202 is the
+    // only synchronous thing the client gets, so this is where the correlation
+    // starts -- the socket event and the job query name the same one. Written
+    // through the generation guard, because this promise can resolve after the
+    // turn it belongs to has already failed and been cleaned up.
+    // Accepted, or retired. A 202 that is not `queue_position: 0` means this
+    // send is not the running turn after all -- it was queued, or the snapshot
+    // could not be read -- so its provisional ticket is dead and its id will
+    // arrive on its own `processing` event instead. Retiring touches nothing
+    // that belongs to another turn.
+    if (!acceptTurnTicket(turnTicket, accepted)) retireTurnTicket(turnTicket);
+    // The server's own answer, not a guess. `annotations` is `sent`, `pending`
+    // or `none`, and `annotation_reservation_id` is what a reconcile asks
+    // about after a reload. Only `sent` is a consumed pin; `none` means this
+    // request claimed nothing (a concurrent turn won the race) and the comment
+    // is still the user's to send.
+    if (annIds.length) {
+      const said = accepted && accepted.annotations;
+      if (said === "none") setLocalAnnotationStatus(annIds, "open");
+      else if (said === "sent") setLocalAnnotationStatus(annIds, "sent");
+      if (accepted && accepted.annotation_reservation_id) {
+        S.lastAnnotationReservation = accepted.annotation_reservation_id;
+      }
+      // The answer arrived, so there is nothing left to reconcile. Removing it
+      // here rather than on the next reload keeps storage to what is genuinely
+      // outstanding -- and only a decided answer removes anything.
+      if (admissionId && admissionSettled(said)) forgetAdmission(S.currentId, admissionId);
+      try { await loadAnnotations(S.currentId); } catch {}
+      refreshAllStages(); updateAnnotBadge();
+    }
   }
   catch (e) {
     if (annIds.length) {
-      // POST failed → annotations were never consumed server-side. Reconcile with the server
-      // if reachable; if that reload also fails, revert the optimistic "sent" flip locally so
-      // the pending comments stay visible for a retry instead of vanishing from the composer.
+      // A POST that failed *synchronously* released its reservation server-side,
+      // so the pins are `open` again and this reload will say so. That is a
+      // narrower claim than the one this comment used to make. It said "the
+      // POST failed, therefore they were never consumed" -- which was false
+      // twice over. The route used to burn them to 'sent' *before*
+      // `submit_message`, where every refusal happens, so a 413/409/429
+      // destroyed them; and a failure with no response at all (a dropped
+      // connection after the server accepted) is not a refusal, so treating it
+      // as one reopens pins the running turn is already carrying.
+      //
+      // Hence: reconcile from the server rather than deciding locally, and the
+      // local revert below is only the fallback for when the server cannot be
+      // reached at all -- where leaving the comments visible is the lesser
+      // wrong, because a duplicate is recoverable and a silent loss is not.
+      // Reconcile with the
+      // server if reachable; if that reload also fails, revert the optimistic
+      // "sent" flip locally so the pending comments stay visible for a retry
+      // instead of vanishing from the composer.
+      // Reopen only on an authoritative *synchronous* refusal -- a status the
+      // server actually answered with, which means the reservation was
+      // released and the pins are the user's again. A transport failure with
+      // no status is not a refusal: the turn may be running and carrying them,
+      // and reopening would offer the user a comment that is already on its
+      // way. Ambiguity stays `pending` and is reconciled from the server.
+      const refused = !!(e && Number.isInteger(e.status) && e.status >= 400);
+      // An authoritative synchronous refusal is an answer: the server released
+      // the reservation and said so, so there is nothing to ask it later. A
+      // transport failure with no status is the ambiguous case this mechanism
+      // exists for, and its id is kept.
+      if (admissionId && refused) forgetAdmission(S.currentId, admissionId);
       const reloaded = await loadAnnotations(S.currentId);
-      if (!reloaded) setLocalAnnotationStatus(annIds, "open");
+      if (!reloaded) setLocalAnnotationStatus(annIds, refused ? "open" : "pending");
       refreshAllStages(); updateAnnotBadge();
     }
-    // 409 `model_revision_unavailable` is the one send failure the user cannot
-    // do anything about from anywhere else in the app. It says "choose one to
-    // continue" and there was nothing to choose with: the binding is not in
-    // any PATCH allowlist, forking inherits it, and this file had zero
-    // references to the code. So the session was unsendable for good.
-    if (e && e.code === "model_revision_unavailable") {
+    // The two 409s a send can end on that the user cannot resolve from
+    // anywhere else in the app. Both say "choose one to continue" and both are
+    // answered by the same rebind: the binding is in no PATCH allowlist and
+    // forking inherits it, so without this the session is unsendable for good.
+    //
+    // `model_revision_ambiguous` was left out. It is raised when a legacy
+    // session's recorded model matches more than one profile -- the server
+    // refuses to guess, which is right, and then the only remedy was
+    // unreachable. Same predicament, same fix, one code away.
+    if (e && (e.code === "model_revision_unavailable"
+              || e.code === "model_revision_ambiguous")) {
       if (confirm(t("model.rebind.confirm"))) {
         try {
           await api(`/frames/${encodeURIComponent(S.currentId)}/model-binding`, { method: "POST" });
           hint(t("model.rebind.done"));
-          if (S.running) turnDone("failed");
+          // Ownership, not the dispatch snapshot: the rebind prompt is modal
+          // and the user can sit on it for a long time, which is more than
+          // enough for another turn to start and own the screen.
+          if (ownsTurnTicket(turnTicket)) turnDone("failed");
           loadSessions();
           return;
         } catch (rebindError) { hint(apiErrorText(rebindError), true); }
       }
     }
     hint(t("toast.sendFailed", apiErrorText(e)), true);
-    if (S.running) turnDone("failed");
+    // A follow-up that was refused (413/409/429) says nothing about the turn
+    // already running. Tearing the turn state down here would report the
+    // running turn as failed because a *different*, never-admitted message was
+    // rejected — and would re-enable Stop against a turn nobody stopped.
+    // Ownership, not the stale snapshot. A send that began idle can be
+    // rejected *after* another turn has started -- the `false -> true` case --
+    // and tearing down there reports someone else's running turn as failed and
+    // re-enables Stop against a turn nobody stopped. If this send no longer
+    // owns the turn, its own bubble is the only thing that changes.
+    if (ownsTurnTicket(turnTicket)) turnDone("failed");
+    else w.classList.add("cancelled");
     loadSessions();
     return;
   }
@@ -5049,10 +5816,15 @@ async function refreshKeyBanner() {
 /* ---------- models ---------- */
 async function loadModels() {
   try { const m = await api("/models"); const groups = (m && m.models) || {}; S.models = Object.values(groups).flat(); S.defaultModel = m.default_model_id || (S.models[0] && S.models[0].id);
+    // The option value is a profile_id now, so the model *name* has to be carried
+    // separately for the display-only `model` field on session creation. Sending
+    // the id there would store a profile id in `frames.model`.
+    const nameFor = id => { const e = S.models.find(x => x.id === id); return (e && (e.model || e.name)) || id; };
+    S.defaultModelName = nameFor(S.defaultModel);
     const sel = $("#model-select"); sel.innerHTML = "";
     if (!S.models.length) { const o = el("option", null, t("models.none")); o.value = ""; sel.appendChild(o); }
     S.models.forEach(md => { const o = el("option", null, md.name || md.id); o.value = md.id; if (md.id === S.defaultModel) o.selected = true; sel.appendChild(o); });
-    sel.onchange = async () => { S.defaultModel = sel.value; try { await api("/models/default", { method: "PUT", body: JSON.stringify({ model_id: sel.value }) }); } catch {} };
+    sel.onchange = async () => { S.defaultModel = sel.value; S.defaultModelName = nameFor(sel.value); try { await api("/models/default", { method: "PUT", body: JSON.stringify({ model_id: sel.value }) }); } catch {} };
   } catch { $("#model-select").innerHTML = "<option>" + t("models.none") + "</option>"; }
 }
 
@@ -5422,8 +6194,39 @@ function renderTableArtifact(container, a, url) {
     else { const pre = el("pre", "renderer-source"); pre.textContent = text.slice(0, 300000); container.appendChild(pre); }
   }).catch(() => rendererFailure(container, a, url));
 }
+// The true shape of a parsed table: rows, and the union of every row's keys.
+// Not `rows[0]`'s keys, which is what decides the drawn columns -- records
+// parsed from JSON are ragged, so a field appearing only in later rows is
+// invisible in the table and would be uncounted here too.
+function sheetShape(rows) {
+  const keys = new Set();
+  for (const row of rows) { for (const key in row) keys.add(key); }
+  return { rows: rows.length, columns: keys.size };
+}
+// Say the shape out loud, and name whatever the cap dropped.
+//
+// `renderSheet` caps at 5000x100 and used to say nothing at all, so a 5001x101
+// matrix rendered as a table that looked complete: a reader counting 100
+// columns had no way to learn a 101st existed. The Notebook's table path
+// already carries this banner; the Viewer's did not, so the two disagreed
+// about the same file. The `nb.table.*` sentences are reused deliberately
+// rather than translated a second time -- two table paths wording the same
+// fact differently is how they drifted apart to begin with.
+function appendSheetShape(container, rows, shownRows, shownColumns) {
+  const shape = sheetShape(rows);
+  const note = el("div", "renderer-note", t("viewer.table.shape", shape.rows.toLocaleString(), shape.columns.toLocaleString()));
+  const hiddenRows = Math.max(0, shape.rows - shownRows);
+  const hiddenColumns = Math.max(0, shape.columns - shownColumns);
+  let hidden = "";
+  if (hiddenRows && hiddenColumns) hidden = t("nb.table.bothHidden", hiddenRows.toLocaleString(), hiddenColumns.toLocaleString());
+  else if (hiddenRows) hidden = t("nb.table.rowsHidden", hiddenRows.toLocaleString());
+  else if (hiddenColumns) hidden = t("nb.table.colsHidden", hiddenColumns.toLocaleString());
+  if (hidden) note.appendChild(document.createTextNode(" " + hidden));
+  container.appendChild(note);
+}
 function renderSheet(container, rows) {
   const safeRows = rows.slice(0, 5000); const columns = Object.keys(safeRows[0] || {}).slice(0, 100);
+  appendSheetShape(container, rows, safeRows.length, columns.length);
   const table = el("table", "sheet"); const head = el("tr"); columns.forEach(key => head.appendChild(el("th", null, key))); table.appendChild(head);
   safeRows.forEach(row => { const tr = el("tr"); columns.forEach(key => tr.appendChild(el("td", null, String(row[key] ?? "")))); table.appendChild(tr); });
   container.appendChild(table);
@@ -5604,6 +6407,156 @@ async function loadAnnotations(fid) {
   updateAnnotBadge();
   return true;
 }
+/* What happened to the pins this tab last sent, when it never saw the answer.
+   A reload, a closed tab, a dropped connection: the 202 is gone and the client
+   knows only that it sent something. Guessing is the one thing it must not do
+   — "assume sent" silently loses the comments, "assume open" offers the user a
+   comment a running turn is already carrying. So it asks. */
+/* One localStorage key per outstanding admission, never a container.
+
+   Two designs were wrong before this one. A single scalar
+   (`openai4s.admission.<fid>`) meant a second send while the first was still
+   outstanding — the ordinary queued follow-up, and exactly the case where a
+   response goes missing — overwrote the only record of the first: not sent as
+   far as the tab knew, not open as far as the server knew, and with no id left
+   to ask about. Replacing it with a JSON list under the same key fixed the
+   overwrite within one tab and kept it between two: read-modify-write is not
+   atomic across tabs, so both read the same list and the later `setItem` drops
+   the other's id. That list also carried a cap, which silently evicted the
+   *oldest unresolved* id — and the queue accepts far more than the cap was set
+   to, so the eviction was reachable by ordinary use.
+
+   Independent keys have neither problem: a write touches one reservation, so
+   concurrent tabs cannot clobber each other, and there is nothing to bound.
+   Unresolved ids are removed when they are answered, never to make room. */
+const ADMISSION_LEGACY_KEY = fid => "openai4s.admission." + fid;
+const ADMISSION_PREFIX = fid => "openai4s.admission." + fid + ".";
+/* The scalar and the list a tab may still be holding when it reloads into this
+   build — which is precisely a client with something outstanding, so dropping
+   them would lose the comments this whole mechanism exists to recover. */
+function migrateAdmissions(fid) {
+  let raw = null;
+  try { raw = localStorage.getItem(ADMISSION_LEGACY_KEY(fid)); } catch { return; }
+  if (!raw) return;
+  let ids = [];
+  if (raw[0] === "[") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) ids = parsed.filter(x => typeof x === "string" && x);
+    } catch {}
+  } else ids = [raw];
+  for (const id of ids) rememberAdmission(fid, id);
+  try { localStorage.removeItem(ADMISSION_LEGACY_KEY(fid)); } catch {}
+}
+function outstandingAdmissions(fid) {
+  migrateAdmissions(fid);
+  const prefix = ADMISSION_PREFIX(fid);
+  const found = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(prefix)) found.push([key.slice(prefix.length), localStorage.getItem(key)]);
+    }
+  } catch { return []; }
+  // Oldest first, by the stamp written at mint time. Ties break on the id:
+  // `Date.now()` has millisecond resolution and several sends can share one,
+  // in which case sorting on the stamp alone falls back to storage iteration
+  // order -- which is not defined, so "oldest first" would be a claim the code
+  // does not keep.
+  found.sort((a, b) => (Number(a[1]) || 0) - (Number(b[1]) || 0) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return found.map(pair => pair[0]).filter(Boolean);
+}
+/* How long a just-minted admission is protected from another tab's 404.
+
+   The value stored under each key is the mint time, and it doubles as a
+   bounded dispatch lease. The race it closes: tab A writes its key and has not
+   sent the POST yet; tab B opens the same session, asks about that id, and is
+   told 404 because the server has genuinely never heard of it; B deletes the
+   key; A's POST then succeeds and its response is lost, with nothing left to
+   reconcile from. B's 404 was true and acting on it was still wrong -- "not
+   yet" and "never" are the same answer from the server and different facts.
+
+   Bounded, so a key for a request that really never left cannot accumulate
+   forever. Past the grace a 404 is taken at face value. */
+const ADMISSION_GRACE_MS = 60_000;
+function admissionAge(fid, id) {
+  let raw = null;
+  try { raw = localStorage.getItem(ADMISSION_PREFIX(fid) + id); } catch { return null; }
+  const minted = Number(raw);
+  // A missing, unparseable or future stamp is not a lease. Trusting one would
+  // make a corrupted value protect a key permanently.
+  if (!raw || !Number.isFinite(minted) || minted <= 0 || minted > Date.now()) return null;
+  return Date.now() - minted;
+}
+function admissionWithinGrace(fid, id) {
+  const age = admissionAge(fid, id);
+  return age !== null && age < ADMISSION_GRACE_MS;
+}
+function rememberAdmission(fid, id) {
+  // A single independent write. No read, so nothing to lose a race with.
+  try { localStorage.setItem(ADMISSION_PREFIX(fid) + id, String(Date.now())); } catch {}
+}
+function forgetAdmission(fid, id) {
+  try { localStorage.removeItem(ADMISSION_PREFIX(fid) + id); } catch {}
+}
+/* Whether an answer settles an admission. `sent`, `released` and `none` are
+   decided; `pending` is undecided by definition, and an unrecognised state is
+   not evidence of anything — dropping either throws away the only handle the
+   client has on those comments. */
+function admissionSettled(state) {
+  return state === "sent" || state === "released" || state === "none";
+}
+/* What happened to the pins this tab sent, when it never saw the answers.
+   A reload, a closed tab, a dropped connection: the 202s are gone and the
+   client knows only that it sent something. Guessing is the one thing it must
+   not do — "assume sent" silently loses the comments, "assume open" offers the
+   user a comment a running turn is already carrying. So it asks, about every
+   one of them, and keeps the ones that are still undecided. */
+/* One pending retry per session, so N unresolved ids schedule one sweep.
+
+   Without the de-dupe every 404 inside the lease would arm its own timer and a
+   tab with several outstanding sends would re-ask N times per round. */
+const _admissionRetries = new Map();
+function scheduleAdmissionRetry(fid) {
+  if (_admissionRetries.has(fid)) return;
+  _admissionRetries.set(fid, setTimeout(() => {
+    _admissionRetries.delete(fid);
+    // Only if the session is still the one on screen; reconciling a session
+    // the user has left would fight whatever is now open.
+    if (S.currentId === fid) reconcileLastAdmission(fid).catch(() => {});
+  }, 3000));
+}
+async function reconcileLastAdmission(fid) {
+  const outstanding = outstandingAdmissions(fid);
+  if (!outstanding.length) return null;
+  const records = [];
+  for (const reservation of outstanding) {
+    let record = null;
+    try {
+      record = await api(`/frames/${fid}/admissions/${encodeURIComponent(reservation)}`);
+    } catch (e) {
+      // 404 means this session has no such admission. That is true both for a
+      // stale id and for one whose POST has not left another tab yet, and the
+      // second must not be deleted — see ADMISSION_GRACE_MS. Within the lease
+      // the key is kept and re-asked; past it, taken at face value. Anything
+      // else (offline, 5xx) always leaves it for the next attempt rather than
+      // dropping the only handle on the comments.
+      if (e && e.status === 404) {
+        if (admissionWithinGrace(fid, reservation)) scheduleAdmissionRetry(fid);
+        else forgetAdmission(fid, reservation);
+      }
+      continue;
+    }
+    records.push(record);
+    // Only a decided outcome is forgotten.
+    if (admissionSettled(record && record.state)) forgetAdmission(fid, reservation);
+  }
+  await loadAnnotations(fid);
+  refreshAllStages(); updateAnnotBadge();
+  // The most recent decided record, for callers that want one answer; every
+  // record was acted on above regardless.
+  return records.length ? records[records.length - 1] : null;
+}
 /* Render an image the user can pin comments onto, with zoom + pan. Used by the
    dock viewer AND the fullscreen modal. Zoom is WIDTH-BASED (the image element
    physically grows) rather than a CSS transform, so the pin layer scales with
@@ -5699,11 +6652,34 @@ function renderAnnotatableImage(body, a, url) {
     openAnnotDraft(stage, a, x, y);
   });
 }
+/* The one place that decides what a pin's status is for display. `reserved`
+   and `pending` are in-flight: not open (the user cannot act on them) and not
+   sent (they are not consumed yet). Anything unrecognised is `unknown` rather
+   than silently `open`, because "I do not know" and "you may edit this" are
+   different answers. */
+function annotationStatus(an) {
+  const raw = String((an && an.status) || "open");
+  if (raw === "sent" || raw === "resolved" || raw === "dismissed") return raw;
+  if (raw === "reserved" || raw === "pending") return "pending";
+  if (raw === "open") return "open";
+  return "unknown";
+}
+function annotationIsHeld(an) {
+  const shown = annotationStatus(an);
+  return shown === "pending" || shown === "unknown";
+}
 function renderPins(stage, a) {
   const layer = stage.querySelector(".annot-layer"); if (!layer) return;
   layer.querySelectorAll(".annot-pin:not(.draft)").forEach(n => n.remove());
   annotationsFor(a.id).forEach(an => {
-    const pin = el("div", "annot-pin" + (an.status === "sent" ? " sent" : (an.status === "resolved" ? " resolved" : "")));
+    // A held pin is not an open one. `reserved` (a turn is quoting it) and
+    // `pending` (accepted, consume unconfirmed) both used to render as `open`,
+    // which invites the user to edit or delete a comment that is already on its
+    // way -- and `data-annotation-status` exists so a test can assert that
+    // without matching on CSS class soup or translated text.
+    const shown = annotationStatus(an);
+    const pin = el("div", "annot-pin " + shown);
+    pin.dataset.annotationStatus = shown;
     pin.style.left = (an.x * 100) + "%"; pin.style.top = (an.y * 100) + "%";
     pin.textContent = an.number; pin.title = an.body || "";
     pin.onclick = (e) => { e.stopPropagation(); openPinPop(stage, a, an); };
@@ -5784,7 +6760,16 @@ function openPinPop(stage, a, an) {
   const pop = el("div", "annot-pop view");
   const head = el("div", "annot-pop-head");
   head.appendChild(el("span", "annot-pop-num", "#" + an.number));
-  const st = el("span", "annot-pop-status " + (an.status || "open"), an.status === "sent" ? t("annot.status.sent") : (an.status === "resolved" ? t("annot.status.resolved") : t("annot.status.open")));
+  const shown = annotationStatus(an);
+  const label = {
+    sent: t("annot.status.sent"),
+    resolved: t("annot.status.resolved"),
+    dismissed: t("annot.status.resolved"),
+    pending: t("annot.status.pending"),
+    unknown: t("annot.status.unknown"),
+  }[shown] || t("annot.status.open");
+  const st = el("span", "annot-pop-status " + shown, label);
+  st.dataset.annotationStatus = shown;
   head.appendChild(st);
   const bodyEl = el("div", "annot-pop-body", an.body || "");
   const foot = el("div", "annot-foot");
@@ -5794,6 +6779,14 @@ function openPinPop(stage, a, an) {
     try { await deleteAnnotations([annotationId(an)]); closeAnnotPop(); hint(t("annot.deleted")); }
     catch (e) { del.disabled = false; hint(t("toast.deleteFailed", apiErrorText(e)), true); }
   };
+  // A held pin is not the user's to delete: a turn is quoting it, and the
+  // server answers 409 for exactly this. Offering the button and then showing
+  // an error is a worse version of not offering it.
+  if (annotationIsHeld(an)) {
+    del.disabled = true;
+    del.title = t("annot.status.pending");
+    del.dataset.heldByTurn = "1";
+  }
   const close = el("button", "annot-btn solid", t("common.close")); close.onclick = () => closeAnnotPop();
   foot.appendChild(del); foot.appendChild(close);
   pop.appendChild(head); pop.appendChild(bodyEl); pop.appendChild(foot);
@@ -6510,6 +7503,10 @@ const NOTEBOOK_EXPORTS = [
   { language: "bundle", key: "prov.exec.downloadNotebook", suffix: "notebooks.zip" },
   { language: "python", key: "prov.exec.downloadPython", suffix: "python.ipynb" },
   { language: "r", key: "prov.exec.downloadR", suffix: "r.ipynb" },
+  // The reading form. The three above are for re-running the work; this one is
+  // for pasting it into an issue or a methods section, with both languages in
+  // execution order because the interleaving is the record.
+  { language: "markdown", key: "prov.exec.downloadMarkdown", suffix: "md" },
 ];
 function notebookExportLink(frameId) {
   const wrap = el("div", "prov-dl");
@@ -7068,7 +8065,7 @@ function openKetcher() { $("#modal-title").textContent = t("ketcher.modalTitle")
 /* ---------- upload ---------- */
 function uploadFiles(files) {
   [...files].forEach(file => { const rd = new FileReader(); rd.onload = async () => { const b64 = (rd.result.split(",")[1]) || "";
-    try { if (!S.currentId) { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModel }) }); S.currentId = f.id; sub(f.id); await loadSessions(); await openConversation(f.id, S.project); }
+    try { if (!S.currentId) { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModelName }) }); S.currentId = f.id; sub(f.id); await loadSessions(); await openConversation(f.id, S.project); }
       await api("/uploads", { method: "POST", body: JSON.stringify({ filename: file.name, content_base64: b64, project_id: S.project || undefined, frame_id: S.currentId }) });
       loadArtifacts(S.currentId); hint(t("upload.uploaded", file.name));
     } catch (e) { hint(t("upload.failed", apiErrorText(e)), true); } }; rd.readAsDataURL(file); });
@@ -7343,6 +8340,21 @@ async function custGeneral(c) {
   const kr = el("div", "cust-row"); const ki = el("div", "info"); ki.appendChild(el("div", "nm", t("cust.general.modelKeyName"))); ki.appendChild(el("div", "ds", conf.has_api_key ? (t("cust.general.apiKeyConfigured") + (conf.model ? "（" + conf.model + "）" : "")) : t("cust.models.key.missing"))); kr.appendChild(ki); const go = el("button", "outline-btn small", t("cust.general.configureBtn")); go.onclick = () => custTab("models"); kr.appendChild(go); c.appendChild(kr);
 }
 function setLayout(name) { localStorage.setItem("os-layout", name); applyLayout(name); hint(t("toast.layout", ({ comfortable: t("cust.general.layout.comfortable"), compact: t("cust.general.layout.compact"), wide: t("cust.general.layout.wide") }[name] || name))); }
+// Readiness is computed server-side from local state alone (`nvidia-smi` is
+// looked for on PATH, never run) and the catalogue row had no reader, so a
+// GPU-only Skill rendered identically to one that runs anywhere and the user
+// met the difference mid-task. `ready` adds nothing to a row, so only the two
+// states that cost the user something are drawn.
+function skillReadinessNote(s) {
+  const rd = (s && s.readiness) || {};
+  if (!rd.state || rd.state === "ready") return null;
+  const named = publicList(rd.state === "needs_setup" ? rd.missing : rd.unverifiable, 8);
+  // Falls back to the declared requirements rather than to an empty sentence:
+  // "needs setup" that names nothing is not actionable.
+  const listed = (named.length ? named : publicList(s.requirements, 8)).join(", ");
+  if (!listed) return null;
+  return el("div", "ds prof-warn", t(rd.state === "needs_setup" ? "skill.readiness.needsSetup" : "skill.readiness.unknown", listed));
+}
 async function custSkills(c) {
   try {
     const pid = (typeof effProject === "function" ? effProject() : S.project) || null;
@@ -7362,7 +8374,7 @@ async function custSkills(c) {
       const scope = s.scope === "project" ? "project" : (s.scope === "bundled" ? "bundled" : "personal");
       const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm");
       nm.appendChild(el("span", null, s.displayName || s.name)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", t(`skill.scope.${scope}`)));
-      info.appendChild(nm); info.appendChild(el("div", "ds", s.description || "")); row.appendChild(info);
+      info.appendChild(nm); info.appendChild(el("div", "ds", s.description || "")); const rn = skillReadinessNote(s); if (rn) info.appendChild(rn); row.appendChild(info);
       const useBtn = el("button", "icon-ghost"); useBtn.title = t("skill.useInChat"); useBtn.innerHTML = icon("message-square", 15); useBtn.onclick = () => insertSkillMention(s.name); row.appendChild(useBtn);
       if (s.versioned) { const vb = el("button", "icon-ghost"); vb.title = t("skill.historyBtn"); vb.innerHTML = icon("clock", 15); vb.onclick = () => skillVersionHistory(s.name, scope, scope === "project" ? pid : null); row.appendChild(vb); }
       if (s.editable && scope === "personal") { const eb = el("button", "icon-ghost"); eb.title = t("common.edit"); eb.innerHTML = icon("pencil", 15); eb.onclick = () => skillEditor(s.name); row.appendChild(eb); const db = el("button", "icon-ghost"); db.title = t("common.delete"); db.innerHTML = icon("trash-2", 15); db.onclick = async () => { if (!confirm(t("cust.skills.deleteConfirm", s.name))) return; try { await api(`/skills/${encodeURIComponent(s.name)}`, { method: "DELETE" }); S.skillsCatalog = null; custTab("skills"); } catch (e) { hint(t("toast.deleteFailed", apiErrorText(e)), true); } }; row.appendChild(db); }
@@ -7568,7 +8580,10 @@ async function refreshJobList(list) {
     if (j.status === "running" || j.status === "queued") anyRunning = true;
     const row = el("div", "cust-row"); const info = el("div", "info");
     const nm = el("div", "nm"); nm.appendChild(el("span", "job-badge " + j.status, j.status)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "job-cmd", (j.kind + "  " + j.command).slice(0, 80))); info.appendChild(nm);
-    info.appendChild(el("div", "ds", (j.duration_s != null ? j.duration_s + "s" : "") + (j.exit_code != null ? " · exit " + j.exit_code : "")));
+    // The drop, on the row. The job record has carried these counters all
+    // along and the only trace of a cut anywhere in the UI was a notice
+    // prepended inside the output modal, which a reader has to open to see.
+    info.appendChild(el("div", "ds", (j.duration_s != null ? j.duration_s + "s" : "") + (j.exit_code != null ? " · exit " + j.exit_code : "") + (j.truncated ? " " + t("cust.jobs.dropped", (j.dropped_bytes || 0).toLocaleString()) : "")));
     row.appendChild(info);
     const view = el("button", "outline-btn small", t("cust.jobs.viewOutput")); view.onclick = () => showJobOutput(j.id); row.appendChild(view);
     if (j.status === "running" || j.status === "queued") { const cx = el("button", "outline-btn small", t("common.cancel")); cx.onclick = async () => { try { await api(`/compute/jobs/${j.id}/cancel`, { method: "POST" }); await refreshJobList(list); } catch {} }; row.appendChild(cx); }
@@ -7659,18 +8674,45 @@ async function telemetryRow(c) {
   }
   row.appendChild(tg); c.appendChild(row);
 }
+// Memory has two tiers: "global", which every project inherits, and one
+// project. The Save button used to send neither, so the server stored the
+// literal "default" — a project nothing here creates — while injection reads
+// the session's real project id. Saves listed fine and reached no prompt ever.
+// So the scope is chosen here and always sent, and a row says which tier it is
+// in. Unknown ids (rows left by that older write) render as the raw id rather
+// than as the generic project fallback, so an orphan looks like one.
+function memScopes() {
+  const pid = effProject();
+  const out = [{ id: "global", label: t("cust.memory.scope.global") }];
+  if (pid) out.push({ id: pid, label: memScopeLabel(pid) });
+  return out;
+}
+function memScopeLabel(pid) {
+  if (!pid || pid === "global") return t("cust.memory.scope.global");
+  const p = S.projects.find(x => (x.project_id || x.id) === pid);
+  return (p && p.name) || pid;
+}
 async function custMemory(c) { try {
   const m = await api("/memory/enabled");
   const mem = await api("/memory?project_id=all").catch(() => ({ memories: [] }));
   const cats = await api("/memory/categories?project_id=all").catch(() => ({ categories: [] }));
+  // What the active scope would actually inject, not merely what is stored:
+  // this pane listed every scope's rows and said nothing about which of them
+  // reach a prompt, which is how a write to a dead scope looked healthy.
+  const scopes = memScopes(); const active = scopes[scopes.length - 1].id;
+  const ctx = await api(`/memory/context?project_id=${encodeURIComponent(active)}`).catch(() => null);
   c.innerHTML = ""; c.appendChild(hdr(t("cust.memory.title"), t("cust.memory.desc")));
   const master = el("div", "cust-row"); const mi = el("div", "info"); mi.appendChild(el("div", "nm", t("cust.memory.enableName"))); mi.appendChild(el("div", "ds", m.enabled ? t("cust.memory.enabledDesc") : t("cust.memory.disabledDesc"))); master.appendChild(mi); const tg = el("button", "toggle" + (m.enabled ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { await api("/memory/enabled", { method: "PUT", body: JSON.stringify({ enabled: on }) }); hint(on ? t("toast.memory.enabled") : t("toast.memory.disabled")); } catch {} }; master.appendChild(tg); c.appendChild(master);
   // add with category
   const add = el("div", "cust-row"); const ai = el("div", "info"); ai.appendChild(el("div", "nm", t("cust.memory.addName"))); const ad = el("div", "job-submit");
   const catSel = el("select", "cust-input"); catSel.style.flex = "0 0 120px"; ["user", "project", "preference", "fact", "general"].forEach(k => { const o = el("option", null, k); o.value = k; catSel.appendChild(o); });
+  const scopeSel = el("select", "cust-input"); scopeSel.style.flex = "0 0 150px"; scopeSel.title = t("cust.memory.scopeName"); scopes.forEach(s => { const o = el("option", null, s.label); o.value = s.id; scopeSel.appendChild(o); }); scopeSel.value = active;
   const inp = el("input", "cust-input"); inp.placeholder = t("cust.memory.contentPlaceholder");
-  const btn = el("button", "solid-btn small", t("common.save")); btn.onclick = async () => { const v = inp.value.trim(); if (!v) return; try { await api("/memory", { method: "POST", body: JSON.stringify({ content: v, block: catSel.value }) }); inp.value = ""; custTab("memory"); } catch (e) { hint(t("artifact.save.err", apiErrorText(e)), true); } };
-  ad.appendChild(catSel); ad.appendChild(inp); ad.appendChild(btn); ai.appendChild(ad); add.appendChild(ai); c.appendChild(add);
+  const btn = el("button", "solid-btn small", t("common.save")); btn.onclick = async () => { const v = inp.value.trim(); if (!v) return; try { await api("/memory", { method: "POST", body: JSON.stringify({ content: v, block: catSel.value, project_id: scopeSel.value }) }); inp.value = ""; custTab("memory"); } catch (e) { hint(t("artifact.save.err", apiErrorText(e)), true); } };
+  ad.appendChild(scopeSel); ad.appendChild(catSel); ad.appendChild(inp); ad.appendChild(btn); ai.appendChild(ad); add.appendChild(ai); c.appendChild(add);
+  // What this scope injects, said out loud. The budgets already report what
+  // they withheld; nothing showed it to the person who saved the item.
+  if (ctx) { const sr = el("div", "cust-row"); const si = el("div", "info"); si.appendChild(el("div", "nm", t("cust.memory.injectedInto", memScopeLabel(active)))); si.appendChild(el("div", "ds", t("cust.memory.injectedCounts", String(ctx.included_count || 0), String((ctx.omitted || []).length), String(ctx.inherited_count || 0), String(ctx.overridden_count || 0)))); sr.appendChild(si); c.appendChild(sr); }
   // category chips
   const catList = (cats.categories || []);
   if (catList.length) { const cr = el("div", "cust-row"); const ci = el("div", "info"); ci.appendChild(el("div", "nm", t("cust.memory.categories"))); const box = el("div", "ds"); catList.forEach(k => box.appendChild(el("span", "pill", (k.block || "general") + " · " + k.count))); ci.appendChild(box); cr.appendChild(ci); c.appendChild(cr); }
@@ -7678,7 +8720,35 @@ async function custMemory(c) { try {
   const groups = {}; (mem.memories || []).forEach(x => { const b = x.block || "general"; (groups[b] = groups[b] || []).push(x); });
   Object.keys(groups).sort().forEach(block => {
     c.appendChild(el("div", "cust-subhead", block));
-    groups[block].forEach(x => { const row = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "ds", x.content || "")); row.appendChild(info); const del = el("button", "icon-ghost"); del.appendChild(iconEl("trash-2", 14)); del.onclick = async () => { try { await api(`/memory/${x.memory_id}`, { method: "DELETE" }); custTab("memory"); } catch {} }; row.appendChild(del); c.appendChild(row); });
+    groups[block].forEach(x => {
+      const row = el("div", "cust-row"); const info = el("div", "info");
+      info.appendChild(el("div", "ds", x.content || ""));
+      const sc = el("div", "ds"); sc.appendChild(el("span", "pill", memScopeLabel(x.project_id)));
+      // Said out loud, because it is what retention measures. A memory nobody
+      // has touched in a year stops being injected, and until there was an
+      // edit the only "touch" a row could have was the day it was written.
+      if (x.updated_at) sc.appendChild(el("span", "pill", t("cust.memory.edited")));
+      info.appendChild(sc); row.appendChild(info);
+      // Edit in place. Correcting standing context used to mean delete and
+      // rewrite: two round trips through a scope that may be at its cap, so
+      // the second can fail and leave the user with neither version.
+      const edit = el("button", "icon-ghost"); edit.title = t("common.edit");
+      edit.appendChild(iconEl("pencil", 14));
+      edit.onclick = async () => {
+        const next = prompt(t("cust.memory.editPrompt"), x.content || "");
+        if (next === null) return;
+        const value = String(next).trim();
+        if (!value || value === (x.content || "")) return;
+        try {
+          await api(`/memory/${x.memory_id}?project_id=${encodeURIComponent(x.project_id || "global")}`, { method: "PATCH", body: JSON.stringify({ content: value }) });
+          custTab("memory");
+        } catch (e) { hint(apiErrorText(e), true); }
+      };
+      row.appendChild(edit);
+      const del = el("button", "icon-ghost"); del.appendChild(iconEl("trash-2", 14));
+      del.onclick = async () => { try { await api(`/memory/${x.memory_id}?project_id=${encodeURIComponent(x.project_id || "global")}`, { method: "DELETE" }); custTab("memory"); } catch (e) { hint(apiErrorText(e), true); } };
+      row.appendChild(del); c.appendChild(row);
+    });
   });
   if (!(mem.memories || []).length) c.appendChild(el("div", "dock-empty", t("cust.memory.empty")));
 } catch (e) { c.textContent = t("versions.load.err", e.message); } }
@@ -7743,20 +8813,42 @@ function renderLocalModelEndpoints(root, discovery, profiles) {
     row.appendChild(add); root.appendChild(row);
   });
 }
+// Which protocols a user may pick is the daemon's answer, not a copy of it kept
+// here. `gemini` and `openai_responses` are both in PROFILE_PROTOCOLS and both
+// accepted by POST/PATCH, while this pane offered a fixed three -- so a user
+// holding a Gemini key had no way to say so. The list has to be *generated* from
+// the served catalogue or the next protocol added server-side is unreachable the
+// same way. Only the label stays client-side: a protocol nobody has translated
+// yet shows its id, which is a usable option rather than a missing one.
+function modelProtocolOptions(served) {
+  const labelKeys = {
+    chatgpt: "cust.models.protocol.openai",
+    claude: "cust.models.protocol.anthropic",
+    ark: "cust.models.protocol.ark",
+    gemini: "cust.models.protocol.gemini",
+    openai_responses: "cust.models.protocol.openaiResponses",
+  };
+  const ids = [];
+  (Array.isArray(served) ? served : []).forEach(value => {
+    const id = typeof value === "string" ? value.trim().slice(0, 64) : "";
+    if (id && !ids.includes(id)) ids.push(id);
+  });
+  // A daemon too old to serve the catalogue still has to leave the form usable;
+  // these three are what shipped before `protocols` was part of the payload.
+  const list = ids.length ? ids : ["chatgpt", "claude", "ark"];
+  // tOptional, not t: a missing translation must not put a dot-key in a menu.
+  return list.map(id => ({ value: id, label: tOptional(labelKeys[id] || "") || id }));
+}
 async function custModels(c) {
   c.innerHTML = ""; c.appendChild(hdr(t("cust.tab.models"), t("cust.models.subtitle2")));
   let data = { profiles: [], active_id: "", protocols: [] };
   try { data = await api("/model-profiles"); } catch (e) { c.appendChild(el("div", "dock-empty", t("versions.load.err", e.message))); return; }
   let editing = null;  // set to a profile object when editing that row
-  const protocols = [
-    ["chatgpt", "cust.models.protocol.openai"],
-    ["claude", "cust.models.protocol.anthropic"],
-    ["ark", "cust.models.protocol.ark"],
-  ];
-  const protocolIds = new Set(protocols.map(item => item[0]));
+  const protocols = modelProtocolOptions(data.protocols);
+  const protocolIds = new Set(protocols.map(item => item.value));
   const protocolLabel = provider => {
-    const match = protocols.find(item => item[0] === provider);
-    return match ? t(match[1]) : provider;
+    const match = protocols.find(item => item.value === provider);
+    return match ? match.label : provider;
   };
 
   // Local discovery is a read-only, fixed-loopback scan. The endpoint must be
@@ -7775,7 +8867,13 @@ async function custModels(c) {
     } finally { scanLocal.disabled = false; scanLocal.textContent = t("cust.models.local.scan"); }
   };
   scanLocal.onclick = () => runLocalScan(true); localActions.appendChild(scanLocal);
-  c.appendChild(localInfo); c.appendChild(localActions); c.appendChild(localResults); runLocalScan(false);
+  c.appendChild(localInfo); c.appendChild(localActions); c.appendChild(localResults);
+  // Opening this pane used to run the scan itself, so every visit -- including
+  // the re-render after every save, activate and delete -- probed four loopback
+  // ports nobody asked it to. Readiness is answered from local state precisely
+  // so that opening Customize costs nothing; the one control here that touches a
+  // socket waits for the button, like the per-profile probe beside it.
+  localResults.appendChild(el("div", "dock-empty", t("cust.models.local.idle")));
 
   // --- add / edit form ---
   const head = el("div", "cust-subhead", t("cust.models.addHeading"));
@@ -7783,7 +8881,7 @@ async function custModels(c) {
   const form = el("div", "skill-form");
   const nameIn = el("input", "cust-input"); nameIn.placeholder = t("cust.models.namePlaceholder");
   const provIn = el("select", "cust-input");
-  protocols.forEach(([value, labelKey]) => { const option = el("option"); option.value = value; option.textContent = t(labelKey); provIn.appendChild(option); });
+  protocols.forEach(({ value, label }) => { const option = el("option"); option.value = value; option.textContent = label; provIn.appendChild(option); });
   const baseIn = el("input", "cust-input"); baseIn.placeholder = t("cust.models.baseUrlPlaceholder");
   const modelIn = el("input", "cust-input"); modelIn.placeholder = t("cust.models.modelPlaceholder2");
   const keyIn = el("input", "cust-input"); keyIn.type = "password"; keyIn.placeholder = "API Key"; keyIn.autocomplete = "off";
@@ -8080,8 +9178,18 @@ function csv(line, sep) { return csvFields(line, sep); }
 function ago(iso) { if (!iso) return ""; const t = new Date(iso).getTime(); if (isNaN(t)) return ""; const d = (Date.now() - t) / 1000; if (d < 60) return "just now"; if (d < 3600) return (d / 60 | 0) + "m"; if (d < 86400) return (d / 3600 | 0) + "h"; return (d / 86400 | 0) + "d"; }
 function bytes(b) { b = b || 0; if (b < 1024) return b + " B"; if (b < 1048576) return (b / 1024).toFixed(1) + " KB"; return (b / 1048576).toFixed(1) + " MB"; }
 function hint(t, err, spin) { const h = $("#composer-hint"); h.innerHTML = ""; if (!t) return; if (spin) { h.appendChild(iconEl("loader", 13, "spin")); h.appendChild(document.createTextNode(" ")); } const s = el("span", null, t); if (err) s.style.color = "var(--danger)"; h.appendChild(s); }
+// `on` no longer means "typable" — it means "the next Enter starts a turn
+// rather than queueing one". The textarea itself is never disabled: the server
+// admits a follow-up sent mid-turn into its FIFO queue and always did, so
+// disabling the box withheld a capability the backend already had. A disabled
+// textarea also drops focus and throws away a half-typed @-mention, which made
+// "wait for the turn to finish" cost the user their draft as well.
 function enableComposer(on) {
-  const c = $("#composer"); if (c) c.disabled = !on;
+  const c = $("#composer"); if (!c) return;
+  c.disabled = false;
+  c.classList.toggle("queueing", !on);
+  c.placeholder = t(on ? "composer.placeholder" : "composer.placeholderQueue");
+  renderQueueStrip();
 }
 function messagesAtBottom(m, pad) { return !m || (m.scrollHeight - m.scrollTop - m.clientHeight) < (pad || 80); }
 function paintJumpPill() { const m = $("#messages"), pill = $("#jump-pill"); if (!m || !pill) return; pill.classList.toggle("hidden", messagesAtBottom(m, 60)); }
@@ -8111,8 +9219,20 @@ async function acProjectFiles() {
     try { const a = await api(`/projects/${pid}/artifacts`); _acFiles.list = Array.isArray(a) ? a : []; _acFiles.pid = pid; _acFiles.at = Date.now(); }
     catch (e) { /* keep last good list */ }
   }
+  // Deduped by artifact identity, not by filename. Keying on the name was
+  // right for the overlap this loop exists for (a project artifact is also a
+  // session artifact) and wrong for everything else: two DIFFERENT artifacts
+  // that happen to share a name -- `results.csv` here and `results.csv` in a
+  // sibling conversation -- collapsed into one row, so the second was
+  // unpickable and there was no way to reference it at all. `artifact_id` is
+  // what the overlap actually is.
   const seen = new Set(); const out = [];
-  for (const a of [...(pid ? _acFiles.list : []), ...(S.artifacts || [])]) { const fn = a && a.filename; if (!fn || seen.has(fn)) continue; seen.add(fn); out.push(a); }
+  for (const a of [...(pid ? _acFiles.list : []), ...(S.artifacts || [])]) {
+    if (!a || !a.filename) continue;
+    const key = a.artifact_id || a.id || a.filename;
+    if (seen.has(key)) continue;
+    seen.add(key); out.push(a);
+  }
   return out;
 }
 async function acUpdate() {
@@ -8135,7 +9255,10 @@ async function acUpdate() {
       // The provenance matters at pick time: "this comes from another session
       // and will be copied in" is the one thing a user cannot see from a
       // filename, and it is what makes the copy unsurprising afterwards.
-      sub: (elsewhere ? t("ac.fromOtherSession") + " · " : "") + (a.content_type || ""),
+      // Two rows may now carry the same label (same name, different artifact),
+      // so the short version id is the only thing that tells them apart.
+      sub: (elsewhere ? t("ac.fromOtherSession") + " · " : "")
+        + (version ? version.slice(2, 8) + " · " : "") + (a.content_type || ""),
     };
   });
   else if (d.trigger === "#") items = (S.sessions || []).map(f => ({ label: f.name || f.task_summary || "session", insert: f.name || f.task_summary || "session", sub: "" }));
@@ -8163,7 +9286,10 @@ function acPick(i) {
   const token = ac.trigger + it.insert + " ";
   c.value = val.slice(0, ac.start) + token + val.slice(pos);
   const np = ac.start + token.length; c.setSelectionRange(np, np);
-  acClose(); grow(); c.focus();
+  // Assigning `value` fires no `input` event, so the chip row has to be told.
+  // Without this the one path that always inserts a *correct* token was the
+  // one path that never drew a chip for it.
+  acClose(); grow(); renderComposerRefChips(); c.focus();
 }
 // Unresolved @references, shown inline above the composer.
 function renderAttachmentProblems(problems) {
@@ -8180,6 +9306,17 @@ function renderAttachmentProblems(problems) {
   // card and deliberate — these reasons are a closed set the client can
   // translate, where a ref problem's message names arbitrary files.
   if (!Array.isArray(problems) || !problems.length) return;
+  // The refusals that carry no number, so they need no format arguments. They
+  // exist because a pin can fail for reasons that are not a budget: the pinned
+  // figure was re-plotted over, deleted, or is not actually an image. Falling
+  // through to the bare reason code printed `version_changed` at the user,
+  // which is a log line rather than a sentence.
+  const ATTACH_REASONS = {
+    version_changed: "attach.versionChanged",
+    not_found: "attach.notFound",
+    unsupported_type: "attach.unsupported",
+    decode_failed: "attach.decodeFailed",
+  };
   const messages = $("#messages"); if (!messages) return;
   const card = el("div", "ref-problems");
   card.appendChild(el("div", "ref-problems-head", t("attach.problemsTitle", problems.length)));
@@ -8194,7 +9331,7 @@ function renderAttachmentProblems(problems) {
         ? t("attach.budget", bytes(limit))
         : reason === "too_many"
           ? t("attach.tooMany", limit)
-          : reason;
+          : ATTACH_REASONS[reason] ? t(ATTACH_REASONS[reason]) : reason;
     row.appendChild(el("span", "ref-problem-msg", detail));
     card.appendChild(row);
   });
@@ -8519,7 +9656,7 @@ async function init() {
   $("#proj-modal").onclick = (e) => { if (e.target.id === "proj-modal") closeProjectModal(); };
   $("#pm-create").onclick = submitProjectModal;
   const c = $("#composer");
-  c.addEventListener("input", () => { grow(); acUpdate(); });
+  c.addEventListener("input", () => { grow(); acUpdate(); renderComposerRefChips(); });
   c.addEventListener("keydown", (e) => {
     if (e.isComposing || e.keyCode === 229) return;  // IME composition: Enter commits the candidate, not the message
     if (ac.open) {

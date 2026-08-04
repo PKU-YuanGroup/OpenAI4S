@@ -753,6 +753,11 @@ body.layout-wide{--col:1080px}
 .job-badge.done{background:#3aa76d22;color:#3aa76d}
 .job-badge.failed{background:#8e262622;color:#8e2626}
 .job-badge.cancelled{background:#8881;color:var(--muted,#888)}
+/* `timeout` and `abandoned` are terminal statuses jobs.py declares and the
+   deadline and adoption paths reach; unstyled, they rendered as bare text
+   beside four styled siblings and read as a rendering bug. */
+.job-badge.timeout{background:#b4770022;color:#b47700}
+.job-badge.abandoned{background:#6b21a822;color:#6b21a8}
 .job-cmd{font-family:var(--mono,monospace);font-size:12px;color:var(--text-200,#333)}
 .job-output{white-space:pre-wrap;word-break:break-word;background:#0b0b0b;color:#e6e6e6;padding:14px;border-radius:10px;font:12px/1.5 var(--mono,monospace);max-height:52vh;overflow:auto;margin:0}
 
@@ -1454,6 +1459,18 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
 /* Unresolved @references. Deliberately not styled as an error: the turn ran,
    and referencing four files with one typo should answer about the other
    three. It is a note, and a note the old code never showed at all. */
+/* Chips under a restored user message: the artifact references it was sent
+   with, drawn from the stored record rather than re-parsed out of the prose. */
+.msg-refs{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;justify-content:flex-end}
+.msg-ref-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border:1px solid var(--border);border-radius:9px;background:var(--bg-2);color:var(--text-400);font-size:11px;max-width:100%}
+.msg-ref-chip.clickable{cursor:pointer}
+.msg-ref-chip.clickable:hover{color:var(--text-200)}
+/* The composer's copy of the message chips, drawn before the send. Same
+   element so the two cannot drift apart visually; the row is what is new. */
+.composer-refs{display:flex;flex-wrap:wrap;gap:6px;padding:6px 12px 0}
+.composer-refs.hidden{display:none}
+.msg-ref-chip.unresolved{border-color:var(--warn,#b8860b);color:var(--warn,#b8860b)}
+.msg-ref-chip.elsewhere{border-style:dashed}
 .ref-problems{margin:8px 20px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-2)}
 .ref-problems-head{font-size:12px;color:var(--text-400);margin-bottom:6px}
 .ref-problem{display:flex;gap:8px;align-items:baseline;font-size:12px;line-height:1.5}
@@ -1467,3 +1484,27 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
 .ver-src-k{color:var(--text-400);min-width:130px;flex:none}
 .ver-src-v{color:var(--text-200);word-break:break-all}
 .ver-src-note{color:var(--text-400);margin-top:5px;font-style:italic}
+
+/* ---- queued follow-ups ----------------------------------------------------
+   The composer stays usable while a turn runs, so what is waiting behind that
+   turn has to be visible. Sits between the composer card and the hint line, so
+   it reads as "what your next Enter joins" rather than as transcript. */
+.queue-strip{margin:6px auto 0;width:min(var(--col),calc(100% - 48px));border:.5px solid var(--border-btn);border-radius:var(--radius-card);background:var(--bg-000);padding:6px 8px}
+.queue-head{font-size:11px;color:var(--text-400);margin:0 2px 4px}
+.queue-row{display:flex;align-items:baseline;gap:8px;padding:3px 2px;font-size:12px;min-width:0}
+.queue-pos{color:var(--text-400);flex:none;font-variant-numeric:tabular-nums}
+.queue-preview{color:var(--text-200);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.queue-meta{color:var(--text-400);font-size:11px;flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.queue-cancel{flex:none}
+/* A message typed while a turn was running: shown in the transcript in the
+   order it will run, but visibly not yet the live one. */
+.msg.user.queued .bubble{opacity:.72}
+/* A message that was queued and then dropped stays legible on purpose: the
+   user can re-send it, which they cannot do with a bubble that vanished. */
+.msg.user.cancelled .bubble{opacity:.5;text-decoration:line-through}
+#composer.queueing::placeholder{font-style:italic}
+
+/* The stored identity of a failed turn, inline on the message it belongs to.
+   Muted: it is a support id and a warning, not part of the conversation. */
+.msg-failure-meta { margin-top: 6px; font-size: 12px; opacity: .72; line-height: 1.5; }
+.msg-failure-meta:empty { display: none; }

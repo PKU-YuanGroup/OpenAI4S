@@ -112,20 +112,53 @@ class BackgroundExecutor:
         self._lock = threading.Lock()
         self._closed = False
 
+    #: Concurrently RUNNING background cells. Each one owns a kernel
+    #: subprocess of its own, so this bounds PROCESSES rather than
+    #: bookkeeping: a finished job stays in the registry for `exec_peek` and
+    #: does not hold a slot. There was no cap at all -- a loop calling
+    #: `host.exec_background` forked a worker per iteration until the machine
+    #: ran out of pids or memory, and nothing on the path said no.
+    MAX_ACTIVE_JOBS = 16
+
     def launch(self, code: str, origin: str = "agent") -> dict:
+        exec_id = f"exec-{uuid.uuid4().hex[:12]}"
+        job = _BackgroundJob(exec_id, code)
+        # Claim the slot BEFORE the kernel exists. The old order checked
+        # `_closed`, released the lock, spawned, and registered afterwards --
+        # so any number of concurrent launches passed the check together and
+        # every one of them spawned. A limit tested there would have been
+        # tested against processes that already existed, which is not a limit.
+        # Registering first makes the slot count the thing being limited.
         with self._lock:
             if self._closed:
                 raise RuntimeError("background executor is closed")
-        exec_id = f"exec-{uuid.uuid4().hex[:12]}"
-        job = _BackgroundJob(exec_id, code)
-        job._kernel = self._kernel_factory()
+            active = sum(1 for j in self._jobs.values() if j.status == "running")
+            if active >= self.MAX_ACTIVE_JOBS:
+                raise RuntimeError(
+                    f"{active} background cells are already running (limit "
+                    f"{self.MAX_ACTIVE_JOBS}); interrupt one with "
+                    f"host.exec_interrupt or wait for it to finish"
+                )
+            self._jobs[exec_id] = job
+        try:
+            job._kernel = self._kernel_factory()
+        except BaseException:
+            # A spawn failure has to give the slot back, or the cap leaks one
+            # slot per failure and eventually refuses every launch on a machine
+            # that is now perfectly able to serve them.
+            with self._lock:
+                self._jobs.pop(exec_id, None)
+            raise
         with self._lock:
             if self._closed:
+                # `shutdown()` ran while we were spawning. It walked a job whose
+                # `_kernel` was still None, so this worker is ours to stop --
+                # nobody else has a handle on it.
+                self._jobs.pop(exec_id, None)
                 try:
                     job._kernel.shutdown()
                 finally:
                     raise RuntimeError("background executor is closed")
-            self._jobs[exec_id] = job
 
         def _run() -> None:
             try:
@@ -189,22 +222,30 @@ class BackgroundExecutor:
             if job.status != "running":
                 continue
             stopped += 1
-            try:
-                job._kernel.interrupt()
-            except Exception:  # noqa: BLE001 — advance to the exact hard stop
-                pass
+            kernel = job._kernel
+            if kernel is not None:
+                try:
+                    kernel.interrupt()
+                except Exception:  # noqa: BLE001 — advance to the exact hard stop
+                    pass
             thread = job._thread
             if thread is not None:
                 thread.join(timeout=max(0.0, timeout_per_job))
-            # ``thread`` is None during the launch() window between registering
-            # the job and assigning its thread; the kernel worker already exists
-            # (created before registration), so it must still be hard-killed
-            # here or it leaks a running background worker past teardown.
+            # ``thread`` is None during the launch() window between claiming a
+            # slot and starting the runner, and ``_kernel`` is None for the part
+            # of that window before the spawn returns -- the slot is claimed
+            # first, on purpose. A worker that appears after this point is not
+            # leaked: launch() re-reads ``_closed`` once it has spawned and
+            # shuts down the worker it just created. Re-read ``_kernel`` here
+            # rather than reuse the value from before the join, which may have
+            # been None then and real now.
             if thread is None or thread.is_alive():
-                try:
-                    job._kernel.kill_worker()
-                except Exception:  # noqa: BLE001 — worker may already be dead
-                    pass
+                kernel = job._kernel
+                if kernel is not None:
+                    try:
+                        kernel.kill_worker()
+                    except Exception:  # noqa: BLE001 — worker may already be dead
+                        pass
                 if thread is not None:
                     thread.join(timeout=max(0.0, timeout_per_job))
         return stopped

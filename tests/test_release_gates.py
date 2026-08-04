@@ -198,7 +198,11 @@ def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
         "scripts/release_pipeline.py",
         "scripts/verify_release_tag.py",
         "git cat-file -t",
-        "git merge-base --is-ancestor HEAD origin/main",
+        # The ancestor check moved into the `freeze` job and now names the peeled
+        # SHA rather than `HEAD`. It lived in `build`, whose `HEAD` was that job's
+        # own independent checkout of a mutable tag -- so it asserted something
+        # about whatever the tag pointed at when that one job ran.
+        'git merge-base --is-ancestor "$SHA" origin/main',
         "scripts/source_secret_scan.py",
         "scripts/verify_release_artifacts.py",
         "python-package-distributions",

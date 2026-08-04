@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from openai4s.bash_capability import CAPABILITY_VERSION, command_digest
+from openai4s.execution.budget import channel_counters
 
 DEFAULT_TTL_SECONDS = 15.0
 MAX_TTL_SECONDS = 60.0
@@ -530,6 +531,23 @@ class BashAuthorizationService:
         except (TypeError, ValueError):
             duration_ms = 0
 
+        def cut(stream: str, text: str) -> dict[str, Any]:
+            """The worker's count, clamped -- never recomputed from `len(text)`.
+
+            `len(text) == 30_000` is the same number for a command that printed
+            exactly the budget and for one that printed five million
+            characters, so this side cannot derive the fact; only the drainer
+            that watched every chunk go past knows it. What this side can do is
+            refuse a claim smaller than what it is holding, the way `exit_code`
+            and `status` above are clamped rather than trusted.
+            """
+            try:
+                claimed = int(spec.get(f"{stream}_seen_chars") or 0)
+            except (TypeError, ValueError):
+                claimed = 0
+            seen = max(len(text), claimed)
+            return channel_counters(seen=seen, retained=len(text), unit="chars")
+
         def safe_paths(key: str) -> list[str]:
             values = diff.get(key) or ()
             if not isinstance(values, (list, tuple)):
@@ -546,13 +564,19 @@ class BashAuthorizationService:
             "duration_ms": duration_ms,
             "stdout": {
                 "chars": len(stdout),
+                # Of what was kept, which is all this side ever had. Recorded
+                # beside the counts below rather than alone: presented on its
+                # own it read as the command's stdout digest, and for a cut
+                # stream it is the digest of the tail.
                 "sha256": hashlib.sha256(stdout.encode("utf-8", "replace")).hexdigest(),
                 "preview": redact_shell_text(stdout, limit=2000),
+                **cut("stdout", stdout),
             },
             "stderr": {
                 "chars": len(stderr),
                 "sha256": hashlib.sha256(stderr.encode("utf-8", "replace")).hexdigest(),
                 "preview": redact_shell_text(stderr, limit=1200),
+                **cut("stderr", stderr),
             },
             "workspace_diff": {
                 "created": safe_paths("created"),

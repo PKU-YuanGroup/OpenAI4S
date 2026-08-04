@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 import openai4s.compute.manager as manager_mod
+from openai4s.compute import registry
 from openai4s.compute.manager import ComputeError, ComputeManager
 from openai4s.compute.safe_archive import UnsafeArchiveError, safe_extract_tar
 
@@ -36,6 +37,11 @@ def mgr(tmp_path):
     (tmp_path / "data").mkdir()
     (tmp_path / "skills").mkdir()
     (tmp_path / "ws").mkdir()
+    # `lab` is registered because the product refuses an unregistered
+    # destination before it spawns ssh. Without this the fixture drives a
+    # state an agent cannot reach: `submit` is only callable through a door
+    # that has already checked the alias.
+    registry.add_host("lab", data_dir=tmp_path / "data")
     return ComputeManager(cfg, workspace=tmp_path / "ws")
 
 

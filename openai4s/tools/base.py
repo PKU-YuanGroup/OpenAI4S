@@ -48,6 +48,19 @@ class Tool:
     permission_target_key: str | None = None
     permission_target_default: str = ""
     secret_path_key: str | None = None
+    #: This tool writes files, but the destination is derived by the host rather
+    #: than named by the caller, so `secret_path_key` has nothing to refuse.
+    #: `compute_result` is the case: its harvest lands under
+    #: `<workspace>/hpc/<job_id>/`, where `job_id` is regex-sanitised and
+    #: containment-checked by `ComputeManager._safe_harvest_dest`.
+    #:
+    #: This exists so the "every file-writing tool declares a secret-path
+    #: refusal" invariant can distinguish the two cases instead of being
+    #: loosened. It is an exemption from *that* check only, and
+    #: `tests/test_compute_owner_and_harvest.py` requires the confinement it
+    #: claims to be real -- a declaration nothing verifies is the failure mode
+    #: this codebase keeps finding.
+    derived_write_path: bool = False
     screen_untrusted_output: bool = False
     # The Host uses these declarations for durable audit events and future
     # resource-aware scheduling. They are separate from permission targets:
@@ -79,6 +92,7 @@ class Tool:
         "permission_target_key",
         "permission_target_default",
         "secret_path_key",
+        "derived_write_path",
         "screen_untrusted_output",
         "side_effect_class",
         "resource_key_prefix",

@@ -216,6 +216,14 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             {
                 "frame_id": fid,
                 "running": runner.is_running(fid),
+                # The frame's own terminal state, which `running` cannot give:
+                # `running: false` is true of a session that completed, one
+                # that was cancelled and one that failed alike. A client
+                # reopening a session had no authoritative way to learn which,
+                # so it could not restore a failure that had already ended --
+                # and the alternative, reading a cached session list, is stale
+                # by construction.
+                "status": (runner.store.get_frame(fid) or {}).get("status"),
                 "kernel": runner.kernel_status(fid),
             }
         )

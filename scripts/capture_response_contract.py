@@ -130,7 +130,10 @@ def document(routes: dict[str, dict]) -> dict:
             "written by hand. Regenerate with "
             "scripts/capture_response_contract.py. `kinds` is derived from the "
             "status and content type the handler actually sent; a route absent "
-            "here is one nothing could drive, which is a gap in the tests."
+            "here is one nothing could drive, which is a gap in the tests. "
+            "`content_types` is what was observed and not a closed set: an "
+            "artifact download echoes whatever media type its stored file has, "
+            "so the entry names one the capture served rather than all of them."
         ),
         "routes": routes,
     }

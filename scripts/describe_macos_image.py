@@ -90,6 +90,52 @@ def describe_signature(app: Path) -> dict:
     }
 
 
+def describe_notarization(dmg: Path) -> dict:
+    """Whether a notarization ticket is actually stapled to this image.
+
+    The release gate previously recorded `notarized: None` and read it nowhere,
+    so a Developer-ID-signed image with no notarization satisfied it — and
+    Gatekeeper rejects exactly that image on a user's machine. `stapler validate`
+    is the local check for an attached ticket and is what Gatekeeper consults
+    offline, so it is the evidence worth carrying. `spctl` is recorded alongside
+    as the assessment a first launch performs; it is informational because it
+    depends on the runner's own policy state.
+
+    Both are recorded as return codes plus clipped output. Neither is turned into
+    a claim here: `read_signature` in the pipeline decides, and it additionally
+    requires the result to be bound to this image's digest.
+    """
+    stapler = _run(["xcrun", "stapler", "validate", str(dmg)])
+    assess = _run(
+        [
+            "spctl",
+            "--assess",
+            "--type",
+            "open",
+            "--context",
+            "context:primary-signature",
+            "-vv",
+            str(dmg),
+        ]
+    )
+    return {
+        "stapler_returncode": stapler.returncode,
+        "stapler_detail": ((stapler.stdout or "") + (stapler.stderr or "")).strip()[
+            :400
+        ],
+        "spctl_returncode": assess.returncode,
+        "spctl_detail": ((assess.stdout or "") + (assess.stderr or "")).strip()[:400],
+        # The single derived fact the gate reads. A missing `xcrun`/`stapler`
+        # (returncode != 0 for any reason) is not notarized, which is the
+        # fail-closed direction.
+        "notarized": stapler.returncode == 0,
+        "note": (
+            "xcrun stapler validate on the built image; a non-zero result means no "
+            "notarization ticket is stapled and Gatekeeper will refuse the image"
+        ),
+    }
+
+
 def describe_components(app: Path) -> dict:
     """Every distribution installed in the image's embedded runtime."""
     runtime = app / "Contents" / "Resources" / "runtime"
@@ -155,6 +201,11 @@ def describe(dmg: Path) -> tuple[dict, dict]:
         signature = describe_signature(app)
         components = describe_components(app)
         version = _bundle_version(app)
+    # Notarization is a property of the image, not of the .app inside it, so it
+    # is read after unmounting and merged into the same sidecar the gate already
+    # consults. Keeping it in one document means the gate cannot read the
+    # signature while missing the ticket, which is the shape of the old defect.
+    signature.update(describe_notarization(dmg))
     image_digest = _sha256(dmg)
     signature["image"] = dmg.name
     # Bind the receipt to the exact image it describes. Without a digest a
@@ -195,6 +246,7 @@ def main(argv: list[str]) -> int:
         )
         print(
             f"{dmg.name}: {kind}; "
+            f"notarized={'yes' if signature.get('notarized') else 'no'}; "
             f"{len(components.get('packages') or [])} embedded package(s)"
         )
     return 0

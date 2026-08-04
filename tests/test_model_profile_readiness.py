@@ -139,16 +139,37 @@ def test_the_probe_refuses_to_spend_a_request_it_knows_will_fail(tmp_path, monke
     assert result["state"] == "needs_key"
 
 
-def test_a_failed_probe_reports_the_providers_own_words_redacted(tmp_path, monkeypatch):
-    """Rewriting the message would lose the one detail that tells a user
-    whether it is their key, their model name or their network."""
-    import openai4s.llm as llm_module
+def test_a_failed_probe_names_the_cause_without_quoting_the_provider(
+    tmp_path, monkeypatch
+):
+    """The concern this test used to encode is real; the mechanism was not.
 
-    monkeypatch.setattr(
-        llm_module,
-        "chat",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("model not found: bogus-1")),
-    )
+    It was named `..._reports_the_providers_own_words_redacted` and asserted
+    that the provider's text reached `detail`, on the argument that rewriting it
+    "would lose the one detail that tells a user whether it is their key, their
+    model name or their network". Keeping that distinction is right. Getting it
+    by publishing the provider's prose is not: `redact_text` is shape-based, and
+    measured against a real 403 body it replaces a credential-shaped token while
+    `10.4.2.17:8443`, `/Users/<name>/.certs/corp-ca.pem` and
+    `org-Acme-Research-Lab` all survive into a 200 body and the Customize ->
+    Models panel. `errors.py` had already removed `redact_text` for exactly this.
+
+    So the distinction now comes from `status`/`error_code` -- fields this
+    codebase sets on `TransportError` -- which is what `gateway._friendly_error`
+    does for the turn path. Same information, no provider text.
+    """
+    import openai4s.llm as llm_module
+    from openai4s.llm.models import TransportError
+
+    def _fail(*a, **k):
+        raise TransportError(
+            "chat failed (404): {'error': 'no model bogus-1 at /srv/models'}",
+            provider="claude",
+            status=404,
+            error_code="model_not_found",
+        )
+
+    monkeypatch.setattr(llm_module, "chat", _fail)
     store, service = _service(tmp_path)
     service.create(
         {
@@ -161,7 +182,16 @@ def test_a_failed_probe_reports_the_providers_own_words_redacted(tmp_path, monke
     )
     result = service.probe(store.list_model_profiles()[0]["id"])
     assert result["contacted"] is True and result["reachable"] is False
-    assert "model not found" in result["detail"]
+    # The cause is still distinguishable -- a wrong model name, not a bad key.
+    assert "does not have a model by that name" in result["detail"]
+    # And the provider's own text is not in it.
+    assert "/srv/models" not in result["detail"]
+    assert "bogus-1" not in result["detail"]
+    # Correlatable instead: a stable code. `request_id` is the gateway's, so it
+    # is present when a request made this call and absent for a direct service
+    # call like this one -- the field exists either way.
+    assert result["code"] == "probe_failed"
+    assert "request_id" in result
 
 
 def test_probing_an_unknown_profile_is_a_404(tmp_path):
@@ -169,3 +199,42 @@ def test_probing_an_unknown_profile_is_a_404(tmp_path):
     with pytest.raises(ModelProfileError) as refused:
         service.probe("mp-nope")
     assert refused.value.status_code == 404
+
+
+def test_a_probe_never_publishes_what_redaction_does_not_catch(tmp_path, monkeypatch):
+    """The measurement that decided this, kept as a test.
+
+    `redact_text` is shape-based. Against a real provider body it replaces a
+    credential-shaped token and lets everything else through, and "everything
+    else" on a failed TLS or auth call includes the absolute path of a cert
+    (with the account name in it), an internal address, and an org identifier.
+    All three reached a 200 body and the Customize -> Models panel.
+    """
+    import openai4s.llm as llm_module
+    from openai4s.llm.models import TransportError
+
+    def _fail(*a, **k):
+        raise TransportError(
+            "LLM HTTP 403: connect 10.4.2.17:8443 via "
+            "/Users/alice/.certs/corp-ca.pem for org-Acme-Research-Lab",
+            provider="claude",
+            status=403,
+            error_code="forbidden",
+        )
+
+    monkeypatch.setattr(llm_module, "chat", _fail)
+    store, service = _service(tmp_path)
+    service.create(
+        {
+            "name": "C",
+            "provider": "claude",
+            "base_url": "https://y",
+            "model": "m",
+            "api_key": "abc123def456ghi789",
+        }
+    )
+    detail = service.probe(store.list_model_profiles()[0]["id"])["detail"]
+
+    for leaked in ("10.4.2.17", "/Users/alice", "corp-ca.pem", "org-Acme-Research-Lab"):
+        assert leaked not in detail, detail
+    assert "not permitted to use this model" in detail

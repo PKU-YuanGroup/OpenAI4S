@@ -42,6 +42,11 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             "get_model_capabilities",
             "provider_specs",
             "supports_vision",
+            # The triple-aware sibling. `supports_vision` answers for the
+            # provider's default model at its default endpoint, which is not
+            # what a configured session sends; the gateway's pre-flight has to
+            # ask about the exact provider+endpoint+model a call would use.
+            "supports_vision_for",
         }
     ),
     "openai4s.webtools": frozenset(

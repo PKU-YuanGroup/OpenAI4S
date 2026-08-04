@@ -9,6 +9,8 @@ cannot bound that, because length is the thing that varies.
 
 from __future__ import annotations
 
+import time
+
 from openai4s import memory_budget
 
 
@@ -251,18 +253,35 @@ def test_a_pasted_protocol_no_longer_fills_the_window(tmp_path):
     the user had typed anything. The assertion is a fixed character count, not
     a multiple of the constants under test: expressing it in terms of the
     budget is how the image-attachment tests ended up unable to fail.
+
+    Seeded through SQL rather than `add_memory`, because the write path now
+    refuses a 10,000-character memory outright. These rows are still reachable
+    -- they are what an install that predates the limit already holds, and what
+    a session import carries -- and the injection budget is what has to hold
+    the line for them.
     """
     runner = _runner(tmp_path)
     store = runner.store
     store.set_setting("memory_enabled", "1")
     store.create_project(name="alpha", description="", context="")
     alpha = {p["name"]: p["project_id"] for p in store.list_projects()}["alpha"]
-    for index in range(60):
-        store.add_memory(
-            content=f"protocol {index}: " + "x" * 10_000,
-            block="general",
-            project_id=alpha,
-        )
+    now = int(time.time() * 1000)
+    with store._lock:
+        for index in range(60):
+            store._conn.execute(
+                "INSERT INTO memories(memory_id,project_id,block,content,"
+                "created_at) VALUES(?,?,?,?,?)",
+                (
+                    f"legacy-{index}",
+                    alpha,
+                    "general",
+                    f"protocol {index}: " + "x" * 10_000,
+                    # Recent, so this stays a test of the *size* budget rather
+                    # than accidentally becoming one of the retention window.
+                    now - index,
+                ),
+            )
+        store._conn.commit()
 
     state = runner._state(runner.create_session(alpha), alpha)
     runner._seed_messages(state)

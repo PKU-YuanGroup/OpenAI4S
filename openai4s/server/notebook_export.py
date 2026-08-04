@@ -23,6 +23,15 @@ class CellStore(Protocol):
     def get_session_checkpoint(self, checkpoint_id: str) -> dict | None:
         ...
 
+    def list_branch_messages(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        ...
+
 
 _LANGUAGE = {
     "python": {
@@ -40,6 +49,11 @@ _LANGUAGE = {
         "file_extension": ".r",
     },
 }
+
+
+#: Bounded so one document cannot become a file listing, and the cut is
+#: announced rather than silent.
+_MAX_RENDERED_INPUTS = 200
 
 
 class NotebookExportService:
@@ -135,6 +149,171 @@ class NotebookExportService:
                 archive.writestr(info, data)
         return output.getvalue()
 
+    @staticmethod
+    def _refs_from_metadata(metadata: Any) -> list[Mapping[str, Any]]:
+        """The refs a message recorded, parsed strictly and from metadata only.
+
+        `metadata` comes back from the store as a JSON *string*, and it is
+        free-form: anything a future writer puts there arrives here too. So the
+        shape is checked rather than assumed, and the message *body* is never
+        looked at -- the `@name#version` text in it is what the resolver read,
+        not what it resolved to, and after a copy it can name a version this
+        session cannot see.
+        """
+        if type(metadata) is str:
+            try:
+                metadata = json.loads(metadata)
+            except (ValueError, TypeError):
+                return []
+        if not isinstance(metadata, Mapping):
+            return []
+        refs = metadata.get("artifact_refs")
+        if not isinstance(refs, list):
+            return []
+        return [ref for ref in refs if isinstance(ref, Mapping)]
+
+    def _referenced_artifacts(self, root_frame_id: str, branch_id: str) -> list[dict]:
+        """The artifacts this branch's turns were given, pinned as they were.
+
+        Read from the messages rather than the cells because that is where the
+        choice lives: a reference is something the researcher wrote into a
+        turn, and it is resolved to an exact version at send time. The cells
+        only ever see files.
+
+        Branch-aware on purpose. `list_messages` returns the frame's rows;
+        `list_branch_messages` runs the production projector, so a fork
+        inherits its parent's inputs and a revert stops naming the files an
+        abandoned turn referenced -- which would otherwise leak an abandoned
+        file name and version into a document meant for publication.
+
+        `limit=None` because `list_branch_messages` defaults to 300, and a
+        provenance list that is quietly partial is worse than absent: a reader
+        cannot tell. There is deliberately no `TypeError` fallback around this
+        call -- one would swallow a `TypeError` raised *inside* the reader and
+        silently return to the paged default, which is the same silent-partial
+        failure in a shape that is harder to see.
+        """
+        messages = self.store.list_branch_messages(
+            root_frame_id, branch_id=branch_id, limit=None
+        )
+        seen: set[str] = set()
+        out: list[dict] = []
+        for message in messages or ():
+            if not isinstance(message, Mapping):
+                continue
+            for ref in self._refs_from_metadata(message.get("metadata")):
+                name = ref.get("display_name")
+                version = ref.get("version_id")
+                if type(name) is not str or not name:
+                    continue
+                if type(version) is not str:
+                    version = ""
+                # Keyed on the version, because that is the identity: the same
+                # pinned version cited twice -- or under an alias -- is one
+                # input, and two versions of one file are two. An unpinned
+                # reference has no version to key on, so it falls back to the
+                # name rather than collapsing every unpinned file into one.
+                key = f"v:{version}" if version else f"n:{name}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"display_name": name, "version_id": version})
+        return out
+
+    def markdown(self, root_frame_id: str, *, branch_id: str | None = None) -> bytes:
+        """Render the branch as one Markdown document.
+
+        The `.ipynb` forms are for re-running the work; this one is for reading
+        it and for pasting it somewhere that is not Jupyter -- an issue, a lab
+        notebook, a supplementary methods section. Both languages appear in the
+        one file, in execution order, because the interleaving *is* the record:
+        splitting them apart is what the bundle already offers and it loses
+        which R cell answered which Python cell.
+
+        Structured rather than pretty-printed. Every cell carries its index,
+        language and state revision in a heading a reader can cite, and its
+        output is fenced rather than indented so a traceback survives a
+        round trip through anything that reflows text. Nothing here re-derives
+        a cell's content: it is the same `_branch_cells` the notebooks use, so
+        the two exports cannot disagree about what ran.
+        """
+        selected = branch_id or root_frame_id
+        cells = self._branch_cells(root_frame_id, selected)
+        lines: list[str] = [
+            f"# Session {root_frame_id}",
+            "",
+            f"- branch: `{selected}`",
+            f"- cells: {len(cells)}",
+            "- history is read-only; this document is a rendering, not a source",
+            "",
+        ]
+        # Provenance, and only provenance. This document is meant to be pasted
+        # into "an issue, a lab notebook, a supplementary methods section", and
+        # a methods section whose inputs are unnamed is the kind of incomplete
+        # that matters: the reader cannot tell which version of which file
+        # produced the numbers, and the session knows, because the reference
+        # was pinned when the turn was sent. The message text around it is the
+        # researcher's unpublished thinking and is a separate decision from
+        # naming the file it pointed at, so it is not exported here.
+        inputs = self._referenced_artifacts(root_frame_id, selected)
+        if inputs:
+            lines.append("## Inputs")
+            lines.append("")
+            lines.append(
+                "Artifacts referenced by this session's turns, at the version "
+                "that was sent."
+            )
+            lines.append("")
+            for item in inputs[:_MAX_RENDERED_INPUTS]:
+                version = item["version_id"]
+                pinned = f"version `{version}`" if version else "unpinned"
+                lines.append(f"- `{item['display_name']}` — {pinned}")
+            if len(inputs) > _MAX_RENDERED_INPUTS:
+                lines.append(
+                    f"- ...and {len(inputs) - _MAX_RENDERED_INPUTS} more, "
+                    "not listed here"
+                )
+            lines.append("")
+        for index, cell in enumerate(cells, start=1):
+            language = str(cell.get("language") or "python").lower()
+            revision = self._state_revision(cell, fallback=index)
+            lines.append(f"## Cell {index} — {language} (state revision {revision})")
+            lines.append("")
+            source = str(cell.get("code") or cell.get("source") or "")
+            fence = "r" if language == "r" else "python"
+            lines.append(f"```{fence}")
+            lines.append(source.rstrip("\n"))
+            lines.append("```")
+            lines.append("")
+            # The same three fields `_cell` reads, so the two exports cannot
+            # disagree about what a cell produced.
+            for name, label in (("stdout", "Output"), ("stderr", "Stderr")):
+                text = str(cell.get(name) or "").rstrip("\n")
+                if not text:
+                    continue
+                lines.append(f"{label}:")
+                lines.append("")
+                lines.append("```text")
+                lines.append(text)
+                lines.append("```")
+                lines.append("")
+            figures = list(cell.get("figures") or ())
+            if figures:
+                lines.append("Artifacts: " + ", ".join(f"`{item}`" for item in figures))
+                lines.append("")
+            error = str(cell.get("error") or "").rstrip("\n")
+            if error:
+                # Kept, and labelled. A failed cell is part of the record --
+                # dropping it would make the document describe a run that went
+                # smoothly, which is the one thing a reader must not conclude.
+                lines.append("Error:")
+                lines.append("")
+                lines.append("```text")
+                lines.append(error)
+                lines.append("```")
+                lines.append("")
+        return ("\n".join(lines).rstrip("\n") + "\n").encode("utf-8")
+
     def export(
         self,
         root_frame_id: str,
@@ -145,7 +324,11 @@ class NotebookExportService:
         """Return immutable bytes plus the exact HTTP descriptor Gateway needs."""
 
         stem = self._safe_stem(root_frame_id)
-        if language is None or str(language).lower() == "bundle":
+        if language is not None and str(language).lower() == "markdown":
+            data = self.markdown(root_frame_id, branch_id=branch_id)
+            filename = f"{stem}.md"
+            content_type = "text/markdown; charset=utf-8"
+        elif language is None or str(language).lower() == "bundle":
             data = self.bundle(root_frame_id, branch_id=branch_id)
             filename = f"{stem}.notebooks.zip"
             content_type = "application/zip"

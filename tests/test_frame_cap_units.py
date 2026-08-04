@@ -154,13 +154,45 @@ def test_an_oversized_frame_still_answers_the_caller(monkeypatch):
 def test_every_file_writing_tool_refuses_secret_paths():
     """The defect, as the asymmetry it was. Written as "every tool that writes"
     rather than naming `web_download`, so a fourth one cannot be added without
-    this failing."""
+    this failing.
+
+    `derived_write_path` is the one exemption, and it is narrow: it means the
+    caller names no destination, so `secret_path_key` has nothing to refuse.
+    `compute_result` is the case — its harvest lands under
+    `<workspace>/hpc/<job_id>/`, where `job_id` is regex-sanitised and
+    containment-checked. The exemption is not taken on trust:
+    `tests/test_compute_owner_and_harvest.py` drives `_safe_harvest_dest` with a
+    traversing id and a symlinked directory, so a tool cannot claim it and skip
+    the confinement.
+    """
     missing = [
         tool.name
         for tool in (cls() for cls in TOOL_TYPES)
-        if tool.writes_files and not tool.secret_path_key
+        if tool.writes_files
+        and not tool.secret_path_key
+        and not tool.derived_write_path
     ]
     assert missing == [], f"these write files with no secret-path refusal: {missing}"
+
+
+def test_the_derived_path_exemption_is_not_a_way_out_of_the_refusal():
+    """A tool may not declare both: naming a destination argument *and* claiming
+    the destination is host-derived is a contradiction, and the pair would read as
+    protection while the invariant above skipped it."""
+    both = [
+        tool.name
+        for tool in (cls() for cls in TOOL_TYPES)
+        if tool.derived_write_path and tool.secret_path_key
+    ]
+    assert both == [], f"these claim a derived path and also name one: {both}"
+
+    # And the exemption is only meaningful for tools that write at all.
+    idle = [
+        tool.name
+        for tool in (cls() for cls in TOOL_TYPES)
+        if tool.derived_write_path and not tool.writes_files
+    ]
+    assert idle == [], f"these declare a derived write path but write nothing: {idle}"
 
 
 def test_web_download_names_its_destination_argument():

@@ -334,6 +334,40 @@ class FrameRepository:
             "created_at": now,
         }
 
+    def update_message_metadata(self, message_id: str, patch: dict) -> dict | None:
+        """Merge keys into one message's metadata blob after it is written.
+
+        The user message has to exist *before* its `@`-references are resolved:
+        resolving may materialise a sibling session's file into this workspace,
+        and the message row plus the fork checkpoint taken from it are the
+        branch point that must be durable before anything writes. So the
+        structured references arrive a moment late and are merged in rather
+        than passed at INSERT.
+
+        Merged, not replaced: the blob is shared with whatever else a caller
+        stamps on a message, and an overwrite here would silently drop it.
+        """
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT metadata FROM messages WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                current = json.loads(row["metadata"] or "{}")
+            except (TypeError, ValueError):
+                current = {}
+            if not isinstance(current, dict):
+                current = {}
+            current.update(dict(patch or {}))
+            self._connection.execute(
+                "UPDATE messages SET metadata=? WHERE message_id=?",
+                (json.dumps(current, ensure_ascii=False), message_id),
+            )
+            self._connection.commit()
+        return current
+
     def list_messages(
         self,
         root_frame_id: str,
@@ -411,8 +445,13 @@ class FrameRepository:
             params.extend((max(0, int(limit)), max(0, int(start))))
         with self._lock:
             rows = self._connection.execute(
+                # `m.metadata` rides along because the structured artifact
+                # references a message was sent with live there, and the
+                # conversation route is the only reader that can restore them
+                # on reopen. Without it the client had a `@name#v-id` string to
+                # re-parse and no way to learn which version was actually read.
                 "SELECT m.message_id,m.root_frame_id,m.branch_id,m.seq,m.role,"
-                "m.content,m.created_at,(SELECT "
+                "m.content,m.metadata,m.created_at,(SELECT "
                 "c.checkpoint_id FROM session_checkpoints AS c WHERE "
                 "c.root_frame_id=m.root_frame_id AND c.source_kind='message' "
                 "AND c.source_id=m.message_id LIMIT 1) AS fork_checkpoint_id "

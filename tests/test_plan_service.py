@@ -264,9 +264,15 @@ def test_execution_guards_and_revision_prompt(tmp_path):
 
     store, _events, service = _service(tmp_path, run_message)
     session = _session(tmp_path, store)
+    # Approve now refuses through `claim_approval`, the same compare-and-swap
+    # resume has used since two POSTs were found both executing the same steps.
+    # So the refusal carries the plan it lost to, exactly as resume's does --
+    # `plan_id`/`plan_status` are `None` here because there is no plan at all.
     assert service.run_execution(session.root_frame_id, "science") == {
         "status": "failed",
         "frame_id": session.root_frame_id,
+        "plan_id": None,
+        "plan_status": None,
         "error": "no plan to approve",
     }
     assert calls == []
@@ -298,14 +304,21 @@ def test_execution_guards_and_revision_prompt(tmp_path):
         steps=[{"id": "s1", "title": "Step"}],
         status="executing",
     )
+    # Per-status, not one flat "cannot approve": the caller's next move differs
+    # between "somebody else is already running it" and "this one is finished".
     assert service.run_execution(session.root_frame_id, "science") == {
         "status": "failed",
         "frame_id": session.root_frame_id,
-        "error": "plan already executing",
+        "plan_id": plan["plan_id"],
+        "plan_status": "executing",
+        "error": "only a draft plan can be approved; this one is executing",
     }
+    # And the losing claim leaves the row where it was rather than writing over
+    # a plan another turn owns -- the whole point of the swap.
+    assert store.get_plan(plan["plan_id"])["status"] == "executing"
     store.update_plan(plan["plan_id"], status="completed")
     assert service.run_execution(session.root_frame_id, "science")["error"] == (
-        "plan already completed"
+        "only a draft plan can be approved; this one is completed"
     )
     assert store.get_plan(plan["plan_id"])["status"] == "completed"
     assert calls == []
@@ -444,3 +457,48 @@ def test_a_paused_plan_with_nothing_left_completes_instead_of_running_a_turn(tmp
     assert result["resumed_steps"] == 0
     assert result["plan_status"] == "completed"
     assert store.get_plan(plan["plan_id"])["status"] == "completed"
+
+
+def test_a_skipped_step_is_settled_and_not_re_run(tmp_path):
+    """`skipped` is a more explicit decision than `failed`, and was left out.
+
+    The comment on `_SETTLED_STEP_STATUSES` argued exactly why `failed` counts
+    as a decision rather than an interruption, and then listed two members. The
+    status is in `PLAN_STEP_STATUSES`, `host.plan_update` accepts it without
+    coercion, and `app.js` gives it its own glyph -- so an agent could mark a
+    step skipped from a cell, see it rendered as skipped, and have resume run it
+    again anyway.
+    """
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _plan_with_steps(store, frame_id, ["skipped", "completed", None])
+
+    remaining = service.unfinished_steps(plan)
+    assert [step["id"] for step in remaining] == ["s3"]
+
+
+def test_the_resume_seed_names_a_skipped_step_among_the_settled(tmp_path):
+    """Settled means "do not redo", and the seed is where that is said."""
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _plan_with_steps(store, frame_id, ["skipped", None])
+
+    seed = service.resume_seed(plan, service.unfinished_steps(plan))
+    assert "s1" in seed and "不要重做" in seed
+
+
+def test_every_step_status_is_either_settled_or_deliberately_not(tmp_path):
+    """The partition has to cover the vocabulary, or the next status added is
+    unsettled by accident -- which is how `skipped` behaved for its whole life.
+
+    Asserted against `PLAN_STEP_STATUSES` rather than a second literal list, so
+    adding a status without deciding which side it falls on fails here.
+    """
+    from openai4s.host.progress import PLAN_STEP_STATUSES
+    from openai4s.server.plans import PlanService
+
+    settled = PlanService._SETTLED_STEP_STATUSES
+    unsettled = frozenset({"pending", "in_progress"})
+
+    assert settled | unsettled == frozenset(PLAN_STEP_STATUSES)
+    assert settled & unsettled == frozenset()

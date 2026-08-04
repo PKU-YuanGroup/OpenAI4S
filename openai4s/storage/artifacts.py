@@ -16,6 +16,13 @@ import sqlite3
 import uuid
 from typing import Any, Callable
 
+# The restore refusal type, imported rather than duplicated: these three
+# raises are author-written refusals on the same restore transaction the
+# service owns, and the caller distinguishes them from an OS-layer failure
+# by type. `artifact_restore` imports nothing from storage, so this is a
+# leaf dependency rather than a cycle.
+from openai4s.artifact_restore import ArtifactRestoreRefused
+
 Clock = Callable[[], int]
 Execute = Callable[[str, tuple], None]
 GetFrame = Callable[[str], dict | None]
@@ -671,6 +678,7 @@ class ArtifactRepository:
         frame_id: str | None,
         root_frame_id: str,
         project_id: str,
+        producing_cell_id: str | None = None,
     ) -> dict:
         """Copy another session's artifact version *into* this one, atomically.
 
@@ -766,7 +774,7 @@ class ArtifactRepository:
                         source["checksum"],
                         path,
                         snapshot_path,
-                        None,
+                        producing_cell_id,
                         frame_id,
                         now,
                         source["env_snapshot_id"],
@@ -790,7 +798,7 @@ class ArtifactRepository:
                         f"e-{uuid.uuid4().hex[:12]}",
                         source_version_id,
                         version_id,
-                        None,
+                        producing_cell_id,
                         frame_id,
                         now,
                     ),
@@ -854,11 +862,15 @@ class ArtifactRepository:
                     (source_version_id, artifact_id),
                 ).fetchone()
                 if artifact is None or source is None:
-                    raise KeyError("artifact restore source not found")
+                    raise ArtifactRestoreRefused("artifact restore source not found")
                 if artifact["latest_version_id"] != expected_latest_version_id:
-                    raise RuntimeError("artifact changed concurrently during restore")
+                    raise ArtifactRestoreRefused(
+                        "artifact changed concurrently during restore"
+                    )
                 if artifact["latest_version_id"] == source_version_id:
-                    raise ValueError("restore source is already the latest version")
+                    raise ArtifactRestoreRefused(
+                        "restore source is already the latest version"
+                    )
                 if source["checksum"] != checksum or (
                     source["size_bytes"] is not None
                     and int(source["size_bytes"]) != int(size_bytes)
@@ -1099,23 +1111,54 @@ class ArtifactRepository:
             ).fetchone()
         return row["p"] if row else None
 
-    def version_for_path(self, path: str) -> str | None:
+    def version_for_path(
+        self, path: str, *, root_frame_id: str | None, project_id: str
+    ) -> str | None:
+        """The version a path belongs to, within one session.
+
+        Scope is keyword-only and required, so an unscoped call is
+        unrepresentable rather than defaulted. It has to be: `artifact_versions`
+        carries no project column, this was the one artifact read keyed on a
+        filesystem path rather than an id, and the identity fallback below scans
+        *every* row in the database. An agent could hand it any absolute path
+        and learn whether another project held a version for it -- and the id it
+        got back then passed unvalidated into `prov_record`, whose lineage read
+        returns the input version's filename and path. An existence oracle that
+        escalates to disclosure.
+
+        The predicates go into both SELECTs rather than filtering afterwards.
+        Post-filtering is wrong and not merely slower: this returns one best
+        candidate, so discarding a foreign winner would answer None even when an
+        in-scope version for the same path exists further down the list.
+        """
+        root_clause = (
+            "a.root_frame_id=?"
+            if root_frame_id is not None
+            else "a.root_frame_id IS NULL"
+        )
+        root_args: tuple = (root_frame_id,) if root_frame_id is not None else ()
+        scope_args = (project_id, *root_args)
         with self._lock:
             exact = self._connection.execute(
-                "SELECT version_id,created_at,rowid AS version_rowid "
-                "FROM artifact_versions WHERE path=? "
-                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                (str(path),),
+                "SELECT v.version_id,v.created_at,v.rowid AS version_rowid "
+                "FROM artifact_versions v "
+                "JOIN artifacts a ON a.artifact_id=v.artifact_id "
+                f"WHERE a.project_id=? AND {root_clause} AND v.path=? "
+                "ORDER BY v.created_at DESC, v.rowid DESC LIMIT 1",
+                (*scope_args, str(path)),
             ).fetchone()
             identity = self._identify_file(path)
             if identity is None:
                 return exact["version_id"] if exact else None
             if exact:
                 candidates = self._connection.execute(
-                    "SELECT version_id,path FROM artifact_versions WHERE "
-                    "created_at>? OR (created_at=? AND rowid>?) "
-                    "ORDER BY created_at DESC, rowid DESC",
+                    "SELECT v.version_id,v.path FROM artifact_versions v "
+                    "JOIN artifacts a ON a.artifact_id=v.artifact_id "
+                    f"WHERE a.project_id=? AND {root_clause} AND "
+                    "(v.created_at>? OR (v.created_at=? AND v.rowid>?)) "
+                    "ORDER BY v.created_at DESC, v.rowid DESC",
                     (
+                        *scope_args,
                         exact["created_at"],
                         exact["created_at"],
                         exact["version_rowid"],
@@ -1123,8 +1166,11 @@ class ArtifactRepository:
                 ).fetchall()
             else:
                 candidates = self._connection.execute(
-                    "SELECT version_id,path FROM artifact_versions "
-                    "ORDER BY created_at DESC, rowid DESC"
+                    "SELECT v.version_id,v.path FROM artifact_versions v "
+                    "JOIN artifacts a ON a.artifact_id=v.artifact_id "
+                    f"WHERE a.project_id=? AND {root_clause} "
+                    "ORDER BY v.created_at DESC, v.rowid DESC",
+                    scope_args,
                 ).fetchall()
         for candidate in candidates:
             if self._identify_file(candidate["path"]) == identity:

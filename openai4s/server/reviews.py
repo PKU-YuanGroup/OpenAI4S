@@ -240,7 +240,12 @@ class ReviewService:
         if not readable:
             return None
         try:
-            data = Path(path).read_bytes()[:8_000]
+            # Read-bounded, for the reason `artifact_refs._read_snapshot` gives:
+            # slicing after `read_bytes()` caps the excerpt, not the allocation.
+            # This is the only other instance of that pattern in `openai4s/`,
+            # and fixing one of two is the defect this ticket already is.
+            with Path(path).open("rb") as handle:
+                data = handle.read(8_000)
         except OSError:
             return None
         return data.decode("utf-8", errors="replace")

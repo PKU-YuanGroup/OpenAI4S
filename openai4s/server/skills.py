@@ -13,6 +13,7 @@ import shutil
 from typing import Any
 
 from openai4s.skills_loader import SkillLoader, SkillVersionService, frontmatter_edit
+from openai4s.skills_loader.loader import skill_readiness
 
 #: Every domain failure this service can report, as a stable machine-readable
 #: code and the HTTP status the gateway turns it into.
@@ -352,6 +353,26 @@ class SkillCustomizationService:
                 if distribution == "project"
                 else "personal"
             )
+            # The loader computes both of these and this projection dropped
+            # them, so the Web catalogue could not tell a GPU-only Skill from
+            # one that runs anywhere: only the agent-facing host surface saw
+            # the difference, and the user met it mid-task. Passed through
+            # rather than recomputed -- two readiness answers for one Skill is
+            # worse than none, because they can disagree.
+            requirements = (
+                [str(entry) for entry in (item.get("requirements") or ())]
+                if isinstance(item, dict)
+                else []
+            )
+            readiness = item.get("readiness") if isinstance(item, dict) else None
+            if not isinstance(readiness, dict):
+                # A loader that answers without a readiness block still gets
+                # one, from the same function the loader uses -- not a
+                # hardcoded "ready", which would be a promise nobody checked.
+                # Local-only by construction: `skill_readiness` looks for
+                # `nvidia-smi` on PATH and never runs it, so building a row
+                # costs no subprocess and no socket.
+                readiness = skill_readiness(requirements)
             installation = None
             if self.versions is not None and item_scope == self.scope:
                 try:
@@ -377,6 +398,12 @@ class SkillCustomizationService:
                     "scope": item_scope,
                     "editable": editable.get(name, origin == "user"),
                     "enabled": name not in disabled_names,
+                    # Beside `enabled`, never folded into it: a disabled Skill
+                    # can be perfectly ready and an enabled one can be missing
+                    # its hardware, so merging them tells a user who flipped
+                    # the toggle that they made the Skill work.
+                    "requirements": requirements,
+                    "readiness": readiness,
                     "versioned": bool(installation),
                     "activeVersionId": (
                         installation.get("active_version_id")

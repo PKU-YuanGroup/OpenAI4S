@@ -864,6 +864,10 @@ def test_submit_message_runs_turn_in_background(tmp_path):
         plan=False,
         annos=None,
         explore=False,
+        # What the item was ACCEPTED under, carried from the request thread. The
+        # freeze used to be written only to the frame, whose pin the rebind route
+        # rewrites by design -- so a queued follow-up could adopt it after 202.
+        frozen_binding=None,
     ):
         started.set()
         assert root_frame_id == "f-test"
@@ -1143,6 +1147,10 @@ def test_explore_flag_passes_through_submit_message(tmp_path):
         plan=False,
         annos=None,
         explore=False,
+        # What the item was ACCEPTED under, carried from the request thread. The
+        # freeze used to be written only to the frame, whose pin the rebind route
+        # rewrites by design -- so a queued follow-up could adopt it after 202.
+        frozen_binding=None,
     ):
         seen["explore"] = explore
         return {"status": "completed", "frame_id": root_frame_id}
@@ -1582,13 +1590,22 @@ def test_frame_update_status_literal_vocabulary(tmp_path):
     exactly {processing, titled, failed, success, updated}; the run_message
     terminal site emits a VARIABLE status ∈ {completed, failed, cancelled}
     (asserted behaviorally by the structured-submit and max-turn tests above).
-    If this fails, a status was added/removed — update docs/webapp-api.md."""
+    If this fails, a status was added/removed — update docs/webapp-api.md.
+
+    The *vocabulary* is what docs/webapp-api.md promises, so the vocabulary is
+    what is locked. This used to also require at least seven emit sites, which
+    made deduplication look like a contract change: folding two copies of the
+    terminal failure event into `_terminal_failure_event` reddened it while
+    emitting exactly the same statuses. Collapsing a literal into the helper
+    that owns it is the direction this file should encourage, so the terminal
+    failure status is now asserted at that helper instead of counted.
+    """
     from openai4s.server import titles as titles_mod
 
     src = Path(gateway_mod.__file__).read_text(encoding="utf-8")
     src += Path(titles_mod.__file__).read_text(encoding="utf-8")
     sites = list(re.finditer(r'"type": "frame_update"', src))
-    assert len(sites) >= 7  # the emit sites documented today
+    assert sites, "no frame_update emit site is visible; this test sees nothing"
     literals = set()
     for m in sites:
         window = src[m.end() : m.end() + 250]
@@ -1596,6 +1613,20 @@ def test_frame_update_status_literal_vocabulary(tmp_path):
         if s:
             literals.add(s.group(1))
     assert literals == {"processing", "titled", "failed", "success", "updated"}
+
+    # The one status no longer written at more than one emit site. It is built
+    # by a named helper, so it is checked by calling it -- which also pins that
+    # a failed turn's terminal event carries the ids the client needs to tell
+    # it from the next turn's.
+    job = gateway_mod.MessageJob("job-vocab", "root-vocab")
+    job.execution_id = "exec-vocab"
+    terminal = gateway_mod.SessionRunner._terminal_failure_event(
+        None, "root-vocab", job
+    )
+    assert terminal["type"] == "frame_update"
+    assert terminal["status"] == "failed"
+    assert terminal["request_id"] == job.request_id
+    assert terminal["execution_id"] == "exec-vocab"
 
 
 def test_auto_title_broadcasts_titled_frame_update(monkeypatch, tmp_path):
@@ -1736,10 +1767,19 @@ def test_token_gate_401_and_cookie_redirect(monkeypatch, tmp_path, capsys):
     assert "HttpOnly" in resp["headers"]["Set-Cookie"]
 
     resp["headers"].clear()
-    handler.path = f"/preview/abc?token={token}&mode=raw"
+    handler.path = f"/?token={token}&mode=raw"
     handler._route("GET")
     assert resp["code"] == 303
-    assert resp["headers"]["Location"] == "/preview/abc?mode=raw"
+    assert resp["headers"]["Location"] == "/?mode=raw"
+
+    # ...but a path that answers with data may not be bootstrapped at all.
+    # `/preview/<id>` streams artifact bytes, so a link carrying a token there
+    # used to set the cookie and then hand the file to whoever held the link.
+    resp["headers"].clear()
+    handler.path = f"/preview/abc?token={token}&mode=raw"
+    handler._route("GET")
+    assert replies[-1][0] == 401
+    assert "Set-Cookie" not in resp["headers"]
 
 
 def test_gateway_error_maps_to_error_envelope(tmp_path):
@@ -1765,8 +1805,15 @@ def test_gateway_error_maps_to_error_envelope(tmp_path):
 
 
 def test_unhandled_exception_maps_to_500_error_envelope(tmp_path, capsys):
-    """A non-GatewayError exception under /api/* becomes a 500 with the
-    same {"error": str(e)} envelope (and never a raw traceback body)."""
+    """A non-GatewayError exception under /api/* becomes a 500 whose body says
+    nothing about the exception.
+
+    This used to assert `{"error": str(e)}` -- it pinned the leak. An
+    exception nobody wrote a message for carries whatever the raising code
+    happened to interpolate, which in practice is a path, an argv or a
+    credential, so the projector replaces it. See
+    tests/test_public_exception_projector.py for the canary that proves it.
+    """
     cfg = _cfg(tmp_path)
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
@@ -1782,7 +1829,12 @@ def test_unhandled_exception_maps_to_500_error_envelope(tmp_path, capsys):
     handler.path = "/api/v1/anything"
     handler._route("GET")
 
-    assert replies[-1] == (500, {"error": "kaput"})
+    code, body = replies[-1]
+    assert code == 500
+    assert "kaput" not in json.dumps(body)
+    assert body["error"] == gateway_mod.INTERNAL_ERROR_MESSAGE
+    assert body["code"] == "internal_error"
+    assert body["request_id"]
     capsys.readouterr()  # swallow the printed traceback
 
 
@@ -3232,17 +3284,17 @@ def _probe_route(handler_cls, headers, path, method="GET"):
     return seen[-1] if seen else None
 
 
-def test_a_query_token_bootstraps_only_a_navigation(tmp_path, monkeypatch):
+def test_a_query_token_bootstraps_only_the_root_page(tmp_path, monkeypatch):
     """A URL with a credential in it is a shareable credential.
 
     It gets pasted into chat, logged by a proxy and kept in browser history.
     The gate accepted `?token=` on *any* GET, so
     `/api/v1/artifacts/<id>/download?token=…` was a link that hands over the
     file to whoever holds it -- no redirect, no cookie hand-off, the response
-    body is the payload. On a path that serves the SPA shell the same link buys
-    only the bootstrap it was minted for, and the 303 strips it immediately.
-
-    Deep links keep working: the redirect goes to the same path, not to "/".
+    body is the payload. Excluding `/api/v1/` and `/static/` narrowed that but
+    did not close it: `/preview/<id>` is neither, and it answers with artifact
+    bytes. Only the root page -- the one URL the product ever prints -- may be
+    bootstrapped, and the 303 strips the credential immediately.
     """
     from openai4s.server import local_auth
 
@@ -3253,8 +3305,12 @@ def test_a_query_token_bootstraps_only_a_navigation(tmp_path, monkeypatch):
     token = local_auth.read_token(cfg.data_dir)
     try:
         assert _probe_route(handler_cls, {}, f"/?token={token}") == 303
-        assert _probe_route(handler_cls, {}, f"/session/abc?token={token}") == 303
-        # Data paths: refused, even with a valid token in the query.
+        assert _probe_route(handler_cls, {}, f"/index.html?token={token}") == 303
+        # Everything else: refused, even with a valid token in the query.
+        # `/preview/<id>` is the one that mattered -- it is not under the API
+        # prefix, so the old subtractive rule bootstrapped it.
+        assert _probe_route(handler_cls, {}, f"/session/abc?token={token}") == 401
+        assert _probe_route(handler_cls, {}, f"/preview/abc?token={token}") == 401
         assert _probe_route(handler_cls, {}, f"/api/v1/frames?token={token}") == 401
         assert _probe_route(handler_cls, {}, f"/static/app.js?token={token}") == 401
         # And a mutation is refused on every path, navigation or not.
@@ -3397,19 +3453,32 @@ def test_every_request_serving_spawn_goes_through_the_helper():
     )
 
 
-def test_a_job_built_outside_a_request_omits_the_field_rather_than_nulling_it():
-    """A `request_id: null` reads as "this request had no id". What it would
-    actually mean is that there was no request -- a daemon-lifetime sweep, a
-    recovery pass -- and the error envelope already has a way to say that."""
+def test_a_job_built_outside_a_request_mints_its_own_id_rather_than_none():
+    """A direct submit -- the CLI, a recovery replay -- has no HTTP request
+    behind it, and this used to leave the field off entirely. That was the
+    smaller of two wrongs: `run_message` minted its own id for the socket
+    regardless, so the 202 and the job query were nameless while the stream
+    carried an id nothing else knew. One id the caller can quote everywhere
+    beats an honest absence that the next layer contradicts."""
     from openai4s.observability import reset_correlation_id, set_correlation_id
 
     token = set_correlation_id("")
     try:
         job = gateway_mod.MessageJob("job-2", "root-2")
+        assert job.request_id, "a job built outside a request has no id at all"
         job.finish(error="boom")
         result = job.wait_result()
-        assert "request_id" not in result
+        assert result["request_id"] == job.request_id
         assert result["error"] == "boom"
+
+        # Portable: it travels in a header, a JSON body and a log line, so it
+        # has to survive all three unescaped.
+        assert re.fullmatch(r"[A-Za-z0-9_-]{8,64}", job.request_id), job.request_id
+
+        # And minted per job, not shared. Two turns that cannot be told apart
+        # are the defect this id exists to close.
+        other = gateway_mod.MessageJob("job-3", "root-2")
+        assert other.request_id != job.request_id
     finally:
         reset_correlation_id(token)
 

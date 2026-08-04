@@ -17,8 +17,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from openai4s.artifact_restore import ArtifactRestoreService, trusted_snapshot_roots
+from openai4s.artifact_restore import (
+    ArtifactRestoreRefused,
+    ArtifactRestoreService,
+    trusted_snapshot_roots,
+)
 from openai4s.execution import CaptureResult
+from openai4s.server.errors import record_diagnostic
 
 _JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
 _EMBEDDED_IMAGE_TYPES = frozenset(
@@ -247,6 +252,42 @@ class ArtifactManager:
             raise PermissionError("artifact live path escapes its workspace") from error
         return target
 
+    def stage_version_bytes(self, filename: str, data: bytes) -> Path:
+        """Freeze bytes under a pending name, before any version row exists.
+
+        The strict half of `write_version_snapshot`, and the reason it exists:
+        that method swallows `OSError`, so on the upload path a failed snapshot
+        left a *committed* version whose `snapshot_path` was NULL and whose
+        frozen bytes were nowhere -- and the call still returned success. The
+        comment directly above the call said "a committed version must never
+        lack the frozen bytes its checksum describes"; the code said otherwise,
+        and `ArtifactRestoreService.verified_snapshot_bytes` refuses exactly
+        that version, so the upload reported success and produced something no
+        restore could ever read.
+
+        Swallowing is right for `protect_latest`, which backfills opportunistically
+        and must not fail a turn. It is wrong here, where the write is the thing
+        that makes a version legitimate. Writing under a pending name lets the
+        caller do it *before* the row is created, so a failure happens while
+        nothing is visible rather than after the commit.
+        """
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
+        directory = self.versions_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        pending = directory / f".pending-{uuid.uuid4().hex}__{safe}"
+        pending.write_bytes(data)
+        return pending
+
+    def promote_version_bytes(
+        self, version_id: str, filename: str, pending: Path
+    ) -> Path:
+        """Give staged bytes their version-scoped name and record it."""
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
+        final = self.versions_dir() / f"{version_id}__{safe}"
+        os.replace(str(pending), str(final))
+        self.store.set_version_snapshot(version_id, str(final))
+        return final
+
     def write_version_snapshot(
         self,
         version_id: str,
@@ -316,8 +357,21 @@ class ArtifactManager:
                 source_version_id=version_id,
                 frame_id=artifact.get("root_frame_id"),
             )
-        except (KeyError, OSError, PermissionError, RuntimeError, ValueError) as error:
-            return {"error": f"restore failed: {error}"}
+        except ArtifactRestoreRefused as refusal:
+            # Author-written, and the product: "checksum verification failed" is
+            # exactly what the user has to be told, and suppressing it to be
+            # safe would leave them with a restore that failed for no stated
+            # reason.
+            return {"error": f"restore failed: {refusal}", "code": "restore_refused"}
+        except (KeyError, OSError, RuntimeError, ValueError) as error:
+            # Anything else escaped from the OS layer with its own text. An
+            # `OSError` here names the snapshot it could not read -- an absolute
+            # path under the data directory, so the account's username -- and
+            # this dict is the body of
+            # `POST /artifacts/<id>/versions/<vid>/restore`. The original goes
+            # to the operator record, redacted once and paired with the id.
+            record_diagnostic(error, surface="artifacts:restore")
+            return {"error": "restore failed", "code": "restore_failed"}
 
         current_artifact = self.store.get_artifact(artifact_id)
         root_frame_id = artifact.get("root_frame_id")
@@ -386,7 +440,10 @@ class ArtifactManager:
             live.parent.mkdir(parents=True, exist_ok=True)
             live.write_text(content, encoding="utf-8")
         except OSError as error:
-            raise ArtifactOperationError(500, f"write failed: {error}") from error
+            # Same reason as `restore` above: `strerror` arrives with the
+            # absolute path it failed on, and a 500 body is a public surface.
+            record_diagnostic(error, surface="artifacts:write")
+            raise ArtifactOperationError(500, "write failed") from error
 
         record = self.store.save_artifact(
             path=str(live),
@@ -519,10 +576,38 @@ class ArtifactManager:
         *,
         broadcast: Broadcast | None = None,
     ) -> dict:
-        """Decode and register one JSON/base64 upload as a versioned artifact."""
+        """Decode and register one JSON/base64 upload as a versioned artifact.
+
+        The ordering is the contract. This used to be
+        `target.write_bytes(raw)` followed by the same-name lookup and then
+        `save_artifact`, whose scope resolution can still refuse -- so a
+        `project_id` that did not match the frame's left the previous version's
+        row naming a path whose bytes were now the *rejected* upload's. That is
+        client-reachable rather than theoretical: `app.js` sends
+        `S.project || undefined` and this method defaults the field to
+        `"default"`, so an upload into a non-default-project session with the
+        field omitted takes exactly that branch.
+
+        Now every refusal happens first, the bytes are staged beside the target,
+        and the live file is replaced only once the version is committed and its
+        immutable snapshot written. A failure anywhere leaves the previous live
+        bytes, the Artifact head, the checksum, the version count and the event
+        count all unchanged.
+        """
         filename = payload.get("filename") or f"upload-{uuid.uuid4().hex[:8]}"
         frame_id = payload.get("frame_id")
-        project_id = payload.get("project_id") or "default"
+        # `None` when the client said nothing, not `"default"`.
+        #
+        # `artifact_write_scope` treats a non-None `project_id` as an assertion
+        # about the frame's project and refuses when the two disagree -- which
+        # is right. Defaulting here turned "the client did not say" into "the
+        # client said `default`", so uploading into any session outside the
+        # `default` project raised `project_id conflicts with producer frame`
+        # from a request that named no project at all. Every session in a real
+        # project was un-uploadable-to. The resolver already falls back to
+        # `"default"` itself when there is no producer frame, so the frameless
+        # case is unchanged.
+        project_id = payload.get("project_id")
         raw = self._upload_bytes(payload)
 
         workspace = (
@@ -530,24 +615,71 @@ class ArtifactManager:
         )
         workspace.mkdir(parents=True, exist_ok=True)
         target = workspace / Path(filename).name
-        target.write_bytes(raw)
+
+        # Both of these can refuse, and neither touches disk.
+        try:
+            _explicit, _root, project_id = self.store.artifact_write_scope(
+                frame_id=frame_id, project_id=project_id
+            )
+        except ValueError as conflict:
+            # A scope disagreement is the caller's, not the daemon's. It used to
+            # leave the repository as a bare `ValueError`, reach the dispatcher's
+            # catch-all and be answered `500 internal_error` -- so a client that
+            # named the wrong project was told the server had broken, with
+            # nothing to act on. The message is the repository's own and names
+            # only field names.
+            raise ArtifactOperationError(409, str(conflict)) from conflict
         existing = (
             self.store.artifact_by_filename(target.name, frame_id, strict=True)
             if frame_id
             else None
         )
-        record = self.store.save_artifact(
-            path=str(target),
-            filename=target.name,
-            content_type=self.guess_content_type(target.name),
-            size_bytes=len(raw),
-            checksum=hashlib.sha256(raw).hexdigest(),
-            frame_id=frame_id,
-            project_id=project_id,
-            is_user_upload=True,
-            artifact_id=(existing["artifact_id"] if existing else None),
-        )
-        self.write_version_snapshot(record["version_id"], target.name, data=raw)
+
+        # Both stages happen before any row exists, so everything that can fail
+        # on the way in fails while nothing is visible: no version, no live
+        # file, no event. The old order committed the row first and then wrote
+        # the snapshot through a call that swallows `OSError`, which is how a
+        # successful-looking upload produced a version no restore could read.
+        staged = target.with_name(f"{target.name}.{uuid.uuid4().hex[:8]}.part")
+        pending: Path | None = None
+        try:
+            staged.write_bytes(raw)
+            pending = self.stage_version_bytes(target.name, raw)
+        except OSError as error:
+            staged.unlink(missing_ok=True)
+            if pending is not None:
+                pending.unlink(missing_ok=True)
+            record_diagnostic(error, surface="artifacts:upload:stage")
+            raise ArtifactOperationError(500, "upload staging failed") from error
+        try:
+            record = self.store.save_artifact(
+                path=str(target),
+                filename=target.name,
+                content_type=self.guess_content_type(target.name),
+                size_bytes=len(raw),
+                checksum=hashlib.sha256(raw).hexdigest(),
+                frame_id=frame_id,
+                project_id=project_id,
+                is_user_upload=True,
+                # Committed already pointing at bytes that exist. Between here
+                # and `promote_version_bytes` the row names the pending file,
+                # which is a worse *name* and the same bytes -- the invariant
+                # that matters holds throughout.
+                snapshot_path=str(pending),
+                artifact_id=(existing["artifact_id"] if existing else None),
+            )
+        except Exception:
+            # Nothing was made visible: drop both stages and let the caller see
+            # the refusal.
+            staged.unlink(missing_ok=True)
+            pending.unlink(missing_ok=True)
+            raise
+        try:
+            self.promote_version_bytes(record["version_id"], target.name, pending)
+            os.replace(str(staged), str(target))
+        except Exception:
+            staged.unlink(missing_ok=True)
+            raise
         self._notify(
             frame_id,
             {

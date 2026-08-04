@@ -40,7 +40,7 @@ from .catalog import (
     unregister_model_preset,
 )
 from .client import chat as _client_chat
-from .client import supports_vision
+from .client import supports_vision, supports_vision_for
 from .models import LLMError, TransportError, parse_retry_after
 from .providers.anthropic import _ANTHROPIC_VERSION
 from .registry import (
@@ -85,6 +85,7 @@ __all__ = [
     "register_provider",
     "set_capability_override",
     "supports_vision",
+    "supports_vision_for",
     "unregister_model_preset",
     "unregister_provider",
     "validate_model_request",

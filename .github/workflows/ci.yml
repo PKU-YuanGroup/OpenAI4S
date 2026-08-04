@@ -51,6 +51,7 @@ jobs:
     # updated -- an actor-based exemption makes Dependabot PRs unmergeable
     # through the front door. The head ref is the thing the policy is about.
     if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'dependabot/')
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     steps:
       - name: Check head branch name
@@ -69,6 +70,7 @@ jobs:
 
   lint:
     name: Lint (pre-commit)
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,11 +81,28 @@ jobs:
         run: uv sync --locked
       - name: pre-commit (black, isort, ruff, mypy, hygiene hooks)
         run: uv run pre-commit run --all-files
+
+  # Its own job, not a second step in `lint`. As a step it could only ever run
+  # when pre-commit had already passed, so a branch that failed formatting and
+  # added an undocumented directory reported one problem and hid the other --
+  # and the doc gap is the one a reviewer cannot see in the diff.
+  docs-coverage:
+    name: Bilingual per-directory documentation
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: uv sync --locked
       - name: Verify bilingual per-directory documentation coverage
         run: uv run python scripts/check_directory_readmes.py
 
   type-check:
     name: Type safety (core orchestration boundary)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,6 +116,7 @@ jobs:
 
   source-security:
     name: Source credential scan
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,6 +128,7 @@ jobs:
 
   release-artifacts:
     name: Build and install wheel/sdist
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -144,6 +165,10 @@ jobs:
     # no WSL, which also makes it the right place to prove the refusal path
     # refuses instead of proceeding.
     runs-on: windows-latest
+    # Every job here carries one. A PowerShell parse that hangs would otherwise
+    # hold a Windows runner for the six-hour default, and this job arrived from
+    # a branch that predated the rule.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Parse the launcher
@@ -184,6 +209,7 @@ jobs:
 
   test:
     name: Offline tests (py${{ matrix.python-version }})
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -194,6 +220,15 @@ jobs:
         python-version: ["3.10", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history on exactly one matrix entry. `tests/test_plan_crosswalk.py`
+          # asserts that the crosswalk's `baseline` and `audited_at` are real
+          # commits and that the audit is reachable from HEAD -- and the default
+          # depth-1 checkout does not contain those objects, so the check can
+          # only skip. Deepening one job makes it a check CI actually performs
+          # instead of one that is enforced on developer machines and nowhere
+          # else; deepening all three would pay for the same answer twice more.
+          fetch-depth: ${{ matrix.python-version == '3.12' && 0 || 1 }}
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -219,23 +254,72 @@ jobs:
       - name: Run the offline suite (no secrets, no network, no hardware)
         # addopts already passes -q; a second -q would suppress the summary line.
         run: uv run pytest
+
+  # Three gates that used to be steps in `test`, after `pytest`. A step can only
+  # run when every step before it passed, so all three were unreachable whenever
+  # one unrelated test was red — and a run that reported "tests failed" was
+  # indistinguishable from one where the harness goldens had also drifted and
+  # the response contract had also moved. Independent jobs answer three
+  # questions instead of one, and each is legible on its own.
+
+  harness-contracts:
+    name: Harness scenario contracts
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: uv sync --locked
       - name: Run deterministic harness contracts
         run: uv run python -m harness.cli run --tier pr --offline
-      # Reruns the suite with the response capture installed and compares what
-      # the routes returned against docs/response-schemas.json. One matrix entry
-      # is enough: the shapes are the server's, not the interpreter's.
-      - name: Check the frozen response shapes still match reality
-        if: matrix.python-version == '3.12'
-        run: uv run python scripts/capture_response_schemas.py --check
-      # The companion gate: every route the router can match must have a
-      # recorded response *kind* and status, not only the ones that return
-      # JSON. Cheap — it drives the surface directly rather than rerunning the
-      # suite — so it is not restricted to one matrix entry.
+
+  # Every route the router can match must have a recorded response *kind* and
+  # status, not only the ones that return JSON. Cheap: it drives the surface
+  # directly rather than rerunning the suite.
+  response-contract:
+    name: Route response contract
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev and science dependencies
+        run: uv sync --locked --extra science
       - name: Check every route still has a response contract
         run: uv run python scripts/capture_response_contract.py --check
 
+  # Reruns the suite with the response capture installed and compares what the
+  # routes returned against docs/response-schemas.json. The shapes are the
+  # server's, not the interpreter's, so one interpreter is enough.
+  #
+  # This one genuinely cannot answer while the suite is red — a failing suite
+  # exercises fewer routes, so any drift it reported would be an artefact of the
+  # failures rather than a real change, and the script refuses rather than
+  # guessing. Its own job anyway: "the schema gate did not get to run" and "the
+  # schema gate ran and passed" are different facts, and as a step behind pytest
+  # they looked identical on the summary page.
+  response-schemas:
+    name: Frozen response shapes
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev, science, and chemistry dependencies
+        run: uv sync --locked --extra science --extra chemistry
+      - name: Check the frozen response shapes still match reality
+        run: uv run python scripts/capture_response_schemas.py --check
+
   browser-smoke:
     name: Browser workbench E2E (${{ matrix.engine }})
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     # Chromium is the engine the app is developed against, so it is the one
     # least likely to surprise anyone. The defects a matrix catches are the
@@ -293,6 +377,19 @@ jobs:
           # it runs in every engine.
           if [ "${{ matrix.engine }}" = "chromium" ]; then
             node tests/browser_smoke.mjs
+            # The admission fault case: the POST reaches the daemon and
+            # succeeds, the response is destroyed on the way back, and the page
+            # has to reconcile from an id it stored before dispatch. Chromium
+            # only, for the same reason the walk is -- it is depth, not breadth
+            # -- but it has to run somewhere, because a browser file no gate
+            # invokes is not evidence of anything.
+            node tests/browser_admission_fault.mjs
+            # The P1-A/P1-B controls. Chromium-only for the same reason as the
+            # two above, and listed here because the audit's finding was not
+            # "these controls are broken" but "no browser file mentions them" --
+            # a file this job does not invoke would reproduce that finding
+            # exactly, with a green tick on top.
+            node tests/browser_p1_controls.mjs
           fi
           node tests/browser_matrix.mjs --browser=${{ matrix.engine }}
       - name: Show daemon log after a failure
@@ -302,6 +399,7 @@ jobs:
   macos-sandbox-smoke:
     name: macOS sandbox enforcement (nightly)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 25
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -334,6 +432,7 @@ jobs:
     # day. Nightly and manual only: it downloads a runtime plus ~1 GB of
     # wheels, which is not a cost to put on every contributor's PR.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -358,6 +457,7 @@ jobs:
     # contributor's PR, and the script exits non-zero only on real schema drift,
     # never on an upstream being unreachable. See scripts/connector_canary.py.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

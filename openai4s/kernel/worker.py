@@ -292,7 +292,15 @@ def _attach_cell_context(method: str, args: list) -> list:
     message type.
     """
     cell_id = _ACTIVE_CELL_ID[0]
-    if method != "save_artifact" or not cell_id or not args:
+    # `materialise_artifact` too. It writes a version like `save_artifact` does,
+    # and without the cell identity that version carries `producing_cell_id`
+    # NULL -- which is the exact column the end-of-cell capture matches on, so
+    # the capture could never reuse it and made a second version of the same
+    # bytes. The lineage edge stayed on the first, leaving the artifact head
+    # with no inputs.
+    if method not in ("save_artifact", "materialise_artifact") or not cell_id:
+        return args
+    if not args:
         return args
     spec = args[0]
     if not isinstance(spec, dict):
@@ -463,26 +471,84 @@ def _install_host(ns: dict) -> None:
         _write_frame({"type": "log", "msg": f"provenance unavailable: {e}"})
 
 
-class _StreamingStdout(io.StringIO):
+class _BoundedBuffer(io.StringIO):
+    """A capture buffer that stops RETAINING at `MAX_OUTPUT`.
+
+    Bounding at the producer and bounding at the response builder yield the
+    same string and a completely different peak, which is why nothing caught
+    this: the visible result was always correct. `_cap` ran once the whole
+    payload was already in worker RAM. Measured on this file before the change,
+    a cell doing 200 x `sys.stderr.write('x' * 1_000_000)` peaked at 452 MB to
+    keep 1 MB of it. Peak here is the cap plus at most one incoming chunk.
+
+    An `io.StringIO` subclass rather than a bare `io.TextIOBase`: this object
+    stands in for `sys.stderr` inside user code, and a cell is entitled to find
+    the same surface the plain `StringIO` gave it before.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._retained = 0
+        #: Whether anything was dropped. Retaining exactly `MAX_OUTPUT` makes
+        #: the result indistinguishable from output that simply ended there, so
+        #: the buffer has to say so itself -- otherwise the captured stream is
+        #: silently short, which is the failure this whole change is about.
+        self.truncated = False
+
+    @property
+    def full(self) -> bool:
+        """Whether anything further would be dropped.
+
+        Read by `_bounded_format_exc`, which uses it to stop pulling chunks out
+        of the traceback generator rather than format frames it would throw
+        away one line later.
+        """
+        return self._retained >= MAX_OUTPUT
+
+    def write(self, s: str) -> int:  # type: ignore[override]
+        if not s:
+            return 0
+        room = MAX_OUTPUT - self._retained
+        if room > 0:
+            kept = s if len(s) <= room else s[:room]
+            super().write(kept)
+            self._retained += len(kept)
+            if len(kept) < len(s):
+                self.truncated = True
+        else:
+            self.truncated = True
+        # Report the length HANDED OVER, never the length retained. A short
+        # return means "partial write" to every stdlib caller: `print` treats it
+        # as a failed write and retries the remainder, which would turn a
+        # bounded stream into a loop.
+        return len(s)
+
+    def captured(self) -> str:
+        value = self.getvalue()
+        # Exactly one marker per stream, appended here rather than at each
+        # write, so a stream cut across a hundred writes still says so once.
+        return value + _TRUNCATION_MARKER if self.truncated else value
+
+
+class _StreamingStdout(_BoundedBuffer):
     """Captures stdout AND streams stdout_chunk frames live, both bounded.
 
     Charged as the output is produced rather than when the response is built.
     `_cap` at the end of the cell was the only bound, and it runs far too late
     to matter: by then the whole string is already in worker RAM, and every
     intermediate `write` has already been forwarded verbatim as its own frame.
+
+    The retention half of that now lives in `_BoundedBuffer`, shared with cell
+    stderr. Two near-identical bounded writers in one file is how the two
+    streams drifted apart in the first place -- stdout got the fix and stderr
+    did not.
     """
 
     def __init__(self, cell_id: str) -> None:
         super().__init__()
         self._cell_id = cell_id
-        self._retained = 0
         self._streamed = 0
         self._marked = False
-        #: Whether anything was dropped. Retaining exactly `MAX_OUTPUT` makes
-        #: the result indistinguishable from output that simply ended there, so
-        #: the buffer has to say so itself -- otherwise the final `stdout` is
-        #: silently short, which is the failure this whole change is about.
-        self.truncated = False
 
     def _emit(self, text: str) -> None:
         _write_frame({"type": "stdout_chunk", "id": self._cell_id, "text": text})
@@ -490,15 +556,7 @@ class _StreamingStdout(io.StringIO):
     def write(self, s: str) -> int:  # type: ignore[override]
         if not s:
             return 0
-        room = MAX_OUTPUT - self._retained
-        if room > 0:
-            kept = s[:room]
-            super().write(kept)
-            self._retained += len(kept)
-            if len(kept) < len(s):
-                self.truncated = True
-        else:
-            self.truncated = True
+        super().write(s)  # retention bound and `truncated` live in the base
 
         budget = MAX_OUTPUT - self._streamed
         if budget > 0:
@@ -514,6 +572,64 @@ class _StreamingStdout(io.StringIO):
         # Report the full length. `print` treats a short return as a failed
         # write and retries, which would turn a bounded stream into a loop.
         return len(s)
+
+
+def _cap(s: str) -> str:
+    """Head-cap a string that is ALREADY materialised.
+
+    The last resort, not the strategy: every stream a cell can grow without
+    bound is now bounded while it is being written. What is left for this are
+    the short sentences the worker composes itself, plus one that is not short
+    -- a trapped `SystemExit`'s message, which exists whole in the cell's own
+    frame before the worker ever sees it.
+
+    Module level because the `except` clauses need it, and a nested definition
+    further down `_run_cell` does not exist yet when they run.
+
+    `len` on a str counts characters, so the old "bytes" in this message was
+    wrong -- and the R worker, which does gate on bytes, says so in its own
+    units. Named for what it measures rather than made to agree by coincidence.
+    """
+    if len(s) <= MAX_OUTPUT:
+        return s
+    return s[:MAX_OUTPUT] + _TRUNCATION_MARKER
+
+
+def _bounded_format_exc(exc: BaseException) -> str:
+    """Format an exception without ever holding the whole traceback.
+
+    `traceback.format_exc()` joins every chunk first and hands the result to
+    `_cap`, which keeps the first megabyte -- so a large traceback was paid for
+    in full before anything refused it, and paid for again when the same string
+    was serialised into the response frame. Measured on a sixty-deep exception
+    chain whose links share one 1 MB message: 122 MB peak to produce 61 MB of
+    text, against 3 MB here.
+
+    `TracebackException.format()` is a generator, so the frames past the cap
+    are never formatted at all. What this does NOT bound is a single yielded
+    chunk: an exception's own message arrives as one string, so
+    `raise ValueError('x' * 200_000_000)` still costs 200 MB transiently --
+    though that string already exists in the cell's frame either way, and it is
+    never retained here. Bounding it would mean reimplementing
+    `format_exception_only`, which is a larger promise than this one makes.
+    """
+    buf = _BoundedBuffer()
+    try:
+        chunks = traceback.TracebackException.from_exception(exc).format()
+        for chunk in chunks:
+            buf.write(chunk)
+            if buf.full:
+                # Everything still inside the generator would be dropped, so
+                # stop formatting it -- that is the whole reason for using the
+                # generator form. One further chunk is pulled to tell "ended
+                # exactly at the cap" from "was cut", so the marker is never
+                # attached to complete output.
+                if next(chunks, None) is not None:
+                    buf.truncated = True
+                break
+    except BaseException:  # noqa: BLE001 - a hostile __repr__ must not eat the cell
+        buf.write(f"{type(exc).__name__}: <traceback could not be formatted>\n")
+    return buf.captured()
 
 
 def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
@@ -535,7 +651,12 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
         pass
 
     out_buf = _StreamingStdout(cell_id)
-    err_buf = io.StringIO()
+    # Bounded as it is written. This was a plain `io.StringIO` capped in the
+    # response builder -- exactly the mistake `_StreamingStdout` exists to fix
+    # on the other stream, left standing on this one. Not streamed: there is no
+    # `stderr_chunk` frame in the protocol and inventing one would be a
+    # protocol change this does not need.
+    err_buf = _BoundedBuffer()
     real_out, real_err = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = out_buf, err_buf
 
@@ -587,17 +708,22 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
         else:
             # user code did `raise KeyboardInterrupt`: normal error w/ lineno.
             tb = sys.exc_info()[2]
-            error_str = traceback.format_exc()
+            error_str = _bounded_format_exc(e)
             error_lineno, error_call = _error_lineno(tb, tag)
             error_str = error_str or f"KeyboardInterrupt: {e}"
     except (SystemExit, GeneratorExit) as e:
         # exit/quit must NOT kill the worker — trap and report.
         _in_user_code[0] = False
-        error_str = f"{type(e).__name__} trapped (worker kept alive): {e}"
-    except BaseException:  # noqa: BLE001 - capture everything for the agent
+        # `_cap` around the MESSAGE, not around the finished sentence. A
+        # `SystemExit('x' * 200_000_000)` would otherwise be interpolated whole
+        # before anything looked at its size -- and capping the sentence
+        # afterwards would append a second truncation marker to a string this
+        # call already marked.
+        error_str = f"{type(e).__name__} trapped (worker kept alive): " + _cap(str(e))
+    except BaseException as exc:  # noqa: BLE001 - capture everything for the agent
         _in_user_code[0] = False
         tb = sys.exc_info()[2]
-        error_str = traceback.format_exc()
+        error_str = _bounded_format_exc(exc)
         error_lineno, error_call = _error_lineno(tb, tag)
     finally:
         _in_user_code[0] = False
@@ -614,36 +740,24 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
         except Exception:  # noqa: BLE001
             guard_report = {}
 
-    def _cap(s: str) -> str:
-        # `len` on a str counts characters, so the old "bytes" in this message
-        # was wrong -- and the R worker, which does gate on bytes, says so in
-        # its own units. Named for what it measures rather than made to agree
-        # by coincidence.
-        if len(s) <= MAX_OUTPUT:
-            return s
-        return s[:MAX_OUTPUT] + _TRUNCATION_MARKER
-
-    def _capped_stdout() -> str:
-        value = out_buf.getvalue()
-        # The streaming buffer stops retaining at the cap, so `_cap` alone can
-        # no longer tell a truncated result from one that ended there.
-        if getattr(out_buf, "truncated", False):
-            return value + _TRUNCATION_MARKER
-        return _cap(value)
-
     response = {
         "type": "response",
         "id": cell_id,
-        "stdout": _capped_stdout(),
-        "stderr": _cap(err_buf.getvalue()),
-        # Capped like its two neighbours. It was not, and an exception carrying
-        # a large message -- `raise ValueError("x" * 12_000_000)`, or a
-        # traceback quoting a big repr -- pushed the whole response frame past
-        # `_MAX_FRAME_BYTES`. `_write_frame` then correctly refused to put it
-        # on the wire and sent a `log` in its place, so no response for this
-        # cell id ever arrived and `Kernel.execute` blocked until the watchdog
-        # killed the kernel. Verified: the cell had not returned after 90s.
-        "error": _cap(error_str) if error_str else error_str,
+        # All three were bounded while they were produced, so each already
+        # carries its own single truncation marker; capping again here would
+        # append a second one to a string that says it was cut once.
+        "stdout": out_buf.captured(),
+        "stderr": err_buf.captured(),
+        # `error` used to be capped right here and nowhere else -- and before
+        # that, not at all: an exception carrying a large message --
+        # `raise ValueError("x" * 12_000_000)`, or a traceback quoting a big
+        # repr -- pushed the whole response frame past `_MAX_FRAME_BYTES`.
+        # `_write_frame` then correctly refused to put it on the wire and sent
+        # a `log` in its place, so no response for this cell id ever arrived
+        # and `Kernel.execute` blocked until the watchdog killed the kernel.
+        # Verified: the cell had not returned after 90s. The bound now lives at
+        # the producer, which fixes the allocation the late cap never could.
+        "error": error_str,
         "interrupted": interrupted,
         "trace": {"error_lineno": error_lineno, "error_call": error_call},
         "guards": guard_report,

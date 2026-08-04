@@ -50,6 +50,7 @@ from openai4s.host.remote_science import RemoteScienceService
 from openai4s.host.session import SessionControlService
 from openai4s.host.skills import SkillService
 from openai4s.llm import chat
+from openai4s.storage.memories import MemoryLimitError
 from openai4s.storage.metadata import DERIVABLE_HOST_CALLS
 from openai4s.store import SECRET_ARG_HOST_CALLS, get_store
 from openai4s.tools.catalog import SessionToolCatalog
@@ -233,6 +234,15 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     if method == "save_artifact":
         fn = a.get("filename") or Path(a.get("path", "")).name
         return ("artifact", f"Saving {fn}", {"filename": fn})
+    if method == "materialise_artifact":
+        # Without a view the card falls back to the bare method name, and a
+        # gate nobody can read is a gate everybody clicks through.
+        fn = a.get("filename") or a.get("version_id") or "artifact"
+        return (
+            "artifact",
+            f"Copying {fn} in from another session",
+            {"filename": fn, "version_id": a.get("version_id")},
+        )
     if method == "get_artifact_metadata":
         return (
             "artifact",
@@ -387,6 +397,14 @@ GATEABLE_TOOLS = frozenset(
         "delegate",
         "exec_background",
         "save_artifact",
+        # Writing a file into the workspace was gated and copying another
+        # session's file into it was not, which is the asymmetry backwards:
+        # `save_artifact` persists bytes the cell already had, while this brings
+        # in bytes from a session the caller was never given. Plan section 7.1
+        # requires same-project cross-session access to pass an explicit
+        # capability; there was none, on either the Host RPC or the message
+        # path.
+        "materialise_artifact",
         "credentials_set",
         "skills_edit",
         "skills_delete",
@@ -414,6 +432,11 @@ def _gate_target(method: str, args: list) -> str:
         return a.get("path", "") or ""
     if method == "save_artifact":
         return a.get("filename") or a.get("path", "") or ""
+    if method == "materialise_artifact":
+        # The destination filename, not the source version id: a version id is
+        # single-use, so a durable "always allow" keyed on one could never match
+        # a second time and the rule would read as broken rather than narrow.
+        return a.get("filename") or a.get("version_id") or ""
     if method in ("web_fetch", "web_download"):
         return _domain(a.get("url", "")) or a.get("url", "") or ""
     if method == "web_search":
@@ -797,9 +820,20 @@ class HostDispatcher:
 
     @property
     def skill_loader(self) -> Any:
-        """The dispatcher-scoped loader shared by prompt and host retrieval."""
+        """The raw corpus. Not the prompt view -- see `skill_disclosure`."""
 
         return self._skill_service.loader
+
+    @property
+    def skill_disclosure(self) -> Any:
+        """The allowlist-aware view: what this session may be *told* exists.
+
+        Distinct from `skill_loader`, which is every skill on disk. A delegated
+        child's system prompt was rendered from the loader, so a denied skill
+        was still advertised to it by name and summary.
+        """
+
+        return self._skill_service
 
     @property
     def bash_generation_id(self) -> str | int | None:
@@ -876,10 +910,13 @@ class HostDispatcher:
         # `set_allowed_skills` only ever narrows, so applying it twice — which
         # a delegation chain does — cannot widen. `None` inherits.
         if policy is not None:
-            try:
-                self._skill_service.set_allowed_skills(policy.skill_names)
-            except Exception:  # noqa: BLE001 - a child must not die on this
-                pass
+            # Deliberately not wrapped in `except Exception: pass` any more.
+            # Both setters are pure set arithmetic over an already-validated
+            # policy, and a swallowed failure here is an allowlist that looks
+            # applied and is not — the exact shape of the defect this arming
+            # exists to close.
+            self._skill_service.set_allowed_skills(policy.skill_names)
+            self._mcp_service.set_allowed_connectors(policy.connector_names)
         self._session_tool_catalog = None
         self._session_tool_scope = None
 
@@ -1665,9 +1702,15 @@ class HostDispatcher:
             pid = (fr or {}).get("project_id") or "default"
         except Exception:  # noqa: BLE001
             pass
-        rec = self.store.add_memory(
-            content=content, block=spec.get("block") or "general", project_id=pid
-        )
+        try:
+            rec = self.store.add_memory(
+                content=content, block=spec.get("block") or "general", project_id=pid
+            )
+        except MemoryLimitError as error:
+            # Soft-fail, so the cell gets a RuntimeError it can act on. Letting
+            # this escape would kill the cell over a refused *side effect*,
+            # losing the analysis the agent was in the middle of.
+            return {"error": f"remember: {error}"}
         return {"ok": True, "memory_id": rec["memory_id"]}
 
     def _compute_available(self) -> bool:
@@ -1680,7 +1723,41 @@ class HostDispatcher:
 
     # --- remote compute (host.compute backend) --------------------
     def _m_compute_submit(self, kw: dict) -> Any:
-        return self._compute_guard(lambda: self.compute.submit(kw))
+        return self._compute_guard(lambda: self._submit_to_known_host(kw))
+
+    def _submit_to_known_host(self, kw: dict) -> Any:
+        """Refuse an ssh destination nobody registered, before any subprocess.
+
+        `ComputeManager._safe_alias` checks the alias's *shape* -- that it
+        cannot be read as an ssh option or a second word. It says nothing about
+        whether the destination exists, so `provider="ssh:<anything>"` reached
+        `ssh <anything>` and was resolved by whatever a `Host *` stanza or a DNS
+        search domain supplies. The alias on this path is chosen by the model.
+
+        The check is here rather than inside `_split` deliberately. `_split` is
+        on every path into the manager, including the CLI and the user's own
+        Compute panel, where the alias is something the person typed and
+        requiring prior registration would refuse names the product itself
+        offers. What makes this path different is only that the string came
+        from an agent, and that is exactly the case registration is a proxy
+        for: a host a human has named at least once.
+
+        `~/.ssh/config` counts as registration for the same reason -- the Web
+        UI lists those aliases as remote-GPU candidates, so a name from there
+        has been offered to the user by the product.
+        """
+        from openai4s.compute import ComputeError, registry
+
+        target = str(kw.get("provider") or "")
+        family, _, alias = target.partition(":")
+        if family == "ssh" and alias:
+            if not registry.is_known_alias(alias, Path(self.cfg.data_dir)):
+                raise ComputeError(
+                    f"ssh alias {alias!r} is not a host this daemon knows: it "
+                    "is in neither the compute host registry nor ~/.ssh/config",
+                    "not_found",
+                )
+        return self.compute.submit(kw)
 
     def _m_compute_result(self, kw: dict) -> Any:
         return self._compute_guard(lambda: self.compute.result(kw))

@@ -38,6 +38,7 @@ uv run python scripts/capture_response_schemas.py --check   # frozen response sh
 uv run python scripts/capture_response_contract.py --check  # every routable route still has a contract
 python scripts/source_secret_scan.py                        # no credential-shaped literal in release sources
 node tests/browser_smoke.mjs                                # workbench E2E, needs a daemon on :8760
+node tests/browser_admission_fault.mjs                      # pinned-comment admission survives a lost response
 node tests/browser_matrix.mjs --browser=firefox             # cross-engine breadth (chromium/firefox/webkit)
 ```
 

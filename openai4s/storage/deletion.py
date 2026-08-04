@@ -275,6 +275,34 @@ class SessionDeletionRepository:
             self._delete_counted(
                 deleted_rows, "annotations", " OR ".join(clauses), params
             )
+        if roots or frames:
+            # The admission ledger goes with the pins it correlates. It was
+            # left behind entirely: `delete_session` removed the frames and the
+            # annotations and kept every row naming their root, annotation,
+            # request and job ids -- the correlation record outliving
+            # everything it correlates.
+            #
+            # Scoped to the canonical roots *and* every member frame. The
+            # routes now refuse to admit against a child frame, so a
+            # correctly-written row always names a root; this also sweeps the
+            # ones written before that guard existed, which name a child and
+            # would otherwise survive a cascade that only ever looked at roots.
+            # Never artifact-scoped: an admission belongs to the session that
+            # admitted it.
+            admission_clauses: list[str] = []
+            admission_params: tuple[Any, ...] = ()
+            if roots:
+                admission_clauses.append(f"root_frame_id IN {self._marks(roots)}")
+                admission_params += roots
+            if frames:
+                admission_clauses.append(f"root_frame_id IN {self._marks(frames)}")
+                admission_params += frames
+            self._delete_counted(
+                deleted_rows,
+                "annotation_admissions",
+                " OR ".join(admission_clauses),
+                admission_params,
+            )
         if artifacts:
             self._delete_counted(
                 deleted_rows,
