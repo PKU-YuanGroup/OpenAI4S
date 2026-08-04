@@ -401,6 +401,16 @@ jobs:
         # stack, a missing Web UI / R worker, a desktop entry that launches
         # nothing, or any credential material swept into the archive.
         run: python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+      # Same binding the wheel and the DMG get. Without it the tarball was
+      # staged with no document tying its bytes to the frozen commit -- covered
+      # only by the in-run `incoming` digests, which say "these are the bytes
+      # `attach` downloaded", not "these are the bytes built from this source".
+      - name: Receipt the bundle against the frozen SHA
+        env:
+          SHA: ${{ needs.freeze.outputs.sha }}
+        run: |
+          uv run --locked python scripts/release_receipts.py \
+            --kind linux --source-sha "$SHA" dist/OpenAI4S-*-linux-x86_64.tar.gz
       - name: Upload the verified bundle
         # The .sha256 sidecar travels because `windows-package` embeds it in the
         # zip, so the digest the Windows launcher checks against is the one this
@@ -412,6 +422,7 @@ jobs:
           path: |
             dist/OpenAI4S-*-linux-x86_64.tar.gz
             dist/OpenAI4S-*-linux-x86_64.tar.gz.sha256
+            dist/build-receipt-*.json
           if-no-files-found: error
           retention-days: 1
 
@@ -447,6 +458,12 @@ jobs:
         # matches its checksum, macOS resource-fork litter, or a launcher that
         # has grown a native Windows execution path.
         run: python3 scripts/verify_windows_zip.py dist/OpenAI4S-*-windows-x86_64.zip
+      - name: Receipt the package against the frozen SHA
+        env:
+          SHA: ${{ needs.freeze.outputs.sha }}
+        run: |
+          uv run --locked python scripts/release_receipts.py \
+            --kind windows --source-sha "$SHA" dist/OpenAI4S-*-windows-x86_64.zip
       - name: Upload the verified package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -454,6 +471,7 @@ jobs:
           path: |
             dist/OpenAI4S-*-windows-x86_64.zip
             dist/OpenAI4S-*-windows-x86_64.zip.sha256
+            dist/build-receipt-*.json
           if-no-files-found: error
           retention-days: 1
 

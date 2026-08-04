@@ -185,6 +185,50 @@ def _dmg_series() -> str:
     return match.group(1)
 
 
+def _linux_series() -> str:
+    """The interpreter the Linux tarball embeds -- and, through it, the Windows
+    zip, which wraps that same payload rather than building its own.
+
+    A second shipped interpreter that no reconciliation read. `_dmg_series`
+    covered the macOS image and nothing covered this one, so the Linux bundle's
+    Python could drift away from the classifiers and the CI matrix in silence --
+    on the two platforms where the deliverable *is* the interpreter.
+    """
+    text = (_ROOT / "scripts" / "build_linux_bundle.sh").read_text("utf-8")
+    match = re.search(r'^PYSERIES="(\d+\.\d+)"', text, re.M)
+    assert match, "the Linux bundle's Python series is not where this reads"
+    return match.group(1)
+
+
+def test_every_shipped_interpreter_is_claimed_and_tested():
+    """Not just the DMG's. Both bundles embed a CPython, and the previous
+    version of this reconciliation read one of the two build scripts."""
+    classifiers = _classifier_versions()
+    tested = _ci_tested_versions()
+    for label, series in (
+        ("macOS .dmg", _dmg_series()),
+        ("Linux tarball", _linux_series()),
+    ):
+        assert (
+            series in classifiers
+        ), f"the {label} ships CPython {series} and pyproject does not claim it"
+        assert (
+            series in tested
+        ), f"the {label} ships CPython {series} and no CI job runs it"
+
+
+def test_the_two_shipped_bundles_agree_on_their_interpreter():
+    """They do not have to, but a divergence has to be deliberate.
+
+    The Windows zip wraps the Linux payload, so these two series are what every
+    non-PyPI user gets. Two different ones is a supportable choice and an
+    unnoticed one is not."""
+    assert _dmg_series() == _linux_series(), (
+        f"the .dmg embeds CPython {_dmg_series()} and the Linux tarball "
+        f"{_linux_series()}; if that is intended, say so here"
+    )
+
+
 def test_the_shipped_interpreter_is_claimed_and_tested():
     """The .dmg embedded Python 3.13. The classifiers stopped at 3.12 and the
     CI matrix tested 3.10 and 3.12.

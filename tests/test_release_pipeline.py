@@ -1714,3 +1714,105 @@ def test_a_dry_run_leaves_no_evidence_bundle_on_disk(tmp_path):
     assert (
         list(tmp_path.glob("*evidence.zip")) == []
     ), "a dry run wrote an evidence bundle"
+
+
+# -- the four evidence gaps ---------------------------------------------------
+
+
+def test_a_release_run_that_is_not_staging_still_needs_the_quality_receipt(assets):
+    """The third path, which nothing held to the source quality proof.
+
+    `--from-artifacts` cannot bypass it and `--dry-run` reaches nothing that
+    publishes, but a plain `--mode release` ran `pytest -q -x` and nothing else
+    -- no pre-commit, no mypy, no README check, no harness tier, no response
+    schema or contract, no secret scan, no browser or Python-matrix attestation
+    -- and then staged assets onto the draft on the strength of it. Only the
+    final flip was blocked, and only because `step_publish` requires PyPI to
+    already hold matching digests.
+
+    A local suite is not eight gates run at a frozen SHA on a machine nobody
+    can quietly reconfigure.
+    """
+    ran: list[str] = []
+    report = _pipeline(
+        assets, mode="release", from_artifacts=False, runner=_git_aware(ran.append)
+    ).run()
+
+    step = next(s for s in report["steps"] if s["step"] == "test")
+    assert step["ok"], step
+    assert "-m pytest" not in " ".join(
+        ran
+    ), "a release run answered the quality question with a local pytest"
+    from scripts import release_gates
+
+    assert step["facts"]["gates"] == [g.name for g in release_gates.LOCAL_GATES]
+
+
+def test_a_release_run_without_a_receipt_stops_before_it_stages(assets):
+    (assets / "quality-receipt.json").unlink()
+    report = _pipeline(assets, mode="release", from_artifacts=False).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "test"
+
+
+def test_every_shipped_platform_needs_a_build_receipt(assets):
+    """`("dist", "macos")` was the whole list.
+
+    The Linux tarball and the Windows zip were staged with no document binding
+    their bytes to the frozen commit -- covered only by the in-run `incoming`
+    digests, which attest that `attach` downloaded what it downloaded, not that
+    it was built from these sources. The kinds are now derived from the assets,
+    so a platform that ships without a receipt is refused rather than unnoticed.
+    """
+    from scripts.release_pipeline import required_receipt_kinds
+
+    tarball = assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz"
+    tarball.write_bytes(b"linux-bundle-bytes")
+    zipped = assets / "OpenAI4S-0.2.0-windows-x86_64.zip"
+    zipped.write_bytes(b"windows-package-bytes")
+
+    kinds = required_receipt_kinds(
+        sorted(assets.glob("OpenAI4S-*")) + [assets / "openai4s-0.2.0-py3-none-any.whl"]
+    )
+    assert set(kinds) == {"dist", "linux", "windows"}, kinds
+
+    # And the pipeline refuses when one of them is missing.
+    report = _pipeline(assets, from_artifacts=True).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    failed = next(s for s in report["steps"] if s["step"] == "verify")
+    assert "linux" in failed["detail"] or "windows" in failed["detail"], failed[
+        "detail"
+    ]
+
+
+def test_an_omitted_platform_is_not_demanded(assets):
+    """A partial release is a supported shape. Requiring a receipt for an
+    artifact that is not there would refuse every one of them."""
+    from scripts.release_pipeline import required_receipt_kinds
+
+    assert required_receipt_kinds(sorted(assets.glob("*"))) == ("dist",)
+
+
+def test_the_evidence_bundle_actually_carries_the_sbom(assets):
+    """`step_sbom` writes `sbom.cdx.json`; the collector asked for
+    `sbom.spdx.json`, a name nothing in this repository has ever produced.
+
+    The `if path.is_file()` filter then dropped it without a word, so every
+    bundle shipped without an SBOM while the step that built it reported
+    success. To a reader opening the zip that is not a missing collector, it is
+    "this release has no SBOM".
+    """
+    import zipfile
+
+    from scripts.release_pipeline import SBOM_NAME
+
+    report = _pipeline(assets, mode="local", from_artifacts=True).run()
+    assert report["ok"], report
+
+    bundles = sorted(assets.glob("*-evidence.zip"))
+    assert bundles, "no evidence bundle was sealed"
+    with zipfile.ZipFile(bundles[0]) as archive:
+        names = archive.namelist()
+    assert any(name.endswith(SBOM_NAME) for name in names), names

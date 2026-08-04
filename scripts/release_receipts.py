@@ -263,7 +263,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.path.insert(0, str(root))
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--kind", required=True, help="dist | macos")
+    parser.add_argument("--kind", required=True, help="dist | macos | linux | windows")
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("artifacts", nargs="+", type=Path)
