@@ -149,7 +149,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_harvest_safety.py,tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "d2698336ebddb041d16a839dfd65b69df0ef953376002db9d8e622e3ee03d99d"
+      "evidence_digest": "d551086dacebeb09892147f1de459abdf43949a6e92659d9ed8f15f0ca805dd5"
     },
     {
       "source": "R2",
@@ -593,7 +593,7 @@
       "tests": "tests/test_artifact_scope_closure.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "a2022cf25c653adcc1f32872dbc9ffe7acf02d67b8635c5b5fa7a9ab4c332c4b"
+      "evidence_digest": "dcc12c2d49bdccc350d9e65021311046a017b59fe3e7f758751ef366f17afa1e"
     },
     {
       "source": "R6",
@@ -607,7 +607,7 @@
       "tests": "tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_model_profile_identity.py,tests/test_compute_owner_and_harvest.py,tests/test_upload_scope_resolution.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "e0f399369e6145d1963c6bfe8da8dde661afb8d4984d74a424a9d8a99c711063"
+      "evidence_digest": "ec6534f4244e58117802071a7629938b1312bd089f922eafc72a717ce85e74b6"
     },
     {
       "source": "R6",

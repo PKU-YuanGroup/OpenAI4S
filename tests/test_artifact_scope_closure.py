@@ -196,19 +196,36 @@ def test_a_legitimate_query_still_works(two_projects):
 
 
 def test_agent_sql_cannot_write(two_projects):
-    """Refused, and the connection is `mode=ro` so it could not have written
-    even if the statement had been accepted."""
+    """Refused, and -- checked rather than inferred -- nothing was written."""
     import sqlite3
 
-    _cfg, _store, service, _ours, _foreign = two_projects
+    _cfg, store, service, _ours, _foreign = two_projects
+    before = {name: list(cols) for name, cols in store.schema().items()}
+    rows_before = store.schema().get("artifacts")
+
     for sql in (
         "SELECT 1; DROP TABLE artifacts",
         "UPDATE artifacts SET filename='x'",
         "INSERT INTO artifacts (artifact_id) VALUES ('x')",
         "CREATE TABLE leak AS SELECT * FROM artifacts",
     ):
-        with pytest.raises((PermissionError, ValueError, sqlite3.Error)):
+        # `sqlite3.Warning` is in the tuple because the DB-API makes it a
+        # SIBLING of `Error`, not a subclass, and CPython raises it for a
+        # multi-statement `execute` up to 3.11 -- 3.12 moved that case to
+        # `ProgrammingError`. Naming only `Error` meant this test could not run
+        # on the interpreter named by `requires-python`.
+        with pytest.raises(
+            (PermissionError, ValueError, sqlite3.Error, sqlite3.Warning)
+        ):
             service.query({"sql": sql})
+
+    # The refusal is what the exception says; this is what it means. An
+    # exception type is a claim about the call, not about the database, and
+    # `DROP TABLE` / `CREATE TABLE leak` are visible in the schema either way.
+    after = {name: list(cols) for name, cols in store.schema().items()}
+    assert after == before, "agent SQL changed the schema"
+    assert "leak" not in after
+    assert store.schema().get("artifacts") == rows_before
 
 
 def test_the_authorizer_denies_every_catalog_table_by_rule():

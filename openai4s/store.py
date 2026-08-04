@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -834,6 +835,35 @@ class _QueryAuthorizer:
                 return sqlite3.SQLITE_OK
             return self._deny(table)
         return sqlite3.SQLITE_OK
+
+
+#: `Connection.set_authorizer(None)` removes the authorizer from Python 3.11
+#: onwards. On 3.10 -- this project's declared floor -- it does not. The C
+#: trampoline stays installed with no Python callable behind it, and SQLite
+#: reads a failed callback as `SQLITE_DENY`, so "take the guard off" silently
+#: became "deny everything".
+#:
+#: That is not a test-only difference. `Store.query` clears the guard twice:
+#: once to create the scoped views, which is a privileged setup step, and once
+#: in its `finally` to hand the connection back. On 3.10 the first clear made
+#: the view creation fail, and the second left the daemon's ONE connection
+#: deny-all for the rest of the process -- measured: after a single
+#: `host.query`, an ordinary `new_frame` raises `not authorized`. One agent SQL
+#: statement bricked the Store.
+#:
+#: A permissive callback is the portable way to say "no restrictions", and it
+#: costs nothing measurable: 11.4 us/query against 12.5 us with no authorizer
+#: at all, because SQLite only consults it while preparing a statement.
+_AUTHORIZER_ACCEPTS_NONE = sys.version_info >= (3, 11)
+
+
+def _allow_everything(*_event: object) -> int:
+    return sqlite3.SQLITE_OK
+
+
+def _clear_authorizer(conn: sqlite3.Connection) -> None:
+    """Take the guard off, on every interpreter this project supports."""
+    conn.set_authorizer(None if _AUTHORIZER_ACCEPTS_NONE else _allow_everything)
 
 
 class Store:
@@ -4271,7 +4301,7 @@ class Store:
             try:
                 # Views first, with the guard off: creating them is a privileged
                 # setup step, not part of the caller's statement.
-                conn.set_authorizer(None)
+                _clear_authorizer(conn)
                 if scope:
                     self._refresh_scoped_views(conn, scope)
                 conn.set_authorizer(guard)
@@ -4289,7 +4319,7 @@ class Store:
                 raise
             finally:
                 conn.set_progress_handler(None, 10000)
-                conn.set_authorizer(None)
+                _clear_authorizer(conn)
         return [dict(r) for r in rows]
 
     def schema(self) -> dict[str, list[str]]:
