@@ -346,8 +346,8 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "MCP fault-driven eviction, bounded reads, process-group close Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes. Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes. Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes.",
-      "tests": "tests/test_mcp_lifecycle.py",
+      "status_note": "MCP fault-driven eviction, bounded reads, process-group close Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes. Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes. Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes. The wrong-ID flood arm had no test until tests/test_mcp_lifecycle.py grew one; the budget could be deleted without turning anything red.",
+      "tests": "tests/test_mcp_lifecycle.py,tests/test_kernel_oversized_frame.py",
       "browser_evidence": "",
       "external_evidence": ""
     },
@@ -437,8 +437,8 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "MCP fault-driven eviction, bounded reads, process-group close Re-audited with R4/P0-2: same reader, same byte budget. Re-audited with R4/P0-2: same reader, same byte budget. Re-audited with R4/P0-2: same reader, same byte budget.",
-      "tests": "tests/test_mcp_lifecycle.py",
+      "status_note": "MCP fault-driven eviction, bounded reads, process-group close Re-audited with R4/P0-2: same reader, same byte budget. Re-audited with R4/P0-2: same reader, same byte budget. Re-audited with R4/P0-2: same reader, same byte budget. The wrong-ID flood arm had no test until tests/test_mcp_lifecycle.py grew one; the budget could be deleted without turning anything red.",
+      "tests": "tests/test_mcp_lifecycle.py,tests/test_kernel_oversized_frame.py",
       "browser_evidence": "",
       "external_evidence": ""
     },
