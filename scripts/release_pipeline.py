@@ -110,6 +110,11 @@ def _sandbox_posture() -> dict[str, Any]:
     }
 
 
+#: One name, because the writer and the collector disagreeing about it is
+#: exactly how the SBOM came to be built on every release and carried on none.
+SBOM_NAME = "sbom.cdx.json"
+
+
 def dmg_present(assets: Sequence[Path]) -> bool:
     """Whether this release carries a macOS image at all.
 
@@ -117,6 +122,37 @@ def dmg_present(assets: Sequence[Path]) -> bool:
     required only when there is an image to bind to a commit.
     """
     return any(Path(a).suffix == ".dmg" for a in assets)
+
+
+#: What names an asset as belonging to a receipt kind. Derived from the file, so
+#: adding a platform to the release means adding a row here and a receipt step
+#: to its build job -- rather than the previous arrangement, where a new
+#: platform simply had no receipt and nothing said so.
+_RECEIPT_KIND_SUFFIXES = (
+    ("macos", (".dmg",)),
+    ("windows", ("-windows-x86_64.zip", "-windows-arm64.zip")),
+    ("linux", ("-linux-x86_64.tar.gz", "-linux-aarch64.tar.gz")),
+)
+
+
+def required_receipt_kinds(assets: Sequence[Path]) -> tuple[str, ...]:
+    """The receipt kinds this particular set of assets must carry.
+
+    `("dist", "macos")` was the whole list, so the Linux tarball and the Windows
+    zip were staged with no document binding their bytes to the frozen commit --
+    covered only by the in-run `incoming` digests, which attest that `attach`
+    downloaded what it downloaded, not that it was built from these sources.
+
+    Computed from the assets rather than fixed, because an omitted platform is a
+    supported release shape and demanding a receipt for an artifact that is not
+    there would refuse every partial release.
+    """
+    kinds = ["dist"]
+    names = [Path(a).name for a in assets]
+    for kind, suffixes in _RECEIPT_KIND_SUFFIXES:
+        if any(name.endswith(suffix) for name in names for suffix in suffixes):
+            kinds.append(kind)
+    return tuple(kinds)
 
 
 #: The ordered pipeline. Named here so the order itself is testable.
@@ -770,6 +806,15 @@ class Pipeline:
         # does, so the two build paths agree.
         if self.assets_dir.exists():
             for stale in self.assets_dir.glob("*"):
+                # The quality receipt is an *input* to this run, not an output
+                # of it: it is written by the job that ran the eight gates at
+                # the frozen SHA, and this directory is where that job hands it
+                # over. Sweeping it with the stale artifacts made a release run
+                # destroy the only document proving its own gates -- and then
+                # `step_test` could only fall back to a local pytest, which is
+                # how that path came to have no source quality proof at all.
+                if stale.name == QUALITY_RECEIPT_NAME:
+                    continue
                 if stale.is_file() and stale.suffix in (
                     *DISTRIBUTION_SUFFIXES,
                     ".json",
@@ -826,6 +871,45 @@ class Pipeline:
                     # The check-run and workflow-run ids travel into the
                     # evidence bundle: an attestation nobody can go and look at
                     # is not evidence, so the pointers have to survive the hop.
+                    "checks": [
+                        {
+                            "name": row["name"],
+                            "check_run_id": row["check_run_id"],
+                            "run_id": row["run_id"],
+                            "url": row["url"],
+                        }
+                        for row in receipt.get("checks", [])
+                    ],
+                    "platform_checks": receipt.get("platform_checks", []),
+                },
+            )
+        if self.mode == "release":
+            # The third path, and the one nothing held to the source quality
+            # proof. `--from-artifacts` cannot bypass it and `--dry-run` reaches
+            # nothing that publishes, but a plain `--mode release` ran `pytest`
+            # alone -- no pre-commit, no mypy, no README check, no harness tier,
+            # no response schema or contract, no secret scan, no browser or
+            # Python-matrix attestation -- and then went on to stage assets onto
+            # the draft. Only the final flip was blocked, and only because
+            # `step_publish` requires PyPI to already hold matching digests.
+            #
+            # A local suite is not eight gates run at a frozen SHA on a machine
+            # nobody can quietly reconfigure, and the difference is the whole
+            # point of the receipt.
+            head = self._frozen_sha()
+            receipt = verify_quality_receipt(
+                self.assets_dir / QUALITY_RECEIPT_NAME, expected_sha=head
+            )
+            return StepResult(
+                "test",
+                True,
+                f"quality receipt verified for {head[:12]}",
+                {
+                    "from_artifacts": False,
+                    "source_sha": head,
+                    "manifest_digest": receipt.get("manifest_digest", ""),
+                    "builder": receipt.get("builder", {}),
+                    "gates": [gate["name"] for gate in receipt["gates"]],
                     "checks": [
                         {
                             "name": row["name"],
@@ -1034,7 +1118,7 @@ class Pipeline:
 
     def step_sbom(self) -> StepResult:
         if self.dry_run:
-            return StepResult("sbom", True, "would write sbom.cdx.json")
+            return StepResult("sbom", True, f"would write {SBOM_NAME}")
         packages: list[dict[str, str]] = []
         for wheel in [a for a in self.assets if a.suffix == ".whl"]:
             packages.extend(wheel_components(wheel))
@@ -1043,7 +1127,7 @@ class Pipeline:
         document = build_sbom(
             self.assets, version=self.version, packages=packages, unread=unread
         )
-        target = self.assets_dir / "sbom.cdx.json"
+        target = self.assets_dir / SBOM_NAME
         target.write_text(json.dumps(document, indent=2, sort_keys=True), "utf-8")
         self.assets.append(target)
         return StepResult(
@@ -1103,7 +1187,15 @@ class Pipeline:
             path
             for path in (
                 self.assets_dir / QUALITY_RECEIPT_NAME,
-                self.assets_dir / "sbom.spdx.json",
+                # `step_sbom` writes `sbom.cdx.json`; this asked for
+                # `sbom.spdx.json`, a file nothing in this repository has ever
+                # produced. The `if path.is_file()` filter below then dropped it
+                # without a word, so every evidence bundle shipped without the
+                # SBOM while the step that built it reported success -- an
+                # absence that reads, to anyone opening the zip, as "this
+                # release has no SBOM" rather than "the collector asked for the
+                # wrong name".
+                self.assets_dir / SBOM_NAME,
                 self.assets_dir / "provenance.intoto.json",
                 *sorted(
                     self.assets_dir.glob(
@@ -1192,19 +1284,23 @@ class Pipeline:
             self.assets_dir.glob(f"{release_receipts.BUILD_RECEIPT_PREFIX}*.json")
         )
         build_receipts: dict[str, Any] = {}
-        if self.from_artifacts:
+        if self.from_artifacts or self.mode == "release":
             # Staging is the only place every artifact is together, so it is the
             # only place "the wheel and the DMG are the same commit" can be
             # checked. Nothing checked it: each build job checked out the mutable
             # tag on its own.
+            #
+            # `or self.mode == "release"` because the binding is a property of
+            # what is being published, not of how the bytes arrived. Guarded on
+            # `from_artifacts` alone, a plain `--mode release` staged every asset
+            # with no document tying any of them to the frozen commit -- the same
+            # hole one layer down from the quality receipt above.
             try:
                 build_receipts = release_receipts.verify_build_receipts(
                     receipts,
                     expected_sha=self._frozen_sha(),
                     assets_dir=self.assets_dir,
-                    required_kinds=("dist", "macos")
-                    if dmg_present(self.assets)
-                    else ("dist",),
+                    required_kinds=required_receipt_kinds(self.assets),
                 )
             except release_receipts.ReceiptError as error:
                 raise ReleaseError(str(error)) from error

@@ -108,7 +108,7 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | 0.x | Every ci.yml action pinned to a digest; `inputs.tag` no longer inlined into `run:`; `persist-credentials: false` on the write-capable checkouts | `2eb3544` | `Implemented but unverified` | Each digest was independently re-resolved and matched. **Missing run:** one real CI run. |
 | 0.x | `docs/release-validation.md` corrected in three load-bearing places | `5e32495` | `Completed` | — |
 | 0.4 | Every run seals `openai4s-<version>-evidence.zip` in the format the product's **own** `evidence.verify_package` reads — not a second implementation that could disagree. A stopped run seals too; sealing is best-effort so it cannot fail a good release | `5e56325` | `Completed` | Dropping the manifest self-hash, or leaving a file out of the manifest, each fails; tampering and an added payload are both detected |
-| 0.5 | Python support matrix reconciled: 3.13 classified and added to the CI matrix, and the three files are compared by a test rather than restated in prose | `20b46cd` | `Completed` | Reverting the classifier, the CI matrix or the `requires-python` floor fails a different arm each time, naming the exact file conflict |
+| 0.5 | Python support matrix reconciled: 3.13 classified and added to the CI matrix, and the four files are compared by a test rather than restated in prose | `20b46cd` | `Completed` | Reverting the classifier, the CI matrix or the `requires-python` floor fails a different arm each time, naming the exact file conflict. **It was three files, not four:** the reconciliation read `build_macos_dmg.sh` and not `build_linux_bundle.sh`, so the *second* shipped interpreter — the Linux tarball's, and through it the Windows zip's, since that wraps the same payload — could drift away from the classifiers and the matrix in silence, on the two platforms where the deliverable is the interpreter. Bumping `build_linux_bundle.sh` to an unclassified series now fails two arms. |
 | 0.7 | `verified / not_notarized / preview / not_configured`, computed from evidence and never from a configured secret. `verified` is **unreachable** today (ad-hoc signing, no notarization attempt), so the macOS asset has no publishable path this version — stated in `macos_publishable`, not left as an absence. Per D11 the release-mode hard failure is untouched | `5e56325` | `Completed` | Inferring the state from `OPENAI4S_MACOS_SIGNING_IDENTITY` fails; claiming notarization fails the unreachability test, forcing the claim to be revisited rather than silently outdated |
 
 | 4.x | **Found by running it, not by reading it:** the startup access-token banner used block-buffered stdout while every neighbouring notice uses stderr, so under `nohup`/systemd/Docker the credential a user needs to open their own daemon never appeared | `8a20ae6` | `Completed` | Reproduced against a real daemon with stdout redirected to a file: banner absent before, present after |
@@ -231,6 +231,37 @@ in §12 rather than left implied.
 See [`v03-decisions.md`](v03-decisions.md#externally-unverifiable). Nothing in
 this file marks those `Completed`.
 
+
+### Release-evidence gaps found after the audit
+
+Four things this section recorded as closed were not, and are now:
+
+* **Build receipts covered two artifact kinds.** `required_kinds` was
+  `("dist", "macos")`, so the Linux tarball and the Windows zip were staged with
+  nothing binding their bytes to the frozen commit — covered only by the in-run
+  `incoming` digests, which attest that `attach` downloaded what it downloaded.
+  The kinds are derived from the assets now, and the two build jobs write them.
+* **The Python matrix compared three files.** `build_linux_bundle.sh` was the
+  fourth and nothing read it.
+* **A plain `--mode release` run answered the quality question with a local
+  `pytest -q -x`** — no pre-commit, no mypy, no README check, no harness tier,
+  no response schema or contract, no secret scan, no attestation — and then
+  staged assets onto the draft. `--from-artifacts` could not bypass the quality
+  receipt; this path never consulted it. It does now, and `step_build` stops
+  deleting the receipt it needs: that document is an input to the run, not an
+  output of it.
+* **Every evidence bundle shipped without its SBOM.** `step_sbom` writes
+  `sbom.cdx.json`; the collector asked for `sbom.spdx.json`, a name nothing here
+  has ever produced, and the `if path.is_file()` filter dropped it silently. The
+  step reported success on every release.
+
+Still open and recorded rather than claimed: `platform_checks` receipt rows are
+always `[]`. The platform-checks job really does run the sandbox smoke at the
+frozen SHA and really does gate `build` through `needs`, but it is a sibling of
+`quality` in the graph, so the job that writes the receipt cannot see its
+result. Closing it needs an artifact hop between the two jobs, which is a
+workflow change no working copy can verify.
+
 ## 13. Post-v0.3 audit remediation
 
 A two-round multi-agent audit of this repository produced 41 candidate defects;
@@ -315,7 +346,7 @@ here is the status vocabulary applied honestly.
 
 | Plan item | What changed | Status | What is missing |
 |---|---|---|---|
-| P0-0 items 1-8 | Canonical gate manifest shared by producer and consumer with exact-match verification; `freeze` job peels the tag once and every job checks out that output; `--source-sha` checked against the checkout; per-artifact build receipts binding bytes to the frozen commit with builder OS/arch/interpreter; evidence bundle promoted to a mandatory step before `checksums` and `upload`, carrying the receipts, artifact digests, sandbox posture and builder, re-verified with the product's own `evidence.verify_package`; out-of-band stage attestation so `finalize` no longer trusts the draft's own `SHA256SUMS`; notarization read from `xcrun stapler validate` and required for a public release; `timeout-minutes` on all ten ci.yml jobs; browser and Python-matrix gates bound to the release SHA by check-run attestation with run ids recorded; platform sandbox checks executed at the frozen SHA | `implemented_unverified` | One real `workflow_dispatch`. The script-level logic is falsified offline (`tests/test_release_gate_manifest.py`, 42 cases including retag-between-jobs, missing/duplicate/unknown/substituted gate, seal failure, Developer-ID-without-notary, and asset+manifest replaced together); the YAML is asserted against the parsed workflow graph, not executed |
+| P0-0 items 1-8 | Canonical gate manifest shared by producer and consumer with exact-match verification; `freeze` job peels the tag once and every job checks out that output; `--source-sha` checked against the checkout; per-artifact build receipts binding bytes to the frozen commit with builder OS/arch/interpreter (originally only `dist` and `macos` — the Linux tarball and the Windows zip were staged with no such document, and the required kinds are now derived from the assets present); evidence bundle promoted to a mandatory step before `checksums` and `upload`, carrying the receipts, artifact digests, sandbox posture and builder, re-verified with the product's own `evidence.verify_package`; out-of-band stage attestation so `finalize` no longer trusts the draft's own `SHA256SUMS`; notarization read from `xcrun stapler validate` and required for a public release; `timeout-minutes` on all ten ci.yml jobs; browser and Python-matrix gates bound to the release SHA by check-run attestation with run ids recorded; platform sandbox checks executed at the frozen SHA | `implemented_unverified` | One real `workflow_dispatch`. The script-level logic is falsified offline (`tests/test_release_gate_manifest.py`, 42 cases including retag-between-jobs, missing/duplicate/unknown/substituted gate, seal failure, Developer-ID-without-notary, and asset+manifest replaced together); the YAML is asserted against the parsed workflow graph, not executed |
 | P0-2 items 9-11 | Agent SQL moved to a separate `mode=ro` connection under a real SQLite authorizer; artifact family reachable only through session-scoped `my_*` views; foreign and absent artifact refusals made indistinguishable; `view_image` scope-checked; `input_version_ids` validated before any copy or row | `closed` | Nothing for these three. `tests/test_artifact_scope_closure.py` (29 cases) covers direct SQL, CTE, five quotings, bound-parameter and `pragma_*` bypasses, the catalog by rule, and both refusal-indistinguishability directions |
 | Plan section 14 | The 56-item matrix became [`plan-crosswalk.json`](plan-crosswalk.json) | `closed` | Nothing. `tests/test_plan_crosswalk.py` enforces 56 unique keys each appearing once, eight per source report, `closed` naming an existing test file, and `implemented_unverified` naming its missing run |
 
