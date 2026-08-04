@@ -81,6 +81,22 @@ jobs:
         run: uv sync --locked
       - name: pre-commit (black, isort, ruff, mypy, hygiene hooks)
         run: uv run pre-commit run --all-files
+
+  # Its own job, not a second step in `lint`. As a step it could only ever run
+  # when pre-commit had already passed, so a branch that failed formatting and
+  # added an undocumented directory reported one problem and hid the other --
+  # and the doc gap is the one a reviewer cannot see in the diff.
+  docs-coverage:
+    name: Bilingual per-directory documentation
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: uv sync --locked
       - name: Verify bilingual per-directory documentation coverage
         run: uv run python scripts/check_directory_readmes.py
 
@@ -229,20 +245,68 @@ jobs:
       - name: Run the offline suite (no secrets, no network, no hardware)
         # addopts already passes -q; a second -q would suppress the summary line.
         run: uv run pytest
+
+  # Three gates that used to be steps in `test`, after `pytest`. A step can only
+  # run when every step before it passed, so all three were unreachable whenever
+  # one unrelated test was red — and a run that reported "tests failed" was
+  # indistinguishable from one where the harness goldens had also drifted and
+  # the response contract had also moved. Independent jobs answer three
+  # questions instead of one, and each is legible on its own.
+
+  harness-contracts:
+    name: Harness scenario contracts
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: uv sync --locked
       - name: Run deterministic harness contracts
         run: uv run python -m harness.cli run --tier pr --offline
-      # Reruns the suite with the response capture installed and compares what
-      # the routes returned against docs/response-schemas.json. One matrix entry
-      # is enough: the shapes are the server's, not the interpreter's.
-      - name: Check the frozen response shapes still match reality
-        if: matrix.python-version == '3.12'
-        run: uv run python scripts/capture_response_schemas.py --check
-      # The companion gate: every route the router can match must have a
-      # recorded response *kind* and status, not only the ones that return
-      # JSON. Cheap — it drives the surface directly rather than rerunning the
-      # suite — so it is not restricted to one matrix entry.
+
+  # Every route the router can match must have a recorded response *kind* and
+  # status, not only the ones that return JSON. Cheap: it drives the surface
+  # directly rather than rerunning the suite.
+  response-contract:
+    name: Route response contract
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev and science dependencies
+        run: uv sync --locked --extra science
       - name: Check every route still has a response contract
         run: uv run python scripts/capture_response_contract.py --check
+
+  # Reruns the suite with the response capture installed and compares what the
+  # routes returned against docs/response-schemas.json. The shapes are the
+  # server's, not the interpreter's, so one interpreter is enough.
+  #
+  # This one genuinely cannot answer while the suite is red — a failing suite
+  # exercises fewer routes, so any drift it reported would be an artefact of the
+  # failures rather than a real change, and the script refuses rather than
+  # guessing. Its own job anyway: "the schema gate did not get to run" and "the
+  # schema gate ran and passed" are different facts, and as a step behind pytest
+  # they looked identical on the summary page.
+  response-schemas:
+    name: Frozen response shapes
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dev, science, and chemistry dependencies
+        run: uv sync --locked --extra science --extra chemistry
+      - name: Check the frozen response shapes still match reality
+        run: uv run python scripts/capture_response_schemas.py --check
 
   browser-smoke:
     name: Browser workbench E2E (${{ matrix.engine }})
