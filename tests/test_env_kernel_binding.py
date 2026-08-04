@@ -21,6 +21,7 @@ The kernel tests here execute a real cell in a real worker. Asserting on a
 resolved path would have passed against the broken code too — the path was
 right, it was simply never the one a kernel used.
 """
+
 from __future__ import annotations
 
 import json

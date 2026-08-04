@@ -109,6 +109,7 @@ people as "the helper cannot phone home", so `network_isolated()` exists as its
 own question and `confinement_status()` answers it out loud. A boundary nobody
 mentions is a boundary people assume.
 """
+
 from __future__ import annotations
 
 import os

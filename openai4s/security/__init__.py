@@ -23,6 +23,7 @@ Every layer is opt-out via env (see `openai4s.config.SecurityConfig`) and
 fails open when the base model is unconfigured, so a fresh local install still
 runs while the cheap static gates stay on.
 """
+
 from __future__ import annotations
 
 from openai4s.security.biosecurity import (

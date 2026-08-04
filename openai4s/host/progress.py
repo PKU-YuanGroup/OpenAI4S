@@ -11,11 +11,9 @@ PlanSink = Callable[[dict], None]
 
 
 class ProgressStore(Protocol):
-    def get_plan(self, plan_id: str) -> dict | None:
-        ...
+    def get_plan(self, plan_id: str) -> dict | None: ...
 
-    def get_plan_by_frame(self, frame_id: str) -> dict | None:
-        ...
+    def get_plan_by_frame(self, frame_id: str) -> dict | None: ...
 
     def set_plan_step_status(
         self,
@@ -23,16 +21,13 @@ class ProgressStore(Protocol):
         step_id: str,
         status: str,
         note: str | None = None,
-    ) -> dict | None:
-        ...
+    ) -> dict | None: ...
 
     def list_steps(
         self, frame_id: str, *, start: int = 0, limit: int = 800
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
-    def get_setting(self, key: str, default: str | None = None) -> str | None:
-        ...
+    def get_setting(self, key: str, default: str | None = None) -> str | None: ...
 
 
 class ProgressService:

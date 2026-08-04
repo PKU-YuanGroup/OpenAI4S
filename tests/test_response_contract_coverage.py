@@ -20,6 +20,7 @@ Two rules keep the number honest:
 An empty schema or `additionalProperties: true` would satisfy a coverage count
 while promising nothing, so both are rejected outright.
 """
+
 from __future__ import annotations
 
 import json

@@ -12,6 +12,7 @@ The round-trip below goes through the real repository rather than asserting on
 the document, because "the skill says to pass all four" and "all four survive
 into the record" are different claims.
 """
+
 from __future__ import annotations
 
 import json

@@ -1,4 +1,5 @@
 """Skill loader + example_stats sidecar tests (offline)."""
+
 import ast
 from pathlib import Path
 

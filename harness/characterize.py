@@ -178,8 +178,9 @@ def _cli_max_turns(data_dir: Path) -> Mapping[str, Any]:
             "raw": {},
         }
     )
-    with mock.patch.object(loop, "Kernel", _FakeKernel), mock.patch.object(
-        loop, "chat", fake_chat
+    with (
+        mock.patch.object(loop, "Kernel", _FakeKernel),
+        mock.patch.object(loop, "chat", fake_chat),
     ):
         result = loop.Agent(
             cfg=cfg, max_turns=2, use_skills=False, allow_delegate=False
@@ -219,8 +220,9 @@ def _rate_limit_single_attempt() -> Mapping[str, Any]:
     error_type = None
     error_text = None
     content = None
-    with mock.patch("urllib.request.urlopen", urlopen), mock.patch(
-        "time.sleep", return_value=None
+    with (
+        mock.patch("urllib.request.urlopen", urlopen),
+        mock.patch("time.sleep", return_value=None),
     ):
         try:
             result = llm.chat([{"role": "user", "content": "hello"}], cfg)
@@ -256,9 +258,11 @@ def _partial_sse_hard_failure() -> Mapping[str, Any]:
     post_json = mock.Mock()
     error_type = None
     error_text = None
-    with mock.patch.object(llm, "_post_sse", post_sse), mock.patch.object(
-        llm, "_post_json", post_json
-    ), mock.patch.dict(os.environ, {"OPENAI4S_LLM_STREAM": "1"}):
+    with (
+        mock.patch.object(llm, "_post_sse", post_sse),
+        mock.patch.object(llm, "_post_json", post_json),
+        mock.patch.dict(os.environ, {"OPENAI4S_LLM_STREAM": "1"}),
+    ):
         try:
             llm.chat(
                 [{"role": "user", "content": "hello"}], cfg, on_delta=deltas.append

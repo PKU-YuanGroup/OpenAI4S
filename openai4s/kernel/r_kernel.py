@@ -20,6 +20,7 @@ The R kernel is an ANALYSIS kernel: it never emits host_call frames and has no
 `host` object — completion (host.submit_output) stays on the python control
 plane. Pure stdlib.
 """
+
 from __future__ import annotations
 
 import shutil

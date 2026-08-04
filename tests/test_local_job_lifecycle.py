@@ -28,6 +28,7 @@ empty Jobs panel.
 an `OSError`'s message -- which carries the absolute path it failed on, and with
 it the account's username -- straight to the caller.
 """
+
 from __future__ import annotations
 
 import json

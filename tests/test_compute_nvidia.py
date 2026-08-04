@@ -14,6 +14,7 @@ suite runs on a laptop CI runner. What we assert:
   * env secret scrubbing: baseline before provider import (oneshot + repl),
     provider-declared prefixes in the prologue, operational vars surviving
 """
+
 import importlib.util
 import json
 import os

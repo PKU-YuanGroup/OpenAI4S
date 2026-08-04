@@ -134,9 +134,10 @@ def _stream_replace(
         # `newline=""` on both sides: universal-newline translation would
         # rewrite every CRLF in a file the agent only asked to edit in one
         # place, and the diff would blame the edit.
-        with open(descriptor, "w", encoding="utf-8", newline="") as sink, open(
-            path, "r", encoding="utf-8", newline=""
-        ) as source:
+        with (
+            open(descriptor, "w", encoding="utf-8", newline="") as sink,
+            open(path, "r", encoding="utf-8", newline="") as source,
+        ):
             carry = ""
             while True:
                 chunk = source.read(chunk_chars)

@@ -7,6 +7,7 @@ reported `succeeded` — the declared patterns were persisted and never read
 back — and a transfer truncated midway was indistinguishable from a complete
 one.
 """
+
 import os
 from pathlib import Path
 

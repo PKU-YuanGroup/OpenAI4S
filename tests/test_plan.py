@@ -4,6 +4,7 @@ Covers the plan-JSON parsing helpers, the store `plans` CRUD + cascade, the
 plan-mode turn that emits `plan_ready`, approve→auto-execute→completed, the
 `host.plan_update` step-ticking path, and discard.
 """
+
 from types import SimpleNamespace
 
 from openai4s.config import Config, LLMConfig

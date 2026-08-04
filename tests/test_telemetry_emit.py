@@ -11,6 +11,7 @@ pinned against the engine's real vocabulary rather than an invented one -- the
 first version of the call site mapped `finalized`, a reason the engine never
 produces, and dropped `stopped`, `done` and `failed`, which it does.
 """
+
 from __future__ import annotations
 
 import threading

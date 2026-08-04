@@ -23,6 +23,7 @@ only for what they cannot decide.
 `off` mode short-circuits to SAFE. All modes fail OPEN (SAFE) if the classifier
 itself errors, EXCEPT the deliberate "uncertain -> UNSAFE" in llm mode.
 """
+
 from __future__ import annotations
 
 import json

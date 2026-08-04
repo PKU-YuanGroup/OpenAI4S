@@ -24,6 +24,7 @@ It stores nothing but counts. There is no per-install log, because a file of
 "install X did Y at time T" is the surveillance the whole design exists to
 avoid; the aggregate is what a maintainer needs and the most that should exist.
 """
+
 from __future__ import annotations
 
 import json

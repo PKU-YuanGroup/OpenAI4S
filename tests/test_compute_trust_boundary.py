@@ -12,6 +12,7 @@ remote process, a partial transfer, a hostile archive, a wedged helper, and a
 cancel that never lands. Each must resolve to `failed`, `incomplete`, or
 `unknown` — never `done`.
 """
+
 import io
 import os
 import shutil

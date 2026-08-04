@@ -20,6 +20,7 @@ may a kernel start on this platform -- because that is the question the frozen
 decision asks, and a wider abstraction would invite adding a platform by
 editing a table rather than by doing the work that makes it supported.
 """
+
 from __future__ import annotations
 
 import sys

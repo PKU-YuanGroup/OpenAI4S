@@ -17,6 +17,7 @@ The retry policy is deliberately narrow:
   * a total budget, so a long Retry-After cannot silently park a turn for
     minutes.
 """
+
 from __future__ import annotations
 
 import functools

@@ -647,8 +647,7 @@ class RecoveryResult:
 class Candidate(Protocol):
     generation_id: str
 
-    def shutdown(self) -> None:
-        ...
+    def shutdown(self) -> None: ...
 
 
 JournalSink = Callable[[dict[str, Any]], Any]
@@ -863,13 +862,16 @@ class KernelRecoveryOrchestrator:
                 error = (
                     "step is not explicitly replay-safe"
                     if step.replay_policy != REPLAY_SAFE
-                    else "recovery Cell source hash does not match its recipe"
-                    if expected_code_hash is not None
-                    and str(expected_code_hash) != observed_code_hash
-                    else replay_safety_error(
-                        code,
-                        language=language,
-                        declared_host_methods=step.payload.get("host_methods") or (),
+                    else (
+                        "recovery Cell source hash does not match its recipe"
+                        if expected_code_hash is not None
+                        and str(expected_code_hash) != observed_code_hash
+                        else replay_safety_error(
+                            code,
+                            language=language,
+                            declared_host_methods=step.payload.get("host_methods")
+                            or (),
+                        )
                     )
                 )
                 if error:

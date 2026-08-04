@@ -19,6 +19,7 @@ millisecond timestamp, and two sessions created in the same millisecond are
 ordinary, so ordering by it alone leaves ties undefined and lets a cursor land
 inside one.
 """
+
 import pytest
 
 from openai4s.config import Config

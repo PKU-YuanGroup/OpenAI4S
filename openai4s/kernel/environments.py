@@ -26,6 +26,7 @@ always present so env selection never leaves the user without a Python kernel.
 Pure stdlib (+ :mod:`openai4s.pkgscan`), so it imports under any of the
 prebuilt interpreters as well as the control kernel.
 """
+
 from __future__ import annotations
 
 import os

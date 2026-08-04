@@ -14,14 +14,11 @@ from openai4s.storage.branch_projection import project_branch_records
 class CellStore(Protocol):
     def list_cells(
         self, root_frame_id: str, *, branch_id: str | None = None
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
-    def get_session_branch(self, branch_id: str) -> dict | None:
-        ...
+    def get_session_branch(self, branch_id: str) -> dict | None: ...
 
-    def get_session_checkpoint(self, checkpoint_id: str) -> dict | None:
-        ...
+    def get_session_checkpoint(self, checkpoint_id: str) -> dict | None: ...
 
     def list_branch_messages(
         self,
@@ -29,8 +26,7 @@ class CellStore(Protocol):
         *,
         branch_id: str | None = None,
         limit: int | None = None,
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
 
 _LANGUAGE = {

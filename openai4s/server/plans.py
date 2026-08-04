@@ -34,8 +34,7 @@ class MessageRunner(Protocol):
         model: str | None = None,
         *,
         plan: bool = False,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 class PlanSession(Protocol):
@@ -307,7 +306,9 @@ class PlanService:
                 f"→ 产出：{deliverables}"
             )
         settled_text = (
-            "以下步骤在上一次执行中已经有结论，**不要重做、不要覆盖它们的产物**：\n" + "\n".join(settled) + "\n\n"
+            "以下步骤在上一次执行中已经有结论，**不要重做、不要覆盖它们的产物**：\n"
+            + "\n".join(settled)
+            + "\n\n"
             if settled
             else ""
         )

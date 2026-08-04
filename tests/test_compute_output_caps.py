@@ -15,6 +15,7 @@ tests drive it with **real** processes rather than stubs — a cap asserted
 against a `BytesIO` proves the arithmetic and nothing about pipes, threads or
 deadlocks, which is where this kind of code actually fails.
 """
+
 from __future__ import annotations
 
 import subprocess

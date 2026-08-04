@@ -30,6 +30,7 @@ The macOS tests below establish a real boundary with ``sandbox-exec`` and try
 to read real files through it. A profile-string assertion would have passed
 against the broken code — the string was right, and it allowed the repository.
 """
+
 from __future__ import annotations
 
 import ctypes

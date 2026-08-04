@@ -10,6 +10,7 @@ cleanly has failed exactly as much as one that says `success` and raises — a
 benchmark scoring "no exception" measures only the half of the system nobody
 doubted. Five of the twenty cases exist to watch something refuse.
 """
+
 from __future__ import annotations
 
 import pytest

@@ -11,6 +11,7 @@ Asserted against the filesystem rather than against the chmod call, and phrased
 as "no group/other bits" rather than "== 0600" so the tests describe exposure
 rather than an exact number.
 """
+
 import os
 import stat
 

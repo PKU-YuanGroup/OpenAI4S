@@ -64,6 +64,7 @@ warning printed at boot is not a control; it scrolls away and the credential
 stays in the clear. Storing a secret unprotected is now a decision someone
 makes, not a default they inherit.
 """
+
 from __future__ import annotations
 
 import os

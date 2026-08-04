@@ -15,6 +15,7 @@ The first test forces the interleaving with a barrier rather than hoping for
 it; the second holds a collector open and counts what the daemon actually
 spends on it.
 """
+
 from __future__ import annotations
 
 import threading

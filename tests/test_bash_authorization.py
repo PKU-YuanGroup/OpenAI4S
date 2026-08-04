@@ -1,4 +1,5 @@
 """Capability authorization for worker-local ``host.bash``."""
+
 from __future__ import annotations
 
 import hashlib

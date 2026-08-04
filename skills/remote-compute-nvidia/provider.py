@@ -22,6 +22,7 @@ provider. Ownership + reconciliation ride Docker labels. Stdlib + the ``docker``
 CLI only; no third-party SDK, so the open-source install needs nothing beyond
 Docker (and the NVIDIA Container Toolkit for the self-hosted GPU form).
 """
+
 from __future__ import annotations
 
 import json
@@ -199,9 +200,9 @@ class NvidiaProvider:
         cmd = ["exec", "-i"]
         # Inject the endpoint + key the job script reads.
         exec_env = {
-            "OPENAI4S_NIM_URL": HOSTED_URL
-            if self._mode == "hosted"
-            else SELF_HOSTED_URL,
+            "OPENAI4S_NIM_URL": (
+                HOSTED_URL if self._mode == "hosted" else SELF_HOSTED_URL
+            ),
             "OPENAI4S_NIM_HEALTH": HEALTH_PATH,
         }
         if self._mode == "hosted":

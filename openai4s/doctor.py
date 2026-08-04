@@ -17,6 +17,7 @@ Three properties make it useful rather than decorative:
   diagnostic; the credential is not. The same rule the diagnostics bundle and
   the connector API already follow.
 """
+
 from __future__ import annotations
 
 import os

@@ -24,6 +24,7 @@ keys, and element shapes. It answers "did this response change shape", which
 is the question the contract needs. It does not answer "is this valid against
 an arbitrary published schema", and it does not pretend to.
 """
+
 from __future__ import annotations
 
 from typing import Any

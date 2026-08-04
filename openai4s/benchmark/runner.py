@@ -5,6 +5,7 @@ a clean run has failed just as surely as one that expects success and raises —
 a benchmark that scores "no exception" measures nothing about the half of the
 system that is supposed to refuse.
 """
+
 from __future__ import annotations
 
 import tempfile

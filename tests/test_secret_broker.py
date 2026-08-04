@@ -18,6 +18,7 @@ stdlib-only). Tests use injected backends rather than the real keychain — see
 conftest, which pins OPENAI4S_SECRET_STORE=plaintext so the suite cannot write
 to the developer's login keychain.
 """
+
 import json
 
 import pytest

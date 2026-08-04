@@ -22,6 +22,7 @@ describes real routes, that the shape algebra it is built on is right, and --
 the part that earns its keep -- that a change which would break a client is
 distinguishable from one that would not.
 """
+
 from __future__ import annotations
 
 import json

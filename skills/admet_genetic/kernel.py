@@ -5,6 +5,7 @@ The public visualization entry is render_optimization_history(...). The module
 also keeps small validation and scoring helpers that are useful when building a
 demo pipeline around RDKit, SA-Score, and ADMET-AI.
 """
+
 from __future__ import annotations
 
 import io

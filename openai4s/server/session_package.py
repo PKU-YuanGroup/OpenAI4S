@@ -3028,9 +3028,11 @@ class SessionPackageService:
             status = (
                 "done"
                 if source_status in {"done", "completed", "pass", "passed"}
-                else "error"
-                if source_status in {"error", "failed", "failure"}
-                else "stopped"
+                else (
+                    "error"
+                    if source_status in {"error", "failed", "failure"}
+                    else "stopped"
+                )
             )
             step_id = f"s-{uuid.uuid4().hex[:12]}"
             self.store.add_step(

@@ -15,6 +15,7 @@ same-origin WebSocket connects, while an injected onerror handler and an
 external script are blocked (`script-src-attr`/`script-src-elem` violations)
 and a cross-origin fetch/WebSocket is refused by `connect-src`.
 """
+
 import os
 import re
 

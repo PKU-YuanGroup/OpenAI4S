@@ -22,6 +22,7 @@ projection: a copy of `public_exception` in this file would pass with
 `public_exception` deleted, which is the exact failure `errors.py` documents
 for `gateway_error_payload`.
 """
+
 from __future__ import annotations
 
 import hashlib

@@ -906,7 +906,11 @@ def build_markdown_report(
             f"- 相对残差: **{diagnostics['rel_residual']:.4f}**",
             f"- 解释能量占比: **{diagnostics['explained_energy'] * 100:.1f}%**",
             f"- 残差残留显著峰数: **{diagnostics['n_residual_peaks']}** "
-            + ("(提示可能漏成分)" if diagnostics["n_residual_peaks"] else "(无明显未解释峰)"),
+            + (
+                "(提示可能漏成分)"
+                if diagnostics["n_residual_peaks"]
+                else "(无明显未解释峰)"
+            ),
         ]
     )
     if diagnostics["residual_peak_positions"]:

@@ -1,4 +1,5 @@
 """Deterministic structural checks for exported retrosynthesis route trees."""
+
 from __future__ import annotations
 
 from collections import Counter

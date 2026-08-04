@@ -9,6 +9,7 @@ the declaration of everything telemetry may say; the enforcement is over
 `{"error_type": "FileNotFoundError: /home/y/unpublished/cohort.csv"}` exactly
 as readily as `{"error_type": "ValueError"}`.
 """
+
 from __future__ import annotations
 
 from openai4s.telemetry.schema import (

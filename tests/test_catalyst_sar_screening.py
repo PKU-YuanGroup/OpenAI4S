@@ -98,9 +98,9 @@ def _install_offline_uma_pipeline(monkeypatch) -> None:
                 "mlip_task": k.CDA_UMA_TASK,
             }
             if "dissolution" in requested or "orr" in requested:
-                row[
-                    "dissolution_potential"
-                ] = k.calculate_dissolution_potential_from_binding(metal, bind)
+                row["dissolution_potential"] = (
+                    k.calculate_dissolution_potential_from_binding(metal, bind)
+                )
                 row["metal_binding_energy"] = bind
             if "adsorption" in requested or "orr" in requested:
                 row["adsorption_energies"] = {

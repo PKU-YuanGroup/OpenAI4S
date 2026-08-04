@@ -14,6 +14,7 @@ The vocabulary used to live in three places that disagreed:
 Nothing enforced any of it: the repository's ``update()`` took any string, so
 a typo was a state and a terminal job could be re-opened by a late probe.
 """
+
 import sqlite3
 import types
 

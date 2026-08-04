@@ -50,9 +50,9 @@ def _service(
         turn_active=lambda _root: blockers["turn"],
         approval_pending=lambda _root: blockers["approval"],
         background_active=lambda _state: blockers["background"],
-        background_last_activity_ms=lambda _state: background_at["ms"]
-        if background_at is not None
-        else None,
+        background_last_activity_ms=lambda _state: (
+            background_at["ms"] if background_at is not None else None
+        ),
         release_idle=release,
         owner_instance_id="daemon-test",
         ttl_s=ttl_s,

@@ -19,6 +19,7 @@ egress from a subprocess -- a kernel cell running `requests`, an `ssh` invoked
 by the compute manager. Those are outside any in-process guard by construction,
 which is why the sandbox and the kernel's own allowlisting exist.
 """
+
 from __future__ import annotations
 
 import ast

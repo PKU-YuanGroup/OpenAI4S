@@ -20,6 +20,7 @@ pointer for the surrounding calls.
 `raise`, not `assert`: asserts are stripped under `python -O`, so drift would
 go undetected in optimized runs.
 """
+
 from __future__ import annotations
 
 import json

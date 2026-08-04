@@ -1560,16 +1560,14 @@ def test_a_202_that_resolves_after_the_turn_failed_writes_nothing() -> None:
     finished turn's id, and the *next* turn quoted it -- sending an operator to
     the wrong request, which is worse than showing none.
     """
-    state = _drive(
-        """
+    state = _drive("""
         S.running = true;
         const ticket = openTurnTicket();          // send() takes it, then awaits
         closeTurnTicket();                        // terminal WS wins the race
         S.running = false;
         const wrote = commitTurnTicket(ticket, { request_id: "req-old" });
         console.log(JSON.stringify({ wrote, pending: S.pendingRequestId }));
-        """
-    )
+        """)
     assert state["wrote"] is False
     assert state.get("pending") in (None, ""), state
 
@@ -1583,15 +1581,13 @@ def test_closing_the_ticket_alone_is_enough_to_refuse_a_late_202() -> None:
     never advances the generation -- and then a late 202 writes the id straight
     back in, which is the whole defect.
     """
-    state = _drive(
-        """
+    state = _drive("""
         S.running = true;
         const ticket = openTurnTicket();
         closeTurnTicket();
         const wrote = commitTurnTicket(ticket, { request_id: "req-old" });
         console.log(JSON.stringify({ wrote, pending: S.pendingRequestId }));
-        """
-    )
+        """)
     assert state["wrote"] is False, "a closed ticket still accepted its 202"
     assert state.get("pending") in (None, ""), state
 
@@ -1605,15 +1601,13 @@ def test_a_turn_that_is_no_longer_running_refuses_its_own_202() -> None:
     last, so this is the window between them -- narrow today, and the kind of
     thing a later edit widens without noticing.
     """
-    state = _drive(
-        """
+    state = _drive("""
         S.running = true;
         const ticket = openTurnTicket();
         S.running = false;                        // turn ended, ticket not yet closed
         const wrote = commitTurnTicket(ticket, { request_id: "req-old" });
         console.log(JSON.stringify({ wrote, pending: S.pendingRequestId }));
-        """
-    )
+        """)
     assert state["wrote"] is False, "an ended turn still stored its 202"
     assert state.get("pending") in (None, ""), state
 
@@ -1621,8 +1615,7 @@ def test_a_turn_that_is_no_longer_running_refuses_its_own_202() -> None:
 @pytest.mark.skipif(NODE is None, reason="no node on this machine")
 def test_the_next_turn_does_not_inherit_the_previous_ticket() -> None:
     """A turn with no id of its own must quote nothing, not the last one."""
-    state = _drive(
-        """
+    state = _drive("""
         S.running = true;
         const first = openTurnTicket();
         commitTurnTicket(first, { request_id: "req-first" });
@@ -1631,8 +1624,7 @@ def test_the_next_turn_does_not_inherit_the_previous_ticket() -> None:
         openTurnTicket();                         // second turn starts
         const late = commitTurnTicket(first, { request_id: "req-first" });
         console.log(JSON.stringify({ late, pending: S.pendingRequestId }));
-        """
-    )
+        """)
     assert state["late"] is False, "a stale 202 revived the previous turn's id"
     assert state.get("pending") in (None, ""), state
 
@@ -1640,14 +1632,12 @@ def test_the_next_turn_does_not_inherit_the_previous_ticket() -> None:
 @pytest.mark.skipif(NODE is None, reason="no node on this machine")
 def test_the_ordinary_ordering_still_stores_the_ticket() -> None:
     """The guard must not make every turn id-less, or it is just a deletion."""
-    state = _drive(
-        """
+    state = _drive("""
         S.running = true;
         const ticket = openTurnTicket();
         const wrote = commitTurnTicket(ticket, { request_id: "req-live" });
         console.log(JSON.stringify({ wrote, pending: S.pendingRequestId }));
-        """
-    )
+        """)
     assert state["wrote"] is True
     assert state["pending"] == "req-live"
 
@@ -1701,8 +1691,7 @@ def test_only_queue_position_zero_proves_this_send_is_the_active_turn() -> None:
     is not a yes. Both used to write, and both put a non-running turn's id in
     the slot the running turn's failure quotes.
     """
-    state = _drive(
-        """
+    state = _drive("""
         const out = {};
         const run = (label, accepted) => {
           S.running = true;
@@ -1719,8 +1708,7 @@ def test_only_queue_position_zero_proves_this_send_is_the_active_turn() -> None:
         run("absent", { request_id: "req-NEW" });
         run("noId", { queue_position: 0 });
         console.log(JSON.stringify(out));
-        """
-    )
+        """)
     assert state["zero"] == {"wrote": True, "pending": "req-NEW"}
     assert state["queued"] == {"wrote": False, "pending": "req-ACTIVE"}
     assert state["absent"] == {"wrote": False, "pending": "req-ACTIVE"}
@@ -1735,8 +1723,7 @@ def test_a_stale_or_absent_token_can_never_claim_the_slot() -> None:
     whose turn ended -- or whose slot another turn's `processing` claimed --
     while its POST was still in flight.
     """
-    state = _drive(
-        """
+    state = _drive("""
         S.running = true;
         const token = openTurnTicket();
         commitTurnTicket(token, { request_id: "req-A" });
@@ -1746,8 +1733,7 @@ def test_a_stale_or_absent_token_can_never_claim_the_slot() -> None:
         console.log(JSON.stringify({
           stale, queued, owns: ownsTurnTicket(token), pending: S.pendingRequestId
         }));
-        """
-    )
+        """)
     assert state["stale"] is False, "a superseded send reclaimed the slot"
     assert state["queued"] is False, "a queued send with no ticket claimed the slot"
     assert state["owns"] is False
@@ -1762,8 +1748,7 @@ def test_two_queued_202s_in_any_order_leave_the_active_id_alone() -> None:
     refused twice over. Order does not matter, which is the point: they resolve
     whenever the network says.
     """
-    state = _drive(
-        """
+    state = _drive("""
         S.running = true;
         const a = openTurnTicket();
         commitTurnTicket(a, { request_id: "req-A" });
@@ -1780,8 +1765,7 @@ def test_two_queued_202s_in_any_order_leave_the_active_id_alone() -> None:
           pending: S.pendingRequestId,
           stillLive: acceptTurnTicket(a, { request_id: "req-A", queue_position: 0 })
         }));
-        """
-    )
+        """)
     assert state["wrote"] == [False, False]
     assert state["sameGeneration"] is True, "a queued send advanced the generation"
     assert state["pending"] == "req-A"
@@ -1797,8 +1781,7 @@ def test_a_rejected_follow_up_does_not_tear_down_the_running_turn() -> None:
     The POST then fails. Deciding from `queueing` (still false) tears down the
     turn that is actually running; deciding from ownership does not.
     """
-    state = _drive(
-        """
+    state = _drive("""
         S.running = true;
         const mine = openTurnTicket();       // began idle, took a ticket
         activateTurnTicket("req-OTHER");     // someone else's turn started
@@ -1806,8 +1789,7 @@ def test_a_rejected_follow_up_does_not_tear_down_the_running_turn() -> None:
           tearsDown: ownsTurnTicket(mine),
           pending: S.pendingRequestId
         }));
-        """
-    )
+        """)
     assert (
         state["tearsDown"] is False
     ), "a rejected follow-up would tear down a live turn"
@@ -1822,16 +1804,14 @@ def test_ownership_is_false_before_any_turn_has_started() -> None:
     S.turnTicket` answers *true* for a caller that passes nothing -- and the
     catch would tear down a turn that does not exist.
     """
-    state = _drive(
-        """
+    state = _drive("""
         S.turnTicket = undefined;
         console.log(JSON.stringify({
           nothing: ownsTurnTicket(undefined),
           queued: ownsTurnTicket(null),
           first: (() => { const t = openTurnTicket(); return ownsTurnTicket(t); })()
         }));
-        """
-    )
+        """)
     assert state["nothing"] is False, "a caller with no ticket owned the turn"
     assert state["queued"] is False
     assert state["first"] is True
@@ -1862,8 +1842,7 @@ def test_a_ticket_retired_by_a_queued_answer_can_never_claim_the_slot() -> None:
     duplicated promise -- from using it, and `pendingRequestId` is left alone
     because it does not belong to this turn.
     """
-    state = _drive(
-        """
+    state = _drive("""
         S.running = false;
         const token = openTurnTicket();
         S.running = true;                                  // this send locked the UI
@@ -1875,8 +1854,7 @@ def test_a_ticket_retired_by_a_queued_answer_can_never_claim_the_slot() -> None:
           ownsAfter: ownsTurnTicket(token),
           reclaim: acceptTurnTicket(token, { request_id: "req-B", queue_position: 0 })
         }));
-        """
-    )
+        """)
     assert state["wrote"] is False
     assert state["retired"] is True
     assert state["ownsAfter"] is False
@@ -1885,15 +1863,13 @@ def test_a_ticket_retired_by_a_queued_answer_can_never_claim_the_slot() -> None:
 
 @pytest.mark.skipif(NODE is None, reason="no node on this machine")
 def test_retiring_never_touches_a_turn_it_does_not_own() -> None:
-    state = _drive(
-        """
+    state = _drive("""
         S.running = true;
         const mine = openTurnTicket();
         activateTurnTicket("req-OTHER");        // another turn took over
         const retired = retireTurnTicket(mine);
         console.log(JSON.stringify({ retired, pending: S.pendingRequestId }));
-        """
-    )
+        """)
     assert state["retired"] is False
     assert state["pending"] == "req-OTHER", "retiring cleared another turn's id"
 
@@ -1922,8 +1898,7 @@ def test_an_idless_processing_retires_tickets_without_forgetting_who_is_running(
     the 202 already gave us, leaving the running turn's own failure with
     nothing to quote and nothing to filter on.
     """
-    state = _drive(
-        """
+    state = _drive("""
         S.running = true;
         const token = openTurnTicket();
         commitTurnTicket(token, { request_id: "req-A", execution_id: "exec-A" });
@@ -1935,8 +1910,7 @@ def test_an_idless_processing_retires_tickets_without_forgetting_who_is_running(
           execution: S.pendingExecutionId,
           stale: ownsTurnTicket(token)
         }));
-        """
-    )
+        """)
     assert state["bumped"] is True, "an idless processing left stale tickets valid"
     assert state["request"] == "req-A", "the running turn's id was forgotten"
     assert state["execution"] == "exec-A"
@@ -1951,16 +1925,14 @@ def test_a_late_terminal_from_the_previous_execution_is_stale() -> None:
     after B has been promoted out of the queue. Acting on A's terminal closes
     B's turn and unlocks the composer under a turn that is still running.
     """
-    state = _drive(
-        """
+    state = _drive("""
         activateTurnTicket("req-A", "exec-A");
         activateTurnTicket("req-B", "exec-B");
         console.log(JSON.stringify({
           lateA: isStaleTurnEvent({ request_id: "req-A", execution_id: "exec-A" }),
           ownB: isStaleTurnEvent({ request_id: "req-B", execution_id: "exec-B" })
         }));
-        """
-    )
+        """)
     assert state["lateA"] is True, "A's terminal would have closed B's turn"
     assert state["ownB"] is False, "B's own terminal was refused"
 
@@ -1972,16 +1944,14 @@ def test_a_reused_request_id_is_still_told_apart_by_execution() -> None:
     A filter that compared only request ids would call A's late terminal
     current, which is the whole reason the execution id is on the wire.
     """
-    state = _drive(
-        """
+    state = _drive("""
         activateTurnTicket("req-same", "exec-A");
         activateTurnTicket("req-same", "exec-B");
         console.log(JSON.stringify({
           lateA: isStaleTurnEvent({ request_id: "req-same", execution_id: "exec-A" }),
           ownB: isStaleTurnEvent({ request_id: "req-same", execution_id: "exec-B" })
         }));
-        """
-    )
+        """)
     assert state["lateA"] is True, "two turns sharing a request id were confused"
     assert state["ownB"] is False
 
@@ -1994,8 +1964,7 @@ def test_an_older_daemon_without_identities_still_closes_its_turns() -> None:
     treating that as stale would leave every turn open forever. One side silent
     is the mixed case -- also not evidence of staleness.
     """
-    state = _drive(
-        """
+    state = _drive("""
         const out = {};
         closeTurnTicket();
         out.bothSilent = isStaleTurnEvent({});
@@ -2004,8 +1973,7 @@ def test_an_older_daemon_without_identities_still_closes_its_turns() -> None:
         out.reqOnlyOther = isStaleTurnEvent({ request_id: "req-Z" });
         out.execArrivesLater = isStaleTurnEvent({ execution_id: "exec-A" });
         console.log(JSON.stringify(out));
-        """
-    )
+        """)
     assert state["bothSilent"] is False
     assert state["reqOnlyMatch"] is False
     assert state["reqOnlyOther"] is True, "the request-id fallback stopped working"
@@ -2093,8 +2061,7 @@ def test_a_plan_dispatch_while_a_turn_runs_is_refused_outright() -> None:
     the turn that is actually running, and an acceptance replaces its identity
     so its own terminal event is judged stale and never closes it.
     """
-    state = _drive_plan(
-        """
+    state = _drive_plan("""
         activateTurnTicket("req-A", "exec-A");
         S.running = true;
         const generation = S.turnTicket;
@@ -2105,8 +2072,7 @@ def test_a_plan_dispatch_while_a_turn_runs_is_refused_outright() -> None:
           running: S.running,
           pending: S.pendingRequestId, execution: S.pendingExecutionId
         }));
-        """
-    )
+        """)
     assert state["refused"] is False
     assert state["api"] == 0, "a second plan request was sent during a running turn"
     assert state["turnDone"] == 0
@@ -2118,8 +2084,7 @@ def test_a_plan_dispatch_while_a_turn_runs_is_refused_outright() -> None:
 @pytest.mark.skipif(NODE is None, reason="no node on this machine")
 def test_a_second_plan_click_while_the_first_is_in_flight_sends_nothing() -> None:
     """The first POST is still pending; the button is pressed again."""
-    state = _drive_plan(
-        """
+    state = _drive_plan("""
         const first = dispatchPlanTurn("/plan/approve", {}, "h", "k");
         await tick();
         const second = await dispatchPlanTurn("/plan/approve", {}, "h", "k");
@@ -2129,8 +2094,7 @@ def test_a_second_plan_click_while_the_first_is_in_flight_sends_nothing() -> Non
           second, firstResult, api: calls.api,
           pending: S.pendingRequestId, execution: S.pendingExecutionId
         }));
-        """
-    )
+        """)
     assert state["second"] is False
     assert state["api"] == 1, "the second click sent its own request"
     assert state["firstResult"] is True
@@ -2141,8 +2105,7 @@ def test_a_second_plan_click_while_the_first_is_in_flight_sends_nothing() -> Non
 @pytest.mark.skipif(NODE is None, reason="no node on this machine")
 def test_a_terminal_before_the_plan_202_does_not_relock_the_composer() -> None:
     """The stuck-session case, run rather than simulated."""
-    state = _drive_plan(
-        """
+    state = _drive_plan("""
         const pending = dispatchPlanTurn("/plan/approve", {}, "h", "k");
         await tick();
         turnDone("failed");                       // the WS beat the 202
@@ -2152,8 +2115,7 @@ def test_a_terminal_before_the_plan_202_does_not_relock_the_composer() -> None:
           running: S.running, resume: calls.resume,
           pending: S.pendingRequestId, execution: S.pendingExecutionId
         }));
-        """
-    )
+        """)
     assert state["running"] is False, "the late 202 locked the composer again"
     assert state["resume"] == 0, "the watchdog was re-armed for a finished turn"
     assert state.get("pending") in (None, "")
@@ -2162,8 +2124,7 @@ def test_a_terminal_before_the_plan_202_does_not_relock_the_composer() -> None:
 
 @pytest.mark.skipif(NODE is None, reason="no node on this machine")
 def test_a_rejected_plan_post_does_not_end_the_turn_that_took_over() -> None:
-    state = _drive_plan(
-        """
+    state = _drive_plan("""
         const pending = dispatchPlanTurn("/plan/approve", {}, "h", "k");
         await tick();
         activateTurnTicket("req-B", "exec-B");     // B took over mid-flight
@@ -2173,8 +2134,7 @@ def test_a_rejected_plan_post_does_not_end_the_turn_that_took_over() -> None:
           turnDone: calls.turnDone, running: S.running,
           pending: S.pendingRequestId, execution: S.pendingExecutionId
         }));
-        """
-    )
+        """)
     assert state["turnDone"] == 0, "a rejected plan POST ended another turn"
     assert state["running"] is True
     assert state["pending"] == "req-B" and state["execution"] == "exec-B"
@@ -2183,8 +2143,7 @@ def test_a_rejected_plan_post_does_not_end_the_turn_that_took_over() -> None:
 @pytest.mark.skipif(NODE is None, reason="no node on this machine")
 def test_a_legacy_202_without_ids_still_leaves_the_turn_running() -> None:
     """An older daemon answers with neither id, and its turn must still work."""
-    state = _drive_plan(
-        """
+    state = _drive_plan("""
         const pending = dispatchPlanTurn("/plan/approve", {}, "h", "k");
         await tick();
         settle.resolve({ status: "accepted", job_id: "j-1" });
@@ -2193,8 +2152,7 @@ def test_a_legacy_202_without_ids_still_leaves_the_turn_running() -> None:
         const stale = isStaleTurnEvent({ type: "frame_update", status: "failed" });
         if (!stale) turnDone("failed");
         console.log(JSON.stringify({ before, stale, running: S.running }));
-        """
-    )
+        """)
     assert state["before"] == {"running": True, "resume": 1}
     assert state["stale"] is False, "an idless terminal could never close the turn"
     assert state["running"] is False

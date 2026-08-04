@@ -1,5 +1,6 @@
 """Tests for the opencode-style tool-call permission gate: rule resolution
 (store) + the blocking broker round-trip."""
+
 import json
 import threading
 import time

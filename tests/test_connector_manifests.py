@@ -16,6 +16,7 @@ The second is the one that matters. Without it, a manifest drifts toward listing
 every field anyone might like to have, and a canary built on it alarms on things
 that do not matter until someone mutes the canary.
 """
+
 from __future__ import annotations
 
 import copy

@@ -23,6 +23,7 @@ and orphaned 11 frozen response shapes, and the obvious repair -- regenerate
 the artifact until it is green -- re-files those shapes under the catch-all
 `/frames/([^/]+)(?:/.*)?` and destroys the per-route contract.
 """
+
 import re
 from pathlib import Path
 

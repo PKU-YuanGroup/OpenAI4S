@@ -18,6 +18,7 @@ matter as much as success: a failure, a cancellation, a recovery, a refused
 permission, a provenance claim. A benchmark that only measures the happy path
 measures the half of the system that was never in doubt.
 """
+
 from openai4s.benchmark.model import Case, Workflow, load_workflows
 from openai4s.benchmark.runner import CaseResult, run_all, run_case
 

@@ -28,6 +28,7 @@ audit answer to "what did this session run under".
 Every test drives the real `SessionRunner`/`ModelProfileService`. No test contacts
 a provider: all three defects are decided before the request is built.
 """
+
 from __future__ import annotations
 
 import pytest

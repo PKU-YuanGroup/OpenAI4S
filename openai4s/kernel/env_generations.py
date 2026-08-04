@@ -42,6 +42,7 @@ the directory holds a ``building.json`` and no manifest, so ``get``/``list``
 ignore it and discovery never serves it; a crash therefore leaves something
 visibly not a generation, cleaned up by ``recover``/``discard``.
 """
+
 from __future__ import annotations
 
 import fcntl

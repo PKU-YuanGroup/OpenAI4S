@@ -20,6 +20,7 @@ produces rather than invented ones:
 
 Each of those looks like an enum to someone adding a field in a hurry.
 """
+
 from __future__ import annotations
 
 import pytest

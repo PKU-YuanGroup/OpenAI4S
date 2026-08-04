@@ -26,6 +26,7 @@ standing between a user's disk and a public issue tracker, and treating them as
 if they were is what let a sentence in an ordinary `message` field carry a
 credential straight through field-wise redaction.
 """
+
 from __future__ import annotations
 
 import json

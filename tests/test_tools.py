@@ -3,6 +3,7 @@
 These lock the registry shape, the ```tool parse convention, prompt rendering,
 tool-local prechecks, and the protected dispatch/observation contract.
 """
+
 import ast
 import inspect
 import time

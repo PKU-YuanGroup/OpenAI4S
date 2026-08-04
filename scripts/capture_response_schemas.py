@@ -9,6 +9,7 @@ actually returned. The suite is the corpus: routes it exercises get a schema,
 routes it does not are reported as uncovered. That number is the point -- it
 says how much of the HTTP surface is pinned, and it is meant to go up.
 """
+
 from __future__ import annotations
 
 import argparse

@@ -31,6 +31,7 @@ The adapter is pure stdlib.  Detection and command execution are injectable so
 the supported paths can be tested even inside a parent sandbox that forbids
 nested sandbox creation.
 """
+
 from __future__ import annotations
 
 import json

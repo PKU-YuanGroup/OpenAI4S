@@ -15,6 +15,7 @@ destructive find/replace hid: the two `self._skill_loader.system_context` /
 `.bootstrap_code` method-call parens were dropped, and NOTHING in the old suite
 caught it because every agent test used use_skills=False. This test does.
 """
+
 from pathlib import Path
 
 import pytest

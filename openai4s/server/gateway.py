@@ -16,6 +16,7 @@ runtime; persistent Python/R kernels are acquired only for scientific Cells.
 Prose streams as text chunks, code + output stream as tool chunks, and every
 cell's figures / written files are captured as versioned artifacts.
 """
+
 from __future__ import annotations
 
 import base64
@@ -5357,8 +5358,13 @@ class SessionRunner:
                 "`OPENAI4S_LLM_BASE_URL`(Customize → Network 可确认联网是否开启)。"
             )
         if isinstance(exc, LLMError):
-            return "**LLM 调用失败。** 请在 Customize → Models 确认模型与 API Key " "配置后重试。"
-        return "**这一轮出错了。** " + str((safe or {}).get("error") or INTERNAL_ERROR_MESSAGE)
+            return (
+                "**LLM 调用失败。** 请在 Customize → Models 确认模型与 API Key "
+                "配置后重试。"
+            )
+        return "**这一轮出错了。** " + str(
+            (safe or {}).get("error") or INTERNAL_ERROR_MESSAGE
+        )
 
     def _auto_review_enabled(self, root_frame_id: str) -> bool:
         return self.reviews.auto_enabled(root_frame_id)
@@ -7220,11 +7226,13 @@ class SessionRunner:
             ("job", lambda: self._jobs.pop(job.job_id, None)),
             (
                 "plan",
-                lambda: self._settle_claimed_plan(
-                    job.root_frame_id, claimed_plan_id, rollback_status
-                )
-                if claimed_plan_id and rollback_status
-                else None,
+                lambda: (
+                    self._settle_claimed_plan(
+                        job.root_frame_id, claimed_plan_id, rollback_status
+                    )
+                    if claimed_plan_id and rollback_status
+                    else None
+                ),
             ),
         ):
             try:
@@ -7488,9 +7496,9 @@ class SessionRunner:
                 {"type": "frame_update", "frame_id": root_frame_id, "status": "success"}
             )
             return {
-                "status": "cancelled"
-                if execution.cancellation.is_set()
-                else "completed",
+                "status": (
+                    "cancelled" if execution.cancellation.is_set() else "completed"
+                ),
                 "execution_id": execution.execution_id,
                 "owner": execution.owner.as_dict(),
                 "cell": {
@@ -9870,10 +9878,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             for item in snapshot.get("queue", [])
                             if item.get("execution_id") == job.execution_id
                         ),
-                        snapshot.get("owner")
-                        if (snapshot.get("owner") or {}).get("execution_id")
-                        == job.execution_id
-                        else None,
+                        (
+                            snapshot.get("owner")
+                            if (snapshot.get("owner") or {}).get("execution_id")
+                            == job.execution_id
+                            else None
+                        ),
                     )
                     self._json(
                         {
@@ -12242,7 +12252,8 @@ def _format_annotations_block(annos: list) -> str:
         "1) 先定位生成下述图像的代码——查看本会话此前的代码单元与工作区文件；"
         "若不确定，用 host.glob/host.grep 按文件名或绘图关键字（savefig/plt/matplotlib）搜索。"
         "自动截图名形如 figure_cellN_*.png，其中 N 是生成它的代码单元序号。",
-        "2) 逐条应用标注意见。以随附图上的红圈为准定位对应的子图/柱子/标签/元素；" "文字里的百分比坐标 (x 向右, y 向下) 仅作辅助。",
+        "2) 逐条应用标注意见。以随附图上的红圈为准定位对应的子图/柱子/标签/元素；"
+        "文字里的百分比坐标 (x 向右, y 向下) 仅作辅助。",
         "3) 重新运行绘图代码，覆盖写回同名图像文件（不要改文件名），确保每条改动在新图上可见；完成后简述改了什么。",
         "需要修改的图像：",
     ]

@@ -475,9 +475,11 @@ class DelegationProjectionRepository:
                 _text(message.get("text_preview"), 600) or "",
                 float(message.get("queued_at") or 0.0),
                 _float(message.get("delivered_at")),
-                int(message["boundary"])
-                if message.get("boundary") is not None
-                else None,
+                (
+                    int(message["boundary"])
+                    if message.get("boundary") is not None
+                    else None
+                ),
                 owner,
                 runner,
             ),

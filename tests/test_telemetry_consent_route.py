@@ -8,6 +8,7 @@ already guarantees, checked here through the gateway to prove the wiring
 carries them: a fresh install reads disabled, granting mints an id, revoking
 destroys it, and re-granting is a new identity.
 """
+
 from __future__ import annotations
 
 import pytest

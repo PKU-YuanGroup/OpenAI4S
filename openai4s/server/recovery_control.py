@@ -47,22 +47,17 @@ class RecoveryActionPlan:
 
 
 class RecoveryStore(Protocol):
-    def append_recovery_event(self, **fields: Any) -> dict:
-        ...
+    def append_recovery_event(self, **fields: Any) -> dict: ...
 
-    def list_recovery_events(self, **filters: Any) -> list[dict]:
-        ...
+    def list_recovery_events(self, **filters: Any) -> list[dict]: ...
 
-    def get_session_branch(self, branch_id: str) -> dict | None:
-        ...
+    def get_session_branch(self, branch_id: str) -> dict | None: ...
 
-    def get_session_checkpoint(self, checkpoint_id: str) -> dict | None:
-        ...
+    def get_session_checkpoint(self, checkpoint_id: str) -> dict | None: ...
 
     def latest_kernel_generation(
         self, root_frame_id: str, language: str, *, branch_id: str | None = None
-    ) -> dict | None:
-        ...
+    ) -> dict | None: ...
 
 
 class RecoveryControlService:
@@ -246,11 +241,15 @@ class RecoveryControlService:
                 (
                     unavailable
                     if not restorable
-                    else "recovery already running"
-                    if busy
-                    else "kernel is already active"
-                    if not recoverable_state
-                    else None
+                    else (
+                        "recovery already running"
+                        if busy
+                        else (
+                            "kernel is already active"
+                            if not recoverable_state
+                            else None
+                        )
+                    )
                 ),
                 requires_ticket=True,
             ),
@@ -260,11 +259,11 @@ class RecoveryControlService:
                 (
                     unavailable
                     if not restorable
-                    else "latest recovery is not partial or failed"
-                    if latest_state not in {"partial", "failed"}
-                    else "recovery already running"
-                    if busy
-                    else None
+                    else (
+                        "latest recovery is not partial or failed"
+                        if latest_state not in {"partial", "failed"}
+                        else "recovery already running" if busy else None
+                    )
                 ),
                 requires_ticket=True,
             ),

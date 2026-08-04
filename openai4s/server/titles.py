@@ -10,11 +10,9 @@ from typing import Any, Callable, Protocol
 class SessionTitleStore(Protocol):
     """Persistence surface needed by :class:`SessionTitleService`."""
 
-    def get_frame(self, frame_id: str) -> dict | None:
-        ...
+    def get_frame(self, frame_id: str) -> dict | None: ...
 
-    def update_frame(self, frame_id: str, **fields: Any) -> None:
-        ...
+    def update_frame(self, frame_id: str, **fields: Any) -> None: ...
 
 
 ChatCall = Callable[..., dict]

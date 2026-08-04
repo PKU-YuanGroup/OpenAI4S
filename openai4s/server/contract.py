@@ -27,6 +27,7 @@ What this is not: a schema. It answers "which paths exist", not "what shape do
 they return". Response schemas are the next layer of §4.6 and are not inferable
 from a routing chain.
 """
+
 from __future__ import annotations
 
 import ast

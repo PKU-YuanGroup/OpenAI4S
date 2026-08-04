@@ -123,9 +123,11 @@ def execute_native_batch(
         if result is None:
             call = batch.calls[index]
             results[index] = (
-                _cancelled_text(call)
-                if cancelled()
-                else f"[Tool error] {call.name or '<unnamed>'}: call was not run",
+                (
+                    _cancelled_text(call)
+                    if cancelled()
+                    else f"[Tool error] {call.name or '<unnamed>'}: call was not run"
+                ),
                 False,
             )
 

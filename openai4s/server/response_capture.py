@@ -12,6 +12,7 @@ happened to use. ``/frames/f-abc123/kernel`` and ``/frames/f-def456/kernel``
 are one route observed twice, and treating them as two would produce a file
 that grows with the fixtures rather than with the surface.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -818,9 +819,9 @@ def _drive_seeded_downloads(
         try:
             handler._api("GET", path)
         except Exception as error:  # noqa: BLE001
-            recorder.drive_failures[
-                f"GET {route} (seeded)"
-            ] = f"{type(error).__name__}: {error}"
+            recorder.drive_failures[f"GET {route} (seeded)"] = (
+                f"{type(error).__name__}: {error}"
+            )
 
     # A pin to send. Created here rather than reused, so the capture does not
     # depend on some other seeded step having left one `open`.
@@ -878,9 +879,9 @@ def _drive_seeded_downloads(
         try:
             handler._api(method, path)
         except Exception as error:  # noqa: BLE001
-            recorder.drive_failures[
-                f"{method} {route} (seeded)"
-            ] = f"{type(error).__name__}: {error}"
+            recorder.drive_failures[f"{method} {route} (seeded)"] = (
+                f"{type(error).__name__}: {error}"
+            )
 
     _drive_session_surface(recorder, handler_class, runner, frame_id, artifact, headers)
 
@@ -1018,17 +1019,17 @@ def _drive_session_surface(
                 holding.set()
                 finished.wait(_SEEDED_JOB_WAIT_S)
         except BaseException as error:  # noqa: BLE001
-            recorder.drive_failures[
-                "execution fixture (owner ticket)"
-            ] = f"{type(error).__name__}: {error}"
+            recorder.drive_failures["execution fixture (owner ticket)"] = (
+                f"{type(error).__name__}: {error}"
+            )
             holding.set()
 
     holder = threading.Thread(target=_hold_owner, name="capture-owner", daemon=True)
     holder.start()
     if not holding.wait(_SEEDED_JOB_WAIT_S):
-        recorder.drive_failures[
-            "execution fixture (owner ticket)"
-        ] = "the owner ticket never reached running"
+        recorder.drive_failures["execution fixture (owner ticket)"] = (
+            "the owner ticket never reached running"
+        )
     # `snapshot` names the active ticket `owner`, not `running`. Reading the
     # wrong key reported a fixture failure on a correct fixture -- and the
     # assertion is the only thing standing between "the projection describes a
@@ -1036,16 +1037,16 @@ def _drive_session_surface(
     projection = runner.executions.snapshot(frame_id)
     active = projection.get("owner") or {}
     if str((active.get("owner") or {}).get("id") or "") != _CAPTURE_OWNER_ID:
-        recorder.drive_failures[
-            "execution fixture (owner ticket)"
-        ] = f"the held ticket is not the active one: {active!r}"
+        recorder.drive_failures["execution fixture (owner ticket)"] = (
+            f"the held ticket is not the active one: {active!r}"
+        )
     if not any(
         str((item.get("owner") or {}).get("id") or "") == _CAPTURE_QUEUED_ID
         for item in projection.get("queue") or []
     ):
-        recorder.drive_failures[
-            "execution fixture (queued ticket)"
-        ] = f"the second ticket is not queued: {projection.get('queue')!r}"
+        recorder.drive_failures["execution fixture (queued ticket)"] = (
+            f"the second ticket is not queued: {projection.get('queue')!r}"
+        )
 
     base = f"/frames/{frame_id}"
     reads: tuple[tuple[str, str], ...] = (
@@ -1111,9 +1112,9 @@ def _drive_session_surface(
             try:
                 handler._api("GET", path)
             except Exception as error:  # noqa: BLE001
-                recorder.drive_failures[
-                    f"GET {route} (session surface)"
-                ] = f"{type(error).__name__}: {error}"
+                recorder.drive_failures[f"GET {route} (session surface)"] = (
+                    f"{type(error).__name__}: {error}"
+                )
     finally:
         # In `finally`, because a held ticket that outlives this block stops
         # everything below from being admitted at all. One raised read would
@@ -1122,9 +1123,9 @@ def _drive_session_surface(
         finished.set()
         holder.join(timeout=_SEEDED_JOB_WAIT_S)
         if holder.is_alive():
-            recorder.drive_failures[
-                "execution fixture (owner ticket)"
-            ] = "the held ticket was never released"
+            recorder.drive_failures["execution fixture (owner ticket)"] = (
+                "the held ticket was never released"
+            )
 
     # Checked rather than assumed, and checked *outside* the `finally` so it
     # cannot mask an in-flight exception. The writes below wait on an admission
@@ -1217,9 +1218,9 @@ def _drive_session_surface(
         try:
             handler._api(method, path)
         except Exception as error:  # noqa: BLE001
-            recorder.drive_failures[
-                f"{method} {route} (session surface)"
-            ] = f"{type(error).__name__}: {error}"
+            recorder.drive_failures[f"{method} {route} (session surface)"] = (
+                f"{type(error).__name__}: {error}"
+            )
 
     # Edit and restore, back to back, on an artifact of their own.
     #
@@ -1275,9 +1276,9 @@ def _drive_session_surface(
     ]
     restore_route = r"/artifacts/([^/]+)/versions/([^/]+)/restore"
     if not history:
-        recorder.drive_failures[
-            f"POST {restore_route} (session surface)"
-        ] = "the edit above minted no second version, so nothing is restorable"
+        recorder.drive_failures[f"POST {restore_route} (session surface)"] = (
+            "the edit above minted no second version, so nothing is restorable"
+        )
     else:
         path = (
             f"/artifacts/{history_artifact['artifact_id']}"
@@ -1299,13 +1300,13 @@ def _drive_session_surface(
                 # not reach the state the route needs, and a silent 404 would
                 # republish the refusal-only contract this pass exists to
                 # replace.
-                recorder.drive_failures[
-                    f"POST {restore_route} (session surface)"
-                ] = f"{seen.get('code')}: {seen.get('payload')}"
+                recorder.drive_failures[f"POST {restore_route} (session surface)"] = (
+                    f"{seen.get('code')}: {seen.get('payload')}"
+                )
         except Exception as error:  # noqa: BLE001
-            recorder.drive_failures[
-                f"POST {restore_route} (session surface)"
-            ] = f"{type(error).__name__}: {error}"
+            recorder.drive_failures[f"POST {restore_route} (session surface)"] = (
+                f"{type(error).__name__}: {error}"
+            )
 
     # Apply, then undo the exact operation apply minted. `undo` needs the id
     # from the apply response, so this pair cannot be driven from the table
@@ -1378,9 +1379,9 @@ def _capture_json(
     try:
         handler._api(method, path)
     except Exception as error:  # noqa: BLE001
-        recorder.drive_failures[
-            f"{method} {route} (session surface)"
-        ] = f"{type(error).__name__}: {error}"
+        recorder.drive_failures[f"{method} {route} (session surface)"] = (
+            f"{type(error).__name__}: {error}"
+        )
         return None
     return captured
 
@@ -1442,9 +1443,9 @@ def drive_all_routes(
                 # `kinds: ["json"], statuses: [404]`: GET raised, and the four
                 # unimplemented verbs' dispatcher 404s became the contract for a
                 # zip download, with the coverage gate calling it covered.
-                recorder.drive_failures[
-                    f"{method} {route}"
-                ] = f"{type(error).__name__}: {error}"
+                recorder.drive_failures[f"{method} {route}"] = (
+                    f"{type(error).__name__}: {error}"
+                )
                 continue
     _drive_seeded_downloads(recorder, handler_class, runner, authenticated_headers)
 

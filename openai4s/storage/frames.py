@@ -528,9 +528,11 @@ class FrameRepository:
                     seq,
                     kind,
                     title,
-                    json.dumps(input, ensure_ascii=False, default=str)
-                    if input is not None
-                    else None,
+                    (
+                        json.dumps(input, ensure_ascii=False, default=str)
+                        if input is not None
+                        else None
+                    ),
                     None,
                     status,
                     now,

@@ -22,6 +22,7 @@ We can't set attributes on builtin scalars (int/str), so like openai4s we keep a
 side WeakValueDictionary-ish id->tags table for those and only set _openai4s_src
 on rich objects (DataFrame/ndarray/dict/list) that accept attributes.
 """
+
 from __future__ import annotations
 
 import builtins

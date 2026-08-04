@@ -17,6 +17,7 @@ What it deliberately does not do is verify that a `closed` row is really closed.
 No test can: that is what the row's named test file is for. This file makes the
 claim locatable and refuses the claims that are structurally empty.
 """
+
 from __future__ import annotations
 
 import json

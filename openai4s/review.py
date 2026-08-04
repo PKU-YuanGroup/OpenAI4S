@@ -5,6 +5,7 @@ tools, mutate the workspace, or trigger approval prompts.  It receives a
 bounded evidence packet and returns a small JSON verdict that the gateway
 persists as an ordinary ``review`` activity step.
 """
+
 from __future__ import annotations
 
 import json

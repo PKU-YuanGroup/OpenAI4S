@@ -5,6 +5,7 @@ protocol. When the worker emits a `host_call` frame mid-execution, this manager
 routes it to the host RPC dispatcher and writes back a `host_response` frame —
 this is the inner synchronous RPC loop.
 """
+
 from __future__ import annotations
 
 import json

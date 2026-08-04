@@ -23,6 +23,7 @@ load-bearing by deleting it and watching the adapter stop returning the record.
 A path that can be removed without breaking anything is not required, and the
 manifest may not claim it is.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -25,6 +25,7 @@ No test here contacts a provider. The manager's remote calls are the part these
 defects are *not* in: both are decided in SQLite and in the Gateway wrapper,
 before and after the remote respectively.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace

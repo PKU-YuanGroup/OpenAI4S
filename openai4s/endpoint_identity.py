@@ -23,6 +23,7 @@ So the stored form is the normalised, credential-free one. Nothing is redacted
 at display time, because a value that was never stored cannot leak from a
 surface nobody remembered to redact.
 """
+
 from __future__ import annotations
 
 import urllib.parse

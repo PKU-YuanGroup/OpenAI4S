@@ -26,6 +26,7 @@ thing people mute:
     ``with ... as``, ``except ... as``), comes from the skill's ``kernel.py``
     sidecar, or is one of the two names the kernel actually injects.
 """
+
 from __future__ import annotations
 
 import ast

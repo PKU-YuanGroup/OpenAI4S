@@ -22,6 +22,7 @@ Matching is suffix-based: an allowlist entry ``ncbi.nlm.nih.gov`` also authorize
 ``eutils.ncbi.nlm.nih.gov`` and ``sra-download.ncbi.nlm.nih.gov`` (subdomains), but
 never ``evilncbi.nlm.nih.gov`` (the boundary dot is required).
 """
+
 from __future__ import annotations
 
 import os

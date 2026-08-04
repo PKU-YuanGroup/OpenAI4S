@@ -26,6 +26,7 @@ Protocol (JSON-per-line):
  protocol IN (host -> worker): execute requests AND host_response frames
  protocol OUT (worker -> host): host_call / stdout_chunk / final response frames
 """
+
 from __future__ import annotations
 
 import hashlib

@@ -1,4 +1,5 @@
 """Stdlib-only adapters for isolated retrosynthesis model processes."""
+
 from __future__ import annotations
 
 import hashlib

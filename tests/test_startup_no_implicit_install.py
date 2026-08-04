@@ -14,6 +14,7 @@ explicit user action (``openai4s setup``, ``POST /api/kernel/install``,
 matters is that *no pip subprocess is spawned* during a plan, not merely that
 the return value looks right.
 """
+
 import subprocess
 
 import pytest

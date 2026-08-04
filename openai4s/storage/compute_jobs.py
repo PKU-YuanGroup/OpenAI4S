@@ -20,6 +20,7 @@ is attempted, so a crash anywhere in the submit path leaves a row to find. On
 restart, reconciliation looks the job up by key rather than assuming — which is
 the difference between recovering a job and paying for it twice.
 """
+
 from __future__ import annotations
 
 import json

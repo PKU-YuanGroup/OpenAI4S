@@ -17,6 +17,7 @@ Not part of default pytest collection: it needs a real enforced sandbox, which
 a developer laptop may not have, and a check that degrades to a warning is
 exactly what the frozen decision refuses.
 """
+
 from __future__ import annotations
 
 import json

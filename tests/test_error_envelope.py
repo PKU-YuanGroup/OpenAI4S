@@ -18,6 +18,7 @@ a silently broken screen rather than a test failure. What a contract needs from
 the success side is a documented, stable shape per route, which the inventory
 test now enforces.
 """
+
 import json
 
 import pytest

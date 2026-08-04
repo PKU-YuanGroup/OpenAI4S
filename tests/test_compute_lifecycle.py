@@ -20,6 +20,7 @@ without anything to back it:
 The last one is proved against a real shell in
 ``test_compute_trust_boundary.py``, where the harness lives.
 """
+
 import io
 import sqlite3
 import threading

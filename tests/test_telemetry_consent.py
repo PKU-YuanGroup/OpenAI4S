@@ -14,6 +14,7 @@ alternative that fails quietly:
     read as a privacy decision. Turning telemetry *off* needs no permission, so
     that direction is allowed.
 """
+
 from __future__ import annotations
 
 import json

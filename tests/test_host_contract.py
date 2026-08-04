@@ -6,6 +6,7 @@ soft-fail shape, host.submit_output completion semantics, the SDK<->dispatcher
 wire codec, and SDK/dispatcher method parity. All offline — the LLM is never
 called and the store lives in the per-test tmp data dir.
 """
+
 import re
 from pathlib import Path
 

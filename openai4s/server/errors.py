@@ -9,6 +9,7 @@ Every route module carved out of ``Handler._api`` needs to raise this type, so
 the cycle would have been discovered once per extraction. It lives here
 instead, and gateway re-exports it so existing importers keep working.
 """
+
 from __future__ import annotations
 
 import os

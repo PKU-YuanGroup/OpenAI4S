@@ -29,6 +29,7 @@ by a key the verifier already trusts, which is a distribution decision (whose
 key, distributed how) rather than a format one. Saying so here is better than
 letting "verified" quietly imply more than it means.
 """
+
 from __future__ import annotations
 
 import hashlib

@@ -9,6 +9,7 @@ The dispatcher is always passed in — this module never imports the
 HostDispatcher (or the agent loop / gateway), so it stays importable with zero
 side effects. Pure stdlib.
 """
+
 from __future__ import annotations
 
 import json

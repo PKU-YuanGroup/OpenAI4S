@@ -15,6 +15,7 @@ The two questions an envelope has to answer, and neither could be:
     silently returns something different reads exactly like a rerun that
     returns the same thing.
 """
+
 from __future__ import annotations
 
 import json

@@ -31,6 +31,7 @@ False means the path matched but the method arm did not fire, and the chain
 must continue to its 404. `return bool(regex_matched)` would silently swallow
 twelve wrong-method 404s into an empty response.
 """
+
 from __future__ import annotations
 
 import re
@@ -97,9 +98,11 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
                 for item in snapshot.get("queue", [])
                 if item.get("execution_id") == job.execution_id
             ),
-            snapshot.get("owner")
-            if (snapshot.get("owner") or {}).get("execution_id") == job.execution_id
-            else None,
+            (
+                snapshot.get("owner")
+                if (snapshot.get("owner") or {}).get("execution_id") == job.execution_id
+                else None
+            ),
         )
         self._json(
             {

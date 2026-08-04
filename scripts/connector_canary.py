@@ -35,6 +35,7 @@ A run's exit code is 0 when nothing drifted (including when a source was merely
 unreachable), and non-zero on real drift, a parse error, or a permanent client
 error, so a trend gate can key on it without flaking on an upstream outage.
 """
+
 from __future__ import annotations
 
 import argparse

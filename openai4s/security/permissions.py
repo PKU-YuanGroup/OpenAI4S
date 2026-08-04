@@ -16,6 +16,7 @@ POSIX modes (Windows, FAT, some network mounts) must not stop the daemon from
 starting. Callers get a boolean so they can report the posture rather than
 assume it.
 """
+
 from __future__ import annotations
 
 import os

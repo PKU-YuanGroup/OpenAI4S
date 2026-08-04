@@ -35,9 +35,9 @@ class ArtifactHarness:
             store=self.store,
             workspace_for=lambda frame_id: self.workspace,
             broadcast=lambda frame_id, event: self.broadcasts.append((frame_id, event)),
-            guess_content_type=lambda name: "text/csv"
-            if name.endswith(".csv")
-            else "application/octet-stream",
+            guess_content_type=lambda name: (
+                "text/csv" if name.endswith(".csv") else "application/octet-stream"
+            ),
             checksum=lambda path: hashlib.sha256(path.read_bytes()).hexdigest(),
         )
         self.session = SimpleNamespace(

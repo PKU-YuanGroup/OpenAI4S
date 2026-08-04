@@ -32,6 +32,7 @@ That flag is why the implicit-at-startup behaviour was worth removing rather
 than merely narrowing: it is exactly the flag that makes an unattended install
 capable of stepping on a system interpreter.
 """
+
 from __future__ import annotations
 
 import json

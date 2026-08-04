@@ -23,6 +23,7 @@ finalize job compares the draft against a record the draft cannot reach.
 Neither document is signed, and neither claims to establish *who* produced it.
 They establish that a set of bytes, a commit and a builder go together.
 """
+
 from __future__ import annotations
 
 import hashlib

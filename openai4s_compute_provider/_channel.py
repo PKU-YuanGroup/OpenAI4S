@@ -4,6 +4,7 @@ the courtesy stdout/stderr scrubber, and a byte formatter.
 None of this knows about providers or ops — it's the transport plumbing the
 resident builds on.
 """
+
 from __future__ import annotations
 
 import io

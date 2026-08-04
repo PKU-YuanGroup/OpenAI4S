@@ -5,6 +5,7 @@ SessionRunner._loop) parse a reply through this single module, so these tests
 lock the language whitelist, the one-cell-per-step document-order rule, and
 the fence-collision guarantees the dual loop depends on.
 """
+
 from typing import get_args
 
 from openai4s.agent.actions import (

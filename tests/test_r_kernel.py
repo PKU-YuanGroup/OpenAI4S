@@ -8,6 +8,7 @@ interrupt) against tests/fixtures/fake_rscript.py — a python stand-in that
 speaks the exact protocol — so they need no R installation. The real-R
 integration tests at the bottom run only when an Rscript is resolvable.
 """
+
 import os
 import stat
 import threading

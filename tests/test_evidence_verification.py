@@ -14,6 +14,7 @@ notices. The fourth is the one that justifies rejecting unlisted files —
 checking only what the manifest lists would happily pass an archive with an
 added payload, which is precisely how a "verified" package smuggles something.
 """
+
 import hashlib
 import json
 import zipfile

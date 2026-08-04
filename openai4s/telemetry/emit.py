@@ -17,6 +17,7 @@ path -- no consent -- `emit` is a settings read that returns None and stops.
 Records are accumulated per install and flushed as one envelope, because one
 POST carrying five counts is less to send, and less to receive, than five.
 """
+
 from __future__ import annotations
 
 import threading

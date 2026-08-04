@@ -11,6 +11,7 @@ Validation is not a filter applied to a dict someone else assembled. The
 envelope is built here, field by field, from the declaration in `schema.py`.
 Nothing is copied through.
 """
+
 from __future__ import annotations
 
 import json

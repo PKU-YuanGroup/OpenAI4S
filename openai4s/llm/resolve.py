@@ -14,6 +14,7 @@ send people to fix something that is not broken.
 
 So the resolution lives here, once, and both call it.
 """
+
 from __future__ import annotations
 
 import dataclasses

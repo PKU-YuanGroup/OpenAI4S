@@ -8,6 +8,7 @@ The properties that make it worth having, each pinned below: it works without
 the daemon, it separates "degraded" from "cannot proceed", and it never reports
 a secret value.
 """
+
 from __future__ import annotations
 
 import importlib

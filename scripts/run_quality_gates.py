@@ -30,6 +30,7 @@ must name this commit as its `head_sha`.
 Every gate runs even after one fails, so a red run reports everything that is
 wrong rather than the first thing.
 """
+
 from __future__ import annotations
 
 import argparse

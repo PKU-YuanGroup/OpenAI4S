@@ -4,6 +4,7 @@ store.py is a future extraction target (docs/refactor-plan.md) — these lock
 the row shapes and id conventions callers depend on TODAY, so an extraction
 that drops or renames a column fails here first.
 """
+
 import hashlib
 import sqlite3
 

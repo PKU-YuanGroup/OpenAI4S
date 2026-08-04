@@ -657,9 +657,9 @@ class _DelegationTree:
             pass
 
 
-_ACTIVE_DELEGATION: contextvars.ContextVar[
-    tuple[_DelegationTree, str] | None
-] = contextvars.ContextVar("openai4s_active_delegation", default=None)
+_ACTIVE_DELEGATION: contextvars.ContextVar[tuple[_DelegationTree, str] | None] = (
+    contextvars.ContextVar("openai4s_active_delegation", default=None)
+)
 
 
 class _ChildCancellation:
