@@ -530,8 +530,15 @@ def test_manifest_is_echoed_faithfully_so_the_fingerprint_reproduces(worker, bac
             metadata=metadata,
         )
 
-    first = manifest_with({"review_record": "review-a", "eval_files": 12})
-    second = manifest_with({"review_record": "review-b", "eval_files": 12})
+    # Both fields are ones the metadata filter would have altered: the value is
+    # path-shaped, and the key contains "path". Filtering them collapsed these
+    # two distinct manifests onto a single fingerprint.
+    first = manifest_with(
+        {"review_record": "/shared/reviews/2026-a.md", "eval_path_length": 3}
+    )
+    second = manifest_with(
+        {"review_record": "/shared/reviews/2026-b.md", "eval_path_length": 9}
+    )
 
     echoed_first = worker._normalize_manifest(first.to_dict())
     echoed_second = worker._normalize_manifest(second.to_dict())
