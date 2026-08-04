@@ -20,6 +20,7 @@ claim locatable and refuses the claims that are structurally empty.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -193,7 +194,34 @@ def in_a_checkout() -> bool:
     return _git_says("rev-parse", "--git-dir")
 
 
-def test_the_audited_commits_are_commits_in_this_repository(crosswalk, in_a_checkout):
+@pytest.fixture(scope="module")
+def shallow() -> bool:
+    """Whether this clone may legitimately be missing old objects.
+
+    `actions/checkout` fetches depth 1 by default, so in CI these commits are
+    not merely unreachable -- they are not in the object store at all and
+    `cat-file` exits 128. That is a fact about the checkout, not about the
+    crosswalk, and the first version of these assertions could not tell the two
+    apart: it reddened every `Offline tests` job while passing here, because
+    this working copy is *also* shallow and happens to still hold the baseline.
+
+    So the distinction is explicit. In a shallow clone a missing object is
+    skipped and said out loud; in a full clone it is a hard failure, because
+    there the only way for a named commit to be absent is that it was invented.
+    `ci.yml` fetches full history for the py3.12 job, so the strict branch is
+    the one CI actually takes.
+    """
+    result = _git("rev-parse", "--is-shallow-repository")
+    return result is not None and result[1].strip() == "true"
+
+
+def _present(sha: str) -> bool:
+    return _git_says("cat-file", "-e", f"{sha}^{{commit}}")
+
+
+def test_the_audited_commits_are_commits_in_this_repository(
+    crosswalk, in_a_checkout, shallow
+):
     """Forty characters was the whole check.
 
     A status is a statement about a tree. A `baseline`/`audited_at` that names
@@ -204,21 +232,37 @@ def test_the_audited_commits_are_commits_in_this_repository(crosswalk, in_a_chec
         pytest.skip("not a git checkout")
     for field in ("baseline", "audited_at"):
         sha = crosswalk[field]
-        assert len(sha) == 40, f"{field} is not a full SHA: {sha!r}"
-        result = _git("cat-file", "-t", sha)
-        assert result is not None and result == (
+        # Checkable in any clone, and the half that catches a placeholder:
+        # forty lowercase hex characters. It needs no history.
+        assert re.fullmatch(r"[0-9a-f]{40}", sha), f"{field} is not a full SHA: {sha!r}"
+        if not _present(sha):
+            if shallow:
+                pytest.skip(
+                    f"{field}={sha[:12]} is outside this shallow clone's history; "
+                    "run in a full clone to check it names a real commit"
+                )
+            raise AssertionError(f"{field}={sha} is not a commit in this repository")
+        assert _git("cat-file", "-t", sha) == (
             0,
             "commit",
-        ), f"{field}={sha} is not a commit in this repository"
+        ), f"{field}={sha} exists but is not a commit"
 
 
-def test_the_audit_is_ordered_and_reachable(crosswalk, in_a_checkout):
+def test_the_audit_is_ordered_and_reachable(crosswalk, in_a_checkout, shallow):
     """`baseline` is where the plan started and `audited_at` is where it was
     last read. An audit that predates its own baseline, or that sits on a commit
     this branch cannot reach, is describing a different history."""
     if not in_a_checkout:
         pytest.skip("not a git checkout")
     baseline, audited = crosswalk["baseline"], crosswalk["audited_at"]
+    missing = [sha for sha in (baseline, audited) if not _present(sha)]
+    if missing:
+        if shallow:
+            pytest.skip(
+                f"{[s[:12] for s in missing]} outside this shallow clone; "
+                "ancestry cannot be decided from a truncated history"
+            )
+        raise AssertionError(f"these are not commits here: {missing}")
     assert _git_says(
         "merge-base", "--is-ancestor", baseline, audited
     ), f"baseline {baseline[:12]} is not an ancestor of audited_at {audited[:12]}"
