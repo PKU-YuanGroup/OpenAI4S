@@ -60,12 +60,21 @@ async function api(path, { method = "GET", data } = {}) {
 }
 
 try {
-  // The example session is the one fixture every daemon has, it is seeded by
-  // the product rather than by this file, and its two messages are enough to
-  // separate "newest page" from "oldest page" — which is the whole defect.
-  const seeded = await api("/example/session", { method: "POST", data: {} });
-  const exampleFrame = seeded.frame_id;
-  if (!exampleFrame) throw new Error("the example session did not seed a frame");
+  // A profile pointing at a name that cannot resolve. `.invalid` is reserved by
+  // RFC 2606, so the panel check below can assert the row states the endpoint
+  // it would call without that endpoint existing.
+  const profile = await api("/model-profiles", {
+    method: "POST",
+    data: {
+      name: "P1 coverage profile",
+      provider: "chatgpt",
+      base_url: "https://api.p1-coverage.invalid/v1",
+      model: "p1-coverage-model",
+      api_key: "sk-not-a-real-key",
+    },
+  });
+  const profileId = profile.id || (profile.profile || {}).id;
+  if (!profileId) throw new Error("profile creation did not return an id");
 
   const project = await api("/projects", {
     method: "POST",
@@ -92,6 +101,70 @@ try {
   // went in through the store, the repository and the route, and `app.js`
   // contained neither string. Two messages are enough to tell the two clients
   // apart: the fixed client asks for seq 1, the broken one for seq 0.
+  //
+  // The fixture is built here rather than borrowed. The first version of this
+  // check seeded the product's example session, which passed on the author's
+  // machine — where that session already existed, so the route short-circuited
+  // — and failed in CI, where a fresh data directory made `POST /example/session`
+  // demand `{"confirm": true}` and then run six cells against two external
+  // APIs. That is exactly the "fixture is whatever the developer's database
+  // holds" trap this file's own header warns about.
+  //
+  // What replaces it is one turn that cannot succeed. `run_message` writes the
+  // user row *before* the model is called and the failure path writes the
+  // terminal row, so a turn that dies on its first LLM call leaves exactly seq 0
+  // and seq 1 — no kernel, no network, ~0.2 s.
+  //
+  // THE INVARIANT THIS DEPENDS ON, stated rather than assumed: the daemon has
+  // no usable LLM credential. That is the CI posture — `ci.yml`'s browser job
+  // sets no `OPENAI4S_*_API_KEY` — and it is checked below instead of hoped
+  // for. On a machine that *does* hold a working credential this turn really
+  // runs, and the throw says so in as many words rather than hanging or
+  // quietly passing. (`model` on the frame does not change that: the override
+  // reaching dispatch comes from the message body, not the frame column, so a
+  // bogus model name with a valid key still reaches a live provider.)
+  const pagingFrame = await api("/frames", {
+    method: "POST",
+    data: { project_id: projectId },
+  });
+  const pagingFrameId = pagingFrame.id || pagingFrame.frame_id;
+  // `request`, not `content`: the route reads `input_data.request` or
+  // `request` and never `content`, so the earlier spelling stored an empty
+  // user row that still counted as two messages.
+  const turn = await api(`/frames/${encodeURIComponent(pagingFrameId)}/message`, {
+    method: "POST",
+    data: { request: "paging fixture", wait: true },
+  });
+  if (turn.status !== "failed") {
+    throw new Error(
+      `the paging fixture needs a turn that cannot succeed, and this one reported ` +
+        `"${turn.status}". This daemon holds a usable LLM credential, so the ` +
+        `fixture's stated invariant does not hold here — run this file against a ` +
+        `daemon with no model credential configured, as ci.yml does.`,
+    );
+  }
+  const seeded = await api(
+    `/frames/${encodeURIComponent(pagingFrameId)}/messages?limit=20`,
+  );
+  if ((seeded.messages || []).length !== 2) {
+    throw new Error(
+      `the fixture turn wrote ${(seeded.messages || []).length} messages, not 2; ` +
+        "every assertion below depends on exactly seq 0 and seq 1 existing",
+    );
+  }
+
+  // What only a browser can show for this defect is which query string the
+  // client puts on the wire — the route's side is covered by
+  // tests/test_session_and_message_paging.py. Recorded from the real requests
+  // rather than inferred from the rows, so a client that returned the right
+  // rows by accident still fails.
+  const messageRequests = [];
+  const recordRequest = (request) => {
+    const url = request.url();
+    if (/\/api\/v1\/frames\/[^/]+\/messages/.test(url)) messageRequests.push(url);
+  };
+  page.on("request", recordRequest);
+
   const paging = await page.evaluate(async (fid) => {
     const newest = await fetchRecentMessages(fid, 1);
     const older = newest.next_before_seq == null
@@ -106,7 +179,8 @@ try {
       wholeSeqs: (whole.messages || []).map((m) => m.seq),
       wholeComplete: !!whole.complete,
     };
-  }, exampleFrame);
+  }, pagingFrameId);
+  page.off("request", recordRequest);
 
   check(
     "newest-first paging",
@@ -125,6 +199,22 @@ try {
     "the walk returns the whole conversation, oldest first",
     JSON.stringify(paging.wholeSeqs) === JSON.stringify([0, 1]) && paging.wholeComplete,
     `walk produced ${JSON.stringify(paging.wholeSeqs)} complete=${paging.wholeComplete}`,
+  );
+
+  // The query strings themselves. A client that dropped `newest_first` and got
+  // the right answer anyway — because the session is short enough that the
+  // oldest page and the newest page coincide — would satisfy every assertion
+  // above. This is the one that cannot be satisfied by accident.
+  check(
+    "the client asks the route for the newest page",
+    messageRequests.some((url) => url.includes("newest_first=1")),
+    `no request carried newest_first=1; observed ${JSON.stringify(messageRequests)}`,
+  );
+  check(
+    "and pages backwards with a keyset cursor, not an offset",
+    messageRequests.some((url) => url.includes("before_seq=")) &&
+      !messageRequests.some((url) => /[?&]from=/.test(url)),
+    `observed ${JSON.stringify(messageRequests)}`,
   );
 
   // ---- P1-A: the message reference chip ----------------------------------
@@ -281,21 +371,11 @@ try {
   // Driven through the tray a user actually clicks, not by calling the render
   // function: these two are reached by a tab id, and a tab that stopped
   // rendering would leave the function passing and the panel empty.
-  // The fixture is created here rather than assumed: a daemon with no profiles
-  // configured renders an empty panel *correctly*, and a check that passed on
-  // whatever the developer's database held would be measuring the database.
-  const profile = await api("/model-profiles", {
-    method: "POST",
-    data: {
-      name: "P1 coverage profile",
-      provider: "chatgpt",
-      base_url: "https://api.p1-coverage.invalid/v1",
-      model: "p1-coverage-model",
-    },
-  });
-  const profileId = profile.id || (profile.profile || {}).id;
-  if (!profileId) throw new Error("profile creation did not return an id");
-  try {
+  // Reuses the profile created at the top. The fixture is made by this file
+  // rather than assumed: a daemon with no profiles configured renders an empty
+  // panel *correctly*, and a check that passed on whatever the developer's
+  // database held would be measuring the database.
+  {
     await page.evaluate(() => openCust("models"));
     await page.locator("#cust:not(.hidden)").waitFor({ state: "visible" });
     const profiles = await page.evaluate(async (name) => {
@@ -321,9 +401,12 @@ try {
       profiles.text.includes("api.p1-coverage.invalid"),
       profiles.text.slice(0, 200),
     );
-  } finally {
-    await api(`/model-profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" }).catch(() => {});
   }
+  // Tidied here rather than in a `finally`: the profile is the paging fixture
+  // too, so it has to outlive every check above.
+  await api(`/model-profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" }).catch(
+    () => {},
+  );
 
   await page.evaluate(() => custTab("memory"));
   const memory = await page.evaluate(async () => {
