@@ -434,6 +434,16 @@ bootstrap):
 | `tests/browser_matrix.mjs` | chromium | 9/9 |
 | `tests/browser_matrix.mjs` | firefox | 9/9 |
 | `tests/browser_matrix.mjs` | webkit | 9/9 |
+| `tests/browser_p1_controls.mjs` (P1-A/P1-B controls) | chromium | passed |
+
+The P1 control file was added after an audit found that **none** of the three
+existing browser files mentioned any of `before_seq`, `newest_first`, chip,
+profile, attachment, delegation, steer or memory — the whole P1-A/P1-B control
+group rested on a single manual walkthrough taken 43 commits before the audit,
+which is not evidence of the code as it stands now. It covers those eight and
+only those eight; the remaining crosswalk rows whose `browser_evidence` is empty
+are still empty, deliberately, rather than pointed at a file that does not drive
+them.
 
 Playwright 1.54.1; chromium 139.0.7258.5. The matrix covers app-shell boot,
 session create, WebSocket connect/receive, artifact projection, consent
