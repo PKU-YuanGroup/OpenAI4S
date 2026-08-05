@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-这里是 OpenAI4S 的顶层 Python 包。核心已经实现，扩展面中仍为 Partial 的部分都会在各自的说明里标出。外层 Agent 循环、原生 JSON 控制工具、持久化科学内核、Host RPC 服务、存储、安全层以及 Web/CLI 适配器都挂在这个目录下，把它们组合起来的控制平面只用标准库。
+这里是 OpenAI4S 的顶层 Python 包。核心已经实现；某个面若仍是 Prototype，或某项操作按设计只能以 Partial 收场，都会在各自的说明里标出。外层 Agent 循环、原生 JSON 控制工具、持久化科学内核、Host RPC 服务、存储、安全层以及 Web/CLI 适配器都挂在这个目录下，把它们组合起来的控制平面只用标准库。
 
 ## 在架构中的位置
 
@@ -50,7 +50,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`mcp_servers/`](./mcp_servers/) | 用于演示和测试的内置纯标准库 MCP 示例服务器。 |
 | [`sdk/`](./sdk/) | 注入 Python Cell 的兼容 `host` facade 和远程计算命名空间。 |
 | [`security/`](./security/) | 沙箱和子进程环境隔离。它也筛查代码与内容、检查注入，并提供这些层要用的策略辅助模块。每一层都是独立的，其中有几层会失败即放行。 |
-| [`server/`](./server/) | 标准库 HTTP/WebSocket workbench：session 服务、投影、恢复和静态 UI。若干专用的 UI/恢复工作流仍为 Partial。 |
+| [`server/`](./server/) | 标准库 HTTP/WebSocket workbench：session 服务、投影、恢复和静态 UI。恢复执行、分支 fork/激活/revert/undo 这组控件，以及 Notebook 的四种导出形式，都已端到端接通——每一个都受能力门控：控件会带着理由被禁用，而不是等到路由那里才失败，这也正是只有带可证明检查点映射的记录才提供 Fork 的原因。这里的 `Partial` 说的是一次恢复的**结果**，不是没做完的功能：任意历史命名空间被刻意地从不序列化，因此一次无法重建并验证它的恢复，按设计就以 Partial 收场。 |
 | [`share/`](./share/) | Web 分享传输层：隧道线协议、纯标准库 WSS 客户端、daemon 侧出站 `TunnelClient`、无状态公网 relay，以及 SSRF 加固的 bundle 下载。快照本身在 `server/share_projection.py` 服务端构建。 |
 | [`skills_loader/`](./skills_loader/) | 发现 Skill，并渐进披露：先只给名称和摘要，正文要等到真正加载。它同时负责 sidecar 校验、版本化安装和回滚。 |
 | [`telemetry/`](./telemetry/) | 选择加入的匿名遥测，默认关闭。仅计数与枚举，零自由文本——而且强制是针对**值**的：`{"error_type": "ValueError"}` 和 `{"error_type": "FileNotFoundError: /home/y/unpublished/cohort.csv"}` 过的是同一个键检查。刻意没有可容纳自由文本的取值域，因此新增这类字段必须先新增一个域类。 |

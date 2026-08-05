@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-This is the top-level Python package. The core is implemented, and the extension surfaces that are still Partial are marked as such where they are described. The outer agent loop, the native JSON control tools, the persistent scientific kernels, the Host RPC services, storage, security, and the Web/CLI adapters all hang off this directory, and the control plane that composes them is standard-library only.
+This is the top-level Python package. The core is implemented; where a surface is still a Prototype, or where an operation can only ever end Partial by design, it is marked as such where it is described. The outer agent loop, the native JSON control tools, the persistent scientific kernels, the Host RPC services, storage, security, and the Web/CLI adapters all hang off this directory, and the control plane that composes them is standard-library only.
 
 ## Where this fits
 
@@ -50,7 +50,7 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 | [`mcp_servers/`](./mcp_servers/) | Bundled pure-stdlib example MCP server used for demonstration and tests. |
 | [`sdk/`](./sdk/) | Compatible `host` facade injected into Python cells and the remote-compute namespace. |
 | [`security/`](./security/) | Sandboxing and child-environment isolation. It also screens code and content, checks for injection, and carries the policy helpers those layers lean on. Each layer is independent, and several can fail open. |
-| [`server/`](./server/) | The stdlib HTTP/WebSocket workbench: session services, projections, recovery, and the static UI. Several specialized UI and recovery workflows remain Partial. |
+| [`server/`](./server/) | The stdlib HTTP/WebSocket workbench: session services, projections, recovery, and the static UI. Recovery execution, the branch fork/activate/revert/undo controls, and all four Notebook export forms are wired end to end — each behind a capability gate that disables the control with a stated reason rather than letting it fail at the route, which is why Fork is offered only on a record carrying a proven checkpoint mapping. `Partial` here names a recovery *outcome*, not an unfinished feature: an arbitrary historical namespace is deliberately never serialized, so a recovery that cannot rebuild and verify one ends Partial by design. |
 | [`share/`](./share/) | Web sharing transport: the tunnel wire protocol, a stdlib WSS client, the daemon's outbound `TunnelClient`, the stateless public relay, and the SSRF-hardened bundle fetch. The snapshot itself is built server-side in `server/share_projection.py`. |
 | [`skills_loader/`](./skills_loader/) | Finds Skills and discloses them progressively: name and summary first, the body only on load. It also validates sidecars, installs versions, and rolls them back. |
 | [`telemetry/`](./telemetry/) | Opt-in anonymous telemetry, off by default. Counts and enumerations only, zero free text — and the enforcement is over **values**: `{"error_type": "ValueError"}` and `{"error_type": "FileNotFoundError: /home/y/unpublished/cohort.csv"}` pass the same key check. There is deliberately no domain that can hold free text, so adding such a field requires adding a domain class. |
