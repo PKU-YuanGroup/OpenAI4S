@@ -1,15 +1,20 @@
 """Owner-only permissions for the data directory and its sensitive files.
 
-The SQLite database holds credentials in plaintext today (model-profile API
-keys, connector env, managed-endpoint tokens), and it was created at the
-process umask — typically 0644, i.e. readable by every local account. On a
-shared workstation, a lab server, or any box with a second login, that is the
-whole credential store one `cat` away.
+The SQLite database can hold credentials in the clear (model-profile API keys,
+connector env, managed-endpoint tokens), and it was created at the process
+umask — typically 0644, i.e. readable by every local account. On a shared
+workstation, a lab server, or any box with a second login, that is the whole
+credential store one `cat` away.
 
-Tightening the mode does not make plaintext storage acceptable; a SecretBroker
-is still the actual fix. It removes the cheapest way to read those secrets in
-the meantime, and it is what makes a backup or an rsync of ~/.openai4s not
-silently world-readable at the far end.
+The SecretBroker that was once "still the actual fix" has landed:
+`secret_broker.py` keeps a credential behind an opaque reference in the system
+keychain or the process environment, `secret_migration.py` moves existing rows
+over, and `auto` fails closed rather than degrading to plaintext. That does not
+retire this module. `OPENAI4S_SECRET_STORE=plaintext` remains a mode a user can
+select by name; a value that has not been migrated yet, or whose migration
+failed, deliberately stays readable where it is so the install keeps working;
+and the file mode is what makes a backup or an rsync of ~/.openai4s not
+silently world-readable at the far end regardless of which store is in use.
 
 Stdlib only, and best-effort by contract: a filesystem that cannot represent
 POSIX modes (Windows, FAT, some network mounts) must not stop the daemon from
