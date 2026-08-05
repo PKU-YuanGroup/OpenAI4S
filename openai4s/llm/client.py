@@ -127,7 +127,9 @@ def chat(
     transport_args = {"post_sse": bound_sse}
     if wire == "openai":
         transport_args["post_json"] = bound_json
-    elif wire in ("anthropic", "gemini"):
+    elif wire == "anthropic":
+        transport_args["post_json"] = bound_json
+    elif wire == "gemini":
         transport_args = {"post_json": bound_json}
     reply = caller(
         messages,

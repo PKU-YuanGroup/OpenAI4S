@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any
 
 from ..messages import _anthropic_messages
@@ -25,6 +27,7 @@ def _chat_anthropic(
     tool_choice=None,
     parallel_tool_calls=None,
     post_json,
+    post_sse,
 ) -> dict:
     url = f"{base.rstrip('/')}/v1/messages"
     # Anthropic takes a top-level `system` string, not a system message.
@@ -45,6 +48,16 @@ def _chat_anthropic(
         "x-api-key": cfg.api_key,
         "anthropic-version": _ANTHROPIC_VERSION,
     }
+    want_stream = on_delta is not None and os.environ.get(
+        "OPENAI4S_LLM_STREAM", "1"
+    ) not in ("0", "false", "no", "off")
+    if want_stream:
+        try:
+            return _chat_anthropic_stream(
+                url, dict(payload), headers, cfg, on_delta, post_sse=post_sse
+            )
+        except _StreamStartError:
+            pass
     body = post_json(url, payload, headers, cfg.timeout_s)
     try:
         blocks = body["content"]
@@ -75,4 +88,148 @@ def _chat_anthropic(
         "assistant_message": _assistant_message(text, calls, wire_state),
         "wire_state": wire_state,
         "raw": body,
+    }
+
+
+class _StreamStartError(Exception):
+    """The stream failed before an event, so a blocking retry is safe."""
+
+
+def _chat_anthropic_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> dict:
+    payload["stream"] = True
+    headers = {**headers, "Accept": "text/event-stream"}
+    state: dict[str, Any] = {
+        "blocks": {},
+        "usage": {},
+        "finish": None,
+        "started": False,
+        "terminal": False,
+    }
+
+    def _block(index: int) -> dict[str, Any]:
+        return state["blocks"].setdefault(index, {"type": "text", "text": []})
+
+    def _emit(piece: str) -> None:
+        if not piece:
+            return
+        try:
+            on_delta(piece)
+        except Exception:  # noqa: BLE001 - a UI callback must not kill the stream
+            pass
+
+    def _on_event(evt: dict) -> None:
+        event_type = evt.get("type")
+        if event_type == "error" or evt.get("error"):
+            state["started"] = True
+            error = evt.get("error")
+            detail = error.get("message") if isinstance(error, dict) else error
+            raise LLMError(f"Anthropic stream error: {detail or evt}")
+        if event_type == "ping":
+            return
+        state["started"] = True
+        if event_type == "message_start":
+            message = evt.get("message") or {}
+            state["usage"].update(message.get("usage") or {})
+            return
+        if event_type == "content_block_start":
+            index = int(evt.get("index", 0))
+            raw = evt.get("content_block") or {}
+            if raw.get("type") == "tool_use":
+                state["blocks"][index] = {
+                    "type": "tool_use",
+                    "id": raw.get("id"),
+                    "name": raw.get("name"),
+                    "input_json": [],
+                }
+            elif raw.get("type") == "thinking":
+                initial = raw.get("thinking") or ""
+                state["blocks"][index] = {
+                    "type": "thinking",
+                    "thinking": [initial],
+                }
+            else:
+                initial = raw.get("text") or ""
+                state["blocks"][index] = {"type": "text", "text": [initial]}
+                _emit(initial)
+            return
+        if event_type == "content_block_delta":
+            index = int(evt.get("index", 0))
+            delta = evt.get("delta") or {}
+            kind = delta.get("type")
+            block = _block(index)
+            if kind == "text_delta":
+                piece = delta.get("text") or ""
+                block.setdefault("text", []).append(piece)
+                _emit(piece)
+            elif kind == "input_json_delta":
+                block.setdefault("input_json", []).append(
+                    delta.get("partial_json") or ""
+                )
+            elif kind == "thinking_delta":
+                block.setdefault("thinking", []).append(delta.get("thinking") or "")
+            elif kind == "signature_delta" and delta.get("signature"):
+                block["signature"] = delta["signature"]
+            return
+        if event_type == "message_delta":
+            delta = evt.get("delta") or {}
+            if delta.get("stop_reason") is not None:
+                state["finish"] = delta["stop_reason"]
+            state["usage"].update(evt.get("usage") or {})
+            return
+        if event_type == "message_stop":
+            state["terminal"] = True
+
+    timeout = max(cfg.timeout_s, 60.0)
+    try:
+        post_sse(url, payload, headers, timeout, _on_event)
+    except LLMError:
+        if not state["started"]:
+            raise _StreamStartError()
+        raise
+    if not state["terminal"]:
+        if not state["started"]:
+            raise _StreamStartError()
+        raise LLMError("Anthropic stream ended before message_stop")
+
+    blocks: list[dict[str, Any]] = []
+    for index in sorted(state["blocks"]):
+        acc = state["blocks"][index]
+        kind = acc.get("type")
+        if kind == "tool_use":
+            raw_input = "".join(acc.pop("input_json", []))
+            try:
+                tool_input = json.loads(raw_input) if raw_input else {}
+            except ValueError:
+                tool_input = raw_input
+            blocks.append({**acc, "input": tool_input})
+        elif kind == "thinking":
+            blocks.append({**acc, "thinking": "".join(acc.get("thinking", []))})
+        else:
+            blocks.append({**acc, "text": "".join(acc.get("text", []))})
+
+    text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+    calls: list[dict] = []
+    for ordinal, block in enumerate(b for b in blocks if b.get("type") == "tool_use"):
+        calls.append(
+            _normalized_tool_call(
+                provider="anthropic",
+                ordinal=ordinal,
+                name=block.get("name"),
+                arguments=block.get("input", {}),
+                wire_id=block.get("id"),
+                provider_meta={"block": block},
+            )
+        )
+    provider_finish = state["finish"]
+    wire_state = {"anthropic_content": blocks}
+    return {
+        "content": text,
+        "reasoning": None,
+        "usage": state["usage"],
+        "finish_reason": "tool_calls" if calls else provider_finish,
+        "provider_finish_reason": provider_finish,
+        "tool_calls": calls,
+        "assistant_message": _assistant_message(text, calls, wire_state),
+        "wire_state": wire_state,
+        "raw": None,
     }
