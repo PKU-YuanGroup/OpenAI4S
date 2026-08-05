@@ -6,9 +6,10 @@
 
 ## 运行时职责
 
-- 整个产品由两层壳撑起来：Dashboard 和对话 Workspace。两者一起提供项目、会话、对话、模型选择、计划/审阅、审批、Artifact、Notebook、Timeline、Context、Security、分支/恢复、Skill 与设置界面。
+- 整个产品由两层壳撑起来：Dashboard 和对话 Workspace。两者一起提供项目、会话、对话、模型选择、计划/审阅、审批、Artifact、Notebook（含按语言拆分的 `.ipynb`、打包 bundle 与 Markdown 三类导出）、Timeline、Context、Security、分支/恢复、Skill 与设置界面。
 - `app.js` 保存浏览器侧的投影和临时交互状态。核心 Workbench 投影都经过显式的净化处理，既不保留 provider 的原始报文，也不保留工具调用的原始参数。部分 Settings 路径和遗留的 `innerHTML` 代码还没有做完整的转义审计。
-- WebSocket 事件驱动流式文本、Cell、activity、执行所有权以及 Workbench 的读模型；REST 负责有界读取和显式写入。
+- WebSocket 事件驱动流式文本、Cell、activity、执行所有权以及 Workbench 的读模型；REST 负责有界读取和显式写入。订阅时会带上 `since_seq` 和这条流的 `epoch`，所以重连是在 `replay_begin`/`replay_end` 之间续传，而不是整段重取；而 epoch 一变，这个标签页手里的游标全部作废，绝不会拿去给一条本 daemon 从未产生过的流编号。一轮由它的 `execution_id` 追踪，绝不用它所在的会话来追踪：frame 活得比 turn 长，两个 turn 也会重叠。
+- 一次应答丢失会毁掉的那点状态，由客户端自己保管。钉住评论的 admission id 在这里生成，取自平台 CSPRNG，并在消息**发出之前**写进 `localStorage`，于是一个没收到 202 的标签页可以去问这些评论后来怎么了，而不必重发、也不必悄悄丢掉。长列表是分页而不是截断：会话列表跟着服务端那个不透明的 keyset 游标走，配一个「加载更多」控件；更早的一页消息按时间插入而不是追加，因为这一栏里本来就有比最新一页消息更早的 activity 步骤。
 - Artifact 用哪个渲染器由服务端的 [`../renderers.py`](../renderers.py) 决定。sequence、alignment、genome、Molfile/SMILES 与 LaTeX 的解析在 [`scientific_renderers.js`](scientific_renderers.js) 里；table、image、PDF、HTML 与 text 的展示主要在 `app.js` 中组合。HTML preview 里的脚本是可以执行的：它们跑在不带 `allow-same-origin` 的沙箱 iframe 中，碰不到主应用的 origin，但这个 preview 并不是一个无脚本的渲染器。
 - 前端刻意手写 HTML/CSS/JavaScript。请保持 DOM ID 和事件名稳定，离线静态契约测试和浏览器冒烟测试都是照着它们写的。
 
@@ -27,7 +28,7 @@
 
 | 目录 | 职责 |
 | --- | --- |
-| `share/` | 独立的只读分享查看器（`share.html`/`share.js`/`share.css`），由 relay 隧道的 ShareRouter 提供，与主单页应用分开。它复用 `scientific_renderers.js` 和自带的 3Dmol，但有自己的极简外壳，且从不建立 WebSocket。 |
+| `share/` | 独立的只读分享查看器（`share.html`/`share.js`/`share.css`），由 relay 隧道的 ShareRouter 提供，与主单页应用分开，而且是自成一体的，不是主应用的裁剪版。它的外壳只加载 `share.js` 和 `share.css`，别的一概不加载：没有 WebSocket，不与 `app.js` 共享任何状态，Markdown 和 CSV 也由它自带的极简渲染器处理，而不是 `scientific_renderers.js`。ShareRouter 的资产白名单确实放行了 `scientific_renderers.js` 和自带的 3Dmol，好让更完整的查看器可以取用，但当前这套外壳两者都不请求。 |
 | `vendor/` | 从上游取来的压缩版 3Dmol 运行时和字体资源。3Dmol 是客户端里唯一的第三方 JavaScript，而且只有在打开分子 Artifact 时才由 `app.js` 动态注入。自带的那份如果加载不上，Artifact 直接退回纯文本展示，不存在 CDN 回退（见 [`app.js`](app.js) 里注入 `3Dmol-min.js` 的那处 script 标签）。把它们当作上游的、逐字节敏感的资产：不参与格式化，本 README 也不逐个文件说明。 |
 
 ## 验证

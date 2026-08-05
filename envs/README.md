@@ -10,7 +10,7 @@ plane runs without any of them.
 
 | File | Purpose |
 | --- | --- |
-| `python.yml` | Python 3.11 for general data analysis and plotting. Carries the single-cell stack (scanpy, anndata, leidenalg, umap-learn), scikit-learn and the usual numerics, and pulls rdkit and fair-esm from pip. |
+| `python.yml` | The default kernel env: Python 3.11 for general data analysis and plotting. Carries the single-cell stack (scanpy, anndata, leidenalg, umap-learn), scikit-learn and the usual numerics. rdkit comes from conda-forge and deliberately not from the pip `rdkit-pypi` wheel, which is frozen at 2022.9.5, built against the NumPy 1.x C ABI, and segfaults the kernel worker against the NumPy 2.x this spec resolves. Only fair-esm and pypdfium2 come from pip. |
 | `phylo.yml` | Python 3.11 for phylogenetics and bioinformatics. Alongside biopython, dendropy and ete3 it installs the command-line tools a tree pipeline needs: mafft, iqtree, fasttree, trimal. |
 | `r.yml` | R 4.5.3 and the packages the independent R kernel channel expects: tidyverse, data.table, ggplot2, knitr/rmarkdown, jsonlite. conda-forge only, no bioconda. |
 | `struct.yml` | Python 3.13 for structural biology and protein language models. biotite and biotraj come from conda; torch and fair-esm come from pip, deliberately as the portable CPU build. Substitute a conda pytorch build for a GPU-accelerated one. |

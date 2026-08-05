@@ -8,6 +8,6 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [`r5_prechange.json`](r5_prechange.json) | 选定 r5 生产行为的经审阅快照，规范化成可逐字节比较的字节流：CLI max turns、限流后哪怕响应里带了 Retry-After 也只做一次传输尝试就报错、已经提交过一个 delta 之后断掉的流、compaction 摘要如何投影进各 provider 的请求体、超大 observation、headless 下的权限拒绝，以及被禁用的 MCP connector。每个 case 都记录生产现在的实际行为、期望的契约，以及这份快照是不是在冻结一个已知缺陷。 |
+| [`r5_prechange.json`](r5_prechange.json) | 选定 r5 生产行为的经审阅快照，规范化成可逐字节比较的字节流：CLI max turns、带 `Retry-After` 的 429、已经提交过一个 delta 之后断掉的流、compaction 摘要如何投影进各 provider 的请求体、超大 observation、headless 下的权限拒绝，以及被禁用的 MCP connector。每个 case 都记录生产现在的实际行为、期望的契约，以及这份快照是不是在冻结一个已知缺陷——而如今「pre-change」只剩下文件名这一层意思：七个 case 里曾有四个记着已知缺陷，四个后来都修掉了，它们的 `current_behavior` 也随之改写成修复后的行为。这正是这份文件该有的样子，不是漂移。 |
 
 `uv run python -m harness.cli characterize` 只比较，不写入。对不上是需要人去看的信号，不是自动覆盖 golden 的许可。
