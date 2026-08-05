@@ -18,20 +18,22 @@ SQLite 事务能让明确划定的一组 row 保持原子，但它没法一口�
 | [`actions.py`](actions.py) | 规范的 Action Ledger。group 与 event 一旦写下就不可变，reducer 靠重放它们还原 provider 历史、工具批次和 Cell observation。execution attempt 在工作开始前就分配好；之后每个生命周期节点只填一次，所以已完成的 attempt 永远不会被改写。 |
 | [`activation.py`](activation.py) | 在一个事务里激活某个 checkpoint branch：所选 branch、session capability、会话级 permission 规则、可见的 Artifact head、checkpoint state 和所选的 Python 环境一起切换。这样即使崩溃，也不会出现 branch id 已经发布、周边策略和数据却还停在另一个 branch 的情况。 |
 | [`agents.py`](agents.py) | 具名的专家 Agent profile，其 skill 与 connector 覆盖以 JSON 存放。 |
-| [`annotations.py`](annotations.py) | 单个 session/Artifact 语境下的图像评审 pin：归一化坐标、正文、序号、状态流转与删除。分配序号和插入行放在同一个临界区里，因此并发的两个 pin 不会拿到同一个号。 |
-| [`artifacts.py`](artifacts.py) | 系统对一个产出文件所知道的一切。Artifact 是稳定的身份；每次写入追加一个 version，记下字节在哪、当时是在哪个环境快照下做出来的、以及产出它的那个 Cell。血缘边把一个输出 version 连回它所派生自的那些输入 version——UI 能回答“这张图是谁产的、又吃了什么进去”，靠的就是它，而不必去翻工作区。restore 记录、优先级和最新 head 也在这里。 |
+| [`annotations.py`](annotations.py) | 单个 session/Artifact 语境下的图像评审 pin：归一化坐标、正文、序号、状态流转与删除。分配序号和插入行放在同一个临界区里，因此并发的两个 pin 不会拿到同一个号。它同时负责把一个 pin 恰好一次地接纳进一条消息。`reserve` 是一条限定在本 frame 内、只从 `open` 出发的 UPDATE，两个竞争请求里恰好一个认领到某一行，输的那个看到的是它不在自己的 reservation 里，而不是悄悄共用；`release` 和 `mark_sent` 只结算属于自己的 `reservation_id`，并且只在自己的 frame 内，因为 reservation id 会随响应发出去，是调用方手里的一个值。每条谓词都自带它的预期，而不是先查后写——`Store` 的可重入锁是**每个实例**一把，而 daemon 会对同一个文件跑不止一个实例，所以「拿到了锁」从来就不是关于数据库的断言。`annotation_admissions` 是每个 reservation 最终去向的持久记录；快照可能正好在一个 pin 流转途中把它抓下来，恢复时会把它结算回 `open` 且不带持有者，因为持有它的那个请求活不过这段间隔。 |
+| [`artifacts.py`](artifacts.py) | 系统对一个产出文件所知道的一切。Artifact 是稳定的身份；每次写入追加一个 version，记下字节在哪、当时是在哪个环境快照下做出来的、以及产出它的那个 Cell。血缘边把一个输出 version 连回它所派生自的那些输入 version——UI 能回答“这张图是谁产的、又吃了什么进去”，靠的就是它，而不必去翻工作区。若某个 version 派生自公共数据库，它还带着自己的检索信封——数据从哪来、什么时候取的——以规范 JSON 存放，这样同一次检索派生出的两个 version 直接按文本就相等，而不必比较键序；至于客户端能看到其中多少，由 gateway 的投影决定。在该列出现之前写下的行保持 NULL，而不是回填一次本机从未做过的检索，理由和环境那次迁移不回填是同一个。环境快照的内容地址里含有解释器、环境名**以及**内核 generation：少了 generation，内核重启进同一个环境会算出同一个 id，第二段生命周期产出的每个 artifact 都指向仍然写着第一段的那一行。restore 记录、优先级和最新 head 也在这里。 |
 | [`branch_projection.py`](branch_projection.py) | 用不可变的 checkpoint 游标，加上当前 head 之后写入的本地 row，重建出 branch 视角下的逻辑历史。不会为了让某个 branch 读起来正确，就去删物理上只追加的历史。 |
 | [`capabilities.py`](capabilities.py) | 持久化的 capability 开关。所有 capability 的优先级规则一致（session 盖过 project，project 盖过 global；没有对应 row 就是启用），一张物化的表负责快速的策略判断，每次变更还会追加一条 event。bootstrap manifest 也存在这里。 |
 | [`checkpoint_state.py`](checkpoint_state.py) | 必须跟着 branch 一起走的那部分 session 域状态：plan、评审的活动/设置/批注，以及项目 memory，序列化成规范 JSON 并带一个 SHA-256 完整性摘要。导入进来的状态不会直接采信，而是先校验并隔离，再重映射身份，只恢复通过校验的那部分作用域。 |
+| [`compute_jobs.py`](compute_jobs.py) | 远程作业活得比提交它的那个进程更久——ssh 作业在 `nohup` 下继续跑，BYOC sandbox 继续计费——所以用两张表回答两个不同的问题：`compute_jobs` 记录作业此刻在哪、以及重新够到它需要哪些句柄；`compute_job_events` 记录它是怎么走到这一步的，只追加且严格递增编号。单看一个状态，分不清「我们压根没提交」和「我们提交了，但在记下句柄之前把响应弄丢了」，而重启后这两者要求的动作正好相反。幂等键是在尝试提交**之前**就写下的，所以提交路径上任何位置崩溃，都还留着一行可查；恢复时按这个键去查，而不是靠猜——这正是「找回一个作业」和「为它付两次钱」的分界。`owner_key` 则保证重启不会把一个 session 的在跑作业交给另一个。 |
 | [`connectors.py`](connectors.py) | 一个 MCP 服务器被配置成了什么样子。命令、参数和环境变量以 JSON 存进去，读的时候再解回来，旁边是启用标志和展示用的名字。真正把这个服务器拉起来是 MCP 客户端的活，不是这张表的。 |
 | [`delegation.py`](delegation.py) | 有界的子 Agent 树，持久化下来，因此重启之后这份投影依然读得对。子任务的名额是在一个 immediate 事务里、按 session 的 spawn 上限预留出来的，跑完再释放，所以一次 fanout 没法悄悄超出预算。子任务的生命周期、结果和 steering 消息也一并存在这里。 |
 | [`deletion.py`](deletion.py) | 在单个事务里删掉一个 session 或一个 project 拥有的全部 SQLite 聚合。兼容 schema 里没有外键，所以每张归属它的表都要显式点名。它只把已经变成清理候选的文件路径返回出去，自己不做 unlink。 |
-| [`frames.py`](frames.py) | session 的主干：project、frame 层级以及一个 frame 解析出的作用域、用户看得见的消息、活动步骤、token 计数和 frame 搜索。Cell 执行日志也在这里，每条记录都带着可见性和 replay 策略——只走协议的那种 Cell 因此可以留在审计记录里，同时不出现在只读 Notebook 上。 |
+| [`frames.py`](frames.py) | session 的主干：project、frame 层级以及一个 frame 解析出的作用域、用户看得见的消息、活动步骤、token 计数和 frame 搜索。Cell 执行日志也在这里，每条记录都带着可见性和 replay 策略——只走协议的那种 Cell 因此可以留在审计记录里，同时不出现在只读 Notebook 上。消息可以从两头翻页：默认从最早开始，也可以按 `before_seq` 这个 keyset 游标从最新一页往回走，这才是一段长对话真正需要的方向——升序加 limit 给回的是**最早**那一页，于是一个 640 条消息的 session 打开时停在第 0–299 条，最新的 340 条根本不在里面。用游标而不是 offset，是因为一旦按最新在前排序，每来一条新消息 offset 就会错位；而 `seq` 在同一个 root frame 内本就单调，不需要再加一个次级排序键。 |
 | [`kernels.py`](kernels.py) | Python 与 R 内核 generation 的持久 UUID 身份，外加 manifest、owner 与进程元数据、序号、活动记录和终止状态。这些行描述的是进程的生命周期，从不声称把活着的命名空间序列化下来了。 |
-| [`memories.py`](memories.py) | 项目级的长期 memory，一张有意做得很小的表。增、查、删，外加按 category 和 block 的投影，省得调用方自己去分组。 |
+| [`memories.py`](memories.py) | 项目级的长期 memory，一张有意做得很小的表。增、改、删，外加按 block 的投影，省得调用方自己去分组。`resolve` 返回生效集合**以及**继承过程做了什么——先是项目自己的 memory，然后才是那些没被本项目某个 block 覆盖掉的全局 memory——因为只给一份合并后的列表，就分不清一条 memory 是被覆盖了还是从未写过；这里的顺序即优先级：预算是从末尾开始截断的，所以上下文满了先掉的是全局那一批。跨项目视图必须由调用方明确点名才拿得到。过期只是把一条 memory 从注入中扣下，从不删除，所以每个 scope 的名额上限数的是**存活**行——若按存储行数来数，一个全部过期的 scope 会拒绝每一次新写入，而被它顶满名额的那些 memory，面板上早已标为已略过——另有一个更大的存储上限，免得前一条规则让 scope 无限增长。 |
 | [`metadata.py`](metadata.py) | 五个小仓储合在一个模块里：项目笔记、文件夹、受管 endpoint 元数据、compaction 归档，以及 Host 调用的审计日志。凭据读取是可推导的，不会再往日志里抄一份；带 secret 的 RPC 仍按方法名留下审计记录，但它们的原始参数不会越过持久化边界。 |
+| [`migrations.py`](migrations.py) | 版本化、事务化的 schema 迁移。以前根本没有版本标记：每次打开都要把每张表重新探一遍，再对缺的列发 `ALTER TABLE ADD COLUMN`，外面裹一个光秃秃的 `except OperationalError: pass`——于是真正失败的 ALTER 和重跑时那句无害的「列已存在」变得无从分辨，进程就带着一个自以为有、实则缺列的 schema 继续跑。版本 1 的定义是「旧的那一遍已完整跑完」——它按谓词幂等，只补缺失的列，每处回填都带着只选中仍需处理之行的 WHERE，所以在任何库上再跑一次都收敛到同一形状；从 2 开始，每一步都有编号、只执行一次，并连同 checksum 一起记录。整批迁移跑在一次显式 `BEGIN` 里，而这正是承重的一环：pysqlite 只在 DML 之前开事务，DDL 之前不开，于是一条裸的 ALTER 会以 autocommit 执行，熬过那条本该撤销它的 ROLLBACK。由此换来的不变式是：数据库要么完全在 N，要么完全在 N-1——被中断的升级因此只要再跑一次就能恢复。升级前先过 `PRAGMA integrity_check`，并通过 SQLite 自带的 backup API 另存一份：失败时保留，作为运维手里的退路；升级提交后即删除。 |
 | [`permissions.py`](permissions.py) | 解析带作用域的 allow/ask/deny 规则，写入本地默认值，持久化审批请求与事件，并让过了期限的待决 decision 过期。重启后的 continuation grant 绑定得很窄，且只会被原子地消费一次。 |
-| [`plans.py`](plans.py) | 某个 frame 的结构化 plan，以及每一步的状态与备注。 |
+| [`plans.py`](plans.py) | 某个 frame 的结构化 plan，以及每一步的状态与备注。状态集合在 Python 里强制，而不是写成 SQL CHECK：`plans` 是用 `CREATE TABLE IF NOT EXISTS` 建的，今天加上的约束只对新库生效，对既有库则悄无声息——护的恰好是最不需要护的那批人。状态变更走 compare-and-set；被已死进程留在 `executing` 的行，在启动时与内核 generation 一起被清算：置为 paused 而非 failed，因为已经完成的步骤确实完成了。`get_by_frame` 返回的是最新的、未被 discard 的那个 plan，这也正是为什么一行卡在 `executing` 会永久遮住该 session 之后的每一份草稿。 |
 | [`recovery.py`](recovery.py) | 恢复日志。每一次尝试、每一次修复都追加一条有序记录，所以失败或只做了一半的恢复，在 daemon 重启之后依然查得到。 |
 | [`settings.py`](settings.py) | 一张 key/value 表，上面搭了两个结构化视图。模型 profile 以 JSON 列表存放，`mutate_model_profiles` 在 `Store` 的锁里完成读取、修改、写回，所以并发编辑不会把哪个 profile 弄丢。消息反馈则按 frame 归键。 |
 | [`skills.py`](skills.py) | content-addressed 的 Skill 包：不可变的 blob、文件与 manifest；只在乐观并发下才移动的安装指针；以及只追加的启用/停用历史。包的校验与物化归 [`skills_loader/versions.py`](../skills_loader/versions.py) 管，不在这里。 |
@@ -50,7 +52,7 @@ SQLite 事务能让明确划定的一组 row 保持原子，但它没法一口�
 - 只有 snapshot 绑定成功之后，一个 Artifact version 才是完全不可变的。snapshot 捕获失败时，那一行可能仍然指向一个活的、按路径引用的文件。调用方必须去看元数据，不能默认每个 version 背后都有冻结的字节。
 - 工作区 restore 会感知冲突，也会逐个文件做原子替换，但它不是覆盖整个文件系统的事务。中途失败可能留下一棵只恢复了一半的目录树，诊断这种情况要靠操作记录和恢复日志。
 - checkpoint 激活只保证它列出的那些会话级数据库投影是原子的，仅此而已。project 和 global 策略仍然是活的，文件系统与内核的恢复另行协调。
-- Agent 的只读 SQL 由 `Store` 的查询检查器强制，而不是靠给出受限的数据库账号。仓储方法本身属于受信任的进程内代码。
+- Agent 的只读 SQL 由 `Store` 的查询检查器强制，而不是靠给出受限的数据库账号。仓储方法本身属于受信任的进程内代码。由于这道检查器跑在唯一那条共享连接上，**解除**它和**装上**它一样承重：在 Python 3.10（本项目声明的下限）上，`set_authorizer(None)` 并不会摘掉 C 侧的转接层，只是让它背后没有可调用对象，SQLite 会把这次失败的回调读成 `SQLITE_DENY`——于是那句意为「不设限制」的调用实际含义是「全部拒绝」，一次 `host.query` 就足以让本进程之后的每一次写入都报未授权。所以解除检查器的方式是装上一个放行的回调。
 - permission decision 持久化的是授权元数据，不是可以续跑的 Python 栈，也不是执行参数。重启之后，必须由一个匹配的新 action 来消费那个窄绑定的 continuation grant。
 - connector 配置和其他 JSON 元数据一样，可能带着敏感的运维输入。审计脱敏规则只覆盖特定的 Host 调用，覆盖不到任何人随手存进来的字段，因此部署时的备份要按同等级别保护。
 - 删除先提交 SQLite 里的归属变更，然后才把候选路径返回出去。服务端在 unlink 之前必须重新校验这些路径；数据库事务成功，并不证明字节真的清理干净了。
@@ -61,6 +63,3 @@ SQLite 事务能让明确划定的一组 row 保持原子，但它没法一口�
 - [Web 运行时](../../docs/webapp.md)
 - [安全模型](../../docs/security.md)
 - [Store facade](../store.py)
-
-- [`migrations.py`](migrations.py) —— 版本化、事务化的 schema 迁移：要么完全在 N，要么完全在 N-1。
-- [`compute_jobs.py`](compute_jobs.py) —— 持久化的远程任务记录及其带序号的事件流。

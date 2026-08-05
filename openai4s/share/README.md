@@ -1,11 +1,22 @@
 # share/
 
+[中文说明](README_zh.md)
+
 The web-share transport layer. The daemon publishes a session as an immutable,
 read-only snapshot (built in [`../server/share_projection.py`](../server/share_projection.py))
 and dials **out** over WSS to a relay you run; visitors reach it at
 `https://<share-id>.<domain>/`. Everything here is pure standard library, and
 none of it ever touches the kernel, dispatcher, or a writable gateway route — the
 relay forwards visitor requests to the read-only ShareRouter and nothing else.
+
+The daemon side is driven by `openai4s share` (`create`, `update`, `list`,
+`revoke`, `enable`, `disable`, `status`, `import`); the public side is
+`openai4s relay serve` on a VPS, plus `openai4s relay gen-token` for a publisher
+token. The one import from outside
+this package is [`../server/ws_frames.py`](../server/ws_frames.py): both ends of
+the tunnel parse RFC 6455 through the same hardened, role-aware codec as the
+gateway's own WebSocket, so a frame the daemon would refuse is not one the relay
+quietly accepts.
 
 | File | Purpose |
 |---|---|

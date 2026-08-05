@@ -12,7 +12,7 @@ changes before they reach those runtime surfaces.
 | File | Purpose |
 | --- | --- |
 | `CODEOWNERS` | Maps paths to reviewers: a catch-all default, then rules for the runtime core, security-sensitive paths, the web app, compute, science skills, tests, and governance. The last matching rule wins, so the specific entries override the default. |
-| `dependabot.yml` | Weekly Monday dependency-update proposals for the `uv`, `pre-commit`, and `github-actions` ecosystems, each with a cap on how many PRs stay open. Action bumps are batched into a single PR, and `uv` batches minor and patch bumps of development dependencies; everything else — production deps, majors, `pre-commit` — still arrives one PR at a time. |
+| `dependabot.yml` | Weekly Monday dependency-update proposals for the `uv`, `pre-commit`, and `github-actions` ecosystems, each with a cap on how many PRs stay open. Action bumps are batched into a single PR; `uv` batches minor and patch bumps of development dependencies, and `pre-commit` batches minor and patch hook bumps. Majors are deliberately outside every group, and production dependencies are not grouped at all, so both still arrive one PR at a time — a major hook bump is a lint or style policy change that has to be read on its own rather than merged as one row of a version table. |
 | `pull_request_template.md` | The checklist a PR fills in: branch policy, what changed, which commands were actually run (and which were not, and why), the core dependency policy, and what must never appear in a public repository. |
 
 ## Subdirectories
@@ -21,7 +21,7 @@ changes before they reach those runtime surfaces.
 | --- | --- |
 | `ISSUE_TEMPLATE/` | The structured issue forms, plus the policy for what belongs in a public issue. |
 | `contributors/` | Contributor avatars, cropped to circles and committed here for the root READMEs to embed. |
-| `workflows/` | The GitHub Actions: CI, release, the contributor wall, OpenSSF Scorecard, and secret scanning. |
+| `workflows/` | The three GitHub Actions workflows: the offline CI gate, the draft-first release pipeline, and OpenSSF Scorecard. Credential scanning is a job inside CI rather than a workflow of its own. |
 
 ## Where this fits
 

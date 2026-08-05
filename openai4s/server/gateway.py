@@ -59,10 +59,10 @@ from openai4s.config import Config, get_config
 from openai4s.execution import (
     CaptureResult,
     CellRequest,
+    QueueDepthExceeded,
     WatchdogPolicy,
     execute_with_watchdog,
 )
-from openai4s.execution.coordinator import QueueDepthExceeded
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
 from openai4s.llm import PROVIDERS, chat, get_model_capabilities, provider_specs
@@ -172,7 +172,6 @@ _SHARE_ASSET_NAMES = (
     "share.html",
     "share.js",
     "share.css",
-    "md_renderer.js",
     "scientific_renderers.js",
     "vendor/3Dmol-min.js",
 )

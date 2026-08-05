@@ -838,10 +838,12 @@ def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
 
     `path` is relative to the API root -- "/shares", not "/api/shares". Every
     `openai4s share` subcommand passed the latter, and the daemon serves the
-    API only under `/api/v1`, so all nine answered with the daemon's own "the
-    API is versioned" 404. The whole feature had never reached a route,
-    including the `openai4s share import <url>` line the generated share page
-    tells a recipient to run.
+    API only under `/api/v1`, so all nine requests answered with the daemon's
+    own "the API is versioned" 404 -- nine and not eight because `share create
+    latest` resolves the session with a `GET /frames` of its own before it
+    posts. The whole feature had never reached a route, including the
+    `openai4s share import <url>` line the generated share page tells a
+    recipient to run.
 
     The version is joined from `contract.API_ROOT`, the constant the gateway
     routes on, so the two cannot drift.

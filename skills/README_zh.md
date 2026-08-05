@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-33 个 OpenAI4S 内置 Skill 都在这里，一个 Skill 一个目录。Skill 是一份 recipe：
+34 个 OpenAI4S 内置 Skill 都在这里，一个 Skill 一个目录。Skill 是一份 recipe：
 代码，加上把它跑起来所需要的运维知识，而不是 provider 的 JSON Tool。披露是渐进的，
 loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它才去读该目录下的
 `SKILL.md` 和可选的 `kernel.py` sidecar。
@@ -22,6 +22,7 @@ loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它
 | [`diffdock/`](diffdock/) | 盲式对接。不需要预先划定搜索盒：扩散模型可以把配体放到表面任何位置，再由 confidence 头给采样排序。这个 confidence 反映的是构象是否正确，不是结合自由能，而且不同复合物之间的数值不可比。所以在做苗头化合物分诊之前，还要配一个打分工具。 |
 | [`esmfold2/`](esmfold2/) | Biohub 的 ESM 发布：既有可以只凭单条序列跑的全原子 co-folding，也有 ESMC 语言模型给出的 embedding、突变打分和 contact 预测。当你没有 MSA 也能接受时，它优于其他几个 co-folding Skill。 |
 | [`evaluate-model/`](evaluate-model/) | 在留出数据上评估二分类与回归：ROC AUC 会处理并列取值，不确定度来自确定性 bootstrap。它有一半是纪律而不是算术：指标要在看到测试集之前定下来，结果要对照 baseline，还要逐个子群检查。bootstrap 区间刻画的是抽样波动，它不会修正泄漏，也不会修正数据分布偏移。 |
+| [`evidence-walkthrough/`](evidence-walkthrough/) | 端到端的参考流程，也是最该先跑的一个：固定查询、本地分析、每个派生产物都声明自己是从哪些版本推导出来的，最后导出一份会话包——接收方只要 `openai4s verify-package` 就能校验，不需要 daemon。accession 是写死的，因此两次运行可比，这也正是它能当基准用例的原因。校验通过说明这个包**完整**，不等于**可信**：这个格式不带签名。 |
 | [`evo2/`](evo2/) | 长上下文的 DNA 语言模型。可以给出逐核苷酸的似然用于变异效应打分、基因组窗口的 embedding，以及从前缀出发的序列生成。它给的是序列概率，而 `borzoi` 给的是实验 track 预测。 |
 | [`example_stats/`](example_stats/) | 用户自建 Skill 的范例（`origin: personal`），而且本身就能用：在普通 Python 列表上算均值、标准差、中位数、分位数、z-score 和 Pearson 相关，不依赖 NumPy 和 pandas。要自己写 Skill 之前，先读这一个。 |
 | [`fair-esm2/`](fair-esm2/) | 通过 `fair-esm` 包使用 Meta 的 ESM-2：逐残基与整条序列的 embedding、掩码语言模型的突变打分、contact 预测。注意命名空间撞车：`fair-esm` 和 `esmfold2` 背后的 Biohub fork 都以 `esm` 导入，但是两个不同的库。 |
@@ -39,7 +40,7 @@ loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它
 | [`proteinmpnn/`](proteinmpnn/) | 设计面只有蛋白时的默认反向折叠步骤：输入 backbone 几何，输出序列，模型小到在 CPU 上跑几条设计就是几秒钟的事。它只写序列，不写别的，所以需要穿好序列的 PDB 时要用 `ligandmpnn` 的 runner；一旦涉及辅因子或可溶表达，就该换 Skill。 |
 | [`remote-compute-nvidia/`](remote-compute-nvidia/) | 把任务派发到 NVIDIA NIM，两种形态共用同一套 job 契约。`self_hosted` 在你自己的 GPU 上跑 nvcr.io 容器；`hosted` 不需要本地 GPU，但每一次任务请求都会发往 NVIDIA 的托管网关。只有声明过的 key 变量才会转发给受限的 helper，并且会从离开沙箱的日志尾部里抹掉。 |
 | [`remote-compute-ssh/`](remote-compute-ssh/) | 在用户自己的 SSH 或 SLURM 主机上跑任务时的编排部分：分区、环境激活、作业脚本、文件暂存、结果回收、恢复。科学内容不归它管。每一次提交都会在用户面前弹出审批框，并且花掉他们的机时，所以一次好的运行应该是：先读已经记下来的主机信息，缺的一次问清，把第一次提交落地，再把学到的东西写下来。 |
-| [`retrosynthesis_planning/`](retrosynthesis_planning/) | 把 AiZynthFinder 的路线规范化成稳定 schema、排序，并渲染成供化学家评审和路线分诊的 dashboard。报告里的反应条件、收率区间、路线结论和安全提示都由 LLM 生成。它们是假设，不是实验验证，每一条都必须对照文献、ELN 数据、供应商可得性和专家意见去核。 |
+| [`retrosynthesis_planning/`](retrosynthesis_planning/) | 把 AiZynthFinder 的路线规范化成稳定 schema，去掉重复的路线假设以得到化学上更有区分度的评审集合，再排序、做确定性的结构审计，并渲染成供化学家评审和路线分诊的 dashboard。可选的隔离模型进程通过一次带版本的 JSON 交换补充单步前体提案，它不替代多步搜索。报告里的反应条件、收率区间、路线结论和安全提示都由 LLM 生成。它们是假设，不是实验验证，每一条都必须对照文献、ELN 数据、供应商可得性和专家意见去核。 |
 | [`scgpt/`](scgpt/) | 面向单细胞数据的 transformer 基础模型：用于聚类的细胞 embedding、零样本或微调的细胞类型注释，以及可用于扰动或 GRN 分析的基因表示。checkpoint 是裸目录，不是 HuggingFace repo。代码是 MIT，但没有任何来源说明权重的许可证。 |
 | [`scvi-tools/`](scvi-tools/) | `scgpt` 的概率式对应物：scVI 给出批次校正后的隐空间，scANVI 从部分标注的参考集迁移标签，还有贝叶斯差异表达。它需要的是原始整数 UMI counts。要做空间解卷积或映射，请改用 cell2location、DestVI 或 Tangram。 |
 | [`solublempnn/`](solublempnn/) | ProteinMPNN 的同一套架构，在可溶 PDB 子集上重训，使输出偏离全 PDB 模型乐于放置的表面疏水残基。设计出来的蛋白老是聚集、进包涵体时，用它。代价是牺牲几个百分点的原生序列回收率；而且仅凭序列的先验并不是一次可溶性测量。 |
@@ -55,6 +56,3 @@ loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它
   Python 内核；它不得给 core 引入强制依赖。
 - Provider shim 是受信任的扩展代码，运行时会跨过另有文档说明的 compute 或 endpoint
   边界。光有一份 manifest，并不代表这项 capability 已经能用。
-
-- [`evidence-walkthrough/`](evidence-walkthrough/) —— 参考流程：固定查询、本地分析、带 lineage 的产物，以及能在干净环境校验的证据包。
-- [`bioprobench/`](bioprobench/) —— 流程推理（protocol reasoning）评测。

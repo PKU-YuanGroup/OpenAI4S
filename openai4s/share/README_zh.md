@@ -1,9 +1,18 @@
 # share/
 
+[English](README.md)
+
 Web 分享的传输层。daemon 把一个会话发布成不可变的只读快照（在
 [`../server/share_projection.py`](../server/share_projection.py) 构建），并通过 WSS 主动**出站**
 连到你自建的 relay；访客经 `https://<share-id>.<domain>/` 访问。这里全部是纯标准库，且没有任何
 代码触碰内核、dispatcher 或可写的 gateway 路由——relay 只把访客请求转给只读的 ShareRouter，仅此而已。
+
+daemon 一侧由 `openai4s share`（`create`、`update`、`list`、`revoke`、`enable`、
+`disable`、`status`、`import`）驱动；公网一侧是跑在 VPS 上的 `openai4s relay serve`，
+再加一个生成发布者令牌的 `openai4s relay gen-token`。本包唯一一个来自外部的 import 是
+[`../server/ws_frames.py`](../server/ws_frames.py)：隧道两端解析 RFC 6455 用的，
+是与 gateway 自身 WebSocket 完全相同的那套加固过、按角色区分的编解码，
+所以 daemon 会拒绝的帧，relay 不会悄悄收下。
 
 | 文件 | 作用 |
 |---|---|
