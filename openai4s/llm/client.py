@@ -124,10 +124,12 @@ def chat(
     bound_sse = bind_call_context(
         post_sse, provider=cfg.provider, should_cancel=should_cancel
     )
+    # `responses` is SSE-only; `gemini` has no streaming adapter. The two wires
+    # that stream *and* keep a blocking fallback need both transports.
     transport_args = {"post_sse": bound_sse}
-    if wire == "openai":
+    if wire in ("openai", "anthropic"):
         transport_args["post_json"] = bound_json
-    elif wire in ("anthropic", "gemini"):
+    elif wire == "gemini":
         transport_args = {"post_json": bound_json}
     reply = caller(
         messages,

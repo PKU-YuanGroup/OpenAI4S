@@ -266,7 +266,7 @@ _BUILTIN_PROVIDERS: dict[str, ProviderCapabilities] = {
         vision=True,
         audio=False,
         reasoning=True,
-        streaming=False,
+        streaming=True,
         usage_mapping=_ANTHROPIC_USAGE,
     ),
     "gemini": ProviderCapabilities(
