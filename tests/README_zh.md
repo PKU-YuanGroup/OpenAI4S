@@ -149,6 +149,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_kernel_sandbox.py`](test_kernel_sandbox.py) | Seatbelt 与 bubblewrap 的命令是怎么拼出来的，以及各个模式的行为。`auto` 会在带可见告警的前提下退化成没有沙箱；`enforce` 在后端缺失或自检失败时失败即拒绝；无效的模式绝不会被悄悄降级成更弱的那个。 |
 | [`test_kernel_supervisor.py`](test_kernel_supervisor.py) | 不对底下协议作任何假设的 worker 生命周期。反复出现的主题是“精确”：过期的 lease 中断不了、杀不掉、重启不了、也放弃不了一个新的 worker；一个已死的替身会被拒绝，而不会连累健康的当前 worker。 |
 | [`test_lazy_kernel.py`](test_lazy_kernel.py) | 关于 CLI 一次性内核所有权的四个测试。从不跑代码的上下文就从不创建 worker；bootstrap 失败也不会把一个坏掉的 worker 发布出去。 |
+| [`test_llm_anthropic_streaming.py`](test_llm_anthropic_streaming.py) | Anthropic 的 SSE 路径，以及让"加这条路径"这件事本身安全的那条性质：流式与阻塞必须规范化出同一个 reply。`wire_state` 会被原样当作下一轮的 assistant 内容回放，所以重建逻辑不认识的 block——`redacted_thinking`、server-tool block——必须完整存活，而不是塌缩成一个空 text 块：那会让**下一次**请求失败，而不是产生它的这一次。回退边界也在两个方向上被钉住：流在第一个事件之前就死掉，会以不带 `stream` 的请求体退回阻塞式；已经吐过增量之后再死，则直接抛出而不重放。 |
 | [`test_llm_anthropic_tool_calls.py`](test_llm_anthropic_tool_calls.py) | Anthropic Messages 的 Tool 调用走一轮编解码往返。并行的结果必须回到同一条相邻的 user 消息里——朴素地重建历史，恰恰就错在这一点上。 |
 | [`test_llm_capabilities.py`](test_llm_capabilities.py) | Provider 的 capability 目录与 token 记账。用量规范化能容忍缺失或离谱的计数器；成本只由显式配置的价格算出，绝不靠猜。 |
 | [`test_llm_gemini_tool_calls.py`](test_llm_gemini_tool_calls.py) | Gemini `generateContent`，以及它别扭的那个角落。wire 没给调用 ID 时会生成一个稳定的本地 ID，但这个 ID 绝不能回放给 Gemini；不透明的 part metadata（包括签名）必须原样回放在原来的 part 上。 |

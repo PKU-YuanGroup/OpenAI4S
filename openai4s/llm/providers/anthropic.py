@@ -134,23 +134,34 @@ def _chat_anthropic_stream(url, payload, headers, cfg, on_delta, *, post_sse) ->
         if event_type == "content_block_start":
             index = int(evt.get("index", 0))
             raw = evt.get("content_block") or {}
-            if raw.get("type") == "tool_use":
+            kind = raw.get("type")
+            if kind == "tool_use":
                 state["blocks"][index] = {
                     "type": "tool_use",
                     "id": raw.get("id"),
                     "name": raw.get("name"),
                     "input_json": [],
                 }
-            elif raw.get("type") == "thinking":
+            elif kind == "thinking":
                 initial = raw.get("thinking") or ""
                 state["blocks"][index] = {
                     "type": "thinking",
                     "thinking": [initial],
                 }
-            else:
+            elif kind in (None, "text"):
                 initial = raw.get("text") or ""
                 state["blocks"][index] = {"type": "text", "text": [initial]}
                 _emit(initial)
+            else:
+                # Anything else — `redacted_thinking`, a server-tool block, a
+                # type added after this was written — is carried through
+                # unchanged. The reply's `wire_state` becomes the next turn's
+                # assistant content verbatim (see `_anthropic_messages`), so
+                # coercing an unrecognized block into `{"type": "text",
+                # "text": ""}` is not a lossy render: it is a request Anthropic
+                # rejects, one turn after the turn that produced it. The
+                # blocking path keeps these blocks intact; so must this one.
+                state["blocks"][index] = dict(raw)
             return
         if event_type == "content_block_delta":
             index = int(evt.get("index", 0))
@@ -192,35 +203,55 @@ def _chat_anthropic_stream(url, payload, headers, cfg, on_delta, *, post_sse) ->
         raise LLMError("Anthropic stream ended before message_stop")
 
     blocks: list[dict[str, Any]] = []
+    # Arguments to normalize, per tool_use block, paired with that block's
+    # position in `blocks`. They live beside the wire block and never inside
+    # it: the block is replayed to Anthropic verbatim, so it may carry only
+    # fields the Messages API accepts.
+    tool_arguments: list[tuple[int, Any]] = []
     for index in sorted(state["blocks"]):
-        acc = state["blocks"][index]
+        acc = dict(state["blocks"][index])
         kind = acc.get("type")
         if kind == "tool_use":
             raw_input = "".join(acc.pop("input_json", []))
             try:
-                tool_input = json.loads(raw_input) if raw_input else {}
+                parsed = json.loads(raw_input) if raw_input else {}
             except ValueError:
-                tool_input = raw_input
-            blocks.append({**acc, "input": tool_input})
+                parsed = None
+            # `input` is an object on this wire. Fragments that never formed
+            # valid JSON still reach the normalized call — which carries a
+            # `parse_error` field for exactly this — while the wire block keeps
+            # a shape the next request can actually carry.
+            acc["input"] = parsed if isinstance(parsed, dict) else {}
+            tool_arguments.append(
+                (len(blocks), acc["input"] if isinstance(parsed, dict) else raw_input)
+            )
         elif kind == "thinking":
-            blocks.append({**acc, "thinking": "".join(acc.get("thinking", []))})
-        else:
-            blocks.append({**acc, "text": "".join(acc.get("text", []))})
+            acc["thinking"] = "".join(acc.get("thinking", []))
+        elif kind == "text":
+            # A delta that arrived without its `content_block_start` lands on
+            # the default text accumulator; drop the stray key rather than
+            # replaying it as part of the block.
+            acc.pop("input_json", None)
+            acc["text"] = "".join(acc.get("text", []))
+        blocks.append(acc)
 
     text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
     calls: list[dict] = []
-    for ordinal, block in enumerate(b for b in blocks if b.get("type") == "tool_use"):
+    for ordinal, (position, arguments) in enumerate(tool_arguments):
+        block = blocks[position]
         calls.append(
             _normalized_tool_call(
                 provider="anthropic",
                 ordinal=ordinal,
                 name=block.get("name"),
-                arguments=block.get("input", {}),
+                arguments=arguments,
                 wire_id=block.get("id"),
                 provider_meta={"block": block},
             )
         )
-    provider_finish = state["finish"]
+    # Parity with the OpenAI stream's `or "stop"`: a reply whose finish reason
+    # is None is indistinguishable from one the loop never finished reading.
+    provider_finish = state["finish"] or "end_turn"
     wire_state = {"anthropic_content": blocks}
     return {
         "content": text,
