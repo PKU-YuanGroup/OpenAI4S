@@ -24,7 +24,20 @@ def _load_dotenv() -> None:
     the real environment (so an explicit `export` always wins). This keeps
     secrets like OPENAI4S_LLM_API_KEY out of source while still letting the app
     run with a single local, git-ignored file.
+
+    ``OPENAI4S_SKIP_DOTENV=1`` skips the load entirely. The offline test suite
+    (tests/conftest.py) sets it before this module is first imported so a
+    developer's real .env can never configure the tests — several dataclass
+    defaults below are frozen at import time, where no fixture can undo a
+    leaked value.
     """
+    if os.environ.get("OPENAI4S_SKIP_DOTENV", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return
     here = Path(__file__).resolve()
     for base in (here.parent, *here.parents):
         candidate = base / ".env"
