@@ -479,8 +479,14 @@ def _plural(n: int, word: str) -> str:
 def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]:
     """(output, one-line summary) for a finished step."""
     if not ok or (isinstance(result, dict) and result.get("error")):
-        err = result.get("error") if isinstance(result, dict) else "failed"
-        return ({"error": str(err)[:600]}, "failed")
+        # Carry the reason onto the card. This used to collapse every failure
+        # to the bare word "failed", so a save_artifact that raised
+        # "no such file: bar_chart.png" showed the user (and the reopened
+        # Timeline) nothing to act on.
+        err = result.get("error") if isinstance(result, dict) else None
+        reason = " ".join(str(err).split()) if err else ""
+        summary = "failed" if not reason else f"failed: {reason[:160]}"
+        return ({"error": str(err)[:600] if err else "failed"}, summary)
     r = result if isinstance(result, dict) else {}
     if kind == "search":
         raw = result if isinstance(result, list) else r.get("results")
@@ -1086,6 +1092,7 @@ class HostDispatcher:
         result = None
         deferred_step = False
         permission_decision_id = None
+        raised_error: str | None = None
         try:
             child_decision = None
             if self._child_execution_policy is not None:
@@ -1172,8 +1179,12 @@ class HostDispatcher:
                     )
                 result = self._screen_tool_result(method, result, control_tool)
             return result
-        except Exception:
+        except Exception as exc:
             ok = False
+            # The worker sees this exception as its RuntimeError; the step
+            # card otherwise sees nothing (``result`` is still None on the
+            # raise path), so keep the message for the ``finally`` below.
+            raised_error = f"{type(exc).__name__}: {exc}"
             raise
         finally:
             self.store.log_host_call(
@@ -1195,7 +1206,10 @@ class HostDispatcher:
                 and view is not None
             ):
                 try:
-                    output, summary = _step_end(method, view[0], result, ok)
+                    step_result = result
+                    if step_result is None and raised_error is not None:
+                        step_result = {"error": raised_error}
+                    output, summary = _step_end(method, view[0], step_result, ok)
                     self.on_step(
                         {
                             "phase": "end",
@@ -1963,7 +1977,16 @@ class HostDispatcher:
             return self.background_kernel_factory()
         from openai4s.kernel import Kernel
 
-        return Kernel(dispatcher=self)
+        # ``background_kernel_factory`` is wired when a *foreground* kernel
+        # spawns — but ``exec_background`` is also a native control tool, so a
+        # tool-only Web turn reaches this fallback with the factory still
+        # unset. A Kernel without a cwd inherits the daemon's launch directory,
+        # which is a different directory from the one write_file and artifact
+        # capture resolve against: the cell then cannot see the files the
+        # control plane just wrote, and its own relative-path writes pollute
+        # the daemon's cwd where no artifact service will ever look. Anchor the
+        # fallback to the same workspace the file tools use.
+        return Kernel(dispatcher=self, cwd=str(self._files.workspace()))
 
     def _bg(self) -> Any:
         """Lazily build the background executor (one per dispatcher).
