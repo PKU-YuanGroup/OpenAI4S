@@ -241,9 +241,9 @@ jobs:
         if: matrix.python-version == '3.12'
         run: uv sync --locked --extra science --extra chemistry
       # The .dmg's interpreter. The science extra is not optional here even
-      # though the core is stdlib-only: a few test modules import pandas at
-      # module scope, so without it pytest fails during *collection* and the
-      # job reports an error rather than a result.
+      # though the core is stdlib-only: the science-dependent test modules
+      # importorskip pandas/matplotlib, so without the extra they silently
+      # skip and the job stops validating the interpreter the .dmg ships.
       - name: Install dev and science dependencies
         if: matrix.python-version == '3.13'
         run: uv sync --locked --extra science
