@@ -43,6 +43,19 @@ PAST_TENSE_STARTERS = frozenset(
 _CJK_START = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 
 
+def first_english_word(bullet: Any) -> str | None:
+    """The lowercased first word of an English bullet, or ``None``.
+
+    ``None`` means the word-level heuristics do not apply: the bullet is not a
+    non-empty string, or it starts with CJK text, whose morphology does not
+    mark tense the way the English guards assume.
+    """
+    if not isinstance(bullet, str) or not bullet.strip():
+        return None
+    first = re.split(r"\s+", bullet.strip())[0].lower()
+    return None if _CJK_START.match(first) else first
+
+
 def validate_completion_bullets(bullets: list) -> str | None:
     """Require 1-4 non-empty completed-action bullets.
 
@@ -55,8 +68,8 @@ def validate_completion_bullets(bullets: list) -> str | None:
     for bullet in bullets:
         if not isinstance(bullet, str) or not bullet.strip():
             return "each completion bullet must be a non-empty string"
-        first = re.split(r"\s+", bullet.strip())[0].lower()
-        if _CJK_START.match(first):
+        first = first_english_word(bullet)
+        if first is None:
             continue
         if not (first.endswith("ed") or first in PAST_TENSE_STARTERS):
             return (
@@ -123,6 +136,7 @@ class CompletionService:
 __all__ = [
     "CompletionService",
     "PAST_TENSE_STARTERS",
+    "first_english_word",
     "validate_completion_bullets",
     "validate_output_schema",
 ]

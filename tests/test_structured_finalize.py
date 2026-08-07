@@ -22,8 +22,10 @@ from openai4s.agent.events import (
 )
 from openai4s.agent.finalize import (
     execute_finalize_action,
+    execution_evidence,
     finalize_response_schema,
     finalize_response_tool_spec,
+    reconcile_completion_claims,
     validate_finalize_arguments,
     with_finalize_response,
 )
@@ -45,6 +47,22 @@ def _arguments(**overrides):
         "limitations": ["Only one dataset was available."],
         "next_steps": ["Validate on an independent dataset."],
         "completion_bullets": ["Completed the evidence review"],
+    }
+    value.update(overrides)
+    return value
+
+
+def _prose_arguments(**overrides):
+    """A payload with no execution-shaped claims — no artifacts, no metrics,
+    reflective bullets — which is what an honest conversational turn (zero
+    cells, zero tools) is allowed to finalize with under ledger reconciliation.
+    """
+    value = {
+        "summary": "The inspected evidence supports the requested conclusion.",
+        "findings": ["The control and measured value agree."],
+        "limitations": ["Only one dataset was available."],
+        "next_steps": ["Validate on an independent dataset."],
+        "completion_bullets": ["Explained the evidence review"],
     }
     value.update(overrides)
     return value
@@ -185,7 +203,7 @@ def test_router_reserves_finalization_only_for_one_standalone_native_call():
 
 
 def test_cli_executor_closes_provider_call_before_returning_completion_record():
-    call = _call(_arguments())
+    call = _call(_prose_arguments())
     outcome = _local_executor().execute(
         FinalizeAction(call), ModelReply(tool_calls=(call,)), RunState([])
     )
@@ -203,10 +221,10 @@ def test_cli_executor_closes_provider_call_before_returning_completion_record():
     assert outcome.completion == {
         "output": {
             key: value
-            for key, value in _arguments().items()
+            for key, value in _prose_arguments().items()
             if key != "completion_bullets"
         },
-        "completion_bullets": ["Completed the evidence review"],
+        "completion_bullets": ["Explained the evidence review"],
     }
     assert outcome.stop_reason is None
 
@@ -264,7 +282,7 @@ def test_mixed_batch_treats_finalize_as_nonterminal_and_never_completes():
 
 
 def test_engine_records_assistant_then_tool_result_before_submitted_terminal():
-    call = _call(_arguments())
+    call = _call(_prose_arguments())
     reply = ModelReply(content="", tool_calls=(call,))
 
     class Model:
@@ -288,7 +306,7 @@ def test_engine_records_assistant_then_tool_result_before_submitted_terminal():
 
 
 def test_web_executor_accepts_finalize_without_dispatcher_kernel_or_pending_work():
-    call = _call(_arguments())
+    call = _call(_prose_arguments())
     outcome = _web_executor().execute(
         FinalizeAction(call), ModelReply(tool_calls=(call,)), RunState([])
     )
@@ -349,3 +367,132 @@ def test_finalize_ledger_roundtrip_and_timeline_projection(tmp_path):
     assert finalized["status"] == "completed"
     assert finalized["title"].startswith("The inspected evidence")
     store.close()
+
+
+def test_reconciliation_rejects_execution_claims_without_ledger_evidence():
+    zero = {"cells": 0, "tool_calls": 0}
+
+    assert reconcile_completion_claims(_prose_arguments(), zero) is None
+    error = reconcile_completion_claims(_arguments(), zero)
+    assert "artifacts" in error and "metrics" in error and "ledger" in error
+    flagged = reconcile_completion_claims(
+        _prose_arguments(completion_bullets=["Computed the standard deviation"]),
+        zero,
+    )
+    assert "Computed the standard deviation" in flagged
+    # CJK bullets carry no tense morphology; the verb heuristic never applies.
+    assert (
+        reconcile_completion_claims(
+            _prose_arguments(completion_bullets=["完成了证据审阅"]), zero
+        )
+        is None
+    )
+    # Any real execution satisfies the reconciliation for every claim shape.
+    assert reconcile_completion_claims(_arguments(), {"cells": 1}) is None
+    assert reconcile_completion_claims(_arguments(), {"tool_calls": 2}) is None
+    # A corrupted evidence mapping degrades to zero counts, never a crash.
+    assert "ledger" in reconcile_completion_claims(
+        _arguments(), {"cells": "three", "tool_calls": -1}
+    )
+
+
+def test_zero_execution_finalize_with_claims_is_refused_but_repairable():
+    call = _call(_arguments(completion_bullets=["Computed the standard deviation"]))
+
+    for executor in (_local_executor(), _web_executor()):
+        outcome = executor.execute(
+            FinalizeAction(call), ModelReply(tool_calls=(call,)), RunState([])
+        )
+        result = outcome.history_messages[0]
+        assert result["is_error"] is True
+        assert "ledger" in result["content"]
+        assert outcome.completion is None
+        # A refused reconciliation is repairable, not terminal: the model can
+        # run the claimed work (or restate the completion) on the next turn.
+        assert outcome.stop_reason is None
+
+    # Direct calls without an evidence ledger keep the legacy behaviour.
+    legacy = execute_finalize_action(FinalizeAction(call))
+    assert legacy.history_messages[0]["is_error"] is False
+    assert legacy.completion is not None
+
+
+def test_cli_finalize_accepts_execution_claims_after_a_real_cell_ran():
+    class Kernel:
+        generation = 0
+
+        def execute(self, code, origin="agent"):
+            assert origin == "agent"
+            return {"stdout": "4\n", "stderr": "", "error": None}
+
+    class Dispatcher:
+        last_output = None
+
+    executor = LocalActionExecutor(
+        Kernel(),
+        Dispatcher(),
+        lambda code, messages: None,
+        lambda code: {"error": "R must not start"},
+    )
+    state = RunState([])
+    cell = CodeCell("python", "print(2 + 2)\n")
+    executor.execute(cell, ModelReply(content="```python\nprint(2 + 2)\n```"), state)
+    assert execution_evidence(state.metadata) == {"cells": 1, "tool_calls": 0}
+
+    call = _call(_arguments(completion_bullets=["Computed the requested value"]))
+    outcome = executor.execute(
+        FinalizeAction(call), ModelReply(tool_calls=(call,)), state
+    )
+    assert outcome.history_messages[0]["is_error"] is False
+    assert outcome.completion is not None
+
+
+def test_safety_refused_cell_never_counts_as_execution_evidence():
+    executor = LocalActionExecutor(
+        _NeverKernel(),
+        _NeverDispatcher(),
+        lambda code, messages: "cell refused by the safety gate",
+        lambda code: {"error": "R must not start"},
+    )
+    state = RunState([])
+    cell = CodeCell("python", "import os\n")
+    refused = executor.execute(
+        cell, ModelReply(content="```python\nimport os\n```"), state
+    )
+    assert "refused" in str(refused.observation)
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+    call = _call(_arguments())
+    outcome = executor.execute(
+        FinalizeAction(call), ModelReply(tool_calls=(call,)), state
+    )
+    assert outcome.history_messages[0]["is_error"] is True
+    assert outcome.completion is None
+
+
+def test_web_finalize_accepts_execution_claims_after_a_real_cell_ran():
+    sent = []
+    events = WebEventSink(sent.append, "frame-1", [], lambda usage: None)
+
+    class Dispatcher:
+        last_output = None
+
+    executor = WebActionExecutor(
+        dispatcher=lambda: Dispatcher(),
+        apply_pending=lambda: None,
+        execute_cell=lambda action: {"stdout": "ok\n", "stderr": "", "error": None},
+        events=events,
+        prose_nudge="nudge",
+        explore_nudge="explore",
+    )
+    state = RunState([])
+    cell = CodeCell("python", "print(1)\n")
+    executor.execute(cell, ModelReply(content="```python\nprint(1)\n```"), state)
+    assert execution_evidence(state.metadata) == {"cells": 1, "tool_calls": 0}
+
+    call = _call(_arguments(completion_bullets=["Computed the requested value"]))
+    outcome = executor.execute(
+        FinalizeAction(call), ModelReply(tool_calls=(call,)), state
+    )
+    assert outcome.history_messages[0]["is_error"] is False
+    assert outcome.completion is not None

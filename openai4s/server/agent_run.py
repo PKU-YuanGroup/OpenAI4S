@@ -27,7 +27,11 @@ from openai4s.agent.events import (
     TextDelta,
     TurnStarted,
 )
-from openai4s.agent.finalize import execute_finalize_action
+from openai4s.agent.finalize import (
+    execute_finalize_action,
+    execution_evidence,
+    note_execution_evidence,
+)
 from openai4s.agent.models import ExecutionOutcome, ModelReply, RunState
 from openai4s.agent.runtime import format_observation
 from openai4s.server.completions import action_narration, outcome_narration
@@ -448,7 +452,6 @@ class WebActionExecutor:
     def execute(
         self, action: Action | None, reply: ModelReply, state: RunState
     ) -> ExecutionOutcome:
-        del state
         if self.cancelled():
             if isinstance(action, NativeToolBatch):
                 return self._refuse_native(
@@ -464,7 +467,9 @@ class WebActionExecutor:
         if self.plan_mode:
             return self._capture_plan(action, reply)
         if isinstance(action, FinalizeAction):
-            return execute_finalize_action(action)
+            return execute_finalize_action(
+                action, evidence=execution_evidence(state.metadata)
+            )
         if isinstance(action, NativeToolBatch):
             kwargs = {
                 "cancelled": self.cancelled,
@@ -482,12 +487,14 @@ class WebActionExecutor:
                 lambda call: self._invoke_native(call, apply_pending=False),
                 **kwargs,
             )
+            note_execution_evidence(state.metadata, tool_calls=len(action.calls))
             if self.cancelled():
                 return outcome
             return self._apply_trailing_pending(outcome)
         if isinstance(action, CodeCell):
             self.apply_pending()
             result = self.execute_cell(action)
+            note_execution_evidence(state.metadata, cells=1)
             observation = format_observation(result)
             if count_code_blocks(reply.content) > 1 or has_incomplete_code_block(
                 reply.content
@@ -495,7 +502,7 @@ class WebActionExecutor:
                 observation += MULTI_CELL_NOTE
             completion = getattr(self.dispatcher(), "last_output", None)
             return self._user_observation(observation, completion=completion)
-        return self._legacy_or_nudge(reply)
+        return self._legacy_or_nudge(reply, state)
 
     def _capture_plan(
         self, action: Action | None, reply: ModelReply
@@ -581,7 +588,7 @@ class WebActionExecutor:
             observation = str(outcome.observation or "") + "\n" + notice
             return ExecutionOutcome(tuple(history), observation=observation)
 
-    def _legacy_or_nudge(self, reply: ModelReply) -> ExecutionOutcome:
+    def _legacy_or_nudge(self, reply: ModelReply, state: RunState) -> ExecutionOutcome:
         if self.tool_catalog is None:
             calls, errors = parse_tool_calls(reply.content)
         else:
@@ -598,6 +605,8 @@ class WebActionExecutor:
                     errors.append(_env_switch_notice(exc))
                     break
                 parts.append(text)
+            if parts:
+                note_execution_evidence(state.metadata, tool_calls=len(parts))
             if not self.cancelled():
                 try:
                     self.apply_pending()

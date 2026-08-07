@@ -98,7 +98,10 @@ straight to synthetic data when a real lookup is possible.
 Finishing:
 - A conversational or tool-only task finishes with `finalize_response` as the \
 ONLY native call in its turn. Use its structured fields to report only work \
-that actually completed.
+that actually completed. Its claims are reconciled against this run's action \
+ledger: if no cell and no tool ran, execution-shaped claims (bullets like \
+'Computed…'/'Ran…'/'Wrote…', an `artifacts` list, or `metrics`) are rejected — \
+do the work first, or describe the response without claiming execution.
 - Scientific work that used the Python/R runtime finishes by running one final \
 python cell that calls `host.submit_output({...}, ["what you did",...])`. This \
 is the sole completion signal for a scientific cell. The submitted `output` must include a \

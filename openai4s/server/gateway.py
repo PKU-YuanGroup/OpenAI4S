@@ -12924,18 +12924,45 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         source_kind="message",
         source_id=demo_user_message["message_id"],
     )
-    for code in (_DEMO_UNIPROT, _DEMO_MCP, _DEMO_PLOT, _DEMO_CSV, _DEMO_PDB, _DEMO_MD):
+    cell_failures: list[str] = []
+    demo_cells = (_DEMO_UNIPROT, _DEMO_MCP, _DEMO_PLOT, _DEMO_CSV, _DEMO_PDB, _DEMO_MD)
+    for index, code in enumerate(demo_cells, start=1):
+        label = f"cell {index}/{len(demo_cells)}"
         try:
-            runner.run_repl(fid, "proj_example", code)
-        except Exception:  # noqa: BLE001
+            outcome = runner.run_repl(fid, "proj_example", code)
+        except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
-    # Describe only the materials that were actually produced. The structure is
-    # the one conditional deliverable (Cell 5 writes it only on a successful live
-    # RCSB download and never substitutes a placeholder), so branch the wording
-    # on whether its artifact exists rather than over-claiming it.
+            cell_failures.append(f"{label}: {type(exc).__name__}: {exc}")
+            continue
+        cell = outcome.get("cell") if isinstance(outcome, dict) else None
+        error = (cell or {}).get("error")
+        if error:
+            # The kernel error is a traceback whose last line is the exception;
+            # that one line is what the summary message can honestly cite.
+            summary_line = str(error).strip().splitlines()[-1]
+            cell_failures.append(f"{label}: {summary_line}")
+    # Describe only the materials that were actually produced. Every deliverable
+    # is conditional in practice — Cell 5's structure needs a live RCSB
+    # download, and Cells 3/4/6 need optional science libraries the lightweight
+    # install does not ship (matplotlib, Biopython, pandas) — so branch every
+    # line on the artifact store rather than over-claiming any of them.
     _produced = {
         a.get("filename") for a in store.list_artifacts({"root_frame_id": fid})
     }
+    _figure_line = (
+        "- **hydropathy figure (PNG)** — Kyte-Doolittle profile of the "
+        "reference sequence\n"
+        if any(str(name or "").endswith(".png") for name in _produced)
+        else "- _hydropathy figure_ — not produced this run (Cell 3 did not "
+        "complete; see its error in the Notebook tab)\n"
+    )
+    _csv_line = (
+        "- **family_biochemistry.csv** — per-protein length / MW / pI / "
+        "GRAVY / % identity (Biopython)\n"
+        if "family_biochemistry.csv" in _produced
+        else "- _biochemistry table_ — not produced this run (Cell 4 did not "
+        "complete; see its error in the Notebook tab)\n"
+    )
     _struct_line = (
         "- **nif3_structure.pdb** — real RCSB structure (opens in the 3Dmol "
         "viewer)\n"
@@ -12943,12 +12970,34 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         else "- _3D structure_ — skipped this run: the RCSB download was unreachable "
         "(no placeholder is ever substituted; see nif3_report.md)\n"
     )
+    _report_line = (
+        "- **nif3_report.md** — reproducible summary with data provenance\n"
+        if "nif3_report.md" in _produced
+        else "- _summary report_ — not produced this run (Cell 6 did not "
+        "complete; see its error in the Notebook tab)\n"
+    )
+    if cell_failures:
+        # An honest header beats the reassuring one: some cells crashed, so
+        # "every value is real" must not be claimed on their behalf.
+        _header = (
+            f"{len(cell_failures)} of {len(demo_cells)} example cells did not "
+            "complete on this install (commonly a missing optional science "
+            "dependency such as Biopython or pandas):\n"
+            + "".join(f"- {failure}\n" for failure in cell_failures)
+            + "\nEvery value that **was** produced is computed from real data "
+            "(no simulated or placeholder values), and the materials below "
+            "list only what was actually produced."
+        )
+    else:
+        _header = (
+            "Done — every value in this session is computed from real data "
+            "(no simulated or placeholder values)."
+        )
     store.add_message(
         root_frame_id=fid,
         role="assistant",
         frame_id=fid,
-        content="Done — every value in this session is computed from real data "
-        "(no simulated or placeholder values).\n\n"
+        content=_header + "\n\n"
         "**Real inputs**\n"
         "- **UniProt REST API** — NIF3/DUF34 family records + sequences\n"
         "- **RCSB PDB API** — full-text search + coordinate download of a "
@@ -12956,13 +13005,11 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         "- **MCP connector `example`** — `calc` / `now` tools over the "
         "Connectors bridge\n\n"
         "**Materials — click any artifact to view**\n"
-        "- **hydropathy figure (PNG)** — Kyte-Doolittle profile of the "
-        "reference sequence\n"
-        "- **family_biochemistry.csv** — per-protein length / MW / pI / "
-        "GRAVY / % identity (Biopython)\n"
+        + _figure_line
+        + _csv_line
         + _struct_line
-        + "- **nif3_report.md** — reproducible summary with data provenance\n\n"
-        "Open the **Notebook** tab to replay the executed cells, or the "
+        + _report_line
+        + "\nOpen the **Notebook** tab to replay the executed cells, or the "
         "**Files** panel to view each material.",
     )
     store.update_frame(fid, status="done")

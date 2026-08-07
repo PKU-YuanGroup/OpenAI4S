@@ -342,6 +342,140 @@ def test_a_confirmed_seed_completes_without_an_attached_approver(tmp_path, monke
         runner.close()
 
 
+def _seed_with_fake_cells(tmp_path, monkeypatch, cell_behaviour):
+    """Run the real `_seed_demo_session` with `run_repl` replaced per cell.
+
+    `cell_behaviour(index, register)` returns the kernel error string for that
+    cell (None for success) and calls `register(filename)` for any artifact the
+    cell would have written. Returns (store, final assistant message content).
+    """
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    executed: list[str] = []
+
+    def _fake_run_repl(self, root_frame_id, project_id, code, *args, **kwargs):
+        executed.append(code)
+
+        def register(name):
+            store.save_artifact(
+                path=str(tmp_path / name),
+                filename=name,
+                content_type=None,
+                size_bytes=1,
+                checksum=None,
+                frame_id=root_frame_id,
+                root_frame_id=root_frame_id,
+                project_id=project_id,
+            )
+
+        error = cell_behaviour(len(executed), register)
+        return {"status": "completed", "cell": {"error": error}}
+
+    monkeypatch.setattr(gateway_mod.SessionRunner, "run_repl", _fake_run_repl)
+    try:
+        gateway_mod._seed_demo_session(cfg, runner)
+    finally:
+        runner.close()
+
+    assert len(executed) == 6, "the seed must attempt every demo cell"
+    roots = store.browse_frames(project_id="proj_example", roots_only=True)
+    row = next(
+        r for r in roots if (r.get("name") or "") == gateway_mod._DEMO_SESSION_NAME
+    )
+    fid = row.get("frame_id") or row.get("id")
+    messages = store.list_messages(fid)
+    final = messages[-1]
+    assert final["role"] == "assistant"
+    return store, final["content"]
+
+
+def test_the_example_seed_message_lists_only_materials_that_really_exist(
+    tmp_path, monkeypatch
+):
+    """The final assistant message must be reconciled against what actually ran.
+
+    On a lightweight install (no Biopython/pandas) Cell 4 dies on
+    ModuleNotFoundError and Cell 6 on FileNotFoundError, yet the message used to
+    open with "Done — every value ... is computed from real data" and list
+    family_biochemistry.csv and nif3_report.md as clickable materials. Every
+    material line now branches on the artifact store, and the header reports the
+    crashed cells instead of claiming success on their behalf.
+    """
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+
+    def behaviour(index, register):
+        if index == 3:
+            register("figure_cell3_0001.png")
+        elif index == 4:
+            return (
+                "Traceback (most recent call last):\n"
+                '  File "<kernel:4>", line 3, in <module>\n'
+                "ModuleNotFoundError: No module named 'Bio'"
+            )
+        elif index == 5:
+            register("nif3_structure.pdb")
+        elif index == 6:
+            return (
+                "Traceback (most recent call last):\n"
+                '  File "<kernel:6>", line 2, in <module>\n'
+                "FileNotFoundError: [Errno 2] No such file or directory: "
+                "'family_biochemistry.csv'"
+            )
+        return None
+
+    store, content = _seed_with_fake_cells(tmp_path, monkeypatch, behaviour)
+
+    # The header is honest about the crashed cells and cites their errors.
+    assert not content.startswith("Done")
+    assert "2 of 6 example cells did not complete" in content
+    assert "cell 4/6: ModuleNotFoundError: No module named 'Bio'" in content
+    assert "cell 6/6: FileNotFoundError" in content
+
+    # Materials list exactly what the artifact store holds: produced files are
+    # clickable claims, missing ones are honest placeholders.
+    produced = {
+        a.get("filename") for a in store.list_artifacts({"project_id": "proj_example"})
+    }
+    assert produced == {"figure_cell3_0001.png", "nif3_structure.pdb"}
+    assert "**hydropathy figure (PNG)**" in content
+    assert "**nif3_structure.pdb**" in content
+    assert "**family_biochemistry.csv**" not in content
+    assert "**nif3_report.md**" not in content
+    assert "_biochemistry table_ — not produced this run" in content
+    assert "_summary report_ — not produced this run" in content
+
+
+def test_the_example_seed_message_keeps_the_full_claim_when_everything_ran(
+    tmp_path, monkeypatch
+):
+    """The all-green run keeps its original, fully-claimed message."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+
+    def behaviour(index, register):
+        if index == 3:
+            register("figure_cell3_0001.png")
+        elif index == 4:
+            register("family_biochemistry.csv")
+        elif index == 5:
+            register("nif3_structure.pdb")
+        elif index == 6:
+            register("nif3_report.md")
+        return None
+
+    _store, content = _seed_with_fake_cells(tmp_path, monkeypatch, behaviour)
+
+    assert content.startswith("Done — every value in this session")
+    assert "did not complete" not in content
+    for name in (
+        "**hydropathy figure (PNG)**",
+        "**family_biochemistry.csv**",
+        "**nif3_structure.pdb**",
+        "**nif3_report.md**",
+    ):
+        assert name in content
+
+
 def test_ws_resume_buffer_replaces_notebook_drafts_and_keeps_live_cell_events():
     hub = gateway_mod.WSHub()
     root = "root-draft-replay"

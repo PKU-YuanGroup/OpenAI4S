@@ -43,7 +43,11 @@ from .compaction import (
 )
 from .control import execute_native_batch, tool_parallel_policy
 from .events import AgentEvent, OutcomeProduced, ReplyReceived
-from .finalize import execute_finalize_action
+from .finalize import (
+    execute_finalize_action,
+    execution_evidence,
+    note_execution_evidence,
+)
 from .models import ExecutionOutcome, ModelReply, RunState
 
 LogFn = Callable[..., None]
@@ -274,12 +278,16 @@ class LocalActionExecutor:
         self, action: Action | None, reply: ModelReply, state: RunState
     ) -> ExecutionOutcome:
         if isinstance(action, FinalizeAction):
-            return execute_finalize_action(action)
+            return execute_finalize_action(
+                action, evidence=execution_evidence(state.metadata)
+            )
         if isinstance(action, NativeToolBatch):
-            return self._execute_native(action)
+            outcome = self._execute_native(action)
+            note_execution_evidence(state.metadata, tool_calls=len(action.calls))
+            return outcome
         if isinstance(action, CodeCell):
             return self._execute_code(action, reply, state)
-        return self._execute_legacy_or_nudge(reply)
+        return self._execute_legacy_or_nudge(reply, state)
 
     def _execute_native(self, batch: NativeToolBatch) -> ExecutionOutcome:
         def invoke(call):
@@ -345,6 +353,9 @@ class LocalActionExecutor:
             else:
                 result = self.kernel.execute(action.code, origin="agent")
             self._record_kernel_generation(state)
+        # Recorded here, after the kernel ran — a safety-gate refusal above
+        # returned already and must never count as finalize-time evidence.
+        note_execution_evidence(state.metadata, cells=1)
         observation = format_observation(result)
         if count_code_blocks(reply.content) > 1 or has_incomplete_code_block(
             reply.content
@@ -364,7 +375,9 @@ class LocalActionExecutor:
             state.metadata["kernel_restarted"] = True
         state.metadata["active_kernel_generation"] = generation
 
-    def _execute_legacy_or_nudge(self, reply: ModelReply) -> ExecutionOutcome:
+    def _execute_legacy_or_nudge(
+        self, reply: ModelReply, state: RunState
+    ) -> ExecutionOutcome:
         if self.tool_catalog is None:
             calls, errors = parse_tool_calls(reply.content)
         else:
@@ -379,6 +392,8 @@ class LocalActionExecutor:
                     errors,
                     self.tool_catalog,
                 )
+            if calls:
+                note_execution_evidence(state.metadata, tool_calls=len(calls))
         elif has_incomplete_code_block(reply.content):
             observation = INCOMPLETE_CELL_NUDGE
         else:
