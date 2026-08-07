@@ -216,12 +216,17 @@ def test_session_runtime_reuses_delegation_tree_and_scoped_capabilities(tmp_path
     assert first is not None
     assert dispatcher.skill_loader.capabilities.session_id == frame_id
     assert dispatcher.skill_loader.capabilities.project_id == "default"
+    # Delegated children anchor to the session workspace, not the daemon cwd.
+    assert first.workspace == state.workspace
 
     state.model = "next-model"
+    state.workspace = tmp_path / "branch-workspace"
     runner._wire_delegation(state)
     assert state.delegation_runner is first
     assert dispatcher._delegate_fn is first
     assert first.cfg.llm.model == "next-model"
+    # The per-turn rewire follows a retargeted workspace (branch activation).
+    assert first.workspace == state.workspace
     runner.close()
 
 

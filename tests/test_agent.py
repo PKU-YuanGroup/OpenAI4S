@@ -661,6 +661,77 @@ def test_delegate_output_schema_uses_shared_completion_validation(monkeypatch):
     assert runner.children()[1]["status"] == "done"
 
 
+def test_web_delegated_child_runs_in_parent_session_workspace(monkeypatch, tmp_path):
+    """A Web-delegated child's relative writes land in the parent session's
+    workspace, never in the daemon's launch directory (its process cwd)."""
+    daemon_cwd = tmp_path / "daemon-cwd"
+    workspace = tmp_path / "session-workspace"
+    daemon_cwd.mkdir()
+    workspace.mkdir()
+    scripted = ScriptedLLM(
+        [
+            "```python\n"
+            "open('kernel-out.txt', 'w').write('from kernel cwd')\n"
+            "host.write_file('host-out.txt', 'from host files')\n"
+            "host.submit_output({'wrote': True}, ['Wrote both files'])\n"
+            "```",
+        ]
+    )
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    monkeypatch.chdir(daemon_cwd)
+
+    # The gateway wires the runner with the session workspace (_wire_delegation).
+    runner = DelegationRunner(get_config(), workspace=workspace)
+    try:
+        result = runner({"request": "write files via relative paths"})
+    finally:
+        runner.close()
+
+    assert result["stop_reason"] == "submitted"
+    # Kernel cwd and the dispatcher's file service both anchor to the workspace.
+    assert (workspace / "kernel-out.txt").read_text() == "from kernel cwd"
+    assert (workspace / "host-out.txt").read_text() == "from host files"
+    assert not (daemon_cwd / "kernel-out.txt").exists()
+    assert not (daemon_cwd / "host-out.txt").exists()
+
+
+def test_cli_delegated_child_keeps_process_cwd(monkeypatch, tmp_path):
+    """Without an explicit workspace (the CLI path) a delegated child still
+    resolves relative writes against the process cwd, exactly as before."""
+    cli_cwd = tmp_path / "cli-cwd"
+    cli_cwd.mkdir()
+    scripted = ScriptedLLM(
+        [
+            "```python\n"
+            "open('kernel-out.txt', 'w').write('from cli cwd')\n"
+            "host.submit_output({'wrote': True}, ['Wrote the file'])\n"
+            "```",
+        ]
+    )
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    monkeypatch.chdir(cli_cwd)
+
+    runner = DelegationRunner(get_config())
+    try:
+        result = runner({"request": "write a file via a relative path"})
+    finally:
+        runner.close()
+
+    assert result["stop_reason"] == "submitted"
+    assert (cli_cwd / "kernel-out.txt").read_text() == "from cli cwd"
+
+
+def test_delegating_agent_threads_workspace_to_its_nested_runner(tmp_path):
+    """A child Agent hands its own workspace to the runner it builds for
+    grandchildren, so the whole delegation subtree stays anchored."""
+    agent = Agent(use_skills=False, workspace=tmp_path)
+    try:
+        assert agent._delegation_runner is not None
+        assert agent._delegation_runner.workspace == tmp_path
+    finally:
+        agent._delegation_runner.close()
+
+
 def test_delegate_session_cap(monkeypatch):
     def fake_run(self, task):
         return {"stop_reason": "final", "submitted_output": None, "final_message": None}

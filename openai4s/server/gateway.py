@@ -3827,6 +3827,11 @@ class SessionRunner:
                     parent_frame_id=st.root_frame_id,
                     store=self.store,
                     owner_instance_id=self._owner_instance_id,
+                    # Without this, a delegated child falls back to
+                    # os.getcwd() — the daemon's launch directory — so its
+                    # kernels and relative writes pollute the checkout and
+                    # stay invisible to this session's artifact capture.
+                    workspace=st.workspace,
                 )
                 st.delegation_runner = runner
             else:
@@ -3834,6 +3839,9 @@ class SessionRunner:
                 # tree, running children, steering inboxes, and session budget
                 # remain intact across Web turns.
                 runner.cfg = child_cfg
+                # Branch fork/activate can retarget the live workspace; future
+                # children must follow it, not the one at runner creation.
+                runner.workspace = st.workspace
             disp._delegate_fn = runner
             disp.steer_fns = {
                 "children": runner.children,

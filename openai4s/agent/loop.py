@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.agent.actions import NO_CODE_NUDGE, NO_NATIVE_COMPLETION_NUDGE
@@ -209,6 +210,10 @@ class Agent:
     # leave both unset and retain the exact historical behavior.
     cancellation: object | None = field(default=None, repr=False)
     context_policy: object | None = field(default=None, repr=False)
+    # Explicit working directory for this run. A Web-delegated child must run
+    # in its parent session's workspace, not in the daemon's launch directory;
+    # unset falls back to os.getcwd(), which is the CLI contract.
+    workspace: str | Path | None = None
     _recorder: object | None = field(default=None, repr=False)
     # persistent R kernel for ```r cells — spawned lazily on first use,
     # retargeted when host.env.use() picks an R-only env, shut down with the run
@@ -251,6 +256,7 @@ class Agent:
                     depth=self.delegate_depth,
                     parent_frame_id=self.frame_id,
                     store=self.dispatcher.store,
+                    workspace=self.workspace,
                 )
                 self._delegation_runner = runner
                 self.dispatcher._delegate_fn = runner
@@ -365,7 +371,7 @@ class Agent:
             {"role": "user", "content": task},
         ]
         transcript: list[Turn] = []
-        run_cwd = os.getcwd()
+        run_cwd = str(self.workspace) if self.workspace else os.getcwd()
         self.dispatcher.set_workspace(run_cwd)
         self.dispatcher.background_kernel_factory = lambda: Kernel(
             dispatcher=self.dispatcher,

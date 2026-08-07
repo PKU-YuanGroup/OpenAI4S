@@ -23,6 +23,7 @@ import time
 import uuid
 from collections import deque
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, TimeoutError
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.agent.runtime import CompactionPolicy
@@ -758,6 +759,7 @@ class DelegationRunner:
         parent_child_id: str | None = None,
         owner_instance_id: str | None = None,
         runner_instance_id: str | None = None,
+        workspace: str | Path | None = None,
     ) -> None:
         if depth < 0 or depth > MAX_DEPTH:
             raise ValueError(f"delegation depth must be between 0 and {MAX_DEPTH}")
@@ -772,6 +774,12 @@ class DelegationRunner:
         self.parent_frame_id = parent_frame_id
         self.parent_child_id = parent_child_id
         self.store = store
+        # Children run here instead of in os.getcwd(). The Web gateway passes
+        # the parent session's workspace so a delegated child's kernels and
+        # relative file writes land where the parent's artifact capture looks,
+        # never in the daemon's launch directory. None preserves the CLI
+        # contract: each child resolves its own process cwd at run() start.
+        self.workspace = workspace
         self.owner_instance_id = owner_instance_id or DELEGATION_PROCESS_INSTANCE_ID
         self.runner_instance_id = runner_instance_id or f"runner-{uuid.uuid4()}"
         if (
@@ -921,6 +929,7 @@ class DelegationRunner:
                 delegate_depth=child.depth,
                 cancellation=_ChildCancellation(child),
                 context_policy=_SteeringContextPolicy(child_cfg, child, self._tree),
+                workspace=self.workspace,
             )
             agent.dispatcher.set_child_execution_policy(execution_policy)
             if child.attach_agent(agent):
