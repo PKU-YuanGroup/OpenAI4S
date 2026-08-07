@@ -268,6 +268,80 @@ def test_the_example_seed_route_reports_the_already_seeded_state(tmp_path, monke
         runner.close()
 
 
+def test_a_confirmed_seed_completes_without_an_attached_approver(tmp_path, monkeypatch):
+    """The confirmed seed must never block on an approval nobody can answer.
+
+    Cell 2 calls the bundled MCP connector and the global default for
+    `mcp_call` is "ask", so a scripted `POST /example/session` (no browser
+    attached, nobody watching the brand-new session) filed a pending approval
+    and the seed hung at Cell 2 for the broker's full 15-minute backstop while
+    `GET /example/session` reported `running: true` the whole time --
+    indistinguishable from a dead seed. The `{"confirm": true}` click is the
+    user's approval of exactly what the demo does, so the seeder pre-authorizes
+    `example/calc` + `example/now` for its own conversation and Cell 2 executes
+    immediately.
+
+    The other five cells are swapped for offline stand-ins (the real ones call
+    UniProt/RCSB and need the science extra); Cell 2 runs VERBATIM through the
+    real kernel, the real dispatcher, the real permission broker and the real
+    bundled MCP server.
+    """
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+    cfg = _cfg(tmp_path)
+    gateway_mod._seed_example_connector(cfg)  # boot normally registers it
+    monkeypatch.setattr(
+        gateway_mod,
+        "_DEMO_UNIPROT",
+        "entries = [{'sequence': 'ACDEFGHIKL'}, {'sequence': 'MNPQRSTVWY'}]\n",
+    )
+    for heavy in ("_DEMO_PLOT", "_DEMO_CSV", "_DEMO_PDB", "_DEMO_MD"):
+        monkeypatch.setattr(gateway_mod, heavy, "pass\n")
+
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    try:
+        assert runner.example_seed.start(cfg, runner) is True
+        # Before the fix Cell 2 blocked for the broker's 900 s timeout; this
+        # bound is generous for a slow CI box yet far below that backstop.
+        deadline = time.time() + 120
+        while runner.example_seed.running() and time.time() < deadline:
+            time.sleep(0.1)
+        assert not runner.example_seed.running(), (
+            "the seed is still running -- Cell 2 is blocked on a permission "
+            "prompt with no approver attached"
+        )
+        assert runner.example_seed.last_error() is None
+
+        frame = gateway_mod._example_session_frame(cfg)
+        assert frame is not None
+        fid = frame.get("frame_id") or frame.get("id")
+        store = get_store(cfg.db_path)
+
+        cells = store.list_cells(fid)
+        assert len(cells) == 6
+        mcp_cell = next(c for c in cells if "host.mcp.call" in (c.get("code") or ""))
+        assert mcp_cell["status"] == "ok"
+        assert 'MCP connector "example" reachable' in (mcp_cell.get("stdout") or ""), (
+            "Cell 2 did not execute the MCP call -- it was denied or skipped: "
+            f"stdout={mcp_cell.get('stdout')!r}"
+        )
+        assert "MCP connector call skipped" not in (mcp_cell.get("stdout") or "")
+
+        # The pre-authorization means no approval request was ever filed:
+        # nothing pending, nothing denied, nothing waiting out a timeout.
+        assert store.list_permission_requests(root_frame_id=fid) == []
+
+        # And the grant is exactly as narrow as the demo: two conversation-
+        # scoped patterns, never a project/global rule another session could
+        # inherit.
+        rules = store.get_permission_rules(scope="conversation", scope_id=fid)
+        assert {(r["tool"], r["pattern"], r["decision"]) for r in rules} == {
+            ("mcp_call", "example/calc", "allow"),
+            ("mcp_call", "example/now", "allow"),
+        }
+    finally:
+        runner.close()
+
+
 def test_ws_resume_buffer_replaces_notebook_drafts_and_keeps_live_cell_events():
     hub = gateway_mod.WSHub()
     root = "root-draft-replay"

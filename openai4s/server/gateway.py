@@ -12865,6 +12865,24 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
     fid = store.new_frame(
         kind="turn", project_id="proj_example", status="done", model=cfg.llm.model
     )
+    # Cell 2 calls the bundled `example` connector and the global default for
+    # `mcp_call` is "ask". The seed runs on a background thread with a live
+    # permission channel but no human guaranteed to be watching the brand-new
+    # session, so that prompt would sit pending for the broker's full
+    # 15-minute backstop — and a scripted `POST /example/session` has no
+    # approver at all. The user's explicit `{"confirm": true}` already
+    # authorized exactly what the demo does, so pre-authorize precisely the
+    # two demo tools, scoped to this one conversation. A standing operator
+    # `deny` rule still vetoes these (deny is absolute in resolve()), and
+    # every other tool, connector and session keeps asking.
+    for pattern in ("example/calc", "example/now"):
+        store.set_permission_rule(
+            scope="conversation",
+            scope_id=fid,
+            tool="mcp_call",
+            pattern=pattern,
+            decision="allow",
+        )
     store.update_frame(
         fid,
         name=_DEMO_SESSION_NAME,
