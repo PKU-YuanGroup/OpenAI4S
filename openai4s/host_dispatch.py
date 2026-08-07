@@ -26,7 +26,7 @@ from typing import Any, Callable, Iterator
 
 from openai4s.config import Config, get_config
 from openai4s.host.bash import BashAuthorizationService, redact_shell_text
-from openai4s.host.completion import CompletionService
+from openai4s.host.completion import CompletionService, gather_submission_evidence
 from openai4s.host.credentials import CredentialService
 from openai4s.host.data import HostDataService
 from openai4s.host.delegation import DelegationService
@@ -671,7 +671,6 @@ class HostDispatcher:
             fanout_cap=lambda: self.LLM_FANOUT_CAP,
             executor_factory=lambda **kwargs: ThreadPoolExecutor(**kwargs),
         )
-        self._completion_service = CompletionService()
         self.frame_id = frame_id
         self.workspace_path = Path(workspace).resolve() if workspace else None
         self.store = get_store(self.cfg.db_path)
@@ -686,6 +685,17 @@ class HostDispatcher:
             data_dir=self.cfg.data_dir,
             frame_id=lambda: self.frame_id,
             workspace=lambda: self.workspace_path,
+        )
+        # Late-bound on purpose: the CLI assigns frame_id after construction,
+        # and a mid-cell submit must probe the workspace *and* the process
+        # cwd — the kernel inherits this process's cwd, and a file the
+        # current cell just wrote exists only on disk until capture runs.
+        self._completion_service = CompletionService(
+            evidence=lambda: gather_submission_evidence(
+                self.store,
+                self.frame_id,
+                search_roots=(self._files.workspace(), Path.cwd()),
+            )
         )
         # Lifecycle owners may stamp the supervisor's persistent generation
         # here.  Until then the capability still binds the worker's per-process
