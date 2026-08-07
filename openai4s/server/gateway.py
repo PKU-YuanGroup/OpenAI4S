@@ -12418,7 +12418,15 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     _seed_example_project(cfg)
     _seed_example_connector(cfg)
     handler = make_handler(cfg, hub, runner)
-    httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
+    try:
+        httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
+    except OSError:
+        # The bind is the last step, and by now the runner has live resources
+        # (recovery sweeper, coordinator). A caller that survives the failure —
+        # the CLI's port-collision message, an embedder retrying another port —
+        # must not inherit them as orphans.
+        runner.close()
+        raise
     httpd.daemon_threads = True
     if _demo_seed_enabled():
         # Opt-in only (`OPENAI4S_SEED_DEMO=1`), because this runs real cells:

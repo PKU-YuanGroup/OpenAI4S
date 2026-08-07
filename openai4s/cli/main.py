@@ -13,6 +13,7 @@ openai4s jupyter  describe/export/install the optional Jupyter bridge
 from __future__ import annotations
 
 import argparse
+import errno
 import getpass
 import json
 import os
@@ -92,12 +93,27 @@ def _url(cfg, *, with_token: bool = True) -> str:
 
 
 def cmd_serve(args) -> int:
-    from openai4s.server import serve
+    from openai4s.server import build_server
 
     cfg = get_config()
     existing = _read_pid(cfg)
     if existing and _pid_alive(existing):
         print(f"daemon already running (pid {existing}) at {_url(cfg)}")
+        return 1
+    # Bind before the banner: "listening" printed ahead of the actual bind made
+    # a port collision look like a crash after a successful start. Binding also
+    # mints the access token, so the URL printed below actually opens.
+    try:
+        httpd = build_server(cfg)
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        print(
+            f"error: cannot listen on {cfg.host}:{cfg.port} — address already "
+            "in use. A previous daemon may still be shutting down, or another "
+            "process holds the port; free it or change OPENAI4S_PORT.",
+            file=sys.stderr,
+        )
         return 1
     _write_state(cfg)
     print(f"openai4s listening at {_url(cfg)} (model={cfg.llm.model})")
@@ -123,9 +139,15 @@ def cmd_serve(args) -> int:
 
         threading.Thread(target=_open, daemon=True).start()
     try:
-        serve(cfg, block=True)
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
     finally:
-        _clear_state(cfg)
+        try:
+            httpd.shutdown()
+            httpd.server_close()
+        finally:
+            _clear_state(cfg)
     return 0
 
 
@@ -237,6 +259,15 @@ def cmd_status(args) -> int:
         return 2
 
 
+def _wait_pid_exit(pid: int, *, attempts: int = 50, interval: float = 0.1) -> bool:
+    """Poll until ``pid`` is gone; True means it actually exited."""
+    for _ in range(attempts):
+        if not _pid_alive(pid):
+            return True
+        time.sleep(interval)
+    return not _pid_alive(pid)
+
+
 def cmd_stop(args) -> int:
     cfg = get_config()
     pid = _read_pid(cfg)
@@ -244,11 +275,32 @@ def cmd_stop(args) -> int:
         print("daemon: not running")
         _clear_state(cfg)
         return 1
-    os.kill(pid, signal.SIGTERM)
-    for _ in range(50):
-        if not _pid_alive(pid):
-            break
-        time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # exited between the aliveness check and the signal
+    stopped = _wait_pid_exit(pid)
+    if not stopped and getattr(args, "force", False):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stopped = _wait_pid_exit(pid)
+    if not stopped:
+        # An in-flight cell can hold shutdown past the grace period. The state
+        # files must outlive the process they describe: clearing them here left
+        # a live daemon on a bound port that `status` and a second `stop` both
+        # called "not running", and the next `serve` crashed into.
+        hint = (
+            "it ignored SIGKILL"
+            if getattr(args, "force", False)
+            else "retry `openai4s stop`, or `openai4s stop --force` to SIGKILL it"
+        )
+        print(
+            f"error: daemon (pid {pid}) is still shutting down — {hint}",
+            file=sys.stderr,
+        )
+        return 2
     _clear_state(cfg)
     print(f"daemon stopped (pid {pid})")
     return 0
@@ -1077,7 +1129,13 @@ def build_parser() -> argparse.ArgumentParser:
         "-o", "--output", help="destination zip (default ./openai4s-diagnostics.zip)"
     )
     pd.set_defaults(fn=cmd_diagnostics)
-    sub.add_parser("stop", help="stop the daemon").set_defaults(fn=cmd_stop)
+    pstop = sub.add_parser("stop", help="stop the daemon")
+    pstop.add_argument(
+        "--force",
+        action="store_true",
+        help="escalate to SIGKILL if the daemon does not exit in time",
+    )
+    pstop.set_defaults(fn=cmd_stop)
     sub.add_parser("url", help="print the web UI url").set_defaults(fn=cmd_url)
 
     pr = sub.add_parser("run", help="run one Code-as-Action task in-process")
