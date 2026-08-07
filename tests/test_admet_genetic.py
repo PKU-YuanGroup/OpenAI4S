@@ -9,11 +9,12 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from openai4s.config import get_config
 from openai4s.skills_loader import SkillLoader
+
+pd = pytest.importorskip("pandas")
 
 
 def _import_skill():
