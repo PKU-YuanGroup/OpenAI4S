@@ -418,6 +418,50 @@ def test_the_windows_package_has_no_native_windows_execution_path():
         assert suffix in verifier
 
 
+def test_the_windows_launcher_opens_the_authenticated_url_and_requires_sandbox():
+    launcher = (ROOT / "scripts" / "windows" / "openai4s.ps1").read_text("utf-8")
+    bootstrap = (ROOT / "scripts" / "windows" / "bootstrap.sh").read_text("utf-8")
+
+    assert "Get-AppUrl" in launcher
+    assert "Start-Process $appUrl" in launcher
+    assert "Start-Process $Url" not in launcher
+    assert "OPENAI4S_WSL_PYPI_INDEX" in launcher
+    assert "Test-LocalhostForwardingDisabled" in launcher
+    assert "Get-WslIpv4" in launcher
+    # A distro that already holds ~/.openai4s data must keep winning selection,
+    # and the default mirrors must be disablable without deleting the env var.
+    assert "Test-DistroHasInstall" in launcher
+    assert "if ($PypiIndex -eq 'off') { $PypiIndex = '' }" in launcher
+    assert "if ($CondaMirror -eq 'off') { $CondaMirror = '' }" in launcher
+    assert "'dev', 'eth0', 'scope', 'global'" in launcher
+    assert "'route', 'get', '192.0.2.1'" in launcher
+    assert '$proxyBypass = "127.0.0.1,localhost,$AppHost"' in launcher
+    assert '"NO_PROXY=$proxyBypass"' in launcher
+    assert '"no_proxy=$proxyBypass"' in launcher
+    assert "if (-not (Test-SandboxIndependentCli $Arguments))" in launcher
+    for command in ("status", "url", "stop", "doctor", "verify-package"):
+        assert f"'{command}'" in launcher
+    assert 'MIN_BWRAP_VERSION="0.8.0"' in bootstrap
+    for flag in (
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-net",
+    ):
+        assert flag in bootstrap
+    assert "--unshare-user" not in bootstrap
+    assert "--uid 0" not in bootstrap
+    assert "--gid 0" not in bootstrap
+    assert "OPENAI4S_KERNEL_SANDBOX" in bootstrap
+    assert "--no-browser" in bootstrap
+    assert "--detached" in bootstrap
+    # User-edited mirror files survive relaunch: only marker-carrying files are
+    # rewritten, and a foreign pip.conf that names an index-url is preserved.
+    assert 'MANAGED_MARK="managed-by-openai4s-windows-launcher"' in bootstrap
+    assert "grep -q '^index-url'" in bootstrap
+
+
 def test_the_windows_launcher_does_not_leak_native_stdout_into_its_return_value():
     """A native command's stdout IS the function's return value in PowerShell.
 
@@ -444,10 +488,33 @@ def test_the_windows_launcher_does_not_leak_native_stdout_into_its_return_value(
 
     assert calls, "the launcher must still go through wsl.exe"
     for call in calls:
-        assert call.endswith("| Out-Host"), (
-            "a wsl.exe invocation whose value is not captured must pipe to "
-            f"Out-Host, or its stdout becomes part of the return value: {call}"
+        consumes_output = call.endswith("| Out-Host") or (
+            "| ForEach-Object" in call and "Write-Host" in call
         )
+        assert consumes_output, (
+            "a wsl.exe invocation whose value is not captured must pipe to "
+            f"a host-only sink, or its stdout becomes part of the return value: {call}"
+        )
+
+
+def test_the_windows_launcher_tolerates_successful_wsl_stderr_diagnostics():
+    """PowerShell 5.1 turns native stderr into errors under the global Stop.
+
+    Current WSL emits a localized NAT/proxy warning on stderr before successful
+    ``--exec`` commands. The launcher must judge native calls by LASTEXITCODE,
+    or an unrelated Windows proxy setting makes first launch fail before the
+    package path is translated.
+    """
+
+    launcher = (ROOT / "scripts" / "windows" / "openai4s.ps1").read_text("utf-8")
+
+    assert "function Invoke-WslCaptureNative" in launcher
+    assert "$ErrorActionPreference = 'Continue'" in launcher
+    assert "$code = $LASTEXITCODE" in launcher
+    assert "$previousPreference" in launcher
+    assert "$paths = @(" in launcher
+    assert "$selectedPath = $paths[0]" in launcher
+    assert "return [string]$selectedPath" in launcher
 
 
 def test_the_windows_launcher_sources_stay_pure_ascii():
@@ -546,6 +613,45 @@ def _stage_windows_package(root: Path, version: str = "9.9.9") -> Path:
 def test_the_windows_verifier_accepts_a_correctly_staged_package(tmp_path):
     verifier = _load_script("verify_windows_zip")
     verifier.verify(_stage_windows_package(tmp_path))
+
+
+def test_the_windows_verifier_refuses_a_bare_unauthenticated_browser_url(tmp_path):
+    verifier = _load_script("verify_windows_zip")
+    package = _stage_windows_package(tmp_path)
+    launcher = package / "openai4s.ps1"
+    body = launcher.read_bytes()
+    assert b"Start-Process $appUrl" in body
+    launcher.write_bytes(body.replace(b"Start-Process $appUrl", b"Start-Process $Url"))
+
+    with pytest.raises(verifier.BundleCheckError, match="unauthenticated bare URL"):
+        verifier.verify(package)
+
+
+def test_the_windows_verifier_refuses_a_weakened_bubblewrap_baseline(tmp_path):
+    verifier = _load_script("verify_windows_zip")
+    package = _stage_windows_package(tmp_path)
+    bootstrap = package / "wsl" / "bootstrap.sh"
+    body = bootstrap.read_bytes()
+    assert b'MIN_BWRAP_VERSION="0.8.0"' in body
+    bootstrap.write_bytes(
+        body.replace(b'MIN_BWRAP_VERSION="0.8.0"', b'MIN_BWRAP_VERSION="0.7.0"')
+    )
+
+    with pytest.raises(verifier.BundleCheckError, match="sandbox contract"):
+        verifier.verify(package)
+
+
+def test_the_windows_verifier_refuses_preflight_only_namespace_flags(tmp_path):
+    verifier = _load_script("verify_windows_zip")
+    package = _stage_windows_package(tmp_path)
+    bootstrap = package / "wsl" / "bootstrap.sh"
+    body = bootstrap.read_bytes()
+    marker = b"--unshare-ipc --unshare-uts --unshare-net"
+    assert marker in body
+    bootstrap.write_bytes(body.replace(marker, b"--unshare-user " + marker))
+
+    with pytest.raises(verifier.BundleCheckError, match="absent from the runtime"):
+        verifier.verify(package)
 
 
 def test_the_windows_verifier_refuses_a_crlf_wsl_bootstrap(tmp_path):

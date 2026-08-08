@@ -179,6 +179,15 @@ bash scripts/build_windows_zip.sh
 python3 scripts/verify_windows_zip.py dist/OpenAI4S-*-windows-x86_64.zip
 ```
 
+The packaged path now carries the same operational baseline as the documented
+WSL flow: Ubuntu 24.04 is preferred, WSL1 is refused, bubblewrap 0.8.0+ must
+successfully apply the runtime lifecycle, IPC, UTS, and network namespace
+flags, and the daemon starts with
+`OPENAI4S_KERNEL_SANDBOX=enforce`. The browser target must come from
+`openai4s url`; the bare root intentionally fails local authentication and is
+not a valid first-launch URL. The verifier pins all of those strings and also
+has negative tests that weaken the sandbox version or restore the bare URL.
+
 The failure modes are specific to the format. `wsl/bootstrap.sh` must arrive
 LF-only, because a carriage return makes WSL fail it with `bad interpreter` — on
 the user's machine, not here. The payload's checksum sidecar must match its

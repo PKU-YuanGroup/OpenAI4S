@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -318,23 +319,21 @@ def _bwrap_read_masks(deny_read: Sequence[tuple[str, str]]) -> list[str]:
 def _bwrap_daemon_environ_mask() -> list[str]:
     """Hide the daemon's own environment from a cell that shares its PID namespace.
 
-    The sandbox deliberately keeps the host PID namespace: `Kernel.interrupt()`
-    targets `Popen.pid` exactly, and `--unshare-pid` makes bwrap interpose an
-    init/reaper that weakens that contract. The cost is that `/proc` still shows
-    every host process, so a Linux cell can read `/proc/<daemon>/environ` — and
-    that is where the daemon's API keys live, since the child's own environment
-    is allowlisted clean.
+    The sandbox deliberately keeps the host PID namespace. bubblewrap remains
+    as the process returned by ``Popen`` and starts the worker as its direct
+    child; ``KernelSandbox.send_interrupt()`` pins and validates that child
+    before ``Kernel.interrupt()`` delivers SIGINT. The cost is that
+    `/proc` still shows every host process, so a Linux cell can read
+    `/proc/<daemon>/environ` — and that is where the daemon's API keys live,
+    since the child's own environment is allowlisted clean.
 
-    Closing the whole PID-namespace gap needs `--unshare-pid` plus `--info-fd`
-    child-pid parsing, and it changes the interrupt contract on a platform this
-    is not developed on. This closes the part that carries the credentials
-    without touching that contract: one file, bound over with /dev/null.
+    Closing the whole PID-namespace gap needs `--unshare-pid` plus an explicit
+    child-pid channel. This closes the part that carries the credentials without
+    changing the current process tree: one file, bound over with /dev/null.
 
-    NOT VERIFIED AT RUNTIME. bubblewrap is Linux-only and development here is
-    macOS, so what is checked is that the flags are emitted in the right order.
-    Whether a Linux cell is actually refused needs a Linux run. The wider
-    exposure — that a cell can still see other processes exist — is recorded in
-    the ledger rather than fixed.
+    The mount order and interrupt path are both covered by real Linux/WSL tests.
+    The wider exposure — that a cell can still see other processes exist — is
+    recorded in the ledger rather than fixed.
     """
     environ = f"/proc/{os.getpid()}/environ"
     if not os.path.exists(environ):  # not Linux, or /proc unavailable
@@ -359,13 +358,13 @@ def wrap_bwrap_command(
         str(executable),
         "--die-with-parent",
         "--new-session",
-        # Deliberately keep the host PID namespace.  Kernel.interrupt() targets
-        # Popen.pid exactly; without a PID namespace bwrap can exec the worker
-        # in place instead of interposing an init/reaper that would weaken that
-        # protocol contract.  (PID-ns isolation — and the /proc/<daemon>/environ
-        # read it would close — is deferred to a Linux-verified change using
-        # --unshare-pid + --info-fd child-pid parsing; the deny-read masks below
-        # already block the DB/.env/credential-file payloads on both platforms.)
+        # Deliberately keep the host PID namespace. bubblewrap remains the
+        # Popen process and supervises one direct worker child even without a
+        # PID namespace. KernelSandbox.send_interrupt() validates the child and
+        # pins its identity with a pidfd so SIGINT reaches user code without
+        # killing the wrapper. PID-ns isolation is deferred to a change with an
+        # explicit child-pid channel; the masks below already block credential
+        # payloads.
         "--unshare-ipc",
         "--unshare-uts",
     ]
@@ -562,6 +561,7 @@ class KernelSandbox:
         self._owns_temp_dir = owns_temp_dir
         self._deny_read = tuple(deny_read)
         self._closed = False
+        self._interrupt_gap_reported = False
 
     def wrap_command(self, command: Sequence[str]) -> list[str]:
         argv = [str(part) for part in command]
@@ -599,6 +599,136 @@ class KernelSandbox:
             env["TEMP"] = self._temp_dir
             env["MPLCONFIGDIR"] = str(Path(self._temp_dir) / "matplotlib")
         return env
+
+    def interrupt_target_pid(
+        self,
+        launcher_pid: int,
+        *,
+        proc_root: str | os.PathLike[str] = "/proc",
+    ) -> int:
+        """Return the process that should receive a worker SIGINT.
+
+        Seatbelt and an unsandboxed worker execute at ``Popen.pid``. On Linux,
+        bubblewrap stays at that PID and supervises the real Python/R worker as
+        one direct child. Signalling bubblewrap terminates the wrapper instead
+        of raising ``KeyboardInterrupt`` in the cell, so resolve the child from
+        procfs and independently confirm its PPid before returning it.
+
+        Any absent, changing, or malformed procfs state falls back to the
+        launcher. This keeps the adapter portable and preserves the previous
+        best-effort behaviour when procfs is hidden by host policy.
+        """
+
+        launcher = int(launcher_pid)
+        if not (
+            launcher > 0
+            and self.status.enforced
+            and self.status.backend == "bubblewrap"
+        ):
+            return launcher
+
+        root = Path(proc_root)
+        try:
+            children_text = (
+                root / str(launcher) / "task" / str(launcher) / "children"
+            ).read_text(encoding="ascii")
+            child_tokens = children_text.split()
+            if len(child_tokens) != 1:
+                return launcher
+            child = int(child_tokens[0], 10)
+            if child <= 0 or child == launcher:
+                return launcher
+
+            status_text = (root / str(child) / "status").read_text(
+                encoding="utf-8", errors="replace"
+            )
+            parent = None
+            for line in status_text.splitlines():
+                if line.startswith("PPid:"):
+                    parent = int(line.partition(":")[2].strip(), 10)
+                    break
+            if parent != launcher:
+                return launcher
+        except (OSError, UnicodeError, ValueError):
+            return launcher
+        return child
+
+    def send_interrupt(
+        self,
+        launcher_pid: int,
+        signum: int,
+        *,
+        proc_root: str | os.PathLike[str] = "/proc",
+    ) -> bool:
+        """Safely deliver a signal through bubblewrap's supervising process.
+
+        The return value means that this adapter owns signal delivery, not that
+        a signal necessarily reached a live worker.  An enforced bubblewrap
+        path never hands a numeric child PID back to the caller: a pidfd pins
+        the process identity across the second procfs validation and the send,
+        so PID reuse cannot redirect SIGINT to an unrelated process.
+
+        Python builds or kernels without pidfd support fail safe here.  The
+        request becomes a best-effort no-op rather than falling back to the
+        racy numeric child PID; the watchdog can still replace a stuck worker.
+        """
+
+        launcher = int(launcher_pid)
+        if not (
+            launcher > 0
+            and self.status.enforced
+            and self.status.backend == "bubblewrap"
+        ):
+            return False
+
+        pidfd_open = getattr(os, "pidfd_open", None)
+        pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
+        if not callable(pidfd_open) or not callable(pidfd_send_signal):
+            self._report_interrupt_gap("this Python/kernel has no pidfd support")
+            return True
+
+        child = self.interrupt_target_pid(launcher, proc_root=proc_root)
+        if child == launcher:
+            self._report_interrupt_gap("procfs did not name one direct worker child")
+            return True
+
+        pidfd = None
+        try:
+            pidfd = pidfd_open(child, 0)
+            # Opening the pidfd pins the identity. Re-read procfs afterwards so
+            # the fd is used only if that exact PID is still the wrapper's sole
+            # direct child. If it exited, pidfd_send_signal would be safe too,
+            # but there is no longer an intended worker to interrupt.
+            if self.interrupt_target_pid(launcher, proc_root=proc_root) != child:
+                return True
+            pidfd_send_signal(pidfd, int(signum), None, 0)
+        except (OSError, ValueError):
+            pass
+        finally:
+            if pidfd is not None:
+                try:
+                    os.close(pidfd)
+                except OSError:
+                    pass
+        return True
+
+    def _report_interrupt_gap(self, reason: str) -> None:
+        """Make a structurally unreachable interrupt visible, once per kernel.
+
+        These branches deliberately drop the SIGINT rather than fall back to a
+        racy numeric PID, which leaves the user's stop request doing nothing
+        while the cell keeps running until the watchdog replaces the worker.
+        That trade is only acceptable when it is visible.
+        """
+        if self._interrupt_gap_reported:
+            return
+        self._interrupt_gap_reported = True
+        print(
+            "[openai4s] cell interrupt cannot reach the sandboxed worker "
+            f"({reason}); the stop request is dropped and a stuck cell is "
+            "recovered by the watchdog instead",
+            file=sys.stderr,
+        )
 
     def close(self) -> None:
         if self._closed:

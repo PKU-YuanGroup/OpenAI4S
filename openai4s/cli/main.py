@@ -1,6 +1,6 @@
 """openai4s CLI: serve / status / stop / url / run / init / setup.
 
-openai4s serve    start the daemon (foreground; use & or nohup to background)
+openai4s serve    start the daemon (supports --port/--no-browser/--detached)
 openai4s status   is the daemon up? (reads pidfile + /health)
 openai4s stop     stop the running daemon
 openai4s url      print the local web UI url
@@ -91,41 +91,233 @@ def _url(cfg, *, with_token: bool = True) -> str:
     return f"{base}?token={token}" if token else base
 
 
+def _apply_serve_overrides(args, cfg) -> None:
+    """Apply command-line listen overrides to config and the child environment.
+
+    Host and port historically came only from environment variables.  Config's
+    dataclass defaults are evaluated when its module is imported, so changing
+    the environment alone here would be too late for the foreground process.
+    Updating both keeps this process and a detached child on the same address.
+    """
+
+    host = getattr(args, "host", None)
+    port = getattr(args, "port", None)
+    if host:
+        cfg.host = str(host)
+        os.environ["OPENAI4S_HOST"] = str(host)
+    if port is not None:
+        cfg.port = int(port)
+        os.environ["OPENAI4S_PORT"] = str(port)
+
+
+def _tcp_port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("port must be an integer") from None
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+def _open_daemon(request, *, timeout: float):
+    """Open a local daemon URL without consulting environment proxies.
+
+    Under WSL2 the daemon can be reached through its NAT address rather than
+    loopback.  It is still a local control-plane request, so sending it through
+    an inherited HTTP(S) proxy is both incorrect and a source of false startup
+    failures.
+    """
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(request, timeout=timeout)
+
+
+def _health_ready(cfg) -> bool:
+    """True only when the listener identifies itself as an OpenAI4S daemon."""
+
+    try:
+        with _open_daemon(
+            _url(cfg, with_token=False) + "health", timeout=1
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        # The occupant may be any local service: a JSON body that is not an
+        # object is "not our daemon", never a crash.
+        return (
+            response.status == 200
+            and isinstance(payload, dict)
+            and payload.get("status") == "ok"
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _cleanup_failed_detached_child(process) -> None:
+    """Stop and reap a detached child whose readiness contract failed."""
+
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except (ProcessLookupError, OSError):
+        return
+
+    try:
+        process.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        process.wait(timeout=5)
+    except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _cmd_serve_detached(args, cfg) -> int:
+    """Start the same foreground server in a new POSIX session.
+
+    The detached child owns the pid/state files and all shutdown handling.  The
+    parent only redirects its descriptors, waits until the child-owned pidfile
+    and the real ``/health`` response agree, and then returns.  This is
+    intentionally a CLI convenience for Linux/macOS (including WSL2), not a
+    native-Windows kernel path.
+    """
+
+    if os.name != "posix":
+        print(
+            "error: --detached is supported on Linux/macOS; on Windows run "
+            "OpenAI4S inside WSL2.",
+            file=sys.stderr,
+        )
+        return 2
+
+    cfg.ensure_dirs()
+    log_path = cfg.logs_dir / "app.out"
+    command = [
+        sys.executable,
+        "-m",
+        "openai4s",
+        "serve",
+        "--host",
+        str(cfg.host),
+        "--port",
+        str(cfg.port),
+        "--no-browser",
+    ]
+    with log_path.open("ab", buffering=0) as log:
+        process = subprocess.Popen(
+            command,
+            cwd=cfg.data_dir,
+            env=dict(os.environ),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            start_new_session=True,
+        )
+
+    # A packaged bundle's first start can spend most of a minute on imports and
+    # Store migrations on a slow disk; 30s produced false "did not become
+    # ready" failures for a daemon that was seconds from healthy.
+    ready_timeout = 60.0
+    raw_timeout = os.environ.get("OPENAI4S_DETACHED_READY_TIMEOUT", "")
+    if raw_timeout:
+        try:
+            ready_timeout = max(1.0, float(raw_timeout))
+        except ValueError:
+            pass
+    deadline = time.monotonic() + ready_timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            break
+        if _read_pid(cfg) == process.pid and _health_ready(cfg):
+            # Re-check both identities after the request.  Another daemon on
+            # the same address can answer /health, and a child that loses the
+            # bind race can exit while that request is in flight.
+            if process.poll() is not None or _read_pid(cfg) != process.pid:
+                break
+            app_url = _url(cfg)
+            print(f"daemon started (pid {process.pid}) at {app_url}")
+            print(f"log: {log_path}")
+            if not os.environ.get("OPENAI4S_NO_OPEN") and not getattr(
+                args, "no_open", False
+            ):
+                try:
+                    import webbrowser
+
+                    webbrowser.open(app_url)
+                except Exception:
+                    pass
+            return 0
+        time.sleep(0.25)
+
+    _cleanup_failed_detached_child(process)
+    print(
+        f"error: detached daemon did not become ready within {ready_timeout:.0f}s "
+        f"(OPENAI4S_DETACHED_READY_TIMEOUT overrides); inspect {log_path}",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def cmd_serve(args) -> int:
-    from openai4s.server import serve
+    from openai4s.server import build_server
 
     cfg = get_config()
+    _apply_serve_overrides(args, cfg)
     existing = _read_pid(cfg)
     if existing and _pid_alive(existing):
         print(f"daemon already running (pid {existing}) at {_url(cfg)}")
         return 1
-    _write_state(cfg)
-    print(f"openai4s listening at {_url(cfg)} (model={cfg.llm.model})")
-    print("web UI ready. Ctrl-C to stop.")
-
-    def _graceful(signum, frame):
+    if existing:
         _clear_state(cfg)
-        raise KeyboardInterrupt
+    if getattr(args, "detached", False):
+        return _cmd_serve_detached(args, cfg)
 
-    signal.signal(signal.SIGTERM, _graceful)
-    if not os.environ.get("OPENAI4S_NO_OPEN") and not getattr(args, "no_open", False):
-
-        def _open():
-            time.sleep(1.0)
-            try:
-                import webbrowser
-
-                webbrowser.open(_url(cfg))
-            except Exception:
-                pass
-
-        import threading
-
-        threading.Thread(target=_open, daemon=True).start()
+    # Bind before publishing pid/state.  Otherwise a process that loses a port
+    # race leaves a short window where the detached parent can mistake another
+    # OpenAI4S daemon's /health response for this child becoming ready.
+    httpd = build_server(cfg)
     try:
-        serve(cfg, block=True)
+        _write_state(cfg)
+        print(f"openai4s listening at {_url(cfg)} (model={cfg.llm.model})")
+        print("web UI ready. Ctrl-C to stop.")
+
+        def _graceful(signum, frame):
+            _clear_state(cfg)
+            raise KeyboardInterrupt
+
+        signal.signal(signal.SIGTERM, _graceful)
+        if not os.environ.get("OPENAI4S_NO_OPEN") and not getattr(
+            args, "no_open", False
+        ):
+
+            def _open():
+                time.sleep(1.0)
+                try:
+                    import webbrowser
+
+                    webbrowser.open(_url(cfg))
+                except Exception:
+                    pass
+
+            import threading
+
+            threading.Thread(target=_open, daemon=True).start()
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
     finally:
-        _clear_state(cfg)
+        try:
+            httpd.server_close()
+        finally:
+            _clear_state(cfg)
     return 0
 
 
@@ -220,9 +412,7 @@ def cmd_status(args) -> int:
         return 1
     # confirm via /health
     try:
-        with urllib.request.urlopen(
-            _url(cfg, with_token=False) + "health", timeout=3
-        ) as r:
+        with _open_daemon(_url(cfg, with_token=False) + "health", timeout=3) as r:
             health = json.loads(r.read().decode("utf-8"))
         print(f"daemon: running (pid {pid}) at {_url(cfg)}")
         print(f"  model    : {health.get('model')}")
@@ -872,7 +1062,7 @@ def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
         req.add_header(local_auth.TOKEN_HEADER, token)
     # The daemon's CSRF guard passes non-browser clients (no Origin header).
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with _open_daemon(req, timeout=300) as resp:
             raw = resp.read().decode("utf-8")
             return resp.status, (json.loads(raw) if raw else {})
     except urllib.error.HTTPError as error:
@@ -1055,8 +1245,25 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="openai4s", description="openai4s CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    ps = sub.add_parser("serve", help="start the daemon (foreground)")
-    ps.add_argument("--no-open", action="store_true", help="don't open a browser")
+    ps = sub.add_parser("serve", help="start the daemon")
+    ps.add_argument("--host", help="listen host (default: OPENAI4S_HOST or 127.0.0.1)")
+    ps.add_argument(
+        "--port",
+        type=_tcp_port,
+        help="listen port (default: OPENAI4S_PORT or 8760)",
+    )
+    ps.add_argument(
+        "--no-open",
+        "--no-browser",
+        dest="no_open",
+        action="store_true",
+        help="don't open a browser",
+    )
+    ps.add_argument(
+        "--detached",
+        action="store_true",
+        help="run in the background (Linux/macOS, including WSL2)",
+    )
     ps.set_defaults(fn=cmd_serve)
     sub.add_parser("status", help="check daemon status").set_defaults(fn=cmd_status)
     pdoc = sub.add_parser(

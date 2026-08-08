@@ -346,6 +346,14 @@ The daemon binds `127.0.0.1` by default. Reach the UI over an SSH tunnel — **n
 ssh -L 8760:127.0.0.1:8760 user@your-host
 ```
 
+One documented exception: when a WSL2 user has explicitly set
+`localhostForwarding=false` in `.wslconfig`, the Windows launcher binds the
+daemon to the WSL NAT (`eth0`) address instead, because loopback is then
+unreachable from the Windows browser. That address is routable only from the
+Windows host across Microsoft's virtual switch — not from the LAN — and the
+token gate below still applies to it. Details:
+[Windows / WSL2 guide](windows-wsl.md).
+
 The server requires an access token by default, on loopback too. It is minted
 once under the data dir (`access-token`, mode 0600), survives restarts, and is
 printed at startup as a URL you open once to set the cookie. Scripts send it as

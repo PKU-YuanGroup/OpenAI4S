@@ -45,6 +45,24 @@ def test_console_and_module_entrypoints_target_the_same_main():
     [
         (["serve"], {"cmd": "serve", "no_open": False}),
         (["serve", "--no-open"], {"cmd": "serve", "no_open": True}),
+        (
+            [
+                "serve",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8080",
+                "--no-browser",
+                "--detached",
+            ],
+            {
+                "cmd": "serve",
+                "host": "127.0.0.1",
+                "port": 8080,
+                "no_open": True,
+                "detached": True,
+            },
+        ),
         (["status"], {"cmd": "status"}),
         (["stop"], {"cmd": "stop"}),
         (["url"], {"cmd": "url"}),
@@ -120,6 +138,9 @@ def test_setup_only_accepts_each_documented_environment(name):
     ("argv", "expected_fragment"),
     [
         (["serve", "--help"], "--no-open"),
+        (["serve", "--help"], "--no-browser"),
+        (["serve", "--help"], "--detached"),
+        (["serve", "--help"], "--port"),
         (["run", "--help"], "--json"),
         (["run", "--help"], "--verbose"),
         (["init", "--help"], "--api-key-stdin"),
@@ -188,6 +209,14 @@ def test_cli_rejects_unknown_commands_and_missing_run_task(capsys):
     capsys.readouterr()
 
 
+@pytest.mark.parametrize("port", ["0", "65536", "not-a-port"])
+def test_serve_rejects_invalid_ports(port, capsys):
+    with pytest.raises(SystemExit) as stopped:
+        _cli_module().main(["serve", "--port", port])
+    assert stopped.value.code == 2
+    capsys.readouterr()
+
+
 def test_url_command_is_offline_and_returns_success(monkeypatch, capsys):
     module = _cli_module()
     monkeypatch.setattr(
@@ -198,6 +227,334 @@ def test_url_command_is_offline_and_returns_success(monkeypatch, capsys):
 
     assert module.main(["url"]) == 0
     assert capsys.readouterr().out.strip() == "http://127.0.0.1:9876/"
+
+
+def test_daemon_health_ignores_environment_proxies_for_a_wsl_nat_host(monkeypatch):
+    module = _cli_module()
+    config = SimpleNamespace(host="172.25.100.5", port=8760)
+    handlers = []
+    opened = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read():
+            return b'{"status":"ok"}'
+
+    class Opener:
+        @staticmethod
+        def open(request, timeout):
+            opened.append((request, timeout))
+            return Response()
+
+    def build_opener(*items):
+        handlers.extend(items)
+        return Opener()
+
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setattr(module.urllib.request, "build_opener", build_opener)
+
+    assert module._health_ready(config) is True
+    assert opened == [("http://172.25.100.5:8760/health", 1)]
+    proxy = next(
+        item
+        for item in handlers
+        if isinstance(item, module.urllib.request.ProxyHandler)
+    )
+    assert proxy.proxies == {}
+
+
+def test_detached_serve_starts_the_foreground_command_in_a_new_session(
+    tmp_path, monkeypatch, capsys
+):
+    import os
+
+    if os.name != "posix":
+        pytest.skip("detached server sessions are a POSIX/WSL feature")
+
+    module = _cli_module()
+    logs = tmp_path / "logs"
+    config = SimpleNamespace(
+        host="127.0.0.1",
+        port=8760,
+        data_dir=tmp_path,
+        logs_dir=logs,
+        pidfile=tmp_path / "daemon.pid",
+        ensure_dirs=lambda: logs.mkdir(parents=True, exist_ok=True),
+    )
+    launched = {}
+
+    class Process:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return None
+
+    def fake_popen(command, **kwargs):
+        launched["command"] = command
+        launched["kwargs"] = kwargs
+        config.pidfile.write_text("4321", encoding="utf-8")
+        return Process()
+
+    monkeypatch.setattr(module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(module, "_health_ready", lambda _cfg: True)
+    monkeypatch.setattr(module, "_url", lambda _cfg: "http://127.0.0.1:8760/?ready")
+
+    args = SimpleNamespace(no_open=True)
+    assert module._cmd_serve_detached(args, config) == 0
+    assert launched["command"][-1] == "--no-browser"
+    assert launched["kwargs"]["start_new_session"] is True
+    assert launched["kwargs"]["stdin"] is module.subprocess.DEVNULL
+    assert "daemon started (pid 4321)" in capsys.readouterr().out
+
+
+def test_detached_serve_stops_a_child_that_never_becomes_ready(
+    tmp_path, monkeypatch, capsys
+):
+    import os
+
+    if os.name != "posix":
+        pytest.skip("detached server sessions are a POSIX/WSL feature")
+
+    module = _cli_module()
+    logs = tmp_path / "logs"
+    config = SimpleNamespace(
+        host="127.0.0.1",
+        port=8760,
+        data_dir=tmp_path,
+        logs_dir=logs,
+        pidfile=tmp_path / "daemon.pid",
+        ensure_dirs=lambda: logs.mkdir(parents=True, exist_ok=True),
+    )
+    calls = []
+
+    class Process:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            calls.append("terminate")
+
+        @staticmethod
+        def wait(timeout):
+            calls.append(("wait", timeout))
+            return 0
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_a, **_k: Process())
+    ticks = iter((0.0, 61.0))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+
+    assert module._cmd_serve_detached(SimpleNamespace(no_open=True), config) == 1
+    assert calls == ["terminate", ("wait", 5)]
+    assert "did not become ready" in capsys.readouterr().err
+
+
+def test_detached_serve_ready_timeout_is_overridable(tmp_path, monkeypatch, capsys):
+    import os
+
+    if os.name != "posix":
+        pytest.skip("detached server sessions are a POSIX/WSL feature")
+
+    module = _cli_module()
+    logs = tmp_path / "logs"
+    config = SimpleNamespace(
+        host="127.0.0.1",
+        port=8760,
+        data_dir=tmp_path,
+        logs_dir=logs,
+        pidfile=tmp_path / "daemon.pid",
+        ensure_dirs=lambda: logs.mkdir(parents=True, exist_ok=True),
+    )
+
+    class Process:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            return None
+
+        @staticmethod
+        def wait(timeout):
+            return 0
+
+    monkeypatch.setenv("OPENAI4S_DETACHED_READY_TIMEOUT", "5")
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_a, **_k: Process())
+    # The second tick is far past 5s but well inside the 60s default: only the
+    # override can make the loop give up here.
+    ticks = iter((0.0, 6.0))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+
+    assert module._cmd_serve_detached(SimpleNamespace(no_open=True), config) == 1
+    assert "within 5s" in capsys.readouterr().err
+
+
+def test_detached_serve_does_not_accept_an_unrelated_healthy_daemon(
+    tmp_path, monkeypatch, capsys
+):
+    import os
+
+    if os.name != "posix":
+        pytest.skip("detached server sessions are a POSIX/WSL feature")
+
+    module = _cli_module()
+    logs = tmp_path / "logs"
+    config = SimpleNamespace(
+        host="127.0.0.1",
+        port=8760,
+        data_dir=tmp_path,
+        logs_dir=logs,
+        pidfile=tmp_path / "daemon.pid",
+        ensure_dirs=lambda: logs.mkdir(parents=True, exist_ok=True),
+    )
+    polls = iter((None, 98, 98))
+
+    class Process:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return next(polls)
+
+        @staticmethod
+        def terminate():
+            raise AssertionError("an exited child must not be signalled")
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_a, **_k: Process())
+    monkeypatch.setattr(module, "_health_ready", lambda _cfg: True)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    assert module._cmd_serve_detached(SimpleNamespace(no_open=True), config) == 1
+    output = capsys.readouterr()
+    assert "daemon started" not in output.out
+    assert "did not become ready" in output.err
+
+
+def test_foreground_serve_binds_before_publishing_pid_state(tmp_path, monkeypatch):
+    module = _cli_module()
+    config = SimpleNamespace(
+        host="127.0.0.1",
+        port=8760,
+        data_dir=tmp_path,
+        pidfile=tmp_path / "daemon.pid",
+        statefile=tmp_path / "daemon.json",
+    )
+    args = SimpleNamespace(detached=False)
+    published = []
+
+    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "_apply_serve_overrides", lambda *_args: None)
+    monkeypatch.setattr(module, "_read_pid", lambda _cfg: None)
+    monkeypatch.setattr(module, "_write_state", lambda _cfg: published.append(True))
+
+    import openai4s.server as server_module
+
+    def bind_failure(_cfg):
+        raise OSError("address already in use")
+
+    monkeypatch.setattr(server_module, "build_server", bind_failure)
+
+    with pytest.raises(OSError, match="address already in use"):
+        module.cmd_serve(args)
+    assert published == []
+
+
+def test_foreground_serve_clears_state_when_server_close_fails(tmp_path, monkeypatch):
+    module = _cli_module()
+    config = SimpleNamespace(
+        host="127.0.0.1",
+        port=8760,
+        data_dir=tmp_path,
+        pidfile=tmp_path / "daemon.pid",
+        statefile=tmp_path / "daemon.json",
+        llm=SimpleNamespace(model="test"),
+    )
+    args = SimpleNamespace(detached=False, no_open=True)
+    cleared = []
+
+    class Server:
+        @staticmethod
+        def serve_forever():
+            return None
+
+        @staticmethod
+        def server_close():
+            raise RuntimeError("close failed")
+
+    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "_apply_serve_overrides", lambda *_args: None)
+    monkeypatch.setattr(module, "_read_pid", lambda _cfg: None)
+    monkeypatch.setattr(module, "_write_state", lambda _cfg: None)
+    monkeypatch.setattr(module, "_clear_state", lambda cfg: cleared.append(cfg))
+    monkeypatch.setattr(module.signal, "signal", lambda *_args: None)
+
+    import openai4s.server as server_module
+
+    monkeypatch.setattr(server_module, "build_server", lambda _cfg: Server())
+
+    with pytest.raises(RuntimeError, match="close failed"):
+        module.cmd_serve(args)
+    assert cleared == [config]
+
+
+def test_detached_cleanup_escalates_to_kill_and_reaps():
+    module = _cli_module()
+    calls = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            calls.append("terminate")
+
+        @staticmethod
+        def kill():
+            calls.append("kill")
+
+        @staticmethod
+        def wait(timeout):
+            calls.append(("wait", timeout))
+            if calls.count(("wait", timeout)) == 1:
+                raise module.subprocess.TimeoutExpired("serve", timeout)
+            return 0
+
+    module._cleanup_failed_detached_child(Process())
+
+    assert calls == ["terminate", ("wait", 5), "kill", ("wait", 5)]
+
+
+def test_detached_cleanup_does_not_signal_an_already_exited_child():
+    module = _cli_module()
+
+    class Process:
+        @staticmethod
+        def poll():
+            return 1
+
+        @staticmethod
+        def terminate():
+            raise AssertionError("an exited child must not be signalled")
+
+    module._cleanup_failed_detached_child(Process())
 
 
 def test_status_reports_the_local_data_dir_without_trusting_health(monkeypatch, capsys):
@@ -222,8 +579,8 @@ def test_status_reports_the_local_data_dir_without_trusting_health(monkeypatch, 
     monkeypatch.setattr(module, "_read_pid", lambda cfg: 123)
     monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(
-        module.urllib.request,
-        "urlopen",
+        module,
+        "_open_daemon",
         lambda *args, **kwargs: Response(),
     )
 
