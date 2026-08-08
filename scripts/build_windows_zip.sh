@@ -179,7 +179,9 @@ OpenAI4S $VERSION - first launch on Windows
 
    The first run installs the bundled Linux app into your WSL2 distribution
    (about 1 GB unpacked, no download), starts the local server, and opens
-   http://127.0.0.1:8760/ in your browser. Later runs just start it.
+   http://127.0.0.1:8760/ in your browser. The launcher obtains the secure
+   sign-in URL from \`openai4s url\`; the credential is removed from the address
+   bar after the browser receives its local cookie. Later runs just start it.
 
    Set your LLM provider + API key in the UI (Customize -> Models). No API key
    is shipped with this package.
@@ -194,7 +196,8 @@ OpenAI4S $VERSION - first launch on Windows
    the same program every other platform runs - not an emulation of it.
 
    If you do not have WSL2 yet, the launcher tells you the exact command
-   (\`wsl --install\`, from an Administrator PowerShell) and stops.
+   (\`wsl --install -d Ubuntu-24.04\`, from an Administrator PowerShell) and
+   stops. WSL1 is refused.
 
 3. Where things are.
 
@@ -207,8 +210,15 @@ OpenAI4S $VERSION - first launch on Windows
 4. The command line.
 
    OpenAI4S.cmd status      is the daemon up?
+   OpenAI4S.cmd url         print a fresh secure browser URL
+   OpenAI4S.cmd stop        stop the daemon
    OpenAI4S.cmd setup       create the conda envs, including the R kernel
    OpenAI4S.cmd --help      everything else
+
+   The installer also creates ~/.local/bin/openai4s inside WSL. Open a new
+   Ubuntu terminal (or run \`. ~/.profile\`) and the same commands work there:
+
+     openai4s serve --port 8760 --no-browser --detached
 
 5. Choosing a distribution.
 
@@ -220,13 +230,27 @@ OpenAI4S $VERSION - first launch on Windows
 
 6. The sandbox.
 
-   Cells run under bubblewrap when it is available. Install it inside the
-   distribution (Ubuntu/Debian: \`sudo apt install bubblewrap\`) or the default
-   OPENAI4S_KERNEL_SANDBOX=auto reports a visibly degraded, unisolated kernel.
+   WSL2 and working bubblewrap 0.8.0 or newer are required. The launcher tests
+   the same lifecycle, IPC, UTS, and network namespace flags used by real Cells
+   before installation and starts the daemon with OPENAI4S_KERNEL_SANDBOX=enforce.
+   Ubuntu 24.04 ships a suitable version:
+
+     sudo apt update && sudo apt install -y bubblewrap
 
 7. The Python science stack is bundled and works offline: numpy, pandas, scipy,
    matplotlib, scikit-learn, rdkit, scanpy and the single-cell stack, umap and
    numba. The R kernel is not bundled - add it with \`OpenAI4S.cmd setup\`.
+
+8. Network downloads after installation.
+
+   The bundled app itself installs offline. Later pip/Conda package downloads
+   default to the Tsinghua mirrors in this Windows/WSL launcher. Override with
+   OPENAI4S_WSL_PYPI_INDEX or OPENAI4S_WSL_CONDA_MIRROR.
+
+   To use a local proxy, set OPENAI4S_WSL_PROXY before launch. In WSL NAT mode,
+   Windows localhost is not WSL localhost; either enable mirrored networking
+   and use http://127.0.0.1:7897, or expose the proxy on the Windows host
+   gateway. See docs/windows-wsl.md in the installed source tree.
 NOTE
 to_crlf "$NOTE_SRC" "$PKG/READ ME FIRST.txt"
 rm -f "$NOTE_SRC"

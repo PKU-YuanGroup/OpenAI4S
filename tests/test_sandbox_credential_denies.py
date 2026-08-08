@@ -204,10 +204,10 @@ def _bwrap(monkeypatch, tmp_path, *, fake_proc=True):
 def test_the_daemon_environ_is_masked_on_linux(tmp_path, monkeypatch):
     """The part of the PID-namespace gap that carries the credentials.
 
-    The sandbox keeps the host PID namespace on purpose — `Kernel.interrupt()`
-    targets `Popen.pid` exactly — so `/proc` still shows the daemon, and the
-    daemon's environment is where the API keys are, since the child's own
-    environment is allowlisted clean.
+    The sandbox keeps the host PID namespace on purpose so the manager can
+    validate bubblewrap's direct worker child before interrupting it. `/proc`
+    therefore still shows the daemon, and the daemon's environment is where
+    the API keys are, since the child's own environment is allowlisted clean.
     """
     argv = _bwrap(monkeypatch, tmp_path)
     environ = f"/proc/{os.getpid()}/environ"
@@ -241,11 +241,11 @@ def test_nothing_is_emitted_where_there_is_no_proc(tmp_path, monkeypatch):
 
 def test_the_pid_namespace_stays_shared_on_purpose(tmp_path, monkeypatch):
     """Recorded as a decision rather than left implicit. `--unshare-pid` makes
-    bwrap interpose an init/reaper, and `Kernel.interrupt()` targets
-    `Popen.pid` exactly — so closing the rest of this gap changes the interrupt
-    contract and needs a Linux-verified change. What is left open is that a
-    cell can see other processes exist; what is closed is the one file that
-    carries credentials.
+    bwrap interpose an additional init/reaper; the current interrupt resolver
+    instead validates the direct child in the shared procfs. Closing the rest
+    of this gap therefore needs an explicit child-pid channel. What is left
+    open is that a cell can see other processes exist; what is closed is the
+    one file that carries credentials.
     """
     argv = _bwrap(monkeypatch, tmp_path)
     assert "--unshare-pid" not in argv

@@ -110,7 +110,7 @@ def test_the_url_is_built_under_the_versioned_root(monkeypatch):
     # says nothing about the API root this test is actually about.
     monkeypatch.setattr(cli_main, "_url", lambda _cfg, **_kw: "http://127.0.0.1:8760/")
     monkeypatch.setattr(cli_main, "_daemon_token", lambda _cfg: "t")
-    monkeypatch.setattr(cli_main.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(cli_main, "_open_daemon", _fake_urlopen)
 
     cli_main._daemon_request(object(), "GET", "/shares")
     assert seen["url"] == "http://127.0.0.1:8760/api/v1/shares"
