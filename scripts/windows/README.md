@@ -28,14 +28,20 @@ further downstream.
 WSL2 reports as `linux`, which is a supported platform, so this package runs
 the same program every other platform runs rather than an approximation of it.
 The supported-platform matrix is [`../../docs/platforms.md`](../../docs/platforms.md).
+The end-user walkthrough is [`../../docs/windows-wsl.md`](../../docs/windows-wsl.md).
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `OpenAI4S.cmd` | The double-clickable entry point. Explorer opens a `.ps1` in an editor rather than running it, and the default execution policy blocks it even from a prompt, so this wrapper invokes PowerShell with `-ExecutionPolicy Bypass` for that one process and forwards its arguments and exit code. Ships CRLF. |
-| `openai4s.ps1` | The Windows half: find a WSL **2** distribution (refusing WSL 1, which has no user namespaces and therefore no sandbox), translate the package path with `wslpath`, install the payload, start the daemon, poll the forwarded port, and open the browser. Every refusal names both the cause and the exact command that fixes it. Ships CRLF. |
+| `openai4s.ps1` | The Windows half: prefer Ubuntu 24.04 on WSL **2**, propagate mainland package mirrors and an optional WSL-reachable proxy, install the payload, distinguish OpenAI4S from an unrelated port occupant, obtain the authenticated URL from `openai4s url`, and open the Windows browser. Every refusal names both the cause and the exact command that fixes it. Ships CRLF. |
 | `bootstrap.sh` | The Linux half, run inside the distribution. It verifies the payload's checksum before unpacking (the archive crosses the 9p/DrvFs boundary, where a short read yields a truncated file rather than an error), installs idempotently, and starts the daemon fully detached. Ships LF — a carriage return here fails inside WSL with `bad interpreter`, and `../verify_windows_zip.py` refuses a package that has one. |
+
+The bootstrap additionally proves bubblewrap 0.8.0+ accepts the same lifecycle,
+IPC, UTS, and network namespace flags used by real Cells, writes the selected mirror configuration and
+`~/.local/bin/openai4s` link, and starts the daemon with
+`OPENAI4S_KERNEL_SANDBOX=enforce` and browser auto-open disabled.
 
 ## Where this fits
 

@@ -179,7 +179,7 @@ tar -xzf OpenAI4S-*-linux-x86_64.tar.gz && cd OpenAI4S-*-linux-x86_64
 
 ### Windows（经由 WSL2）
 
-下载 `OpenAI4S-<version>-windows-x86_64.zip`，解压后双击 `OpenAI4S.cmd`。首次运行会把随包携带的 Linux 应用装进你的 WSL2 发行版、在里面启动守护进程，然后用 Windows 浏览器打开 `http://127.0.0.1:8760/`。不下载、不 `pip`、不装工具链。
+下载 `OpenAI4S-<version>-windows-x86_64.zip`，解压后双击 `OpenAI4S.cmd`。首次运行会检查 WSL2 与可工作的 bubblewrap 0.8.0+ 沙箱，校验并安装随包 Linux payload，创建 `~/.local/bin/openai4s`，在 WSL 中启动守护进程，再用 Windows 浏览器打开带本地登录引导的安全 URL。应用本体不下载、不 `pip`、不装工具链；支持基线是 Ubuntu 24.04，启动器可配置国内 PyPI/Conda 镜像以及 WSL 可访问的代理。详见双语 [Windows/WSL2 指南](docs/windows-wsl.md)。
 
 **原生 Windows 不受支持，而且程序会直接拒绝在那里启动内核**，不是「先警告再照跑」——内核要拉起 POSIX 子进程，R 通道靠 shell 重定向走文件描述符 3 和 4，沙箱也没有 Windows 后端。WSL2 报告自己是 Linux，所以这个包跑的就是其他平台跑的同一个构建。如果你还没有 WSL2，启动器会停下来并给出那条确切的命令（管理员 PowerShell 里的 `wsl --install`）。详见：**[平台支持矩阵](docs/platforms.md)**。
 
@@ -202,6 +202,7 @@ tar -xzf OpenAI4S-*-linux-x86_64.tar.gz && cd OpenAI4S-*-linux-x86_64
 | [**Jupyter 适配器**](docs/jupyter.md) | 可选的独立 Python/R KernelSpec、安装命令与兼容边界 |
 | [**配置**](docs/configuration.md) | 模型供应商、环境变量、conda 环境、CLI |
 | [**平台支持**](docs/platforms.md) | 各操作系统的支持等级，以及原生 Windows 为何拒绝启动内核 |
+| [**Windows / WSL2**](docs/windows-wsl.md) | Ubuntu 24.04 安装、沙箱自检、生命周期命令、国内镜像与 localhost 代理说明 |
 | [**安全**](docs/security.md) | 纵深防御安全层与远程访问说明 |
 
 ---

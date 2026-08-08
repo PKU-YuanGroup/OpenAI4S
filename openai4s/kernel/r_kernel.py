@@ -13,8 +13,9 @@ swap:
 - protocol IN rides fd 4 (aliased from the stdin pipe the manager writes),
 - fd 0 becomes /dev/null so R code reading stdin cannot eat protocol frames,
 - fd 1 is aliased to stderr so stray C-level prints never corrupt the wire,
-- `exec` keeps the spawned pid == R's pid so Kernel.interrupt()'s SIGINT lands
-  in R (caught there as an interrupt condition → interrupted=True).
+- `exec` keeps the shell child's pid == R's pid, so Kernel.interrupt()'s SIGINT
+  lands in R directly (including when bubblewrap supervises that child) and is
+  caught there as an interrupt condition with `interrupted=True`.
 
 The R kernel is an ANALYSIS kernel: it never emits host_call frames and has no
 `host` object — completion (host.submit_output) stays on the python control

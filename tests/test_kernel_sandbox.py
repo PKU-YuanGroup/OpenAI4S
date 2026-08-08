@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,7 @@ import pytest
 import openai4s.security.sandbox as sandbox_module
 from openai4s.kernel import Kernel
 from openai4s.security.sandbox import (
+    KernelSandbox,
     SandboxConfigurationError,
     SandboxStatus,
     SandboxUnavailableError,
@@ -128,6 +131,240 @@ def test_bwrap_raw_network_compatibility_switch_only_removes_network_namespace()
     assert ["--ro-bind", "/", "/"] == wrapped[
         wrapped.index("--ro-bind") : wrapped.index("--ro-bind") + 3
     ]
+
+
+def _interrupt_sandbox(tmp_path, *, backend="bubblewrap", enforced=True):
+    return KernelSandbox(
+        status=SandboxStatus(
+            mode="enforce" if enforced else "off",
+            state="enabled" if enforced else "disabled",
+            backend=backend,
+            enforced=enforced,
+            self_test_passed=True if enforced else None,
+            network_policy="blocked" if enforced else "not_enforced",
+            workspace=str(tmp_path),
+            temp_dir=None,
+            detail="interrupt resolver test",
+        )
+    )
+
+
+def test_bwrap_interrupt_resolves_and_validates_direct_worker(tmp_path):
+    launcher = 4100
+    worker = 4101
+    task_dir = tmp_path / str(launcher) / "task" / str(launcher)
+    task_dir.mkdir(parents=True)
+    (task_dir / "children").write_text(f"{worker}\n", encoding="ascii")
+    worker_dir = tmp_path / str(worker)
+    worker_dir.mkdir()
+    (worker_dir / "status").write_text(
+        f"Name:\tpython\nPPid:\t{launcher}\n", encoding="utf-8"
+    )
+
+    sandbox = _interrupt_sandbox(tmp_path)
+
+    assert sandbox.interrupt_target_pid(launcher, proc_root=tmp_path) == worker
+
+
+@pytest.mark.parametrize(
+    ("children", "worker_status"),
+    [
+        ("", None),
+        ("4101 4102", None),
+        ("not-a-pid", None),
+        ("4101", "Name:\tpython\nPPid:\t9999\n"),
+        ("4101", "Name:\tpython\n"),
+    ],
+)
+def test_bwrap_interrupt_falls_back_for_ambiguous_procfs(
+    tmp_path, children, worker_status
+):
+    launcher = 4100
+    task_dir = tmp_path / str(launcher) / "task" / str(launcher)
+    task_dir.mkdir(parents=True)
+    (task_dir / "children").write_text(children, encoding="ascii")
+    if worker_status is not None:
+        worker_dir = tmp_path / "4101"
+        worker_dir.mkdir()
+        (worker_dir / "status").write_text(worker_status, encoding="utf-8")
+
+    sandbox = _interrupt_sandbox(tmp_path)
+
+    assert sandbox.interrupt_target_pid(launcher, proc_root=tmp_path) == launcher
+
+
+@pytest.mark.parametrize(
+    ("backend", "enforced"), [("seatbelt", True), ("bubblewrap", False)]
+)
+def test_interrupt_target_uses_launcher_outside_enforced_bwrap(
+    tmp_path, backend, enforced
+):
+    sandbox = _interrupt_sandbox(tmp_path, backend=backend, enforced=enforced)
+
+    assert sandbox.interrupt_target_pid(4100, proc_root=tmp_path) == 4100
+    assert sandbox.send_interrupt(4100, signal.SIGINT, proc_root=tmp_path) is False
+
+
+def test_bwrap_interrupt_pins_worker_with_pidfd_before_signalling(
+    tmp_path, monkeypatch
+):
+    launcher = 4100
+    worker = 4101
+    task_dir = tmp_path / str(launcher) / "task" / str(launcher)
+    task_dir.mkdir(parents=True)
+    (task_dir / "children").write_text(f"{worker}\n", encoding="ascii")
+    worker_dir = tmp_path / str(worker)
+    worker_dir.mkdir()
+    (worker_dir / "status").write_text(
+        f"Name:\tpython\nPPid:\t{launcher}\n", encoding="utf-8"
+    )
+    sandbox = _interrupt_sandbox(tmp_path)
+    read_fd, write_fd = os.pipe()
+    opened = []
+    sent = []
+
+    def pidfd_open(pid, flags):
+        opened.append((pid, flags))
+        return read_fd
+
+    def pidfd_send_signal(fd, signum, siginfo, flags):
+        sent.append((fd, signum, siginfo, flags))
+
+    monkeypatch.setattr(sandbox_module.os, "pidfd_open", pidfd_open, raising=False)
+    monkeypatch.setattr(
+        sandbox_module.signal,
+        "pidfd_send_signal",
+        pidfd_send_signal,
+        raising=False,
+    )
+    try:
+        assert (
+            sandbox.send_interrupt(launcher, signal.SIGINT, proc_root=tmp_path) is True
+        )
+        with pytest.raises(OSError):
+            os.fstat(read_fd)
+    finally:
+        os.close(write_fd)
+
+    assert opened == [(worker, 0)]
+    assert sent == [(read_fd, signal.SIGINT, None, 0)]
+
+
+def test_bwrap_interrupt_refuses_a_target_that_changes_after_pidfd_open(
+    tmp_path, monkeypatch
+):
+    launcher = 4100
+    worker = 4101
+    sandbox = _interrupt_sandbox(tmp_path)
+    targets = iter((worker, launcher))
+    read_fd, write_fd = os.pipe()
+    sent = []
+
+    monkeypatch.setattr(
+        sandbox,
+        "interrupt_target_pid",
+        lambda *_a, **_k: next(targets),
+    )
+    monkeypatch.setattr(
+        sandbox_module.os,
+        "pidfd_open",
+        lambda _pid, _flags: read_fd,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sandbox_module.signal,
+        "pidfd_send_signal",
+        lambda *_args: sent.append(_args),
+        raising=False,
+    )
+    try:
+        assert (
+            sandbox.send_interrupt(launcher, signal.SIGINT, proc_root=tmp_path) is True
+        )
+        with pytest.raises(OSError):
+            os.fstat(read_fd)
+    finally:
+        os.close(write_fd)
+
+    assert sent == []
+
+
+@pytest.mark.parametrize("failure", ["unsupported", "exited"])
+def test_bwrap_interrupt_never_falls_back_to_a_numeric_child_pid(
+    tmp_path, monkeypatch, failure
+):
+    launcher = 4100
+    worker = 4101
+    sandbox = _interrupt_sandbox(tmp_path)
+    monkeypatch.setattr(
+        sandbox,
+        "interrupt_target_pid",
+        lambda *_a, **_k: worker,
+    )
+    killed = []
+    monkeypatch.setattr(sandbox_module.os, "kill", lambda *args: killed.append(args))
+
+    if failure == "unsupported":
+        monkeypatch.setattr(sandbox_module.os, "pidfd_open", None, raising=False)
+        monkeypatch.setattr(
+            sandbox_module.signal, "pidfd_send_signal", None, raising=False
+        )
+    else:
+
+        def exited(_pid, _flags):
+            raise ProcessLookupError("worker exited")
+
+        monkeypatch.setattr(sandbox_module.os, "pidfd_open", exited, raising=False)
+        monkeypatch.setattr(
+            sandbox_module.signal,
+            "pidfd_send_signal",
+            lambda *_args: None,
+            raising=False,
+        )
+
+    assert sandbox.send_interrupt(launcher, signal.SIGINT, proc_root=tmp_path) is True
+    assert killed == []
+
+
+def test_kernel_interrupt_lets_the_sandbox_own_bwrap_signal_delivery():
+    calls = []
+
+    class Process:
+        pid = 4100
+
+        @staticmethod
+        def send_signal(signum):
+            calls.append(("direct", signum))
+
+    kernel = Kernel.__new__(Kernel)
+    kernel._proc = Process()
+    kernel._sandbox = SimpleNamespace(
+        send_interrupt=lambda pid, signum: calls.append(("sandbox", pid, signum))
+        or True
+    )
+
+    kernel.interrupt()
+
+    assert calls == [("sandbox", 4100, signal.SIGINT)]
+
+
+def test_kernel_interrupt_signals_the_direct_process_outside_bwrap():
+    calls = []
+
+    class Process:
+        pid = 4100
+
+        @staticmethod
+        def send_signal(signum):
+            calls.append(("direct", signum))
+
+    kernel = Kernel.__new__(Kernel)
+    kernel._proc = Process()
+    kernel._sandbox = SimpleNamespace(send_interrupt=lambda _pid, _signum: False)
+
+    kernel.interrupt()
+
+    assert calls == [("direct", signal.SIGINT)]
 
 
 def test_seatbelt_profile_appends_targeted_read_denies():
