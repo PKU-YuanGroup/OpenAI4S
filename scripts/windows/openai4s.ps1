@@ -78,6 +78,10 @@ $CondaMirror = if ($env:OPENAI4S_WSL_CONDA_MIRROR) {
 } else {
     'https://mirrors.tuna.tsinghua.edu.cn/anaconda'
 }
+# Windows cannot express an empty environment variable (set VAR= deletes it),
+# so `off` is the explicit way to say "no mirror: use the official indexes".
+if ($PypiIndex -eq 'off') { $PypiIndex = '' }
+if ($CondaMirror -eq 'off') { $CondaMirror = '' }
 
 function Write-Section([string] $Text) {
     Write-Host ''
@@ -261,14 +265,38 @@ function Select-Distro {
             'Or set OPENAI4S_WSL_DISTRO to a WSL 2 distribution.'
         )
     }
+    # A distribution that already holds OpenAI4S data pins the choice. Without
+    # this, installing Ubuntu 24.04 for any reason would silently move the app
+    # to a fresh distribution and every existing session would look deleted.
+    $withData = @($two | Where-Object { Test-DistroHasInstall $_.Name })
+    $pool = if ($withData.Count -gt 0) { $withData } else { $two }
     # Ubuntu 24.04 carries bubblewrap >= 0.8.0. Prefer it when an older distro
     # is still the Windows default; the explicit environment override above
     # remains authoritative for people using another compatible distribution.
-    $preferred = $two | Where-Object { $_.Name -eq 'Ubuntu-24.04' } | Select-Object -First 1
-    if ($preferred) { return $preferred.Name }
-    $preferred = $two | Where-Object { $_.IsDefault } | Select-Object -First 1
-    if ($preferred) { return $preferred.Name }
-    return $two[0].Name
+    $selected = $pool | Where-Object { $_.Name -eq 'Ubuntu-24.04' } | Select-Object -First 1
+    if (-not $selected) {
+        $selected = $pool | Where-Object { $_.IsDefault } | Select-Object -First 1
+    }
+    if (-not $selected) { $selected = $pool[0] }
+    if ($withData.Count -gt 0) {
+        Write-Host "  using WSL distribution $($selected.Name) (existing OpenAI4S data found there)." -ForegroundColor DarkGray
+    }
+    return $selected.Name
+}
+
+function Test-DistroHasInstall([string] $Name) {
+    # `wsl --exec` starts no shell, so $HOME needs sh to expand it; the
+    # data-dir override is a PowerShell-side literal that Assert-WslDataDir has
+    # already stripped of quoting and expansion characters.
+    $probeScript = if ($WslDataDir) {
+        "test -d `"$WslDataDir/app`""
+    } else {
+        'test -d "$HOME/.openai4s/app"'
+    }
+    $probe = Invoke-WslCaptureNative -WslArgs @(
+        '-d', $Name, '--exec', 'sh', '-c', $probeScript
+    )
+    return $probe.ExitCode -eq 0
 }
 
 function Test-LocalhostForwardingDisabled {
@@ -410,10 +438,14 @@ function Assert-HttpUrl([string] $Name, [string] $Value) {
 function Assert-WslDataDir([string] $Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return }
     $parts = $Value -split '/'
+    # Quoting and expansion characters are refused, not escaped: the value is
+    # interpolated into sh command strings (Test-DistroHasInstall) where a
+    # quote or `$` would change what the shell runs.
     if (-not $Value.StartsWith('/') -or $Value -eq '/' -or $parts -contains '..' -or
-        $Value -match "[`r`n]") {
+        $Value -match "[`r`n]" -or
+        $Value.IndexOfAny([char[]] @('"', "'", '`', '$', '\')) -ge 0) {
         Stop-WithGuidance 'OPENAI4S_WSL_DATA_DIR must be a specific absolute Linux path.' @(
-            'Example: /home/me/.openai4s'
+            'Example: /home/me/.openai4s  (no quotes, backslashes, or $)'
         )
     }
 }
@@ -425,10 +457,14 @@ function Get-WslBootstrapArgs([string] $Distro, [string] $BootstrapLinux, [strin
     if ($WslDataDir) {
         $wslArgs += "OPENAI4S_DATA_DIR=$WslDataDir"
     }
-    $wslArgs += "OPENAI4S_PYPI_INDEX_URL=$PypiIndex"
-    $wslArgs += "PIP_INDEX_URL=$PypiIndex"
-    $wslArgs += "UV_DEFAULT_INDEX=$PypiIndex"
-    $wslArgs += "OPENAI4S_CONDA_MIRROR=$CondaMirror"
+    if ($PypiIndex) {
+        $wslArgs += "OPENAI4S_PYPI_INDEX_URL=$PypiIndex"
+        $wslArgs += "PIP_INDEX_URL=$PypiIndex"
+        $wslArgs += "UV_DEFAULT_INDEX=$PypiIndex"
+    }
+    if ($CondaMirror) {
+        $wslArgs += "OPENAI4S_CONDA_MIRROR=$CondaMirror"
+    }
     $proxyBypass = "127.0.0.1,localhost,$AppHost"
     $wslArgs += "NO_PROXY=$proxyBypass"
     $wslArgs += "no_proxy=$proxyBypass"
@@ -498,12 +534,20 @@ function Get-AppUrl([string] $Distro, [string] $BootstrapLinux, [string] $Bundle
     } | Select-Object -Last 1
     $parsed = $null
     if (-not $candidate -or
-        -not [Uri]::TryCreate($candidate, [UriKind]::Absolute, [ref] $parsed) -or
-        [string]::IsNullOrWhiteSpace($parsed.Query)) {
+        -not [Uri]::TryCreate($candidate, [UriKind]::Absolute, [ref] $parsed)) {
         Stop-WithGuidance 'OpenAI4S did not return a tokenized browser URL.' @(
             'Read the daemon log inside WSL:',
             "    wsl -d $Distro -- tail -40 $WslLogPath"
         )
+    }
+    if ([string]::IsNullOrWhiteSpace($parsed.Query)) {
+        # `openai4s url` returns the URL a person can open. No query means the
+        # daemon's sign-in gate was explicitly turned off (OPENAI4S_REQUIRE_TOKEN
+        # set to 0, where the bare URL works) or its credential file could not
+        # be read. Opening it is still the right next step, so warn instead of
+        # refusing.
+        Write-Host '  note: the URL carries no sign-in token. If the browser shows 401,' -ForegroundColor Yellow
+        Write-Host "  read the daemon log: wsl -d $Distro -- tail -40 $WslLogPath" -ForegroundColor Yellow
     }
     return $parsed.AbsoluteUri
 }

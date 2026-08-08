@@ -84,6 +84,10 @@ _REQUIRED_LAUNCHER_RUNTIME = (
     "Test-OpenAI4SServing",
     "Test-LocalhostForwardingDisabled",
     "Get-WslIpv4",
+    # An existing installation pins the distro choice; without this probe an
+    # Ubuntu-24.04 install would silently strand the user's sessions in the
+    # previously used distribution.
+    "Test-DistroHasInstall",
     "'dev', 'eth0', 'scope', 'global'",
     "192.0.2.1",
     'proxyBypass = "127.0.0.1,localhost,$AppHost"',
@@ -107,6 +111,9 @@ _REQUIRED_BOOTSTRAP_RUNTIME = (
     "--detached",
     "install_cli_link",
     "OPENAI4S_PYPI_INDEX_URL",
+    # Mirror config files are rewritten only when they carry this marker; a
+    # user-edited pip.conf/condarc must survive the next launch.
+    "managed-by-openai4s-windows-launcher",
 )
 
 

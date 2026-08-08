@@ -326,6 +326,42 @@ def test_bwrap_interrupt_never_falls_back_to_a_numeric_child_pid(
     assert killed == []
 
 
+def test_bwrap_interrupt_reports_an_unreachable_worker_once(
+    tmp_path, monkeypatch, capsys
+):
+    """Dropping a stop request is an accepted trade only while it is visible."""
+
+    sandbox = _interrupt_sandbox(tmp_path)
+    monkeypatch.setattr(
+        sandbox_module.os, "pidfd_open", lambda _pid, _flags: 99, raising=False
+    )
+    monkeypatch.setattr(
+        sandbox_module.signal,
+        "pidfd_send_signal",
+        lambda *_args: None,
+        raising=False,
+    )
+
+    # tmp_path carries no procfs structure, so the resolver falls back to the
+    # launcher: the adapter owns the request and deliberately drops it.
+    assert sandbox.send_interrupt(4100, signal.SIGINT, proc_root=tmp_path) is True
+    first = capsys.readouterr().err
+    assert "cell interrupt cannot reach the sandboxed worker" in first
+    assert "did not name one direct worker child" in first
+
+    assert sandbox.send_interrupt(4100, signal.SIGINT, proc_root=tmp_path) is True
+    assert capsys.readouterr().err == ""
+
+
+def test_bwrap_interrupt_reports_missing_pidfd_support(tmp_path, monkeypatch, capsys):
+    sandbox = _interrupt_sandbox(tmp_path)
+    monkeypatch.setattr(sandbox_module.os, "pidfd_open", None, raising=False)
+    monkeypatch.setattr(sandbox_module.signal, "pidfd_send_signal", None, raising=False)
+
+    assert sandbox.send_interrupt(4100, signal.SIGINT, proc_root=tmp_path) is True
+    assert "no pidfd support" in capsys.readouterr().err
+
+
 def test_kernel_interrupt_lets_the_sandbox_own_bwrap_signal_delivery():
     calls = []
 

@@ -354,12 +354,55 @@ def test_detached_serve_stops_a_child_that_never_becomes_ready(
             return 0
 
     monkeypatch.setattr(module.subprocess, "Popen", lambda *_a, **_k: Process())
-    ticks = iter((0.0, 31.0))
+    ticks = iter((0.0, 61.0))
     monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
 
     assert module._cmd_serve_detached(SimpleNamespace(no_open=True), config) == 1
     assert calls == ["terminate", ("wait", 5)]
     assert "did not become ready" in capsys.readouterr().err
+
+
+def test_detached_serve_ready_timeout_is_overridable(tmp_path, monkeypatch, capsys):
+    import os
+
+    if os.name != "posix":
+        pytest.skip("detached server sessions are a POSIX/WSL feature")
+
+    module = _cli_module()
+    logs = tmp_path / "logs"
+    config = SimpleNamespace(
+        host="127.0.0.1",
+        port=8760,
+        data_dir=tmp_path,
+        logs_dir=logs,
+        pidfile=tmp_path / "daemon.pid",
+        ensure_dirs=lambda: logs.mkdir(parents=True, exist_ok=True),
+    )
+
+    class Process:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            return None
+
+        @staticmethod
+        def wait(timeout):
+            return 0
+
+    monkeypatch.setenv("OPENAI4S_DETACHED_READY_TIMEOUT", "5")
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_a, **_k: Process())
+    # The second tick is far past 5s but well inside the 60s default: only the
+    # override can make the loop give up here.
+    ticks = iter((0.0, 6.0))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+
+    assert module._cmd_serve_detached(SimpleNamespace(no_open=True), config) == 1
+    assert "within 5s" in capsys.readouterr().err
 
 
 def test_detached_serve_does_not_accept_an_unrelated_healthy_daemon(

@@ -428,6 +428,11 @@ def test_the_windows_launcher_opens_the_authenticated_url_and_requires_sandbox()
     assert "OPENAI4S_WSL_PYPI_INDEX" in launcher
     assert "Test-LocalhostForwardingDisabled" in launcher
     assert "Get-WslIpv4" in launcher
+    # A distro that already holds ~/.openai4s data must keep winning selection,
+    # and the default mirrors must be disablable without deleting the env var.
+    assert "Test-DistroHasInstall" in launcher
+    assert "if ($PypiIndex -eq 'off') { $PypiIndex = '' }" in launcher
+    assert "if ($CondaMirror -eq 'off') { $CondaMirror = '' }" in launcher
     assert "'dev', 'eth0', 'scope', 'global'" in launcher
     assert "'route', 'get', '192.0.2.1'" in launcher
     assert '$proxyBypass = "127.0.0.1,localhost,$AppHost"' in launcher
@@ -451,6 +456,10 @@ def test_the_windows_launcher_opens_the_authenticated_url_and_requires_sandbox()
     assert "OPENAI4S_KERNEL_SANDBOX" in bootstrap
     assert "--no-browser" in bootstrap
     assert "--detached" in bootstrap
+    # User-edited mirror files survive relaunch: only marker-carrying files are
+    # rewritten, and a foreign pip.conf that names an index-url is preserved.
+    assert 'MANAGED_MARK="managed-by-openai4s-windows-launcher"' in bootstrap
+    assert "grep -q '^index-url'" in bootstrap
 
 
 def test_the_windows_launcher_does_not_leak_native_stdout_into_its_return_value():

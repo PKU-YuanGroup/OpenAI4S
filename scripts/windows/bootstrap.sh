@@ -81,6 +81,11 @@ run_preflight() {
   echo "preflight-ok WSL2 bubblewrap-$BWRAP_VERSION"
 }
 
+# Files this launcher rewrites carry this marker. A file without it was edited
+# by the user (or shipped by the bundle) and is preserved, not clobbered on the
+# next launch.
+MANAGED_MARK="managed-by-openai4s-windows-launcher"
+
 configure_network() {
   APP="$1"
   PYPI_INDEX="${OPENAI4S_PYPI_INDEX_URL:-}"
@@ -94,13 +99,29 @@ configure_network() {
     # This is pip's site config for the embedded interpreter. Environment-only
     # PIP_* settings do not reach a sandboxed Cell, so putting the mirror here
     # is what keeps later in-Cell installs off a direct public index.
-    printf '%s\n' \
-      '[global]' \
-      "index-url = $PYPI_INDEX" \
-      '' \
-      '[install]' \
-      'user = true' \
-      'break-system-packages = true' > "$APP/runtime/pip.conf"
+    #
+    # The bundle ships a build-time pip.conf that routes installs to the user
+    # site and names no index; rewriting that one is this launcher's job. A
+    # file without the managed marker that already names an index-url is the
+    # user's own mirror choice and is left alone.
+    PIP_CONF="$APP/runtime/pip.conf"
+    if [ -f "$PIP_CONF" ] && ! grep -q "$MANAGED_MARK" "$PIP_CONF" 2>/dev/null \
+        && grep -q '^index-url' "$PIP_CONF" 2>/dev/null; then
+      echo "note: $PIP_CONF has a user-managed index-url; leaving it unchanged" >&2
+      echo "      (set OPENAI4S_WSL_PYPI_INDEX to manage mirrors from the launcher)" >&2
+    else
+      printf '%s\n' \
+        "# $MANAGED_MARK -- rewritten on every launch." \
+        '# Set OPENAI4S_WSL_PYPI_INDEX in Windows to change the mirror, or to' \
+        '# off to restore the official index. Direct edits here are preserved' \
+        '# only if this marker line is removed.' \
+        '[global]' \
+        "index-url = $PYPI_INDEX" \
+        '' \
+        '[install]' \
+        'user = true' \
+        'break-system-packages = true' > "$PIP_CONF"
+    fi
   fi
 
   if [ -n "$CONDA_MIRROR" ]; then
@@ -109,16 +130,25 @@ configure_network() {
       *) echo "invalid Conda mirror URL: $CONDA_MIRROR" >&2; exit 1 ;;
     esac
     mkdir -p "$NETWORK_DIR"
-    printf '%s\n' \
-      'channels:' \
-      '  - conda-forge' \
-      '  - defaults' \
-      "channel_alias: $CONDA_MIRROR/cloud" \
-      'default_channels:' \
-      "  - $CONDA_MIRROR/pkgs/main" \
-      "  - $CONDA_MIRROR/pkgs/r" \
-      "  - $CONDA_MIRROR/pkgs/msys2" \
-      'show_channel_urls: true' > "$NETWORK_DIR/condarc"
+    CONDARC_FILE="$NETWORK_DIR/condarc"
+    if [ -f "$CONDARC_FILE" ] && ! grep -q "$MANAGED_MARK" "$CONDARC_FILE" 2>/dev/null; then
+      echo "note: $CONDARC_FILE is user-managed; leaving it unchanged" >&2
+    else
+      printf '%s\n' \
+        "# $MANAGED_MARK -- rewritten on every launch." \
+        '# Set OPENAI4S_WSL_CONDA_MIRROR in Windows to change the mirror, or to' \
+        '# off to stop writing this file. Direct edits here are preserved only' \
+        '# if this marker line is removed.' \
+        'channels:' \
+        '  - conda-forge' \
+        '  - defaults' \
+        "channel_alias: $CONDA_MIRROR/cloud" \
+        'default_channels:' \
+        "  - $CONDA_MIRROR/pkgs/main" \
+        "  - $CONDA_MIRROR/pkgs/r" \
+        "  - $CONDA_MIRROR/pkgs/msys2" \
+        'show_channel_urls: true' > "$CONDARC_FILE"
+    fi
   fi
 }
 

@@ -80,7 +80,9 @@ OpenAI4S.cmd
 
 启动器会依次完成：
 
-1. 选择 Ubuntu 24.04（可用 `OPENAI4S_WSL_DISTRO` 覆盖）；
+1. 选择发行版：`OPENAI4S_WSL_DISTRO` 最优先；其次是已经存有
+   OpenAI4S 数据（`~/.openai4s/app`）的发行版，这样升级后会话不会
+   「消失」在另一个发行版里；再其次才是 Ubuntu 24.04 与默认发行版；
 2. 拒绝 WSL1，验证 bubblewrap 版本并运行真实 namespace 自检；
 3. 在 WSL 中重新计算 payload SHA-256；
 4. 幂等安装或升级应用，并创建 `~/.local/bin/openai4s`；
@@ -133,6 +135,12 @@ Windows ZIP 自带应用，不会在首次安装时访问公网。以后使用 p
 $env:OPENAI4S_WSL_PYPI_INDEX = 'https://pypi.tuna.tsinghua.edu.cn/simple'
 $env:OPENAI4S_WSL_CONDA_MIRROR = 'https://mirrors.tuna.tsinghua.edu.cn/anaconda'
 ```
+
+不在大陆或想直接使用官方源时，把变量设为 `off`（Windows 无法表达
+「空值」环境变量，`off` 即显式停用镜像）。启动器只重写自己带有
+`managed-by-openai4s-windows-launcher` 标记的配置文件；你手工编辑过的
+`pip.conf` / condarc（去掉该标记行，或自行指定了 `index-url`）会原样
+保留。
 
 若要使用 Windows 上的 `127.0.0.1:7897`，需要注意网络方向：Windows 访问
 WSL 服务时，`localhost` 通常会自动转发；但 NAT 模式下，WSL 访问 Windows
@@ -225,6 +233,18 @@ starts an enforced-sandbox daemon, obtains the authenticated URL from
 `openai4s url`, and opens that URL in the Windows browser. In NAT mode, an
 explicit `localhostForwarding=false` is detected and handled by using the
 current WSL IPv4; ordinary and mirrored configurations keep using loopback.
+
+Distribution choice: `OPENAI4S_WSL_DISTRO` wins; otherwise a distribution that
+already holds OpenAI4S data (`~/.openai4s/app`) is kept, so an upgrade never
+strands existing sessions in another distribution; only then does the launcher
+prefer Ubuntu 24.04 over the Windows default.
+
+The launcher defaults pip/Conda to the Tsinghua mirrors for later package
+installs. Set `OPENAI4S_WSL_PYPI_INDEX` / `OPENAI4S_WSL_CONDA_MIRROR` to
+another mirror, or to `off` to keep the official indexes. Files the launcher
+writes carry a `managed-by-openai4s-windows-launcher` marker; a `pip.conf` or
+condarc you edited yourself (marker removed, or your own `index-url`) is left
+unchanged on the next launch.
 
 ### Lifecycle commands
 
