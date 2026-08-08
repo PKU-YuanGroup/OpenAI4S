@@ -229,8 +229,14 @@ def _health_ready(cfg) -> bool:
             _url(cfg, with_token=False) + "health", timeout=1
         ) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        return response.status == 200 and payload.get("status") == "ok"
-    except (AttributeError, OSError, ValueError, urllib.error.URLError):
+        # The occupant may be any local service: a JSON body that is not an
+        # object is "not our daemon", never a crash.
+        return (
+            response.status == 200
+            and isinstance(payload, dict)
+            and payload.get("status") == "ok"
+        )
+    except (OSError, ValueError):
         return False
 
 
@@ -304,7 +310,17 @@ def _cmd_serve_detached(args, cfg) -> int:
             start_new_session=True,
         )
 
-    deadline = time.monotonic() + 30.0
+    # A packaged bundle's first start can spend most of a minute on imports and
+    # Store migrations on a slow disk; 30s produced false "did not become
+    # ready" failures for a daemon that was seconds from healthy.
+    ready_timeout = 60.0
+    raw_timeout = os.environ.get("OPENAI4S_DETACHED_READY_TIMEOUT", "")
+    if raw_timeout:
+        try:
+            ready_timeout = max(1.0, float(raw_timeout))
+        except ValueError:
+            pass
+    deadline = time.monotonic() + ready_timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
             break
@@ -331,7 +347,8 @@ def _cmd_serve_detached(args, cfg) -> int:
 
     _cleanup_failed_detached_child(process)
     print(
-        f"error: detached daemon did not become ready; inspect {log_path}",
+        f"error: detached daemon did not become ready within {ready_timeout:.0f}s "
+        f"(OPENAI4S_DETACHED_READY_TIMEOUT overrides); inspect {log_path}",
         file=sys.stderr,
     )
     return 1

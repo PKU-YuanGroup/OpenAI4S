@@ -561,6 +561,7 @@ class KernelSandbox:
         self._owns_temp_dir = owns_temp_dir
         self._deny_read = tuple(deny_read)
         self._closed = False
+        self._interrupt_gap_reported = False
 
     def wrap_command(self, command: Sequence[str]) -> list[str]:
         argv = [str(part) for part in command]
@@ -683,10 +684,12 @@ class KernelSandbox:
         pidfd_open = getattr(os, "pidfd_open", None)
         pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
         if not callable(pidfd_open) or not callable(pidfd_send_signal):
+            self._report_interrupt_gap("this Python/kernel has no pidfd support")
             return True
 
         child = self.interrupt_target_pid(launcher, proc_root=proc_root)
         if child == launcher:
+            self._report_interrupt_gap("procfs did not name one direct worker child")
             return True
 
         pidfd = None
@@ -708,6 +711,24 @@ class KernelSandbox:
                 except OSError:
                     pass
         return True
+
+    def _report_interrupt_gap(self, reason: str) -> None:
+        """Make a structurally unreachable interrupt visible, once per kernel.
+
+        These branches deliberately drop the SIGINT rather than fall back to a
+        racy numeric PID, which leaves the user's stop request doing nothing
+        while the cell keeps running until the watchdog replaces the worker.
+        That trade is only acceptable when it is visible.
+        """
+        if self._interrupt_gap_reported:
+            return
+        self._interrupt_gap_reported = True
+        print(
+            "[openai4s] cell interrupt cannot reach the sandboxed worker "
+            f"({reason}); the stop request is dropped and a stuck cell is "
+            "recovered by the watchdog instead",
+            file=sys.stderr,
+        )
 
     def close(self) -> None:
         if self._closed:

@@ -245,7 +245,9 @@ OpenAI4S $VERSION - first launch on Windows
 
    The bundled app itself installs offline. Later pip/Conda package downloads
    default to the Tsinghua mirrors in this Windows/WSL launcher. Override with
-   OPENAI4S_WSL_PYPI_INDEX or OPENAI4S_WSL_CONDA_MIRROR.
+   OPENAI4S_WSL_PYPI_INDEX or OPENAI4S_WSL_CONDA_MIRROR, or set either to
+   \`off\` to keep the official indexes. A pip.conf or condarc you edited
+   yourself is preserved on later launches.
 
    To use a local proxy, set OPENAI4S_WSL_PROXY before launch. In WSL NAT mode,
    Windows localhost is not WSL localhost; either enable mirrored networking
