@@ -2,9 +2,9 @@
 
 [English](README.md)
 
-面向维护者的脚本：环境搭建、发布校验、密钥扫描、目录文档覆盖、贡献者墙，以及一个
-需要显式启用的科学操作。它们都不是 Agent 的原生 Tool，正常的 daemon 循环也不会导入
-它们。
+面向维护者的脚本：环境搭建、发布校验、密钥扫描、目录文档覆盖、两道抓取式响应门禁、
+上游 schema 金丝雀、贡献者墙，以及一个需要显式启用的科学操作。它们都不是 Agent 的原生
+Tool，`openai4s/` 下也没有任何模块会导入它们。
 
 ## 文件
 
@@ -14,7 +14,7 @@
 | `build_linux_bundle.sh` | 打包 Linux `.tar.gz`：同一份内嵌的可重定位 CPython、同一份预装科学栈、同样原样带上的源码树，外加一个自定位启动器、一份 `.desktop` 模板和面向单用户的 `install.sh`。刻意不做 AppImage——一个靠 FUSE 挂载的 squashfs，对于「本职就是在 bubblewrap 下拉起子进程」的程序是错误的宿主，而且它会在执行 cell 的时候才坏，不是在启动的时候。可以在 macOS 上交叉构建（全程不编译），只跳过那些必须**运行**目标才能做的检查，并且明说跳过了。 |
 | `build_windows_zip.sh` | 打包 Windows `.zip`。这不是原生 Windows 构建：`platform_support.py` 在 win32 上拒绝启动内核，所以这里发的是一个包着 Linux bundle 的 Windows 启动器——首次运行把它装进 WSL2，再用 Windows 浏览器打开转发出来的端口。它消费的就是同一次发布里那个 Linux 制品本身，而不是另起一次「理应一致」的构建。源文件在 `windows/`。 |
 | `bundle_contract.py` | 把「每个发出去的桌面包都必须满足什么」写在一处：预装包清单、只在运行时才暴露缺失的资源（Web UI、R worker、compute 模板）、Skill 目录数量下限、hash-based 字节码规则，以及凭据扫描。三个校验器共用它，理由和两个沙箱冒烟测试共用一份实现是同一个：两份拷贝迟早会漂移，直到某个平台悄悄不再检查别人还在检查的东西——而那个平台正是会把坏镜像发出去的那个。 |
-| `capture_response_schemas.py` | 重新生成（加 `--check` 则是校验）[`docs/response-schemas.json`](../docs/response-schemas.json)。装上捕获后跑一遍离线套件，记录每条 route 真正返回了什么；从真实响应导出的 schema 不可能描述代码根本不会产生的响应，覆盖率也因此是量出来的数字而不是一句断言。`--check` 只在会打断客户端的变化上失败——字段被删、保证被撤、类型被放宽。仅仅增量移动的形状、以及新增或丢失覆盖的 route 会打印但不失败：捕获结果本身还取决于装了哪些可选 extra、以及某个平台跳过了哪些测试，而一道总在狼来了的门最后只会被人重新生成到失去意义。两种模式都会逐条列出没有任何离线测试触达的 route——今天是 143 条里的 93 条——因为光有一个覆盖率数字，谁也没法据此行动。 |
+| `capture_response_schemas.py` | 重新生成（加 `--check` 则是校验）[`docs/response-schemas.json`](../docs/response-schemas.json)。装上捕获后跑一遍离线套件，记录每条 route 真正返回了什么；从真实响应导出的 schema 不可能描述代码根本不会产生的响应，覆盖率也因此是量出来的数字而不是一句断言。`--check` 会在会打断客户端的变化上失败——字段被删、保证被撤、类型被放宽。仅仅增量移动的形状、以及新增或丢失覆盖的 route 会打印但不失败：捕获结果本身还取决于装了哪些可选 extra、以及某个平台跳过了哪些测试，而一道总在狼来了的门最后只会被人重新生成到失去意义。两种模式都会逐条列出没有任何离线测试触达的 route，因为光有一个覆盖率数字，谁也没法据此行动——而这份名单如今已经清空，`--check` 也就据此失败了：一条 route 不能再一边留在契约里、一边没有任何被冻结的形状，`/frames/<id>/admissions/<id>` 当年正是这样待了 43 个提交，那时这份名单只是被当成指标打印出来。整个产物还压在一条溯源规则上：凡是把某个服务换成 stub 的测试都必须挂 `stubbed_backend` marker，它会在该测试运行期间暂停记录器。少了它，stub 编造出来的 `{"ok": true}` 就会被当成这条 route 的真实契约发布出去——这是错误的溯源，比没有溯源更糟，因为读者会当真。 |
 | `check_directory_readmes.py` | 本文件必须通过的那项 CI 检查。每个受维护目录都要有 `README.md` 和 `README_zh.md`，两者标题序列与表格行数一致，每个直属文件和子目录都以反引号形式出现过，相对链接在磁盘上确实能解析到。 |
 | `connector_canary.py` | 询问 UniProt、RCSB PDB、OpenAlex 是否仍返回 connector 所解析的东西。仅定时/手动运行——公共 API 的宕机不构成让 PR 失败的理由——它**仅**在真实 schema 漂移时（一个 200 响应里 required 字段没了）以非零退出，绝不在上游不可达时（超时、5xx、HTML 页面）失败。宕机与漂移的区分是整件事的核心，并用注入的 fetch 离线测过。 |
 | `bundled_packages.txt` | 预装进每一个发出去的桌面包的科学栈，每行 `<pip 名> <import 名>`——即默认 `python.yml` 内核环境里可 pip 安装的超集（rdkit、scanpy、numba、umap、单细胞、化学信息学……）。跨平台的单一事实来源：两个构建脚本都按 pip 名安装，每个校验器都断言这些 import 是从包内解析的，所以既不会「装的」和「查的」漂移，也不会两个平台悄悄装了不同的栈。torch/fair-esm 以及 conda 专属的 R 与 bioconda 工具刻意不含。 |
@@ -35,7 +35,7 @@
 | `release_gates.py` | 发布质量门禁的唯一权威清单，由 `run_quality_gates.py`（负责执行）与 `release_pipeline.py`（要求收据与之完全一致）共同导入。此前生产方私有持有这份列表，而消费方只比较退出码，因此一份只有两行、把 `pytest` 的命令写成 `["pytest"]` 的收据也能通过 staging。现在校验是精确匹配：缺失、重复、未知或被替换命令的 gate，以及不同的 schema 版本和不同的 manifest 摘要，都会硬失败。同时承载 check-suite 证明——浏览器矩阵与 Python 支持矩阵由 GitHub 自身、绑定到发布 `head_sha` 的 check run 证明并记录 run id，而不是重新执行一遍。 |
 | `release_receipts.py` | 构建收据与 staging 证明，以及构建 job 调用的 CLI。构建收据把某个 job 的产物绑定到被冻结的源码 SHA，并记录构建机的 OS/架构/解释器，因此 staging 能够检查 wheel 与 DMG 是否来自同一个提交——此前每个 job 各自 checkout 可变 tag，没有任何东西做过比较。staging 证明记录了被暂存资产的精确集合与摘要，并通过 workflow 制品通道传递，因为 `step_publish` 此前是拿 draft 自己的 `SHA256SUMS` 去重新校验 draft：这是一份自我担保的文件，任何能替换资产的人都能在同一动作里把它一起替换。 |
 | `reaudit_crosswalk.py` | 为 [`docs/plan-crosswalk.json`](../docs/plan-crosswalk.json) 里每个 `closed` 行记录它所指证据文件的内容摘要；`--check` 会在任何一份证据变动后拒绝通过。此前 48 个 closed 行中有 25 个所指的测试文件在文档自称的审计点之后又被改过（其中一个跨了 12 个提交），而现有断言全部通过——因为它们检查的是文件“存在”。用内容摘要而不是 commit SHA：做这次重新审计的那个提交，无法在自身内部校验自己的 SHA。 |
-| `capture_response_contract.py` | 通过驱动离线测试套件、记录每个 route 实际返回什么，来重新生成 [`docs/response-contract.json`](../docs/response-contract.json) 的抓取侧。手写的契约是由人签字的那一侧；这一侧回答的是服务端是否还与它一致。 |
+| `capture_response_contract.py` | 配套的另一道门，问的是另一个问题：`capture_response_schemas.py` 冻结的是测试恰好触发到的那些 JSON body 的**形状**，而它冻结的是每条 route 究竟给出**哪一类**回答——json、stream、redirect、binary 还是空——以及配的是哪些状态码。它不会重跑测试套件，而是把清单里的每条 route 不带参数地直接打到真实 handler 与真实 Store 上，于是大多数返回 4xx，而这正是重点：错误响应同样是一种承诺，一条根本驱动不起来的 route 会以「条目缺失」的形式暴露，而不是变成一个填满空值的条目。清单里那种连自身具体化都路由不到的条目会被单独点名，绝不计入覆盖。[`docs/response-contract.json`](../docs/response-contract.json) 是抓取出来的，不是手写的，理由和它的搭档一样：手工维护的一份「这些 route 是流式的」清单，只在写下它的那天是对的，之后就会悄悄变错。抓取时会在临时数据目录里把 `OPENAI4S_SECRET_STORE` 钉成 `plaintext`，因为 `/search/config` 要读凭据，而 `auto` 解析到的是**执行抓取那台机器**上有什么——有钥匙串的笔记本会把这条 route 冻进去，两样都没有的 runner 会跳过它，于是这份产物在除了生成它那台机器之外的所有机器上都显得过期。 |
 
 ## 子目录
 

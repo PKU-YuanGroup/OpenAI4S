@@ -4,7 +4,7 @@
 
 Harness 用来回放场景。一个场景会脚本化模型本该说出的话，在指定的点上注入故障，把整次运行记成规范化的事件 trace，再拿这条 trace 去核对场景声明的预期结果。它覆盖的正是单元测试不太好写的那些问题：事情发生的先后顺序、一次运行花了几次模型调用，以及故障落在某个点的第三次访问上，和落在第一次访问上，结果是否不同。
 
-这里的东西都带版本、只用标准库，也不在生产代码的 import 图里。通用 runner 只验证 Harness 自身的 schema/event/fault 循环，刻意不导入生产运行时；目前的例外只有 `characterize.py` 和 action-routing eval，而且它们触及选定的生产入口时，一律隔着 fake。
+这里的东西都带版本、只用标准库，也不在生产代码的 import 图里。通用 runner 只验证 Harness 自身的 schema/event/fault 循环，刻意不导入生产运行时。目前的例外是三个文件，而且它们的例外方式并不相同：`characterize.py` 隔着标准库 `unittest.mock` 的 fake 去驱动选定的生产入口；action-routing 与 retrosynthesis-backend 这两个 eval 则是拿录制好的输入直接调用一个生产函数——`openai4s/agent/actions.py` 里的 router，以及内置 retrosynthesis Skill 里的响应规范化函数——这里不需要 fake，因为根本没有活的边界需要顶替。
 
 确定性的 `tier:pr` 场景是 CI 必需的 Harness 自契约门禁。pytest suite 还会在进程内验证 CLI 门禁（`tests/test_harness_contract.py`）；之所以在 CI 里另设独立 step，是为了让契约门禁不依赖 pytest collection（`pyproject.toml` 刻意只收集 `tests/`）。真实模型的质量 eval 与需要外部资源的 smoke test 始终要显式启用。
 
@@ -38,7 +38,7 @@ Harness 用来回放场景。一个场景会脚本化模型本该说出的话，
 | [`scenarios/`](scenarios/) | 一个场景一个 JSON 文件：prompt、要按顺序回放的 provider step、要注入的 fault、决定它属于哪个 tier 的 tag，以及预期结果。fixture 和 permission 元数据只做校验，尚未真正执行，所以这些仍然不是端到端的 Agent/Gateway 运行。 |
 | [`providers/`](providers/) | 离线的假 provider，顶替一次运行本来要跨过的平台边界：模型、compute、endpoint、lab。 |
 | [`golden_traces/`](golden_traces/) | 经审阅的参考 trajectory，留着做精确比较，也留着在漂移确属有意时逐行审阅。它们是拿来读的数据，不是拿来跑的 replay。 |
-| [`evals/`](evals/) | 离线 eval fixture 和给它们计分的代码，其中包括确定性的 action-routing 质量与契约评测。 |
+| [`evals/`](evals/) | 离线 eval fixture 和给它们计分的代码：确定性的 action-routing 质量与契约评测，以及 retrosynthesis 后端回放——它把录制下来的外部模型响应过一遍生产的规范化函数来计分，不加载任何模型权重。 |
 | [`smoke/`](smoke/) | 用来检查平台或外部资源的 runtime smoke 程序。不显式启用，这里什么都不会跑。 |
 
 ## 基本规则
@@ -69,7 +69,7 @@ uv run python -m harness.cli characterize --write  # 审阅后重新生成
 
 ## Trace 资产不能混用
 
-这里有三种记录挨在一起，回答的却是不同的问题。Canonical run trace 是目标记录，服务于脚本化的 model、action、permission、lifecycle 事件，也是确定性契约比较真正读的东西。Host-call tape 保存成功的 host call 结果，好让 Notebook 能离线回放；它既不是完整 trajectory，也不是崩溃恢复记录。Live-model eval snapshot 衡量文本和任务质量，它不是 CI 能倚仗的真值来源。
+这里有四种记录挨在一起，回答的却是不同的问题。Canonical run trace 是目标记录，服务于脚本化的 model、action、permission、lifecycle 事件，也是确定性契约比较真正读的东西。Host-call tape 保存成功的 host call 结果，好让 Notebook 能离线回放；它既不是完整 trajectory，也不是崩溃恢复记录。Backend response tape——现存的只有 `evals/retrosynthesis_backend_cases.json` 一份——是录下来的外部模型响应，用来过一遍生产的规范化函数：它回答的是「这份响应今天还能不能被正确解析」，完全不回答「这个模型是不是还答得对」。Live-model eval snapshot 衡量文本和任务质量，它不是 CI 能倚仗的真值来源。
 
 ## 治理
 

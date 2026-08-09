@@ -14,7 +14,6 @@ _ASSETS = {
     "share.html": b"<!doctype html><title>share</title>",
     "share.js": b"console.log('share')",
     "share.css": b"body{}",
-    "md_renderer.js": b"// md",
     "scientific_renderers.js": b"// sci",
     "vendor/3Dmol-min.js": b"// 3dmol",
 }

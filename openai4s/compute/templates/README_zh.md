@@ -14,7 +14,7 @@
 ## 运行时契约
 
 - 结果必须写到 `./out/` 下面。`out/` 为空只会产生一条 warning。
-- deadline 控制相关的环境值在 source `.job_env` 之前就已读入并设为只读，job 没法用自己的变量把这些限制放宽。
+- deadline 控制相关的环境值（`OPENAI4S_JOB_TIMEOUT_S`、`OPENAI4S_HARVEST_MARGIN_S`、`OPENAI4S_TERM_GRACE_S`，以及 `OPENAI4S_SANDBOX_REMAINING_S` 与 `OPENAI4S_SANDBOX_DEADLINE_EPOCH` 二者之一）在 source `.job_env` 之前就已读入并设为只读，job 没法用自己的变量把这些限制放宽。沙箱 deadline 只有在 Host 递了值的时候才存在：没有值，看门狗就根本不上膛——这行为本身是诚实的，但不等于"deadline 永远生效"。manager 在创建沙箱时就把容器的到期时刻盖上，所以后续复用这个热容器的 job 会继承已经用掉的那部分时间。
 - workload 跑在独立的 session 和 process group 里。先 TERM，等一段 grace，再 KILL；在 stage 结果之前，wrapper 会尽力把后代进程一并停掉。
 - `.phase` 记录 `done:<rc>:<wall>` 或 `harvest_failed:<rc>:<wall>`。deadline 与 job 超时这两个 sentinel 的写入顺序，是 Host 和 provider 用来判断 job 如何结束的契约的一部分。
 - 即使发生超时，或者 workload 以非零码退出，也照样会尝试 stage 输出，好让日志和部分结果仍然能被取回。

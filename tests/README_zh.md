@@ -7,20 +7,24 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 ## 离线契约
 
 - `uv run pytest` 不能依赖真实 LLM、API key、网络、GPU、SSH 主机、Docker daemon、浏览器或实验室系统。[`conftest.py`](conftest.py) 为每个测试把 `~/.openai4s` 指向一个临时目录，并装上 fake provider 与 key。
-- 需要外部资源的测试必须挂上在 `pyproject.toml` 里注册的标记，由使用者显式选择开启；[`test_marker_policy.py`](test_marker_policy.py) 守着这条规矩。
+- 需要外部资源的测试必须挂上在 `pyproject.toml` 里注册的标记，由使用者显式选择开启；[`test_marker_policy.py`](test_marker_policy.py) 守着这条规矩。这条排除是一套机制，不是一种习惯：`addopts` 里带着 `--strict-markers` 和那串 "not external and not network and …" 表达式，所以未注册的 marker 会直接是收集期错误，而不是被悄悄跳过。
+- 凡是把某个服务替换成 stub 的测试都必须挂 `stubbed_backend`。`scripts/capture_response_schemas.py` 会装上记录器重跑这套测试，把各条 route 返回了什么冻结进 `docs/response-schemas.json`，而那份文件的全部主张就是「抓自真实响应」；这个 marker 会在该测试运行期间暂停记录器，少了它，一份编造出来的响应体就会被当成那条 route 的契约发布出去。
 - 捕获下来的输入和对字节敏感的样本放在 `fixtures/`；测试不得静默改写它们。
 - 网络、子进程、provider、时钟、UUID 与文件系统这几处边界要么被 mock，要么被限制住。唯一的例外是明确声明过、并且单独调用的 smoke 程序。
 - 跑单个模块用 `uv run pytest tests/test_kernel.py`，跑单个用例用 `uv run pytest tests/test_agent.py::test_max_turns_stop`，跑完整门禁就是 `uv run pytest`。
+- `uv run pytest` 是下限，不是门禁的全部。目录 README 检查、harness 的 `tier:pr` 场景、两道响应抓取、源码密钥扫描与浏览器套件都是各自独立、可以单独失败的 CI 作业——[`test_ci_gate_independence.py`](test_ci_gate_independence.py) 之所以存在，是因为其中四道曾经是别的作业**内部**的 step，只要有一个不相干的测试变红，它们就根本轮不到执行。
 
 ## 支持与 Smoke 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`conftest.py`](conftest.py) | 建立 import 路径，给每个测试一份独立的数据目录，配好 fake LLM 的配置与 key，用完清理 `Store`，并存放共享的 pytest fixture。 |
-| [`browser_auth.mjs`](browser_auth.mjs) | 两个浏览器测试共用的凭据获取。守护进程现在默认要求 access token，loopback 上也一样；如果测试还是直接打开 `/` 而不带凭据，每一项检查都会因为 401 失败，并且看起来像是产品坏了。它按 CLI 的同一条路径、从同一个文件读 token，并且用真实用户的方式登录——打开启动时打印的 `?token=` URL 一次，让 303 把 Cookie 设上——所以这条 bootstrap 和 Cookie 交接是被真正跑到的，而不是被绕开的。 |
+| [`conftest.py`](conftest.py) | 建立 import 路径，给每个测试一份独立的数据目录，配好 fake LLM 的配置与 key，用完清理 `Store`，并存放共享的 pytest fixture。它还会把这套 suite 本该度量、而不是从运行者那里继承来的 posture 钉死：`OPENAI4S_UNATTENDED_APPROVAL=deny`、`OPENAI4S_SECRET_STORE=plaintext`（这样没有任何测试会写进开发者的登录钥匙串）、`OPENAI4S_NOTEBOOK_REPL=0`、把 git-ignored `.env` 里可能带进来的 share 与 MCP 超时变量清空，以及把遥测 endpoint 指向 `https://127.0.0.1:1/`——最后这条不是假想中的卫生问题：曾有一个 benchmark 用例给自己授予了同意，于是每台开发机和每个 CI runner 都真的向线上 endpoint POST 了一个全新的安装 id。最后，当设置了 `OPENAI4S_CAPTURE_SCHEMAS` 时它会装上响应形状记录器，并在每个 `stubbed_backend` 测试前后暂停它。 |
+| [`browser_auth.mjs`](browser_auth.mjs) | 每个浏览器测试共用的凭据获取，四个文件都从这里 import `authenticate`。守护进程现在默认要求 access token，loopback 上也一样；如果测试还是直接打开 `/` 而不带凭据，每一项检查都会因为 401 失败，并且看起来像是产品坏了。它按 CLI 的同一条路径、从同一个文件读 token，并且用真实用户的方式登录——打开启动时打印的 `?token=` URL 一次，让 303 把 Cookie 设上——所以这条 bootstrap 和 Cookie 交接是被真正跑到的，而不是被绕开的。 |
 | [`browser_p1_controls.mjs`](browser_p1_controls.mjs) | P1-A/P1-B 的控件，跑在真实浏览器里。现有三个 `browser_*.mjs` 对这八个关键词——`before_seq`、`newest_first`、chip、profile、attachment、delegation、steer、memory——命中全为 **0**，整组只靠 43 个提交之前的一次手工走查。分页用客户端自己的 fetch helper 打真实路由来验（缺陷就在于“发到线上的是哪个 query string”，DOM 断言看不见）；其余调用真实的 render 函数进真实 DOM。夹具由测试自己创建，绝不假定开发机数据库里有什么。 |
 | [`browser_smoke.mjs`](browser_smoke.mjs) | 用真实浏览器驱动运行中的 Gateway UI 与流式交互路径。本地要和 pytest 分开调用；普通 PR CI workflow 会自动跑它。 |
-| [`scientific_renderers_smoke.cjs`](scientific_renderers_smoke.cjs) | 一个轻依赖的 Node 运行器，按契约检查 Web UI 里那些 UMD 科学 Artifact 解析器。 |
+| [`scientific_renderers_smoke.cjs`](scientific_renderers_smoke.cjs) | 一个轻依赖的 Node 运行器，按契约检查 Web UI 里那些 UMD 科学 Artifact 解析器。用 `node tests/scientific_renderers_smoke.cjs` 手动运行；没有任何 CI 作业会调用它。 |
+
+所有 `browser_*.mjs` 都不可能挂在 `uv run pytest` 下跑，它们也不会替你把任何东西拉起来：它们需要一个真实的浏览器引擎，以及一个已经在 `127.0.0.1:8760` 上服务的 daemon。驱动用 `npm install --no-save --ignore-scripts playwright@1.54.1` 和 `npx playwright install <engine>` 装；如果默认端口已经被你在用的 daemon 占着，用 `OPENAI4S_BROWSER_URL` 把它们指到别处。CI 里，工作台走查、admission fault 用例与 P1 控件只在 Chromium 上跑——要的是深度而不是广度——而 [`browser_matrix.mjs`](browser_matrix.mjs) 三个引擎都跑。
 
 ## 测试模块
 
@@ -146,6 +150,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_kernel_sandbox.py`](test_kernel_sandbox.py) | Seatbelt 与 bubblewrap 的命令是怎么拼出来的，以及各个模式的行为。`auto` 会在带可见告警的前提下退化成没有沙箱；`enforce` 在后端缺失或自检失败时失败即拒绝；无效的模式绝不会被悄悄降级成更弱的那个。 |
 | [`test_kernel_supervisor.py`](test_kernel_supervisor.py) | 不对底下协议作任何假设的 worker 生命周期。反复出现的主题是“精确”：过期的 lease 中断不了、杀不掉、重启不了、也放弃不了一个新的 worker；一个已死的替身会被拒绝，而不会连累健康的当前 worker。 |
 | [`test_lazy_kernel.py`](test_lazy_kernel.py) | 关于 CLI 一次性内核所有权的四个测试。从不跑代码的上下文就从不创建 worker；bootstrap 失败也不会把一个坏掉的 worker 发布出去。 |
+| [`test_llm_anthropic_streaming.py`](test_llm_anthropic_streaming.py) | Anthropic 的 SSE 路径，以及让"加这条路径"这件事本身安全的那条性质：流式与阻塞必须规范化出同一个 reply。`wire_state` 会被原样当作下一轮的 assistant 内容回放，所以重建逻辑不认识的 block——`redacted_thinking`、server-tool block——必须完整存活，而不是塌缩成一个空 text 块：那会让**下一次**请求失败，而不是产生它的这一次。回退边界也在两个方向上被钉住：流在第一个事件之前就死掉，会以不带 `stream` 的请求体退回阻塞式；已经吐过增量之后再死，则直接抛出而不重放。 |
 | [`test_llm_anthropic_tool_calls.py`](test_llm_anthropic_tool_calls.py) | Anthropic Messages 的 Tool 调用走一轮编解码往返。并行的结果必须回到同一条相邻的 user 消息里——朴素地重建历史，恰恰就错在这一点上。 |
 | [`test_llm_capabilities.py`](test_llm_capabilities.py) | Provider 的 capability 目录与 token 记账。用量规范化能容忍缺失或离谱的计数器；成本只由显式配置的价格算出，绝不靠猜。 |
 | [`test_llm_gemini_tool_calls.py`](test_llm_gemini_tool_calls.py) | Gemini `generateContent`，以及它别扭的那个角落。wire 没给调用 ID 时会生成一个稳定的本地 ID，但这个 ID 绝不能回放给 Gemini；不透明的 part metadata（包括签名）必须原样回放在原来的 part 上。 |

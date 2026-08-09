@@ -13,7 +13,7 @@ wire adapter 是 [`../client.py`](../client.py) 之下的叶子模块。endpoint
 | 文件 | 职责 |
 | --- | --- |
 | [`__init__.py`](./__init__.py) | 把每个 wire 名字（`openai`、`anthropic`、`gemini`、`responses`）映射到对应的 adapter 函数。这张内部 dispatch 表就是本模块的全部内容。 |
-| [`anthropic.py`](./anthropic.py) | Anthropic Messages 这条 wire，只有非流式一条路径。它把 system 消息提到顶层 `system` 字段，应用原生工具与 tool choice，再把返回的 content block 读成文本、标准化的工具调用和 usage。 |
+| [`anthropic.py`](./anthropic.py) | Anthropic Messages 这条 wire。它把 system 消息提到顶层 `system` 字段，应用原生工具与 tool choice，再把返回的 content block 读成文本、标准化的工具调用和 usage。调用方传了 delta 回调时走流式，从事件序列里重建 content block；只有流在吐出第一个事件之前就失败，才退回阻塞式请求。不认识的 content block 原样透传，因为 `wire_state` 会被当作下一轮的 assistant 内容回放。 |
 | [`gemini.py`](./gemini.py) | 构造 Gemini `generateContent` 请求，映射 system 指令、历史消息和工具声明。返回后取第一个 candidate，从中解析出文本、function call 和 usage。 |
 | [`openai.py`](./openai.py) | OpenAI-compatible Chat Completions 这条 wire。调用方传了 delta 回调时逐 token 流式输出；流在吐出任何内容之前就失败，会退回阻塞式请求重发一次；已经吐过 token 之后再出错，就直接抛出，不再回退。 |
 | [`responses.py`](./responses.py) | OpenAI Responses 这条 wire，始终走 SSE。它负责 input 与工具的映射，从 output item 事件里拼出文本和 function call 参数；流在 `response.completed` 之前结束即视为失败。 |

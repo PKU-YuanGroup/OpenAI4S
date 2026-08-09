@@ -14,7 +14,7 @@
 ## Runtime contract
 
 - Results have to be written under `./out/`. An empty `out/` is only a warning.
-- The deadline-control environment values are read and made read-only before `.job_env` is sourced, so a job cannot widen those limits through its own variables.
+- The deadline-control environment values (`OPENAI4S_JOB_TIMEOUT_S`, `OPENAI4S_HARVEST_MARGIN_S`, `OPENAI4S_TERM_GRACE_S`, and either `OPENAI4S_SANDBOX_REMAINING_S` or `OPENAI4S_SANDBOX_DEADLINE_EPOCH`) are read and made read-only before `.job_env` is sourced, so a job cannot widen those limits through its own variables. The sandbox deadline exists only when the host supplies one: with no value the watchdog is simply not armed, which is the honest behaviour but not the same thing as "a deadline is always in force". The manager stamps the container's expiry when it creates the sandbox, so a later job reusing a warm container inherits the time already spent.
 - The workload gets its own session and process group. TERM, then a grace period, then KILL, and the wrapper tries to stop the descendants before results are staged.
 - `.phase` records either `done:<rc>:<wall>` or `harvest_failed:<rc>:<wall>`. The order in which the deadline and job-timeout sentinels are written is part of the contract the host and provider use to classify how a job ended.
 - Output staging is attempted even after a timeout or a non-zero workload exit, so logs and partial results can still be harvested.

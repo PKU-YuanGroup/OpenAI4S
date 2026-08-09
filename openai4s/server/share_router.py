@@ -38,7 +38,6 @@ _STATIC_WHITELIST = frozenset(
     {
         "share.js",
         "share.css",
-        "md_renderer.js",
         "scientific_renderers.js",
         "vendor/3Dmol-min.js",
     }

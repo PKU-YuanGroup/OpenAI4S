@@ -11,9 +11,14 @@ lands differently from a failure on the first.
 
 Everything here is versioned, stdlib-only, and outside the production import
 graph. The generic runner validates the Harness's own schema/event/fault loop
-and deliberately does not import the production runtime; `characterize.py` and
-the action-routing eval are the current exceptions, and they reach selected
-production entry points only from behind fakes.
+and deliberately does not import the production runtime. Three files are the
+current exceptions, and they are exceptions in two different ways:
+`characterize.py` drives selected production entry points from behind stdlib
+`unittest.mock` fakes, while the action-routing and retrosynthesis-backend
+evals call a production function on recorded input — the router in
+`openai4s/agent/actions.py`, the response normalizer in the bundled
+retrosynthesis Skill — which needs no fake because there is no live boundary to
+stand in for.
 
 The deterministic `tier:pr` scenarios are a required Harness self-contract gate. The
 pytest suite also exercises the CLI gate in-process
@@ -62,7 +67,7 @@ Rule of thumb:
 | [`scenarios/`](scenarios/) | One JSON file per scenario: the prompt, the scripted provider steps to reply with, the faults to inject, the tags that place it in a tier, and the outcome to expect. Fixture and permission metadata is validated but not yet executed, so these are still not end-to-end Agent/Gateway runs. |
 | [`providers/`](providers/) | Offline stand-ins for the platform boundaries a run would otherwise cross: model, compute, endpoint, lab. |
 | [`golden_traces/`](golden_traces/) | Reviewed reference trajectories, kept for exact comparison and for reviewing drift that turns out to be intentional. They are data to read, not replay to run. |
-| [`evals/`](evals/) | Offline eval fixtures and the code that scores them, including the deterministic action-routing quality and contract evaluation. |
+| [`evals/`](evals/) | Offline eval fixtures and the code that scores them: the deterministic action-routing quality and contract evaluation, and the retrosynthesis backend replay, which scores recorded external-model responses through the production normalizer without loading a model weight. |
 | [`smoke/`](smoke/) | Runtime smoke programs that check a platform or an external resource. Nothing here runs unless you opt in. |
 
 ## Ground rules
@@ -115,13 +120,17 @@ uv run python -m harness.cli characterize --write  # regenerate after review
 
 ## Trace assets are not interchangeable
 
-Three kinds of recording live near each other here, and they answer different
+Four kinds of recording live near each other here, and they answer different
 questions. A canonical run trace is the target record for scripted model,
 action, permission, and lifecycle events, and the thing deterministic contract
 comparison reads. A host-call tape stores successful host-call results so a
 notebook can be replayed offline; it is neither a full trajectory nor a
-crash-resume record. A live-model eval snapshot measures prose and task
-quality, and it is not a source of truth CI can rely on.
+crash-resume record. A backend response tape — `evals/retrosynthesis_backend_cases.json`
+is the one that exists — is a recorded external-model reply replayed through
+the production normalizer: it says whether that response is still parsed
+correctly, and nothing about whether the model is still right. A live-model
+eval snapshot measures prose and task quality, and it is not a source of truth
+CI can rely on.
 
 ## Governance
 
