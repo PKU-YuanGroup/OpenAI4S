@@ -254,6 +254,14 @@ jobs:
       - name: Run the offline suite (no secrets, no network, no hardware)
         # addopts already passes -q; a second -q would suppress the summary line.
         run: uv run pytest
+      # After the suite, not before it: the pytest gate must never sit behind
+      # a command that can fail it (tests/test_ci_gate_independence.py). The
+      # importorskip guards make a missing science stack a *silent* skip, and
+      # every matrix entry above installs it on purpose — so assert it really
+      # landed, or a lockfile/extras drift turns this job green while it
+      # validates nothing the .dmg ships.
+      - name: Assert the science stack actually installed
+        run: uv run python -c "import matplotlib, pandas"
 
   # Three gates that used to be steps in `test`, after `pytest`. A step can only
   # run when every step before it passed, so all three were unreachable whenever

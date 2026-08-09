@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import re
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Protocol
+from typing import Any, Callable, Iterable, Iterator, Protocol
 
 PAST_TENSE_STARTERS = frozenset(
     {
@@ -14,6 +15,7 @@ PAST_TENSE_STARTERS = frozenset(
         "found",
         "made",
         "ran",
+        "reran",
         "wrote",
         "read",
         "sent",
@@ -139,7 +141,20 @@ _FILE_CLAIM_KEYS = frozenset(
 _ID_CLAIM_KEYS = frozenset({"artifact", "artifacts"})
 
 _FILE_EXT = re.compile(r"\.([A-Za-z0-9]{1,8})$")
-_NUMBER_TOKEN = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?%?")
+#: A standalone number in prose.  The lookbehind refuses digits glued to a
+#: word or hyphen ("f1", "top_10", "top-5", "v1.2") — those are identifier
+#: fragments, not stated values — and comma groups keep "1,500" one token.
+_NUMBER_TOKEN = re.compile(
+    r"(?<![\w.\-])[-+]?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE][-+]?\d+)?%?"
+)
+#: A number introduced as a bound rather than a statement of the metric:
+#: "p < 0.05", "fewer than 100", "short of the 0.95 target".  Matching is
+#: anchored so "over" fires but "moreover" does not.
+_COMPARATOR_BEFORE = re.compile(
+    r"(?:<|>|≤|≥|\b(?:than|least|most|under|over|above|below|within|beyond"
+    r"|exceed(?:s|ed)?|up to|short of)\b)[^0-9a-z]*$"
+)
+_THRESHOLD_AFTER = ("target", "threshold", "cutoff", "goal", "cap", "limit", "budget")
 _CLAIM_WALK_MAX_NODES = 512
 _CLAIM_WALK_MAX_DEPTH = 6
 _SCAN_MAX_ENTRIES = 4096
@@ -163,13 +178,17 @@ class SubmissionEvidence:
 
 
 class EvidenceStore(Protocol):
-    """The two read-only queries reconciliation needs from the ``Store``."""
+    """The two read-only queries reconciliation needs from the ``Store``.
 
-    def list_artifacts(self, filters: dict | None = None) -> list[dict]: ...
+    Deliberately the *narrow* ones: the wide ``list_artifacts``/``list_cells``
+    reads join, sort, and materialize every cell's code and stdout — all
+    discarded here, on a call that runs while the kernel worker blocks on
+    the host-call lock.
+    """
 
-    def list_cells(
-        self, root_frame_id: str, *, branch_id: str | None = None
-    ) -> list[dict]: ...
+    def list_artifact_names(self) -> list[dict]: ...
+
+    def list_cell_outputs(self, root_frame_id: str) -> list[dict]: ...
 
 
 def gather_submission_evidence(
@@ -182,27 +201,25 @@ def gather_submission_evidence(
     Artifacts are matched store-wide rather than per-session on purpose:
     a delegation child submits through its own frame while its files may be
     registered under the parent's scope, and a looser evidence set can only
-    let an honest claim through, never refuse one.  Store failures degrade to
-    an empty set — missing evidence must never crash the completion path.
+    let an honest claim through, never refuse one.  Store failures propagate
+    — the caller (``CompletionService.submit``) turns a raising evidence
+    provider into the legacy unreconciled accept.  Swallowing them here and
+    returning an *empty* set inverted that degradation: an artifact-ID claim
+    is backable only by the store, so a failing store refused every honest
+    ID claim instead of accepting it.
     """
 
     names: set[str] = set()
-    try:
-        for row in store.list_artifacts() or []:
-            for key in ("filename", "artifact_id", "latest_version_id"):
-                _add_known_name(names, row.get(key))
-    except Exception:
-        pass
+    for row in store.list_artifact_names() or []:
+        for key in ("filename", "artifact_id", "latest_version_id"):
+            _add_known_name(names, row.get(key))
     if root_frame_id:
-        try:
-            for cell in store.list_cells(root_frame_id) or []:
-                for key in ("files_written", "figures"):
-                    values = cell.get(key) or []
-                    if isinstance(values, (list, tuple)):
-                        for value in values:
-                            _add_known_name(names, value)
-        except Exception:
-            pass
+        for cell in store.list_cell_outputs(root_frame_id) or []:
+            for key in ("files_written", "figures"):
+                values = cell.get(key) or []
+                if isinstance(values, (list, tuple)):
+                    for value in values:
+                        _add_known_name(names, value)
     return SubmissionEvidence(frozenset(names), tuple(search_roots))
 
 
@@ -240,9 +257,13 @@ def _claim_strings(value: Any) -> Iterator[str]:
                 yield item.strip()
     elif isinstance(value, dict):
         # Both shapes occur in the wild: {"report": "report.md"} and
-        # {"report.md": "the report"}; the file-shape filter disambiguates.
+        # {"report.md": "the report"}.  Keys are claims only when they are
+        # file-shaped themselves: under the ID keys any bare word passes the
+        # identifier filter, so yielding descriptive labels ({"heatmap":
+        # "heatmap.svg"}) turned the label into a must-resolve artifact ID
+        # and refused honest submissions for their own captions.
         for key, item in value.items():
-            if isinstance(key, str):
+            if isinstance(key, str) and _looks_like_file(key.strip()):
                 yield key.strip()
             if isinstance(item, str):
                 yield item.strip()
@@ -253,13 +274,23 @@ def collect_file_claims(output: Any) -> list[tuple[str, str]]:
 
     claims: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    stack: list[tuple[Any, int]] = [(output, 0)]
+    # Breadth-first over container nodes only.  The budget exists to bound
+    # hostile shapes, not to be a bypass: the old LIFO walk aborted wholesale
+    # on the depth or node cap, so one deep decoy branch (or a long list of
+    # leaf strings) exhausted the budget before shallow, not-yet-visited
+    # produce keys were reached and their fabricated claims went unchecked.
+    # BFS visits shallow claims first, leaves cost no budget, and the depth
+    # cap prunes one subtree instead of ending the walk.
+    queue: deque[tuple[Any, int]] = deque([(output, 0)])
     nodes = 0
-    while stack:
-        node, depth = stack.pop()
+    while queue:
+        node, depth = queue.popleft()
         nodes += 1
-        if nodes > _CLAIM_WALK_MAX_NODES or depth > _CLAIM_WALK_MAX_DEPTH:
+        if nodes > _CLAIM_WALK_MAX_NODES:
             break
+        if depth > _CLAIM_WALK_MAX_DEPTH:
+            continue
+        children: Iterable[Any] = ()
         if isinstance(node, dict):
             for key, value in node.items():
                 key_text = key.lower() if isinstance(key, str) else ""
@@ -272,10 +303,12 @@ def collect_file_claims(output: Any) -> list[tuple[str, str]]:
                         if (is_file or is_id) and (key_text, claim) not in seen:
                             seen.add((key_text, claim))
                             claims.append((key_text, claim))
-                stack.append((value, depth + 1))
+            children = node.values()
         elif isinstance(node, (list, tuple)):
-            for value in node:
-                stack.append((value, depth + 1))
+            children = node
+        for value in children:
+            if isinstance(value, (dict, list, tuple)):
+                queue.append((value, depth + 1))
     return claims
 
 
@@ -287,6 +320,12 @@ def _scan_basenames(root: Path) -> frozenset[str]:
     try:
         base_depth = len(root.parts)
         for dirpath, dirnames, filenames in os.walk(root):
+            # Checked per directory, not only per file: a directory-heavy,
+            # file-light tree never tripped the in-loop file check and was
+            # walked in full while the submitting cell blocked on the host
+            # RPC lock.
+            if entries >= _SCAN_MAX_ENTRIES:
+                return frozenset(names)
             depth = len(Path(dirpath).parts) - base_depth
             if depth >= _SCAN_MAX_DEPTH:
                 dirnames[:] = []
@@ -344,21 +383,38 @@ def _metric_key_pattern(key: str) -> re.Pattern[str] | None:
     )
 
 
-def _claimed_number_matches(token: str, actual: float) -> bool:
-    """Whether a number written in prose is the metric at the written precision."""
+def _claim_candidates(token: str) -> list[tuple[float, float]]:
+    """``(value, written_scale)`` readings of a number token, [] if unparsable.
 
-    text = token[:-1] if token.endswith("%") else token
+    A percent token reads both ways ("93%" may state 93.0 or 0.93); the scale
+    records how much smaller the *fraction* reading is than the written text,
+    so written-precision tolerances can be applied in the right unit.
+    """
+
+    text = (token[:-1] if token.endswith("%") else token).replace(",", "")
     try:
         claimed = float(text)
     except ValueError:
-        return False
-    candidates = [claimed, claimed / 100.0] if token.endswith("%") else [claimed]
-    for value in candidates:
+        return []
+    if token.endswith("%"):
+        return [(claimed, 1.0), (claimed / 100.0, 100.0)]
+    return [(claimed, 1.0)]
+
+
+def _claimed_number_matches(token: str, actual: float) -> bool:
+    """Whether a number written in prose is the metric at the written precision."""
+
+    text = (token[:-1] if token.endswith("%") else token).replace(",", "")
+    for value, written_scale in _claim_candidates(token):
         if value == actual:
             return True
-        if "." in text and "e" not in text.lower():
-            decimals = len(text.rsplit(".", 1)[1])
-            if abs(actual - value) <= 10.0**-decimals:
+        if "e" not in text.lower():
+            decimals = len(text.rsplit(".", 1)[1]) if "." in text else 0
+            # The tolerance lives in the token's own unit: "99.9%" states one
+            # decimal of a *percentage*, i.e. ±0.001 of the fraction reading.
+            # Unscaled, the same tolerance was ±0.1 and accepted 99.9% as a
+            # restatement of 0.93.
+            if abs(actual - value) <= 10.0**-decimals / written_scale:
                 return True
         scale = max(abs(value), abs(actual))
         if scale and abs(value - actual) / scale <= 0.005:
@@ -366,13 +422,54 @@ def _claimed_number_matches(token: str, actual: float) -> bool:
     return False
 
 
+def _is_near_miss(token: str, actual: float) -> bool:
+    """Whether a non-matching number plausibly *restates* this metric.
+
+    The motivating incident is a same-quantity wrong value (summary 2.4495,
+    metric 2.3664): same sign, same order of magnitude.  A count or epoch in
+    the window ("over the 100 epochs" near a 0.02 loss) is a different
+    quantity, not a contradiction — requiring every nearby number to match
+    refused honest prose on the loop's only completion signal.
+    """
+
+    for value, _scale in _claim_candidates(token):
+        if value == 0.0 and actual == 0.0:
+            return True
+        if value == 0.0 or actual == 0.0:
+            continue
+        if (value > 0) != (actual > 0):
+            continue
+        ratio = abs(value) / abs(actual)
+        if 1 / 3 <= ratio <= 3:
+            return True
+    return False
+
+
+def _in_comparator_context(lowered: str, token: re.Match[str]) -> bool:
+    """A number introduced as a bound, not a statement of the metric.
+
+    Exclusion fails open: a skipped token can only let a submission pass,
+    never refuse one.
+    """
+
+    before = lowered[max(0, token.start() - 16) : token.start()]
+    if _COMPARATOR_BEFORE.search(before):
+        return True
+    after = lowered[token.end() : token.end() + 16].lstrip(" \t:—-")
+    return any(after.startswith(marker) for marker in _THRESHOLD_AFTER)
+
+
 def check_summary_metrics(output: Any) -> list[str]:
     """Contradictions between ``output.summary`` prose and ``output.metrics``.
 
-    For each metric key that appears in the summary with numbers nearby, at
-    least one nearby number must equal the metric at its written precision.
-    A key the summary never mentions, or mentions without numbers, is fine —
-    only a stated, wrong value is a contradiction.
+    A contradiction requires a nearby number that plausibly *restates* the
+    metric (same sign and order of magnitude) while no nearby number matches
+    it at its written precision.  Digits inside the key's own mention
+    ("top 10 accuracy"), identifier fragments ("f1", "top-5"), bounds
+    ("p < 0.05", "short of the 0.95 target"), and different-quantity numbers
+    ("over the 100 epochs" near a loss) are not stated values — every
+    exclusion fails open, because a false refusal here blocks the loop's
+    only completion signal.
     """
 
     if not isinstance(output, dict):
@@ -383,6 +480,7 @@ def check_summary_metrics(output: Any) -> list[str]:
         return []
     problems: list[str] = []
     lowered = summary.lower()
+    tokens = list(_NUMBER_TOKEN.finditer(lowered))
     for key, actual in metrics.items():
         if not isinstance(key, str):
             continue
@@ -391,17 +489,34 @@ def check_summary_metrics(output: Any) -> list[str]:
         pattern = _metric_key_pattern(key)
         if pattern is None:
             continue
-        nearby: list[str] = []
-        for match in pattern.finditer(lowered):
-            window = lowered[max(0, match.start() - 24) : match.end() + 48]
-            nearby.extend(item.group(0) for item in _NUMBER_TOKEN.finditer(window))
+        spans = [(m.start(), m.end()) for m in pattern.finditer(lowered)]
+        if not spans:
+            continue
+        nearby = [
+            token
+            for token in tokens
+            if any(
+                start - 24 <= token.start() and token.end() <= end + 48
+                for start, end in spans
+            )
+            and not any(
+                token.start() < end and token.end() > start for start, end in spans
+            )
+            and not _in_comparator_context(lowered, token)
+        ]
         if not nearby:
             continue
-        if not any(_claimed_number_matches(token, float(actual)) for token in nearby):
-            stated = ", ".join(dict.fromkeys(nearby))
-            problems.append(
-                f"summary states {key!r} as {stated} but metrics[{key!r}] = {actual}"
-            )
+        actual_value = float(actual)
+        texts = [token.group(0) for token in nearby]
+        if any(_claimed_number_matches(text, actual_value) for text in texts):
+            continue
+        misses = [text for text in texts if _is_near_miss(text, actual_value)]
+        if not misses:
+            continue
+        stated = ", ".join(dict.fromkeys(misses))
+        problems.append(
+            f"summary states {key!r} as {stated} but metrics[{key!r}] = {actual}"
+        )
     return problems
 
 
@@ -474,14 +589,25 @@ class CompletionService:
                 return {"error": error}
 
         if self._evidence is not None:
-            try:
-                evidence = self._evidence()
-            except Exception:
-                # Evidence gathering must never block completion outright: a
-                # broken provider degrades to the legacy unreconciled accept
-                # rather than refusing every submission (which would deadlock
-                # the only completion signal the loop accepts).
-                evidence = None
+            # The provider is consulted only when the output actually names
+            # produced files: claim collection and the summary/metrics check
+            # are pure functions of the spec, so a claim-less submission
+            # ({"output": {"answer": 42}}) must not pay the store sweep —
+            # this path runs while the kernel worker blocks on the host-call
+            # lock.  (collect_file_claims runs again inside reconciliation;
+            # it is bounded and walk-only, far cheaper than the queries it
+            # gates.)
+            evidence: SubmissionEvidence | None = SubmissionEvidence()
+            if collect_file_claims(spec.get("output")):
+                try:
+                    evidence = self._evidence()
+                except Exception:
+                    # Evidence gathering must never block completion
+                    # outright: a broken provider degrades to the legacy
+                    # unreconciled accept rather than refusing every
+                    # submission (which would deadlock the only completion
+                    # signal the loop accepts).
+                    evidence = None
             if evidence is not None:
                 error = reconcile_submission_claims(spec, evidence)
                 if error:

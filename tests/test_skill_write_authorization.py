@@ -158,9 +158,16 @@ def test_a_legitimate_cwd_is_still_created():
         root = pathlib.Path(directory) / "jobs"
         root.mkdir()
         manager = JobManager(root=root)
-        result = manager.submit(kind="bash", command="true", cwd="run/one")
-        assert not result.get("error"), result
-        assert (root / "run" / "one").is_dir()
+        try:
+            result = manager.submit(kind="bash", command="true", cwd="run/one")
+            assert not result.get("error"), result
+            assert (root / "run" / "one").is_dir()
+        finally:
+            # The submitted job runs on a worker thread that keeps writing its
+            # status/log files under ``root``; close() stops it and waits, or
+            # TemporaryDirectory cleanup races the writer and dies with
+            # "Directory not empty".
+            manager.close()
 
 
 def test_an_uncreatable_directory_is_reported_not_raised():
@@ -174,5 +181,8 @@ def test_an_uncreatable_directory_is_reported_not_raised():
         blocker.write_text("I am a file, not a directory\n", encoding="utf-8")
 
         manager = JobManager(root=root)
-        result = manager.submit(kind="bash", command="true", cwd="blocked/under")
-        assert isinstance(result, dict) and result.get("error"), result
+        try:
+            result = manager.submit(kind="bash", command="true", cwd="blocked/under")
+            assert isinstance(result, dict) and result.get("error"), result
+        finally:
+            manager.close()

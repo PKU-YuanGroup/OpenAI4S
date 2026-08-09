@@ -496,3 +496,98 @@ def test_web_finalize_accepts_execution_claims_after_a_real_cell_ran():
     )
     assert outcome.history_messages[0]["is_error"] is False
     assert outcome.completion is not None
+
+
+def test_web_refused_cell_result_never_counts_as_execution_evidence():
+    """The Web sibling of the safety-gate contract.
+
+    The gateway's ``execute_cell`` returns its full outcome dict whose
+    ``executed`` bit is False for safety-refused / runtime-unavailable soft
+    errors — result dicts byte-identical to real failures.  Counting them let
+    a Web turn whose only cell was refused finalize with fabricated
+    execution claims.
+    """
+    sent = []
+    events = WebEventSink(sent.append, "frame-1", [], lambda usage: None)
+
+    class Dispatcher:
+        last_output = None
+
+    executor = WebActionExecutor(
+        dispatcher=lambda: Dispatcher(),
+        apply_pending=lambda: None,
+        execute_cell=lambda action: {
+            "result": {"stdout": "", "stderr": "", "error": "refused"},
+            "executed": False,
+        },
+        events=events,
+        prose_nudge="nudge",
+        explore_nudge="explore",
+    )
+    state = RunState([])
+    cell = CodeCell("python", "import os\n")
+    executor.execute(cell, ModelReply(content="```python\nimport os\n```"), state)
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+    call = _call(_arguments(completion_bullets=["Computed the requested value"]))
+    outcome = executor.execute(
+        FinalizeAction(call), ModelReply(tool_calls=(call,)), state
+    )
+    assert outcome.history_messages[0]["is_error"] is True
+    assert outcome.completion is None
+
+
+def test_refused_native_batch_never_counts_as_execution_evidence():
+    """A batch whose every call was refused without dispatch is not evidence.
+
+    Parse/validation/limit refusals are answered by ``execute_native_batch``
+    itself — no tool runs.  Counting declarations let one malformed call back
+    a fabricated finalize.
+    """
+    bad = NativeToolCall(
+        id="t-1",
+        wire_id="wire-t-1",
+        name="read_file",
+        ordinal=0,
+        raw_arguments="{not json",
+        arguments=None,
+        parse_error="arguments are not valid JSON",
+    )
+
+    class NeverInvokedDispatcher:
+        last_output = None
+
+        def execute_host_call(self, *args, **kwargs):  # pragma: no cover
+            raise AssertionError("a refused call must not reach the dispatcher")
+
+    local = LocalActionExecutor(
+        _NeverKernel(),
+        NeverInvokedDispatcher(),
+        lambda code, messages: None,
+        lambda code: {"error": "R must not start"},
+    )
+    state = RunState([])
+    local.execute(NativeToolBatch((bad,)), ModelReply(tool_calls=(bad,)), state)
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+    call = _call(_arguments(completion_bullets=["Queried the database"]))
+    refused = local.execute(FinalizeAction(call), ModelReply(tool_calls=(call,)), state)
+    assert refused.history_messages[0]["is_error"] is True
+    assert refused.completion is None
+
+
+def test_cli_r_unavailable_soft_error_never_counts_as_execution_evidence():
+    """The R runner's spawn-failure dict carries no "stdout": nothing ran."""
+    executor = LocalActionExecutor(
+        _NeverKernel(),
+        _NeverDispatcher(),
+        lambda code, messages: None,
+        lambda code: {"error": "R kernel unavailable: Rscript not found"},
+    )
+    state = RunState([])
+    cell = CodeCell("r", "summary(1:3)\n")
+    outcome = executor.execute(
+        cell, ModelReply(content="```r\nsummary(1:3)\n```"), state
+    )
+    assert "R kernel unavailable" in str(outcome.observation)
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}

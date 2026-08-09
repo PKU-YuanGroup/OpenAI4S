@@ -6400,6 +6400,9 @@ class SessionRunner:
                 action_ledger.current_group_id if action_ledger else None
             )
             try:
+                # The full outcome (not just ["result"]): the executor needs
+                # the "executed" bit to keep refused cells out of the
+                # finalize-evidence ledger, and unwraps "result" itself.
                 return self._execute_and_log(
                     st,
                     action.code,
@@ -6407,7 +6410,7 @@ class SessionRunner:
                     emit,
                     stream=True,
                     language=action.language,
-                )["result"]
+                )
             finally:
                 st.active_action_group_id = None
 
@@ -6793,6 +6796,11 @@ class SessionRunner:
             "figures": executed.capture.figures,
             "files_written": executed.capture.files_written,
             "saved": executed.capture.artifacts,
+            # Whether a kernel really ran the cell (False for safety-refused /
+            # runtime-unavailable soft errors, whose result dict is identical
+            # to a real failure).  The agent executor's evidence ledger keys
+            # off this.
+            "executed": executed.executed,
         }
 
     def _emit_artifact_step(
@@ -12415,16 +12423,20 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
             os.environ["OPENAI4S_TAVILY_API_KEY"] = _tav
     except Exception:  # noqa: BLE001
         pass
-    _seed_example_project(cfg)
-    _seed_example_connector(cfg)
-    handler = make_handler(cfg, hub, runner)
     try:
+        _seed_example_project(cfg)
+        _seed_example_connector(cfg)
+        handler = make_handler(cfg, hub, runner)
         httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
-    except OSError:
-        # The bind is the last step, and by now the runner has live resources
-        # (recovery sweeper, coordinator). A caller that survives the failure —
-        # the CLI's port-collision message, an embedder retrying another port —
-        # must not inherit them as orphans.
+    except BaseException:
+        # By this point the runner has live resources (recovery sweeper,
+        # coordinator).  Every raise site after its creation is covered —
+        # the seeds and make_handler can fail on a locked/corrupt store or an
+        # unwritable data dir, not just the bind at the end — because a
+        # caller that survives the failure (the CLI's port-collision message,
+        # an embedder retrying another port) must not inherit them as
+        # orphans.  ``runner.close()`` is idempotent, so the bind path's
+        # server_close() closing it again is safe.
         runner.close()
         raise
     httpd.daemon_threads = True
@@ -12540,17 +12552,30 @@ def _example_session_frame(cfg: Config) -> dict[str, Any] | None:
     return None
 
 
+def run_server(httpd: ThreadingHTTPServer) -> None:
+    """Serve ``httpd`` until KeyboardInterrupt, then tear everything down.
+
+    The one blocking service loop.  ``serve_app`` and the CLI's
+    ``openai4s serve`` both drive it, so a lifecycle fix (teardown ordering,
+    a drain, a close timeout) cannot land on one path and silently miss the
+    other.  ``server_close`` is what tears down the runner and jobs, not just
+    the socket; ``shutdown`` is a no-op after ``serve_forever`` has already
+    returned, and stops a loop another thread may be running.
+    """
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def serve_app(cfg: Config | None = None, *, block: bool = True) -> ThreadingHTTPServer:
     cfg = cfg or get_config()
     httpd = build_app_server(cfg)
     if block:
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            httpd.shutdown()
-            httpd.server_close()
+        run_server(httpd)
     else:
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
@@ -12924,10 +12949,66 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         source_kind="message",
         source_id=demo_user_message["message_id"],
     )
+    # One row per demo cell: its source plus, where the cell has a
+    # user-visible deliverable, how to recognize it in the artifact store and
+    # the success line to render. The execution loop and the material lines
+    # both derive from this table — the cell number in each fallback comes
+    # from the same enumeration — so inserting or reordering a demo cell
+    # cannot leave the message citing the wrong cell, and a cell's expected
+    # artifact lives on the same row as the cell that writes it.
+    demo_plan: tuple[tuple[str, dict[str, Any] | None], ...] = (
+        (_DEMO_UNIPROT, None),
+        (_DEMO_MCP, None),
+        (
+            _DEMO_PLOT,
+            {
+                # Any .png, not an exact name: the figure filename carries the
+                # producing cell's index. If _DEMO_PLOT ever exports another
+                # format, update this predicate on the same row.
+                "produced": lambda names: any(
+                    str(name or "").endswith(".png") for name in names
+                ),
+                "line": "- **hydropathy figure (PNG)** — Kyte-Doolittle "
+                "profile of the reference sequence\n",
+                "label": "hydropathy figure",
+            },
+        ),
+        (
+            _DEMO_CSV,
+            {
+                "filename": "family_biochemistry.csv",
+                "line": "- **family_biochemistry.csv** — per-protein length "
+                "/ MW / pI / GRAVY / % identity (Biopython)\n",
+                "label": "biochemistry table",
+            },
+        ),
+        (
+            _DEMO_PDB,
+            {
+                "filename": "nif3_structure.pdb",
+                "line": "- **nif3_structure.pdb** — real RCSB structure "
+                "(opens in the 3Dmol viewer)\n",
+                # Bespoke fallback: a missing structure is a deliberate
+                # skip (Cell 5 writes it only on a successful live RCSB
+                # download), not a crash to send the reader hunting for.
+                "missing": "- _3D structure_ — skipped this run: the RCSB "
+                "download was unreachable (no placeholder is ever "
+                "substituted; see nif3_report.md)\n",
+            },
+        ),
+        (
+            _DEMO_MD,
+            {
+                "filename": "nif3_report.md",
+                "line": "- **nif3_report.md** — reproducible summary with "
+                "data provenance\n",
+                "label": "summary report",
+            },
+        ),
+    )
     cell_failures: list[str] = []
-    demo_cells = (_DEMO_UNIPROT, _DEMO_MCP, _DEMO_PLOT, _DEMO_CSV, _DEMO_PDB, _DEMO_MD)
-    for index, code in enumerate(demo_cells, start=1):
-        label = f"cell {index}/{len(demo_cells)}"
+    for index, (code, _material) in enumerate(demo_plan, start=1):
+        label = f"cell {index}/{len(demo_plan)}"
         try:
             outcome = runner.run_repl(fid, "proj_example", code)
         except Exception as exc:  # noqa: BLE001
@@ -12941,46 +13022,46 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
             # that one line is what the summary message can honestly cite.
             summary_line = str(error).strip().splitlines()[-1]
             cell_failures.append(f"{label}: {summary_line}")
-    # Describe only the materials that were actually produced. Every deliverable
-    # is conditional in practice — Cell 5's structure needs a live RCSB
-    # download, and Cells 3/4/6 need optional science libraries the lightweight
-    # install does not ship (matplotlib, Biopython, pandas) — so branch every
-    # line on the artifact store rather than over-claiming any of them.
+        elif (isinstance(outcome, dict) and outcome.get("status") == "cancelled") or (
+            cell or {}
+        ).get("status") == "interrupted":
+            # ``run_repl`` reports Stop/shutdown/watchdog interrupts as a
+            # cancelled run or an interrupted cell with ``error`` None —
+            # treating those as successes reopened the all-green "Done —
+            # every value is real" header over cells that never finished.
+            cell_failures.append(f"{label}: interrupted before completion")
+    # Describe only the materials that were actually produced. Every
+    # deliverable is conditional in practice — the structure needs a live
+    # RCSB download, the figure/table/report need optional science libraries
+    # the lightweight install does not ship (matplotlib, Biopython, pandas) —
+    # so every line branches on the artifact store rather than over-claiming.
     _produced = {
         a.get("filename") for a in store.list_artifacts({"root_frame_id": fid})
     }
-    _figure_line = (
-        "- **hydropathy figure (PNG)** — Kyte-Doolittle profile of the "
-        "reference sequence\n"
-        if any(str(name or "").endswith(".png") for name in _produced)
-        else "- _hydropathy figure_ — not produced this run (Cell 3 did not "
-        "complete; see its error in the Notebook tab)\n"
-    )
-    _csv_line = (
-        "- **family_biochemistry.csv** — per-protein length / MW / pI / "
-        "GRAVY / % identity (Biopython)\n"
-        if "family_biochemistry.csv" in _produced
-        else "- _biochemistry table_ — not produced this run (Cell 4 did not "
-        "complete; see its error in the Notebook tab)\n"
-    )
-    _struct_line = (
-        "- **nif3_structure.pdb** — real RCSB structure (opens in the 3Dmol "
-        "viewer)\n"
-        if "nif3_structure.pdb" in _produced
-        else "- _3D structure_ — skipped this run: the RCSB download was unreachable "
-        "(no placeholder is ever substituted; see nif3_report.md)\n"
-    )
-    _report_line = (
-        "- **nif3_report.md** — reproducible summary with data provenance\n"
-        if "nif3_report.md" in _produced
-        else "- _summary report_ — not produced this run (Cell 6 did not "
-        "complete; see its error in the Notebook tab)\n"
-    )
+    _material_lines: list[str] = []
+    for index, (_code, material) in enumerate(demo_plan, start=1):
+        if material is None:
+            continue
+        produced = (
+            material["produced"](_produced)
+            if "produced" in material
+            else material["filename"] in _produced
+        )
+        if produced:
+            _material_lines.append(material["line"])
+        elif "missing" in material:
+            _material_lines.append(material["missing"])
+        else:
+            _material_lines.append(
+                f"- _{material['label']}_ — not produced this run (Cell "
+                f"{index} did not complete; see its error in the Notebook "
+                "tab)\n"
+            )
     if cell_failures:
         # An honest header beats the reassuring one: some cells crashed, so
         # "every value is real" must not be claimed on their behalf.
         _header = (
-            f"{len(cell_failures)} of {len(demo_cells)} example cells did not "
+            f"{len(cell_failures)} of {len(demo_plan)} example cells did not "
             "complete on this install (commonly a missing optional science "
             "dependency such as Biopython or pandas):\n"
             + "".join(f"- {failure}\n" for failure in cell_failures)
@@ -13005,10 +13086,7 @@ def _seed_demo_session(cfg: Config, runner: "SessionRunner") -> None:
         "- **MCP connector `example`** — `calc` / `now` tools over the "
         "Connectors bridge\n\n"
         "**Materials — click any artifact to view**\n"
-        + _figure_line
-        + _csv_line
-        + _struct_line
-        + _report_line
+        + "".join(_material_lines)
         + "\nOpen the **Notebook** tab to replay the executed cells, or the "
         "**Files** panel to view each material.",
     )

@@ -90,7 +90,9 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
         }
     ),
     "openai4s.agent.loop": frozenset({"Agent", "run_task"}),
-    "openai4s.server.gateway": frozenset({"build_app_server", "serve_app"}),
+    "openai4s.server.gateway": frozenset(
+        {"build_app_server", "run_server", "serve_app"}
+    ),
 }
 
 # Existing boundary violations.  Do not add to this list: move the consumer to

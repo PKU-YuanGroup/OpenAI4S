@@ -27,6 +27,22 @@ _LLM_ENV_LEAK = re.compile(
 for _name in [n for n in os.environ if _LLM_ENV_LEAK.match(n)]:
     del os.environ[_name]
 
+# The non-LLM definition-time defaults leak the same way and are frozen at the
+# same moment: ``Config``'s field defaults read these at class definition, so
+# a developer's `export OPENAI4S_PORT=9760` (the documented second-daemon
+# setup) or a stray OPENAI4S_RECORD_TAPE=1 silently reshapes every test in the
+# session with no fixture able to undo it.
+for _name in (
+    "OPENAI4S_HOST",
+    "OPENAI4S_PORT",
+    "OPENAI4S_MAX_TURNS",
+    "OPENAI4S_EXPLORE_MAX_TURNS",
+    "OPENAI4S_CONTEXT_WINDOW",
+    "OPENAI4S_COMPACTION_TRIGGER_RATIO",
+    "OPENAI4S_RECORD_TAPE",
+):
+    os.environ.pop(_name, None)
+
 # These must exist before any test module imports ``openai4s.config`` because
 # several dataclass defaults are resolved at module/class definition time.
 os.environ["OPENAI4S_LLM_PROVIDER"] = "deepseek"

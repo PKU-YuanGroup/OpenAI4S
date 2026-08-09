@@ -482,19 +482,36 @@ class WebActionExecutor:
                 kwargs["validate"] = lambda name, arguments: tool_validation_error(
                     name, arguments, self.tool_catalog
                 )
-            outcome = execute_native_batch(
-                action,
-                lambda call: self._invoke_native(call, apply_pending=False),
-                **kwargs,
-            )
-            note_execution_evidence(state.metadata, tool_calls=len(action.calls))
+            # Count dispatched calls, not declared ones: the batch answers
+            # parse/validation/limit refusals and post-cancel remainders
+            # without ever invoking a tool, and those must not become
+            # finalize-time evidence.  list.append is atomic under the GIL,
+            # so the parallel read waves count safely.
+            invoked: list[Any] = []
+
+            def _counted_invoke(call):
+                invoked.append(call)
+                return self._invoke_native(call, apply_pending=False)
+
+            outcome = execute_native_batch(action, _counted_invoke, **kwargs)
+            if invoked:
+                note_execution_evidence(state.metadata, tool_calls=len(invoked))
             if self.cancelled():
                 return outcome
             return self._apply_trailing_pending(outcome)
         if isinstance(action, CodeCell):
             self.apply_pending()
-            result = self.execute_cell(action)
-            note_execution_evidence(state.metadata, cells=1)
+            cell_outcome = self.execute_cell(action)
+            # ``execute_cell`` returns the gateway's full outcome dict; legacy
+            # fakes (and any embedder) may still hand back the bare kernel
+            # result, which always came from a real execution.
+            if isinstance(cell_outcome, dict) and "result" in cell_outcome:
+                result = cell_outcome["result"]
+                executed = bool(cell_outcome.get("executed", True))
+            else:
+                result, executed = cell_outcome, True
+            if executed:
+                note_execution_evidence(state.metadata, cells=1)
             observation = format_observation(result)
             if count_code_blocks(reply.content) > 1 or has_incomplete_code_block(
                 reply.content

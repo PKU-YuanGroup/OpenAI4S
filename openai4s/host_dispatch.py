@@ -690,9 +690,13 @@ class HostDispatcher:
         # and a mid-cell submit must probe the workspace *and* the process
         # cwd — the kernel inherits this process's cwd, and a file the
         # current cell just wrote exists only on disk until capture runs.
+        # The store is re-resolved per submit rather than captured: a cached
+        # ``self.store`` can be a closed generation (``Store.close()`` evicts
+        # the singleton and ``get_store`` mints a new one), whose every query
+        # raises and silently degrades reconciliation.
         self._completion_service = CompletionService(
             evidence=lambda: gather_submission_evidence(
-                self.store,
+                get_store(self.cfg.db_path),
                 self.frame_id,
                 search_roots=(self._files.workspace(), Path.cwd()),
             )

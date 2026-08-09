@@ -27,6 +27,7 @@ import urllib.request
 from pathlib import Path
 
 from openai4s.config import get_config
+from openai4s.execution.process_group import TERM_GRACE_S
 
 
 def _write_state(cfg) -> None:
@@ -92,38 +93,80 @@ def _url(cfg, *, with_token: bool = True) -> str:
     return f"{base}?token={token}" if token else base
 
 
+def _sigterm_to_keyboard_interrupt(signum, frame):
+    """Turn `openai4s stop`'s SIGTERM into the Ctrl-C path — nothing more.
+
+    The state files must outlive the process they describe: clearing them
+    here, at signal arrival, deleted the pidfile before the (possibly slow)
+    runner/kernel teardown ran, so a `stop` that timed out told the user to
+    retry against a pidfile the daemon had already removed — the retry and
+    `stop --force` both saw "not running" while the port stayed bound.  The
+    serve loop's finally clears state after teardown completes.
+    """
+    raise KeyboardInterrupt
+
+
+def _bind_failure_message(exc: OSError, cfg) -> str | None:
+    """One clear line naming the env var to fix, or ``None`` to re-raise.
+
+    ``build_server`` does more than bind, so only bind-shaped errnos map to
+    the port: EADDRINUSE and EADDRNOTAVAIL cannot come from anywhere else,
+    while EACCES is blamed on the port only when the port is actually
+    privileged — a read-only data dir raises EACCES too, and that one must
+    stay a traceback pointing at the real path.
+    """
+    prefix = f"error: cannot listen on {cfg.host}:{cfg.port} — "
+    if exc.errno == errno.EADDRINUSE:
+        return prefix + (
+            "address already in use. A previous daemon may still be "
+            "shutting down, or another process holds the port; free it or "
+            "change OPENAI4S_PORT."
+        )
+    if exc.errno == errno.EACCES and cfg.port < 1024:
+        return prefix + (
+            "permission denied. Ports below 1024 are privileged; pick an "
+            "unprivileged one via OPENAI4S_PORT (default 8760)."
+        )
+    if exc.errno == errno.EADDRNOTAVAIL:
+        return prefix + (
+            "this machine has no such address. Check OPENAI4S_HOST "
+            "(127.0.0.1 serves locally)."
+        )
+    return None
+
+
 def cmd_serve(args) -> int:
-    from openai4s.server import build_server
+    from openai4s.server import build_server, run_server
 
     cfg = get_config()
     existing = _read_pid(cfg)
     if existing and _pid_alive(existing):
         print(f"daemon already running (pid {existing}) at {_url(cfg)}")
         return 1
+    # The pidfile covers the whole boot, not just the post-bind lifetime:
+    # written after the build, a second `serve` racing a slow store
+    # open/migration passed the singleton check above and booted the same
+    # data dir concurrently, while `stop`/`status` called the mid-boot
+    # daemon "not running".  Every build-failure path below clears it.
+    _write_state(cfg)
     # Bind before the banner: "listening" printed ahead of the actual bind made
     # a port collision look like a crash after a successful start. Binding also
     # mints the access token, so the URL printed below actually opens.
     try:
         httpd = build_server(cfg)
     except OSError as exc:
-        if exc.errno != errno.EADDRINUSE:
+        _clear_state(cfg)
+        message = _bind_failure_message(exc, cfg)
+        if message is None:
             raise
-        print(
-            f"error: cannot listen on {cfg.host}:{cfg.port} — address already "
-            "in use. A previous daemon may still be shutting down, or another "
-            "process holds the port; free it or change OPENAI4S_PORT.",
-            file=sys.stderr,
-        )
+        print(message, file=sys.stderr)
         return 1
-    _write_state(cfg)
+    except BaseException:
+        _clear_state(cfg)
+        raise
     print(f"openai4s listening at {_url(cfg)} (model={cfg.llm.model})")
     print("web UI ready. Ctrl-C to stop.")
-
-    def _graceful(signum, frame):
-        _clear_state(cfg)
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, _graceful)
+    signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
     if not os.environ.get("OPENAI4S_NO_OPEN") and not getattr(args, "no_open", False):
 
         def _open():
@@ -139,15 +182,11 @@ def cmd_serve(args) -> int:
 
         threading.Thread(target=_open, daemon=True).start()
     try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        # The shared service loop (gateway.run_server): serve_app and this
+        # command must not carry two copies of serve/teardown that can drift.
+        run_server(httpd)
     finally:
-        try:
-            httpd.shutdown()
-            httpd.server_close()
-        finally:
-            _clear_state(cfg)
+        _clear_state(cfg)
     return 0
 
 
@@ -259,8 +298,23 @@ def cmd_status(args) -> int:
         return 2
 
 
-def _wait_pid_exit(pid: int, *, attempts: int = 50, interval: float = 0.1) -> bool:
-    """Poll until ``pid`` is gone; True means it actually exited."""
+def _wait_pid_exit(
+    pid: int, *, attempts: int | None = None, interval: float = 0.1
+) -> bool:
+    """Poll until ``pid`` is gone; True means it actually exited.
+
+    The default grace period is ``TERM_GRACE_S`` — the same budget
+    ``execution/process_group.py`` gives a job's SIGTERM — so daemon stops
+    and job stops cannot quietly drift apart.  The pid-shaped ladder itself
+    stays local on purpose: the daemon is not this CLI's child (there is no
+    ``Popen`` to reap, which the group helpers require) and it is not
+    reliably its own process-group leader (under nohup/launchd the pgid may
+    be shared with siblings), so ``killpg`` semantics do not transfer.
+    Leader-only signalling is safe here: kernel workers exit on their
+    manager pipe's EOF when the daemon dies.
+    """
+    if attempts is None:
+        attempts = max(1, round(TERM_GRACE_S / interval))
     for _ in range(attempts):
         if not _pid_alive(pid):
             return True

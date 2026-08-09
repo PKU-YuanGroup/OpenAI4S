@@ -346,7 +346,8 @@ def _seed_with_fake_cells(tmp_path, monkeypatch, cell_behaviour):
     """Run the real `_seed_demo_session` with `run_repl` replaced per cell.
 
     `cell_behaviour(index, register)` returns the kernel error string for that
-    cell (None for success) and calls `register(filename)` for any artifact the
+    cell (None for success, or a full run_repl outcome dict for cancelled /
+    interrupted shapes) and calls `register(filename)` for any artifact the
     cell would have written. Returns (store, final assistant message content).
     """
     cfg = _cfg(tmp_path)
@@ -370,6 +371,8 @@ def _seed_with_fake_cells(tmp_path, monkeypatch, cell_behaviour):
             )
 
         error = cell_behaviour(len(executed), register)
+        if isinstance(error, dict):
+            return error
         return {"status": "completed", "cell": {"error": error}}
 
     monkeypatch.setattr(gateway_mod.SessionRunner, "run_repl", _fake_run_repl)
@@ -474,6 +477,63 @@ def test_the_example_seed_message_keeps_the_full_claim_when_everything_ran(
         "**nif3_report.md**",
     ):
         assert name in content
+
+
+def test_the_example_seed_counts_interrupted_cells_as_failures(tmp_path, monkeypatch):
+    """Cancelled/interrupted cells carry ``error`` None and must not read as
+    successes: doing so reopened the all-green "Done — every value is real"
+    header over cells that never finished, alongside material lines pointing
+    at a Notebook error that does not exist."""
+    monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
+
+    def behaviour(index, register):
+        if index == 3:
+            return {
+                "status": "completed",
+                "cell": {"error": None, "status": "interrupted"},
+            }
+        if index == 4:
+            register("family_biochemistry.csv")
+        elif index == 5:
+            register("nif3_structure.pdb")
+        elif index == 6:
+            register("nif3_report.md")
+        return None
+
+    _store, content = _seed_with_fake_cells(tmp_path, monkeypatch, behaviour)
+
+    assert not content.startswith("Done")
+    assert "1 of 6 example cells did not complete" in content
+    assert "cell 3/6: interrupted before completion" in content
+    assert "_hydropathy figure_ — not produced this run" in content
+
+
+def test_build_app_server_closes_runner_when_startup_raises_before_bind(
+    tmp_path, monkeypatch
+):
+    """The orphan guard must cover every raise site after the runner exists.
+
+    The seeds and ``make_handler`` run after SessionRunner started its
+    recovery sweeper; guarded only around the bind, an exception there leaked
+    the sweeper/coordinator to any embedder that catches and retries."""
+    closed: list[bool] = []
+    real_close = gateway_mod.SessionRunner.close
+
+    def spying_close(self):
+        closed.append(True)
+        return real_close(self)
+
+    monkeypatch.setattr(gateway_mod.SessionRunner, "close", spying_close)
+    monkeypatch.setattr(
+        gateway_mod,
+        "_seed_example_project",
+        lambda cfg: (_ for _ in ()).throw(RuntimeError("store locked")),
+    )
+
+    with pytest.raises(RuntimeError, match="store locked"):
+        gateway_mod.build_app_server(_cfg(tmp_path))
+
+    assert closed, "a failed startup must close the runner it created"
 
 
 def test_ws_resume_buffer_replaces_notebook_drafts_and_keeps_live_cell_events():

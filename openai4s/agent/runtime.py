@@ -282,15 +282,23 @@ class LocalActionExecutor:
                 action, evidence=execution_evidence(state.metadata)
             )
         if isinstance(action, NativeToolBatch):
-            outcome = self._execute_native(action)
-            note_execution_evidence(state.metadata, tool_calls=len(action.calls))
-            return outcome
+            return self._execute_native(action, state)
         if isinstance(action, CodeCell):
             return self._execute_code(action, reply, state)
         return self._execute_legacy_or_nudge(reply, state)
 
-    def _execute_native(self, batch: NativeToolBatch) -> ExecutionOutcome:
+    def _execute_native(
+        self, batch: NativeToolBatch, state: RunState
+    ) -> ExecutionOutcome:
+        # Evidence counts dispatched calls, not declared ones: the batch
+        # answers parse/validation/limit refusals without invoking anything,
+        # and those must not back a later execution-shaped finalize claim.
+        # list.append is atomic under the GIL, so parallel read waves count
+        # safely.
+        invoked: list[Any] = []
+
         def invoke(call):
+            invoked.append(call)
             payload = {"name": call.name, "arguments": call.arguments}
             binder = getattr(self.dispatcher, "bind_action_context", None)
 
@@ -312,19 +320,25 @@ class LocalActionExecutor:
                 return execute()
 
         if self.tool_catalog is None:
-            return execute_native_batch(
+            outcome = execute_native_batch(
                 batch,
                 invoke,
                 parallel_policy=tool_parallel_policy,
             )
-        return execute_native_batch(
-            batch,
-            invoke,
-            validate=lambda name, arguments: tool_validation_error(
-                name, arguments, self.tool_catalog
-            ),
-            parallel_policy=lambda call: tool_parallel_policy(call, self.tool_catalog),
-        )
+        else:
+            outcome = execute_native_batch(
+                batch,
+                invoke,
+                validate=lambda name, arguments: tool_validation_error(
+                    name, arguments, self.tool_catalog
+                ),
+                parallel_policy=lambda call: tool_parallel_policy(
+                    call, self.tool_catalog
+                ),
+            )
+        if invoked:
+            note_execution_evidence(state.metadata, tool_calls=len(invoked))
+        return outcome
 
     def _execute_code(
         self, action: CodeCell, reply: ModelReply, state: RunState
@@ -355,7 +369,11 @@ class LocalActionExecutor:
             self._record_kernel_generation(state)
         # Recorded here, after the kernel ran — a safety-gate refusal above
         # returned already and must never count as finalize-time evidence.
-        note_execution_evidence(state.metadata, cells=1)
+        # The same goes for the R runner's spawn-failure / pre-execution
+        # soft errors: a kernel-produced result always carries "stdout",
+        # while those synthesized dicts carry only "error".
+        if isinstance(result, dict) and "stdout" in result:
+            note_execution_evidence(state.metadata, cells=1)
         observation = format_observation(result)
         if count_code_blocks(reply.content) > 1 or has_incomplete_code_block(
             reply.content
@@ -393,7 +411,13 @@ class LocalActionExecutor:
                     self.tool_catalog,
                 )
             if calls:
-                note_execution_evidence(state.metadata, tool_calls=len(calls))
+                # ``run_tool_calls`` dispatches only the first
+                # MAX_TOOL_CALLS_PER_TURN parsed calls; the remainder never
+                # ran and must not be counted.
+                note_execution_evidence(
+                    state.metadata,
+                    tool_calls=len(calls[:MAX_TOOL_CALLS_PER_TURN]),
+                )
         elif has_incomplete_code_block(reply.content):
             observation = INCOMPLETE_CELL_NUDGE
         else:

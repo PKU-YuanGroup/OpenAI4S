@@ -926,6 +926,32 @@ class FrameRepository:
             cells.append(cell)
         return cells
 
+    def list_cell_outputs(self, root_frame_id: str) -> list[dict]:
+        """Per-cell ``files_written``/``figures`` for one session, decoded.
+
+        The submission-evidence gatherer reads only these two lists;
+        ``list_cells`` materializes every cell's code and stdout (up to 1M
+        chars per cell) plus a correlated attempts subquery — all discarded
+        on that path, which runs while the kernel worker blocks on the
+        host-call lock.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT files_written,figures FROM execution_log "
+                "WHERE root_frame_id=?",
+                (root_frame_id,),
+            ).fetchall()
+        cells = []
+        for row in rows:
+            cell = dict(row)
+            for key in ("files_written", "figures"):
+                try:
+                    cell[key] = json.loads(cell.get(key) or "[]")
+                except (TypeError, ValueError):
+                    cell[key] = []
+            cells.append(cell)
+        return cells
+
     def cell_detail(self, producing_cell_id: str) -> dict | None:
         with self._lock:
             row = self._connection.execute(
