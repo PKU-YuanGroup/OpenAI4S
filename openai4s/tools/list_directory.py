@@ -22,7 +22,10 @@ class ListDirectoryTool(Tool):
 
     name = "list_dir"
     host_method = "list_dir"
-    description = "List the entries of a workspace directory."
+    description = (
+        "List entries in one workspace directory only. For the Skill catalog, "
+        "use list_skills."
+    )
     parameters = {
         "properties": {
             "path": {

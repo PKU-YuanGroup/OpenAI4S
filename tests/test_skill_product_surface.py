@@ -34,10 +34,20 @@ def _document(name: str, body: str) -> str:
 
 
 def test_skill_control_tools_keep_schema_policy_and_behavior_in_named_classes():
+    listing = get_tool("list_skills")
     status = get_tool("skill_status")
     history = get_tool("skill_history")
     rollback = get_tool("rollback_skill_version")
 
+    assert type(listing).__name__ == "ListSkillsTool"
+    assert listing.input_schema() == {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False,
+    }
+    assert listing.read_only is True and listing.requires_approval is False
+    assert listing.resource_keys({}) == ("skill:catalog",)
     assert type(status).__name__ == "SkillStatusTool"
     assert type(history).__name__ == "SkillHistoryTool"
     assert type(rollback).__name__ == "RollbackSkillVersionTool"
@@ -67,6 +77,29 @@ def test_skill_control_tools_keep_schema_policy_and_behavior_in_named_classes():
         )
         is None
     )
+
+
+def test_list_skills_native_tool_dispatches_to_existing_catalog(tmp_path):
+    dispatcher = build_dispatcher(_config(tmp_path))
+    try:
+        catalog = get_tool("list_skills").invoke(dispatcher, {})
+    finally:
+        dispatcher.store.close()
+
+    assert catalog == {"count": 1, "names": ["Trusted"]}
+
+
+@pytest.mark.parametrize("arguments", ["example_stats", {"name": "example_stats"}])
+def test_load_skill_control_tool_accepts_legacy_sdk_and_native_arguments(arguments):
+    calls = []
+    runtime = SimpleNamespace(
+        invoke=lambda method, *args: calls.append((method, args)) or {"name": args[0]}
+    )
+    tool = get_tool("load_skill")
+
+    assert tool.execute(runtime, arguments) == {"name": "example_stats"}
+    assert calls == [("load_skill", ("example_stats",))]
+    assert tool.resource_keys(arguments) == ("skill:example_stats",)
 
 
 def test_sdk_skill_version_methods_encode_only_narrow_scope_arguments():

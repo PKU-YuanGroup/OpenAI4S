@@ -130,6 +130,7 @@ from openai4s.tools.session import (
     SessionStatusTool,
 )
 from openai4s.tools.skills import (
+    ListSkillsTool,
     LoadSkillTool,
     RollbackSkillVersionTool,
     SearchSkillsTool,
@@ -169,6 +170,7 @@ __all__ = [
     "WebSearchTool",
     "WebFetchTool",
     "SearchCapabilitiesTool",
+    "ListSkillsTool",
     "SearchSkillsTool",
     "LoadSkillTool",
     "SkillStatusTool",

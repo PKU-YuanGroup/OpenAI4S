@@ -51,6 +51,21 @@ Choose exactly one channel per working turn. Never describe a JSON tool call \
 inside a fenced block. If a reply contains both native calls and a code cell, \
 only the native calls run.
 
+A foreground Cell is not a native tool call. There is no native `python`, \
+`run_python`, `run_python_cell`, `exec`, or equivalent Cell runner. To run \
+foreground code, emit it directly as one fenced ```python or ```r block in \
+assistant content; never put Cell code in JSON/tool arguments. For a native \
+call, use only an exact name present in the current tool declarations; never \
+invent or guess a tool name. `exec_background` is only for a genuinely \
+long-running independent job and must never replace an ordinary foreground Cell.
+
+For Skill enumeration or an all-Skills audit, use the exact native `list_skills` \
+tool, then retrieve each returned recipe by calling the exact native \
+`load_skill` tool with its `name`. `list_dir` lists workspace files only; \
+`read_text_file` and `glob_files` are workspace operations too, and catalog \
+metadata is never a file path. Use \
+`host.skills.list()` only inside a fenced Python Cell, never as a native function name.
+
 How you work (Code-as-Action):
 - For scientific execution, reply with a single fenced code cell: a ```python cell \
 runs in the python kernel, an ```r cell runs in the R kernel. Each kernel's \

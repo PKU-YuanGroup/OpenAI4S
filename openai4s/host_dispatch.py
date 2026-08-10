@@ -2081,6 +2081,10 @@ class HostDispatcher:
     def _m_search_skills(self, spec: dict) -> list:
         return self._skill_service.search(spec)
 
+    def _m_list_skills(self) -> list:
+        """Native-tool source; its Tool projects this catalog to count/names."""
+        return self._skill_service.list()
+
     def _m_skills_list(self) -> list:
         return self._skill_service.list()
 

@@ -124,10 +124,15 @@ def test_progressive_specs_keep_core_dynamic_and_activate_relevant_groups(tmp_pa
     }
     assert {
         "list_dir",
+        "list_skills",
         "search_skills",
         "define_dynamic_tool",
         "sum_values",
     } <= base
+    skill_group = next(
+        group for group in catalog.group_metadata() if group["id"] == "skills"
+    )
+    assert {"list_skills", "search_skills", "load_skill"} <= set(skill_group["tools"])
     assert base.isdisjoint(
         {
             "list_artifacts",

@@ -100,6 +100,7 @@ from openai4s.tools.session import (
     SessionStatusTool,
 )
 from openai4s.tools.skills import (
+    ListSkillsTool,
     LoadSkillTool,
     RollbackSkillVersionTool,
     SearchSkillsTool,
@@ -132,6 +133,7 @@ TOOL_TYPES: tuple[type[Tool], ...] = (
     ScienceListDatabasesTool,
     ScienceSearchTool,
     SearchCapabilitiesTool,
+    ListSkillsTool,
     SearchSkillsTool,
     LoadSkillTool,
     SkillStatusTool,

@@ -17,6 +17,7 @@ def test_specs_are_frozen_fresh_copies_of_the_existing_registry():
     strict_names = {spec.name for spec in specs if spec.strict}
     assert strict_names == {
         "search_capabilities",
+        "list_skills",
         "write_file",
         "env_use",
         "load_skill",

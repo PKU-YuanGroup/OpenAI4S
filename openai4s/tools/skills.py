@@ -9,6 +9,39 @@ from openai4s.tools.contexts import ControlToolContext
 from openai4s.tools.taxonomy import RUNTIME_MUTATION, resource_key
 
 
+class ListSkillsTool(Tool):
+    """List the complete Skill catalog visible to the current agent."""
+
+    name = "list_skills"
+    # Keep the native projection separate from the SDK's ``skills_list``
+    # method: host.skills.list() returns full metadata and is a public Cell
+    # contract, while this control-plane view is deliberately compact.
+    host_method = "list_skills"
+    description = (
+        "Return the exact count and names of every Skill available to this agent. "
+        "For all-Skills audits, then call load_skill with each returned name. "
+        "Do not use workspace file tools."
+    )
+    parameters = {"properties": {}, "required": []}
+    requires_approval = False
+    output_limit = 10_000
+    resource_key_prefix = "skill"
+    resource_target_default = "catalog"
+
+    def execute(self, runtime: ControlToolContext, arguments: dict) -> dict:
+        del arguments
+        rows = runtime.invoke(self.host_method)
+        # The Host catalog also carries descriptions, readiness, content
+        # digests, and version ids for UI reconciliation. The full 34-row JSON
+        # exceeds the bounded model-observation window and is archived to an
+        # internal blob; Ark then mistook that archive hint for a workspace
+        # path. Native enumeration needs only stable names. Full metadata stays
+        # available through host.skills.list() inside a foreground Cell.
+        names = [str(row.get("name") or "") for row in rows]
+        names = [name for name in names if name]
+        return {"count": len(names), "names": names}
+
+
 class SearchSkillsTool(Tool):
     """Retrieve full recipes only when a task needs them."""
 
@@ -65,8 +98,23 @@ class LoadSkillTool(Tool):
     resource_key_prefix = "skill"
     resource_target_key = "name"
 
-    def execute(self, runtime: ControlToolContext, arguments: dict) -> dict:
-        return runtime.invoke(self.host_method, str(arguments.get("name") or ""))
+    def resource_keys(self, arguments: Any) -> tuple[str, ...]:
+        name = (
+            arguments if isinstance(arguments, str) else (arguments or {}).get("name")
+        )
+        return (resource_key("skill", name or "*"),)
+
+    def execute(
+        self,
+        runtime: ControlToolContext,
+        arguments: dict | str,
+    ) -> dict:
+        name = (
+            arguments
+            if isinstance(arguments, str)
+            else str((arguments or {}).get("name") or "")
+        )
+        return runtime.invoke(self.host_method, name)
 
 
 class SkillStatusTool(Tool):
@@ -198,6 +246,7 @@ class RollbackSkillVersionTool(SkillStatusTool):
 
 
 __all__ = [
+    "ListSkillsTool",
     "LoadSkillTool",
     "RollbackSkillVersionTool",
     "SearchSkillsTool",
