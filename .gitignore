@@ -23,3 +23,8 @@ dist/
 # Internal review-fix ledger. Kept local: it is a running record of defects and
 # their reproductions, which is working material rather than product documentation.
 docs/nextgen-progress.md
+
+# Local evaluation scratch (runs, logs, workspaces). Never committed: its
+# subtrees carry no bilingual README pairs, so one stray `git add -A` would
+# fail the directory-docs CI gate.
+epibench_eval/
