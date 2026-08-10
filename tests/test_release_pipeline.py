@@ -397,14 +397,18 @@ def test_installed_daemon_smoke_bootstraps_and_loads_the_real_webui(
             if parsed.path == "/" and authenticated:
                 self._reply(
                     200,
-                    b'<title>OpenAI4S</title><div id="dashboard"></div>',
+                    b'<title>OpenAI4S</title><div id="dashboard"></div>'
+                    b'<script src="/static/app.js"></script>',
                     "text/html; charset=utf-8",
                 )
                 return
             if parsed.path == "/static/app.js" and authenticated:
+                # Deliberately shares no source text with the real app.js: the
+                # probe must judge the entrypoint by serving facts, and this
+                # body fails the smoke if source-literal coupling comes back.
                 self._reply(
                     200,
-                    b'"use strict";\nconst S = {};',
+                    b"(() => { window.addEventListener('load', boot); })();",
                     "text/javascript; charset=utf-8",
                 )
                 return

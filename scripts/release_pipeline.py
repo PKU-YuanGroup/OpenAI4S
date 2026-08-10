@@ -1235,13 +1235,18 @@ class Pipeline:
             or "token=" in final_url
             or b"<title>OpenAI4S</title>" not in html
             or b'id="dashboard"' not in html
+            or b"static/app.js" not in html
         ):
             raise ReleaseError("installed daemon did not serve the Web UI shell")
+        # The entrypoint is judged by serving facts: status, a JavaScript
+        # content type, a non-empty body, and the shell above actually
+        # referencing it. Never by source literals — asserting fragments like
+        # `"use strict";` here turned an app.js style choice into a release
+        # failure whose message points at packaging.
         if (
             not (200 <= script_status < 300)
             or "javascript" not in script_type
-            or b'"use strict";' not in script
-            or b"const S =" not in script
+            or not script.strip()
         ):
             raise ReleaseError("installed daemon did not serve the Web UI application")
 
