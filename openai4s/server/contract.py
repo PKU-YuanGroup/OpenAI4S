@@ -1,4 +1,4 @@
-"""The externally-reachable HTTP/WebSocket surface, extracted from the code.
+"""The externally-reachable HTTP/WebSocket surface.
 
 The proposal requires that every external route and event be covered by a
 contract inventory, and that the inventory be *checkable* rather than a list
@@ -6,22 +6,18 @@ someone maintains by hand. A hand-maintained list is wrong the first time
 somebody adds a route in a hurry, and its being wrong is invisible — which is
 the failure mode a contract exists to prevent.
 
-So the inventory is derived from the gateway source instead of duplicated
-beside it. It is deliberately a **static** read of the routing chain rather than
-runtime introspection: `Handler._api` is a long `if` / `re.fullmatch` chain
-inside a closure, so there is no route table to enumerate at runtime, and
-importing the module to walk it would not tell us which branches are reachable.
-Parsing the source is the honest approximation, and it fails loudly (empty
-inventory) if the routing style ever changes enough to invalidate it.
+HTTP routing is being migrated incrementally to declarative ``RouteSpec``
+objects. A route module that exports ``ROUTES`` is inventoried from those exact
+runtime declarations. Legacy gateway branches and route modules without a
+registry still use the static source extractor, so the migration does not force
+a high-risk rewrite of the whole routing chain in one change.
 
-The risk this carries is worth naming, because it bit on the first run: an
-extractor that misses an idiom reports *full coverage of an incomplete
-inventory* — false confidence, which is worse than no check. The first version
-handled only `sub == "..."` and `re.fullmatch`, and silently omitted `/frames`
-(matched query-aware as `sub.split("?")[0] == "/frames"`), the `sub in (...)`
-tuples, and `sub.startswith(...)`. A test asserting that a few obviously-present
-routes are found is what caught it, and is why that test exists alongside the
-coverage assertions rather than being folded into them.
+The source fallback remains deliberately strict. An extractor that misses an
+idiom reports *full coverage of an incomplete inventory* — false confidence,
+which is worse than no check. The first version handled only ``sub == ...`` and
+``re.fullmatch`` and silently omitted several real spellings. Tests therefore
+pin both obvious routes and the extraction properties while the declarative
+surface grows.
 
 What this is not: a schema. It answers "which paths exist", not "what shape do
 they return". Response schemas are the next layer of §4.6 and are not inferable
@@ -31,9 +27,12 @@ from a routing chain.
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 import textwrap
 from pathlib import Path
+
+from openai4s.server.routing import RouteSpec
 
 #: Where the HTTP API lives. Defined here rather than in the gateway because
 #: two very different callers need it and neither should guess: the gateway
@@ -58,9 +57,9 @@ _MEMBERSHIP = re.compile(r"sub\s+in\s+\(([^)]*)\)")
 _MEMBER_ITEM = re.compile(r'"(/[^"]*)"')
 # `sub.startswith("/frames?")` — a prefix route.
 _PREFIX = re.compile(r'sub\.startswith\(\s*"(/[^"?]*)')
-# `re.fullmatch(r"/frames/([^/]+)/kernel", sub)` — a parameterised route. Only
-# patterns anchored at "/" are routes; the file also uses fullmatch to validate
-# hashes and identifiers, and those must not be mistaken for surface.
+# `re.fullmatch(r"/frames/([^/]+)/kernel", sub)` — a parameterised legacy
+# route. Only patterns anchored at "/" are routes; the files also use
+# fullmatch to validate hashes and identifiers.
 _PATTERN = re.compile(r're\.fullmatch\(\s*r"(/[^"]*)"')
 # WebSocket client messages are dispatched on `t == "view_session"` — or on
 # `t in {"cancel_execution", "cancel"}`, a form the equality-only pattern
@@ -72,33 +71,16 @@ _WS_INBOUND_ITEM = re.compile(r'"([a-z_]+)"')
 _WS_OUTBOUND = re.compile(r'"type"\s*:\s*"([a-z_]+)"')
 
 
-#: Modules that hold route branches carved out of `Handler._api`. The
-#: decomposition moves groups of routes into siblings, and a route that moved
-#: is still surface -- but `_source()` read gateway.py alone, so the first
-#: extraction would have dropped 12 routes out of the inventory and orphaned 11
-#: frozen response shapes. The tempting repair (regenerate the artifact until
-#: the tests pass) is the damaging one: those shapes get re-filed under the
-#: catch-all `/frames/([^/]+)(?:/.*)?` and the per-route contract is gone.
-#:
-#: Same reasoning that already widened WS-event scanning to the whole package
-#: above; HTTP routes were simply never widened with it.
-#:
-#: The membership is *derived*, not listed. A hand-maintained tuple has the
-#: same defect as a hand-maintained inventory: it is wrong the first time
-#: somebody extracts a route group in a hurry, and its being wrong is
-#: invisible, because the extractor then reports full coverage of an incomplete
-#: inventory. Neither `--check` script catches that -- the routes are missing
-#: from both sides of the comparison. So the convention is the naming, and
-#: `test_contract_inventory` fails the build when a module carries routing
-#: idioms without following it.
+#: Modules that hold route branches carved out of `Handler._api`. Declarative
+#: modules expose ``ROUTES``; legacy ones continue to be source-scanned until
+#: they are migrated. Discovery stays convention-based so adding a route module
+#: cannot require remembering a second list.
 _ROUTE_MODULE_GLOB = "*_routes.py"
 
 #: Modules that use the same routing idioms but are **not** reachable through
 #: `Handler._route`, so their paths are a different surface. `ShareRouter` is
 #: constructed for the outbound tunnel client and dispatched to directly; its
-#: `/api/artifacts/([^/]+)` never passes through the gateway chain. Counting it
-#: here would add a path the contract driver cannot drive, and an undrivable
-#: route is indistinguishable from an uncovered one.
+#: `/api/artifacts/([^/]+)` never passes through the gateway chain.
 _NON_GATEWAY_ROUTE_MODULES = frozenset({"share_router.py"})
 
 
@@ -113,10 +95,44 @@ def _route_modules() -> tuple[str, ...]:
     )
 
 
+def _route_module_specs(name: str) -> tuple[RouteSpec, ...]:
+    """Return one route module's executable declarations, if it has migrated.
+
+    Route modules are intentionally import-safe handler modules. Importing one
+    is now useful because a declarative module exposes the exact table the
+    runtime consumes; modules without that table stay on the source fallback.
+    """
+
+    module_name = f"{__package__}.{name[:-3]}"
+    module = importlib.import_module(module_name)
+    declared = getattr(module, "ROUTES", None)
+    if declared is None:
+        return ()
+    if not isinstance(declared, (tuple, list)):
+        raise TypeError(f"{module_name}.ROUTES must be a tuple/list of RouteSpec")
+    specs = tuple(declared)
+    invalid = [spec for spec in specs if not isinstance(spec, RouteSpec)]
+    if invalid:
+        raise TypeError(f"{module_name}.ROUTES contains non-RouteSpec values")
+    return specs
+
+
+def declared_http_routes() -> tuple[RouteSpec, ...]:
+    """All executable RouteSpec declarations on the gateway HTTP surface."""
+
+    specs: list[RouteSpec] = []
+    for name in _route_modules():
+        specs.extend(_route_module_specs(name))
+    return tuple(specs)
+
+
 def _route_sources() -> list[str]:
-    """gateway.py plus every module that owns extracted route branches."""
+    """Gateway plus only route modules that still need source extraction."""
+
     texts = [_GATEWAY.read_text("utf-8")]
     for name in _route_modules():
+        if _route_module_specs(name):
+            continue
         path = _SERVER_PKG / name
         if path.is_file():
             texts.append(path.read_text("utf-8"))
@@ -127,29 +143,27 @@ def _source() -> str:
     return _GATEWAY.read_text("utf-8")
 
 
+def _callee_name(node: ast.Call) -> str:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
 def _fullmatch_patterns(text: str) -> set[str]:
-    """Parameterised routes, read as constant expressions rather than scanned.
+    """Parameterised legacy routes, read as constant expressions.
 
     A regex scan takes the first string literal it sees. The gateway builds one
-    matcher out of adjacent raw literals across several lines, so the scan
-    produced ``/frames/([^/]+)/(?:`` — a fragment that cannot match anything and
-    is not a route. It was still counted as one: the contract driver
-    concretised it, recorded the 404 that a non-route naturally produces, and
-    that 404 went into the claimed coverage.
-
-    Python's parser joins implicitly concatenated literals before the AST
-    exists, so reading the call's first argument as a constant gets the whole
-    pattern — and anything that is *not* a constant is not something this can
-    describe, so it is left out rather than half-read.
+    matcher out of adjacent raw literals across several lines, so the scan can
+    produce a fragment that cannot match anything. Python's parser joins those
+    literals before the AST exists; non-constant matchers are left out rather
+    than half-read.
     """
     try:
         tree = ast.parse(textwrap.dedent(text))
     except SyntaxError:
-        # A fragment rather than a module — the tests hand this function one,
-        # and so would any future caller scanning a snippet. Fall back to the
-        # scan, which reads the first literal of a concatenation: the
-        # completeness filter in `http_routes` is what stops the truncation
-        # that produces from being counted, in either path.
         return set(_PATTERN.findall(text))
     found: set[str] = set()
     for node in ast.walk(tree):
@@ -163,14 +177,40 @@ def _fullmatch_patterns(text: str) -> set[str]:
     return found
 
 
-def is_complete_matcher(route: str) -> bool:
-    """Can this entry stand for a route at all?
+def _route_spec_patterns(text: str) -> set[str]:
+    """Read constant RouteSpec patterns from a supplied source fragment.
 
-    A path, and a regex that compiles. An entry that cannot form a complete
-    matcher describes no surface, so counting it as covered — on the strength
-    of the 404 it earns for not being a route — inflates the number that is
-    supposed to mean "every endpoint has an observed response".
+    Normal inventory does not depend on this parser for declarative modules —
+    it reads their live ``ROUTES`` table. This helper keeps source-oriented
+    contract tests meaningful and lets them compare a module in isolation.
     """
+
+    try:
+        tree = ast.parse(textwrap.dedent(text))
+    except SyntaxError:
+        return set()
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _callee_name(node) != "RouteSpec":
+            continue
+        if len(node.args) >= 3:
+            pattern = node.args[2]
+        else:
+            pattern = next(
+                (
+                    kw.value
+                    for kw in node.keywords
+                    if kw.arg == "pattern"
+                ),
+                None,
+            )
+        if isinstance(pattern, ast.Constant) and isinstance(pattern.value, str):
+            found.add(pattern.value)
+    return found
+
+
+def is_complete_matcher(route: str) -> bool:
+    """Can this entry stand for a route at all?"""
     if not route.startswith("/"):
         return False
     try:
@@ -181,29 +221,32 @@ def is_complete_matcher(route: str) -> bool:
 
 
 def http_routes(source: str | None = None) -> set[str]:
-    """Every path the HTTP surface can match, relative to the API root."""
-    text = source if source is not None else "\n".join(_route_sources())
-    routes = set(_EXACT.findall(text)) | _fullmatch_patterns(text)
+    """Every path the HTTP surface can match, relative to the API root.
+
+    With no ``source`` override, declarative route modules contribute their live
+    RouteSpec patterns and only legacy modules are source-scanned. A supplied
+    source is treated as an isolated fragment for extractor tests.
+    """
+
+    if source is None:
+        text = "\n".join(_route_sources())
+        declared = {spec.pattern for spec in declared_http_routes()}
+    else:
+        text = source
+        declared = _route_spec_patterns(text)
+    routes = declared | set(_EXACT.findall(text)) | _fullmatch_patterns(text)
     routes |= set(_PREFIX.findall(text))
     for group in _MEMBERSHIP.findall(text):
         routes |= set(_MEMBER_ITEM.findall(group))
-    # A route is a path that can match something. Anything else is not surface,
-    # and must not be counted as covered.
     return {route for route in routes if is_complete_matcher(route)}
 
 
 def websocket_inbound(source: str | None = None) -> set[str]:
     """Message types a client may send over the socket."""
     text = source if source is not None else _source()
-    # Bounded to the socket handler so unrelated `t == "..."` comparisons
-    # elsewhere in the gateway cannot inflate the surface.
     start = text.find("def _handle_ws")
     if start < 0:
         return set()
-    # Bounded at BOTH ends. Scanning to end-of-file swept in an unrelated
-    # truthiness check hundreds of lines later that happens to use the same
-    # loop variable name, which would have put "false"/"no"/"off" in the
-    # inventory as client message types.
     body = text[start:]
     end = re.search(r"\n(?=def |class )", body)
     handler = body[: end.start()] if end else body
@@ -226,24 +269,8 @@ _EMIT_CALLS = frozenset(
 _EVENT_ADDRESS_KEYS = frozenset({"root_frame_id", "frame_id"})
 
 
-def _callee_name(node: ast.Call) -> str:
-    func = node.func
-    if isinstance(func, ast.Name):
-        return func.id
-    if isinstance(func, ast.Attribute):
-        return func.attr
-    return ""
-
-
 def _event_types_in_module(text: str) -> set[str]:
-    """Event type literals in one module, by AST rather than by regex.
-
-    A plain `"type": "..."` scan cannot be used here: `finalize.py` alone
-    contributes `string`/`number`/`object`/`array` from JSON-schema fragments,
-    and a contract inventory that lists non-events is as wrong as one that
-    omits events. Two signals mark a real one — the dict is addressed at a
-    session, or it is handed to something that emits.
-    """
+    """Event type literals in one module, by AST rather than by regex."""
     try:
         tree = ast.parse(text)
     except SyntaxError:  # pragma: no cover - the tree is import-checked in CI
@@ -295,9 +322,8 @@ def _event_source_files() -> list[Path]:
 def websocket_outbound(source: str | None = None) -> set[str]:
     """Event types the server may emit over the socket.
 
-    ``source`` overrides the gateway text only, for the tests that feed a
-    synthetic routing chain; the service modules are always read from disk,
-    since there is no single text that could stand in for all of them.
+    ``source`` overrides the gateway text only, for tests that feed a synthetic
+    routing chain; service modules are always read from disk.
     """
     text = source if source is not None else _source()
     outbound = set(_WS_OUTBOUND.findall(text))
@@ -312,20 +338,7 @@ def websocket_outbound(source: str | None = None) -> set[str]:
 
 
 def inventory() -> dict:
-    """The machine-readable surface: every route and event this build exposes.
-
-    ``http_routes`` gets no ``source`` argument so it reads the full route set
-    — gateway.py *plus* the modules route branches were extracted into.
-    Handing it the gateway text alone defeated the very widening
-    ``_route_sources`` exists for: ``http_routes()`` reported 144 routes while
-    ``inventory()["http_routes"]`` reported 132, and the 12 endpoints in
-    kernel_routes.py were absent from the artifact that is supposed to be the
-    contract. A surface missing from the inventory is a surface nothing checks.
-
-    The two websocket scans keep the gateway text on purpose: inbound types are
-    bounded to the socket handler that lives there, and ``websocket_outbound``
-    reads the service modules from disk itself.
-    """
+    """The machine-readable surface: every route and event this build exposes."""
     text = _source()
     return {
         "http_routes": sorted(http_routes()),
@@ -335,12 +348,7 @@ def inventory() -> dict:
 
 
 def route_family(route: str) -> str:
-    """The first stable path segment, e.g. "/frames/([^/]+)/kernel" -> "frames".
-
-    Documentation is organised by family rather than by exact path — a doc that
-    had to enumerate every parameterised variant would be unmaintainable and
-    would therefore stop being maintained.
-    """
+    """The first stable path segment, e.g. "/frames/([^/]+)/kernel" -> "frames"."""
     parts = [p for p in route.split("/") if p]
     return parts[0] if parts else ""
 
@@ -354,6 +362,7 @@ def route_families(source: str | None = None) -> set[str]:
 
 
 __all__ = [
+    "declared_http_routes",
     "http_routes",
     "inventory",
     "route_families",
