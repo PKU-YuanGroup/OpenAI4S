@@ -155,8 +155,21 @@ _COMPARATOR_BEFORE = re.compile(
     r"|exceed(?:s|ed)?|up to|short of)\b)[^0-9a-z]*$"
 )
 _THRESHOLD_AFTER = ("target", "threshold", "cutoff", "goal", "cap", "limit", "budget")
-_CLAIM_WALK_MAX_NODES = 512
-_CLAIM_WALK_MAX_DEPTH = 6
+#: Bounds on the claim walk. Neither is a security parameter any more: hitting
+#: either makes ``_walk_file_claims`` report ``truncated=True`` and
+#: reconciliation *refuses* the submission, so a shape built to overrun a
+#: budget (a wall of decoy containers, or a claim buried below the depth cap)
+#: is rejected rather than waved through. Both used to end or prune the walk
+#: silently, which let exactly those shapes smuggle an unchecked fabricated
+#: claim past the whole check.
+#:
+#: With fail-closed semantics the only thing these still trade off is work
+#: against false refusals, so they sit far above any real ``output`` — a
+#: conclusion object is a handful of nodes a few levels deep — while keeping
+#: the worst case bounded (the walk runs while the kernel worker blocks on the
+#: host-call lock).
+_CLAIM_WALK_MAX_NODES = 65_536
+_CLAIM_WALK_MAX_DEPTH = 24
 _SCAN_MAX_ENTRIES = 4096
 _SCAN_MAX_DEPTH = 4
 _SCAN_SKIP_DIRS = frozenset({"node_modules", "venv", "__pycache__"})
@@ -269,26 +282,34 @@ def _claim_strings(value: Any) -> Iterator[str]:
                 yield item.strip()
 
 
-def collect_file_claims(output: Any) -> list[tuple[str, str]]:
-    """``(key, claim)`` pairs asserting produced files/artifacts in ``output``."""
+def _walk_file_claims(output: Any) -> tuple[list[tuple[str, str]], bool]:
+    """``((key, claim) pairs, truncated)`` for the produce keys in ``output``.
+
+    ``truncated`` is True when any container went uninspected — the node budget
+    ran out, or a subtree sat below the depth cap. Callers that gate a
+    submission on this treat it as fail-closed: a shape too large or too deep
+    to verify is refused, never accepted on the strength of the claims that
+    happened to be reachable. Both bounds used to be silent (one ended the
+    walk, the other pruned a subtree), and each was a constructible bypass:
+    decoy containers ahead of a buried claim, or a claim nested one level below
+    the depth cap, went unchecked and the submission was accepted.
+
+    Breadth-first over container nodes only, so shallow claims are visited
+    before deep decoys and leaves cost no budget.
+    """
 
     claims: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    # Breadth-first over container nodes only.  The budget exists to bound
-    # hostile shapes, not to be a bypass: the old LIFO walk aborted wholesale
-    # on the depth or node cap, so one deep decoy branch (or a long list of
-    # leaf strings) exhausted the budget before shallow, not-yet-visited
-    # produce keys were reached and their fabricated claims went unchecked.
-    # BFS visits shallow claims first, leaves cost no budget, and the depth
-    # cap prunes one subtree instead of ending the walk.
     queue: deque[tuple[Any, int]] = deque([(output, 0)])
     nodes = 0
+    truncated = False
     while queue:
         node, depth = queue.popleft()
         nodes += 1
         if nodes > _CLAIM_WALK_MAX_NODES:
-            break
+            return claims, True
         if depth > _CLAIM_WALK_MAX_DEPTH:
+            truncated = True
             continue
         children: Iterable[Any] = ()
         if isinstance(node, dict):
@@ -309,7 +330,13 @@ def collect_file_claims(output: Any) -> list[tuple[str, str]]:
         for value in children:
             if isinstance(value, (dict, list, tuple)):
                 queue.append((value, depth + 1))
-    return claims
+    return claims, truncated
+
+
+def collect_file_claims(output: Any) -> list[tuple[str, str]]:
+    """``(key, claim)`` pairs asserting produced files/artifacts in ``output``."""
+
+    return _walk_file_claims(output)[0]
 
 
 def _scan_basenames(root: Path) -> frozenset[str]:
@@ -346,6 +373,30 @@ def _scan_basenames(root: Path) -> frozenset[str]:
     return frozenset(names)
 
 
+def _within_a_root(path: Path, roots: tuple[Path, ...]) -> bool:
+    """Whether ``path`` resolves to a location inside one of ``roots``.
+
+    A path is disk-backed evidence only when it lands inside an authorized
+    evidence root (the session workspace / process cwd). Existence alone says
+    nothing about *this run* having produced it: an absolute claim of
+    ``/etc/hosts`` — or a relative ``../../etc/passwd`` climbing out of a
+    root — pointed at a real file the run never wrote and backed a fabricated
+    artifact claim. ``resolve()`` also collapses a workspace symlink aimed
+    outside the roots, so a link cannot launder an external file back in.
+    """
+    try:
+        resolved = path.resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    for root in roots:
+        try:
+            resolved.relative_to(root.resolve())
+            return True
+        except (OSError, ValueError, RuntimeError):
+            continue
+    return False
+
+
 def _claim_backed(
     claim: str,
     evidence: SubmissionEvidence,
@@ -357,11 +408,16 @@ def _claim_backed(
         return True
     try:
         if os.path.isabs(claim):
-            if Path(claim).exists():
+            candidate = Path(claim)
+            if candidate.exists() and _within_a_root(candidate, evidence.search_roots):
                 return True
         else:
             for root in evidence.search_roots:
-                if (root / claim).exists():
+                candidate = root / claim
+                # Confine the join to the root: a relative claim with ``..``
+                # segments resolves outside it, and existence there is not
+                # this run's evidence any more than an absolute system path is.
+                if candidate.exists() and _within_a_root(candidate, (root,)):
                     return True
     except (OSError, ValueError):
         pass
@@ -534,7 +590,18 @@ def reconcile_submission_claims(spec: dict, evidence: SubmissionEvidence) -> str
     problems: list[str] = []
     unmatched: list[str] = []
     scanned: dict[Path, frozenset[str]] = {}
-    for key, claim in collect_file_claims(output):
+    file_claims, truncated = _walk_file_claims(output)
+    if truncated:
+        # Fail closed: the output is too large or has too many containers to
+        # verify exhaustively, so some claim may be unchecked. Refusing (rather
+        # than accepting the reachable claims) is what stops a decoy-padded
+        # shape from smuggling a fabricated claim past the budget.
+        problems.append(
+            "output is too large or too deeply nested to verify its file "
+            "claims exhaustively; reduce it to a small, shallow conclusion "
+            "object that names only the files this run produced"
+        )
+    for key, claim in file_claims:
         if not _claim_backed(claim, evidence, scanned):
             unmatched.append(f"{claim!r} (under {key!r})")
     if unmatched:

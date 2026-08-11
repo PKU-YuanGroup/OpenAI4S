@@ -368,3 +368,102 @@ def test_stop_grace_period_is_the_shared_process_group_budget():
     # == TERM_GRACE_S).  A dead pid exercises the default path without
     # sleeping: the first poll observes the exit.
     assert cli_main._wait_pid_exit(99999999) is True
+
+
+def _state_cfg(tmp_path):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        pidfile=tmp_path / "daemon.pid",
+        statefile=tmp_path / "daemon.json",
+        host="127.0.0.1",
+        port=8760,
+    )
+
+
+def test_serve_clear_spares_a_pidfile_owned_by_another_booter(tmp_path):
+    """A startup that lost the race must not delete the winner's state.
+
+    Two concurrent `serve` runs could both pass the old read-then-write check;
+    if one then failed its build, its unconditional `_clear_state` deleted the
+    *winner's* pidfile, stranding a live daemon that `status`/`stop` then read
+    as "not running". The serve-side clear now only removes state it owns.
+    """
+    cfg = _state_cfg(tmp_path)
+    cfg.pidfile.write_text("424242", "utf-8")  # another process now owns it
+    cfg.statefile.write_text('{"pid": 424242}', "utf-8")
+
+    cli_main._clear_state(cfg, only_if_owned_by=os.getpid())
+    assert cfg.pidfile.read_text("utf-8").strip() == "424242", "must not delete it"
+
+    # `stop` clears unconditionally — it removes another process's state on
+    # purpose, after confirming that process is gone.
+    cli_main._clear_state(cfg)
+    assert not cfg.pidfile.exists() and not cfg.statefile.exists()
+
+
+def test_acquire_singleton_is_atomic_single_winner_and_reclaims_stale(tmp_path):
+    """`_acquire_singleton` is the atomic claim that closes the boot race.
+
+    O_EXCL makes "create the pidfile or fail" one step, so a second live
+    claimant is refused rather than both booting the same data dir; a stale
+    pidfile (its recorded pid is gone) is reclaimed exactly once.
+    """
+    cfg = _state_cfg(tmp_path)
+
+    assert cli_main._acquire_singleton(cfg) is True
+    assert cfg.pidfile.read_text("utf-8").strip() == str(os.getpid())
+    # Our own pid is alive, so a second claim against the same pidfile fails.
+    assert cli_main._acquire_singleton(cfg) is False
+
+    # A stale pidfile (dead pid) is reclaimed and rewritten with our pid.
+    cfg.pidfile.write_text("99999999", "utf-8")
+    assert cli_main._acquire_singleton(cfg) is True
+    assert cfg.pidfile.read_text("utf-8").strip() == str(os.getpid())
+
+
+def test_serve_arms_the_sigterm_handler_before_the_build(monkeypatch, capsys):
+    """The SIGTERM handler must be armed before the (slow) build, and a failed
+    startup must put back the disposition it found.
+
+    Installed only after the build returned, a signal arriving during a slow
+    store open/migration took the interpreter's default disposition —
+    terminate — orphaning the pidfile the boot had already claimed. Asserted on
+    the ordering of the real ``signal.signal`` calls rather than by signalling
+    this process: an asynchronously delivered SIGTERM raises KeyboardInterrupt
+    at whatever bytecode boundary it lands on, which escapes the test and
+    aborts the whole pytest session.
+    """
+    import errno as errno_mod
+
+    calls: list[tuple[str, object]] = []
+    real_signal = signal.signal
+
+    def recording_signal(signum, handler):
+        if signum == signal.SIGTERM:
+            calls.append(("sigterm", handler))
+        return real_signal(signum, handler)
+
+    def build(_cfg):
+        calls.append(("build", None))
+        raise OSError(errno_mod.EADDRINUSE, "address already in use")
+
+    import openai4s.server as server_pkg
+
+    monkeypatch.setattr(server_pkg, "build_server", build)
+    monkeypatch.setenv("OPENAI4S_NO_OPEN", "1")
+
+    # Whatever this process's disposition happens to be — an earlier serve test
+    # in this module may already have armed the same handler, so identity alone
+    # cannot tell "armed" from "restored".
+    before = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(cli_main.signal, "signal", recording_signal)
+    try:
+        assert cli_main.main(["serve", "--no-open"]) == 1
+    finally:
+        real_signal(signal.SIGTERM, before)
+    capsys.readouterr()
+
+    assert [step for step, _ in calls] == ["sigterm", "build", "sigterm"]
+    assert calls[0][1] is cli_main._sigterm_to_keyboard_interrupt, "armed before build"
+    assert calls[2][1] is before, "a failed startup restores what it found"

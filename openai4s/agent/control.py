@@ -23,6 +23,38 @@ GroupPreparation = Callable[[], None]
 _MAX_PARALLEL_READS = 8
 
 
+def call_reaches_dispatcher(
+    name: Any, catalog: Any = None, arguments: Any = None
+) -> bool:
+    """Whether a native call would actually reach the dispatcher (execute work).
+
+    Finalize evidence must count executed work, not declared work. An unknown
+    tool name, or a known tool with invalid arguments, is refused *before* the
+    dispatcher — ``execute_tool_call`` reports it and nothing runs — so it must
+    not back a later execution-shaped completion claim.
+
+    The native batch already applies this gate before ``invoke`` (unknown names
+    slip through its validator, hence the name check here), but the legacy
+    text-parsed path invokes calls without a prior validate, so pass
+    ``arguments`` there to reject a known tool whose arguments would be refused.
+    (A known, valid call blocked by a static precheck is the one residual
+    over-count; such blocks are rare, and are themselves a signal the model
+    should not then claim it executed work.)
+    """
+    if not isinstance(name, str) or not name:
+        return False
+    if catalog is None:
+        tool = get_tool(name)
+    else:
+        getter = getattr(catalog, "get", None)
+        tool = getter(name) if callable(getter) else None
+    if tool is None:
+        return False
+    if arguments is not None and tool_validation_error(name, arguments, catalog):
+        return False
+    return True
+
+
 def _never_cancelled() -> bool:
     return False
 
@@ -289,6 +321,7 @@ __all__ = [
     "ToolInvoker",
     "ToolParallelPolicy",
     "GroupPreparation",
+    "call_reaches_dispatcher",
     "execute_native_batch",
     "tool_parallel_policy",
 ]

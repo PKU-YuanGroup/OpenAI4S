@@ -59,11 +59,13 @@ def test_collect_file_claims_targets_produce_shaped_keys_only():
     # produce keys require file-shaped strings, so bare words there are inert.
     assert collect_file_claims({"files": ["notes without extension"]}) == []
     assert collect_file_claims("plain prose output") == []
-    # The bounded walk survives hostile shapes: deep nesting and cycles.
+    # The bounded walk survives hostile shapes: deep nesting and cycles. A
+    # claim within the depth bound is collected rather than silently pruned —
+    # pruning it *and* staying quiet is what let a nested claim go unchecked.
     deep = {"files": ["deep.csv"]}
     for _ in range(20):
         deep = {"wrap": deep}
-    assert collect_file_claims(deep) == []
+    assert collect_file_claims(deep) == [("files", "deep.csv")]
     cyclic = {"files": ["seen.csv"]}
     cyclic["self"] = cyclic
     assert collect_file_claims(cyclic) == [("files", "seen.csv")]
@@ -428,3 +430,97 @@ def test_artifacts_mapping_labels_are_not_id_claims():
     assert ("artifacts", "report.md") in collect_file_claims(
         {"artifacts": {"report.md": "the report"}}
     )
+
+
+def test_absolute_and_relative_claims_are_confined_to_search_roots(tmp_path):
+    """A path is disk-backed evidence only inside an authorized search root.
+
+    Existence alone backed a fabricated artifact claim: an absolute
+    ``/etc/hosts`` — or a relative path climbing out of the workspace with
+    ``..`` — named a real file the run never produced. Only paths resolving
+    inside a search root (the mid-cell escape hatch) may back a claim.
+    """
+    import os
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "inside.csv").write_text("x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.csv").write_text("x")
+    evidence = SubmissionEvidence(search_roots=(root,))
+
+    # In-root claims stay backed — this is the legitimate mid-cell path.
+    assert (
+        reconcile_submission_claims(_spec({"files": ["inside.csv"]}), evidence) is None
+    )
+    assert (
+        reconcile_submission_claims(
+            _spec({"files": [str(root / "inside.csv")]}), evidence
+        )
+        is None
+    )
+
+    # An absolute system path outside every root is refused despite existing.
+    if os.path.exists("/etc/hosts"):
+        err = reconcile_submission_claims(
+            _spec({"artifacts": ["/etc/hosts"]}), evidence
+        )
+        assert err and "/etc/hosts" in err
+    # An absolute path to a real file outside the root is refused.
+    assert reconcile_submission_claims(
+        _spec({"files": [str(outside / "secret.csv")]}), evidence
+    )
+    # A relative claim climbing out of the root with ``..`` is refused too.
+    assert reconcile_submission_claims(
+        _spec({"files": ["../outside/secret.csv"]}), evidence
+    )
+
+
+def test_an_unverifiable_shape_fails_closed_instead_of_smuggling_a_claim():
+    """Neither walk bound may drop a claim silently.
+
+    Both were constructible bypasses: a wall of decoy containers exhausted the
+    node budget and ended the walk, and a claim nested below the depth cap was
+    pruned — in both cases the fabricated claim was never inspected and the
+    submission was accepted. Now a shape within the bounds is walked in full
+    (the claim is caught) and a shape beyond them is refused as unverifiable.
+    """
+    from openai4s.host.completion import (
+        _CLAIM_WALK_MAX_DEPTH,
+        _CLAIM_WALK_MAX_NODES,
+        _walk_file_claims,
+    )
+
+    # Within the bounds: the buried claim is walked and refused on empty
+    # evidence, rather than slipping past behind the decoys.
+    padded = {
+        "pad": [{"a": i} for i in range(600)],
+        "hidden": {"deep": {"files": ["fabricated_evil.csv"]}},
+    }
+    assert ("files", "fabricated_evil.csv") in collect_file_claims(padded)
+    assert reconcile_submission_claims(_spec(padded), SubmissionEvidence()) is not None
+
+    # Nested just past the depth cap: previously pruned in silence.
+    too_deep = {"files": ["fabricated_deep.csv"]}
+    for _ in range(_CLAIM_WALK_MAX_DEPTH + 1):
+        too_deep = {"wrap": too_deep}
+    _claims, truncated = _walk_file_claims(too_deep)
+    assert truncated is True
+    err = reconcile_submission_claims(_spec(too_deep), SubmissionEvidence())
+    assert err and "too deeply nested" in err
+
+    # Past the node budget: previously ended the walk in silence. One shared
+    # empty dict keeps the fixture cheap; each occurrence is still a visit.
+    too_many = {"pad": [{}] * (_CLAIM_WALK_MAX_NODES + 16)}
+    _claims, truncated = _walk_file_claims(too_many)
+    assert truncated is True
+    err = reconcile_submission_claims(_spec(too_many), SubmissionEvidence())
+    assert err and "too large" in err
+
+    # An ordinary conclusion object is never truncated, so the fail-closed
+    # branch cannot refuse honest submissions.
+    _claims, truncated = _walk_file_claims(
+        {"summary": "done", "answer": 42, "files": ["real.csv"], "rows": [{"n": 1}]}
+    )
+    assert truncated is False

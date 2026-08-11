@@ -18,7 +18,11 @@ from openai4s.agent.actions import (
     has_incomplete_code_block,
     is_completion_only_cell,
 )
-from openai4s.agent.control import execute_native_batch, tool_parallel_policy
+from openai4s.agent.control import (
+    call_reaches_dispatcher,
+    execute_native_batch,
+    tool_parallel_policy,
+)
 from openai4s.agent.events import (
     ActionRouted,
     AgentEvent,
@@ -484,13 +488,19 @@ class WebActionExecutor:
                 )
             # Count dispatched calls, not declared ones: the batch answers
             # parse/validation/limit refusals and post-cancel remainders
-            # without ever invoking a tool, and those must not become
-            # finalize-time evidence.  list.append is atomic under the GIL,
-            # so the parallel read waves count safely.
+            # without ever invoking a tool, and an unknown tool name reaches
+            # invoke but is refused before the dispatcher — none executed work.
+            # Count only calls that actually reach the dispatcher, so a
+            # refused/hallucinated call cannot become finalize-time evidence.
+            # list.append is atomic under the GIL, so the parallel read waves
+            # count safely.
             invoked: list[Any] = []
 
             def _counted_invoke(call):
-                invoked.append(call)
+                if call_reaches_dispatcher(
+                    call.name, self.tool_catalog, call.arguments
+                ):
+                    invoked.append(call)
                 return self._invoke_native(call, apply_pending=False)
 
             outcome = execute_native_batch(action, _counted_invoke, **kwargs)
@@ -612,6 +622,7 @@ class WebActionExecutor:
             calls, errors = parse_tool_calls(reply.content, self.tool_catalog)
         if calls or errors:
             parts: list[str] = []
+            executed = 0
             for call in calls[:MAX_TOOL_CALLS_PER_TURN]:
                 if self.cancelled():
                     errors.append("remaining legacy tool calls skipped: cancelled")
@@ -622,8 +633,17 @@ class WebActionExecutor:
                     errors.append(_env_switch_notice(exc))
                     break
                 parts.append(text)
-            if parts:
-                note_execution_evidence(state.metadata, tool_calls=len(parts))
+                # Count only calls that reach the dispatcher: an unknown name
+                # or invalid arguments are refused before it and executed
+                # nothing, so they must not back an execution-shaped finalize.
+                if call_reaches_dispatcher(
+                    (call or {}).get("name"),
+                    self.tool_catalog,
+                    (call or {}).get("arguments"),
+                ):
+                    executed += 1
+            if executed:
+                note_execution_evidence(state.metadata, tool_calls=executed)
             if not self.cancelled():
                 try:
                     self.apply_pending()

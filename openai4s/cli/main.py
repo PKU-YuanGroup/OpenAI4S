@@ -30,22 +30,66 @@ from openai4s.config import get_config
 from openai4s.execution.process_group import TERM_GRACE_S
 
 
-def _write_state(cfg) -> None:
-    cfg.pidfile.write_text(str(os.getpid()), "utf-8")
-    cfg.statefile.write_text(
-        json.dumps(
-            {
-                "pid": os.getpid(),
-                "host": cfg.host,
-                "port": cfg.port,
-                "started_at": int(time.time()),
-            }
-        ),
-        "utf-8",
+def _statefile_payload(cfg) -> str:
+    return json.dumps(
+        {
+            "pid": os.getpid(),
+            "host": cfg.host,
+            "port": cfg.port,
+            "started_at": int(time.time()),
+        }
     )
 
 
-def _clear_state(cfg) -> None:
+def _acquire_singleton(cfg) -> bool:
+    """Atomically claim the daemon pidfile. True iff we now own the singleton.
+
+    ``O_CREAT|O_EXCL`` makes "create the pidfile or fail" a single atomic step,
+    closing the check-then-write race where two concurrent ``serve`` runs each
+    passed a separate liveness check and then both booted the same data dir. A
+    stale pidfile (its recorded pid is gone) is reclaimed once; a live one
+    means another daemon holds the slot. The statefile is a non-authoritative
+    sidecar written after — the pidfile is the lock.
+    """
+    for reclaim in (True, False):
+        try:
+            fd = os.open(cfg.pidfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            existing = _read_pid(cfg)
+            if existing and _pid_alive(existing):
+                return False
+            if not reclaim:
+                return False  # a concurrent booter won the reclaim
+            try:
+                cfg.pidfile.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(str(os.getpid()))
+        except OSError:
+            _clear_state(cfg, only_if_owned_by=os.getpid())
+            raise
+        cfg.statefile.write_text(_statefile_payload(cfg), "utf-8")
+        return True
+    return False
+
+
+def _clear_state(cfg, *, only_if_owned_by: int | None = None) -> None:
+    """Remove the daemon state files.
+
+    ``only_if_owned_by`` guards the serve path: on a startup failure a booter
+    must delete only the pidfile it actually wrote, never one a concurrent
+    winner now owns (deleting that stranded a live daemon whose port stayed
+    bound while ``status`` and ``stop`` read "not running"). ``stop`` clears
+    unconditionally — it is deliberately removing another process's state after
+    confirming that process is gone.
+    """
+    if only_if_owned_by is not None:
+        current = _read_pid(cfg)
+        if current is not None and current != only_if_owned_by:
+            return
     for p in (cfg.pidfile, cfg.statefile):
         try:
             p.unlink()
@@ -139,34 +183,48 @@ def cmd_serve(args) -> int:
     from openai4s.server import build_server, run_server
 
     cfg = get_config()
-    existing = _read_pid(cfg)
-    if existing and _pid_alive(existing):
-        print(f"daemon already running (pid {existing}) at {_url(cfg)}")
+    # Atomically claim the singleton, covering the whole boot. A plain
+    # read-then-write let a second `serve` racing a slow store open/migration
+    # pass a separate liveness check and boot the same data dir concurrently;
+    # O_EXCL makes the claim one step so exactly one booter wins. Every
+    # build-failure path below clears only the state this process owns.
+    if not _acquire_singleton(cfg):
+        existing = _read_pid(cfg)
+        if existing and _pid_alive(existing):
+            print(f"daemon already running (pid {existing}) at {_url(cfg)}")
+        else:
+            print(
+                "another `openai4s serve` is starting on this data dir; "
+                "retry in a moment",
+                file=sys.stderr,
+            )
         return 1
-    # The pidfile covers the whole boot, not just the post-bind lifetime:
-    # written after the build, a second `serve` racing a slow store
-    # open/migration passed the singleton check above and booted the same
-    # data dir concurrently, while `stop`/`status` called the mid-boot
-    # daemon "not running".  Every build-failure path below clears it.
-    _write_state(cfg)
+    my_pid = os.getpid()
+    # Arm the SIGTERM handler before the (possibly slow) build_server: a signal
+    # arriving mid-build must run teardown, not the interpreter's default
+    # terminate, which would orphan the pidfile just claimed above. A startup
+    # that fails puts back the disposition it found, so an in-process caller
+    # does not inherit this one from a `serve` that never served.
+    previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
     # Bind before the banner: "listening" printed ahead of the actual bind made
     # a port collision look like a crash after a successful start. Binding also
     # mints the access token, so the URL printed below actually opens.
     try:
         httpd = build_server(cfg)
     except OSError as exc:
-        _clear_state(cfg)
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        _clear_state(cfg, only_if_owned_by=my_pid)
         message = _bind_failure_message(exc, cfg)
         if message is None:
             raise
         print(message, file=sys.stderr)
         return 1
     except BaseException:
-        _clear_state(cfg)
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        _clear_state(cfg, only_if_owned_by=my_pid)
         raise
     print(f"openai4s listening at {_url(cfg)} (model={cfg.llm.model})")
     print("web UI ready. Ctrl-C to stop.")
-    signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
     if not os.environ.get("OPENAI4S_NO_OPEN") and not getattr(args, "no_open", False):
 
         def _open():
@@ -186,7 +244,7 @@ def cmd_serve(args) -> int:
         # command must not carry two copies of serve/teardown that can drift.
         run_server(httpd)
     finally:
-        _clear_state(cfg)
+        _clear_state(cfg, only_if_owned_by=my_pid)
     return 0
 
 

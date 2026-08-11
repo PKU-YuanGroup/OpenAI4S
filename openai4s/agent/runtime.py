@@ -41,7 +41,11 @@ from .compaction import (
     safe_keep_recent,
     should_compact,
 )
-from .control import execute_native_batch, tool_parallel_policy
+from .control import (
+    call_reaches_dispatcher,
+    execute_native_batch,
+    tool_parallel_policy,
+)
 from .events import AgentEvent, OutcomeProduced, ReplyReceived
 from .finalize import (
     execute_finalize_action,
@@ -292,13 +296,16 @@ class LocalActionExecutor:
     ) -> ExecutionOutcome:
         # Evidence counts dispatched calls, not declared ones: the batch
         # answers parse/validation/limit refusals without invoking anything,
-        # and those must not back a later execution-shaped finalize claim.
-        # list.append is atomic under the GIL, so parallel read waves count
-        # safely.
+        # and an unknown tool name reaches invoke but is refused before the
+        # dispatcher — none executed work. Count only calls that actually reach
+        # the dispatcher, so a refused/hallucinated call cannot back a later
+        # execution-shaped finalize claim. list.append is atomic under the GIL,
+        # so parallel read waves count safely.
         invoked: list[Any] = []
 
         def invoke(call):
-            invoked.append(call)
+            if call_reaches_dispatcher(call.name, self.tool_catalog, call.arguments):
+                invoked.append(call)
             payload = {"name": call.name, "arguments": call.arguments}
             binder = getattr(self.dispatcher, "bind_action_context", None)
 
@@ -410,14 +417,22 @@ class LocalActionExecutor:
                     errors,
                     self.tool_catalog,
                 )
-            if calls:
-                # ``run_tool_calls`` dispatches only the first
-                # MAX_TOOL_CALLS_PER_TURN parsed calls; the remainder never
-                # ran and must not be counted.
-                note_execution_evidence(
-                    state.metadata,
-                    tool_calls=len(calls[:MAX_TOOL_CALLS_PER_TURN]),
+            # ``run_tool_calls`` dispatches only the first
+            # MAX_TOOL_CALLS_PER_TURN parsed calls; the remainder never ran.
+            # Of those, count only calls naming a known tool: an unknown name
+            # is refused before the dispatcher and executed nothing, so it must
+            # not back a later execution-shaped finalize claim.
+            executed = sum(
+                1
+                for call in calls[:MAX_TOOL_CALLS_PER_TURN]
+                if call_reaches_dispatcher(
+                    (call or {}).get("name"),
+                    self.tool_catalog,
+                    (call or {}).get("arguments"),
                 )
+            )
+            if executed:
+                note_execution_evidence(state.metadata, tool_calls=executed)
         elif has_incomplete_code_block(reply.content):
             observation = INCOMPLETE_CELL_NUDGE
         else:

@@ -591,3 +591,81 @@ def test_cli_r_unavailable_soft_error_never_counts_as_execution_evidence():
     )
     assert "R kernel unavailable" in str(outcome.observation)
     assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+
+def test_call_reaches_dispatcher_gates_evidence_counting():
+    """Evidence counts only calls that would actually run a tool.
+
+    A hallucinated tool name, or a known tool whose arguments would be
+    refused, executes nothing — counting it let a refused call back a later
+    execution-shaped finalize claim.
+    """
+    from openai4s.agent.control import call_reaches_dispatcher
+
+    # A known tool with valid arguments will be dispatched → counts.
+    assert call_reaches_dispatcher("read_text_file", None, {"path": "a.txt"}) is True
+    # The native path validated arguments before invoke, so a bare known name
+    # (no arguments passed) counts too.
+    assert call_reaches_dispatcher("list_dir", None) is True
+    # An unknown / hallucinated name is refused before the dispatcher.
+    assert call_reaches_dispatcher("run_python_cell", None, {"code": "x"}) is False
+    # A known tool with a type-invalid argument is refused before the dispatcher
+    # (this is the legacy path's gap: it has no prior validate step).
+    assert call_reaches_dispatcher("read_text_file", None, {"path": 123}) is False
+    # Degenerate names never count.
+    assert call_reaches_dispatcher(None) is False
+    assert call_reaches_dispatcher("") is False
+
+
+def test_unknown_native_tool_name_never_counts_as_execution_evidence():
+    """A hallucinated native tool name slips past the batch validator (which
+    only knows how to reject *known* tools' bad input) but is refused before
+    the dispatcher — it must not become finalize-time evidence."""
+    unknown = NativeToolCall(
+        id="t-1",
+        wire_id="wire-1",
+        name="run_python_cell",
+        ordinal=0,
+        raw_arguments='{"code": "print(1)"}',
+        arguments={"code": "print(1)"},
+        parse_error=None,
+    )
+
+    class NeverInvokedDispatcher:
+        last_output = None
+
+        def __call__(self, *a, **k):  # pragma: no cover - unknown tool early-exits
+            raise AssertionError("an unknown tool must not reach the dispatcher")
+
+    local = LocalActionExecutor(
+        _NeverKernel(),
+        NeverInvokedDispatcher(),
+        lambda code, messages: None,
+        lambda code: {"error": "R must not start"},
+    )
+    state = RunState([])
+    local.execute(NativeToolBatch((unknown,)), ModelReply(tool_calls=(unknown,)), state)
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+    call = _call(_arguments(completion_bullets=["Ran the analysis"]))
+    refused = local.execute(FinalizeAction(call), ModelReply(tool_calls=(call,)), state)
+    assert refused.history_messages[0]["is_error"] is True
+    assert refused.completion is None
+
+
+def test_legacy_unknown_or_invalid_tool_calls_never_count_as_evidence():
+    """The text-parsed path has no prior validate gate, so it must itself
+    refuse to count an unknown tool or a known tool with invalid arguments."""
+    local = LocalActionExecutor(
+        _NeverKernel(),
+        _NeverDispatcher(),
+        lambda code, messages: None,
+        lambda code: {"error": "R must not start"},
+    )
+    for content in (
+        '```tool\n{"name": "run_python_cell", "arguments": {"code": "x"}}\n```',
+        '```tool\n{"name": "read_text_file", "arguments": {"path": 123}}\n```',
+    ):
+        state = RunState([])
+        local.execute(None, ModelReply(content=content), state)
+        assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
