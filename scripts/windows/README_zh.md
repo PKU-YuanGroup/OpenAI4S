@@ -24,6 +24,8 @@ Windows 发布包用作入口的三个文件。[`../build_windows_zip.sh`](../bu
 WSL2 报告自己是 `linux`，属于受支持平台，所以这个包跑的就是其他平台跑的同一个程序，而不是
 它的近似版。平台支持矩阵见 [`../../docs/platforms.md`](../../docs/platforms.md)。
 
+面向用户的完整步骤见 [`../../docs/windows-wsl.md`](../../docs/windows-wsl.md)。当前启动链路会优先选择 Ubuntu 24.04，使用与真实 Cell 一致的生命周期、IPC、UTS 和 network namespace 参数验证 bubblewrap 0.8.0+，写入国内镜像配置和 `~/.local/bin/openai4s`，以 `enforce` 沙箱后台启动，并只打开 `openai4s url` 返回的安全地址。
+
 ## 文件
 
 | 文件 | 职责 |

@@ -123,7 +123,9 @@ Host-RPC limitations.
 
 ```bash
 openai4s init      # guided first-run model configuration (headless-friendly)
-openai4s serve     # daemon + web UI (foreground)
+openai4s serve     # daemon + web UI (foreground; --detached to background,
+                   # plus --host/--port/--no-browser; the detached parent waits
+                   # up to 60s for /health, OPENAI4S_DETACHED_READY_TIMEOUT overrides)
 openai4s status    # is it up?
 openai4s stop      # stop the daemon
 openai4s run "…"   # one Code-as-Action task in-process, no daemon

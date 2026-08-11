@@ -461,11 +461,16 @@ class Kernel:
         and self-disarms, so the interrupt stops the cell but keeps the kernel
         (and its namespace) alive.
         """
-        import os
         import signal
 
+        sender = getattr(self._sandbox, "send_interrupt", None)
+        if callable(sender) and sender(self._proc.pid, signal.SIGINT):
+            return
         try:
-            os.kill(self._proc.pid, signal.SIGINT)
+            # Popen owns the direct child identity and synchronizes its poll /
+            # signal path. Bubblewrap's numeric grandchild never reaches here;
+            # KernelSandbox pins that target with a pidfd above.
+            self._proc.send_signal(signal.SIGINT)
         except (ProcessLookupError, OSError):
             pass
 

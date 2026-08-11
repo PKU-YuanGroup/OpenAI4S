@@ -72,7 +72,48 @@ _CREDENTIAL_ASSIGNMENT = re.compile(r"(?i)(api[_-]?key|secret|token)\s*=\s*[\"']
 _REQUIRED_GUIDANCE = (
     "wsl --install",
     "wsl --set-version",
+    "Ubuntu-24.04",
     "localhostForwarding",
+)
+
+#: These are executable contracts, not prose: the Windows side must ask the
+#: installed CLI for the authenticated URL, and the WSL side must prove the
+#: sandbox baseline before installing or starting anything.
+_REQUIRED_LAUNCHER_RUNTIME = (
+    "Get-AppUrl",
+    "Test-OpenAI4SServing",
+    "Test-LocalhostForwardingDisabled",
+    "Get-WslIpv4",
+    # An existing installation pins the distro choice; without this probe an
+    # Ubuntu-24.04 install would silently strand the user's sessions in the
+    # previously used distribution.
+    "Test-DistroHasInstall",
+    "'dev', 'eth0', 'scope', 'global'",
+    "192.0.2.1",
+    'proxyBypass = "127.0.0.1,localhost,$AppHost"',
+    '"NO_PROXY=$proxyBypass"',
+    '"no_proxy=$proxyBypass"',
+    "if (-not (Test-SandboxIndependentCli $Arguments))",
+    "OPENAI4S_WSL_PYPI_INDEX",
+    "OPENAI4S_WSL_CONDA_MIRROR",
+)
+
+_REQUIRED_BOOTSTRAP_RUNTIME = (
+    "preflight)",
+    'MIN_BWRAP_VERSION="0.8.0"',
+    "--die-with-parent",
+    "--new-session",
+    "--unshare-ipc",
+    "--unshare-uts",
+    "--unshare-net",
+    "OPENAI4S_KERNEL_SANDBOX",
+    "--no-browser",
+    "--detached",
+    "install_cli_link",
+    "OPENAI4S_PYPI_INDEX_URL",
+    # Mirror config files are rewritten only when they carry this marker; a
+    # user-edited pip.conf/condarc must survive the next launch.
+    "managed-by-openai4s-windows-launcher",
 )
 
 
@@ -193,6 +234,51 @@ def _check_no_native_windows_path(package: _Package) -> None:
         raise BundleCheckError(
             "openai4s.ps1 no longer tells the user how to recover from: "
             + ", ".join(missing)
+        )
+
+
+def _check_wsl_runtime_contract(package: _Package) -> None:
+    """The launcher opens an authenticated UI and fails closed on no sandbox."""
+
+    launcher = package.read("openai4s.ps1").decode("ascii")
+    bootstrap = package.read("wsl/bootstrap.sh").decode("ascii")
+    missing_launcher = [
+        text for text in _REQUIRED_LAUNCHER_RUNTIME if text not in launcher
+    ]
+    if missing_launcher:
+        raise BundleCheckError(
+            "openai4s.ps1 lost its secure WSL launch contract: "
+            + ", ".join(missing_launcher)
+        )
+    # The bare root is intentionally unauthorized. Opening it yields a 401 and
+    # a blank first launch; only `openai4s url` returns the query bootstrap that
+    # sets the browser cookie and immediately removes the credential from the
+    # address bar.
+    if re.search(r"(?im)^\s*Start-Process\s+\$Url\s*$", launcher):
+        raise BundleCheckError(
+            "openai4s.ps1 opens the unauthenticated bare URL instead of the "
+            "tokenized URL returned by openai4s url"
+        )
+    if "Start-Process $appUrl" not in launcher:
+        raise BundleCheckError(
+            "openai4s.ps1 never opens the authenticated URL returned by Get-AppUrl"
+        )
+
+    missing_bootstrap = [
+        text for text in _REQUIRED_BOOTSTRAP_RUNTIME if text not in bootstrap
+    ]
+    if missing_bootstrap:
+        raise BundleCheckError(
+            "wsl/bootstrap.sh lost its WSL2/sandbox contract: "
+            + ", ".join(missing_bootstrap)
+        )
+    mismatched_preflight = [
+        flag for flag in ("--unshare-user", "--uid 0", "--gid 0") if flag in bootstrap
+    ]
+    if mismatched_preflight:
+        raise BundleCheckError(
+            "wsl/bootstrap.sh preflight uses flags absent from the runtime "
+            "sandbox: " + ", ".join(mismatched_preflight)
         )
 
 
@@ -321,6 +407,7 @@ def verify(target: Path) -> None:
     _check_ascii(package)
     _check_line_endings(package)
     _check_no_native_windows_path(package)
+    _check_wsl_runtime_contract(package)
     _check_no_secrets(package)
     payload_dir, digest = _check_payload(package, version, arch)
 
@@ -328,6 +415,7 @@ def verify(target: Path) -> None:
     print(f"package   : {package.name}  (v{version}, windows-{arch})")
     print("launcher  : OpenAI4S.cmd + openai4s.ps1 (CRLF) + wsl/bootstrap.sh (LF)")
     print("platform  : every execution path goes through wsl.exe; no Windows binaries")
+    print("WSL gate  : WSL2 + working bubblewrap >= 0.8.0; authenticated browser URL")
     print(f"payload   : {payload_dir}  sha256 {digest[:16]}…, sidecar agrees")
     print(
         f"size      : {total / 1024 / 1024:.0f} MB unpacked, {len(package.entries)} files"

@@ -23,7 +23,7 @@ because that package does not run OpenAI4S on Windows.
 | --- | --- | --- | --- |
 | `OpenAI4S-<v>-macos-arm64.dmg` | [`scripts/build_macos_dmg.sh`](../scripts/build_macos_dmg.sh) | `verify_macos_bundle.py` | An `.app` with an embedded relocatable CPython and the pre-baked science stack. Ad-hoc signed, not notarized. |
 | `OpenAI4S-<v>-linux-x86_64.tar.gz` | [`scripts/build_linux_bundle.sh`](../scripts/build_linux_bundle.sh) | `verify_linux_bundle.py` | The same payload as a relocatable directory, plus a `.desktop` template and a per-user `install.sh`. Unpack anywhere and run `./OpenAI4S`. |
-| `OpenAI4S-<v>-windows-x86_64.zip` | [`scripts/build_windows_zip.sh`](../scripts/build_windows_zip.sh) | `verify_windows_zip.py` | A Windows launcher wrapped around **that exact Linux tarball**, which it installs into WSL2 on first run. Not a native Windows build; see below. |
+| `OpenAI4S-<v>-windows-x86_64.zip` | [`scripts/build_windows_zip.sh`](../scripts/build_windows_zip.sh) | `verify_windows_zip.py` | A Windows launcher wrapped around **that exact Linux tarball**. It requires WSL2 + working bubblewrap 0.8.0+, installs offline, and opens the authenticated URL returned by the WSL CLI. Not a native Windows build; see below and the [Windows/WSL2 guide](windows-wsl.md). |
 | `openai4s-<v>-py3-none-any.whl` | `uv build` | `verify_release_artifacts.py` | The zero-dependency wheel, for any supported platform with its own Python. |
 
 Only `x86_64` slices are published, the same way the `.dmg` is Apple Silicon
@@ -92,7 +92,8 @@ sandbox backend) and the way out (WSL2).
 There is a Windows download, and native Windows is still refused. Both are true
 because the package does not run OpenAI4S on Windows: it is a launcher that
 installs the Linux bundle into the user's WSL2 distribution, starts the daemon
-there, and opens the Windows browser at the forwarded localhost port. WSL2
+there, asks `openai4s url` for the authenticated first-visit URL, and opens the
+Windows browser at the forwarded localhost port. WSL2
 reports as `linux`, so what runs is the supported build, unmodified.
 
 Making the documented way out double-clickable is the whole value. The
@@ -111,6 +112,13 @@ build on each:
   syscalls and has no user namespaces, so bubblewrap cannot start and cells
   would run unisolated — the exact silent degradation the tiers above exist to
   rule out.
+
+- bubblewrap must be at least 0.8.0 and must pass a preflight using the same
+  lifecycle, IPC, UTS, and network namespace flags as real Cells; the packaged
+  daemon starts with `OPENAI4S_KERNEL_SANDBOX=enforce`.
+- the Windows launcher never opens the bare root URL, which local authentication
+  intentionally answers with 401; it opens only the URL returned by
+  `openai4s url`, then the browser exchanges its query bootstrap for a cookie.
 
 ## Why Linux is beta and macOS is stable
 
