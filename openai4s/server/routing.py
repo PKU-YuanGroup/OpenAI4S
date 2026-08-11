@@ -28,13 +28,19 @@ class RouteSpec:
         if not self.name or not self.name.strip():
             raise ValueError("route name must be non-empty")
         if self.method != self.method.upper() or not self.method.isalpha():
-            raise ValueError(f"route method must be uppercase HTTP verb: {self.method!r}")
+            raise ValueError(
+                f"route method must be uppercase HTTP verb: {self.method!r}"
+            )
         if not self.pattern.startswith("/"):
-            raise ValueError(f"route pattern must start with '/': {self.pattern!r}")
+            raise ValueError(
+                f"route pattern must start with '/': {self.pattern!r}"
+            )
         try:
             re.compile(self.pattern)
         except re.error as exc:
-            raise ValueError(f"invalid route pattern {self.pattern!r}: {exc}") from exc
+            raise ValueError(
+                f"invalid route pattern {self.pattern!r}: {exc}"
+            ) from exc
 
     def match(self, method: str, path: str) -> Match[str] | None:
         """Match only when both the HTTP method and path belong to this route.
