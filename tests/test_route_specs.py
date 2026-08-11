@@ -38,7 +38,9 @@ def test_route_specs_are_unique_by_name_and_method_path():
     names = [spec.name for spec in specs]
     method_paths = [(spec.method, spec.pattern) for spec in specs]
     assert len(names) == len(set(names)), "route names are protocol identities"
-    assert len(method_paths) == len(set(method_paths)), "duplicate HTTP route declaration"
+    assert len(method_paths) == len(
+        set(method_paths)
+    ), "duplicate HTTP route declaration"
 
 
 def test_route_spec_matching_is_method_aware():
@@ -48,10 +50,10 @@ def test_route_spec_matching_is_method_aware():
     assert spec.match("GET", path) is None
 
 
-def test_inventory_reads_declarative_routes_even_without_route_source_scan(monkeypatch):
-    """The point of the migration: registered runtime routes do not disappear
-    merely because contract tooling stops parsing their handler source.
-    """
+def test_inventory_reads_declarative_routes_even_without_route_source_scan(
+    monkeypatch,
+):
+    """Registered runtime routes do not depend on handler-source extraction."""
 
     gateway_only = contract._source()
     monkeypatch.setattr(contract, "_route_sources", lambda: [gateway_only])
