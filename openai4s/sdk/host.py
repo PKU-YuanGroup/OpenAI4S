@@ -839,7 +839,7 @@ class _Host:
         return self._call("search_skills", [{"query": query, "limit": limit}])
 
     def skill(self, name: str) -> dict:
-        """Load one skill's full recipe by exact name (opencode `skill` tool)."""
+        """Return one skill's metadata by exact name, without its recipe body."""
         return self.skills.get(name)
 
     def load_skill(self, name: str) -> dict:

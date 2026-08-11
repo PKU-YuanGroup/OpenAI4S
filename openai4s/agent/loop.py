@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.agent.actions import NO_CODE_NUDGE, NO_NATIVE_COMPLETION_NUDGE
@@ -49,6 +50,21 @@ state.
 Choose exactly one channel per working turn. Never describe a JSON tool call \
 inside a fenced block. If a reply contains both native calls and a code cell, \
 only the native calls run.
+
+A foreground Cell is not a native tool call. There is no native `python`, \
+`run_python`, `run_python_cell`, `exec`, or equivalent Cell runner. To run \
+foreground code, emit it directly as one fenced ```python or ```r block in \
+assistant content; never put Cell code in JSON/tool arguments. For a native \
+call, use only an exact name present in the current tool declarations; never \
+invent or guess a tool name. `exec_background` is only for a genuinely \
+long-running independent job and must never replace an ordinary foreground Cell.
+
+For Skill enumeration or an all-Skills audit, use the exact native `list_skills` \
+tool, then retrieve each returned recipe by calling the exact native \
+`load_skill` tool with its `name`. `list_dir` lists workspace files only; \
+`read_text_file` and `glob_files` are workspace operations too, and catalog \
+metadata is never a file path. Use \
+`host.skills.list()` only inside a fenced Python Cell, never as a native function name.
 
 How you work (Code-as-Action):
 - For scientific execution, reply with a single fenced code cell: a ```python cell \
@@ -97,7 +113,10 @@ straight to synthetic data when a real lookup is possible.
 Finishing:
 - A conversational or tool-only task finishes with `finalize_response` as the \
 ONLY native call in its turn. Use its structured fields to report only work \
-that actually completed.
+that actually completed. Its claims are reconciled against this run's action \
+ledger: if no cell and no tool ran, execution-shaped claims (bullets like \
+'Computed…'/'Ran…'/'Wrote…', an `artifacts` list, or `metrics`) are rejected — \
+do the work first, or describe the response without claiming execution.
 - Scientific work that used the Python/R runtime finishes by running one final \
 python cell that calls `host.submit_output({...}, ["what you did",...])`. This \
 is the sole completion signal for a scientific cell. The submitted `output` must include a \
@@ -209,6 +228,10 @@ class Agent:
     # leave both unset and retain the exact historical behavior.
     cancellation: object | None = field(default=None, repr=False)
     context_policy: object | None = field(default=None, repr=False)
+    # Explicit working directory for this run. A Web-delegated child must run
+    # in its parent session's workspace, not in the daemon's launch directory;
+    # unset falls back to os.getcwd(), which is the CLI contract.
+    workspace: str | Path | None = None
     _recorder: object | None = field(default=None, repr=False)
     # persistent R kernel for ```r cells — spawned lazily on first use,
     # retargeted when host.env.use() picks an R-only env, shut down with the run
@@ -251,6 +274,7 @@ class Agent:
                     depth=self.delegate_depth,
                     parent_frame_id=self.frame_id,
                     store=self.dispatcher.store,
+                    workspace=self.workspace,
                 )
                 self._delegation_runner = runner
                 self.dispatcher._delegate_fn = runner
@@ -365,7 +389,7 @@ class Agent:
             {"role": "user", "content": task},
         ]
         transcript: list[Turn] = []
-        run_cwd = os.getcwd()
+        run_cwd = str(self.workspace) if self.workspace else os.getcwd()
         self.dispatcher.set_workspace(run_cwd)
         self.dispatcher.background_kernel_factory = lambda: Kernel(
             dispatcher=self.dispatcher,

@@ -105,12 +105,12 @@ jobs:
           echo "frozen at $SHA"
 
   guard:
-    name: Require an existing draft release
+    name: Require an existing stable draft release
     if: inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: The named tag must exist and must still be a draft
+      - name: The named tag must exist and must be a non-prerelease draft
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -120,12 +120,16 @@ jobs:
             echo '::error::publishing requires the "tag" input'
             exit 1
           fi
-          if ! gh release view "$TAG" --json isDraft > release.json; then
+          if ! gh release view "$TAG" --json isDraft,isPrerelease > release.json; then
             echo "::error::no release $TAG exists; create the draft first"
             exit 1
           fi
           if [ "$(jq -r .isDraft release.json)" != "true" ]; then
             echo "::error::$TAG is already public; staging assets onto it is the half-published state this pipeline exists to prevent"
+            exit 1
+          fi
+          if [ "$(jq -r .isPrerelease release.json)" = "true" ]; then
+            echo "::error::$TAG is marked as a prerelease; stable publication requires a non-prerelease draft"
             exit 1
           fi
 
@@ -145,8 +149,8 @@ jobs:
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
-      - name: Install dev dependencies
-        run: uv sync --locked
+      - name: Install dev, science, and chemistry dependencies
+        run: uv sync --locked --extra science --extra chemistry
       # The browser matrix and the Python support matrix already ran on the push
       # to `main` that this tag points at, and cost more than the rest of the
       # release combined. So they are proven from GitHub's own check runs *pinned

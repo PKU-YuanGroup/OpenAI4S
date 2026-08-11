@@ -187,6 +187,23 @@ def test_release_workflow_keeps_source_build_and_offline_install_gates():
         assert contract in workflow
 
 
+def test_release_quality_installs_every_collection_dependency():
+    """The release-SHA gates must collect the same suite as the 3.12 matrix.
+
+    ``tests/test_admet_genetic.py`` imports pandas at module scope.  Installing
+    only the dev group therefore makes the quality job fail during collection,
+    before it can produce the receipt that staging requires.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    quality = workflow[
+        workflow.index("  quality:") : workflow.index("  platform-checks:")
+    ]
+    install = "uv sync --locked --extra science --extra chemistry"
+
+    assert install in quality
+    assert quality.index(install) < quality.index("scripts/run_quality_gates.py")
+
+
 def test_publish_workflow_uses_verified_artifact_and_job_scoped_oidc():
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
 
@@ -246,6 +263,21 @@ def test_publishing_requires_an_existing_draft_before_anything_runs():
     for job in ("  attach:", "  pypi:"):
         block = workflow[workflow.index(job) : workflow.index(job) + 900]
         assert "guard" in block, f"{job.strip()} may run without the draft check"
+
+
+def test_publishing_refuses_a_prerelease_draft():
+    """A stable tag must not publish a GitHub Release still marked prerelease.
+
+    The version/tag gate accepts only ``vMAJOR.MINOR.PATCH``, so leaving the
+    draft's prerelease flag unchecked could publish stable files to PyPI while
+    presenting the matching GitHub Release as a prerelease.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    guard = workflow[workflow.index("  guard:") : workflow.index("  quality:")]
+
+    assert "--json isDraft,isPrerelease" in guard
+    assert "jq -r .isPrerelease" in guard
+    assert "stable publication requires a non-prerelease draft" in guard
 
 
 def test_the_staging_job_consumes_artifacts_and_never_publishes():

@@ -529,6 +529,10 @@ class CellExecutionService:
             capture,
             state_revision=index,
             generation_id=generation_id,
+            # No kernel touched this cell: the refusal/unavailability result
+            # is synthesized.  The agent loop's evidence ledger must not count
+            # it as an executed cell.
+            executed=False,
         )
 
     def _finish_attempt(

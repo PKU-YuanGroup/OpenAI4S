@@ -71,6 +71,14 @@ def test_kernel_boots_with_host_facade(session):
     assert _emit(kernel, "hasattr(host, 'skills') and hasattr(host, 'query')") is True
 
 
+def test_kernel_loads_bundled_skill_guidance_through_sdk(session):
+    _cfg, _disp, kernel = session
+    loaded = _emit(kernel, "host.load_skill('example_stats')")
+
+    assert loaded["name"] == "example_stats"
+    assert "from example_stats.kernel import" in loaded["content"]
+
+
 # --- customize -----------------------------------------------------------
 
 

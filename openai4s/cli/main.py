@@ -13,6 +13,7 @@ openai4s jupyter  describe/export/install the optional Jupyter bridge
 from __future__ import annotations
 
 import argparse
+import errno
 import getpass
 import json
 import os
@@ -26,24 +27,69 @@ import urllib.request
 from pathlib import Path
 
 from openai4s.config import get_config
+from openai4s.execution.process_group import TERM_GRACE_S
 
 
-def _write_state(cfg) -> None:
-    cfg.pidfile.write_text(str(os.getpid()), "utf-8")
-    cfg.statefile.write_text(
-        json.dumps(
-            {
-                "pid": os.getpid(),
-                "host": cfg.host,
-                "port": cfg.port,
-                "started_at": int(time.time()),
-            }
-        ),
-        "utf-8",
+def _statefile_payload(cfg) -> str:
+    return json.dumps(
+        {
+            "pid": os.getpid(),
+            "host": cfg.host,
+            "port": cfg.port,
+            "started_at": int(time.time()),
+        }
     )
 
 
-def _clear_state(cfg) -> None:
+def _acquire_singleton(cfg) -> bool:
+    """Atomically claim the daemon pidfile. True iff we now own the singleton.
+
+    ``O_CREAT|O_EXCL`` makes "create the pidfile or fail" a single atomic step,
+    closing the check-then-write race where two concurrent ``serve`` runs each
+    passed a separate liveness check and then both booted the same data dir. A
+    stale pidfile (its recorded pid is gone) is reclaimed once; a live one
+    means another daemon holds the slot. The statefile is a non-authoritative
+    sidecar written after — the pidfile is the lock.
+    """
+    for reclaim in (True, False):
+        try:
+            fd = os.open(cfg.pidfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            existing = _read_pid(cfg)
+            if existing and _pid_alive(existing):
+                return False
+            if not reclaim:
+                return False  # a concurrent booter won the reclaim
+            try:
+                cfg.pidfile.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(str(os.getpid()))
+        except OSError:
+            _clear_state(cfg, only_if_owned_by=os.getpid())
+            raise
+        cfg.statefile.write_text(_statefile_payload(cfg), "utf-8")
+        return True
+    return False
+
+
+def _clear_state(cfg, *, only_if_owned_by: int | None = None) -> None:
+    """Remove the daemon state files.
+
+    ``only_if_owned_by`` guards the serve path: on a startup failure a booter
+    must delete only the pidfile it actually wrote, never one a concurrent
+    winner now owns (deleting that stranded a live daemon whose port stayed
+    bound while ``status`` and ``stop`` read "not running"). ``stop`` clears
+    unconditionally — it is deliberately removing another process's state after
+    confirming that process is gone.
+    """
+    if only_if_owned_by is not None:
+        current = _read_pid(cfg)
+        if current is not None and current != only_if_owned_by:
+            return
     for p in (cfg.pidfile, cfg.statefile):
         try:
             p.unlink()
@@ -91,23 +137,94 @@ def _url(cfg, *, with_token: bool = True) -> str:
     return f"{base}?token={token}" if token else base
 
 
+def _sigterm_to_keyboard_interrupt(signum, frame):
+    """Turn `openai4s stop`'s SIGTERM into the Ctrl-C path — nothing more.
+
+    The state files must outlive the process they describe: clearing them
+    here, at signal arrival, deleted the pidfile before the (possibly slow)
+    runner/kernel teardown ran, so a `stop` that timed out told the user to
+    retry against a pidfile the daemon had already removed — the retry and
+    `stop --force` both saw "not running" while the port stayed bound.  The
+    serve loop's finally clears state after teardown completes.
+    """
+    raise KeyboardInterrupt
+
+
+def _bind_failure_message(exc: OSError, cfg) -> str | None:
+    """One clear line naming the env var to fix, or ``None`` to re-raise.
+
+    ``build_server`` does more than bind, so only bind-shaped errnos map to
+    the port: EADDRINUSE and EADDRNOTAVAIL cannot come from anywhere else,
+    while EACCES is blamed on the port only when the port is actually
+    privileged — a read-only data dir raises EACCES too, and that one must
+    stay a traceback pointing at the real path.
+    """
+    prefix = f"error: cannot listen on {cfg.host}:{cfg.port} — "
+    if exc.errno == errno.EADDRINUSE:
+        return prefix + (
+            "address already in use. A previous daemon may still be "
+            "shutting down, or another process holds the port; free it or "
+            "change OPENAI4S_PORT."
+        )
+    if exc.errno == errno.EACCES and cfg.port < 1024:
+        return prefix + (
+            "permission denied. Ports below 1024 are privileged; pick an "
+            "unprivileged one via OPENAI4S_PORT (default 8760)."
+        )
+    if exc.errno == errno.EADDRNOTAVAIL:
+        return prefix + (
+            "this machine has no such address. Check OPENAI4S_HOST "
+            "(127.0.0.1 serves locally)."
+        )
+    return None
+
+
 def cmd_serve(args) -> int:
-    from openai4s.server import serve
+    from openai4s.server import build_server, run_server
 
     cfg = get_config()
-    existing = _read_pid(cfg)
-    if existing and _pid_alive(existing):
-        print(f"daemon already running (pid {existing}) at {_url(cfg)}")
+    # Atomically claim the singleton, covering the whole boot. A plain
+    # read-then-write let a second `serve` racing a slow store open/migration
+    # pass a separate liveness check and boot the same data dir concurrently;
+    # O_EXCL makes the claim one step so exactly one booter wins. Every
+    # build-failure path below clears only the state this process owns.
+    if not _acquire_singleton(cfg):
+        existing = _read_pid(cfg)
+        if existing and _pid_alive(existing):
+            print(f"daemon already running (pid {existing}) at {_url(cfg)}")
+        else:
+            print(
+                "another `openai4s serve` is starting on this data dir; "
+                "retry in a moment",
+                file=sys.stderr,
+            )
         return 1
-    _write_state(cfg)
+    my_pid = os.getpid()
+    # Arm the SIGTERM handler before the (possibly slow) build_server: a signal
+    # arriving mid-build must run teardown, not the interpreter's default
+    # terminate, which would orphan the pidfile just claimed above. A startup
+    # that fails puts back the disposition it found, so an in-process caller
+    # does not inherit this one from a `serve` that never served.
+    previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
+    # Bind before the banner: "listening" printed ahead of the actual bind made
+    # a port collision look like a crash after a successful start. Binding also
+    # mints the access token, so the URL printed below actually opens.
+    try:
+        httpd = build_server(cfg)
+    except OSError as exc:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        _clear_state(cfg, only_if_owned_by=my_pid)
+        message = _bind_failure_message(exc, cfg)
+        if message is None:
+            raise
+        print(message, file=sys.stderr)
+        return 1
+    except BaseException:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        _clear_state(cfg, only_if_owned_by=my_pid)
+        raise
     print(f"openai4s listening at {_url(cfg)} (model={cfg.llm.model})")
     print("web UI ready. Ctrl-C to stop.")
-
-    def _graceful(signum, frame):
-        _clear_state(cfg)
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, _graceful)
     if not os.environ.get("OPENAI4S_NO_OPEN") and not getattr(args, "no_open", False):
 
         def _open():
@@ -123,9 +240,11 @@ def cmd_serve(args) -> int:
 
         threading.Thread(target=_open, daemon=True).start()
     try:
-        serve(cfg, block=True)
+        # The shared service loop (gateway.run_server): serve_app and this
+        # command must not carry two copies of serve/teardown that can drift.
+        run_server(httpd)
     finally:
-        _clear_state(cfg)
+        _clear_state(cfg, only_if_owned_by=my_pid)
     return 0
 
 
@@ -237,6 +356,30 @@ def cmd_status(args) -> int:
         return 2
 
 
+def _wait_pid_exit(
+    pid: int, *, attempts: int | None = None, interval: float = 0.1
+) -> bool:
+    """Poll until ``pid`` is gone; True means it actually exited.
+
+    The default grace period is ``TERM_GRACE_S`` — the same budget
+    ``execution/process_group.py`` gives a job's SIGTERM — so daemon stops
+    and job stops cannot quietly drift apart.  The pid-shaped ladder itself
+    stays local on purpose: the daemon is not this CLI's child (there is no
+    ``Popen`` to reap, which the group helpers require) and it is not
+    reliably its own process-group leader (under nohup/launchd the pgid may
+    be shared with siblings), so ``killpg`` semantics do not transfer.
+    Leader-only signalling is safe here: kernel workers exit on their
+    manager pipe's EOF when the daemon dies.
+    """
+    if attempts is None:
+        attempts = max(1, round(TERM_GRACE_S / interval))
+    for _ in range(attempts):
+        if not _pid_alive(pid):
+            return True
+        time.sleep(interval)
+    return not _pid_alive(pid)
+
+
 def cmd_stop(args) -> int:
     cfg = get_config()
     pid = _read_pid(cfg)
@@ -244,11 +387,32 @@ def cmd_stop(args) -> int:
         print("daemon: not running")
         _clear_state(cfg)
         return 1
-    os.kill(pid, signal.SIGTERM)
-    for _ in range(50):
-        if not _pid_alive(pid):
-            break
-        time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # exited between the aliveness check and the signal
+    stopped = _wait_pid_exit(pid)
+    if not stopped and getattr(args, "force", False):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stopped = _wait_pid_exit(pid)
+    if not stopped:
+        # An in-flight cell can hold shutdown past the grace period. The state
+        # files must outlive the process they describe: clearing them here left
+        # a live daemon on a bound port that `status` and a second `stop` both
+        # called "not running", and the next `serve` crashed into.
+        hint = (
+            "it ignored SIGKILL"
+            if getattr(args, "force", False)
+            else "retry `openai4s stop`, or `openai4s stop --force` to SIGKILL it"
+        )
+        print(
+            f"error: daemon (pid {pid}) is still shutting down — {hint}",
+            file=sys.stderr,
+        )
+        return 2
     _clear_state(cfg)
     print(f"daemon stopped (pid {pid})")
     return 0
@@ -1079,7 +1243,13 @@ def build_parser() -> argparse.ArgumentParser:
         "-o", "--output", help="destination zip (default ./openai4s-diagnostics.zip)"
     )
     pd.set_defaults(fn=cmd_diagnostics)
-    sub.add_parser("stop", help="stop the daemon").set_defaults(fn=cmd_stop)
+    pstop = sub.add_parser("stop", help="stop the daemon")
+    pstop.add_argument(
+        "--force",
+        action="store_true",
+        help="escalate to SIGKILL if the daemon does not exit in time",
+    )
+    pstop.set_defaults(fn=cmd_stop)
     sub.add_parser("url", help="print the web UI url").set_defaults(fn=cmd_url)
 
     pr = sub.add_parser("run", help="run one Code-as-Action task in-process")

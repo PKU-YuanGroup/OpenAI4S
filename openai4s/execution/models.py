@@ -46,6 +46,12 @@ class CellExecutionResult:
     # execution attempt was bound.  ``None`` is truthful for failures that
     # never acquired a worker (for example, an unavailable R runtime).
     generation_id: str | None = None
+    # Whether a kernel actually ran this cell.  False for results synthesized
+    # without execution — a safety-gate refusal or an unavailable runtime —
+    # whose ``result`` dict is byte-identical to a real failure.  The agent
+    # loop's execution-evidence ledger reads this: a refused cell must never
+    # count as finalize-time evidence.
+    executed: bool = True
 
 
 __all__ = ["CaptureResult", "CellExecutionResult", "CellRequest"]

@@ -344,6 +344,7 @@ def test_normalize_metrics_and_formulas():
 
 
 def test_lean_pipeline_deliverables(tmp_path: Path, monkeypatch):
+    pytest.importorskip("matplotlib")
     funcs = _import_skill()
     _install_offline_uma_pipeline(monkeypatch)
 
@@ -455,6 +456,7 @@ def test_all_catalog_metals_are_recognized_and_dissolution_support():
 
 def test_adsorption_mode_still_exports_a_figure(tmp_path: Path):
     """metrics=['adsorption'] must yield a statistical figure, not a RuntimeError."""
+    pytest.importorskip("matplotlib")
     sys.path.insert(0, str(get_config().skills_dir))
     from catalyst_sar_screening import kernel as k  # noqa: PLC0415
 

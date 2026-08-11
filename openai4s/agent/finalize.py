@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Any, Iterable, Mapping, TypedDict
+from typing import Any, Iterable, Mapping, MutableMapping, TypedDict
 
-from openai4s.host.completion import validate_completion_bullets
+from openai4s.host.completion import first_english_word, validate_completion_bullets
 from openai4s.tools import ToolSpec, finalize_tool_batch, validate_json_schema
 
 from .actions import FINALIZE_RESPONSE_NAME, FinalizeAction, NativeToolCall
@@ -29,6 +29,139 @@ class CompletionRecord(TypedDict):
 
     output: dict[str, Any]
     completion_bullets: list[str]
+
+
+class ExecutionEvidence(TypedDict):
+    """What this run has actually executed, counted at the execution sites."""
+
+    cells: int
+    tool_calls: int
+
+
+#: ``RunState.metadata`` key under which executors accumulate the evidence.
+EXECUTION_EVIDENCE_KEY = "execution_evidence"
+
+#: Past-tense verbs that assert executed work: computation, real I/O, or a
+#: produced file. A deliberately conservative core set — a verb belongs here
+#: only when a bullet starting with it is dishonest without a cell or tool run
+#: backing it. Reflective verbs (``explained``, ``answered``, ``summarised``,
+#: ``compared`` …) stay out: they describe reasoning over what is already in
+#: context, which needs no execution.
+_EXECUTION_CLAIM_STARTERS = frozenset(
+    {
+        "aligned",
+        "benchmarked",
+        "built",
+        "calculated",
+        "computed",
+        "converted",
+        "created",
+        "downloaded",
+        "executed",
+        "exported",
+        "fetched",
+        "fitted",
+        "folded",
+        "generated",
+        "installed",
+        "measured",
+        "plotted",
+        "produced",
+        "profiled",
+        "queried",
+        "ran",
+        "rendered",
+        "reran",
+        "retrieved",
+        "saved",
+        "simulated",
+        "trained",
+        "uploaded",
+        "wrote",
+    }
+)
+
+
+def note_execution_evidence(
+    metadata: MutableMapping[str, Any], *, cells: int = 0, tool_calls: int = 0
+) -> None:
+    """Record that this run really dispatched a cell or native tool batch.
+
+    Executors call this at the execution site — after the kernel or dispatcher
+    ran, never for a safety-gate refusal — so the finalize-time reconciliation
+    reads what happened rather than what was attempted.
+    """
+
+    current = metadata.get(EXECUTION_EVIDENCE_KEY)
+    if not isinstance(current, dict):
+        current = {"cells": 0, "tool_calls": 0}
+        metadata[EXECUTION_EVIDENCE_KEY] = current
+    current["cells"] = _count(current.get("cells")) + cells
+    current["tool_calls"] = _count(current.get("tool_calls")) + tool_calls
+
+
+def execution_evidence(metadata: Mapping[str, Any]) -> ExecutionEvidence:
+    """The run's accumulated evidence; zero counts when nothing was recorded."""
+
+    current = metadata.get(EXECUTION_EVIDENCE_KEY)
+    if not isinstance(current, Mapping):
+        return {"cells": 0, "tool_calls": 0}
+    return {
+        "cells": _count(current.get("cells")),
+        "tool_calls": _count(current.get("tool_calls")),
+    }
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
+def reconcile_completion_claims(
+    arguments: Mapping[str, Any], evidence: Mapping[str, Any]
+) -> str | None:
+    """Reject completion payloads whose claims outrun the turn's ledger.
+
+    A run that executed nothing — no code cell, no native tool — cannot have
+    computed metrics, produced artifacts, or completed an execution-shaped
+    action. Accepting such a payload publishes provenance that is wrong rather
+    than absent, so it is refused as a repairable validation error: the model
+    can perform the work and finalize again, or restate the completion in
+    non-execution terms.
+
+    The check is conservative on purpose: any recorded cell or tool call
+    satisfies it, and CJK bullets (no tense morphology) are never flagged.
+    """
+
+    if _count(evidence.get("cells")) > 0 or _count(evidence.get("tool_calls")) > 0:
+        return None
+    claims: list[str] = []
+    bullets = arguments.get("completion_bullets")
+    if isinstance(bullets, list):
+        flagged = [
+            str(bullet)
+            for bullet in bullets
+            if first_english_word(bullet) in _EXECUTION_CLAIM_STARTERS
+        ]
+        if flagged:
+            claims.append(
+                "completion bullets claim executed work ("
+                + "; ".join(repr(item) for item in flagged)
+                + ")"
+            )
+    if arguments.get("artifacts"):
+        claims.append("'artifacts' names produced files")
+    if arguments.get("metrics"):
+        claims.append("'metrics' reports measured values")
+    if not claims:
+        return None
+    return (
+        "completion claims are not backed by this run's ledger: "
+        + "; ".join(claims)
+        + ". No code cell and no tool ran this turn. Either perform the "
+        "claimed work first (run a cell or call a tool), or restate the "
+        "completion without execution claims — e.g. 'Explained…' or "
+        "'Answered…' bullets, and omit artifacts/metrics."
+    )
 
 
 _TEXT_ITEM = {"type": "string", "minLength": 1, "maxLength": 2_000}
@@ -164,12 +297,18 @@ def execute_finalize_action(
     *,
     refusal: str | None = None,
     stop_reason: str | None = None,
+    evidence: Mapping[str, Any] | None = None,
 ) -> ExecutionOutcome:
     """Close the provider call, then optionally accept structured completion.
 
     Even malformed, cancelled, or plan-mode declarations produce exactly one
     canonical provider tool result.  A validation failure is observable but is
     never a completion signal, allowing the model to repair it next turn.
+
+    ``evidence`` is the run's execution ledger (see ``execution_evidence``);
+    when supplied, completion claims are reconciled against it and a payload
+    claiming unexecuted work is refused. ``None`` preserves the legacy
+    behaviour for callers that keep no ledger.
     """
 
     call = action.call
@@ -177,6 +316,9 @@ def execute_finalize_action(
     record: CompletionRecord | None = None
     if error is None:
         error = validate_finalize_arguments(call.arguments)
+    if error is None and evidence is not None:
+        assert call.arguments is not None
+        error = reconcile_completion_claims(call.arguments, evidence)
     if error is None:
         assert call.arguments is not None
         record = _completion_record(call.arguments)
@@ -216,9 +358,14 @@ def _call_error(call: NativeToolCall) -> str | None:
 
 __all__ = [
     "CompletionRecord",
+    "EXECUTION_EVIDENCE_KEY",
+    "ExecutionEvidence",
     "execute_finalize_action",
+    "execution_evidence",
     "finalize_response_schema",
     "finalize_response_tool_spec",
+    "note_execution_evidence",
+    "reconcile_completion_claims",
     "validate_finalize_arguments",
     "with_finalize_response",
 ]

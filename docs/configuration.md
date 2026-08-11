@@ -1,6 +1,6 @@
 # Configuration
 
-Config is via env vars (all have working defaults), read from the environment or a git-ignored `.env` at the repo root. **You rarely need to touch files** — set your model from the UI (**Customize → Models**). To configure by env instead, copy `.env.example` to `.env`.
+Config is via env vars (all have working defaults), read from the environment or a git-ignored `.env` at the repo root. **You rarely need to touch files** — set your model from the UI (**Customize → Models**). To configure by env instead, copy `.env.example` to `.env`. `OPENAI4S_SKIP_DOTENV=1` skips the `.env` loader entirely — the offline test suite sets it so a developer's real `.env` can never configure the tests.
 
 ## Model providers
 

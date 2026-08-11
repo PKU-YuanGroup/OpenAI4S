@@ -11,8 +11,11 @@
 # worker.py) then resolves correctly wherever the .app lives, and all writable
 # state goes to ~/.openai4s (outside the read-only bundle).
 #
-# No Apple Developer credentials are used: the app is ad-hoc signed only (free),
-# which is still required so Apple Silicon does not kill an unsigned binary.
+# Signing follows the release environment: use a configured Developer ID
+# identity when one is supplied, otherwise fall back to an ad-hoc signature so
+# Apple Silicon does not kill an unsigned binary. This builder does not submit
+# to Apple's notary service or staple a ticket; the release gate verifies those
+# facts separately and refuses an un-notarized public DMG.
 set -euo pipefail
 
 APP_NAME="OpenAI4S"
@@ -335,7 +338,7 @@ echo "-- [8/10] precompiling bytecode (sealed into the signature) --"
 echo "   compiled: $(find "$APP" -name '*.pyc' | wc -l | tr -d ' ') .pyc files"
 
 # --------------------------------------------------------------------------- #
-# 9) ad-hoc codesign (no Apple Developer credentials; required on Apple Silicon)
+# 9) codesign (Developer ID when configured, otherwise ad-hoc)
 # --------------------------------------------------------------------------- #
 SIGNING_IDENTITY="${OPENAI4S_MACOS_SIGNING_IDENTITY:-}"
 if [ -n "$SIGNING_IDENTITY" ]; then
@@ -348,10 +351,12 @@ if [ -n "$SIGNING_IDENTITY" ]; then
     --sign "$SIGNING_IDENTITY" "$APP"
   codesign --verify --deep --strict "$APP"
   echo "   codesign verify: OK (Developer ID)"
+  SIGNING_KIND="Developer ID signed"
 else
   echo "-- [9/10] ad-hoc codesigning (no OPENAI4S_MACOS_SIGNING_IDENTITY) --"
   codesign --force --deep --sign - --timestamp=none "$APP" 2>&1 | tail -2 || true
   codesign --verify --deep "$APP" && echo "   codesign verify: OK" || echo "   codesign verify: WARN (ad-hoc)"
+  SIGNING_KIND="ad-hoc signed"
 fi
 
 # --------------------------------------------------------------------------- #
@@ -367,8 +372,8 @@ OpenAI4S $VERSION — first launch on macOS
 
 1. Drag OpenAI4S.app onto the Applications folder (shown here).
 
-2. This build is ad-hoc signed but NOT notarized (no Apple Developer account),
-   so Gatekeeper will refuse it on first launch. To open it:
+2. This build is $SIGNING_KIND but NOT notarized by this builder, so Gatekeeper
+   may refuse it on first launch. To open it:
      • macOS 15 (Sequoia) and newer: double-click, dismiss the warning, then go
        to System Settings → Privacy & Security and press "Open Anyway".
      • macOS 12-14: right-click (or Control-click) OpenAI4S.app → Open → Open.

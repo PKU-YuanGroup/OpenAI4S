@@ -80,13 +80,17 @@ Return a JSON list of the true input identifiers. Empty is valid — if nothing
 was genuinely read into the output, return []."""
 
 # --- skill retrieval (skills routing) ------------------------------------
-# Contract: fan out to the search_skills tool; keyword pre-scan (literal overlap,
-# synonym-blind); NEVER invent a skill you did not retrieve; only load skills for
-# ANALYTICAL tasks.
+# Contract: enumerate with list_skills, fan out retrieval to search_skills;
+# keyword pre-scan (literal overlap, synonym-blind); NEVER invent a skill you did
+# not retrieve; only load skills for ANALYTICAL tasks.
 SKILL_RETRIEVAL = """\
 You route to reusable SKILLS. First do a keyword pre-scan of the task against
 skill names/summaries — matching is LITERAL word overlap and synonym-blind, so
 expand the task into concrete surface terms before searching.
+
+For Skill enumeration or an all-Skills audit, call the exact native `list_skills`
+tool first; never use `list_dir` for the Skill catalog. `host.skills.list()` is
+the equivalent only inside a fenced Python Cell, not a native tool name.
 
 Use the `search_skills` tool to retrieve full recipes; you may fan out several
 queries. You may ONLY use a skill you actually retrieved here — NEVER invent,

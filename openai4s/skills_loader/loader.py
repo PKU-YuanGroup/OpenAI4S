@@ -282,7 +282,7 @@ class Skill:
     source: str = "bundled"
     keywords: set[str] = field(default_factory=set)
     #: What this Skill needs before it can actually run — `requirements: [gpu]`
-    #: in the frontmatter. Five bundled Skills have declared this since they
+    #: in the frontmatter. Thirteen bundled Skills have declared this since they
     #: were written and nothing read it, so a GPU-only Skill looked identical
     #: to one that runs anywhere and the agent discovered the difference at
     #: execution time, deep into a task.
@@ -863,9 +863,10 @@ class SkillLoader:
         """Progressive-disclosure block for the system prompt.
 
         Only skill NAMES + one-line summaries go here — NOT the full docs.
-        The agent calls host.search_skills(query) to pull a skill's full recipe
-        on demand: analytic tasks retrieve skills lazily instead of
-        front-loading every doc into context.
+        The agent uses the declared native search_skills/load_skill functions
+        when available, or their host.* counterparts inside a fenced Python
+        Cell, to pull a skill's full recipe on demand: analytic tasks retrieve
+        skills lazily instead of front-loading every doc into context.
 
         `only` is the caller's allowlist, and `None` means unrestricted, so the
         default output is byte-identical to before. It exists because a
@@ -883,10 +884,17 @@ class SkillLoader:
         lines = [
             "# Available skills (progressive disclosure)",
             "These skills exist but their full instructions are NOT loaded yet. "
-            "When a task looks relevant to one, call "
-            '`host.search_skills("<keywords>")` in a code cell to retrieve its '
-            "full recipe, then import its sidecar and use it. Do NOT invent "
-            "skills or APIs you have not retrieved.",
+            "When a task looks relevant to one, use the declared native "
+            "`search_skills` / `load_skill` functions when available. Inside a "
+            "fenced Python Cell, use `host.search_skills(...)` / "
+            "`host.load_skill(...)` instead. Retrieve the full recipe, then "
+            "import its sidecar and use it. Do NOT invent a skill, API, or "
+            "Cell-runner function. For enumeration or an all-Skills audit, use "
+            "native `list_skills`, then native `load_skill` with each exact "
+            "returned name; only inside a fenced Python Cell use "
+            "`host.skills.list()`. Never use `list_dir` for the Skill catalog. "
+            "Catalog metadata is not a path: do not use `read_text_file` or "
+            "`glob_files` for Skill retrieval.",
             "",
         ]
         for s in skills.values():

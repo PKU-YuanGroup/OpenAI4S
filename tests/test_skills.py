@@ -32,7 +32,13 @@ def test_system_context_is_progressive():
     assert "example_stats" in ctx
     assert "summary" in ctx
     # progressive disclosure: instructs retrieval, not full-doc dump
-    assert "search_skills" in ctx
+    assert "native `search_skills` / `load_skill`" in ctx
+    assert "Inside a fenced Python Cell" in ctx
+    assert "`host.search_skills(...)` / `host.load_skill(...)`" in ctx
+    assert "native `list_skills`" in ctx
+    assert "`host.skills.list()`" in ctx
+    assert "Never use `list_dir` for the Skill catalog" in ctx
+    assert "Cell-runner function" in ctx
 
 
 def test_bootstrap_code_adds_skills_path():

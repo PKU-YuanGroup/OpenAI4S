@@ -170,6 +170,11 @@ def test_control_tool_classes_own_their_security_policy():
     assert get_tool("web_fetch").resource_keys(
         {"url": "https://www.example.org/a"}
     ) == ("network:example.org",)
+    assert "workspace directory only" in get_tool("list_dir").description
+    assert "use list_skills" in get_tool("list_dir").description
+    assert "exact count and names" in get_tool("list_skills").description
+    assert "call load_skill" in get_tool("list_skills").description
+    assert "Do not use workspace file tools" in get_tool("list_skills").description
 
 
 def test_registration_rejects_shell_completion_and_metadata_only_tools():
@@ -396,6 +401,24 @@ def test_execute_bash_is_not_a_tool_and_never_dispatches():
     assert calls == []
     assert ok is False
     assert "unknown tool" in obs
+
+
+def test_execute_hallucinated_cell_runner_never_dispatches():
+    """Foreground code is a fenced Cell, never an invented native runner."""
+    calls = []
+
+    def disp(method, args):
+        calls.append((method, args))
+        return {"ok": True}
+
+    obs, ok = execute_tool_call(
+        disp,
+        {"name": "run_python_cell", "arguments": {"code": "print('unsafe')"}},
+    )
+    assert calls == []
+    assert ok is False
+    assert "unknown tool" in obs
+    assert "run_python_cell" in obs
 
 
 def test_execute_reports_error_only_result_as_not_ok():

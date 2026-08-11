@@ -272,6 +272,7 @@ _TOOL_GROUP = {
             "web_fetch",
         )
     },
+    "list_skills": "skills",
     "search_skills": "skills",
     "load_skill": "skills",
     "skill_status": "skills",

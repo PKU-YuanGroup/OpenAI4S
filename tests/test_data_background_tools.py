@@ -211,3 +211,83 @@ def test_background_submit_is_gated_but_exact_interrupt_stays_available(tmp_path
         ("peek", "exec-1"),
         ("interrupt", "exec-1"),
     ]
+
+
+def test_tool_only_turn_background_kernel_shares_the_write_file_workspace(
+    tmp_path, monkeypatch
+):
+    """A Web turn that never spawns a foreground kernel still gets a
+    workspace-anchored background kernel.
+
+    Regression for a real Web session: the model wrote ``plot_data.py`` with
+    the native write_file tool, then ran ``exec(open('plot_data.py').read())``
+    through the native exec_background tool. ``background_kernel_factory`` is
+    only wired when a foreground kernel spawns, so the tool-only turn fell to
+    the bare ``Kernel(dispatcher=self)`` fallback, whose cwd was the daemon's
+    launch directory — the repo checkout. The cell could not see the file the
+    control plane had just written, its own ``savefig`` polluted the checkout,
+    and the follow-up save_artifact failed because the artifact service
+    resolves relative paths against the session workspace.
+    """
+    import time
+
+    daemon_cwd = tmp_path / "daemon-cwd"
+    daemon_cwd.mkdir()
+    monkeypatch.chdir(daemon_cwd)
+
+    data_dir = tmp_path / "data"
+    workspace = data_dir / "agent-workspaces" / "f-regress"
+    dispatcher = build_dispatcher(
+        Config(data_dir=data_dir),
+        workspace=workspace,
+    )
+    dispatcher.frame_id = dispatcher.store.new_frame(
+        kind="turn", project_id="proj-bg-cwd", status="ready"
+    )
+    for tool in ("write_file", "exec_background", "save_artifact"):
+        dispatcher.store.set_permission_rule(
+            scope="global", scope_id="", tool=tool, pattern="*", decision="allow"
+        )
+
+    written = dispatcher("write_file", [{"path": "notes.txt", "content": "payload"}])
+    assert written.get("error") is None
+    assert (workspace / "notes.txt").is_file()
+
+    launch = dispatcher(
+        "exec_background",
+        [
+            {
+                "code": (
+                    "content = open('notes.txt').read()\n"
+                    "open('made_by_cell.txt', 'w').write(content.upper())\n"
+                    "import os\n"
+                    "print(os.getcwd())\n"
+                )
+            }
+        ],
+    )
+    exec_id = launch["exec_id"]
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            peek = dispatcher("exec_peek", [exec_id])
+            if peek.get("done"):
+                break
+            assert time.monotonic() < deadline, f"background cell hung: {peek}"
+            time.sleep(0.1)
+
+        assert peek.get("error") is None, peek
+        # The cell ran where write_file wrote, and never in the daemon's cwd.
+        assert peek["stdout"].strip() == str(workspace.resolve())
+        assert (workspace / "made_by_cell.txt").is_file()
+        assert list(daemon_cwd.iterdir()) == []
+
+        # The relative-path output is artifact-capturable: the artifact
+        # service resolves against the same workspace the cell wrote into.
+        record = dispatcher("save_artifact", [{"path": "made_by_cell.txt"}])
+        assert record.get("version_id")
+        assert record.get("filename") == "made_by_cell.txt"
+    finally:
+        executor = dispatcher._bg_executor
+        if executor is not None:
+            executor.shutdown(timeout_per_job=1.0)

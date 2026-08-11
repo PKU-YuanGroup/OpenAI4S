@@ -1,18 +1,53 @@
 """Pytest fixtures + path setup for the openai4s test suite."""
 
 import os
+import re
 import sys
 from pathlib import Path
 
 import pytest
 
+# The repository's ignored .env belongs to the running app, never to offline
+# tests — but ``openai4s.config`` loads it into os.environ the moment any test
+# imports it. Refusing the load outright is what makes the suite hermetic: a
+# developer's real OPENAI4S_ARK_BASE_URL / OPENAI4S_LLM_MODEL turned three
+# model-catalog contracts red, and definition-time defaults such as
+# OPENAI4S_LLM_MAX_TOKENS are frozen at import, where no fixture can reach a
+# leaked value afterwards.
+os.environ["OPENAI4S_SKIP_DOTENV"] = "1"
+
+# Shell-exported config leaks exactly the same way the .env did, so drop every
+# endpoint/model/key variable ``LLMConfig.__post_init__`` consults before the
+# fakes below re-pin the ones the suite needs. The pattern spans the
+# per-provider names (OPENAI4S_ARK_MODEL, OPENAI4S_CLAUDE_BASE_URL, ...) and
+# the whole generic OPENAI4S_LLM_* family.
+_LLM_ENV_LEAK = re.compile(
+    r"^OPENAI4S_(?:LLM_[A-Z0-9_]+|[A-Z0-9_]*(?:BASE_URL|MODEL|API_KEY))$"
+)
+for _name in [n for n in os.environ if _LLM_ENV_LEAK.match(n)]:
+    del os.environ[_name]
+
+# The non-LLM definition-time defaults leak the same way and are frozen at the
+# same moment: ``Config``'s field defaults read these at class definition, so
+# a developer's `export OPENAI4S_PORT=9760` (the documented second-daemon
+# setup) or a stray OPENAI4S_RECORD_TAPE=1 silently reshapes every test in the
+# session with no fixture able to undo it.
+for _name in (
+    "OPENAI4S_HOST",
+    "OPENAI4S_PORT",
+    "OPENAI4S_MAX_TURNS",
+    "OPENAI4S_EXPLORE_MAX_TURNS",
+    "OPENAI4S_CONTEXT_WINDOW",
+    "OPENAI4S_COMPACTION_TRIGGER_RATIO",
+    "OPENAI4S_RECORD_TAPE",
+):
+    os.environ.pop(_name, None)
+
 # These must exist before any test module imports ``openai4s.config`` because
-# several dataclass defaults are resolved at module/class definition time.  The
-# repository's ignored .env belongs to the running app, never to offline tests.
+# several dataclass defaults are resolved at module/class definition time.
 os.environ["OPENAI4S_LLM_PROVIDER"] = "deepseek"
 os.environ["OPENAI4S_DEEPSEEK_API_KEY"] = "test-key"
 os.environ["OPENAI4S_LLM_API_KEY"] = "test-key"
-os.environ["OPENAI4S_ARK_API_KEY"] = ""
 os.environ["OPENAI4S_UNATTENDED_APPROVAL"] = "deny"
 os.environ["OPENAI4S_NOTEBOOK_REPL"] = "0"
 os.environ["OPENAI4S_ALLOW_PRIVATE_FETCH"] = "0"
@@ -63,6 +98,20 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
         config_mod._CONFIG = None
 
     reset_singletons()
+    # Re-applied per test, for the same reason as the module-level purge:
+    # ``LLMConfig.__post_init__`` reads these fresh on every construction, and
+    # a test that exported one directly into os.environ (instead of via
+    # monkeypatch) must not hand it to the next test.
+    monkeypatch.setenv("OPENAI4S_SKIP_DOTENV", "1")
+    for name in [n for n in os.environ if _LLM_ENV_LEAK.match(n)]:
+        monkeypatch.delenv(name, raising=False)
+    # The provider-native last-resort keys (ANTHROPIC_API_KEY, OPENAI_API_KEY,
+    # ...) feed the same resolver: a developer's real export would make a
+    # keyless-config test see a configured provider.
+    for native in sorted(
+        {v for names in config_mod._NATIVE_KEY_ENV.values() for v in names}
+    ):
+        monkeypatch.delenv(native, raising=False)
     monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "openai4s-data"))
     monkeypatch.setenv("OPENAI4S_LLM_PROVIDER", "deepseek")
     monkeypatch.setenv("OPENAI4S_DEEPSEEK_API_KEY", "test-key")

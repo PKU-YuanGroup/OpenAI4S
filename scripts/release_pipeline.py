@@ -17,8 +17,9 @@ script it runs on a laptop, in `--dry-run`, and under pytest.
 
     existing draft
       → build exact artifacts → test → smoke the exact wheel
-      → sbom → provenance → checksums over everything
-      → verify → stage unchanged bytes → upload → remote digest verification
+      → sbom → provenance → verify → seal evidence
+      → checksums over everything → stage unchanged bytes
+      → upload → remote digest verification
       → PyPI publish
       → GitHub publish
 
@@ -45,17 +46,18 @@ same version.
   a weaker `local`: it is how the *ordering* is tested.
 * `--mode local` really builds, really hashes, really writes the SBOM and
   provenance, and stops before anything is published.
-* `--mode release` additionally requires a real Developer ID signature on any
-  disk image. Missing it is a hard failure, because a release that silently
-  ships unsigned is exactly the outcome signing exists to prevent.
+* `--mode release` additionally requires a real Developer ID signature and a
+  stapled notarization ticket on any disk image. Missing either is a hard
+  failure, because a release that silently ships an image Gatekeeper refuses is
+  exactly the outcome these checks exist to prevent.
 * `--from-artifacts` is the staging-only mode. `build` and `test` do not run —
   their inputs are artifacts an earlier job already produced and verified — and
   the distributions are fingerprinted on entry and re-checked before upload, so
   this job cannot replace the bytes GitHub and PyPI are both meant to receive.
 
-Notarization is never reported as verified here. It needs Apple's service and a
-paid identity; a pipeline that printed "notarized: ok" without one would be the
-kind of confident wrong answer this codebase spends its time removing.
+This pipeline does not submit an image to Apple's notary service or staple a
+ticket. It reports notarization as verified only when image-bound evidence from
+``xcrun stapler validate`` establishes that a ticket is already attached.
 """
 
 from __future__ import annotations
@@ -1063,10 +1065,8 @@ class Pipeline:
             return self._smoke_daemon(python, root, env)
 
     def _smoke_daemon(self, python: Path, root: Path, env: dict[str, str]) -> str:
-        """Start the installed daemon, ask it for its URL, and stop it."""
+        """Start the installed daemon, authenticate, load its UI, and stop it."""
         import socket
-        import urllib.error
-        import urllib.request
 
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
@@ -1093,13 +1093,18 @@ class Pipeline:
                         + output.decode("utf-8", "replace")[-1200:]
                     )
                 try:
-                    with urllib.request.urlopen(
-                        f"http://127.0.0.1:{port}/", timeout=5
-                    ) as response:
-                        if 200 <= getattr(response, "status", 0) < 400:
-                            return f"served on 127.0.0.1:{port}"
-                except (urllib.error.URLError, OSError) as e:
-                    last = str(e)
+                    self._probe_installed_daemon(
+                        python,
+                        root,
+                        env,
+                        f"http://127.0.0.1:{port}/",
+                    )
+                    return f"served authenticated Web UI on 127.0.0.1:{port}"
+                except ReleaseError as error:
+                    # Deliberately contains no token or authenticated URL. The
+                    # CLI bootstrap URL is a credential and must not leak into
+                    # a release log just because readiness took another tick.
+                    last = str(error)
                 time.sleep(1)
             raise ReleaseError(f"the installed daemon never served a page: {last}")
         finally:
@@ -1116,6 +1121,134 @@ class Pipeline:
                 daemon.wait(timeout=30)
             except subprocess.TimeoutExpired:  # pragma: no cover
                 daemon.kill()
+
+    @staticmethod
+    def _probe_installed_daemon(
+        python: Path,
+        root: Path,
+        env: dict[str, str],
+        base_url: str,
+    ) -> None:
+        """Prove liveness and load the authenticated installed Web UI.
+
+        ``/`` is protected by the default token gate. Probing it without a
+        credential therefore turns a healthy installed daemon into a permanent
+        401 and made the local release pipeline time out. ``/health`` is the
+        intentionally public liveness endpoint, but accepting it alone would
+        weaken the packaging smoke to "a process answers JSON" and stop proving
+        that the wheel actually ships a usable workbench.
+
+        The installed CLI owns the token-file contract, so ask its ``url``
+        command for the browser bootstrap URL rather than duplicating the
+        filename here. A cookie-aware stdlib opener follows the 303 hand-off,
+        then loads both the installed HTML shell and its JavaScript entrypoint.
+        """
+        import http.cookiejar
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(
+                urllib.parse.urljoin(base_url, "health"), timeout=5
+            ) as response:
+                status = getattr(response, "status", 0)
+                health = json.loads(response.read().decode("utf-8"))
+        except (OSError, ValueError, urllib.error.URLError):
+            raise ReleaseError(
+                "installed daemon health endpoint is not ready"
+            ) from None
+        if not (200 <= status < 300) or health.get("status") != "ok":
+            raise ReleaseError("installed daemon health endpoint is not ready")
+
+        try:
+            completed = subprocess.run(
+                [str(python), "-I", "-m", "openai4s", "url"],
+                cwd=str(root),
+                env=env,
+                capture_output=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise ReleaseError(
+                "installed CLI could not report its Web UI URL"
+            ) from None
+        lines = [
+            line.strip()
+            for line in (completed.stdout or b"")
+            .decode("utf-8", "replace")
+            .splitlines()
+            if line.strip()
+        ]
+        if completed.returncode != 0 or len(lines) != 1:
+            raise ReleaseError("installed CLI could not report its Web UI URL")
+        authenticated_url = lines[0]
+
+        try:
+            expected = urllib.parse.urlsplit(base_url)
+            supplied = urllib.parse.urlsplit(authenticated_url)
+            same_origin = (
+                supplied.scheme == expected.scheme
+                and supplied.hostname == expected.hostname
+                and supplied.port == expected.port
+            )
+            query = urllib.parse.parse_qs(supplied.query)
+        except ValueError:
+            supplied = None
+            same_origin = False
+            query = {}
+        if (
+            not same_origin
+            or supplied is None
+            or supplied.path not in ("", "/")
+            or not any(query.get("token", []))
+        ):
+            raise ReleaseError(
+                "installed CLI did not return an authenticated URL for this daemon"
+            )
+
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+        )
+        try:
+            # The first GET exchanges ?token= for an HttpOnly cookie and follows
+            # the 303 to the credential-free root page.
+            with opener.open(authenticated_url, timeout=5) as response:
+                html_status = getattr(response, "status", 0)
+                html_type = str(response.headers.get("Content-Type", "")).lower()
+                final_url = response.geturl()
+                html = response.read()
+            with opener.open(
+                urllib.parse.urljoin(base_url, "static/app.js"), timeout=5
+            ) as response:
+                script_status = getattr(response, "status", 0)
+                script_type = str(response.headers.get("Content-Type", "")).lower()
+                script = response.read()
+        except (OSError, urllib.error.URLError):
+            # Never include the exception: HTTPError renders its URL, and the
+            # bootstrap URL contains the daemon credential.
+            raise ReleaseError("authenticated installed Web UI is not ready") from None
+
+        if (
+            not (200 <= html_status < 300)
+            or "text/html" not in html_type
+            or "token=" in final_url
+            or b"<title>OpenAI4S</title>" not in html
+            or b'id="dashboard"' not in html
+            or b"static/app.js" not in html
+        ):
+            raise ReleaseError("installed daemon did not serve the Web UI shell")
+        # The entrypoint is judged by serving facts: status, a JavaScript
+        # content type, a non-empty body, and the shell above actually
+        # referencing it. Never by source literals — asserting fragments like
+        # `"use strict";` here turned an app.js style choice into a release
+        # failure whose message points at packaging.
+        if (
+            not (200 <= script_status < 300)
+            or "javascript" not in script_type
+            or not script.strip()
+        ):
+            raise ReleaseError("installed daemon did not serve the Web UI application")
 
     def step_sbom(self) -> StepResult:
         if self.dry_run:

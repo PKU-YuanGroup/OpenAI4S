@@ -2273,6 +2273,9 @@ class Store:
     ) -> list[dict]:
         return self._frames.list_cells(root_frame_id, branch_id=branch_id)
 
+    def list_cell_outputs(self, root_frame_id: str) -> list[dict]:
+        return self._frames.list_cell_outputs(root_frame_id)
+
     def cell_detail(self, producing_cell_id: str) -> dict | None:
         return self._frames.cell_detail(producing_cell_id)
 
@@ -2974,6 +2977,9 @@ class Store:
 
     def list_artifacts(self, filters: dict | None = None) -> list[dict]:
         return self._artifacts.list_artifacts(filters)
+
+    def list_artifact_names(self) -> list[dict]:
+        return self._artifacts.list_artifact_names()
 
     def resolve_artifact_path(self, ident: str) -> str | None:
         return self._artifacts.resolve_artifact_path(ident)

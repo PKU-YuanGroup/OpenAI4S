@@ -1,6 +1,6 @@
 """What a Skill needs before it can run, and whether this machine has it.
 
-Five bundled Skills have declared `requirements: [gpu]` in their frontmatter
+Thirteen bundled Skills have declared `requirements: [gpu]` in their frontmatter
 since they were written, and nothing read it — not the loader, not the Skill
 object, not the catalogue row. So a GPU-only Skill looked exactly like one that
 runs anywhere, and the agent found out the difference at execution time, deep

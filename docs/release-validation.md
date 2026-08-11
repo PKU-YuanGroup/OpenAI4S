@@ -20,18 +20,20 @@ Developer-ID-signed):
 | State | Meaning | Publishable |
 | --- | --- | --- |
 | `verified` | Developer ID signature **and** completed notarization | yes |
-| `not_notarized` | Developer ID signature, notarization not established | by a decision this pipeline does not make |
+| `not_notarized` | Developer ID signature, notarization not established | no |
 | `preview` | ad-hoc signature — verifies happily, says nothing about who produced it | no |
 | `not_configured` | no signature evidence, or none that could be read | no |
 
-**`verified` is currently unreachable.** `build_macos_dmg.sh` only ad-hoc
-signs, and this pipeline never attempts notarization because that needs a paid
-Apple identity nobody has configured. So no macOS image can reach a publishable
-state in this version. That is a stated limitation, not an untested path, and
-the verify step says so in `macos_publishable` rather than leaving a reader to
-infer it from an absence. Per D11 the hard failure in `--mode release` is
-unchanged: there is no loosening here, only a vocabulary for describing what is
-true.
+**`verified` is currently unreachable.** `build_macos_dmg.sh` uses a Developer
+ID certificate when `OPENAI4S_MACOS_SIGNING_IDENTITY` names one that is
+available in the keychain; otherwise it falls back to an ad-hoc signature.
+Neither the build script nor the release workflow submits the image to Apple's
+notary service or staples a ticket. `describe_macos_image.py` can validate an
+already-stapled ticket, but it cannot create one. Consequently the current
+workflow can produce `preview` or `not_notarized`, never `verified`, and
+`--mode release` refuses the image. That is a stated limitation, not an
+untested path, and the verify step records it in `macos_publishable` rather than
+leaving a reader to infer it from an absence.
 
 ## The evidence bundle
 
@@ -117,15 +119,17 @@ cases. The build cannot be cross-compiled — the science wheels are native — 
 the release job runs it on an Apple Silicon runner and Intel machines install
 from PyPI instead.
 
-Two properties of the image are deliberate. It is **ad-hoc signed and not
-notarized**, because notarization requires a paid Apple Developer identity;
-Gatekeeper therefore refuses it on first launch, and the shipped `READ ME` gives
-both the macOS 15+ ("Open Anyway" in Privacy & Security) and the macOS 12–14
-(right-click → Open) paths, since Sequoia removed the latter. And it bundles
-**Python only**: the R kernel needs a conda environment, which is far too large
-to ship inside a DMG, so the R channel reports that its interpreter is
-unavailable rather than silently falling back to Python. The app therefore also
-ships the `openai4s` CLI at
+Two properties of the image are deliberate. A local build without a configured
+Developer ID identity is **ad-hoc signed**; a configured release build may use
+Developer ID. Neither path currently submits the image for notarization or
+staples a ticket, so the release gate rejects the DMG even when the signature is
+valid. For local preview images Gatekeeper may therefore refuse first launch,
+and the shipped `READ ME` gives both the macOS 15+ ("Open Anyway" in Privacy &
+Security) and the macOS 12–14 (right-click → Open) paths, since Sequoia removed
+the latter. The image also bundles **Python only**: the R kernel needs a conda
+environment, which is far too large to ship inside a DMG, so the R channel
+reports that its interpreter is unavailable rather than silently falling back
+to Python. The app therefore also ships the `openai4s` CLI at
 `Contents/Resources/runtime/bin/openai4s` — without it, `openai4s setup` (the
 one documented way to add that R environment) would be unreachable for anyone
 who only downloaded the image.
@@ -256,13 +260,14 @@ It used to trigger on `release: [created]`. GitHub does not emit that event for
 a *draft*, so the intended entry point could never fire and the pipeline was
 unreachable by construction — which is why the trigger is now explicit.
 
-    build → test → assets → smoke → SBOM → provenance → checksums → verify →
-    draft → upload → re-verify → publish
+    build → test → assets → smoke → SBOM → provenance → verify → evidence →
+    checksums → draft → upload → re-verify → publish
 
 `publish` is last because it is the only step that cannot be undone. `verify`
-runs before the release is staged so a bad asset is caught while nothing is
-public; `re-verify` reads the assets back *after* upload, because a local
-checksum cannot see a transfer that dropped bytes.
+runs before the evidence bundle and checksums are sealed, so signing and
+notarization facts are part of the evidence and every resulting artifact is
+covered before staging. `re-verify` reads the assets back *after* upload,
+because a local checksum cannot see a transfer that dropped bytes.
 
 All of it lives in [`scripts/release_pipeline.py`](../scripts/release_pipeline.py),
 not in the workflow YAML, so it can be exercised without cutting a release:
@@ -279,24 +284,25 @@ published.
 
 ### What is and is not claimed about signing
 
-* `--mode release` **fails closed** for a `.dmg` that is not
-  Developer-ID-signed. The judgement comes from evidence — a receipt written by
-  the macOS job, or `codesign` on the image — and the digest in that evidence
-  must bind to the image being released.
+* `--mode release` **fails closed** unless a `.dmg` is both
+  Developer-ID-signed and notarized. The judgement comes from evidence — a
+  receipt written by the macOS job, or inspection of the image — and the digest
+  in that evidence must bind to the image being released.
 * It deliberately does **not** consult `OPENAI4S_MACOS_SIGNING_IDENTITY`.
   Reading a non-empty environment variable as "this is signed" is exactly what
-  let an ad-hoc image pass the gate as Developer-ID-signed, since
-  `build_macos_dmg.sh` only ever ad-hoc signs. The fact the report carries is
-  named `identity_configured`, it describes configuration rather than
-  signature, and nothing gates on it.
-* Consequence worth stating plainly: with no Developer ID certificate
-  available, **no DMG can pass `--mode release` today**. That is the intended
-  behaviour, not an oversight — but it means the macOS asset has no publishable
-  path until the certificate exists.
-* **Notarization is never reported as verified.** It requires Apple's notary
-  service and a paid identity, so the pipeline reports `notarized: null` with
-  the reason. A pipeline that printed `notarized: ok` without one would be
-  precisely the confident wrong answer this project spends its effort removing.
+  once let an ad-hoc image pass the gate as Developer-ID-signed. The build
+  script may use the named identity, but configuration is not evidence; the
+  verifier inspects the resulting image instead.
+* Consequence worth stating plainly: **no DMG produced entirely by the current
+  workflow can pass `--mode release` today**. Without a certificate it lacks a
+  Developer ID signature; with one it still lacks notarization and a stapled
+  ticket. A release must omit the DMG or gain a separate notarization/stapling
+  stage before this asset has a publishable path.
+* `describe_macos_image.py` runs `xcrun stapler validate` and records the
+  boolean result and return code in the receipt. It validates existing
+  notarization evidence; it does not submit the image or staple a ticket. The
+  current workflow therefore records notarization as false and refuses release
+  mode rather than claiming an unperformed Apple service step succeeded.
 
 The provenance statement is **unsigned** and says so: it binds the listed
 digests to the build's parameters, and it does not establish who produced them.

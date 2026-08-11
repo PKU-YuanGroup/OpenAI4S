@@ -336,6 +336,114 @@ def test_a_dry_run_touches_nothing_and_still_reports_every_step(assets):
 
 
 # --------------------------------------------------------------------------
+# the installed daemon smoke crosses the default token gate
+# --------------------------------------------------------------------------
+
+
+def test_installed_daemon_smoke_bootstraps_and_loads_the_real_webui(
+    monkeypatch, tmp_path
+):
+    """A healthy token-gated daemon must not look dead, or pass on health alone.
+
+    The release smoke requested bare ``/`` after token auth became the default,
+    received 401 forever, and reported that the installed daemon never served a
+    page. Switching only to ``/health`` would hide the packaging failure this
+    smoke exists to catch. Model both sides: unauthenticated root is genuinely
+    refused, then the installed CLI's bootstrap URL must load the HTML shell and
+    its JavaScript through the issued cookie.
+    """
+    import threading
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    token = "release-smoke-token"
+    observed: list[tuple[str, str]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, _format, *_args):
+            return
+
+        def _reply(self, code, body=b"", content_type="text/plain", headers=()):
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            for name, value in headers:
+                self.send_header(name, value)
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def do_GET(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            cookie = self.headers.get("Cookie", "")
+            observed.append((self.path, cookie))
+            if parsed.path == "/health":
+                self._reply(200, b'{"status":"ok"}', "application/json")
+                return
+            if parsed.path == "/" and urllib.parse.parse_qs(parsed.query).get(
+                "token"
+            ) == [token]:
+                self._reply(
+                    303,
+                    headers=(
+                        ("Location", "/"),
+                        ("Set-Cookie", f"os_token={token}; Path=/; HttpOnly"),
+                    ),
+                )
+                return
+            authenticated = f"os_token={token}" in cookie
+            if parsed.path == "/" and authenticated:
+                self._reply(
+                    200,
+                    b'<title>OpenAI4S</title><div id="dashboard"></div>'
+                    b'<script src="/static/app.js"></script>',
+                    "text/html; charset=utf-8",
+                )
+                return
+            if parsed.path == "/static/app.js" and authenticated:
+                # Deliberately shares no source text with the real app.js: the
+                # probe must judge the entrypoint by serving facts, and this
+                # body fails the smoke if source-literal coupling comes back.
+                self._reply(
+                    200,
+                    b"(() => { window.addEventListener('load', boot); })();",
+                    "text/javascript; charset=utf-8",
+                )
+                return
+            self._reply(401, b"unauthorized", "application/json")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}/"
+
+    def installed_cli(argv, **_kwargs):
+        assert argv[-4:] == ["-I", "-m", "openai4s", "url"]
+        return _completed(0, f"{base_url}?token={token}\n".encode())
+
+    monkeypatch.setattr(subprocess, "run", installed_cli)
+    pipeline = Pipeline("0.2.0", assets_dir=tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(base_url, timeout=2)
+        assert denied.value.code == 401, "the regression needs a real token gate"
+
+        pipeline._probe_installed_daemon(
+            Path("/installed/bin/python"), tmp_path, {}, base_url
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert any(path == "/health" for path, _cookie in observed)
+    assert any(path == "/" and cookie for path, cookie in observed)
+    assert any(path == "/static/app.js" and cookie for path, cookie in observed)
+
+
+# --------------------------------------------------------------------------
 # staging consumes; it does not produce
 # --------------------------------------------------------------------------
 
@@ -1548,11 +1656,12 @@ def test_verified_requires_a_ticket_and_the_build_script_alone_cannot_reach_it()
     would be revisited; that is what happened, so the claim is revised here
     rather than the assertion relaxed.
 
-    What is true now: `verified` needs a stapled ticket, `build_macos_dmg.sh`
-    ad-hoc signs and cannot produce one, so an image from the build script alone
-    is `preview` and a release carrying it is refused. What changed is that a
-    *Developer-ID-signed* image is now refused too unless it is notarized --
-    previously it passed.
+    What is true now: `verified` needs a stapled ticket. `build_macos_dmg.sh`
+    uses Developer ID when configured and otherwise ad-hoc signs, but it never
+    submits to Apple's notary service, so the image it produces alone is either
+    `preview` or `not_notarized` and a release carrying it is refused. What
+    changed is that a *Developer-ID-signed* image is now refused too unless it
+    is notarized -- previously it passed.
     """
     from scripts.release_pipeline import signing_state
 

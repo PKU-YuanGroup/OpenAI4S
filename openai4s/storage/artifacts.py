@@ -1094,6 +1094,20 @@ class ArtifactRepository:
             rows = self._connection.execute(sql, tuple(params)).fetchall()
         return [dict(row) for row in rows]
 
+    def list_artifact_names(self) -> list[dict]:
+        """Store-wide ``(filename, artifact_id, latest_version_id)`` rows.
+
+        The submission-evidence gatherer needs exactly these three columns
+        per artifact. ``list_artifacts`` joins versions and sorts by
+        recency for the UI's benefit — work that path discards, on a call
+        that runs while the kernel worker blocks on the host-call lock.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT filename,artifact_id,latest_version_id FROM artifacts"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def resolve_artifact_path(self, ident: str) -> str | None:
         with self._lock:
             row = self._connection.execute(

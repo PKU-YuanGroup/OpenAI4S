@@ -46,7 +46,8 @@ def test_console_and_module_entrypoints_target_the_same_main():
         (["serve"], {"cmd": "serve", "no_open": False}),
         (["serve", "--no-open"], {"cmd": "serve", "no_open": True}),
         (["status"], {"cmd": "status"}),
-        (["stop"], {"cmd": "stop"}),
+        (["stop"], {"cmd": "stop", "force": False}),
+        (["stop", "--force"], {"cmd": "stop", "force": True}),
         (["url"], {"cmd": "url"}),
         (
             ["run", "analyze data"],
@@ -120,6 +121,7 @@ def test_setup_only_accepts_each_documented_environment(name):
     ("argv", "expected_fragment"),
     [
         (["serve", "--help"], "--no-open"),
+        (["stop", "--help"], "--force"),
         (["run", "--help"], "--json"),
         (["run", "--help"], "--verbose"),
         (["init", "--help"], "--api-key-stdin"),

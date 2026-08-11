@@ -22,8 +22,10 @@ from openai4s.agent.events import (
 )
 from openai4s.agent.finalize import (
     execute_finalize_action,
+    execution_evidence,
     finalize_response_schema,
     finalize_response_tool_spec,
+    reconcile_completion_claims,
     validate_finalize_arguments,
     with_finalize_response,
 )
@@ -45,6 +47,22 @@ def _arguments(**overrides):
         "limitations": ["Only one dataset was available."],
         "next_steps": ["Validate on an independent dataset."],
         "completion_bullets": ["Completed the evidence review"],
+    }
+    value.update(overrides)
+    return value
+
+
+def _prose_arguments(**overrides):
+    """A payload with no execution-shaped claims — no artifacts, no metrics,
+    reflective bullets — which is what an honest conversational turn (zero
+    cells, zero tools) is allowed to finalize with under ledger reconciliation.
+    """
+    value = {
+        "summary": "The inspected evidence supports the requested conclusion.",
+        "findings": ["The control and measured value agree."],
+        "limitations": ["Only one dataset was available."],
+        "next_steps": ["Validate on an independent dataset."],
+        "completion_bullets": ["Explained the evidence review"],
     }
     value.update(overrides)
     return value
@@ -185,7 +203,7 @@ def test_router_reserves_finalization_only_for_one_standalone_native_call():
 
 
 def test_cli_executor_closes_provider_call_before_returning_completion_record():
-    call = _call(_arguments())
+    call = _call(_prose_arguments())
     outcome = _local_executor().execute(
         FinalizeAction(call), ModelReply(tool_calls=(call,)), RunState([])
     )
@@ -203,10 +221,10 @@ def test_cli_executor_closes_provider_call_before_returning_completion_record():
     assert outcome.completion == {
         "output": {
             key: value
-            for key, value in _arguments().items()
+            for key, value in _prose_arguments().items()
             if key != "completion_bullets"
         },
-        "completion_bullets": ["Completed the evidence review"],
+        "completion_bullets": ["Explained the evidence review"],
     }
     assert outcome.stop_reason is None
 
@@ -264,7 +282,7 @@ def test_mixed_batch_treats_finalize_as_nonterminal_and_never_completes():
 
 
 def test_engine_records_assistant_then_tool_result_before_submitted_terminal():
-    call = _call(_arguments())
+    call = _call(_prose_arguments())
     reply = ModelReply(content="", tool_calls=(call,))
 
     class Model:
@@ -288,7 +306,7 @@ def test_engine_records_assistant_then_tool_result_before_submitted_terminal():
 
 
 def test_web_executor_accepts_finalize_without_dispatcher_kernel_or_pending_work():
-    call = _call(_arguments())
+    call = _call(_prose_arguments())
     outcome = _web_executor().execute(
         FinalizeAction(call), ModelReply(tool_calls=(call,)), RunState([])
     )
@@ -349,3 +367,305 @@ def test_finalize_ledger_roundtrip_and_timeline_projection(tmp_path):
     assert finalized["status"] == "completed"
     assert finalized["title"].startswith("The inspected evidence")
     store.close()
+
+
+def test_reconciliation_rejects_execution_claims_without_ledger_evidence():
+    zero = {"cells": 0, "tool_calls": 0}
+
+    assert reconcile_completion_claims(_prose_arguments(), zero) is None
+    error = reconcile_completion_claims(_arguments(), zero)
+    assert "artifacts" in error and "metrics" in error and "ledger" in error
+    flagged = reconcile_completion_claims(
+        _prose_arguments(completion_bullets=["Computed the standard deviation"]),
+        zero,
+    )
+    assert "Computed the standard deviation" in flagged
+    # CJK bullets carry no tense morphology; the verb heuristic never applies.
+    assert (
+        reconcile_completion_claims(
+            _prose_arguments(completion_bullets=["完成了证据审阅"]), zero
+        )
+        is None
+    )
+    # Any real execution satisfies the reconciliation for every claim shape.
+    assert reconcile_completion_claims(_arguments(), {"cells": 1}) is None
+    assert reconcile_completion_claims(_arguments(), {"tool_calls": 2}) is None
+    # A corrupted evidence mapping degrades to zero counts, never a crash.
+    assert "ledger" in reconcile_completion_claims(
+        _arguments(), {"cells": "three", "tool_calls": -1}
+    )
+
+
+def test_zero_execution_finalize_with_claims_is_refused_but_repairable():
+    call = _call(_arguments(completion_bullets=["Computed the standard deviation"]))
+
+    for executor in (_local_executor(), _web_executor()):
+        outcome = executor.execute(
+            FinalizeAction(call), ModelReply(tool_calls=(call,)), RunState([])
+        )
+        result = outcome.history_messages[0]
+        assert result["is_error"] is True
+        assert "ledger" in result["content"]
+        assert outcome.completion is None
+        # A refused reconciliation is repairable, not terminal: the model can
+        # run the claimed work (or restate the completion) on the next turn.
+        assert outcome.stop_reason is None
+
+    # Direct calls without an evidence ledger keep the legacy behaviour.
+    legacy = execute_finalize_action(FinalizeAction(call))
+    assert legacy.history_messages[0]["is_error"] is False
+    assert legacy.completion is not None
+
+
+def test_cli_finalize_accepts_execution_claims_after_a_real_cell_ran():
+    class Kernel:
+        generation = 0
+
+        def execute(self, code, origin="agent"):
+            assert origin == "agent"
+            return {"stdout": "4\n", "stderr": "", "error": None}
+
+    class Dispatcher:
+        last_output = None
+
+    executor = LocalActionExecutor(
+        Kernel(),
+        Dispatcher(),
+        lambda code, messages: None,
+        lambda code: {"error": "R must not start"},
+    )
+    state = RunState([])
+    cell = CodeCell("python", "print(2 + 2)\n")
+    executor.execute(cell, ModelReply(content="```python\nprint(2 + 2)\n```"), state)
+    assert execution_evidence(state.metadata) == {"cells": 1, "tool_calls": 0}
+
+    call = _call(_arguments(completion_bullets=["Computed the requested value"]))
+    outcome = executor.execute(
+        FinalizeAction(call), ModelReply(tool_calls=(call,)), state
+    )
+    assert outcome.history_messages[0]["is_error"] is False
+    assert outcome.completion is not None
+
+
+def test_safety_refused_cell_never_counts_as_execution_evidence():
+    executor = LocalActionExecutor(
+        _NeverKernel(),
+        _NeverDispatcher(),
+        lambda code, messages: "cell refused by the safety gate",
+        lambda code: {"error": "R must not start"},
+    )
+    state = RunState([])
+    cell = CodeCell("python", "import os\n")
+    refused = executor.execute(
+        cell, ModelReply(content="```python\nimport os\n```"), state
+    )
+    assert "refused" in str(refused.observation)
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+    call = _call(_arguments())
+    outcome = executor.execute(
+        FinalizeAction(call), ModelReply(tool_calls=(call,)), state
+    )
+    assert outcome.history_messages[0]["is_error"] is True
+    assert outcome.completion is None
+
+
+def test_web_finalize_accepts_execution_claims_after_a_real_cell_ran():
+    sent = []
+    events = WebEventSink(sent.append, "frame-1", [], lambda usage: None)
+
+    class Dispatcher:
+        last_output = None
+
+    executor = WebActionExecutor(
+        dispatcher=lambda: Dispatcher(),
+        apply_pending=lambda: None,
+        execute_cell=lambda action: {"stdout": "ok\n", "stderr": "", "error": None},
+        events=events,
+        prose_nudge="nudge",
+        explore_nudge="explore",
+    )
+    state = RunState([])
+    cell = CodeCell("python", "print(1)\n")
+    executor.execute(cell, ModelReply(content="```python\nprint(1)\n```"), state)
+    assert execution_evidence(state.metadata) == {"cells": 1, "tool_calls": 0}
+
+    call = _call(_arguments(completion_bullets=["Computed the requested value"]))
+    outcome = executor.execute(
+        FinalizeAction(call), ModelReply(tool_calls=(call,)), state
+    )
+    assert outcome.history_messages[0]["is_error"] is False
+    assert outcome.completion is not None
+
+
+def test_web_refused_cell_result_never_counts_as_execution_evidence():
+    """The Web sibling of the safety-gate contract.
+
+    The gateway's ``execute_cell`` returns its full outcome dict whose
+    ``executed`` bit is False for safety-refused / runtime-unavailable soft
+    errors — result dicts byte-identical to real failures.  Counting them let
+    a Web turn whose only cell was refused finalize with fabricated
+    execution claims.
+    """
+    sent = []
+    events = WebEventSink(sent.append, "frame-1", [], lambda usage: None)
+
+    class Dispatcher:
+        last_output = None
+
+    executor = WebActionExecutor(
+        dispatcher=lambda: Dispatcher(),
+        apply_pending=lambda: None,
+        execute_cell=lambda action: {
+            "result": {"stdout": "", "stderr": "", "error": "refused"},
+            "executed": False,
+        },
+        events=events,
+        prose_nudge="nudge",
+        explore_nudge="explore",
+    )
+    state = RunState([])
+    cell = CodeCell("python", "import os\n")
+    executor.execute(cell, ModelReply(content="```python\nimport os\n```"), state)
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+    call = _call(_arguments(completion_bullets=["Computed the requested value"]))
+    outcome = executor.execute(
+        FinalizeAction(call), ModelReply(tool_calls=(call,)), state
+    )
+    assert outcome.history_messages[0]["is_error"] is True
+    assert outcome.completion is None
+
+
+def test_refused_native_batch_never_counts_as_execution_evidence():
+    """A batch whose every call was refused without dispatch is not evidence.
+
+    Parse/validation/limit refusals are answered by ``execute_native_batch``
+    itself — no tool runs.  Counting declarations let one malformed call back
+    a fabricated finalize.
+    """
+    bad = NativeToolCall(
+        id="t-1",
+        wire_id="wire-t-1",
+        name="read_file",
+        ordinal=0,
+        raw_arguments="{not json",
+        arguments=None,
+        parse_error="arguments are not valid JSON",
+    )
+
+    class NeverInvokedDispatcher:
+        last_output = None
+
+        def execute_host_call(self, *args, **kwargs):  # pragma: no cover
+            raise AssertionError("a refused call must not reach the dispatcher")
+
+    local = LocalActionExecutor(
+        _NeverKernel(),
+        NeverInvokedDispatcher(),
+        lambda code, messages: None,
+        lambda code: {"error": "R must not start"},
+    )
+    state = RunState([])
+    local.execute(NativeToolBatch((bad,)), ModelReply(tool_calls=(bad,)), state)
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+    call = _call(_arguments(completion_bullets=["Queried the database"]))
+    refused = local.execute(FinalizeAction(call), ModelReply(tool_calls=(call,)), state)
+    assert refused.history_messages[0]["is_error"] is True
+    assert refused.completion is None
+
+
+def test_cli_r_unavailable_soft_error_never_counts_as_execution_evidence():
+    """The R runner's spawn-failure dict carries no "stdout": nothing ran."""
+    executor = LocalActionExecutor(
+        _NeverKernel(),
+        _NeverDispatcher(),
+        lambda code, messages: None,
+        lambda code: {"error": "R kernel unavailable: Rscript not found"},
+    )
+    state = RunState([])
+    cell = CodeCell("r", "summary(1:3)\n")
+    outcome = executor.execute(
+        cell, ModelReply(content="```r\nsummary(1:3)\n```"), state
+    )
+    assert "R kernel unavailable" in str(outcome.observation)
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+
+def test_call_reaches_dispatcher_gates_evidence_counting():
+    """Evidence counts only calls that would actually run a tool.
+
+    A hallucinated tool name, or a known tool whose arguments would be
+    refused, executes nothing — counting it let a refused call back a later
+    execution-shaped finalize claim.
+    """
+    from openai4s.agent.control import call_reaches_dispatcher
+
+    # A known tool with valid arguments will be dispatched → counts.
+    assert call_reaches_dispatcher("read_text_file", None, {"path": "a.txt"}) is True
+    # The native path validated arguments before invoke, so a bare known name
+    # (no arguments passed) counts too.
+    assert call_reaches_dispatcher("list_dir", None) is True
+    # An unknown / hallucinated name is refused before the dispatcher.
+    assert call_reaches_dispatcher("run_python_cell", None, {"code": "x"}) is False
+    # A known tool with a type-invalid argument is refused before the dispatcher
+    # (this is the legacy path's gap: it has no prior validate step).
+    assert call_reaches_dispatcher("read_text_file", None, {"path": 123}) is False
+    # Degenerate names never count.
+    assert call_reaches_dispatcher(None) is False
+    assert call_reaches_dispatcher("") is False
+
+
+def test_unknown_native_tool_name_never_counts_as_execution_evidence():
+    """A hallucinated native tool name slips past the batch validator (which
+    only knows how to reject *known* tools' bad input) but is refused before
+    the dispatcher — it must not become finalize-time evidence."""
+    unknown = NativeToolCall(
+        id="t-1",
+        wire_id="wire-1",
+        name="run_python_cell",
+        ordinal=0,
+        raw_arguments='{"code": "print(1)"}',
+        arguments={"code": "print(1)"},
+        parse_error=None,
+    )
+
+    class NeverInvokedDispatcher:
+        last_output = None
+
+        def __call__(self, *a, **k):  # pragma: no cover - unknown tool early-exits
+            raise AssertionError("an unknown tool must not reach the dispatcher")
+
+    local = LocalActionExecutor(
+        _NeverKernel(),
+        NeverInvokedDispatcher(),
+        lambda code, messages: None,
+        lambda code: {"error": "R must not start"},
+    )
+    state = RunState([])
+    local.execute(NativeToolBatch((unknown,)), ModelReply(tool_calls=(unknown,)), state)
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+    call = _call(_arguments(completion_bullets=["Ran the analysis"]))
+    refused = local.execute(FinalizeAction(call), ModelReply(tool_calls=(call,)), state)
+    assert refused.history_messages[0]["is_error"] is True
+    assert refused.completion is None
+
+
+def test_legacy_unknown_or_invalid_tool_calls_never_count_as_evidence():
+    """The text-parsed path has no prior validate gate, so it must itself
+    refuse to count an unknown tool or a known tool with invalid arguments."""
+    local = LocalActionExecutor(
+        _NeverKernel(),
+        _NeverDispatcher(),
+        lambda code, messages: None,
+        lambda code: {"error": "R must not start"},
+    )
+    for content in (
+        '```tool\n{"name": "run_python_cell", "arguments": {"code": "x"}}\n```',
+        '```tool\n{"name": "read_text_file", "arguments": {"path": 123}}\n```',
+    ):
+        state = RunState([])
+        local.execute(None, ModelReply(content=content), state)
+        assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
