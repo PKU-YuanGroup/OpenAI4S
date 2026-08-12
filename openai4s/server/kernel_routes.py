@@ -37,8 +37,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from openai4s.server.contract import RouteSpec  # isort: split
-from openai4s.server.errors import GatewayError
+from .contract import RouteSpec
+from .errors import GatewayError
 
 
 _EXECUTION = RouteSpec("kernel.execution", "GET", r"/frames/([^/]+)/execution")
