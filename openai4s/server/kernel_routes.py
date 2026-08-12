@@ -37,9 +37,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from . import contract
-from . import errors
-
+from . import contract, errors
 
 _EXECUTION = contract.RouteSpec("kernel.execution", "GET", r"/frames/([^/]+)/execution")
 _EXECUTE = contract.RouteSpec(
