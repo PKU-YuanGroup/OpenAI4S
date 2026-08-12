@@ -30,9 +30,43 @@ import ast
 import importlib
 import re
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 
-from openai4s.server.routing import RouteSpec
+
+@dataclass(frozen=True)
+class RouteSpec:
+    """One HTTP method + path matcher shared by routing and contract code."""
+
+    name: str
+    method: str
+    pattern: str
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.name.strip():
+            raise ValueError("route name must be non-empty")
+        if self.method != self.method.upper() or not self.method.isalpha():
+            raise ValueError(
+                f"route method must be uppercase HTTP verb: {self.method!r}"
+            )
+        if not self.pattern.startswith("/"):
+            raise ValueError(f"route pattern must start with '/': {self.pattern!r}")
+        try:
+            re.compile(self.pattern)
+        except re.error as exc:
+            raise ValueError(f"invalid route pattern {self.pattern!r}: {exc}") from exc
+
+    def match(self, method: str, path: str) -> re.Match[str] | None:
+        """Match only when both the HTTP method and path belong to this route.
+
+        Wrong-method matches deliberately return ``None``. The gateway's route
+        chain must then continue to its ordinary 404 instead of treating a path
+        match as a handled request.
+        """
+        if method != self.method:
+            return None
+        return re.fullmatch(self.pattern, path)
+
 
 #: Where the HTTP API lives. Defined here rather than in the gateway because
 #: two very different callers need it and neither should guess: the gateway
@@ -102,7 +136,6 @@ def _route_module_specs(name: str) -> tuple[RouteSpec, ...]:
     is now useful because a declarative module exposes the exact table the
     runtime consumes; modules without that table stay on the source fallback.
     """
-
     module_name = f"{__package__}.{name[:-3]}"
     module = importlib.import_module(module_name)
     declared = getattr(module, "ROUTES", None)
@@ -119,7 +152,6 @@ def _route_module_specs(name: str) -> tuple[RouteSpec, ...]:
 
 def declared_http_routes() -> tuple[RouteSpec, ...]:
     """All executable RouteSpec declarations on the gateway HTTP surface."""
-
     specs: list[RouteSpec] = []
     for name in _route_modules():
         specs.extend(_route_module_specs(name))
@@ -128,7 +160,6 @@ def declared_http_routes() -> tuple[RouteSpec, ...]:
 
 def _route_sources() -> list[str]:
     """Gateway plus only route modules that still need source extraction."""
-
     texts = [_GATEWAY.read_text("utf-8")]
     for name in _route_modules():
         if _route_module_specs(name):
@@ -184,7 +215,6 @@ def _route_spec_patterns(text: str) -> set[str]:
     it reads their live ``ROUTES`` table. This helper keeps source-oriented
     contract tests meaningful and lets them compare a module in isolation.
     """
-
     try:
         tree = ast.parse(textwrap.dedent(text))
     except SyntaxError:
@@ -197,11 +227,7 @@ def _route_spec_patterns(text: str) -> set[str]:
             pattern = node.args[2]
         else:
             pattern = next(
-                (
-                    kw.value
-                    for kw in node.keywords
-                    if kw.arg == "pattern"
-                ),
+                (kw.value for kw in node.keywords if kw.arg == "pattern"),
                 None,
             )
         if isinstance(pattern, ast.Constant) and isinstance(pattern.value, str):
@@ -227,7 +253,6 @@ def http_routes(source: str | None = None) -> set[str]:
     RouteSpec patterns and only legacy modules are source-scanned. A supplied
     source is treated as an isolated fragment for extractor tests.
     """
-
     if source is None:
         text = "\n".join(_route_sources())
         declared = {spec.pattern for spec in declared_http_routes()}
@@ -362,6 +387,7 @@ def route_families(source: str | None = None) -> set[str]:
 
 
 __all__ = [
+    "RouteSpec",
     "declared_http_routes",
     "http_routes",
     "inventory",
