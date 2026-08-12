@@ -84,6 +84,47 @@ def test_route_family_reduces_a_parameterised_path():
     assert route_family("/") == ""
 
 
+def test_kernel_routes_declare_state_mutation_semantics():
+    from openai4s.server import kernel_routes
+
+    expected = {
+        "kernel.execution": False,
+        "kernel.execute": True,
+        "kernel.restart": True,
+        "kernel.stop": True,
+        "kernel.interrupt": True,
+        "kernel.start": True,
+        "kernel.variables": False,
+        "kernel.status": False,
+        "session.status": False,
+        "kernel.install": True,
+        "kernel.environments": False,
+        "kernel.env": True,
+    }
+    actual = {spec.name: spec.mutates for spec in kernel_routes.ROUTES}
+    assert actual == expected
+
+
+def test_route_specs_reject_ambiguous_protocol_identities():
+    first = contract.RouteSpec("probe.one", "GET", r"/probe/one", mutates=False)
+    duplicate_name = contract.RouteSpec(
+        "probe.one", "GET", r"/probe/two", mutates=False
+    )
+    duplicate_http = contract.RouteSpec(
+        "probe.two", "GET", r"/probe/one", mutates=False
+    )
+
+    with pytest.raises(ValueError, match="duplicate route name"):
+        contract._validate_route_specs((first, duplicate_name))
+    with pytest.raises(ValueError, match="duplicate HTTP route declaration"):
+        contract._validate_route_specs((first, duplicate_http))
+
+
+def test_route_spec_source_fragment_remains_inventoried():
+    source = 'RouteSpec("probe", "GET", r"/probe/([^/]+)", mutates=False)\n'
+    assert contract.http_routes(source) == {r"/probe/([^/]+)"}
+
+
 # --------------------------------------------------------------------------
 # coverage
 # --------------------------------------------------------------------------

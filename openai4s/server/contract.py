@@ -36,11 +36,12 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class RouteSpec:
-    """One HTTP method + path matcher shared by routing and contract code."""
+    """One HTTP route identity plus its state-mutation contract."""
 
     name: str
     method: str
     pattern: str
+    mutates: bool
 
     def __post_init__(self) -> None:
         if not self.name or not self.name.strip():
@@ -51,6 +52,8 @@ class RouteSpec:
             )
         if not self.pattern.startswith("/"):
             raise ValueError(f"route pattern must start with '/': {self.pattern!r}")
+        if not isinstance(self.mutates, bool):
+            raise TypeError("route mutates flag must be bool")
         try:
             re.compile(self.pattern)
         except re.error as exc:
@@ -150,12 +153,29 @@ def _route_module_specs(name: str) -> tuple[RouteSpec, ...]:
     return specs
 
 
+def _validate_route_specs(specs: tuple[RouteSpec, ...]) -> tuple[RouteSpec, ...]:
+    """Reject ambiguous protocol identities before they enter the inventory."""
+    names: set[str] = set()
+    method_paths: set[tuple[str, str]] = set()
+    for spec in specs:
+        if spec.name in names:
+            raise ValueError(f"duplicate route name: {spec.name!r}")
+        identity = (spec.method, spec.pattern)
+        if identity in method_paths:
+            raise ValueError(
+                f"duplicate HTTP route declaration: {spec.method} {spec.pattern}"
+            )
+        names.add(spec.name)
+        method_paths.add(identity)
+    return specs
+
+
 def declared_http_routes() -> tuple[RouteSpec, ...]:
-    """All executable RouteSpec declarations on the gateway HTTP surface."""
+    """All validated RouteSpec declarations on the gateway HTTP surface."""
     specs: list[RouteSpec] = []
     for name in _route_modules():
         specs.extend(_route_module_specs(name))
-    return tuple(specs)
+    return _validate_route_specs(tuple(specs))
 
 
 def _route_sources() -> list[str]:

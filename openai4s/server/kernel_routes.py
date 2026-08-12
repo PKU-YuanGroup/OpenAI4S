@@ -39,30 +39,78 @@ from typing import Any
 
 from . import contract, errors
 
-_EXECUTION = contract.RouteSpec("kernel.execution", "GET", r"/frames/([^/]+)/execution")
+_EXECUTION = contract.RouteSpec(
+    "kernel.execution",
+    "GET",
+    r"/frames/([^/]+)/execution",
+    mutates=False,
+)
 _EXECUTE = contract.RouteSpec(
-    "kernel.execute", "POST", r"/frames/([^/]+)/kernel/execute"
+    "kernel.execute",
+    "POST",
+    r"/frames/([^/]+)/kernel/execute",
+    mutates=True,
 )
 _RESTART = contract.RouteSpec(
-    "kernel.restart", "POST", r"/frames/([^/]+)/kernel/restart"
+    "kernel.restart",
+    "POST",
+    r"/frames/([^/]+)/kernel/restart",
+    mutates=True,
 )
-_STOP = contract.RouteSpec("kernel.stop", "POST", r"/frames/([^/]+)/kernel/stop")
+_STOP = contract.RouteSpec(
+    "kernel.stop",
+    "POST",
+    r"/frames/([^/]+)/kernel/stop",
+    mutates=True,
+)
 _INTERRUPT = contract.RouteSpec(
-    "kernel.interrupt", "POST", r"/frames/([^/]+)/kernel/interrupt"
+    "kernel.interrupt",
+    "POST",
+    r"/frames/([^/]+)/kernel/interrupt",
+    mutates=True,
 )
-_START = contract.RouteSpec("kernel.start", "POST", r"/frames/([^/]+)/kernel/start")
+_START = contract.RouteSpec(
+    "kernel.start",
+    "POST",
+    r"/frames/([^/]+)/kernel/start",
+    mutates=True,
+)
 _VARIABLES = contract.RouteSpec(
-    "kernel.variables", "GET", r"/frames/([^/]+)/kernel/variables"
+    "kernel.variables",
+    "GET",
+    r"/frames/([^/]+)/kernel/variables",
+    mutates=False,
 )
-_KERNEL = contract.RouteSpec("kernel.status", "GET", r"/frames/([^/]+)/kernel")
-_STATUS = contract.RouteSpec("session.status", "GET", r"/frames/([^/]+)/status")
+_KERNEL = contract.RouteSpec(
+    "kernel.status",
+    "GET",
+    r"/frames/([^/]+)/kernel",
+    mutates=False,
+)
+_STATUS = contract.RouteSpec(
+    "session.status",
+    "GET",
+    r"/frames/([^/]+)/status",
+    mutates=False,
+)
 _INSTALL = contract.RouteSpec(
-    "kernel.install", "POST", r"/frames/([^/]+)/kernel/install"
+    "kernel.install",
+    "POST",
+    r"/frames/([^/]+)/kernel/install",
+    mutates=True,
 )
 _ENVIRONMENTS = contract.RouteSpec(
-    "kernel.environments", "GET", r"/frames/([^/]+)/environments"
+    "kernel.environments",
+    "GET",
+    r"/frames/([^/]+)/environments",
+    mutates=False,
 )
-_ENV = contract.RouteSpec("kernel.env", "POST", r"/frames/([^/]+)/kernel/env")
+_ENV = contract.RouteSpec(
+    "kernel.env",
+    "POST",
+    r"/frames/([^/]+)/kernel/env",
+    mutates=True,
+)
 
 # Ordered exactly as the handler chain below. Contract tooling reads this same
 # tuple, so adding a route here is both a runtime and an inventory change.
