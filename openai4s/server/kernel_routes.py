@@ -37,19 +37,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from openai4s.server.contract import RouteSpec
 from openai4s.server.errors import GatewayError
-from openai4s.server.routing import RouteSpec
 
 
-_EXECUTION = RouteSpec(
-    "kernel.execution", "GET", r"/frames/([^/]+)/execution"
-)
-_EXECUTE = RouteSpec(
-    "kernel.execute", "POST", r"/frames/([^/]+)/kernel/execute"
-)
-_RESTART = RouteSpec(
-    "kernel.restart", "POST", r"/frames/([^/]+)/kernel/restart"
-)
+_EXECUTION = RouteSpec("kernel.execution", "GET", r"/frames/([^/]+)/execution")
+_EXECUTE = RouteSpec("kernel.execute", "POST", r"/frames/([^/]+)/kernel/execute")
+_RESTART = RouteSpec("kernel.restart", "POST", r"/frames/([^/]+)/kernel/restart")
 _STOP = RouteSpec("kernel.stop", "POST", r"/frames/([^/]+)/kernel/stop")
 _INTERRUPT = RouteSpec(
     "kernel.interrupt", "POST", r"/frames/([^/]+)/kernel/interrupt"
@@ -60,15 +54,13 @@ _VARIABLES = RouteSpec(
 )
 _KERNEL = RouteSpec("kernel.status", "GET", r"/frames/([^/]+)/kernel")
 _STATUS = RouteSpec("session.status", "GET", r"/frames/([^/]+)/status")
-_INSTALL = RouteSpec(
-    "kernel.install", "POST", r"/frames/([^/]+)/kernel/install"
-)
+_INSTALL = RouteSpec("kernel.install", "POST", r"/frames/([^/]+)/kernel/install")
 _ENVIRONMENTS = RouteSpec(
     "kernel.environments", "GET", r"/frames/([^/]+)/environments"
 )
 _ENV = RouteSpec("kernel.env", "POST", r"/frames/([^/]+)/kernel/env")
 
-# Ordered exactly as the handler chain below.  Contract tooling reads this same
+# Ordered exactly as the handler chain below. Contract tooling reads this same
 # tuple, so adding a route here is both a runtime and an inventory change.
 ROUTES = (
     _EXECUTION,
