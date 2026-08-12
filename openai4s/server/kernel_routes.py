@@ -37,12 +37,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# Keep this small dependency boundary explicit. `contract` discovers route
-# modules lazily, while route handlers raise the shared gateway error type.
-# isort: off
-from openai4s.server.contract import RouteSpec
+from openai4s.server.contract import RouteSpec  # isort: split
 from openai4s.server.errors import GatewayError
-# isort: on
 
 
 _EXECUTION = RouteSpec("kernel.execution", "GET", r"/frames/([^/]+)/execution")
