@@ -45,19 +45,13 @@ _EXECUTION = RouteSpec("kernel.execution", "GET", r"/frames/([^/]+)/execution")
 _EXECUTE = RouteSpec("kernel.execute", "POST", r"/frames/([^/]+)/kernel/execute")
 _RESTART = RouteSpec("kernel.restart", "POST", r"/frames/([^/]+)/kernel/restart")
 _STOP = RouteSpec("kernel.stop", "POST", r"/frames/([^/]+)/kernel/stop")
-_INTERRUPT = RouteSpec(
-    "kernel.interrupt", "POST", r"/frames/([^/]+)/kernel/interrupt"
-)
+_INTERRUPT = RouteSpec("kernel.interrupt", "POST", r"/frames/([^/]+)/kernel/interrupt")
 _START = RouteSpec("kernel.start", "POST", r"/frames/([^/]+)/kernel/start")
-_VARIABLES = RouteSpec(
-    "kernel.variables", "GET", r"/frames/([^/]+)/kernel/variables"
-)
+_VARIABLES = RouteSpec("kernel.variables", "GET", r"/frames/([^/]+)/kernel/variables")
 _KERNEL = RouteSpec("kernel.status", "GET", r"/frames/([^/]+)/kernel")
 _STATUS = RouteSpec("session.status", "GET", r"/frames/([^/]+)/status")
 _INSTALL = RouteSpec("kernel.install", "POST", r"/frames/([^/]+)/kernel/install")
-_ENVIRONMENTS = RouteSpec(
-    "kernel.environments", "GET", r"/frames/([^/]+)/environments"
-)
+_ENVIRONMENTS = RouteSpec("kernel.environments", "GET", r"/frames/([^/]+)/environments")
 _ENV = RouteSpec("kernel.env", "POST", r"/frames/([^/]+)/kernel/env")
 
 # Ordered exactly as the handler chain below. Contract tooling reads this same
