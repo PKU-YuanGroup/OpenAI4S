@@ -37,22 +37,33 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .contract import RouteSpec
-from .errors import GatewayError
+from . import contract, errors
 
 
-_EXECUTION = RouteSpec("kernel.execution", "GET", r"/frames/([^/]+)/execution")
-_EXECUTE = RouteSpec("kernel.execute", "POST", r"/frames/([^/]+)/kernel/execute")
-_RESTART = RouteSpec("kernel.restart", "POST", r"/frames/([^/]+)/kernel/restart")
-_STOP = RouteSpec("kernel.stop", "POST", r"/frames/([^/]+)/kernel/stop")
-_INTERRUPT = RouteSpec("kernel.interrupt", "POST", r"/frames/([^/]+)/kernel/interrupt")
-_START = RouteSpec("kernel.start", "POST", r"/frames/([^/]+)/kernel/start")
-_VARIABLES = RouteSpec("kernel.variables", "GET", r"/frames/([^/]+)/kernel/variables")
-_KERNEL = RouteSpec("kernel.status", "GET", r"/frames/([^/]+)/kernel")
-_STATUS = RouteSpec("session.status", "GET", r"/frames/([^/]+)/status")
-_INSTALL = RouteSpec("kernel.install", "POST", r"/frames/([^/]+)/kernel/install")
-_ENVIRONMENTS = RouteSpec("kernel.environments", "GET", r"/frames/([^/]+)/environments")
-_ENV = RouteSpec("kernel.env", "POST", r"/frames/([^/]+)/kernel/env")
+_EXECUTION = contract.RouteSpec("kernel.execution", "GET", r"/frames/([^/]+)/execution")
+_EXECUTE = contract.RouteSpec(
+    "kernel.execute", "POST", r"/frames/([^/]+)/kernel/execute"
+)
+_RESTART = contract.RouteSpec(
+    "kernel.restart", "POST", r"/frames/([^/]+)/kernel/restart"
+)
+_STOP = contract.RouteSpec("kernel.stop", "POST", r"/frames/([^/]+)/kernel/stop")
+_INTERRUPT = contract.RouteSpec(
+    "kernel.interrupt", "POST", r"/frames/([^/]+)/kernel/interrupt"
+)
+_START = contract.RouteSpec("kernel.start", "POST", r"/frames/([^/]+)/kernel/start")
+_VARIABLES = contract.RouteSpec(
+    "kernel.variables", "GET", r"/frames/([^/]+)/kernel/variables"
+)
+_KERNEL = contract.RouteSpec("kernel.status", "GET", r"/frames/([^/]+)/kernel")
+_STATUS = contract.RouteSpec("session.status", "GET", r"/frames/([^/]+)/status")
+_INSTALL = contract.RouteSpec(
+    "kernel.install", "POST", r"/frames/([^/]+)/kernel/install"
+)
+_ENVIRONMENTS = contract.RouteSpec(
+    "kernel.environments", "GET", r"/frames/([^/]+)/environments"
+)
+_ENV = contract.RouteSpec("kernel.env", "POST", r"/frames/([^/]+)/kernel/env")
 
 # Ordered exactly as the handler chain below. Contract tooling reads this same
 # tuple, so adding a route here is both a runtime and an inventory change.
@@ -228,9 +239,9 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         fid = m.group(1)
         frame = store.get_frame(fid)
         if frame is None:
-            raise GatewayError(404, "session not found")
+            raise errors.GatewayError(404, "session not found")
         if (frame.get("root_frame_id") or fid) != fid:
-            raise GatewayError(
+            raise errors.GatewayError(
                 409,
                 "variable inspection requires the current root session",
             )
