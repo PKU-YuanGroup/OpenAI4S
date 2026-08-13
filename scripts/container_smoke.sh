@@ -167,8 +167,14 @@ ok "numpy, pandas, matplotlib and scikit-learn import"
 # the pidfile therefore steers around the very code this step means to assert,
 # and the daemon refuses to start for the old reason with the new check never
 # consulted. The bogus start token is what the restarted daemon must notice.
+#
+# The helper writes as the image's own user, NOT as root. /data is 0700 owned
+# by uid 1000, so root can write there too — but the files it left behind would
+# be root-owned, and the restarting daemon opens daemon.json for writing as uid
+# 1000. That is EACCES, and the run would fail for a reason that has nothing to
+# do with what is being tested.
 docker kill --signal=SIGKILL "$CONTAINER" >/dev/null || fail "could not SIGKILL the container"
-docker run --rm --user 0 --volume "${VOLUME}:/data" --entrypoint sh "$IMAGE" -c \
+docker run --rm --volume "${VOLUME}:/data" --entrypoint sh "$IMAGE" -c \
   'printf 1 > /data/openai4s.pid && printf %s "{\"pid\": 1, \"pid_start\": \"1\"}" > /data/daemon.json' \
   >/dev/null || fail "could not plant the colliding pidfile"
 docker start "$CONTAINER" >/dev/null || fail "the container did not start again"
