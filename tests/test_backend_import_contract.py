@@ -40,6 +40,7 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             "PROVIDERS",
             "chat",
             "get_model_capabilities",
+            "llm_failure_code",
             "provider_specs",
             "supports_vision",
             # The triple-aware sibling. `supports_vision` answers for the
@@ -71,7 +72,7 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             "web_search",
         }
     ),
-    "openai4s.mcp_client": frozenset({"manager"}),
+    "openai4s.mcp_client": frozenset({"disconnect_if_initialized", "manager"}),
     "openai4s.permissions": frozenset({"PermissionBroker", "broker"}),
     "openai4s.egress": frozenset(
         {

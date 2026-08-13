@@ -180,6 +180,98 @@ def test_shell_keeps_minimal_controls() -> None:
     )
 
 
+def test_datapro_card_keeps_credentials_ephemeral_and_authenticates_by_search():
+    card = _extract_js_function(APP_JS, "dataproCard")
+    connectors = _extract_js_function(APP_JS, "custConnectors")
+    code_reader = _extract_js_function(APP_JS, "dataproResponseCode")
+    index_reader = _extract_js_function(APP_JS, "dataproIndexComplete")
+
+    for selector in (
+        "datapro-plan-key",
+        "datapro-save-key",
+        "datapro-query",
+        "datapro-search",
+        "datapro-enable-skill",
+        "dataproStatus",
+        "dataproIndexStatus",
+        "dataproResult",
+        "dataproArtifact",
+    ):
+        assert selector in card
+    assert 'keyInput.type = "password"' in card
+    assert 'keyInput.autocomplete = "off"' in card
+    assert card.count('keyInput.value = ""') >= 2
+    assert "/datapro/config" in card
+    assert "/datapro/search" in card
+    assert "/probe" not in card
+    assert ".textContent = dataproResultText" in card
+    assert "response.structuredContent" in code_reader
+    assert "response.code" not in code_reader
+    assert "code === 0 && dataproIndexComplete(response)" in card
+    assert 'indexed ? t("cust.datapro.available")' in card
+    assert 'code === 0 ? t("cust.datapro.indexFailed")' in card
+    assert "index.complete === true" in index_reader
+    assert "index.source_leaf_count === index.indexed_leaf_count" in index_reader
+    assert 'typeof index.source_digest === "string"' in index_reader
+    assert "index.source_digest === index.indexed_digest" in index_reader
+    assert "response.index.entry_count" in card
+    assert 'code === 4011 ? t("cust.datapro.auth4011")' in card
+    assert "conns.filter(k => k.connector_id !== DATAPRO_CONNECTOR_ID)" in connectors
+    assert "已完整索引本次返回的 {0} 条记录（{1} 个内容叶节点）" in APP_JS
+    assert "Key 无效、额度不足，或者专业数据集 Harness 未开启。" in APP_JS
+
+
+def test_doubao_search_is_the_primary_no_fallback_network_card():
+    card = _extract_js_function(APP_JS, "doubaoSearchCard")
+    result_text = _extract_js_function(APP_JS, "doubaoSearchResultText")
+    network = _extract_js_function(APP_JS, "custNetwork")
+
+    for selector in (
+        "doubao-search-plan-key",
+        "doubao-search-save-key",
+        "doubao-search-query",
+        "doubao-search-run",
+        "doubaoSearchStatus",
+        "doubaoSearchResult",
+    ):
+        assert selector in card
+    assert 'keyInput.type = "password"' in card
+    assert 'keyInput.autocomplete = "off"' in card
+    assert card.count('keyInput.value = ""') >= 2
+    assert "/doubao-search/config" in card
+    assert "/doubao-search/search" in card
+    assert "/search/config" not in card
+    assert "response.available === true" in card
+    assert 'response.source === "doubao"' in card
+    assert "results.length > 0" in card
+    assert "response.count === results.length" in card
+    assert "result.textContent = doubaoSearchResultText" in card
+    assert "innerHTML" not in result_text
+    assert (
+        "textContent" not in result_text
+    )  # pure string builder, assigned safely by card
+    assert network.index("doubaoSearchCard") < network.index(
+        't("cust.network.allowName")'
+    )
+    assert "主选" in APP_JS
+    assert "备用搜索 API Key（Tavily）" in APP_JS
+    assert "专用测试不会回退" in APP_JS
+
+
+def test_command_palette_surfaces_safe_datapro_index_hits():
+    search = _extract_js_function(APP_JS, "palSearch")
+    summary = _extract_js_function(APP_JS, "dataproPaletteSummary")
+    opener = _extract_js_function(APP_JS, "openDataproSearchHit")
+
+    assert "r.datapro" in search
+    assert 't("palette.group.datapro")' in search
+    assert "publicText" in search
+    assert "publicText" in summary
+    assert "innerHTML" not in summary
+    assert "hit.artifact_id" in opener
+    assert 'openCust("connectors")' in opener
+
+
 def test_project_modal_reuses_create_button_for_create_and_patch() -> None:
     expected = {"pm-name", "pm-desc", "pm-ctx", "pm-create", "pm-delete"}
     ids = set(SHELL.ids)
@@ -1424,6 +1516,38 @@ def test_the_committed_wording_is_a_real_branch() -> None:
     assert "output_committed" in hint
     assert "turn.failedCommitted" in hint and "turn.failed" in hint
     assert APP_JS.count('"turn.failedCommitted"') >= 2
+
+
+def test_typed_llm_failures_keep_their_cause_in_live_and_reopened_hints() -> None:
+    """A burst refusal must not decay back into the generic retry/key advice.
+
+    The live terminal event and the stored message take different paths.  Both
+    have to retain the existing ``code`` field or reopening the same failed
+    session gives a less accurate explanation than the one originally shown.
+    """
+    classifier = _fn("failureCodeHint")
+    for code in (
+        "llm_request_burst",
+        "llm_rate_limited",
+        "llm_upstream_overloaded",
+    ):
+        assert code in classifier
+    for key in (
+        "turn.failure.llmRequestBurst",
+        "turn.failure.llmRateLimited",
+        "turn.failure.llmUpstreamOverloaded",
+    ):
+        assert APP_JS.count(f'"{key}"') >= 2, f"{key} needs zh and en wording"
+
+    hint = _fn("failureHint")
+    assert "failureCodeHint" in hint and "detail.code" in hint
+    # The retry veto still wins when a prior action already happened.
+    assert "turn.failedCommitted" in hint
+
+    meta = _fn("failureMeta")
+    assert "failure.code" in meta and "failureCode" in meta
+    last = _fn("lastTerminalFailure")
+    assert "failureCode" in last and "code:" in last
 
 
 def test_turn_done_passes_the_event_through_and_retires_the_ticket() -> None:

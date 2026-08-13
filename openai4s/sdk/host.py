@@ -985,7 +985,10 @@ class _Host:
     def web_search(
         self, query: str, *, num_results: int = 8, timeout: float = 20
     ) -> dict:
-        """Live web search (keyless). Returns {results:[{title,url,snippet}]}."""
+        """Live search: Agent Plan uses Doubao; otherwise fallback engines.
+
+        Returns ``{results: [{title, url, snippet}], source, count}``.
+        """
         return self._call(
             "web_search",
             [{"query": query, "num_results": num_results, "timeout": timeout}],

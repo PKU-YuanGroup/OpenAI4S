@@ -32,7 +32,7 @@ class ListSkillsTool(Tool):
         del arguments
         rows = runtime.invoke(self.host_method)
         # The Host catalog also carries descriptions, readiness, content
-        # digests, and version ids for UI reconciliation. The full 34-row JSON
+        # digests, and version ids for UI reconciliation. The full 35-row JSON
         # exceeds the bounded model-observation window and is archived to an
         # internal blob; Ark then mistook that archive hint for a workspace
         # path. Native enumeration needs only stable names. Full metadata stays

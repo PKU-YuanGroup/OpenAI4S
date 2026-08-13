@@ -744,6 +744,29 @@ body.layout-wide{--col:1080px}
 .skill-version-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .skill-version-head .info{min-width:0}
 
+/* --- Volcengine DataPro: dedicated connector workflow --- */
+.datapro-card{display:flex;flex-direction:column;gap:12px;margin:4px 0 14px;padding:14px;border:.5px solid var(--border-card,var(--border));border-radius:12px;background:var(--bg-100,var(--panel))}
+.datapro-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.datapro-title{font-size:14px;font-weight:650;color:var(--text-000)}
+.datapro-desc{margin-top:3px;color:var(--text-400);font-size:12px;line-height:1.45}
+.datapro-head .outline-btn{flex:none}
+.datapro-field{display:flex;flex-direction:column;gap:6px}
+.datapro-input-row{display:flex;align-items:center;gap:8px}
+.datapro-input-row .cust-input{min-width:0}
+.datapro-credential-state{font-size:11.5px;color:var(--success-text)}
+.datapro-credential-state.bad{color:var(--danger)}
+.datapro-query{box-sizing:border-box;width:100%;min-height:74px;resize:vertical;padding:9px 10px;border:1px solid var(--line,#8883);border-radius:8px;background:var(--bg,transparent);color:var(--ink,inherit);font:13px/1.5 var(--sans)}
+.datapro-query-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:28px}
+.datapro-status{min-width:0;font-size:12px;color:var(--text-400);line-height:1.4;overflow-wrap:anywhere}
+.datapro-status.ok{color:var(--success-text);font-weight:600}
+.datapro-status.bad{color:var(--danger)}
+.datapro-output{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.datapro-index-status{font-size:12px;line-height:1.4;color:var(--text-400);overflow-wrap:anywhere}
+.datapro-index-status.ok{color:var(--success-text)}
+.datapro-card .datapro-result{box-sizing:border-box;width:100%;max-height:260px;overflow:auto;margin:0;padding:10px 12px;border:.5px solid var(--border);border-radius:8px;background:var(--bg-000);color:var(--text-200);white-space:pre-wrap;word-break:break-word;font:12px/1.5 var(--mono)}
+.datapro-artifact{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:600px){.datapro-head{flex-direction:column}.datapro-head .outline-btn{align-self:stretch}.datapro-input-row{align-items:stretch;flex-direction:column}.datapro-query-actions{align-items:stretch;flex-direction:column}.datapro-query-actions .solid-btn{align-self:stretch}}
+
 /* --- added: compute jobs --- */
 .job-submit{display:flex;gap:8px;margin-top:6px}
 .job-submit .cust-input{flex:1}

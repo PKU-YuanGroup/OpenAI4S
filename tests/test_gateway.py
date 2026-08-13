@@ -536,6 +536,66 @@ def test_build_app_server_closes_runner_when_startup_raises_before_bind(
     assert closed, "a failed startup must close the runner it created"
 
 
+@pytest.mark.stubbed_backend
+def test_server_close_drops_datapro_connection_bound_to_old_secret_store(
+    tmp_path, monkeypatch
+):
+    """A new in-process daemon must never inherit the prior Store's key."""
+
+    from openai4s import datapro, mcp_client
+
+    seen: list[str] = []
+
+    class _Connection:
+        command = ["streamable_http"]
+
+        def __init__(self, config):
+            self.provider = config["headers_provider"]
+            self.closed = False
+
+        def faulted(self):
+            return self.closed
+
+        def list_tools(self):
+            seen.append(self.provider()["X-Agent-Plan-Key"])
+            return [{"name": datapro.TOOL_NAME}]
+
+        def close(self):
+            self.closed = True
+            return True
+
+    shared = mcp_client.MCPManager()
+    monkeypatch.setattr(shared, "_connect", lambda config: _Connection(config))
+    monkeypatch.setattr(mcp_client, "_MANAGER", shared)
+    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
+
+    monkeypatch.setattr(
+        gateway_mod.ThreadingHTTPServer, "server_close", lambda _server: None
+    )
+    connector = {
+        "connector_id": datapro.CONNECTOR_ID,
+        "command": datapro.managed_connector_command(),
+    }
+
+    def generation(path, key):
+        cfg = _cfg(path)
+        cfg.ensure_dirs()
+        store = get_store(cfg.db_path)
+        datapro.save_agent_plan_key(store, key)
+        shared.list_tools(
+            datapro.CONNECTOR_ID,
+            datapro.connector_runtime_config(store, connector),
+        )
+        server = object.__new__(gateway_mod._GatewayHTTPServer)
+        server.runner = SimpleNamespace(close=store.close)
+        server.RequestHandlerClass = SimpleNamespace(jobs_manager=None)
+        server.server_close()
+
+    generation(tmp_path / "first", "first-plan-key")
+    generation(tmp_path / "second", "second-plan-key")
+    assert seen == ["first-plan-key", "second-plan-key"]
+
+
 def test_ws_resume_buffer_replaces_notebook_drafts_and_keeps_live_cell_events():
     hub = gateway_mod.WSHub()
     root = "root-draft-replay"
@@ -1628,6 +1688,415 @@ def test_model_profile_activate_moves_to_front_and_sanitizes_key(tmp_path):
     assert [p["id"] for p in store.list_model_profiles()] == ["mp-b", "mp-a"]
     assert store.get_setting("active_model_profile") == "mp-b"
     assert store.get_setting("llm_api_key") == ""
+
+
+@pytest.mark.stubbed_backend
+def test_ark_profile_rotation_drops_this_store_datapro_session_and_reconnects(
+    tmp_path, monkeypatch
+):
+    """An Ark A→B activation must not keep DataPro's account-A session."""
+
+    from openai4s import datapro, mcp_client
+
+    class _ScopedManager:
+        def __init__(self):
+            self.sessions = {}
+            self.disconnects = []
+            self.serial = 0
+
+        def open_session(self, connector_id, config):
+            cache_key = (connector_id, config["cache_scope"])
+            if cache_key not in self.sessions:
+                self.serial += 1
+                outbound = config["headers_provider"]()
+                self.sessions[cache_key] = (
+                    f"session-{self.serial}",
+                    outbound["X-Agent-Plan-Key"],
+                )
+            return self.sessions[cache_key]
+
+        def disconnect(self, connector_id, cache_scope=None):
+            self.disconnects.append((connector_id, cache_scope))
+            if cache_scope is None:
+                for key in list(self.sessions):
+                    if key[0] == connector_id:
+                        del self.sessions[key]
+            else:
+                self.sessions.pop((connector_id, cache_scope), None)
+
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    store.set_model_profiles(
+        [
+            {
+                "id": "ark-a",
+                "name": "Ark A",
+                "provider": "ark",
+                "base_url": "",
+                "model": "model-a",
+                "api_key": "profile-a-key",
+            },
+            {
+                "id": "ark-b",
+                "name": "Ark B",
+                "provider": "ark",
+                "base_url": "",
+                "model": "model-b",
+                "api_key": "profile-b-key",
+            },
+        ]
+    )
+    store.set_setting("llm_provider", "ark")
+    store.set_setting("active_model_profile", "ark-a")
+    store.set_secret_setting("llm_api_key", "profile-a-key", scope="llm")
+    manager = _ScopedManager()
+    monkeypatch.setattr(mcp_client, "manager", lambda: manager)
+    scope = datapro.runtime_cache_scope(store)
+    connector = {"connector_id": datapro.CONNECTOR_ID}
+    manager.sessions[(datapro.CONNECTOR_ID, "another-store")] = (
+        "other-session",
+        "other-key",
+    )
+    try:
+        config_a = datapro.connector_runtime_config(store, connector)
+        session_a, key_a = manager.open_session(datapro.CONNECTOR_ID, config_a)
+
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        replies = []
+        handler._query = lambda: {}
+        handler._body = lambda: {}
+        handler._json = lambda obj, code=200: replies.append((code, obj))
+        handler._api("POST", "/model-profiles/ark-b/activate")
+
+        assert replies[-1][0] == 200
+        assert manager.disconnects == [(datapro.CONNECTOR_ID, scope)]
+        assert (datapro.CONNECTOR_ID, "another-store") in manager.sessions
+        config_b = datapro.connector_runtime_config(store, connector)
+        session_b, key_b = manager.open_session(datapro.CONNECTOR_ID, config_b)
+        assert session_b != session_a
+        assert key_a == "profile-a-key"
+        assert key_b == "profile-b-key"
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_model_routes_invalidate_datapro_only_when_effective_key_changes(
+    tmp_path, monkeypatch
+):
+    """Every model mutation route shares the same Store-scoped decision."""
+
+    from openai4s import datapro, mcp_client
+
+    class _Manager:
+        def __init__(self):
+            self.disconnects = []
+
+        def disconnect(self, connector_id, cache_scope=None):
+            self.disconnects.append((connector_id, cache_scope))
+
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    store.set_model_profiles(
+        [
+            {
+                "id": "ark-a",
+                "name": "Ark A",
+                "provider": "ark",
+                "base_url": "",
+                "model": "model-a",
+                "api_key": "profile-a-key",
+            },
+            {
+                "id": "ark-b",
+                "name": "Ark B",
+                "provider": "ark",
+                "base_url": "",
+                "model": "model-b",
+                "api_key": "profile-b-key",
+            },
+        ]
+    )
+    store.set_setting("llm_provider", "ark")
+    store.set_setting("active_model_profile", "ark-a")
+    store.set_secret_setting("llm_api_key", "profile-a-key", scope="llm")
+    manager = _Manager()
+    monkeypatch.setattr(mcp_client, "manager", lambda: manager)
+    scope = datapro.runtime_cache_scope(store)
+    expected_call = (datapro.CONNECTOR_ID, scope)
+    body = {}
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        handler._query = lambda: {}
+        handler._body = lambda: body
+        handler._json = lambda obj, code=200: None
+
+        body = {"model": "model-a-v2"}
+        handler._api("POST", "/config/llm")
+        assert manager.disconnects == [], "a model-only edit keeps the same key"
+
+        body = {"api_key": "direct-ark-key-2"}
+        handler._api("POST", "/config/llm")
+        assert manager.disconnects == [expected_call]
+
+        body = {"api_key": "direct-ark-key-3"}
+        handler._api("PATCH", "/config/llm")
+        assert manager.disconnects == [expected_call] * 2
+
+        body = {"model_id": "ark-b"}
+        handler._api("POST", "/models/default")
+        assert manager.disconnects == [expected_call] * 3
+
+        body = {}
+        handler._api("POST", "/model-profiles/ark-a/activate")
+        assert manager.disconnects == [expected_call] * 4
+
+        body = {"name": "Ark A renamed"}
+        handler._api("PATCH", "/model-profiles/ark-a")
+        assert manager.disconnects == [expected_call] * 4
+
+        body = {"api_key": "profile-a-key-rotated"}
+        handler._api("PATCH", "/model-profiles/ark-a")
+        assert manager.disconnects == [expected_call] * 5
+
+        body = {}
+        handler._api("DELETE", "/model-profiles/ark-a")
+        assert manager.disconnects == [expected_call] * 6
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_config_provider_switch_never_reuses_old_provider_key_for_datapro(
+    tmp_path, monkeypatch
+):
+    """A provider-only non-Ark→Ark edit clears, rather than re-labels, its key."""
+
+    from openai4s import datapro, mcp_client
+
+    class _Manager:
+        def __init__(self):
+            self.disconnects = []
+
+        def disconnect(self, connector_id, cache_scope=None):
+            self.disconnects.append((connector_id, cache_scope))
+
+    old_provider_canary = "old-provider-credential-canary"
+    dedicated = "dedicated-agent-plan-test-value"
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    store.set_setting("llm_provider", "claude")
+    store.set_secret_setting("llm_api_key", old_provider_canary, scope="llm")
+    datapro.save_agent_plan_key(store, dedicated)
+    manager = _Manager()
+    monkeypatch.setattr(mcp_client, "manager", lambda: manager)
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        replies = []
+        handler._query = lambda: {}
+        handler._body = lambda: {"provider": "ark"}
+        handler._json = lambda obj, code=200: replies.append((code, obj))
+
+        handler._api("PATCH", "/config/llm")
+
+        assert replies[-1][0] == 200
+        assert store.get_secret_setting("llm_api_key") == ""
+        assert datapro.resolve_agent_plan_key(store) == dedicated
+        outbound = datapro.connector_runtime_config(
+            store, {"connector_id": datapro.CONNECTOR_ID}
+        )["headers_provider"]()
+        assert outbound["X-Agent-Plan-Key"] == dedicated
+        assert old_provider_canary not in json.dumps(outbound)
+        assert manager.disconnects == [
+            (datapro.CONNECTOR_ID, datapro.runtime_cache_scope(store))
+        ]
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_inactive_profile_provider_switch_forgets_key_before_ark_activation(
+    tmp_path, monkeypatch
+):
+    """Editing a saved provider cannot carry its old credential across vendors."""
+
+    from openai4s import datapro, mcp_client
+
+    class _Manager:
+        def __init__(self):
+            self.disconnects = []
+
+        def disconnect(self, connector_id, cache_scope=None):
+            self.disconnects.append((connector_id, cache_scope))
+
+    profile_canary = "inactive-profile-credential-canary"
+    dedicated = "dedicated-agent-plan-test-value"
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    datapro.save_agent_plan_key(store, dedicated)
+    manager = _Manager()
+    monkeypatch.setattr(mcp_client, "manager", lambda: manager)
+    body = {
+        "name": "Cross-provider",
+        "provider": "claude",
+        "model": "model-a",
+        "api_key": profile_canary,
+    }
+    replies = []
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        handler._query = lambda: {}
+        handler._body = lambda: body
+        handler._json = lambda obj, code=200: replies.append((code, obj))
+
+        handler._api("POST", "/model-profiles")
+        profile_id = replies[-1][1]["id"]
+        old_ref = next(
+            item["api_key"]
+            for item in store.list_model_profiles()
+            if item["id"] == profile_id
+        )
+
+        body = {"provider": "ark"}
+        handler._api("PATCH", f"/model-profiles/{profile_id}")
+        edited = next(
+            item for item in store.list_model_profiles() if item["id"] == profile_id
+        )
+        assert edited["api_key"] == ""
+        assert store.secrets.get(old_ref) is None
+        assert manager.disconnects == [], "an inactive edit changes no live context"
+
+        body = {}
+        handler._api("POST", f"/model-profiles/{profile_id}/activate")
+        assert store.get_secret_setting("llm_api_key") == ""
+        assert datapro.resolve_agent_plan_key(store) == dedicated
+        outbound = datapro.connector_runtime_config(
+            store, {"connector_id": datapro.CONNECTOR_ID}
+        )["headers_provider"]()
+        assert outbound["X-Agent-Plan-Key"] == dedicated
+        assert profile_canary not in json.dumps(outbound)
+        assert manager.disconnects == [
+            (datapro.CONNECTOR_ID, datapro.runtime_cache_scope(store))
+        ]
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_deleting_active_profile_clears_live_key_and_uses_dedicated_fallback(
+    tmp_path, monkeypatch
+):
+    """The broker entry and its activated live copy die in the same route."""
+
+    from openai4s import datapro, mcp_client
+
+    class _Manager:
+        def __init__(self):
+            self.disconnects = []
+
+        def disconnect(self, connector_id, cache_scope=None):
+            self.disconnects.append((connector_id, cache_scope))
+
+    profile_canary = "deleted-profile-credential-canary"
+    dedicated = "dedicated-agent-plan-test-value"
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    datapro.save_agent_plan_key(store, dedicated)
+    manager = _Manager()
+    monkeypatch.setattr(mcp_client, "manager", lambda: manager)
+    body = {
+        "name": "Ark active",
+        "provider": "ark",
+        "model": "model-a",
+        "api_key": profile_canary,
+    }
+    replies = []
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        handler._query = lambda: {}
+        handler._body = lambda: body
+        handler._json = lambda obj, code=200: replies.append((code, obj))
+
+        handler._api("POST", "/model-profiles")
+        profile_id = replies[-1][1]["id"]
+        profile_ref = next(
+            item["api_key"]
+            for item in store.list_model_profiles()
+            if item["id"] == profile_id
+        )
+        body = {}
+        handler._api("POST", f"/model-profiles/{profile_id}/activate")
+        assert datapro.resolve_agent_plan_key(store) == profile_canary
+        manager.disconnects.clear()
+
+        handler._api("DELETE", f"/model-profiles/{profile_id}")
+
+        assert store.get_secret_setting("llm_api_key") == ""
+        assert store.secrets.get(profile_ref) is None
+        assert datapro.resolve_agent_plan_key(store) == dedicated
+        outbound = datapro.connector_runtime_config(
+            store, {"connector_id": datapro.CONNECTOR_ID}
+        )["headers_provider"]()
+        assert outbound["X-Agent-Plan-Key"] == dedicated
+        assert profile_canary not in json.dumps(outbound)
+        assert manager.disconnects == [
+            (datapro.CONNECTOR_ID, datapro.runtime_cache_scope(store))
+        ]
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_disabling_datapro_disconnects_only_the_current_store_scope(
+    tmp_path, monkeypatch
+):
+    """One embedded Store cannot tear down another Store's DataPro session."""
+
+    from openai4s import datapro, mcp_client
+
+    class _Manager:
+        def __init__(self):
+            self.disconnects = []
+
+        def disconnect(self, connector_id, cache_scope=None):
+            self.disconnects.append((connector_id, cache_scope))
+
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    store.upsert_connector(
+        connector_id=datapro.CONNECTOR_ID,
+        name="Volcengine DataPro",
+        command=datapro.managed_connector_command(),
+        enabled=True,
+    )
+    manager = _Manager()
+    monkeypatch.setattr(mcp_client, "manager", lambda: manager)
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        handler._query = lambda: {}
+        handler._body = lambda: {"enabled": False}
+        handler._json = lambda obj, code=200: None
+
+        handler._api("PATCH", f"/connectors/{datapro.CONNECTOR_ID}/enabled")
+
+        assert manager.disconnects == [
+            (datapro.CONNECTOR_ID, datapro.runtime_cache_scope(store))
+        ]
+        assert store.get_connector(datapro.CONNECTOR_ID)["enabled"] is False
+    finally:
+        runner.close()
 
 
 def test_local_model_discovery_route_is_explicit_and_non_mutating(
