@@ -13,6 +13,11 @@ since the extraction is that each HTTP method + path matcher now lives in a
 routing facts executable instead of asking contract tooling to rediscover them
 by parsing the handler source.
 
+Nothing else here was rewritten, and three things that look like oversights are
+not: the `store.get_frame(fid) or {}` fallback on the ten permissive routes, the
+duplicate `store.get_frame` in `kernel/variables`, and the six `notebook_repl`
+gates with `install` deliberately left ungated.
+
 TWO POSITION DEPENDENCIES, written down because a 2,100-line if-chain is
 exactly where this kind of thing hides:
 
@@ -34,6 +39,7 @@ so a right-path/wrong-method request is not swallowed as handled.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -114,20 +120,42 @@ _ENV = contract.RouteSpec(
 
 # Ordered exactly as the handler chain below. Contract tooling reads this same
 # tuple, so adding a route here is both a runtime and an inventory change.
-ROUTES = (
-    _EXECUTION,
-    _EXECUTE,
-    _RESTART,
-    _STOP,
-    _INTERRUPT,
-    _START,
-    _VARIABLES,
-    _KERNEL,
-    _STATUS,
-    _INSTALL,
-    _ENVIRONMENTS,
-    _ENV,
+#
+# Wrapped in `validate_routes` so a duplicate or a shadowed route raises when
+# this module is imported. The validator used to be reachable only from
+# `contract.declared_http_routes()`, which `gateway.py` never calls -- so a
+# duplicated registry imported cleanly and the daemon served it, and deleting
+# the validation call left every test green.
+ROUTES = contract.validate_routes(
+    (
+        _EXECUTION,
+        _EXECUTE,
+        _RESTART,
+        _STOP,
+        _INTERRUPT,
+        _START,
+        _VARIABLES,
+        _KERNEL,
+        _STATUS,
+        _INSTALL,
+        _ENVIRONMENTS,
+        _ENV,
+    )
 )
+
+#: Every pattern above is under `/frames/`, so a request that is not cannot
+#: match any of them -- and 56 of the 91 non-`/frames` routes are declared
+#: *after* this group's call site in `Handler._api`, so they used to walk all
+#: twelve matchers first. Derived rather than written down: a future route that
+#: breaks the assumption shortens the prefix instead of being silently skipped.
+#:
+#: Truncated at the first regex metacharacter, because the shared *pattern*
+#: prefix is `/frames/([^/]+)/` and no real path starts with that -- comparing
+#: a literal path against it would reject every kernel request.
+_PATH_PREFIX = re.split(
+    r"[.^$*+?()\[\]{}|\\]",
+    os.path.commonprefix([spec.pattern for spec in ROUTES]),
+)[0]
 
 
 def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> bool:
@@ -139,6 +167,8 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
     NameError on that route alone -- including on the default path, since
     `q.get` is evaluated before the "python" fallback applies.
     """
+    if not sub.startswith(_PATH_PREFIX):
+        return False
     m = _EXECUTION.match(method, sub)
     if m:
         self._json(runner.executions.snapshot(m.group(1)))
