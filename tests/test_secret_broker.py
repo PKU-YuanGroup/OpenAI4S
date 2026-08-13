@@ -1005,3 +1005,31 @@ def test_auto_prefers_a_keychain_over_the_environment(store, monkeypatch):
         store, mode="auto", backends=[MemoryBackend(), EnvInjectionBackend()]
     ).posture()
     assert posture["backend"] == "memory"
+
+
+@pytest.mark.stubbed_backend
+def test_one_undescribable_profile_ref_does_not_strand_the_others(store, tmp_path):
+    """`describe` reaches the backend, so it must not run outside the guard.
+
+    A locked keychain times out and a hand-edited ref fails to parse. Either
+    one, raised from outside the per-profile `try`, aborted the whole
+    conversion and left every later profile's key sitting in plaintext.
+    """
+
+    service = _profiles(store, tmp_path)
+    store.mutate_model_profiles(
+        lambda profiles: profiles.extend(
+            [
+                {"id": "mp-bad", "name": "bad ref", "api_key": "secret://v1/llm"},
+                {"id": "mp-plain", "name": "plaintext", "api_key": _CANARY},
+            ]
+        )
+    )
+
+    report = service.migrate_profile_keys()
+
+    assert report["migrated"] == ["mp-plain"], report
+    assert [entry["id"] for entry in report["failed"]] == ["mp-bad"]
+    saved = {p["id"]: p for p in store.list_model_profiles()}
+    assert is_ref(saved["mp-plain"]["api_key"])
+    assert _CANARY not in json.dumps(store.list_model_profiles())

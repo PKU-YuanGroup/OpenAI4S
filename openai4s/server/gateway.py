@@ -8191,13 +8191,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         # profile key destroys the previous one through `_forget_key`, so an
         # ark-protocol profile pointed at another vendor's endpoint would lose
         # its credential irrecoverably and then send a DataPro key there.
+        #
+        # The gate reads the *profile being rotated*, not the global settings.
+        # A profile carries its own provider and base_url, and the active one
+        # can disagree with the settings row (it is edited independently, and
+        # the settings are only refreshed on activation) -- so checking the
+        # settings would authorise destroying a credential belonging to an
+        # endpoint nobody verified.
         active_id = str(store.get_setting("active_model_profile") or "").strip()
+        profile = next(
+            (
+                item
+                for item in store.list_model_profiles()
+                if item.get("id") == active_id and not item.get("deleted_at")
+            ),
+            None,
+        )
         if (
             active_id
-            and str(store.get_setting("llm_provider") or "").strip().lower() == "ark"
-            and datapro.is_volcengine_endpoint(
-                str(store.get_setting("llm_base_url") or "")
-            )
+            and profile is not None
+            and str(profile.get("provider") or "").strip().lower() == "ark"
+            and datapro.is_volcengine_endpoint(str(profile.get("base_url") or ""))
         ):
             try:
                 model_profiles.edit(active_id, {"api_key": value})
@@ -11553,7 +11567,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 frame_id=frame_id,
                             )
                         )
-                    if receipt is not None and artifact and artifact.get("id"):
+                    # `receipt` can now be an explicit incomplete receipt with no
+                    # batch_id (the index hit a capacity ceiling), so link only
+                    # a batch that actually exists.
+                    if (
+                        isinstance(receipt, dict)
+                        and receipt.get("batch_id")
+                        and artifact
+                        and artifact.get("id")
+                    ):
                         store.link_datapro_index_artifact(
                             receipt["batch_id"], artifact["id"]
                         )

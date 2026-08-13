@@ -453,12 +453,24 @@ def index_successful_search(
             occurrence_id=uuid.uuid4().hex,
             source_content=safe_source,
         )
-    except DataProIndexCapacity:
+    except DataProIndexCapacity as capacity:
         # The search succeeded; only the derived index is too large to build.
         # Propagating would report a working connector as failed and throw the
-        # retrieved records away, so degrade exactly like a non-zero code does:
-        # no receipt, and the caller still delivers the data.
-        return None
+        # retrieved records away.
+        #
+        # But this must not collapse into `None`: that value already means "the
+        # response was not a success", so a caller could not tell a refused
+        # search from an indexed-but-unsearchable one, and would silently drop
+        # the only signal the user has. Report it as an explicit incomplete
+        # receipt instead -- the caller still saves the data, and the UI's
+        # existing `indexFailed` state has something to render.
+        return {
+            "batch_id": None,
+            "complete": False,
+            "indexed": False,
+            "reason": "capacity",
+            "detail": str(capacity),
+        }
     if not isinstance(receipt, Mapping):
         raise DataProIndexError("DataPro result indexing did not return a receipt")
     source_count = receipt.get("source_leaf_count")

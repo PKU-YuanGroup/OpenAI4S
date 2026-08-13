@@ -603,14 +603,23 @@ class DataProIndexRepository:
                     tuple(params),
                 ).fetchone()[0]
             )
+            # `b.search_text` is the whole batch flattened, so a batch-level hit
+            # makes the predicate true for *every* entry under it. Ordering by
+            # pointer alone then let a batch's non-matching siblings fill the
+            # LIMIT and push the entry the user actually searched for out of the
+            # result entirely. Rank a direct entry hit first so the matching
+            # child can never be hidden by its own batch's text.
             rows = self._connection.execute(
                 "SELECT e.*,b.query,b.project_id,b.root_frame_id,b.artifact_id,"
-                "b.batch_id "
+                "b.batch_id,"
+                "CASE WHEN e.search_text LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END "
+                "AS entry_match_rank "
                 "FROM datapro_index_entries e JOIN datapro_index_batches b "
                 "ON b.batch_id=e.batch_id WHERE "
                 + predicate
-                + " ORDER BY b.created_at DESC,e.json_pointer LIMIT ?",
-                tuple(params + [result_limit]),
+                + " ORDER BY entry_match_rank,b.created_at DESC,e.json_pointer "
+                "LIMIT ?",
+                tuple([content_pattern] + params + [result_limit]),
             ).fetchall()
             # A nested DataPro list can have a large wrapper shared by many
             # child entries. Selecting ``structured_content`` through the join
@@ -649,6 +658,7 @@ class DataProIndexRepository:
         structured_content: Any | None = None,
         include_context: bool = True,
     ) -> dict[str, Any]:
+        row.pop("entry_match_rank", None)  # ordering only; never part of the row
         row["content"] = json.loads(row.pop("content_json"))
         context_json = row.pop("context_json")
         structured_json = row.pop("structured_content", None)

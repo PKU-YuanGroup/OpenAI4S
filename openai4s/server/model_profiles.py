@@ -746,7 +746,17 @@ class ModelProfileService:
                 if not raw:
                     continue
                 if is_ref(raw):
-                    description = self.store.secrets.describe(raw)
+                    # `describe` reaches the secret backend: a locked keychain
+                    # times out, a hand-edited ref fails to parse. Outside a
+                    # guard, one such profile aborted the whole conversion and
+                    # left every later profile's key in plaintext.
+                    try:
+                        description = self.store.secrets.describe(raw)
+                    except Exception as e:  # noqa: BLE001 - one bad profile must
+                        # not strand the others; its ref stays as it is.
+                        if profile_id:
+                            failed.append({"id": profile_id, "error": str(e)[:200]})
+                        continue
                     if profile_id and (
                         description["reentry_required"] or not description["configured"]
                     ):

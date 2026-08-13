@@ -714,3 +714,73 @@ def test_agent_sql_cannot_read_or_discover_the_internal_datapro_index(tmp_path):
     for view in ("my_datapro_batches", "my_datapro_entries"):
         with pytest.raises(sqlite3.OperationalError, match="no such table"):
             store.query(f"SELECT * FROM {view}", scope=scope)
+
+
+def test_matching_child_is_not_hidden_by_its_own_batch_text(tmp_path):
+    """A batch-level hit must not let siblings push the real match out of LIMIT.
+
+    ``b.search_text`` is the whole batch flattened, so it matches whenever any
+    entry does -- which makes the predicate true for *every* entry under that
+    batch. Ordered by pointer alone, the non-matching siblings filled the LIMIT
+    and the entry the user actually searched for was absent from the result.
+    """
+
+    store = _store(tmp_path)
+    needle = "zqxjunique"
+    # The needle sits in the last record, so pointer order buries it.
+    items = [{"note": f"filler-{n:03d}"} for n in range(40)]
+    items.append({"note": f"contains {needle} here"})
+    store.index_datapro_result(
+        query="unrelated batch query",
+        structured_content={"code": 0, "items": items},
+    )
+
+    top = _search(store, needle, limit=5)
+    pointers = [item["json_pointer"] for item in top["items"]]
+    assert any(
+        needle in json.dumps(item["content"]) for item in top["items"]
+    ), f"the matching child was hidden by its batch; got pointers {pointers}"
+    assert top["items"][0]["json_pointer"] == "/items/40"
+
+
+def test_index_capacity_failure_is_reported_not_silently_dropped(tmp_path):
+    """An oversized index must stay distinguishable from a refused search."""
+
+    store = _store(tmp_path)
+    oversized = {
+        "raw": {
+            "structuredContent": {
+                "code": 0,
+                "items": [{"i": n} for n in range(MAX_LOGICAL_ENTRIES + 1)],
+            }
+        }
+    }
+    receipt = datapro.index_successful_search(store, query="capacity", result=oversized)
+    # `None` already means "the response was not a success"; reusing it here
+    # made a working-but-unindexable search indistinguishable from a refused one.
+    assert receipt is not None
+    assert receipt["complete"] is False
+    assert receipt["indexed"] is False
+    assert receipt["reason"] == "capacity"
+    assert receipt["batch_id"] is None
+
+    refused = {"raw": {"structuredContent": {"code": 4011}}}
+    assert datapro.index_successful_search(store, query="q", result=refused) is None
+
+
+def test_linking_a_deleted_artifact_drops_the_batch(tmp_path):
+    """A delete landing before the link must not be undone by the link."""
+
+    store = _store(tmp_path)
+    receipt = store.index_datapro_result(
+        query="race probe",
+        structured_content={"code": 0, "items": [{"a": 1}]},
+    )
+    batch_id = receipt["batch_id"]
+    assert store.search_datapro_index("race probe", limit=10)["total"] >= 1
+
+    with pytest.raises(KeyError):
+        store.link_datapro_index_artifact(batch_id, "a-does-not-exist")
+
+    # The owning Artifact is gone, so the index content has no lifecycle left.
+    assert store.search_datapro_index("race probe", limit=10)["total"] == 0

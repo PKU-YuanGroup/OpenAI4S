@@ -3941,6 +3941,23 @@ class Store:
     def link_datapro_index_artifact(
         self, batch_id: str, artifact_id: str | None
     ) -> dict[str, Any]:
+        """Bind a batch to its saved result, refusing a dead Artifact.
+
+        `ingest` commits the batch with `artifact_id` NULL, and the Artifact is
+        created and linked afterwards. A delete landing in that window matched
+        nothing -- the batch was not yet attributed to the Artifact -- and this
+        UPDATE then pointed it at an id that no longer exists, resurrecting
+        state the delete was supposed to remove. Nothing would collect it
+        again, because `delete_for_artifact` only ever runs once per Artifact,
+        so the batch stayed palette-visible forever.
+
+        Linking to a missing Artifact therefore drops the batch instead: its
+        owner is gone, so the index content has no lifecycle left to share.
+        """
+
+        if artifact_id is not None and self.get_artifact(artifact_id) is None:
+            self._datapro_index.delete_batch(batch_id)
+            raise KeyError(f"no such artifact {artifact_id!r}")
         return self._datapro_index.link_artifact(batch_id, artifact_id)
 
     def search_datapro_index(
