@@ -4,8 +4,11 @@ The proposal requires that every external route and event be covered by a
 contract inventory. The load-bearing word is *checkable*: a list maintained by
 hand is wrong the first time somebody adds a route in a hurry, and its being
 wrong is invisible, which is precisely the failure a contract exists to
-prevent. So the inventory is derived from the gateway source and compared
-against the document.
+prevent. So the inventory is derived from the code and compared against the
+document — by parsing the routing chain out of the source, and, for a module
+that has migrated to declarative `RouteSpec` objects, by reading its live
+`ROUTES` table as well. Both readings run over every route module; neither
+replaces the other.
 
 This found two real gaps on its first run — `branch_projection_restored` and
 `branch_activation_state` were emitted to clients and handled by the frontend
@@ -22,6 +25,11 @@ self-defeating: moving the kernel group dropped 12 routes out of the inventory
 and orphaned 11 frozen response shapes, and the obvious repair -- regenerate
 the artifact until it is green -- re-files those shapes under the catch-all
 `/frames/([^/]+)(?:/.*)?` and destroys the per-route contract.
+
+A migrated module is scanned *and* read, for the same reason. Trusting its
+`ROUTES` table instead of its source reopened the identical hole one level
+down: a leftover `re.fullmatch` branch beside the declarations, or a table
+named anything but `ROUTES`, silently left the inventory.
 """
 
 import re
@@ -82,6 +90,133 @@ def test_route_family_reduces_a_parameterised_path():
     assert route_family("/frames/([^/]+)/kernel") == "frames"
     assert route_family("/projects") == "projects"
     assert route_family("/") == ""
+
+
+def test_kernel_routes_declare_state_mutation_semantics():
+    from openai4s.server import kernel_routes
+
+    expected = {
+        "kernel.execution": False,
+        "kernel.execute": True,
+        "kernel.restart": True,
+        "kernel.stop": True,
+        "kernel.interrupt": True,
+        "kernel.start": True,
+        "kernel.variables": False,
+        "kernel.status": False,
+        "session.status": False,
+        "kernel.install": True,
+        "kernel.environments": False,
+        "kernel.env": True,
+    }
+    actual = {spec.name: spec.mutates for spec in kernel_routes.ROUTES}
+    assert actual == expected
+
+
+@pytest.mark.parametrize(
+    "kwargs, exc",
+    [
+        ({"name": ""}, ValueError),
+        ({"name": "   "}, ValueError),
+        # Spelling is not membership: `str.isalpha()` is Unicode-wide and all
+        # of these are `.upper()`-stable, so an "uppercase alphabetic" test
+        # accepted every one. A route with a typo'd verb never matches a real
+        # request, yet its pattern still enters the inventory and earns the
+        # dispatcher's 404 from every probe verb -- published as covered.
+        ({"method": "get"}, ValueError),
+        ({"method": "GTE"}, ValueError),
+        ({"method": "BANANA"}, ValueError),
+        ({"method": "ＧＥＴ"}, ValueError),
+        ({"method": ""}, ValueError),
+        ({"pattern": "no-leading-slash"}, ValueError),
+        ({"pattern": "/unclosed(["}, ValueError),
+        ({"mutates": 1}, TypeError),
+        ({"mutates": "yes"}, TypeError),
+    ],
+)
+def test_route_spec_rejects_a_declaration_it_cannot_serve(kwargs, exc):
+    """Every arm of `__post_init__`, which had no test at all.
+
+    Deleting the whole validation body left all 58 tests in this file and
+    `test_gateway_kernel_routes.py` green, so the constructor contract the
+    registry rests on could be removed without turning anything red.
+    """
+    fields = {
+        "name": "probe.one",
+        "method": "GET",
+        "pattern": r"/probe/([^/]+)",
+        "mutates": False,
+    }
+    fields.update(kwargs)
+    with pytest.raises(exc):
+        contract.RouteSpec(**fields)
+
+
+def test_a_valid_route_spec_keeps_its_compiled_pattern():
+    """`__post_init__` compiled the pattern to validate it and threw it away,
+    so `match` re-resolved the string through `re`'s 512-entry module cache on
+    every request. Holding it is also what makes the validation compile pay."""
+    spec = contract.RouteSpec("probe.one", "GET", r"/probe/([^/]+)", mutates=False)
+
+    assert spec.match("GET", "/probe/abc").group(1) == "abc"
+    assert spec.match("POST", "/probe/abc") is None
+    assert spec._compiled.pattern == r"/probe/([^/]+)"
+
+
+def test_route_specs_reject_a_route_an_earlier_one_already_answers():
+    """Byte-equal `(method, pattern)` pairs are not the ambiguity that matters.
+
+    Two *different* regexes matching the same path validated cleanly, and the
+    later one was unreachable at runtime while still entering `http_routes()`
+    -- `response_capture` then attributed a response to it, so a route that can
+    only ever 404 counted toward the published coverage.
+    """
+    shadowed = (
+        contract.RouteSpec("kernel.status", "GET", r"/frames/([^/]+)/kernel", False),
+        contract.RouteSpec("kernel.shadow", "GET", r"/frames/(.+)/kernel", False),
+    )
+    with pytest.raises(ValueError, match="shadowed by"):
+        contract._validate_route_specs(shadowed)
+
+    # The real table must stay clean, or the check is unusable.
+    from openai4s.server import kernel_routes
+
+    assert contract._validate_route_specs(kernel_routes.ROUTES) == kernel_routes.ROUTES
+
+
+def test_a_route_module_validates_its_table_when_it_is_imported():
+    """The validator was reachable only from `declared_http_routes()`, which
+    `gateway.py` never calls -- so a duplicated registry imported cleanly and
+    the daemon served it, and deleting the call left every test green."""
+    from openai4s.server import kernel_routes
+
+    source = (contract._SERVER_PKG / "kernel_routes.py").read_text("utf-8")
+    assert "contract.validate_routes(" in source, (
+        "ROUTES must be validated where it is declared, not only when some "
+        "contract test happens to build the inventory"
+    )
+    with pytest.raises(ValueError, match="duplicate route name"):
+        contract.validate_routes(kernel_routes.ROUTES + (kernel_routes.ROUTES[0],))
+
+
+def test_route_specs_reject_ambiguous_protocol_identities():
+    first = contract.RouteSpec("probe.one", "GET", r"/probe/one", mutates=False)
+    duplicate_name = contract.RouteSpec(
+        "probe.one", "GET", r"/probe/two", mutates=False
+    )
+    duplicate_http = contract.RouteSpec(
+        "probe.two", "GET", r"/probe/one", mutates=False
+    )
+
+    with pytest.raises(ValueError, match="duplicate route name"):
+        contract._validate_route_specs((first, duplicate_name))
+    with pytest.raises(ValueError, match="duplicate HTTP route declaration"):
+        contract._validate_route_specs((first, duplicate_http))
+
+
+def test_route_spec_source_fragment_remains_inventoried():
+    source = 'RouteSpec("probe", "GET", r"/probe/([^/]+)", mutates=False)\n'
+    assert contract.http_routes(source) == {r"/probe/([^/]+)"}
 
 
 # --------------------------------------------------------------------------
@@ -271,6 +406,13 @@ def test_widening_the_scan_adds_only_what_the_route_modules_declare():
         path = contract._SERVER_PKG / name
         if path.is_file():
             declared |= set(http_routes(path.read_text("utf-8")))
+    # A declarative module's live table is the more truthful source: the AST
+    # reader sees only *constant* patterns, so a legitimate `RouteSpec` built
+    # from a computed string would appear in `widened` alone and fail the first
+    # assertion with the opposite accusation -- "the widened scan reports routes
+    # that no declared source contains" -- about a route the module declares
+    # correctly.
+    declared |= {spec.pattern for spec in contract.declared_http_routes()}
 
     assert not (widened - declared), (
         "the widened scan reports routes that no declared source contains: "
