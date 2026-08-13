@@ -132,6 +132,26 @@ only thing protecting them, and a backup or an image layer copies them out.
 > variable resolves to nothing, with no error: the pod is healthy, the Secret
 > is mounted, and the model reports itself unconfigured.
 
+**The first thing in `docker logs` is a traceback, and the daemon is fine.**
+Because no secret store is configured, boot prints:
+
+```
+Traceback (most recent call last):
+  File ".../gateway.py", line …, in build_app_server
+    _report = migrate_settings_secrets(_store, _store.secrets)
+  …
+openai4s.security.secret_broker.SecretStoreUnavailable: refusing to handle
+credentials without a secure store (no secure secret store on this host).
+```
+
+That is the once-per-boot credential migration asking for a store it does not
+need — there is nothing to migrate — and finding none. It is caught, the daemon
+continues, and the access-token banner follows it. Nothing is wrong and no
+credential is at risk; it is noise, and it is guaranteed on any headless Linux
+host without libsecret rather than being specific to containers. Setting
+`OPENAI4S_SECRET_STORE=plaintext` silences it by making a decision you probably
+do not want to make for that reason alone.
+
 ### Kernel isolation, honestly
 
 On Linux the kernel sandbox is bubblewrap, and bubblewrap needs to create user,
@@ -382,6 +402,24 @@ cookie 也随之失效。
 > 已经存着一个 `secret://` 引用时才会被查询——而唯一会写那一行的代码，在该后端下
 > 是直接拒绝执行的。于是在一个全新的卷上，注入的变量解析结果为空，且不报任何错：
 > Pod 是健康的，Secret 也挂上了，模型却报告自己没配置。
+
+**`docker logs` 里的第一样东西是一段 traceback，而 daemon 是好的。** 因为没有配置
+密钥存储，启动时会打印：
+
+```
+Traceback (most recent call last):
+  File ".../gateway.py", line …, in build_app_server
+    _report = migrate_settings_secrets(_store, _store.secrets)
+  …
+openai4s.security.secret_broker.SecretStoreUnavailable: refusing to handle
+credentials without a secure store (no secure secret store on this host).
+```
+
+那是每次启动都会跑一遍的凭据迁移，在向一个它其实用不上的存储要东西——根本没有什么
+可迁移的——然后发现一个都没有。异常被捕获了，daemon 继续启动，访问令牌横幅紧随其后。
+没有任何东西出错，也没有任何凭据处于风险中；它只是噪音，而且在任何没有 libsecret 的
+无头 Linux 主机上都必然出现，并非容器特有。设 `OPENAI4S_SECRET_STORE=plaintext`
+能让它闭嘴，但那是替你做了一个多半不该仅仅为此而做的决定。
 
 ### 关于内核隔离，实话实说
 

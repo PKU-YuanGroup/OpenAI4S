@@ -27,15 +27,22 @@ venv
 node_modules
 
 # caches and build outputs
-__pycache__
-*.py[cod]
-*.egg-info
-.pytest_cache
-.mypy_cache
-.ruff_cache
+#
+# `**/` on everything that nests. A pattern without a separator is matched
+# against the whole path relative to the context root, so a bare `__pycache__`
+# excludes only one at the top level — and there isn't one — while the 6 MB
+# spread through openai4s/, skills/ and scripts/ rides along and busies the
+# layer cache on every stray .pyc.
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
 dist
+build
 .build
-*.isorted
+**/*.isorted
 
 # not installed by the wheel
 readme-gifs-hd
@@ -47,4 +54,4 @@ epibench_eval
 docs/*.png
 
 # macOS
-.DS_Store
+**/.DS_Store

@@ -76,8 +76,7 @@ RUN set -eu; \
     wheel="$(ls /tmp/wheels/openai4s-*.whl)"; \
     if [ -n "${OPENAI4S_EXTRAS}" ]; then wheel="${wheel}[${OPENAI4S_EXTRAS}]"; fi; \
     python -m pip install --no-cache-dir "${wheel}"; \
-    rm -rf /tmp/wheels; \
-    python -m compileall -q /usr/local/lib/python*/site-packages/openai4s >/dev/null
+    rm -rf /tmp/wheels
 
 # The data directory: the SQLite store, artifacts, session workspaces, skills,
 # the checkpoint CAS, and the access token. Everything worth keeping is here
@@ -105,9 +104,14 @@ ENV OPENAI4S_NO_OPEN=1 \
 # PYTHONUNBUFFERED — stdout is block-buffered when it is not a TTY, which is
 #   every container. Without this the startup lines sit in a buffer and
 #   `docker logs` is empty while the daemon is already serving.
-# PYTHONDONTWRITEBYTECODE — site-packages is precompiled above, as root. At
-#   runtime the daemon is not root and cannot write there, so let it stop
-#   trying.
+# PYTHONDONTWRITEBYTECODE — pip byte-compiles everything it installs (it is
+#   the default; only `--no-compile` turns it off), so site-packages arrives
+#   precompiled and, at runtime, the daemon is not root and could not write
+#   there anyway. An explicit `compileall` pass used to sit above this and was
+#   removed: it rewrote nothing pip had not already produced, covered less of
+#   site-packages than pip does, and could not fail — `compileall` swallows a
+#   directory it cannot list and still exits 0, so a glob that stopped matching
+#   would have gone on silently doing nothing.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
