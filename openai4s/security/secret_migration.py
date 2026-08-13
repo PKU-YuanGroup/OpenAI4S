@@ -61,8 +61,14 @@ class MigrationReport:
         }
 
 
-# Settings keys holding a credential outright. `scope` groups them in the
+# Settings columns holding a credential outright. `scope` groups them in the
 # keychain so a user can see what an entry is for.
+#
+# The first element is a *column name*, never a credential, and it is reported
+# and logged as such. It is called `setting` rather than `key` on purpose: in a
+# module about credentials, `key` reads as "the secret", and both a human and a
+# taint analysis will believe it -- CodeQL flagged the log lines that printed
+# it for exactly that reason.
 SETTINGS_SECRETS: tuple[tuple[str, str], ...] = (
     ("llm_api_key", "llm"),
     ("tavily_api_key", "search"),
@@ -73,10 +79,10 @@ SETTINGS_SECRETS: tuple[tuple[str, str], ...] = (
 def migrate_settings_secrets(store, broker: SecretBroker) -> MigrationReport:
     """Move each plaintext settings credential behind a reference."""
     report = MigrationReport()
-    for key, scope in SETTINGS_SECRETS:
-        value = store.get_setting(key)
+    for setting, scope in SETTINGS_SECRETS:
+        value = store.get_setting(setting)
         if not value:
-            report.empty.append(key)
+            report.empty.append(setting)
             continue
         if is_ref(value):
             try:
@@ -87,7 +93,7 @@ def migrate_settings_secrets(store, broker: SecretBroker) -> MigrationReport:
                 # outside the per-key guard, so it aborted the whole pass -- and
                 # with it `migrate_profile_keys` and `migrate_connector_env`,
                 # which share one `try` at the call site.
-                report.failed.append({"key": key, "error": type(e).__name__})
+                report.failed.append({"setting": setting, "error": type(e).__name__})
                 continue
             if described["reentry_required"] or not described["configured"]:
                 # A v1 system slot is process-global and contains no evidence
@@ -95,15 +101,17 @@ def migrate_settings_secrets(store, broker: SecretBroker) -> MigrationReport:
                 # would reproduce the cross-Store disclosure this boundary is
                 # meant to close. A matching v2 ref whose backend value was
                 # revoked likewise needs re-entry rather than "already".
-                report.reentry_required.append(key)
+                report.reentry_required.append(setting)
             else:
-                report.already.append(key)
+                report.already.append(setting)
             continue
         try:
-            _migrate_one(store, broker, key=key, scope=scope, name=key, value=value)
-            report.migrated.append(key)
+            _migrate_one(
+                store, broker, key=setting, scope=scope, name=setting, value=value
+            )
+            report.migrated.append(setting)
         except Exception as e:  # noqa: BLE001 - one bad key must not strand the rest
-            report.failed.append({"key": key, "error": type(e).__name__})
+            report.failed.append({"setting": setting, "error": type(e).__name__})
     return report
 
 

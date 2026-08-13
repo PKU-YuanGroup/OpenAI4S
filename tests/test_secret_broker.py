@@ -503,7 +503,7 @@ def test_an_unverifiable_write_leaves_the_plaintext_alone(store):
 
     report = migrate_settings_secrets(store, broken)
     assert report.migrated == []
-    assert [f["key"] for f in report.failed] == ["llm_api_key"]
+    assert [f["setting"] for f in report.failed] == ["llm_api_key"]
     assert store.get_setting("llm_api_key") == _CANARY, "plaintext must survive"
 
 
@@ -519,7 +519,7 @@ def test_one_bad_key_does_not_strand_the_others(store):
 
     report = migrate_settings_secrets(store, broker)
     assert report.migrated == ["tavily_api_key"]
-    assert [f["key"] for f in report.failed] == ["llm_api_key"]
+    assert [f["setting"] for f in report.failed] == ["llm_api_key"]
 
 
 def test_empty_settings_are_skipped(store, broker):
