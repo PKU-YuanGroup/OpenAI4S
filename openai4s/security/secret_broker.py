@@ -1,11 +1,11 @@
 """Credential storage behind an opaque reference.
 
-Business tables should hold a *reference* to a secret, not the secret. Today
-they hold the secret: model-profile API keys and ``llm_api_key`` /
-``tavily_api_key`` live in ``settings`` as plaintext, connector credentials in
-``connectors.env``. The data directory is now owner-only, which removes the
-trivial read by another local account — but a file mode is not encryption, and
-it does nothing for a backup, an rsync, a container layer, or a support bundle.
+Business tables should hold a *reference* to a secret, not the secret. Legacy
+deployments held model-profile API keys, ``llm_api_key``, ``tavily_api_key``,
+``agent_plan_key``, and connector credentials directly in SQLite. Current save
+and migration paths replace those values with opaque broker references. The
+data directory is owner-only too, but a file mode is not encryption and does
+nothing for a backup, an rsync, a container layer, or a support bundle.
 
 This broker is the mechanism for fixing that:
 
@@ -67,6 +67,7 @@ makes, not a default they inherit.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -80,7 +81,9 @@ _VALID_MODES = frozenset({"auto", "keychain", "env", "plaintext"})
 _KEYCHAIN_SERVICE = "openai4s"
 _CLI_TIMEOUT_S = 10.0
 
-_REF_PREFIX = "secret://v1/"
+_REF_V1_PREFIX = "secret://v1/"
+_REF_V2_PREFIX = "secret://v2/"
+_NAMESPACE_DOMAIN = b"openai4s-secret-store-v2\x00"
 
 
 class SecretBrokerError(RuntimeError):
@@ -91,30 +94,80 @@ class SecretStoreUnavailable(SecretBrokerError):
     """``keychain`` was demanded and no usable keychain exists."""
 
 
-def make_ref(scope: str, name: str) -> str:
+def store_namespace(store) -> str:
+    """Stable, non-secret identity for one canonical Store path.
+
+    The path itself never enters a reference or backend attribute.  Including
+    the canonical real path in a domain-separated digest means copying an
+    ``openai4s.db`` to another data directory creates a different credential
+    namespace; a random id stored inside the copied database would not.
+    """
+
+    db_path = getattr(store, "db_path", None)
+    if db_path is None:
+        raise SecretBrokerError("a Store is required for namespaced secrets")
+    canonical = os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(db_path))))
+    digest = hashlib.sha256(_NAMESPACE_DOMAIN + os.fsencode(canonical)).hexdigest()
+    return digest[:32]
+
+
+def make_ref(scope: str, name: str, namespace: str | None = None) -> str:
     """The opaque handle a business table stores instead of the secret.
 
     Deliberately not a URL to anything and deliberately not derived from the
-    value: it identifies *which* secret, and leaks nothing about it. Two
-    installs with the same key produce the same ref, which is what makes a ref
-    safe to log.
+    value: it identifies *which* Store and logical secret, and leaks neither
+    the credential nor the Store path. ``namespace=None`` constructs only the
+    legacy v1 shape for compatibility; all Broker writes produce v2.
     """
     scope = _sanitize(scope, "scope")
     name = _sanitize(name, "name")
-    return f"{_REF_PREFIX}{scope}/{name}"
+    if namespace is None:
+        # Compatibility constructor for rows written before Store namespaces.
+        # SecretBroker.put always supplies its v2 namespace.
+        return f"{_REF_V1_PREFIX}{scope}/{name}"
+    namespace = _sanitize_namespace(namespace)
+    return f"{_REF_V2_PREFIX}{namespace}/{scope}/{name}"
 
 
 def is_ref(value: object) -> bool:
-    return isinstance(value, str) and value.startswith(_REF_PREFIX)
+    return isinstance(value, str) and value.startswith((_REF_V1_PREFIX, _REF_V2_PREFIX))
+
+
+def parse_ref(ref: str) -> tuple[int, str | None, str, str]:
+    """Return ``(version, namespace, scope, name)`` for a supported ref."""
+
+    if not isinstance(ref, str):
+        raise SecretBrokerError(f"not a secret reference: {ref!r}")
+    if ref.startswith(_REF_V2_PREFIX):
+        parts = ref[len(_REF_V2_PREFIX) :].split("/")
+        if len(parts) != 3:
+            raise SecretBrokerError(f"malformed secret reference: {ref!r}")
+        namespace, scope, name = parts
+        return (
+            2,
+            _sanitize_namespace(namespace),
+            _sanitize(scope, "scope"),
+            _sanitize(name, "name"),
+        )
+    if ref.startswith(_REF_V1_PREFIX):
+        parts = ref[len(_REF_V1_PREFIX) :].split("/")
+        if len(parts) != 2:
+            raise SecretBrokerError(f"malformed secret reference: {ref!r}")
+        scope, name = parts
+        return 1, None, _sanitize(scope, "scope"), _sanitize(name, "name")
+    raise SecretBrokerError(f"not a secret reference: {ref!r}")
 
 
 def split_ref(ref: str) -> tuple[str, str]:
-    if not is_ref(ref):
-        raise SecretBrokerError(f"not a secret reference: {ref!r}")
-    scope, _, name = ref[len(_REF_PREFIX) :].partition("/")
-    if not scope or not name:
-        raise SecretBrokerError(f"malformed secret reference: {ref!r}")
+    _version, _namespace, scope, name = parse_ref(ref)
     return scope, name
+
+
+def _sanitize_namespace(namespace: str) -> str:
+    text = str(namespace or "").strip().lower()
+    if len(text) != 32 or any(ch not in "0123456789abcdef" for ch in text):
+        raise SecretBrokerError("secret namespace is invalid")
+    return text
 
 
 def _sanitize(part: str, label: str) -> str:
@@ -159,13 +212,13 @@ class _Backend:
     def available(self) -> bool:
         return False
 
-    def put(self, scope: str, name: str, secret: str) -> None:
+    def put(self, namespace: str, scope: str, name: str, secret: str) -> None:
         raise NotImplementedError
 
-    def get(self, scope: str, name: str) -> str | None:
+    def get(self, namespace: str, scope: str, name: str) -> str | None:
         raise NotImplementedError
 
-    def delete(self, scope: str, name: str) -> None:
+    def delete(self, namespace: str, scope: str, name: str) -> None:
         raise NotImplementedError
 
 
@@ -188,10 +241,12 @@ class KeychainBackend(_Backend):
     def available(self) -> bool:
         return sys.platform == "darwin" and bool(shutil.which("security"))
 
-    def _account(self, scope: str, name: str) -> str:
-        return f"{scope}/{name}"
+    def _account(self, namespace: str, scope: str, name: str) -> str:
+        if not namespace:
+            return f"{scope}/{name}"
+        return f"v2/{namespace}/{scope}/{name}"
 
-    def put(self, scope: str, name: str, secret: str) -> None:
+    def put(self, namespace: str, scope: str, name: str, secret: str) -> None:
         # -w LAST and the value on stdin. `security` prompts twice (enter +
         # confirm), hence the doubled line. Putting it in argv instead would
         # publish it to `ps`.
@@ -201,7 +256,7 @@ class KeychainBackend(_Backend):
                 "add-generic-password",
                 "-U",
                 "-a",
-                self._account(scope, name),
+                self._account(namespace, scope, name),
                 "-s",
                 _KEYCHAIN_SERVICE,
                 "-D",
@@ -216,13 +271,13 @@ class KeychainBackend(_Backend):
                 f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
             )
 
-    def get(self, scope: str, name: str) -> str | None:
+    def get(self, namespace: str, scope: str, name: str) -> str | None:
         proc = _run(
             [
                 "security",
                 "find-generic-password",
                 "-a",
-                self._account(scope, name),
+                self._account(namespace, scope, name),
                 "-s",
                 _KEYCHAIN_SERVICE,
                 "-w",
@@ -233,13 +288,13 @@ class KeychainBackend(_Backend):
         # -w prints the password and a trailing newline; only that newline.
         return proc.stdout.decode("utf-8", "replace").rstrip("\n")
 
-    def delete(self, scope: str, name: str) -> None:
+    def delete(self, namespace: str, scope: str, name: str) -> None:
         _run(
             [
                 "security",
                 "delete-generic-password",
                 "-a",
-                self._account(scope, name),
+                self._account(namespace, scope, name),
                 "-s",
                 _KEYCHAIN_SERVICE,
             ]
@@ -263,19 +318,31 @@ class SecretServiceBackend(_Backend):
             or os.environ.get("XDG_RUNTIME_DIR")
         )
 
-    def put(self, scope: str, name: str, secret: str) -> None:
+    @staticmethod
+    def _attributes(namespace: str, scope: str, name: str) -> list[str]:
+        if not namespace:
+            return ["service", _KEYCHAIN_SERVICE, "scope", scope, "name", name]
+        return [
+            "service",
+            _KEYCHAIN_SERVICE,
+            "version",
+            "v2",
+            "namespace",
+            namespace,
+            "scope",
+            scope,
+            "name",
+            name,
+        ]
+
+    def put(self, namespace: str, scope: str, name: str, secret: str) -> None:
         proc = _run(
             [
                 "secret-tool",
                 "store",
                 "--label",
-                f"OpenAI4S {scope}/{name}",
-                "service",
-                _KEYCHAIN_SERVICE,
-                "scope",
-                scope,
-                "name",
-                name,
+                f"OpenAI4S v2/{namespace}/{scope}/{name}",
+                *self._attributes(namespace, scope, name),
             ],
             stdin=secret,
         )
@@ -285,17 +352,12 @@ class SecretServiceBackend(_Backend):
                 f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
             )
 
-    def get(self, scope: str, name: str) -> str | None:
+    def get(self, namespace: str, scope: str, name: str) -> str | None:
         proc = _run(
             [
                 "secret-tool",
                 "lookup",
-                "service",
-                _KEYCHAIN_SERVICE,
-                "scope",
-                scope,
-                "name",
-                name,
+                *self._attributes(namespace, scope, name),
             ]
         )
         if proc.returncode != 0:
@@ -303,17 +365,12 @@ class SecretServiceBackend(_Backend):
         # secret-tool lookup does NOT append a newline.
         return proc.stdout.decode("utf-8", "replace")
 
-    def delete(self, scope: str, name: str) -> None:
+    def delete(self, namespace: str, scope: str, name: str) -> None:
         _run(
             [
                 "secret-tool",
                 "clear",
-                "service",
-                _KEYCHAIN_SERVICE,
-                "scope",
-                scope,
-                "name",
-                name,
+                *self._attributes(namespace, scope, name),
             ]
         )
 
@@ -332,10 +389,12 @@ class EnvInjectionBackend(_Backend):
     the operator\'s back. ``put`` therefore fails with the exact variable name to
     set, instead of silently accepting a value that would vanish on restart.
 
-    A variable is named ``OPENAI4S_SECRET_<SCOPE>_<NAME>``, upper-cased with
-    every non-alphanumeric run collapsed to ``_`` — so the llm api key is
-    ``OPENAI4S_SECRET_LLM_LLM_API_KEY`` and a connector env value is
-    ``OPENAI4S_SECRET_CONNECTOR_ENV_LAB_LAB_TOKEN``.
+    The preferred variable is
+    ``OPENAI4S_SECRET_V2_<NAMESPACE>_<SCOPE>_<NAME>``. Existing
+    ``OPENAI4S_SECRET_<SCOPE>_<NAME>`` variables remain an explicit
+    process-global fallback so upgrading does not silently change an
+    operator-owned systemd/container contract. Names are upper-cased and every
+    non-alphanumeric run is collapsed to ``_``.
     """
 
     name = "env-injection"
@@ -359,6 +418,13 @@ class EnvInjectionBackend(_Backend):
         collapsed = "_".join(part for part in "".join(out).split("_") if part)
         return collapsed.upper()
 
+    @staticmethod
+    def namespaced_var_name(namespace: str, scope: str, name: str) -> str:
+        namespace = _sanitize_namespace(namespace)
+        raw = f"{EnvInjectionBackend.PREFIX}V2_{namespace}_{scope}_{name}"
+        out = [ch if ch.isalnum() else "_" for ch in raw]
+        return "_".join(part for part in "".join(out).split("_") if part).upper()
+
     def available(self) -> bool:
         if os.environ.get(self.ENABLE, "").strip().lower() in (
             "1",
@@ -369,18 +435,28 @@ class EnvInjectionBackend(_Backend):
             return True
         return any(k.startswith(self.PREFIX) for k in os.environ)
 
-    def put(self, scope: str, name: str, secret: str) -> None:
+    def put(self, namespace: str, scope: str, name: str, secret: str) -> None:
         raise SecretBrokerError(
             f"this deployment takes credentials from the environment, so they "
             f"cannot be set from the app. Set "
-            f"{self.var_name(scope, name)} in the daemon's environment "
+            f"{self.namespaced_var_name(namespace, scope, name)} in the daemon's "
+            f"environment "
             f"(systemd EnvironmentFile, container secret, …) and restart."
         )
 
-    def get(self, scope: str, name: str) -> str | None:
+    def get(self, namespace: str, scope: str, name: str) -> str | None:
+        if namespace:
+            namespaced = os.environ.get(
+                self.namespaced_var_name(namespace, scope, name)
+            )
+            if namespaced:
+                return namespaced
+        # This fallback is deliberate operator policy: environment injection
+        # is process-global by construction. Ambiguous legacy system-keychain
+        # slots do not receive the same exception.
         return os.environ.get(self.var_name(scope, name)) or None
 
-    def delete(self, scope: str, name: str) -> None:
+    def delete(self, namespace: str, scope: str, name: str) -> None:
         # Nothing of ours to remove; the operator owns the variable.
         return None
 
@@ -404,18 +480,20 @@ class PlaintextBackend(_Backend):
     def available(self) -> bool:
         return self._store is not None
 
-    def _key(self, scope: str, name: str) -> str:
-        return f"secret::{scope}::{name}"
+    def _key(self, namespace: str, scope: str, name: str) -> str:
+        if not namespace:
+            return f"secret::{scope}::{name}"
+        return f"secret::v2::{namespace}::{scope}::{name}"
 
-    def put(self, scope: str, name: str, secret: str) -> None:
-        self._store.set_setting(self._key(scope, name), secret)
+    def put(self, namespace: str, scope: str, name: str, secret: str) -> None:
+        self._store.set_setting(self._key(namespace, scope, name), secret)
 
-    def get(self, scope: str, name: str) -> str | None:
-        value = self._store.get_setting(self._key(scope, name))
+    def get(self, namespace: str, scope: str, name: str) -> str | None:
+        value = self._store.get_setting(self._key(namespace, scope, name))
         return value if value else None
 
-    def delete(self, scope: str, name: str) -> None:
-        self._store.set_setting(self._key(scope, name), "")
+    def delete(self, namespace: str, scope: str, name: str) -> None:
+        self._store.set_setting(self._key(namespace, scope, name), "")
 
 
 class MemoryBackend(_Backend):
@@ -427,19 +505,19 @@ class MemoryBackend(_Backend):
     secure = True
 
     def __init__(self) -> None:
-        self._values: dict[tuple[str, str], str] = {}
+        self._values: dict[tuple[str, str, str], str] = {}
 
     def available(self) -> bool:
         return True
 
-    def put(self, scope: str, name: str, secret: str) -> None:
-        self._values[(scope, name)] = secret
+    def put(self, namespace: str, scope: str, name: str, secret: str) -> None:
+        self._values[(namespace, scope, name)] = secret
 
-    def get(self, scope: str, name: str) -> str | None:
-        return self._values.get((scope, name))
+    def get(self, namespace: str, scope: str, name: str) -> str | None:
+        return self._values.get((namespace, scope, name))
 
-    def delete(self, scope: str, name: str) -> None:
-        self._values.pop((scope, name), None)
+    def delete(self, namespace: str, scope: str, name: str) -> None:
+        self._values.pop((namespace, scope, name), None)
 
 
 # --------------------------------------------------------------------------
@@ -478,6 +556,7 @@ class SecretBroker:
         self._lock = threading.RLock()
         self._mode = _mode(mode)
         self._store = store
+        self._namespace = store_namespace(store) if store is not None else None
         self._detail = ""
         self._backend = self._resolve(backends)
 
@@ -520,7 +599,9 @@ class SecretBroker:
             f"  desktop: a login keychain (macOS) or libsecret + a session "
             f"keyring (Linux) makes this work with no further configuration.\n"
             f"  server:  supply credentials in the daemon's environment as "
-            f"{EnvInjectionBackend.PREFIX}<SCOPE>_<NAME> (and set "
+            f"{EnvInjectionBackend.PREFIX}V2_<NAMESPACE>_<SCOPE>_<NAME> "
+            f"(legacy process-global {EnvInjectionBackend.PREFIX}<SCOPE>_<NAME> "
+            f"also remains supported), and set "
             f"{EnvInjectionBackend.ENABLE}=1 before any are configured); "
             f"nothing is written to disk.\n"
             f"  to accept plaintext storage anyway, set "
@@ -537,14 +618,15 @@ class SecretBroker:
         """
         probe = "__selftest__"
         canary = "openai4s-selftest-value"
+        probe_namespace = hashlib.sha256(os.urandom(32)).hexdigest()[:32]
         try:
-            backend.put(probe, "probe", canary)
-            got = backend.get(probe, "probe")
+            backend.put(probe_namespace, probe, "probe", canary)
+            got = backend.get(probe_namespace, probe, "probe")
         except Exception as e:  # noqa: BLE001 - any failure disqualifies it
             return False, str(e)
         finally:
             try:
-                backend.delete(probe, "probe")
+                backend.delete(probe_namespace, probe, "probe")
             except Exception:  # noqa: BLE001
                 pass
         if got != canary:
@@ -557,32 +639,67 @@ class SecretBroker:
         scope = _sanitize(scope, "scope")
         name = _sanitize(name, "name")
         value = _validate_secret(secret)
+        if self._namespace is None:
+            raise SecretBrokerError("a Store is required to write a secret")
         with self._lock:
-            self._backend.put(scope, name, value)
-        return make_ref(scope, name)
+            self._backend.put(self._namespace, scope, name, value)
+        return make_ref(scope, name, self._namespace)
 
     def get(self, ref: str) -> str | None:
-        scope, name = split_ref(ref)
+        version, namespace, scope, name = parse_ref(ref)
         with self._lock:
-            return self._backend.get(scope, name)
+            if version == 2:
+                # Reject a copied/foreign Store's reference before invoking a
+                # backend. This is both the authorization check and the proof
+                # a malicious ref cannot be used as a keychain lookup oracle.
+                if namespace != self._namespace:
+                    return None
+                return self._backend.get(namespace or "", scope, name)
+            if isinstance(self._backend, (PlaintextBackend, EnvInjectionBackend)):
+                # DB-local plaintext has an owner, and an environment variable
+                # is an operator's explicit process-global policy. A legacy
+                # Keychain/Secret Service slot has neither and is fail-closed.
+                return self._backend.get("", scope, name)
+            return None
 
     def delete(self, ref: str) -> None:
-        scope, name = split_ref(ref)
+        version, namespace, scope, name = parse_ref(ref)
         with self._lock:
-            self._backend.delete(scope, name)
+            if version == 2:
+                if namespace != self._namespace:
+                    return
+                self._backend.delete(namespace or "", scope, name)
+                return
+            if isinstance(self._backend, (PlaintextBackend, EnvInjectionBackend)):
+                self._backend.delete("", scope, name)
+            # Never delete an ownerless v1 system slot. Another data directory
+            # may still be the installation legitimately using it.
 
     def describe(self, ref: str) -> dict:
         """Metadata for an API response. Never the value."""
-        scope, name = split_ref(ref)
-        with self._lock:
-            configured = self._backend.get(scope, name) is not None
+        _version, _namespace, scope, name = parse_ref(ref)
+        configured = self.get(ref) is not None
         return {
             "ref": ref,
             "scope": scope,
             "name": name,
             "configured": configured,
             "backend": self._backend.name,
+            "reentry_required": self.ref_requires_reentry(ref),
         }
+
+    def ref_requires_reentry(self, ref: str) -> bool:
+        """Whether this Store must ask the user to save the credential again."""
+
+        version, namespace, _scope, _name = parse_ref(ref)
+        if version == 2:
+            return namespace != self._namespace
+        return bool(
+            not isinstance(self._backend, (PlaintextBackend, EnvInjectionBackend))
+        )
+
+    # Compatibility name used by the first migration caller.
+    legacy_ref_requires_reentry = ref_requires_reentry
 
     def posture(self) -> dict:
         """Machine-readable report. Says plainly when it is not secure."""
@@ -615,5 +732,7 @@ __all__ = [
     "SecretStoreUnavailable",
     "is_ref",
     "make_ref",
+    "parse_ref",
     "split_ref",
+    "store_namespace",
 ]

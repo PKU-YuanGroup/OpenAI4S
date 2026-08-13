@@ -39,6 +39,7 @@ def fingerprint(secret: str) -> str:
 class MigrationReport:
     migrated: list[str] = field(default_factory=list)
     already: list[str] = field(default_factory=list)
+    reentry_required: list[str] = field(default_factory=list)
     empty: list[str] = field(default_factory=list)
     failed: list[dict] = field(default_factory=list)
 
@@ -46,6 +47,7 @@ class MigrationReport:
         return {
             "migrated": list(self.migrated),
             "already_migrated": list(self.already),
+            "reentry_required": list(self.reentry_required),
             "empty": list(self.empty),
             "failed": list(self.failed),
             "ok": not self.failed,
@@ -57,6 +59,7 @@ class MigrationReport:
 SETTINGS_SECRETS: tuple[tuple[str, str], ...] = (
     ("llm_api_key", "llm"),
     ("tavily_api_key", "search"),
+    ("agent_plan_key", "agent_plan"),
 )
 
 
@@ -69,7 +72,25 @@ def migrate_settings_secrets(store, broker: SecretBroker) -> MigrationReport:
             report.empty.append(key)
             continue
         if is_ref(value):
-            report.already.append(key)
+            try:
+                described = broker.describe(value)
+            except Exception as e:  # noqa: BLE001 - one bad key must not strand
+                # `describe` reads the backend: a locked keychain (the CLI times
+                # out after 10s) or a hand-edited ref raises here, and this ran
+                # outside the per-key guard, so it aborted the whole pass -- and
+                # with it `migrate_profile_keys` and `migrate_connector_env`,
+                # which share one `try` at the call site.
+                report.failed.append({"key": key, "error": str(e)[:300]})
+                continue
+            if described["reentry_required"] or not described["configured"]:
+                # A v1 system slot is process-global and contains no evidence
+                # of which data directory owns it. Reading it to "migrate"
+                # would reproduce the cross-Store disclosure this boundary is
+                # meant to close. A matching v2 ref whose backend value was
+                # revoked likewise needs re-entry rather than "already".
+                report.reentry_required.append(key)
+            else:
+                report.already.append(key)
             continue
         try:
             _migrate_one(store, broker, key=key, scope=scope, name=key, value=value)
@@ -109,11 +130,25 @@ def migrate_connector_env(store) -> dict:
     could drift from it.
     """
     migrated: list[str] = []
+    reentry_required: list[str] = []
     failed: list[dict] = []
     for connector in store.list_connectors():
         env = connector.get("env")
         if not isinstance(env, dict) or not env:
             continue
+        refs = [str(value or "") for value in env.values() if is_ref(str(value or ""))]
+        try:
+            needs_reentry = any(
+                (description := store.secrets.describe(ref))["reentry_required"]
+                or not description["configured"]
+                for ref in refs
+            )
+        except Exception as e:  # noqa: BLE001 - one bad connector must not
+            # strand the others; describe() reaches the backend and can raise.
+            failed.append({"id": connector["connector_id"], "error": str(e)[:200]})
+            continue
+        if refs and needs_reentry:
+            reentry_required.append(str(connector["connector_id"]))
         if all(is_ref(str(v or "")) or not v for v in env.values()):
             continue
         try:
@@ -130,7 +165,11 @@ def migrate_connector_env(store) -> dict:
         except Exception as e:  # noqa: BLE001 - one bad connector must not
             # strand the others; its plaintext stays and it keeps working.
             failed.append({"id": connector["connector_id"], "error": str(e)[:200]})
-    return {"migrated": migrated, "failed": failed}
+    return {
+        "migrated": migrated,
+        "reentry_required": reentry_required,
+        "failed": failed,
+    }
 
 
 def resolve_setting(store, broker: SecretBroker, key: str) -> str:
