@@ -18,9 +18,10 @@ and, statically, ``host.bash``). It is:
   (``OPENAI4S_EGRESS``), so nothing changes for an install that relies on
   "networking is ON". Set ``OPENAI4S_EGRESS=allowlist`` to enforce.
 
-Matching is suffix-based: an allowlist entry ``ncbi.nlm.nih.gov`` also authorizes
-``eutils.ncbi.nlm.nih.gov`` and ``sra-download.ncbi.nlm.nih.gov`` (subdomains), but
-never ``evilncbi.nlm.nih.gov`` (the boundary dot is required).
+Matching is suffix-based by default: an allowlist entry ``ncbi.nlm.nih.gov`` also
+authorizes ``eutils.ncbi.nlm.nih.gov`` and ``sra-download.ncbi.nlm.nih.gov``
+(subdomains), but never ``evilncbi.nlm.nih.gov`` (the boundary dot is required).
+Credential-bearing managed integrations opt into exact-host matching instead.
 """
 
 from __future__ import annotations
@@ -32,9 +33,10 @@ import urllib.parse
 
 # --------------------------------------------------------------------------- #
 #  Canonical allowlist — the single source of truth for both enforcement and
-#  the Customize → Network display in the gateway. Entries are BASE domains;
-#  subdomains match by suffix (see `_host_matches`), so eutils./sra-download./
-#  rest. hosts are covered without listing every one.
+#  the Customize → Network display in the gateway. Entries are BASE domains by
+#  default; subdomains match by suffix (see `_host_matches`), so eutils./
+#  sra-download./rest. hosts are covered without listing every one. Managed
+#  authenticated origins opt into exact matching below.
 # --------------------------------------------------------------------------- #
 EGRESS_GROUPS: list[dict] = [
     {
@@ -94,9 +96,26 @@ EGRESS_GROUPS: list[dict] = [
         ],
     },
     {
+        "name": "Professional datasets",
+        "enabled": True,
+        # Exact host, not the Volcengine parent domain or a child host: this
+        # authenticated connector must not widen the general outbound fence.
+        "exact": True,
+        "domains": ["datapro.hqd.cn-beijing.volces.com"],
+    },
+    {
         "name": "Web search",
         "enabled": True,
-        "domains": ["duckduckgo.com", "html.duckduckgo.com", "lite.duckduckgo.com"],
+        "exact_domains": ["open.feedcoopapi.com"],
+        "domains": [
+            # Exact authenticated Doubao Search upstream.  Keep this narrower
+            # than feedcoopapi.com so the Agent Plan credential cannot be sent
+            # to sibling services through an allowlist match.
+            "open.feedcoopapi.com",
+            "duckduckgo.com",
+            "html.duckduckgo.com",
+            "lite.duckduckgo.com",
+        ],
     },
 ]
 
@@ -163,6 +182,23 @@ def builtin_domains() -> frozenset[str]:
     return frozenset(_norm(d) for g in EGRESS_GROUPS for d in g.get("domains", []))
 
 
+def exact_builtin_domains() -> frozenset[str]:
+    """Built-ins whose authorization does not extend to child hosts.
+
+    Most catalog entries intentionally cover a service's documented
+    subdomains. Credential-bearing managed integrations are different: their
+    request code uses one fixed origin, so the policy must name that origin
+    exactly rather than granting an attacker-controlled child label too.
+    """
+
+    exact: set[str] = set()
+    for group in EGRESS_GROUPS:
+        if group.get("exact"):
+            exact.update(_norm(d) for d in group.get("domains", []))
+        exact.update(_norm(d) for d in group.get("exact_domains", []))
+    return frozenset(exact)
+
+
 def granted_domains() -> frozenset[str]:
     """Domains widened at runtime via approved request_network_access calls."""
     with _LOCK:
@@ -201,7 +237,14 @@ def domain_allowed(host_or_url: str) -> bool:
     host = domain_of(host_or_url)
     if not host:
         return True
-    allowed = builtin_domains() | granted_domains()
+    exact = exact_builtin_domains()
+    if host in exact:
+        return True
+    # Re-approving an exact managed origin at runtime must not silently turn
+    # that same string back into a suffix grant for attacker-controlled child
+    # labels. Other user grants retain the documented base-domain semantics.
+    runtime = granted_domains()
+    allowed = (builtin_domains() - exact) | (runtime - exact)
     return any(_host_matches(host, a) for a in allowed)
 
 

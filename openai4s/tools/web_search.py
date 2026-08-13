@@ -1,4 +1,4 @@
-"""Keyless live web-search control tool."""
+"""Live web-search control tool with a brokered primary provider."""
 
 from __future__ import annotations
 
@@ -12,7 +12,10 @@ class WebSearchTool(Tool):
 
     name = "web_search"
     host_method = "web_search"
-    description = "Live keyless web search; returns a list of {title, url, snippet}."
+    description = (
+        "Live web search; uses Doubao Search when an Agent Plan Key is configured, "
+        "otherwise the built-in fallback engines. Returns {title, url, snippet}."
+    )
     parameters = {
         "properties": {
             "query": {
@@ -41,16 +44,19 @@ class WebSearchTool(Tool):
     resource_key_prefix = "network"
     resource_target_default = "search"
 
-    def execute(self, _runtime: Any, arguments: dict) -> dict:
+    def execute(self, runtime: Any, arguments: dict) -> dict:
         from openai4s import egress, webtools
+        from openai4s.doubao_search import DoubaoSearchError
 
         try:
-            return webtools.web_search(
+            return runtime.search_web(
                 arguments.get("query", ""),
                 num_results=int(arguments.get("num_results") or 8),
                 timeout=float(arguments.get("timeout") or 20),
             )
         except (webtools.NetworkDisabled, egress.EgressBlocked) as error:
+            return {"error": str(error)}
+        except DoubaoSearchError as error:
             return {"error": str(error)}
         except Exception as error:  # noqa: BLE001
             return {"error": f"web_search: {error}"}
