@@ -396,6 +396,56 @@
         200
       ]
     },
+    "/datapro/config": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        400,
+        404
+      ]
+    },
+    "/datapro/search": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        400,
+        404
+      ]
+    },
+    "/doubao-search/config": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        400,
+        404
+      ]
+    },
+    "/doubao-search/search": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        400,
+        404
+      ]
+    },
     "/environments": {
       "content_types": [
         "application/json"

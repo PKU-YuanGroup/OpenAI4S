@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-The 34 bundled OpenAI4S Skills live here, one directory each. A Skill is a
+The 35 bundled OpenAI4S Skills live here, one directory each. A Skill is a
 recipe: code plus the operational knowledge needed to run it, not a provider
 JSON Tool. Disclosure is progressive, so the loader shows a name and a one-line
 summary and nothing more until a Skill is selected; only then does it read
@@ -46,6 +46,7 @@ summary and nothing more until a Skill is selected; only then does it read
 | [`scvi-tools/`](scvi-tools/) | The probabilistic counterpart to `scgpt`: scVI for a batch-corrected latent space, scANVI for label transfer from a partly annotated reference, and Bayesian differential expression. It needs raw integer UMI counts. For spatial deconvolution or mapping, use cell2location, DestVI, or Tangram instead. |
 | [`solublempnn/`](solublempnn/) | ProteinMPNN's architecture retrained on a soluble-PDB subset, which shifts the output away from the surface hydrophobics the full-PDB model happily places. Reach for it when designs are aggregating or going to inclusion bodies. It trades a few points of native recovery for that bias, and a sequence-only prior is not a solubility measurement. |
 | [`using-model-endpoint/`](using-model-endpoint/) | Documents a planned endpoint-scoped inference workflow: a Python kernel whose egress is scoped to one registered endpoint, with `BASE_URL` preloaded and no job lifecycle. The current Host implements endpoint registration and probes, but does not wire this provider into `ComputeManager` or create the scoped kernel yet. |
+| [`volcengine-datapro/`](volcengine-datapro/) | A deliberately narrow MCP recipe for professional-dataset search: discover `dataPro_search`, make the real query call, and accept only an integer structured result code of zero as usable. Tool discovery alone is never an authentication verdict. |
 
 ## Where this fits
 

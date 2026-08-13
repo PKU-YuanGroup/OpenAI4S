@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-34 个 OpenAI4S 内置 Skill 都在这里，一个 Skill 一个目录。Skill 是一份 recipe：
+35 个 OpenAI4S 内置 Skill 都在这里，一个 Skill 一个目录。Skill 是一份 recipe：
 代码，加上把它跑起来所需要的运维知识，而不是 provider 的 JSON Tool。披露是渐进的，
 loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它才去读该目录下的
 `SKILL.md` 和可选的 `kernel.py` sidecar。
@@ -45,6 +45,7 @@ loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它
 | [`scvi-tools/`](scvi-tools/) | `scgpt` 的概率式对应物：scVI 给出批次校正后的隐空间，scANVI 从部分标注的参考集迁移标签，还有贝叶斯差异表达。它需要的是原始整数 UMI counts。要做空间解卷积或映射，请改用 cell2location、DestVI 或 Tangram。 |
 | [`solublempnn/`](solublempnn/) | ProteinMPNN 的同一套架构，在可溶 PDB 子集上重训，使输出偏离全 PDB 模型乐于放置的表面疏水残基。设计出来的蛋白老是聚集、进包涵体时，用它。代价是牺牲几个百分点的原生序列回收率；而且仅凭序列的先验并不是一次可溶性测量。 |
 | [`using-model-endpoint/`](using-model-endpoint/) | 记录一个计划中的 endpoint 作用域推理工作流：一个网络出口被限定到单个已注册 endpoint 的 Python 内核，预置 `BASE_URL`，没有 job 生命周期。Host 目前实现了 endpoint 的注册与探测，但还没有把这个 provider 接进 `ComputeManager`，也不会创建对应的 scoped kernel。 |
+| [`volcengine-datapro/`](volcengine-datapro/) | 一份刻意保持窄范围的专业数据集 MCP recipe：发现 `dataPro_search`、发起真实查询，并且只把结构化结果中整数零的 code 判为可用。仅仅发现工具绝不是鉴权结论。 |
 
 ## 在架构中的位置
 
