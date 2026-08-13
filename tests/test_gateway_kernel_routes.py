@@ -382,6 +382,83 @@ def test_a_matched_path_with_the_wrong_method_falls_through_to_404(tmp_path):
 # --------------------------------------------------------------------------
 
 
+def test_the_registry_is_the_exact_runtime_match_chain(monkeypatch):
+    """Every declared route must be consulted once, in declaration order.
+
+    The inventory trusts ``ROUTES`` while runtime dispatch remains the explicit
+    chain in ``handle``. Recording every matcher consultation catches the
+    registry-only direction: a route declared but never consulted would be
+    documented and always 404.
+
+    It cannot catch the other direction on its own -- a branch that matches by
+    some means other than ``RouteSpec.match`` never reaches the recorder -- so
+    the idiom count in the next test is what covers a handler-only route.
+    Identity, not equality: ``RouteSpec`` is a frozen dataclass compared by
+    value, so ``==`` would also accept a locally-built look-alike.
+    """
+    from openai4s.server import contract, kernel_routes
+
+    consulted = []
+
+    def record_match(spec, method, path):
+        consulted.append((spec, method, path))
+        return None
+
+    monkeypatch.setattr(contract.RouteSpec, "match", record_match)
+
+    handled = kernel_routes.handle(
+        None,
+        "OPTIONS",
+        # Must clear the `/frames/` prefix guard, or the chain short-circuits
+        # before consulting anything.
+        "/frames/__route_registry_probe__/__nope__",
+        {},
+        None,
+        None,
+    )
+
+    assert handled is False
+    assert [spec for spec, _, _ in consulted] == list(kernel_routes.ROUTES)
+    assert all(
+        spec is declared
+        for (spec, _, _), declared in zip(consulted, kernel_routes.ROUTES)
+    )
+    # Arguments in the declared order. `_ENV.match(sub, method)` would otherwise
+    # record the right spec in the right slot while the route is dead.
+    assert {(method, path) for _, method, path in consulted} == {
+        ("OPTIONS", "/frames/__route_registry_probe__/__nope__")
+    }
+
+
+def test_every_matcher_in_the_handler_is_a_declared_route():
+    """The handler-only direction, which consultation-recording cannot see.
+
+    A thirteenth branch written the legacy way -- ``re.fullmatch(r"/frames/...",
+    sub)`` -- is a live route that never calls ``RouteSpec.match``, so the chain
+    test above stays green while the route is absent from ``http_routes()`` and
+    from both captured contracts. Counting the route-matching idioms in the
+    source is what notices, and it names the real cause rather than accusing
+    `_route_sources` of having stopped reading a file.
+    """
+    import inspect
+    import re as _re
+
+    from openai4s.server import kernel_routes
+
+    body = inspect.getsource(kernel_routes.handle)
+    spec_matches = len(_re.findall(r"\.match\(method, sub\)", body))
+    raw_matches = _re.findall(r'fullmatch\(\s*r?"(/[^"]*)"', body)
+
+    assert spec_matches == len(kernel_routes.ROUTES), (
+        f"handle() consults {spec_matches} RouteSpec matchers but ROUTES "
+        f"declares {len(kernel_routes.ROUTES)}"
+    )
+    assert raw_matches == [], (
+        "these paths are matched directly instead of through a RouteSpec, so "
+        f"they are live but absent from the contract inventory: {raw_matches}"
+    )
+
+
 def test_the_group_reports_when_it_does_not_own_a_path():
     """The tri-state contract, checked directly rather than through the chain.
     A module that answered `bool(regex_matched)` would claim these."""
@@ -427,16 +504,40 @@ def test_the_moved_routes_are_still_contract_inventory():
         assert path in routes, f"{path} fell out of the inventory when it moved"
 
 
-def test_the_quarantine_guard_still_covers_the_mutating_routes(tmp_path):
+def _mutating_route_ids():
+    from openai4s.server import kernel_routes
+
+    return [spec.name for spec in kernel_routes.ROUTES if spec.mutates]
+
+
+def _mutating_routes():
+    from openai4s.server import kernel_routes
+
+    return [spec for spec in kernel_routes.ROUTES if spec.mutates]
+
+
+@pytest.mark.parametrize("spec", _mutating_routes(), ids=_mutating_route_ids())
+def test_the_quarantine_guard_still_covers_the_mutating_routes(spec, tmp_path):
     """The position dependency, verified rather than asserted in a comment.
     Nothing inside the extracted module re-checks writability, so a call site
     moved above that guard would make the code-execution endpoint live on a
-    session imported from an untrusted archive and marked view-only."""
+    session imported from an untrusted archive and marked view-only.
+
+    Parametrised over `ROUTES`, not over a hand-written list. Asserting only
+    `kernel/execute` left the other six mutating routes -- restart, stop,
+    interrupt, start, install, env -- with no quarantine assertion anywhere in
+    the suite, while this module's docstring and `README.md` both claim the
+    dependency is tested rather than merely commented. Deriving the cases from
+    `spec.mutates` also gives that field its first consumer outside a test that
+    restates it: a route declared `mutates=True` must now actually be
+    write-gated, and a new one joins this test by existing.
+    """
     from openai4s.server.session_package import session_import_quarantine_key
 
     runner, handler, fid = _setup(tmp_path, notebook_repl=True)
     runner.store.set_setting(session_import_quarantine_key(fid), "1")
+    path = spec.pattern.replace(r"([^/]+)", fid)
 
     with pytest.raises(gateway_mod.GatewayError) as raised:
-        _call(handler, "POST", f"/frames/{fid}/kernel/execute", body={"code": "1"})
-    assert raised.value.code == 423
+        _call(handler, spec.method, path, body={"code": "1"})
+    assert raised.value.code == 423, f"{spec.name} is not write-protected"

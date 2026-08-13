@@ -7,11 +7,16 @@ shapes, while `memory`, `permissions`, `connectors` and `compute` own none. A
 smaller, less entangled group would have been easier and would have proved
 nothing.
 
-Nothing here was rewritten. The order of the branches, the
-`store.get_frame(fid) or {}` fallback on the ten permissive routes, the
+The handler bodies and their order remain unchanged. The only structural change
+since the extraction is that each HTTP method + path matcher now lives in a
+`RouteSpec` consumed by both this runtime and the contract inventory. This keeps
+routing facts executable instead of asking contract tooling to rediscover them
+by parsing the handler source.
+
+Nothing else here was rewritten, and three things that look like oversights are
+not: the `store.get_frame(fid) or {}` fallback on the ten permissive routes, the
 duplicate `store.get_frame` in `kernel/variables`, and the six `notebook_repl`
-gates with `install` deliberately left ungated are all as they were. The only
-edits are the dedent and the `return True`.
+gates with `install` deliberately left ungated.
 
 TWO POSITION DEPENDENCIES, written down because a 2,100-line if-chain is
 exactly where this kind of thing hides:
@@ -27,17 +32,130 @@ exactly where this kind of thing hides:
   question, so it is deliberately not bundled into a pure move.
 
 The return value is tri-state on purpose. True means a response was emitted;
-False means the path matched but the method arm did not fire, and the chain
-must continue to its 404. `return bool(regex_matched)` would silently swallow
-twelve wrong-method 404s into an empty response.
+False means the route group did not handle the request, and the chain must
+continue to its 404. `RouteSpec.match()` includes the HTTP method specifically
+so a right-path/wrong-method request is not swallowed as handled.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
-from openai4s.server.errors import GatewayError
+from . import contract, errors
+
+_EXECUTION = contract.RouteSpec(
+    "kernel.execution",
+    "GET",
+    r"/frames/([^/]+)/execution",
+    mutates=False,
+)
+_EXECUTE = contract.RouteSpec(
+    "kernel.execute",
+    "POST",
+    r"/frames/([^/]+)/kernel/execute",
+    mutates=True,
+)
+_RESTART = contract.RouteSpec(
+    "kernel.restart",
+    "POST",
+    r"/frames/([^/]+)/kernel/restart",
+    mutates=True,
+)
+_STOP = contract.RouteSpec(
+    "kernel.stop",
+    "POST",
+    r"/frames/([^/]+)/kernel/stop",
+    mutates=True,
+)
+_INTERRUPT = contract.RouteSpec(
+    "kernel.interrupt",
+    "POST",
+    r"/frames/([^/]+)/kernel/interrupt",
+    mutates=True,
+)
+_START = contract.RouteSpec(
+    "kernel.start",
+    "POST",
+    r"/frames/([^/]+)/kernel/start",
+    mutates=True,
+)
+_VARIABLES = contract.RouteSpec(
+    "kernel.variables",
+    "GET",
+    r"/frames/([^/]+)/kernel/variables",
+    mutates=False,
+)
+_KERNEL = contract.RouteSpec(
+    "kernel.status",
+    "GET",
+    r"/frames/([^/]+)/kernel",
+    mutates=False,
+)
+_STATUS = contract.RouteSpec(
+    "session.status",
+    "GET",
+    r"/frames/([^/]+)/status",
+    mutates=False,
+)
+_INSTALL = contract.RouteSpec(
+    "kernel.install",
+    "POST",
+    r"/frames/([^/]+)/kernel/install",
+    mutates=True,
+)
+_ENVIRONMENTS = contract.RouteSpec(
+    "kernel.environments",
+    "GET",
+    r"/frames/([^/]+)/environments",
+    mutates=False,
+)
+_ENV = contract.RouteSpec(
+    "kernel.env",
+    "POST",
+    r"/frames/([^/]+)/kernel/env",
+    mutates=True,
+)
+
+# Ordered exactly as the handler chain below. Contract tooling reads this same
+# tuple, so adding a route here is both a runtime and an inventory change.
+#
+# Wrapped in `validate_routes` so a duplicate or a shadowed route raises when
+# this module is imported. The validator used to be reachable only from
+# `contract.declared_http_routes()`, which `gateway.py` never calls -- so a
+# duplicated registry imported cleanly and the daemon served it, and deleting
+# the validation call left every test green.
+ROUTES = contract.validate_routes(
+    (
+        _EXECUTION,
+        _EXECUTE,
+        _RESTART,
+        _STOP,
+        _INTERRUPT,
+        _START,
+        _VARIABLES,
+        _KERNEL,
+        _STATUS,
+        _INSTALL,
+        _ENVIRONMENTS,
+        _ENV,
+    )
+)
+
+#: Every pattern above is under `/frames/`, so a request that is not cannot
+#: match any of them -- and 56 of the 91 non-`/frames` routes are declared
+#: *after* this group's call site in `Handler._api`, so they used to walk all
+#: twelve matchers first. Derived rather than written down: a future route that
+#: breaks the assumption shortens the prefix instead of being silently skipped.
+#:
+#: Truncated at the first regex metacharacter, because the shared *pattern*
+#: prefix is `/frames/([^/]+)/` and no real path starts with that -- comparing
+#: a literal path against it would reject every kernel request.
+_PATH_PREFIX = re.split(
+    r"[.^$*+?()\[\]{}|\\]",
+    os.path.commonprefix([spec.pattern for spec in ROUTES]),
+)[0]
 
 
 def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> bool:
@@ -49,12 +167,14 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
     NameError on that route alone -- including on the default path, since
     `q.get` is evaluated before the "python" fallback applies.
     """
-    m = re.fullmatch(r"/frames/([^/]+)/execution", sub)
-    if m and method == "GET":
+    if not sub.startswith(_PATH_PREFIX):
+        return False
+    m = _EXECUTION.match(method, sub)
+    if m:
         self._json(runner.executions.snapshot(m.group(1)))
         return True
-    m = re.fullmatch(r"/frames/([^/]+)/kernel/execute", sub)
-    if m and method == "POST":
+    m = _EXECUTE.match(method, sub)
+    if m:
         if not runner.cfg.notebook_repl:
             self._json(
                 {
@@ -116,8 +236,8 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             202,
         )
         return True
-    m = re.fullmatch(r"/frames/([^/]+)/kernel/restart", sub)
-    if m and method == "POST":
+    m = _RESTART.match(method, sub)
+    if m:
         if not runner.cfg.notebook_repl:
             self._json(
                 {
@@ -131,8 +251,8 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         pid = f.get("project_id") or "default"
         self._json(runner.restart_kernel(fid, pid))
         return True
-    m = re.fullmatch(r"/frames/([^/]+)/kernel/stop", sub)
-    if m and method == "POST":
+    m = _STOP.match(method, sub)
+    if m:
         if not runner.cfg.notebook_repl:
             self._json(
                 {
@@ -145,8 +265,8 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         f = store.get_frame(fid) or {}
         self._json(runner.stop_kernel(fid, f.get("project_id") or "default"))
         return True
-    m = re.fullmatch(r"/frames/([^/]+)/kernel/interrupt", sub)
-    if m and method == "POST":
+    m = _INTERRUPT.match(method, sub)
+    if m:
         if not runner.cfg.notebook_repl:
             self._json(
                 {
@@ -177,8 +297,8 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         }
         self._json(runner.interrupt_kernel(m.group(1), **kwargs))
         return True
-    m = re.fullmatch(r"/frames/([^/]+)/kernel/start", sub)
-    if m and method == "POST":
+    m = _START.match(method, sub)
+    if m:
         if not runner.cfg.notebook_repl:
             self._json(
                 {
@@ -191,14 +311,14 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         f = store.get_frame(fid) or {}
         self._json(runner.start_kernel(fid, f.get("project_id") or "default"))
         return True
-    m = re.fullmatch(r"/frames/([^/]+)/kernel/variables", sub)
-    if m and method == "GET":
+    m = _VARIABLES.match(method, sub)
+    if m:
         fid = m.group(1)
         frame = store.get_frame(fid)
         if frame is None:
-            raise GatewayError(404, "session not found")
+            raise errors.GatewayError(404, "session not found")
         if (frame.get("root_frame_id") or fid) != fid:
-            raise GatewayError(
+            raise errors.GatewayError(
                 409,
                 "variable inspection requires the current root session",
             )
@@ -208,12 +328,12 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             return True
         self._json(runner.variables.inspect(fid, language))
         return True
-    m = re.fullmatch(r"/frames/([^/]+)/kernel", sub)
-    if m and method == "GET":
+    m = _KERNEL.match(method, sub)
+    if m:
         self._json(runner.kernel_status(m.group(1)))
         return True
-    m = re.fullmatch(r"/frames/([^/]+)/status", sub)
-    if m and method == "GET":
+    m = _STATUS.match(method, sub)
+    if m:
         fid = m.group(1)
         self._json(
             {
@@ -231,8 +351,8 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             }
         )
         return True
-    m = re.fullmatch(r"/frames/([^/]+)/kernel/install", sub)
-    if m and method == "POST":
+    m = _INSTALL.match(method, sub)
+    if m:
         # NOT gated by notebook_repl: prebuilt-env package install is a
         # separate Customize → Compute affordance, not the code REPL, and
         # the global /kernel/install route is ungated too.
@@ -251,12 +371,12 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         )
         return True
     # prebuilt-environment selection for this session's kernel
-    m = re.fullmatch(r"/frames/([^/]+)/environments", sub)
-    if m and method == "GET":
+    m = _ENVIRONMENTS.match(method, sub)
+    if m:
         self._json(runner.list_environments(m.group(1)))
         return True
-    m = re.fullmatch(r"/frames/([^/]+)/kernel/env", sub)
-    if m and method == "POST":
+    m = _ENV.match(method, sub)
+    if m:
         if not runner.cfg.notebook_repl:
             self._json(
                 {
