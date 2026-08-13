@@ -284,6 +284,26 @@ jobs:
       - name: Run deterministic harness contracts
         run: uv run python -m harness.cli run --tier pr --offline
 
+  # The container image, built and run. `tests/test_container_deployment.py`
+  # keeps the manifests honest against the code, which is a different question
+  # from whether the image works — and a Dockerfile no gate builds is not
+  # evidence of anything. This is the only place that answers the second
+  # question, so it runs on every PR rather than nightly: a source change can
+  # break the image, and the failure would otherwise surface on a user's
+  # machine after a release.
+  #
+  # No Docker setup step: GitHub-hosted Linux runners already have a daemon,
+  # and the script is deliberately the whole gate so it runs identically on a
+  # laptop.
+  container-image:
+    name: Container image builds and serves
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the image and prove the daemon runs inside it
+        run: bash scripts/container_smoke.sh
+
   # Every route the router can match must have a recorded response *kind* and
   # status, not only the ones that return JSON. Cheap: it drives the surface
   # directly rather than rerunning the suite.

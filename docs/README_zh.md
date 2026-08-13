@@ -16,6 +16,7 @@
 | `backend-refactor-architecture.md` | backend refactor 的历史设计记录。它记的是当时定下的方案，不能用来证明当前已经端到端实现。 |
 | `compute.md` | 远程计算、BYOC provider 与 `host.fold` 的行为和限制。 |
 | `configuration.md` | provider、环境、daemon、内核与数据目录分别怎么配置。 |
+| `docker.md` | 双语容器指南：镜像、`compose.yaml`、Kubernetes 清单，以及通配绑定究竟改变了什么。它把容器与内核沙箱之间的取舍说清楚，而不是暗示容器能替代沙箱；也列出了今天真实存在的限制——没有 R、不支持 IPv6、没有访问日志、启动横幅里带着凭据，以及那个看起来像是 Kubernetes Secret 答案、实则悄悄失效的 secret broker 变量。 |
 | `jupyter.md` | 可选的 Jupyter 适配器：它对外暴露什么、执行边界划在哪里，以及相关的兼容说明。 |
 | `package-architecture.md` | 分解工作期间使用的历史清单，记录包与归属关系。 |
 | `platforms.md` | 代码实际强制执行的平台支持矩阵：macOS 稳定、Linux beta、Windows **拒绝启动**而不是仅仅警告。它点名尚未满足的门槛（Developer ID 签名与公证）而不是暗示已经满足，并解释各层级差异的来源——不是代码不同，而是被证明的程度不同。此外还回答了另一个问题：每个平台真正发出去的是什么，以及为什么「有 Windows 下载」和「Windows 平台被拒绝」并不矛盾。 |

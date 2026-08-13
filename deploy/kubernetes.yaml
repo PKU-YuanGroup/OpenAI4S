@@ -1,0 +1,245 @@
+# OpenAI4S on Kubernetes — a single-replica, stateful deployment.
+#
+#   kubectl create namespace openai4s
+#   kubectl -n openai4s create secret generic openai4s-llm --from-literal=api-key='...'
+#   kubectl -n openai4s apply -f deploy/kubernetes.yaml
+#   kubectl -n openai4s exec deploy/openai4s -- openai4s url
+#   kubectl -n openai4s port-forward svc/openai4s 8760:8760
+#
+# No namespace is set on any object, so the manifest applies into whichever one
+# you name. Read docs/docker.md before putting an Ingress in front of this.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openai4s-data
+  labels:
+    app.kubernetes.io/name: openai4s
+spec:
+  accessModes:
+    # ReadWriteOnce, and it must stay that way. The store is SQLite in
+    # rollback-journal mode with no cross-process coordination beyond the
+    # daemon's own pidfile; two pods sharing this claim would corrupt it.
+    - ReadWriteOnce
+  resources:
+    requests:
+      # Sessions, artifacts and the checkpoint content-addressed store all live
+      # here and only grow. Size it for the science you intend to do.
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openai4s
+  labels:
+    app.kubernetes.io/name: openai4s
+spec:
+  # ONE. This is a stateful singleton: one SQLite database, one pidfile, one
+  # set of live kernel workers holding in-memory session state. Scaling this
+  # Deployment does not scale OpenAI4S, it corrupts it.
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate. A rolling update starts the new pod before
+    # the old one is gone; both would attach the same ReadWriteOnce claim on a
+    # single node and open the same database. The cost is a gap in
+    # availability during an upgrade, which is the correct trade for a
+    # single-user research workbench.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openai4s
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openai4s
+    spec:
+      # This pod runs code an LLM wrote. Handing it a credential for the
+      # cluster's own API is the one thing that turns a contained blast radius
+      # into an uncontained one.
+      automountServiceAccountToken: false
+      # SIGTERM becomes the daemon's Ctrl-C path: it closes every session slot,
+      # joins each in-flight job thread, then closes the store. Teardown waits
+      # for each session's turn lock first, and a cell that ignores the
+      # interrupt holds that lock until the watchdog fires
+      # (OPENAI4S_CELL_TIMEOUT, 900s by default) — so no grace period short of
+      # that is a guarantee, and this one is a compromise rather than a bound.
+      # Overrunning it means SIGKILL: in-flight work is lost, but the next
+      # start is not wedged, because the singleton compares process identity
+      # rather than bare pid liveness.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # The image owns /data as 1000:1000, but a freshly provisioned volume
+        # is owned by root. fsGroup is what makes the mounted claim writable.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: openai4s
+          # Replace with a published tag or digest. Built by ./Dockerfile.
+          image: openai4s:local
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            # Deliberately NOT read-only. Agent cells write to /tmp (matplotlib
+            # keeps its font cache under TMPDIR), the R channel creates FIFOs
+            # there, and on-demand package installs write to site-packages.
+            # Turning this on needs emptyDir mounts for each of those and has
+            # not been proven; claiming it here without that would be a
+            # security posture on paper only.
+            readOnlyRootFilesystem: false
+          ports:
+            - name: http
+              containerPort: 8760
+          env:
+            # Bind every interface *of this pod's network namespace* — the
+            # container's own, not the node's. Kubernetes reaches it through
+            # the Service; nothing else can.
+            - name: OPENAI4S_HOST
+              value: "0.0.0.0"
+            - name: OPENAI4S_PORT
+              value: "8760"
+            - name: OPENAI4S_DATA_DIR
+              value: /data
+            # The credential, from a Secret, written to the volume nowhere.
+            #
+            # Deliberately the plain configuration variable and NOT the secret
+            # broker's `OPENAI4S_SECRET_LLM_LLM_API_KEY`. The broker's
+            # environment-injection backend — the one whose whole documented
+            # purpose is "a Kubernetes Secret" — reads its variable only when a
+            # settings row already holds a `secret://` reference, and the only
+            # code that writes that row refuses to run under that backend. On a
+            # fresh volume the injected name therefore resolves to nothing, with
+            # no error anywhere: the pod runs, the Secret is mounted, and the
+            # model reports itself unconfigured. This variable is the one the
+            # model client actually falls back to.
+            #
+            # `optional: true` so the manifest applies before the Secret exists;
+            # the daemon boots without a key and says so in the UI.
+            - name: OPENAI4S_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openai4s-llm
+                  key: api-key
+                  optional: true
+            # Nothing selects a secret store, so it stays `auto`: no keychain
+            # and no session bus in a pod means it refuses to *handle*
+            # credentials rather than quietly storing one in the clear. The
+            # cost is that Customize -> Models cannot save a key, which is why
+            # the Secret above exists. `OPENAI4S_SECRET_STORE=plaintext` buys
+            # UI-managed keys at the price of holding them unencrypted in
+            # openai4s.db on this volume.
+            #
+            # Thread caps, because BLAS and OpenMP size their pools from the
+            # node's core count rather than this pod's quota — on a large node
+            # one cell otherwise starts dozens of threads inside these limits
+            # and spends its time context-switching. Keep these equal to the
+            # cpu limit below; raise both together.
+            - name: OMP_NUM_THREADS
+              value: "4"
+            - name: OPENBLAS_NUM_THREADS
+              value: "4"
+            - name: MKL_NUM_THREADS
+              value: "4"
+            - name: NUMEXPR_NUM_THREADS
+              value: "4"
+            # An unprivileged pod cannot give bubblewrap the namespaces it
+            # needs, so `auto` degrades — visibly, with one warning line — and
+            # the pod itself becomes the isolation boundary. That boundary is
+            # coarser: a cell can read /data, which holds openai4s.db and the
+            # access token. `enforce` would refuse to start a kernel here.
+            - name: OPENAI4S_KERNEL_SANDBOX
+              value: auto
+            # Regenerated every restart otherwise: it is written under $HOME
+            # rather than the data dir, and $HOME is in the container layer.
+            # Only matters if you use remote BYOC compute, where losing it
+            # orphans sandboxes from `reconcile`. Give it any stable value.
+            # - name: OPENAI4S_INSTALL_ID
+            #   value: "openai4s-cluster-1"
+          # /health is unauthenticated by design and touches no database, no
+          # kernel and no model. Every other route answers 401 without a token,
+          # so no other path can serve as a probe.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            # 120s. First boot runs the schema migration on an empty volume.
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            # The HTTP server is threaded, but a machine saturated by a cell
+            # can still be slow to answer. Restarting a daemon mid-analysis
+            # because one probe was late is worse than a late probe.
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              # /tmp is the container's writable layer and cells lean on it:
+              # the matplotlib font cache, the sandbox's private temp, the R
+              # channel's FIFOs, every staging directory. Unbounded, a cell
+              # writing a large intermediate triggers node-pressure eviction —
+              # the pod is killed for the node's sake, which reads as an
+              # unexplained restart rather than as a failed cell.
+              ephemeral-storage: 2Gi
+            limits:
+              # Agent cells run in this container and will use whatever they
+              # are given. Without a limit one runaway cell takes the node;
+              # with one, the pod is OOM-killed instead — which skips the
+              # graceful shutdown above. Raise both to fit your workloads, and
+              # keep the thread caps above equal to the cpu limit.
+              cpu: "4"
+              memory: 8Gi
+              ephemeral-storage: 8Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          lifecycle:
+            preStop:
+              exec:
+                # Endpoint removal and SIGTERM are racing, not ordered: without
+                # this pause the Service can still be routing requests to a pod
+                # that has already begun tearing down. Handler threads are
+                # daemon threads, so an in-flight request is dropped rather
+                # than drained — a client blocked on a turn just loses its
+                # connection. Five seconds is enough for kube-proxy and most
+                # ingress controllers to stop sending new work.
+                command: ["sleep", "5"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: openai4s-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openai4s
+  labels:
+    app.kubernetes.io/name: openai4s
+spec:
+  # ClusterIP, and no NodePort or LoadBalancer anywhere in this file. The
+  # daemon executes code; reach it with `kubectl port-forward`, or put an
+  # authenticating TLS proxy in front of it — see deploy/kubernetes-ingress.yaml
+  # for what that has to get right.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: openai4s
+  ports:
+    - name: http
+      port: 8760
+      targetPort: http

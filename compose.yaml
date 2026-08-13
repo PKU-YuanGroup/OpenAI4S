@@ -1,0 +1,126 @@
+# OpenAI4S — single-node container deployment.
+#
+#   docker compose up -d --build
+#   docker compose exec openai4s openai4s url    # the URL, with its token
+#   docker compose logs -f openai4s
+#
+# Full guide, including what this exposes and what it does not:
+# docs/docker.md.
+
+services:
+  openai4s:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openai4s:local
+    # Named rather than defaulted so `docker compose restart` and
+    # `docker compose down && up` keep the same container identity in logs.
+    container_name: openai4s
+
+    # LOOPBACK ON PURPOSE. `0.0.0.0:8760:8760` would publish a code-execution
+    # surface to every interface of the host, with a single bearer token
+    # between the internet and `kernel/execute`. The daemon's own posture is
+    # `127.0.0.1` (docs/security.md) and publishing to loopback is how that
+    # survives containerisation: reach it over an SSH tunnel, or put a TLS
+    # reverse proxy in front and publish only to the proxy's network.
+    ports:
+      - "127.0.0.1:8760:8760"
+
+    # One volume, at the data dir. The SQLite store, artifacts, session
+    # workspaces, user skills, the checkpoint CAS and the access token all live
+    # under it — losing it loses every session and re-mints the token, which
+    # invalidates every browser cookie already issued.
+    #
+    # A *named* volume inherits the image's 1000:1000 ownership. A bind mount
+    # does not: `- ./openai4s-data:/data` needs `chown -R 1000:1000` on the
+    # host first, or the daemon cannot create its own database.
+    volumes:
+      - openai4s-data:/data
+
+    environment:
+      # --- credentials -------------------------------------------------------
+      # Supplied by the environment, written to disk nowhere. `${VAR}` is read
+      # from your shell or from a `.env` file beside this one, which Compose
+      # loads itself — the daemon's own `.env` walker cannot see it, because it
+      # starts from the *installed* package inside the image.
+      #
+      # This is the plain configuration variable, deliberately, and not the
+      # secret broker's `OPENAI4S_SECRET_LLM_LLM_API_KEY`. The broker's
+      # environment-injection backend reads its variable only for a settings
+      # row that already holds a `secret://` reference, and the only thing that
+      # writes that row refuses to run under that backend — so on a fresh
+      # volume the injected name resolves to nothing at all, silently. The
+      # variable below is the one the model client actually falls back to.
+      OPENAI4S_LLM_API_KEY: "${OPENAI4S_LLM_API_KEY:-}"
+      # Per-provider variants win over the generic one above, which is how you
+      # keep several configured at once:
+      # OPENAI4S_ARK_API_KEY: "${OPENAI4S_ARK_API_KEY:-}"
+      # Web search, same shape:
+      # OPENAI4S_TAVILY_API_KEY: "${OPENAI4S_TAVILY_API_KEY:-}"
+      #
+      # Nothing here selects a secret store, so it stays at `auto` — which in a
+      # headless container means "no keychain, no session bus, therefore refuse
+      # to handle credentials at all". That is the intended posture and it costs
+      # you exactly one thing: Customize -> Models cannot *save* an API key, so
+      # supply it above. To manage keys from the UI instead, set
+      # OPENAI4S_SECRET_STORE=plaintext and accept that they then sit in the
+      # clear inside openai4s.db on the volume. A file mode is not encryption.
+
+      # --- model -------------------------------------------------------------
+      # Provider and model are ordinary settings, not secrets — set them here or
+      # in the UI. The daemon boots with neither.
+      # OPENAI4S_LLM_PROVIDER: ark
+      # OPENAI4S_LLM_MODEL: doubao-seed-2.0-pro
+
+      # --- kernel isolation ---------------------------------------------------
+      # Left at the default `auto` on purpose. An unprivileged container cannot
+      # give bubblewrap the namespaces it needs, so the daemon will print
+      # "OPENAI4S SECURITY WARNING: OS kernel sandbox is not enforced" once at
+      # startup and run cells unsandboxed *inside the container*. That warning
+      # is the honest state of the system, not a misconfiguration: the container
+      # is then the isolation boundary, and it is a coarser one — a cell can
+      # read the data dir, including openai4s.db and the access token.
+      #
+      # Setting `off` silences the warning and changes nothing else. Setting
+      # `enforce` refuses to start a kernel at all unless you have granted the
+      # privileges bubblewrap needs. docs/docker.md spells out both.
+      OPENAI4S_KERNEL_SANDBOX: auto
+
+    # The daemon spawns kernel workers and shell jobs; PID 1 has to reap them.
+    # The image already runs tini as PID 1, so this is belt and braces for
+    # anyone who overrides the entrypoint.
+    init: true
+
+    # A cell can allocate as much as the machine has. Uncomment to bound it —
+    # an OOM kill of the whole container mid-session is worse than a cell that
+    # fails.
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 8g
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8760/health', timeout=4).read()
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+    # SIGTERM becomes the daemon's Ctrl-C path, and teardown waits for each
+    # session's turn lock before it closes that session's kernels. A cell that
+    # ignores the interrupt holds that lock until the watchdog fires
+    # (OPENAI4S_CELL_TIMEOUT, 900s by default), so no grace period short of
+    # that is a guarantee. This one is a compromise: long enough for an
+    # ordinary turn, short enough that `docker compose down` is not a coffee
+    # break. Exceeding it means SIGKILL, which loses in-flight work but no
+    # longer wedges the next start — the singleton compares process identity
+    # rather than bare pid liveness.
+    stop_grace_period: 120s
+    restart: unless-stopped
+
+volumes:
+  openai4s-data:

@@ -1,0 +1,84 @@
+# OPTIONAL, and the part most likely to be got wrong. Read this file before
+# applying it — every block below exists because the daemon behaves in a way a
+# default Ingress breaks.
+#
+#   kubectl -n openai4s apply -f deploy/kubernetes-ingress.yaml
+#
+# What you are publishing: `/api/v1/kernel/execute`, `/api/v1/compute/jobs` and
+# the Host RPC behind them all execute arbitrary code, and a wildcard bind
+# necessarily turns off the daemon's Host-header rebinding allowlist. The
+# access token is then the only control between the internet and a shell. Put
+# authentication at the proxy as well — the annotations below show one way —
+# and never publish this without TLS.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openai4s
+  labels:
+    app.kubernetes.io/name: openai4s
+  annotations:
+    # 1. WEBSOCKETS. The workbench receives every turn over `/api/v1/ws`.
+    #    ingress-nginx upgrades the connection on its own, but its 60s read
+    #    timeout closes an idle socket mid-session, and a long cell produces no
+    #    bytes while it runs. Nothing on the server side rescues this: the
+    #    daemon only answers pings, it never sends one, so the connection's
+    #    liveness comes entirely from the browser's own 25s timer — which
+    #    Chrome throttles to once a minute in a background tab.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # 2. UPLOADS. Datasets and artifacts move through this proxy, and the
+    #    default limit is 1m — smaller than almost any real input file. Matched
+    #    to the daemon's own ceiling rather than set larger: it refuses a body
+    #    over 128 MiB itself, so a bigger proxy limit only buys you an upload
+    #    that crosses the network before being rejected. Uploads are base64 in
+    #    JSON, so 128m of body is roughly a 96 MB file.
+    nginx.ingress.kubernetes.io/proxy-body-size: "128m"
+    # 3. REQUEST BUFFERING MUST STAY ON. The daemon answers any chunked request
+    #    body with 400 — it requires a Content-Length. Turning request
+    #    buffering off makes nginx forward the body chunked, which breaks every
+    #    write and every upload while ordinary GETs keep working. Stated
+    #    explicitly because a cluster-wide ConfigMap often turns it off, and
+    #    because the response-side setting below has a similar name.
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "on"
+    # 4. RESPONSE BUFFERING, off for large artifact downloads only. Note what
+    #    this is NOT for: every HTTP response the daemon sends carries an
+    #    explicit Content-Length and none of them stream, so this does not
+    #    affect how quickly a reply appears. Incremental output reaches the UI
+    #    over the WebSocket, which proxy_buffering does not govern.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # 5. AUTHENTICATION IN FRONT. Uncomment once the Secret exists. The
+    #    daemon's own token still applies underneath — this is a second lock on
+    #    the same door, not a replacement for it.
+    # nginx.ingress.kubernetes.io/auth-type: basic
+    # nginx.ingress.kubernetes.io/auth-secret: openai4s-basic-auth
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - openai4s.example.com
+      secretName: openai4s-tls
+  rules:
+    # 6. THE HOST HEADER MUST SURVIVE. Mutating `/api/v1/*` requests and the
+    #    WebSocket upgrade are refused unless `Origin` and `Host` match, and
+    #    the browser sends the name it typed. A proxy configured to rewrite
+    #    Host to the backend service (nginx's `proxy_set_header Host
+    #    $proxy_host`) makes every write and every socket answer 403
+    #    "cross-origin request refused" while ordinary GETs keep working —
+    #    which reads as a broken app rather than a proxy misconfiguration.
+    #    ingress-nginx preserves it by default. Traefik and Envoy do too.
+    #    Verify yours rather than assuming.
+    #
+    # 7. The session cookie is HttpOnly and SameSite=Strict but NOT Secure, so
+    #    it would also travel over a plaintext hop. Terminate TLS here and do
+    #    not offer an http listener.
+    - host: openai4s.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: openai4s
+                port:
+                  name: http
