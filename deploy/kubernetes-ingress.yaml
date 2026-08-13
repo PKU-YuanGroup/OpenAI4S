@@ -47,7 +47,16 @@ metadata:
     #    affect how quickly a reply appears. Incremental output reaches the UI
     #    over the WebSocket, which proxy_buffering does not govern.
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    # 5. AUTHENTICATION IN FRONT. Uncomment once the Secret exists. The
+    # 5. NO PLAINTEXT LISTENER. Pinned rather than inherited, for the same
+    #    reason as annotation 3 and with more at stake: ssl-redirect defaults
+    #    to true, but it is a cluster-wide ConfigMap value an operator can flip.
+    #    If it is off, this host answers on :80 and the browser sends the
+    #    session cookie — which is HttpOnly and SameSite=Strict but NOT Secure
+    #    — in the clear. That cookie carries the only credential in front of
+    #    the code-execution routes. Add `force-ssl-redirect: "true"` as well
+    #    when TLS is terminated upstream, where ssl-redirect alone is a no-op.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # 6. AUTHENTICATION IN FRONT. Uncomment once the Secret exists. The
     #    daemon's own token still applies underneath — this is a second lock on
     #    the same door, not a replacement for it.
     # nginx.ingress.kubernetes.io/auth-type: basic
@@ -59,7 +68,7 @@ spec:
         - openai4s.example.com
       secretName: openai4s-tls
   rules:
-    # 6. THE HOST HEADER MUST SURVIVE. Mutating `/api/v1/*` requests and the
+    # 7. THE HOST HEADER MUST SURVIVE. Mutating `/api/v1/*` requests and the
     #    WebSocket upgrade are refused unless `Origin` and `Host` match, and
     #    the browser sends the name it typed. A proxy configured to rewrite
     #    Host to the backend service (nginx's `proxy_set_header Host
@@ -69,7 +78,7 @@ spec:
     #    ingress-nginx preserves it by default. Traefik and Envoy do too.
     #    Verify yours rather than assuming.
     #
-    # 7. The session cookie is HttpOnly and SameSite=Strict but NOT Secure, so
+    # 8. The session cookie is HttpOnly and SameSite=Strict but NOT Secure, so
     #    it would also travel over a plaintext hop. Terminate TLS here and do
     #    not offer an http listener.
     - host: openai4s.example.com

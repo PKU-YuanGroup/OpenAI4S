@@ -57,6 +57,18 @@ spec:
       # cluster's own API is the one thing that turns a contained blast radius
       # into an uncontained one.
       automountServiceAccountToken: false
+      # Not hygiene — a name collision that crashes the pod. Service links
+      # inject one variable per Service into every container, and for a Service
+      # named `openai4s` one of them is literally
+      # `OPENAI4S_PORT=tcp://<clusterIP>:8760`. The daemon reads OPENAI4S_PORT
+      # as `int(...)`, so that value is a ValueError before the server binds.
+      # It is survivable today only because the container env below declares
+      # OPENAI4S_PORT explicitly and container env wins — which makes those
+      # entries load-bearing rather than redundant duplicates of the image's
+      # own ENV, and makes "tidying them away" a change that breaks the pod.
+      # Turning the links off removes the trap instead of relying on the
+      # override: this pod reaches nothing through them; it *is* the service.
+      enableServiceLinks: false
       # SIGTERM becomes the daemon's Ctrl-C path: it closes every session slot,
       # joins each in-flight job thread, then closes the store. Teardown waits
       # for each session's turn lock first, and a cell that ignores the
@@ -176,6 +188,14 @@ spec:
               path: /health
               port: http
             periodSeconds: 10
+            # The same tolerances as liveness below, and for the same reason —
+            # with one replica a NotReady pod empties the EndpointSlice, so an
+            # ingress in front has zero upstreams and answers 503 to
+            # everything, including the browser's WebSocket reconnect. Leaving
+            # the defaults (1s, 3 failures) would take the workbench dark after
+            # ~30s of the very slowness liveness is tuned to survive.
+            timeoutSeconds: 5
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /health

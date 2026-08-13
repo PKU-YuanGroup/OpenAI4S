@@ -67,12 +67,28 @@ def _acquire_singleton(cfg) -> bool:
                 pass
             continue
         try:
+            # The statefile first, then the pid — the reverse of the obvious
+            # order, and load-bearing since the statefile started carrying the
+            # identity `_daemon_alive` compares against.
+            #
+            # Written second, there was a window holding a readable *new* pid
+            # beside the *previous* generation's record. When the two happen to
+            # name the same pid — negligible on a desktop, the ordinary case in
+            # a container where the daemon lands on the same low pid every boot
+            # — a reader in that window compares this process against its
+            # predecessor's start token, concludes stale, and acts on it: a
+            # second `serve` reclaims a live pidfile, and `stop` reports "not
+            # running" and then deletes the live daemon's state.
+            #
+            # This way round there is no such state. The pidfile is empty until
+            # the record describing it is already on disk, and an empty pidfile
+            # is a case every reader already handles as "no daemon".
+            cfg.statefile.write_text(_statefile_payload(cfg), "utf-8")
             with os.fdopen(fd, "w") as handle:
                 handle.write(str(os.getpid()))
         except OSError:
             _clear_state(cfg, only_if_owned_by=os.getpid())
             raise
-        cfg.statefile.write_text(_statefile_payload(cfg), "utf-8")
         return True
     return False
 

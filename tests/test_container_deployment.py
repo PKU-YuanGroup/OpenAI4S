@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -344,7 +345,9 @@ def test_a_reused_pid_does_not_look_like_a_running_daemon(tmp_path, monkeypatch)
     assert cli_main._acquire_singleton(cfg) is True
 
 
-def test_a_matching_start_token_still_means_the_daemon_is_running(tmp_path, monkeypatch):
+def test_a_matching_start_token_still_means_the_daemon_is_running(
+    tmp_path, monkeypatch
+):
     """The fix must not turn a real "already running" into a double boot."""
     cli_main = importlib.import_module("openai4s.cli.main")
 
@@ -391,6 +394,58 @@ def test_an_uninformative_statefile_falls_back_to_plain_liveness(
     assert cli_main._daemon_alive(cfg, 7) is False
 
 
+def test_the_record_is_on_disk_before_the_pid_that_points_at_it(tmp_path, monkeypatch):
+    """Ordering, and the reason the obvious order is wrong.
+
+    Once the statefile carries the identity `_daemon_alive` compares against,
+    writing it *after* the pidfile leaves a window holding a readable new pid
+    beside the previous generation's record. Where the two name the same pid —
+    negligible on a desktop, ordinary in a container, which hands the daemon
+    the same low pid every boot — a reader in that window compares this process
+    against its predecessor's token, concludes stale, and acts: a second
+    `serve` reclaims a live pidfile, and `stop` deletes a live daemon's state.
+
+    Asserted as the invariant rather than as the line order: at no point may
+    the pidfile hold a readable pid while the statefile describes something
+    else.
+    """
+    cli_main = importlib.import_module("openai4s.cli.main")
+
+    cfg = _Cfg(tmp_path)
+    cfg.pidfile.write_text("99999999", "utf-8")
+    cfg.statefile.write_text(
+        json.dumps({"pid": 99999999, "pid_start": "PREVIOUS-GENERATION"}), "utf-8"
+    )
+
+    # Sampled *before* the statefile write, because that is the only moment the
+    # two files can disagree: the pidfile is written through an already-open fd
+    # rather than through `write_text`, so a sample taken afterwards sees both
+    # writes done and would pass against either order.
+    seen: list[tuple[int | None, tuple[int | None, str | None]]] = []
+    real_write = type(cfg.pidfile).write_text
+
+    def _watch(self, *args, **kwargs):
+        seen.append((cli_main._read_pid(cfg), cli_main._recorded_identity(cfg)))
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(cfg.pidfile), "write_text", _watch)
+    monkeypatch.setattr(cli_main, "_process_start_token", lambda pid: "CURRENT")
+    assert cli_main._acquire_singleton(cfg) is True
+
+    for pid, (recorded_pid, recorded_start) in seen:
+        if pid is None:
+            continue  # an empty pidfile is "no daemon" to every reader
+        assert (recorded_pid, recorded_start) == (pid, "CURRENT"), (
+            "the pidfile named a pid the statefile did not describe; a reader "
+            "landing here would call a live daemon stale"
+        )
+
+    # ...and the settled state is consistent, so the loop above is not the
+    # whole assertion resting on an empty sample.
+    assert cli_main._read_pid(cfg) == os.getpid()
+    assert cli_main._recorded_identity(cfg) == (os.getpid(), "CURRENT")
+
+
 @pytest.mark.skipif(
     not Path("/proc/self/stat").exists(), reason="requires procfs (Linux)"
 )
@@ -402,8 +457,6 @@ def test_the_start_token_is_read_from_real_procfs():
     the suite: its token must be stable across calls and must differ from pid
     1's, which booted first.
     """
-    import os
-
     from openai4s.cli.main import _process_start_token
 
     mine = _process_start_token(os.getpid())

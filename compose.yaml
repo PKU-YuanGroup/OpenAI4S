@@ -13,8 +13,10 @@ services:
       context: .
       dockerfile: Dockerfile
     image: openai4s:local
-    # Named rather than defaulted so `docker compose restart` and
-    # `docker compose down && up` keep the same container identity in logs.
+    # Fixed so `docker logs openai4s` and `docker exec openai4s …` work as
+    # written in docs/docker.md, rather than needing the project prefix Compose
+    # would otherwise generate. The trade is that only one of these can run per
+    # engine — which matches what this file is: one machine, one workbench.
     container_name: openai4s
 
     # LOOPBACK ON PURPOSE. `0.0.0.0:8760:8760` would publish a code-execution

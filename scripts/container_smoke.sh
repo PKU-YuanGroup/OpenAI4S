@@ -10,8 +10,12 @@
 # way containerization has broken this program specifically, so each is checked
 # here rather than assumed.
 #
-# Needs a Docker daemon and nothing else. Runs the same on a laptop as in CI,
-# which is the point: a gate only reachable from a runner cannot be debugged.
+# Needs a Docker daemon and a host `python3` (the probe speaks HTTP with it, so
+# that nothing here depends on curl). Both are checked before the build, since
+# discovering a missing interpreter after a five-minute image build — and
+# reading it as "the daemon never became healthy" — is the wrong failure.
+# Otherwise it runs the same on a laptop as in CI, which is the point: a gate
+# only reachable from a runner cannot be debugged.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -31,21 +35,37 @@ fail() {
 
 ok() { echo "container smoke: ok — $*"; }
 
+# --- preflight ----------------------------------------------------------------
+command -v docker >/dev/null || { echo "container smoke: needs a Docker daemon" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "container smoke: needs python3 on PATH" >&2; exit 1; }
+
+# This script destroys $VOLUME on the way in and on the way out, and the volume
+# name is an overridable knob — so refuse to touch one we did not create.
+# Pointing OPENAI4S_SMOKE_VOLUME at, say, compose.yaml's `openai4s-data` would
+# otherwise delete every session, artifact and the access token before the
+# first check ran.
+if docker volume inspect "$VOLUME" >/dev/null 2>&1; then
+  echo "container smoke: volume '${VOLUME}' already exists; refusing to delete" >&2
+  echo "  remove it yourself, or set OPENAI4S_SMOKE_VOLUME to an unused name." >&2
+  exit 1
+fi
+
 cleanup() {
   docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
   docker volume rm --force "$VOLUME" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-cleanup
+docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
 
-# `python -c` rather than curl: the image ships no HTTP client, and neither
-# should this script assume one on the host beyond the interpreter it needs
-# anyway. Prints "<status> <body>" so a caller can assert on both.
+# `python3` rather than curl: the image ships no HTTP client, and neither should
+# this script assume one on the host beyond the interpreter it needs anyway.
+# Prints "<status> <body>" so a caller can assert on both; an unreachable port
+# prints "000 <error>", which every caller treats as not-ready.
 probe() {
   python3 - "$1" "${2-}" <<'PY'
 import sys, urllib.error, urllib.request
 
-url, token = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "")
+url, token = sys.argv[1], sys.argv[2]
 request = urllib.request.Request(url)
 if token:
     request.add_header("Authorization", "Bearer " + token)
@@ -59,31 +79,31 @@ except Exception as exc:  # connection refused while it is still booting
 PY
 }
 
+running() { [ -n "$(docker ps --quiet --filter "name=^/${CONTAINER}$")" ]; }
+
 wait_for_health() {
   local deadline=$((SECONDS + ${1:-120}))
   while [ "$SECONDS" -lt "$deadline" ]; do
     case "$(probe "${BASE}/health")" in
       200\ *) return 0 ;;
     esac
-    if [ -z "$(docker ps --quiet --filter "name=^/${CONTAINER}$")" ]; then
-      fail "the container exited while we waited for /health"
-    fi
+    running || fail "the container exited while we waited for /health"
     sleep 1
   done
   fail "/health did not answer 200 within ${1:-120}s"
 }
 
 echo "container smoke: building ${IMAGE}"
-docker build --tag "$IMAGE" .
+docker build --tag "$IMAGE" . || fail "the image did not build"
 
-docker volume create "$VOLUME" >/dev/null
+docker volume create "$VOLUME" >/dev/null || fail "could not create the volume"
 
 echo "container smoke: starting ${CONTAINER}"
 docker run --detach \
   --name "$CONTAINER" \
   --publish "127.0.0.1:${HOST_PORT}:8760" \
   --volume "${VOLUME}:/data" \
-  "$IMAGE" >/dev/null
+  "$IMAGE" >/dev/null || fail "the container did not start"
 
 wait_for_health 180
 ok "/health answers 200 unauthenticated"
@@ -91,7 +111,7 @@ ok "/health answers 200 unauthenticated"
 # The image must not run as root. This is the one property a reader cannot
 # check from the Dockerfile alone, because a base image or a later layer can
 # quietly put it back.
-uid="$(docker exec "$CONTAINER" id -u)"
+uid="$(docker exec "$CONTAINER" id -u)" || fail "could not read the container uid"
 [ "$uid" = "1000" ] || fail "expected uid 1000 inside the container, got '${uid}'"
 ok "runs as uid 1000"
 
@@ -105,8 +125,9 @@ case "$unauthenticated" in
   *) fail "expected 401 from /api/v1/frames without a token, got: ${unauthenticated}" ;;
 esac
 
-token="$(docker exec "$CONTAINER" cat /data/access-token)"
-[ -n "$token" ] || fail "no access token was minted under the data dir"
+token="$(docker exec "$CONTAINER" cat /data/access-token)" \
+  || fail "no access token was minted under the data dir"
+[ -n "$token" ] || fail "the access token file is empty"
 authenticated="$(probe "${BASE}/api/v1/frames" "$token")"
 case "$authenticated" in
   200\ *) ok "the minted token authenticates" ;;
@@ -115,7 +136,7 @@ esac
 
 # `openai4s url` is how an operator gets that token out of a running
 # container, so it has to agree with the file.
-url="$(docker exec "$CONTAINER" openai4s url)"
+url="$(docker exec "$CONTAINER" openai4s url)" || fail "\`openai4s url\` failed"
 case "$url" in
   *"$token") ok "\`openai4s url\` hands back the same token" ;;
   *) fail "\`openai4s url\` printed '${url}', which does not carry the minted token" ;;
@@ -132,19 +153,32 @@ ok "numpy, pandas, matplotlib and scikit-learn import"
 # A container that cannot restart is not a deployment option. SIGKILL skips the
 # daemon's teardown, so the pidfile survives on the volume — and the next
 # container starts with a fresh PID namespace where that pid is very likely
-# live again but is somebody else. The pidfile is forced to 1 here rather than
-# left to chance: pid 1 always exists in the new container, so this asserts the
-# identity check deterministically instead of hoping for a collision.
-docker kill --signal=SIGKILL "$CONTAINER" >/dev/null
-docker run --rm --user 0 --volume "${VOLUME}:/data" --entrypoint sh "$IMAGE" \
-  -c 'printf 1 > /data/openai4s.pid' >/dev/null
-docker start "$CONTAINER" >/dev/null
+# live again but is somebody else.
+#
+# Both state files are forced to pid 1 rather than left to chance. pid 1 always
+# exists in the new container, and because `USER openai4s` precedes ENTRYPOINT
+# it is tini running as the same uid as the daemon — so `os.kill(1, 0)` really
+# does succeed and the singleton really is asked the hard question.
+#
+# The statefile has to move WITH the pidfile. The identity check deliberately
+# treats a statefile naming a different pid as no information rather than as
+# evidence of staleness — that branch exists so a booter caught in the window
+# between the two writes cannot declare the live winner stale. Rewriting only
+# the pidfile therefore steers around the very code this step means to assert,
+# and the daemon refuses to start for the old reason with the new check never
+# consulted. The bogus start token is what the restarted daemon must notice.
+docker kill --signal=SIGKILL "$CONTAINER" >/dev/null || fail "could not SIGKILL the container"
+docker run --rm --user 0 --volume "${VOLUME}:/data" --entrypoint sh "$IMAGE" -c \
+  'printf 1 > /data/openai4s.pid && printf %s "{\"pid\": 1, \"pid_start\": \"1\"}" > /data/daemon.json' \
+  >/dev/null || fail "could not plant the colliding pidfile"
+docker start "$CONTAINER" >/dev/null || fail "the container did not start again"
 wait_for_health 120
 ok "restarts after a SIGKILL that left a colliding pidfile behind"
 
 # The token is the same one, i.e. the volume really is the state: a re-mint
 # would have invalidated every cookie already issued.
-token_after="$(docker exec "$CONTAINER" cat /data/access-token)"
+token_after="$(docker exec "$CONTAINER" cat /data/access-token)" \
+  || fail "could not read the access token after the restart"
 [ "$token_after" = "$token" ] || fail "the access token changed across a restart"
 ok "the access token survived the restart"
 
@@ -154,8 +188,16 @@ ok "the access token survived the restart"
 # closes every session slot and exits 0; tini forwards the signal and reports
 # that code. A non-zero exit here means the pod would look like it crashed on
 # every ordinary rollout.
-docker stop --timeout 60 "$CONTAINER" >/dev/null
-exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$CONTAINER")"
+#
+# `-t` and not `--timeout`: the long flag only exists from Docker CLI 23, and
+# Debian 12 and Ubuntu 22.04 still ship 20.10. Checking that the container is
+# still up first, because `docker stop` on an already-exited container is a
+# no-op that returns 0 and leaves `docker inspect` reporting the *earlier*
+# exit — an assertion that passes without a SIGTERM ever being delivered.
+running || fail "the container was not running when we came to stop it"
+docker stop -t 60 "$CONTAINER" >/dev/null || fail "docker stop failed"
+exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$CONTAINER")" \
+  || fail "could not read the container exit code"
 [ "$exit_code" = "0" ] || fail "SIGTERM produced exit code ${exit_code}, expected 0"
 ok "SIGTERM shuts the daemon down cleanly"
 
