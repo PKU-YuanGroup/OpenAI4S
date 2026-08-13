@@ -12934,8 +12934,8 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
             )
         for _failure in _report.failed:
             print(
-                f"[openai4s] could not migrate {_failure['key']}: "
-                f"{_failure['error']} — it remains stored in plaintext",
+                f"[openai4s] could not migrate {_failure['key']} "
+                f"({_failure['error']}) — it remains stored in plaintext",
                 file=sys.stderr,
             )
         for _key in _report.reentry_required:
@@ -12960,7 +12960,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         for _failure in _pr["failed"]:
             print(
                 f"[openai4s] could not migrate profile {_failure['id']}: "
-                f"{_failure['error']} — its key remains in plaintext",
+                f"({_failure['error']}) — its key remains in plaintext",
                 file=sys.stderr,
             )
         for _profile_id in _pr["reentry_required"]:
@@ -12980,7 +12980,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         for _failure in _cr["failed"]:
             print(
                 f"[openai4s] could not migrate connector {_failure['id']}: "
-                f"{_failure['error']} — its env remains in plaintext",
+                f"({_failure['error']}) — its env remains in plaintext",
                 file=sys.stderr,
             )
         for _connector_id in _cr["reentry_required"]:

@@ -1033,3 +1033,28 @@ def test_one_undescribable_profile_ref_does_not_strand_the_others(store, tmp_pat
     saved = {p["id"]: p for p in store.list_model_profiles()}
     assert is_ref(saved["mp-plain"]["api_key"])
     assert _CANARY not in json.dumps(store.list_model_profiles())
+
+
+@pytest.mark.stubbed_backend
+def test_migration_failures_report_a_type_name_never_exception_text(store, tmp_path):
+    """A backend error's message text must never reach the failure report.
+
+    The text is produced by `security`/`secret-tool`/sqlite, so "today's
+    messages happen not to contain the value" is an audit that expires the next
+    time one of those is upgraded. Report the type, which cannot carry one.
+    """
+
+    service = _profiles(store, tmp_path)
+    store.mutate_model_profiles(
+        lambda profiles: profiles.append(
+            {"id": "mp-bad", "name": "bad ref", "api_key": "secret://v1/llm"}
+        )
+    )
+
+    report = service.migrate_profile_keys()
+
+    assert [entry["id"] for entry in report["failed"]] == ["mp-bad"]
+    reported = report["failed"][0]["error"]
+    assert reported == "SecretBrokerError", reported
+    # A bare identifier: no message, no punctuation, nothing to smuggle a value in.
+    assert reported.isidentifier()

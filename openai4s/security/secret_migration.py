@@ -20,6 +20,13 @@ error. So the check reads the value back and compares it.
 Nothing here logs a secret. Progress is reported as references and a short hash
 prefix, which is enough to correlate an entry with a row and useless to anyone
 who obtains the log.
+
+A failure is reported as the exception's *type name*, never ``str(exc)``. The
+message text of a backend error is not ours to reason about: it is produced by
+``security``/``secret-tool``/sqlite and can be changed by any of them, so
+"today's messages happen not to contain the value" is an audit that expires the
+next time one of those is upgraded. The type name is enough to tell a locked
+keychain from a malformed reference, and cannot carry a credential at all.
 """
 
 from __future__ import annotations
@@ -80,7 +87,7 @@ def migrate_settings_secrets(store, broker: SecretBroker) -> MigrationReport:
                 # outside the per-key guard, so it aborted the whole pass -- and
                 # with it `migrate_profile_keys` and `migrate_connector_env`,
                 # which share one `try` at the call site.
-                report.failed.append({"key": key, "error": str(e)[:300]})
+                report.failed.append({"key": key, "error": type(e).__name__})
                 continue
             if described["reentry_required"] or not described["configured"]:
                 # A v1 system slot is process-global and contains no evidence
@@ -96,7 +103,7 @@ def migrate_settings_secrets(store, broker: SecretBroker) -> MigrationReport:
             _migrate_one(store, broker, key=key, scope=scope, name=key, value=value)
             report.migrated.append(key)
         except Exception as e:  # noqa: BLE001 - one bad key must not strand the rest
-            report.failed.append({"key": key, "error": str(e)[:300]})
+            report.failed.append({"key": key, "error": type(e).__name__})
     return report
 
 
@@ -145,7 +152,7 @@ def migrate_connector_env(store) -> dict:
             )
         except Exception as e:  # noqa: BLE001 - one bad connector must not
             # strand the others; describe() reaches the backend and can raise.
-            failed.append({"id": connector["connector_id"], "error": str(e)[:200]})
+            failed.append({"id": connector["connector_id"], "error": type(e).__name__})
             continue
         if refs and needs_reentry:
             reentry_required.append(str(connector["connector_id"]))
@@ -164,7 +171,7 @@ def migrate_connector_env(store) -> dict:
             migrated.append(connector["connector_id"])
         except Exception as e:  # noqa: BLE001 - one bad connector must not
             # strand the others; its plaintext stays and it keeps working.
-            failed.append({"id": connector["connector_id"], "error": str(e)[:200]})
+            failed.append({"id": connector["connector_id"], "error": type(e).__name__})
     return {
         "migrated": migrated,
         "reentry_required": reentry_required,
