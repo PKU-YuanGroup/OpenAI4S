@@ -140,7 +140,7 @@ def test_scope_projection_and_default_seed_reset_semantics(tmp_path):
     mcp = next(
         rule
         for rule in repository.get_rules(scope="global")
-        if rule["tool"] == "mcp_call"
+        if rule["tool"] == "mcp_call" and rule["pattern"] == "*"
     )
     repository.delete_rule(mcp["rule_id"])
     repository.set_rule(
@@ -152,7 +152,8 @@ def test_scope_projection_and_default_seed_reset_semantics(tmp_path):
     repository.seed_defaults()
     assert repository.resolve(tool="mcp_call", pattern_input="server/tool") == "ask"
     assert not any(
-        rule["tool"] == "mcp_call" for rule in repository.get_rules(scope="global")
+        rule["tool"] == "mcp_call" and rule["pattern"] == "*"
+        for rule in repository.get_rules(scope="global")
     )
 
     repository.set_rule(
@@ -202,10 +203,22 @@ def test_seed_upgrade_adds_only_new_defaults_to_existing_stores(tmp_path):
 
     assert repository.resolve(tool="science_search", pattern_input="uniprot") == "allow"
     assert repository.resolve(tool="mcp_call", pattern_input="server/tool") == "ask"
-    assert not any(
-        rule["tool"] == "mcp_call" for rule in repository.get_rules(scope="global")
+    assert (
+        repository.resolve(
+            tool="mcp_call",
+            pattern_input="volcengine-datapro/dataPro_search",
+        )
+        == "allow"
     )
-    assert store.get_setting("perm_seed_version") == "2"
+    mcp_rules = [
+        rule
+        for rule in repository.get_rules(scope="global")
+        if rule["tool"] == "mcp_call"
+    ]
+    assert [(rule["pattern"], rule["decision"]) for rule in mcp_rules] == [
+        ("volcengine-datapro/dataPro_search", "allow")
+    ]
+    assert store.get_setting("perm_seed_version") == "3"
 
 
 def test_seed_rules_commit_before_marker_and_recover_after_marker_failure(tmp_path):

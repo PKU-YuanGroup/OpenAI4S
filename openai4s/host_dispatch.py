@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from openai4s.config import Config, get_config
+from openai4s.doubao_search import DoubaoSearchService
 from openai4s.host.bash import BashAuthorizationService, redact_shell_text
 from openai4s.host.completion import CompletionService, gather_submission_evidence
 from openai4s.host.credentials import CredentialService
@@ -86,6 +87,21 @@ def _short(v: Any, limit: int = 600) -> Any:
     except Exception:  # noqa: BLE001
         s = str(v)
     return s[:limit]
+
+
+def _full_json_text(v: Any) -> str:
+    """Serialize one already-bounded tool result without hiding its tail.
+
+    MCP transports cap one response at 4 MiB.  Truncating that bounded value
+    before the static prompt-injection scan creates a blind tail which is then
+    handed to the Agent unchanged.  Keep the complete serialization here; the
+    optional LLM classifier applies its own 16k budget after the static scan.
+    """
+
+    try:
+        return json.dumps(v, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001 - screening remains fail-open by design
+        return str(v)
 
 
 def _domain(url: str) -> str:
@@ -421,6 +437,18 @@ GATEABLE_TOOLS = frozenset(
 )
 
 
+_MCP_SERVER_METHODS = frozenset(
+    {
+        "mcp_call",
+        "mcp_tools",
+        "mcp_resources",
+        "mcp_resource_read",
+        "mcp_prompts",
+        "mcp_prompt_get",
+    }
+)
+
+
 def _gate_target(method: str, args: list) -> str:
     """The tool-specific string a permission pattern is matched against
     (path for file tools, domain for fetch, …)."""
@@ -747,7 +775,8 @@ class HostDispatcher:
             ),
             fingerprint=lambda *fields: _endpoint_fingerprint(*fields),
         )
-        self._mcp_service = MCPService(self.store)
+        self._mcp_service = MCPService(self.store, frame_id=lambda: self.frame_id)
+        self._doubao_search_service = DoubaoSearchService(self.store)
         self._remote_capability_service = RemoteCapabilityService(
             normalize_probe=lambda spec: _normalize_remote_capability_probe(spec),
         )
@@ -810,6 +839,7 @@ class HostDispatcher:
             set_active_r_env=lambda value: setattr(self, "active_r_env", value),
             get_on_env_switch=lambda: self.on_env_switch,
             invoke_control=self._invoke_control_behavior,
+            search_web=self._search_web,
         )
 
     @property
@@ -913,6 +943,42 @@ class HostDispatcher:
         value = getattr(self._action_context_local, "value", None)
         return dict(value) if isinstance(value, dict) else {}
 
+    def _canonical_mcp_server(self, method: str, args: list) -> list:
+        """Rewrite an MCP ``server`` argument to the connector's own id.
+
+        A connector is addressable by id *or* by exact display name, but the
+        permission target was built from whatever spelling the caller used. A
+        standing ``deny`` written against ``volcengine-datapro/*`` therefore did
+        not match a call made as ``"Volcengine DataPro"`` — resolution fell
+        through to the ``ask`` default and the revoked connector ran. One
+        connector must have exactly one permission identity, so canonicalize
+        before the target is computed rather than teaching each pattern every
+        spelling.
+        """
+
+        if method not in _MCP_SERVER_METHODS:
+            return args
+        if not args or not isinstance(args[0], dict):
+            return args
+        server = args[0].get("server")
+        if not isinstance(server, str) or not server:
+            return args
+        try:
+            connector = self.store.get_connector(server)
+            if connector:
+                return args
+            for candidate in self.store.list_connectors():
+                if candidate.get("name") == server:
+                    canonical = str(candidate.get("connector_id") or "")
+                    if not canonical:
+                        return args
+                    rewritten = dict(args[0])
+                    rewritten["server"] = canonical
+                    return [rewritten, *args[1:]]
+        except Exception:  # noqa: BLE001 - an unresolvable name gates as-is
+            return args
+        return args
+
     def set_workspace(self, path: str | Path) -> None:
         """Bind host-side file operations to the kernel's actual cwd."""
         self.workspace_path = Path(path).resolve()
@@ -1013,6 +1079,29 @@ class HostDispatcher:
             raise RuntimeError(f"control behavior is unavailable: {method}")
         return handler(*arguments)
 
+    def _search_web(
+        self,
+        query: Any,
+        *,
+        num_results: int = 8,
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        """Primary search behavior, reachable only inside ``web_search``.
+
+        There is intentionally no ``_m_search_web`` sibling: the kernel wire
+        exposes only the existing ``web_search`` control tool, so this provider
+        selection cannot bypass its permission and audit envelope.
+        """
+
+        from openai4s import webtools
+
+        return self._doubao_search_service.search_primary(
+            query,
+            num_results=num_results,
+            timeout=timeout,
+            fallback=webtools.web_search,
+        )
+
     # dispatcher entrypoint ------------------------------------------------
     def __call__(self, method: str, args: list) -> Any:
         control_tool = get_tool_by_host_method(method)
@@ -1054,6 +1143,7 @@ class HostDispatcher:
         from openai4s.sdk.host import decode_args
 
         args = decode_args(args)
+        args = self._canonical_mcp_server(method, args)
         action_context = self._current_action_context()
         try:
             audit_resources = (
@@ -1322,7 +1412,10 @@ class HostDispatcher:
             src = "web_search"
         elif method == "mcp_call":
             key = "content" if isinstance(result.get("content"), str) else None
-            text = result.get(key, "") if key else _short(result, 20_000)
+            # Scan the whole bounded MCP envelope even when it has a primary
+            # content field: structuredContent and future provider fields are
+            # equally untrusted and are all returned to the Agent.
+            text = _full_json_text(result)
             primary_text = result.get(key) if key else None
             src = str(result.get("server") or "mcp")
         else:

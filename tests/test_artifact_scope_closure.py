@@ -408,7 +408,8 @@ def test_save_artifact_still_accepts_our_own_lineage_input(two_projects):
 def test_the_scoped_views_are_published_once_per_scope_not_once_per_query(tmp_path):
     """The views are published once per scope, not once per statement.
 
-    The first version rebuilt all five on every `host.query`. Measured, that is
+    The first version rebuilt every scoped view on each `host.query`. Measured,
+    that is
     0.090 ms -> 0.005 ms per query, 17x on this path: worth having, and honestly
     not more than that. (An earlier version of this docstring blamed a slow test
     suite on it. That was wrong -- 0.09 ms per query cannot do that -- and the

@@ -32,6 +32,7 @@ GetArtifact = Callable[[str], dict | None]
 GetEnvironmentSnapshot = Callable[[str], dict | None]
 FileIdentity = Callable[[str], str | None]
 SameFilePath = Callable[[str, str], bool]
+DeleteArtifactRelated = Callable[[str], None]
 
 
 def file_identity(path: str) -> str | None:
@@ -141,6 +142,7 @@ class ArtifactRepository:
         get_env_snapshot: GetEnvironmentSnapshot | None = None,
         identify_file: FileIdentity | None = None,
         paths_match: SameFilePath | None = None,
+        delete_related: DeleteArtifactRelated | None = None,
     ) -> None:
         self._connection = connection
         self._lock = lock
@@ -155,6 +157,7 @@ class ArtifactRepository:
         self._get_env_snapshot = get_env_snapshot or self.get_env_snapshot
         self._identify_file = identify_file or file_identity
         self._paths_match = paths_match or same_file_path
+        self._delete_related = delete_related
 
     def get_artifact(self, artifact_id: str) -> dict | None:
         with self._lock:
@@ -188,35 +191,45 @@ class ArtifactRepository:
                 for path in (row["path"], row["snapshot_path"])
                 if path
             }
-            if version_ids:
-                marks = "(" + ",".join("?" for _ in version_ids) + ")"
+            try:
+                self._connection.execute("SAVEPOINT artifact_delete")
+                if self._delete_related is not None:
+                    self._delete_related(artifact_id)
+                if version_ids:
+                    marks = "(" + ",".join("?" for _ in version_ids) + ")"
+                    self._connection.execute(
+                        "DELETE FROM lineage_edges WHERE input_version_id IN "
+                        f"{marks} OR output_version_id IN {marks}",
+                        version_ids + version_ids,
+                    )
                 self._connection.execute(
-                    "DELETE FROM lineage_edges WHERE input_version_id IN "
-                    f"{marks} OR output_version_id IN {marks}",
-                    version_ids + version_ids,
+                    "DELETE FROM artifact_versions WHERE artifact_id=?", (artifact_id,)
                 )
-            self._connection.execute(
-                "DELETE FROM artifact_versions WHERE artifact_id=?", (artifact_id,)
-            )
-            self._connection.execute(
-                "DELETE FROM artifacts WHERE artifact_id=?", (artifact_id,)
-            )
-            self._connection.execute(
-                "DELETE FROM annotations WHERE artifact_id=?", (artifact_id,)
-            )
-            self._connection.execute(
-                "UPDATE plans SET artifact_id=NULL WHERE artifact_id=?", (artifact_id,)
-            )
-            if env_snapshot_ids:
-                marks = "(" + ",".join("?" for _ in env_snapshot_ids) + ")"
                 self._connection.execute(
-                    "DELETE FROM env_snapshots WHERE snapshot_id IN "
-                    f"{marks} AND NOT EXISTS (SELECT 1 FROM artifact_versions "
-                    "WHERE artifact_versions.env_snapshot_id="
-                    "env_snapshots.snapshot_id)",
-                    env_snapshot_ids,
+                    "DELETE FROM artifacts WHERE artifact_id=?", (artifact_id,)
                 )
-            self._connection.commit()
+                self._connection.execute(
+                    "DELETE FROM annotations WHERE artifact_id=?", (artifact_id,)
+                )
+                self._connection.execute(
+                    "UPDATE plans SET artifact_id=NULL WHERE artifact_id=?",
+                    (artifact_id,),
+                )
+                if env_snapshot_ids:
+                    marks = "(" + ",".join("?" for _ in env_snapshot_ids) + ")"
+                    self._connection.execute(
+                        "DELETE FROM env_snapshots WHERE snapshot_id IN "
+                        f"{marks} AND NOT EXISTS (SELECT 1 FROM artifact_versions "
+                        "WHERE artifact_versions.env_snapshot_id="
+                        "env_snapshots.snapshot_id)",
+                        env_snapshot_ids,
+                    )
+                self._connection.execute("RELEASE SAVEPOINT artifact_delete")
+                self._connection.commit()
+            except Exception:
+                self._connection.execute("ROLLBACK TO SAVEPOINT artifact_delete")
+                self._connection.execute("RELEASE SAVEPOINT artifact_delete")
+                raise
             surviving_rows = self._connection.execute(
                 "SELECT path,snapshot_path FROM artifact_versions"
             ).fetchall()

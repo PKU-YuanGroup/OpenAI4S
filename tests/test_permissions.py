@@ -38,6 +38,13 @@ def test_seed_defaults_and_fallback(tmp_path):
     # genuinely risky ones still ask
     assert st.resolve_permission(tool="bash", pattern_input="ls -la") == "ask"
     assert st.resolve_permission(tool="mcp_call", pattern_input="x") == "ask"
+    assert (
+        st.resolve_permission(
+            tool="mcp_call",
+            pattern_input="volcengine-datapro/dataPro_search",
+        )
+        == "allow"
+    )
     # a tool with no rule at all falls back to ask (security-first)
     assert st.resolve_permission(tool="totally_unknown", pattern_input="x") == "ask"
 

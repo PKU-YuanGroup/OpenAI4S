@@ -8,10 +8,19 @@ from openai4s.host.mcp import MCPService
 
 
 class FakeStore:
-    def __init__(self, connectors: list[dict]) -> None:
+    def __init__(
+        self,
+        connectors: list[dict],
+        *,
+        settings: dict[str, str] | None = None,
+        secrets: dict[str, str] | None = None,
+    ) -> None:
         self.connectors = connectors
+        self.settings = settings or {}
+        self.secret_settings = secrets or {}
         self.lookups: list[object] = []
         self.list_calls = 0
+        self.indexed: list[dict] = []
 
     def get_connector(self, connector_id):
         self.lookups.append(connector_id)
@@ -34,6 +43,28 @@ class FakeStore:
         fixtures use plaintext env, which resolves to itself."""
         env = connector.get("env")
         return dict(env) if isinstance(env, dict) else {}
+
+    def get_setting(self, key, default=None):
+        return self.settings.get(key, default)
+
+    def get_secret_setting(self, key):
+        return self.secret_settings.get(key, "")
+
+    def set_secret_setting(self, key, value, *, scope):
+        self.secret_settings[key] = value
+        return f"secret://test/{scope}/{key}"
+
+    def index_datapro_result(self, **kwargs):
+        self.indexed.append(kwargs)
+        return {
+            "batch_id": "dpb-test",
+            "entry_count": 1,
+            "source_leaf_count": 2,
+            "indexed_leaf_count": 2,
+            "source_digest": "same-digest",
+            "indexed_digest": "same-digest",
+            "complete": True,
+        }
 
 
 class FakeManager:
@@ -363,3 +394,209 @@ def test_resource_and_prompt_failures_use_soft_error_contract():
     assert service.get_prompt({"server": "srv", "name": "analyze"}) == {
         "error": "mcp prompt get(srv.analyze) failed: prompt transport down"
     }
+
+
+@pytest.mark.stubbed_backend
+def test_datapro_host_path_is_narrow_shared_and_redacts_an_echoed_key():
+    from openai4s import datapro
+
+    canary = "agent-plan-canary-do-not-project"
+    connector = _connector(
+        datapro.CONNECTOR_ID,
+        "Volcengine DataPro",
+        command=datapro.managed_connector_command(),
+    )
+    store = FakeStore(
+        [connector],
+        settings={"llm_provider": "ark"},
+        secrets={"llm_api_key": canary},
+    )
+    manager = FakeManager()
+    manager.list_result = [
+        {"name": datapro.TOOL_NAME},
+        {"name": "unrelated_tool"},
+    ]
+    manager.call_result = {
+        "is_error": False,
+        "text": "echo " + canary,
+        "raw": {
+            "content": [{"type": "text", "text": "echo " + canary}],
+            "structuredContent": {
+                "code": 0,
+                "value": canary,
+                canary: "reflected-key",
+            },
+        },
+    }
+    service = MCPService(store, manager_factory=lambda: manager)
+
+    # Discovery for the managed connector is answered locally, so it neither
+    # dials out nor puts the credential on the wire: `mcp_tools` carries
+    # `requires_approval = False`, which was decided when discovery could only
+    # fork/exec a local binary. The narrow surface is unchanged, and an echoed
+    # key cannot be reflected because nothing from upstream is returned.
+    listed = service.tools(datapro.CONNECTOR_ID)
+    assert [tool["name"] for tool in listed["tools"]] == [datapro.TOOL_NAME]
+    assert canary not in str(listed)
+    assert manager.list_calls == []
+
+    result = service.call(
+        {
+            "server": datapro.CONNECTOR_ID,
+            "tool": datapro.TOOL_NAME,
+            "args": {"query": "find evidence"},
+        }
+    )
+    assert canary not in str(result)
+    assert "[REDACTED]" in str(result)
+    assert result["index"]["complete"] is True
+    assert store.indexed[0]["query"] == "find evidence"
+    assert canary not in str(store.indexed)
+    connector_id, call_config, tool, args = manager.tool_calls[0]
+    assert connector_id == datapro.CONNECTOR_ID
+    assert call_config["transport"] == "streamable_http"
+    assert tool == datapro.TOOL_NAME
+    assert args == {"query": "find evidence"}
+
+    before = list(manager.tool_calls)
+    assert service.call(
+        {
+            "server": datapro.CONNECTOR_ID,
+            "tool": "unrelated_tool",
+            "args": {"query": "x"},
+        }
+    ) == {"error": "volcengine-datapro only permits dataPro_search"}
+    assert service.call(
+        {
+            "server": datapro.CONNECTOR_ID,
+            "tool": datapro.TOOL_NAME,
+            "args": {"query": "x", "extra": True},
+        }
+    ) == {"error": "dataPro_search requires exactly one string query"}
+    assert manager.tool_calls == before
+
+    narrow = {"error": "volcengine-datapro only permits dataPro_search"}
+    assert service.resources({"server": datapro.CONNECTOR_ID}) == narrow
+    assert (
+        service.read_resource(
+            {"server": datapro.CONNECTOR_ID, "uri": "science://secret"}
+        )
+        == narrow
+    )
+    assert service.prompts({"server": datapro.CONNECTOR_ID}) == narrow
+    assert (
+        service.get_prompt({"server": datapro.CONNECTOR_ID, "name": "secret"}) == narrow
+    )
+    assert manager.resource_list_calls == []
+    assert manager.resource_read_calls == []
+    assert manager.prompt_list_calls == []
+    assert manager.prompt_get_calls == []
+
+
+def test_datapro_never_reuses_a_non_ark_model_key():
+    from openai4s import datapro
+
+    connector = _connector(
+        datapro.CONNECTOR_ID,
+        "Volcengine DataPro",
+        command=datapro.managed_connector_command(),
+    )
+    store = FakeStore(
+        [connector],
+        settings={"llm_provider": "openai"},
+        secrets={
+            "llm_api_key": "openai-key-must-not-leave",
+            datapro.AGENT_PLAN_KEY_SETTING: "dedicated-plan-key",
+        },
+    )
+    config = datapro.connector_runtime_config(store, connector)
+    headers = config["headers_provider"]()
+    assert headers["X-Agent-Plan-Key"] == "dedicated-plan-key"
+    assert "openai-key-must-not-leave" not in str(headers)
+
+
+def test_datapro_one_key_flow_reuses_and_updates_the_active_ark_key():
+    from openai4s import datapro
+
+    store = FakeStore(
+        [],
+        settings={"llm_provider": "ark"},
+        secrets={"llm_api_key": "existing-ark-key"},
+    )
+    assert datapro.credential_state(store) == {
+        "key_configured": True,
+        "ark_key_reused": True,
+    }
+    assert datapro.resolve_agent_plan_key(store) == "existing-ark-key"
+
+    datapro.save_agent_plan_key(store, "new-shared-key")
+    assert store.secret_settings[datapro.AGENT_PLAN_KEY_SETTING] == "new-shared-key"
+    assert store.secret_settings["llm_api_key"] == "new-shared-key"
+    assert datapro.resolve_agent_plan_key(store) == "new-shared-key"
+
+
+@pytest.mark.stubbed_backend
+def test_datapro_short_invalid_key_preserves_host_4011_protocol_shape():
+    from openai4s import datapro
+
+    connector = _connector(
+        datapro.CONNECTOR_ID,
+        "Volcengine DataPro",
+        command=datapro.managed_connector_command(),
+    )
+    store = FakeStore(
+        [connector],
+        settings={"llm_provider": "openai"},
+        secrets={datapro.AGENT_PLAN_KEY_SETTING: "r"},
+    )
+    manager = FakeManager()
+    manager.call_result = {
+        "is_error": False,
+        "text": "error r",
+        "raw": {
+            "content": [{"type": "text", "text": "error r"}],
+            "structuredContent": {"code": 4011, "r": "reflected-key"},
+        },
+    }
+    result = MCPService(store, manager_factory=lambda: manager).call(
+        {
+            "server": datapro.CONNECTOR_ID,
+            "tool": datapro.TOOL_NAME,
+            "args": {"query": "find evidence"},
+        }
+    )
+    assert result["raw"]["structuredContent"]["code"] == 4011
+    assert result["raw"]["structuredContent"]["[REDACTED]"] == "[REDACTED]eflected-key"
+    projected = datapro.public_search_result(result, "r")
+    assert projected["code"] == 4011
+    assert projected["message"] == datapro.AUTH_FAILURE_MESSAGE
+
+
+@pytest.mark.parametrize(
+    ("code", "available"),
+    [
+        (0, True),
+        (False, False),
+        ("0", False),
+        (0.0, False),
+        (None, False),
+        (4011, False),
+        (-1, False),
+    ],
+)
+def test_datapro_availability_requires_strict_structured_integer_zero(code, available):
+    from openai4s import datapro
+
+    projected = datapro.public_search_result(
+        {
+            "is_error": False,
+            "raw": {
+                "content": [],
+                "structuredContent": {"code": code},
+            },
+        },
+        "",
+    )
+    assert projected["available"] is available
+    if code == 4011:
+        assert projected["message"] == datapro.AUTH_FAILURE_MESSAGE
