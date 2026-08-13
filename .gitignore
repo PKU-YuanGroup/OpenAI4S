@@ -18,6 +18,13 @@ node_modules/
 # release build outputs (DMG is uploaded as a GitHub Release asset, not committed)
 dist/
 .build/
+# setuptools' own scratch tree, left behind by `pip wheel .` and `python -m
+# build --wheel`. Not ignored until now, and the consequence was not a stray
+# directory but a red gate: build/lib/ is a copy of the source tree, the
+# directory-README check counts untracked-but-unignored files, and every
+# relative link in every copied README resolves from the wrong depth. One
+# local wheel build produced ~80 documentation errors about files nobody wrote.
+build/
 *.isorted
 
 # Internal review-fix ledger. Kept local: it is a running record of defects and
