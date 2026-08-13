@@ -382,6 +382,38 @@ def test_a_matched_path_with_the_wrong_method_falls_through_to_404(tmp_path):
 # --------------------------------------------------------------------------
 
 
+def test_the_registry_is_the_exact_runtime_match_chain(monkeypatch):
+    """Every declared route must be consulted once, in declaration order.
+
+    The inventory trusts ``ROUTES`` while runtime dispatch remains the explicit
+    chain in ``handle``. Recording every matcher consultation prevents those
+    two representations from drifting: a registry-only route would be
+    documented but always 404, while a handler-only route would be live but
+    absent from the declarative contract.
+    """
+    from openai4s.server import contract, kernel_routes
+
+    consulted = []
+
+    def record_match(spec, method, path):
+        consulted.append(spec)
+        return None
+
+    monkeypatch.setattr(contract.RouteSpec, "match", record_match)
+
+    handled = kernel_routes.handle(
+        None,
+        "OPTIONS",
+        "/__route_registry_probe__",
+        {},
+        None,
+        None,
+    )
+
+    assert handled is False
+    assert tuple(consulted) == kernel_routes.ROUTES
+
+
 def test_the_group_reports_when_it_does_not_own_a_path():
     """The tri-state contract, checked directly rather than through the chain.
     A module that answered `bool(regex_matched)` would claim these."""
