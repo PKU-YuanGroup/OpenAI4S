@@ -23,7 +23,13 @@ import urllib.error
 
 import pytest
 
-from openai4s.llm.models import TransportError, parse_retry_after, status_is_retryable
+from openai4s.llm.models import (
+    LLMError,
+    TransportError,
+    llm_failure_code,
+    parse_retry_after,
+    status_is_retryable,
+)
 from openai4s.llm.transport import post_json, post_sse
 
 
@@ -101,6 +107,43 @@ def test_to_dict_is_loggable_and_omits_the_body():
     assert d["status"] == 500
     assert d["retryable"] is True
     assert "body" not in d
+
+
+@pytest.mark.parametrize(
+    ("error_code", "status", "expected"),
+    [
+        ("RequestBurstTooFast", 429, "llm_request_burst"),
+        ("ServerOverloaded", 429, "llm_upstream_overloaded"),
+        ("some_new_provider_code", 429, "llm_rate_limited"),
+    ],
+)
+def test_public_failure_classification_is_a_closed_local_vocabulary(
+    error_code, status, expected
+):
+    exc = TransportError(
+        "private provider detail", status=status, error_code=error_code
+    )
+    assert llm_failure_code(exc) == expected
+    assert llm_failure_code(exc) != error_code
+
+
+def test_failure_classification_never_parses_provider_prose():
+    assert (
+        llm_failure_code(
+            LLMError(
+                "System protection triggered by request burst: RequestBurstTooFast"
+            )
+        )
+        is None
+    )
+    assert (
+        llm_failure_code(
+            TransportError(
+                "anything", error_code="RequestBurstTooFast plus private prose"
+            )
+        )
+        is None
+    )
 
 
 # --------------------------------------------------------------------------
@@ -216,6 +259,38 @@ def test_backoff_is_jittered_when_no_retry_after(monkeypatch):
     assert len(sleeper.slept) == 2
     # Full jitter: within (0, backoff], never the bare deterministic value.
     assert all(0 <= s <= 8 for s in sleeper.slept)
+
+
+def test_request_burst_uses_slower_strictly_positive_exponential_jitter(
+    monkeypatch,
+):
+    attempts = []
+    jitter_ranges = []
+
+    def urlopen(*a, **k):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise _http_error(
+                429,
+                b'{"error":{"code":"RequestBurstTooFast",'
+                b'"message":"private upstream detail"}}',
+            )
+        return _Resp(b"{}")
+
+    def jitter(low, high):
+        jitter_ranges.append((low, high))
+        return (low + high) / 2.0
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport.random.uniform", jitter)
+    sleeper = _Recorder()
+
+    post_json("https://x.invalid", {}, {}, 5, sleep=sleeper)
+
+    # The generic first two full-jitter windows are [0, 0.5] and [0, 1].
+    # Burst protection instead grows gradually from non-zero [2, 4], [4, 8].
+    assert jitter_ranges == [(2.0, 4.0), (4.0, 8.0)]
+    assert sleeper.slept == [3.0, 6.0]
 
 
 def test_attempts_are_bounded(monkeypatch):
