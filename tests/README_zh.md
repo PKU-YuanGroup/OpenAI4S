@@ -180,6 +180,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_native_tools.py`](test_native_tools.py) | 关于原生 Tool 声明的四个测试。名字必须落在四家 provider 限制的交集里；每次调用拿到的都是一份独立的 schema 拷贝；shell 与完成信号从不作为原生 Tool 声明出去。 |
 | [`test_notebook_export.py`](test_notebook_export.py) | 关于导出的三个测试。Python 与 R 各自成为一份独立的只读 Notebook；导出包是确定性的，manifest 校验和对得上；未知的 Notebook 语言会被拒绝。 |
 | [`test_onboarding.py`](test_onboarding.py) | 首次运行的 provider 配置，这里的写入必须要么全成、要么全不成。无效的 API key 不能让模型设置只写了一半；切换 provider 会丢掉上一个 provider 的 key，而不是沿用它的默认值；任何响应都不会把秘密带回来。 |
+| [`test_orchestration_backend_opacity.py`](test_orchestration_backend_opacity.py) | INV-2，写在第一个 backend **之前**——事后补的泄漏守卫只会把已经漏出来的东西编纂成规则。它主张：编排核心的源码**与** import 图都不出现调度器名字，且 import 契约不会连带加载任何实现。写它这件事在任何 backend 代码落地之前就回本了两次：源码扫描抓到核心自己 docstring 里的调度器名字（这条检查刻意是字面的——一旦允许"解释性提及"，每个泄漏都会以解释性提及的形式到来），而证伪用例抓到了守卫自身的缺口——`\bslurm\b` 匹配不到 `slurm_backend`（`_` 是词字符），所以 import 路径改按子串匹配而非按词匹配。 |
 | [`test_orchestration_skills.py`](test_orchestration_skills.py) | 运行时编排类 Skill，跑在真实 worker 与真实 dispatcher 上而不是 fake 上：内核里的 `host` 门面、Skill 自定义、自省查询、托管 endpoint、算力与环境搭建，以及它们留下的审计痕迹。 |
 | [`test_permission_repository.py`](test_permission_repository.py) | 落库的权限规则与权限请求。有两点要知道：一个请求会原子地绑到它的 Action Ledger group 上，group 不存在时整笔回滚；重启作用域的一次性授权是原子消费的，因此没法被重放。 |
 | [`test_permissions.py`](test_permissions.py) | 权限闸门本身。scope 优先级和模式具体度都在这儿，但同样在这儿的还有那块没有例外的：读 secret 文件或 secret 环境变量会被拒绝，哪怕会话级规则写着允许；无人值守的 broker 在运维没有显式放行时失败即拒绝。 |

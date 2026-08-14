@@ -1,0 +1,16 @@
+# `openai4s/orchestration/`
+
+The cluster **control plane**: what work was asked for, what resource was granted for one attempt at it, and the boundary any resource plane must present. Deliberately outside `server/`, beside [`execution/`](../execution/README.md) — the CLI path needs these values too, and a control plane that can only be reached through a web handler is one that cannot be tested without one.
+
+The package's defining property is what it does **not** contain. INV-2 (Backend Opacity) says the orchestration core's source and import graph never mention a scheduler: no `slurm`, no `partition`, no `qos`, no `sbatch`. Those words live only in a backend subpackage and in `cluster.toml`. This is not a style preference — it is checked, so a scheduler's vocabulary cannot leak into the modules that decide policy, and a second backend does not require re-reading the first one's assumptions.
+
+Two naming rules, fixed by the plan's §2 so two vocabularies cannot drift into one confusing one:
+
+- the kernel layer's `generation` is this layer's **`execution_epoch`** — the same idea (an incarnation counter whose old values must be refused, INV-7), named per layer;
+- the spec's "declarative configuration version" is **`spec_revision`** here, never "generation", because that word is already spoken for.
+
+| file | what it is |
+|---|---|
+| [`__init__.py`](__init__.py) | Re-exports the contract and nothing else. Importing this package must not drag in an implementation — that is one of the runtime claims the leak guard makes, and it is why a backend is imported by composition code rather than from here. |
+| [`models.py`](models.py) | The vocabulary: `Workload` (kind ∈ SESSION/BATCH), `Allocation` (one attempt, one epoch), `ResourceProfile` (what a scientist asks for, in units they state), `Phase`, and the `Reason` codes from the plan's appendix C. Two shapes carry invariants that are easy to lose otherwise: `ExternalHandle` keeps a backend's own id *wrapped* so INV-2 survives contact with a dozen call sites, and `SubmissionToken` is minted before a submission is attempted — which is the whole of INV-8, because "did my submission land?" has to be a question about something the backend was told to record. `Phase.is_terminal` and `Phase.is_active_allocation` are the single readable copies of the sets the schema's partial unique index enforces. |
+| [`ports.py`](ports.py) | The `AllocationBackend` Protocol — submit / observe / cancel / find_by_token / diagnostics — and `SubmitResult` as four cases rather than a boolean. `Created`, `Existing` (a submission carrying this token was already there, which is what makes a retry safe), `Rejected` (an answer: the workload can fail cleanly) and `Unknown` (**not** a retry-me: the caller must reconcile by token first, because a blind retry is how one submission becomes two jobs holding two GPUs). `Unknown` carries the token for exactly that reason — making the caller fish it out of its own state is how the step gets skipped. |
