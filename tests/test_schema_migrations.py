@@ -115,6 +115,12 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Repairs the short-lived development state where v16 could be
         # stamped even though its index tables were absent.
         "datapro_content_index_repair",
+        # Team-mode identity: users, login sessions, and the audit log
+        # (docs/team-server-plan.md M1-2). Additive only.
+        "team_users",
+        # Session ownership for team-mode visibility filtering (M1-6).
+        # Existing sessions get no row, which reads as admin-only.
+        "session_owners",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

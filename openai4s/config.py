@@ -360,15 +360,6 @@ class Config:
     data_dir: Path = field(default_factory=_default_data_dir)
     host: str = os.environ.get("OPENAI4S_HOST", "127.0.0.1")
     port: int = int(os.environ.get("OPENAI4S_PORT", "8760"))
-    # Team Server mode (docs/team-server-plan.md): ON forces web login and
-    # ownership filtering; OFF (default) keeps single-user behavior unchanged
-    # (INV-1). Read at instance time so tests/UI toggles see a fresh value.
-    team_mode: bool = field(
-        default_factory=lambda: _env_flag("OPENAI4S_TEAM_MODE", False)
-    )
-    # Allowlisted roots for the team file area (OPENAI4S_DATA_ROOTS, colon-
-    # separated). Empty = feature dormant.
-    data_roots: list[Path] = field(default_factory=_data_roots)
     llm: LLMConfig = field(default_factory=LLMConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     share: ShareConfig = field(default_factory=ShareConfig)
@@ -404,6 +395,18 @@ class Config:
     notebook_repl: bool = field(
         default_factory=lambda: _env_flag("OPENAI4S_NOTEBOOK_REPL", False)
     )
+    # Team Server mode (docs/team-server-plan.md): ON forces web login and
+    # ownership filtering; OFF (default) keeps single-user behavior unchanged
+    # (INV-1). Read at instance time so tests/UI toggles see a fresh value.
+    # Declared LAST (with data_roots): the constructor's positional prefix is
+    # a pinned public contract (test_public_api_contract), so new fields
+    # append rather than insert.
+    team_mode: bool = field(
+        default_factory=lambda: _env_flag("OPENAI4S_TEAM_MODE", False)
+    )
+    # Allowlisted roots for the team file area (OPENAI4S_DATA_ROOTS, colon-
+    # separated). Empty = feature dormant.
+    data_roots: list[Path] = field(default_factory=_data_roots)
 
     def ensure_dirs(self) -> None:
         from openai4s.security.permissions import harden_dir
