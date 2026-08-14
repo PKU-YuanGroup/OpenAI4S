@@ -172,7 +172,7 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
     assert proc.returncode == 0, proc.stderr
     assert (
         "{serve,status,doctor,verify-package,diagnostics,stop,url,run,init,setup,"
-        "benchmark,env,jupyter,share,relay}" in proc.stdout
+        "benchmark,env,jupyter,share,user,relay}" in proc.stdout
     )
     for command in (
         "serve",
@@ -198,6 +198,9 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
         "setup",
         "jupyter",
         "share",
+        # Team-mode accounts are managed on the server, daemon or not; an
+        # admin who cannot find `user` in --help cannot bootstrap login.
+        "user",
         "relay",
     ):
         assert command in proc.stdout

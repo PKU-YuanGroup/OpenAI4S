@@ -532,6 +532,20 @@ def cmd_serve(args) -> int:
         raise
     print(f"openai4s listening at {_url(cfg)} (model={cfg.llm.model})")
     print("web UI ready. Ctrl-C to stop.")
+    if cfg.team_mode:
+        # First boot of team mode with no accounts: print the bootstrap
+        # command and start normally — never prompt, never block (M1-3).
+        try:
+            from openai4s.store import get_store
+
+            if get_store(cfg.db_path).team.count_users() == 0:
+                print(
+                    "team mode is ON but no users exist yet; create the "
+                    "first admin with:\n"
+                    "  openai4s user add <name> --role admin"
+                )
+        except Exception:
+            pass
     if not os.environ.get("OPENAI4S_NO_OPEN") and not getattr(args, "no_open", False):
 
         def _open():
@@ -1520,6 +1534,107 @@ def cmd_relay_gen_token(args) -> int:
     return 0
 
 
+def _team_store():
+    """Direct-store access for offline account management on the server
+    (the same template as _onboarding_service: no daemon required)."""
+    from openai4s.store import get_store
+
+    cfg = get_config()
+    cfg.ensure_dirs()
+    return get_store(cfg.db_path)
+
+
+def _read_new_password(args) -> tuple[str, str | None]:
+    """(password, generated) per M1-3: --password-stdin reads one line from
+    stdin; otherwise a random password is generated and returned for a
+    single print. The password never appears in argv or logs."""
+    import secrets as _secrets
+
+    if getattr(args, "password_stdin", False):
+        pw = sys.stdin.readline().rstrip("\n")
+        if not pw:
+            raise ValueError("empty password on stdin")
+        return pw, None
+    generated = _secrets.token_urlsafe(12)
+    return generated, generated
+
+
+def cmd_user(args) -> int:
+    action = args.user_action
+    store = _team_store()
+    try:
+        if action == "add":
+            try:
+                password, generated = _read_new_password(args)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
+            user = store.team.create_user(
+                username=args.username,
+                password=password,
+                role=args.role,
+                display_name=args.display_name,
+            )
+            store.team.audit(
+                actor="cli", action="user_add", user_id=user["id"], target=args.username
+            )
+            print(f"created {user['role']} {user['username']} ({user['id']})")
+            if generated is not None:
+                # printed exactly once, never stored or logged
+                print(f"initial password: {generated}")
+        elif action == "list":
+            users = store.team.list_users()
+            if getattr(args, "json", False):
+                print(json.dumps(users, indent=2))
+            else:
+                for u in users:
+                    flag = " [disabled]" if u["disabled"] else ""
+                    print(f"{u['username']:<20} {u['role']:<7} {u['id']}{flag}")
+                if not users:
+                    print(
+                        "no users; create one with: openai4s user add <name> --role admin"
+                    )
+        elif action == "disable":
+            user = store.team.get_user_by_username(args.username)
+            if user is None:
+                print(f"error: no such user {args.username!r}", file=sys.stderr)
+                return 2
+            store.team.set_disabled(user["id"], True)
+            store.team.audit(
+                actor="cli",
+                action="user_disable",
+                user_id=user["id"],
+                target=args.username,
+            )
+            print(f"disabled {args.username} (live sessions revoked)")
+        elif action == "reset-password":
+            user = store.team.get_user_by_username(args.username)
+            if user is None:
+                print(f"error: no such user {args.username!r}", file=sys.stderr)
+                return 2
+            try:
+                password, generated = _read_new_password(args)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
+            store.team.set_password(user["id"], password)
+            store.team.audit(
+                actor="cli",
+                action="user_reset_password",
+                user_id=user["id"],
+                target=args.username,
+            )
+            print(f"password reset for {args.username} (live sessions revoked)")
+            if generated is not None:
+                print(f"new password: {generated}")
+        else:  # pragma: no cover - argparse enforces choices
+            return 2
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="openai4s", description="openai4s CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1725,6 +1840,44 @@ def build_parser() -> argparse.ArgumentParser:
     _share_sub("disable", "disable sharing (keeps shares offline)")
     _share_sub("status", "show tunnel status")
     _share_sub("import", "import a shared session by URL").add_argument("url")
+
+    puser = sub.add_parser(
+        "user",
+        help="manage team-mode accounts (direct database access, no daemon needed)",
+    )
+    usub = puser.add_subparsers(dest="user_action", required=True)
+    ua = usub.add_parser("add", help="create an account")
+    ua.add_argument("username")
+    ua.add_argument("--role", choices=("admin", "member", "guest"), default="member")
+    ua.add_argument("--display-name", dest="display_name")
+    ua.add_argument(
+        "--password-stdin",
+        dest="password_stdin",
+        action="store_true",
+        help="read the password from stdin; otherwise one is generated and "
+        "printed once (a password never goes on the command line)",
+    )
+    ua.set_defaults(fn=cmd_user)
+    ul = usub.add_parser("list", help="list accounts")
+    ul.add_argument("--json", action="store_true")
+    ul.set_defaults(fn=cmd_user)
+    ud = usub.add_parser(
+        "disable", help="disable an account and revoke its live sessions"
+    )
+    ud.add_argument("username")
+    ud.set_defaults(fn=cmd_user)
+    ur = usub.add_parser(
+        "reset-password", help="set a new password and revoke live sessions"
+    )
+    ur.add_argument("username")
+    ur.add_argument(
+        "--password-stdin",
+        dest="password_stdin",
+        action="store_true",
+        help="read the new password from stdin; otherwise one is generated "
+        "and printed once",
+    )
+    ur.set_defaults(fn=cmd_user)
 
     prelay = sub.add_parser("relay", help="run the public share relay (on a VPS)")
     rsub = prelay.add_subparsers(dest="relay_action", required=True)
