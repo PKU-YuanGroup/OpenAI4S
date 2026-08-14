@@ -678,7 +678,8 @@ m.frame_id`.
 | `execution_state` | `frame_id`, `execution_id`, `owner:{kind,id}`, `status` (`queued|running|finalizing|completed|failed|cancelled`), `queue_position`, `reason` | One exact ticket changed state. |
 | `execution_queue` | authoritative snapshot fields from `GET /frames/{fid}/execution` | Queue/position projection; also sent immediately after `view_session`. |
 | `execution_owner` | `execution_id`, `owner`, previous identity, `reason` | Active writer changed. |
-| `execution_cancel_result` | scoped cancellation result | Direct reply to a WS cancellation request. |
+| `execution_cancel_result` | scoped cancellation result | Direct reply to a WS cancellation request. In team mode a cancellation aimed at a session the caller may not see answers `ok:false` with `reason:"session not found"` — the same sentence an unknown session gets, because which sessions exist is itself protected. |
+| `view_denied` | `frame_id`, `reason` | Team mode only: `view_session` named a session this login may not see (another member's, or one with no ownership row). Refused before subscription, so neither the replay buffer, pending `await_permission` prompts, nor the queue snapshot leak. The reason is always `"session not found"`. |
 | `checkpoint_created` | `branch_id`, `checkpoint_id`, `reason` | An immutable checkpoint committed. |
 | `branch_created` | `branch_id`, `from_checkpoint_id` | A checkpoint-backed branch committed. |
 | `branch_revert_conflict` | `branch_id`, `operation_id`, `target_checkpoint_id`, `reason` | Revert was recorded but not applied because the conflict check failed. |

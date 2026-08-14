@@ -60,7 +60,12 @@ def _free_port() -> int:
 
 
 class _TeamDaemon:
-    """One running gateway with OPENAI4S_TEAM_MODE=1 and a seeded user."""
+    """One running gateway with OPENAI4S_TEAM_MODE=1 and a seeded user.
+
+    A REAL WSHub, deliberately: the WS isolation tests subscribe and receive
+    broadcasts, and a stub hub would prove nothing about the replay buffer or
+    the per-connection filtering.
+    """
 
     def __init__(self, data_dir: Path, *, team_mode: bool = True) -> None:
         self.data_dir = data_dir
@@ -76,8 +81,9 @@ class _TeamDaemon:
             self.cfg.team_mode = True
         self.cfg.ensure_dirs()
         self.store = get_store(self.cfg.db_path)
-        self.runner = gateway_mod.SessionRunner(self.cfg, _Hub())
-        handler_cls = gateway_mod.make_handler(self.cfg, _Hub(), self.runner)
+        self.hub = gateway_mod.WSHub()
+        self.runner = gateway_mod.SessionRunner(self.cfg, self.hub)
+        handler_cls = gateway_mod.make_handler(self.cfg, self.hub, self.runner)
         self._httpd = ThreadingHTTPServer(("127.0.0.1", self.port), handler_cls)
         self._httpd.daemon_threads = True
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)

@@ -1331,6 +1331,13 @@ class WSHub:
         buf["event_bytes"] = sum(buf["event_sizes"])
 
     def broadcast(self, root_frame_id: str | None, obj: dict) -> None:
+        if root_frame_id is None:
+            # No caller passes None today, and a None fan-out would reach
+            # every connection regardless of subscription — in team mode that
+            # is a cross-user leak by construction (M1-7). Dropped rather than
+            # asserted: a future caller's bug should lose one event, not the
+            # daemon.
+            return
         with self._lock:
             if root_frame_id:
                 # Stamped under the hub lock, so the number a client sees is the
@@ -12627,6 +12634,31 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except OSError:
                 return
             conn = WSConnection(self.wfile)
+            # Team mode (M1-7): the identity resolved by the team guard at
+            # upgrade time is fixed for the connection's lifetime. Every
+            # subscription below is authorized against it, and a broadcast
+            # only reaches subscribed connections — so the subscribe check is
+            # the per-event check.
+            _ws_user = self._team_identity_dict() if _team_auth is not None else None
+
+            def _ws_session_visible(rid: str) -> bool:
+                if _team_auth is None:
+                    return True
+                frame = store.get_frame(rid)
+                if frame is None:
+                    # An unknown id must not be pre-subscribable: frame ids
+                    # are random, and a lucky guess parked on a future
+                    # session would stream it from its first event.
+                    return bool(
+                        _ws_user
+                        and (
+                            _ws_user.get("role") == "admin"
+                            or _ws_user.get("kind") == "service"
+                        )
+                    )
+                root = frame.get("root_frame_id") or rid
+                return store.team.session_visible_to(str(root), _ws_user)
+
             hub.add(conn)
             try:
                 while conn.alive:
@@ -12650,6 +12682,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         conn.send_json({"type": "pong"})
                     elif t == "view_session":
                         rid = msg.get("root_frame_id") or msg.get("frame_id")
+                        if rid and not _ws_session_visible(str(rid)):
+                            # Same sentence as the HTTP guard's 404: which
+                            # sessions exist is itself protected (INV-13).
+                            # Refused before hub.subscribe, so the replay
+                            # buffer, pending-approval prompts, and the
+                            # queue snapshot below are all behind this one
+                            # check.
+                            conn.send_json(
+                                {
+                                    "type": "view_denied",
+                                    "frame_id": rid,
+                                    "reason": "session not found",
+                                }
+                            )
+                            continue
                         if rid:
                             # Subscription and replay share the hub's enqueue
                             # order with live broadcasts, so a new Cell event
@@ -12699,6 +12746,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                     "type": "execution_cancel_result",
                                     "ok": False,
                                     "reason": "root_frame_id is required",
+                                }
+                            )
+                            continue
+                        if not _ws_session_visible(str(rid)):
+                            # The one WS inbound that mutates: cancelling
+                            # someone else's running turn is a write, and it
+                            # answers exactly like an unknown session.
+                            conn.send_json(
+                                {
+                                    "type": "execution_cancel_result",
+                                    "ok": False,
+                                    "reason": "session not found",
                                 }
                             )
                             continue
