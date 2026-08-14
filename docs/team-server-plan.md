@@ -309,3 +309,9 @@ STALE_EPOCH  STALE_SPEC_REVISION  DUPLICATE_SUBMISSION  KERNEL_STATE_LOST
 - 2026-08-14 · 附录 A 时间戳 · `created_at REAL` · 按仓库 storage 惯例改为 INTEGER 毫秒(注入的 `clock_ms`);列名与约束语义不变。
 - 2026-08-14 · 附录 B 路由名 · `/api/auth/login` 等 · 网关 API 带版本前缀(contract.API_ROOT = /api/v1),落地为 `/api/v1/auth/*`,与既有 `/auth/status` 同侧;文件区同理为 `/api/v1/files*`。
 - 2026-08-14 · M1-4 loopback Bearer · "保留 loopback Bearer 通路给管理 CLI" · service 身份仅接受来自 127.0.0.1/::1 对等端的 header 令牌(X-OpenAI4S-Token / Bearer);团队模式下 `?token=` 换 cookie 的 bootstrap 流程停用——浏览器一律走 /login,机器令牌不再能变成已登录浏览器。
+- 2026-08-14 · M1-6 无归属会话 · 计划未定义(团队模式前历史、demo 播种、CLI 直跑产生的根 frame 无 owner 行) · 判为 admin-only(fail closed,决策优先级"安全默认");M2 项目可见性落地后可再放宽。
+- 2026-08-14 · M1-6 拒绝形态 · 计划未定义 · 越权按址访问一律 404 而非 403——"哪些会话存在"本身是被保护的信息(INV-13);WS 侧 view_denied/cancel 拒绝用同一句 "session not found"。
+- 2026-08-14 · M1-4 限速语义 · "同用户名+IP 令牌桶 5 次/分" · 桶空时连正确口令也拒绝(429),且在 PBKDF2 计算之前扣桶——限速同时约束攻击者能诱发的哈希算力;桶内存态,重启即忘(每次猜测的 PBKDF2 成本远大于此)。
+- 2026-08-14 · M1-8 guest 与文件区 · D3 只说"仅只读回放" · guest 对 /files 三条路由一律 403(读也不给):文件区不属于回放面,回放路由在 M2-3 落地。
+- 2026-08-14 · M1-7 已建立连接的吊销 · 计划未定义 · 禁用用户/登出后,其已打开的 WS 连接的既有订阅在连接存续期内不被回收(订阅时一次性授权);新订阅与新 HTTP 请求立即失效。M2 治理面可加周期性重校验。
+- 2026-08-14 · 守卫正则与契约扫描 · 契约扫描器把内联 `re.fullmatch(r"...", sub)` 识别为路由 · 团队范围守卫的两个匹配器改为模块级预编译常量,避免把守卫模式发布成端点(`/artifacts/([^/]+)(?:/.*)?` 曾被误捕)。

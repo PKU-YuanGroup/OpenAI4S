@@ -442,6 +442,13 @@ _CONSUMED_ANNOTATION_STATES = frozenset({"sent", "resolved", "dismissed"})
 
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+#: The team scope guard's matchers (M1-6). Compiled here, deliberately NOT in
+#: the inline `re.fullmatch(r"...", sub)` form: the contract scanner reads
+#: that form as a *route*, and a guard that matches every frame path is not a
+#: route — inlining it published `/artifacts/([^/]+)(?:/.*)?` as an endpoint.
+_TEAM_SCOPE_FRAME = re.compile(r"/frames/([^/]+)(?:/.*)?")
+_TEAM_SCOPE_ARTIFACT = re.compile(r"/artifacts/([^/]+)(?:/.*)?")
+
 #: The only paths a `?token=` may be traded for a cookie on -- an allowlist,
 #: not a subtraction. The rule used to be "anything that is not `/api/v1/` and
 #: not `/static/`", which its own docstring described as "paths that serve the
@@ -8569,7 +8576,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if _team_auth is None or identity is None or identity.is_admin:
                 return
             user = self._team_identity_dict()
-            m = re.fullmatch(r"/frames/([^/]+)(?:/.*)?", sub)
+            m = _TEAM_SCOPE_FRAME.fullmatch(sub)
             if m:
                 frame = store.get_frame(m.group(1))
                 if frame is not None:
@@ -8577,7 +8584,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     if not store.team.session_visible_to(root, user):
                         raise GatewayError(404, "session not found")
                 return
-            m = re.fullmatch(r"/artifacts/([^/]+)(?:/.*)?", sub)
+            m = _TEAM_SCOPE_ARTIFACT.fullmatch(sub)
             if m:
                 try:
                     artifact = store.get_artifact(unquote(m.group(1)))
