@@ -11,6 +11,7 @@
 
 | 文件 | 是什么 |
 |---|---|
+| [`slurm/`](./slurm/) | Slurm backend——唯一被允许叫出调度器名字的目录，也正是它让上面那条规则可被检查而不是停留在愿望上。泄漏守卫按名字跳过它，所以调度器的词出现在别处就是缺陷。 |
 | [`__init__.py`](__init__.py) | 只重导出契约，别的什么都不做。import 这个包不得连带拉进任何实现——这正是泄漏守卫在运行时主张的其中一条，也正是 backend 由组装代码去 import、而不从这里 import 的原因。 |
 | [`models.py`](models.py) | 词汇表：`Workload`（kind ∈ SESSION/BATCH）、`Allocation`（一次尝试、一个 epoch）、`ResourceProfile`（科研人员用自己的单位说出的诉求）、`Phase`，以及计划附录 C 的 `Reason` 原因码。两个形状承载着最容易丢的不变量：`ExternalHandle` 把 backend 自己的 id **包起来**，好让 INV-2 在十几个调用点之后依然活着；`SubmissionToken` 在尝试提交**之前**就铸好——这就是 INV-8 的全部，因为"我那次提交到底落没落"必须是一个关于「backend 被要求记下来的东西」的问题。`Phase.is_terminal` 与 `Phase.is_active_allocation` 是 schema 里那条部分唯一索引所强制的集合的唯一可读副本。 |
 | [`ports.py`](ports.py) | `AllocationBackend` Protocol——submit / observe / cancel / find_by_token / diagnostics——以及作为四种情形（而非一个布尔）的 `SubmitResult`。`Created`、`Existing`（已经有一次带着这个 token 的提交在那儿了，正是它让重试变安全）、`Rejected`（这是个答复：workload 可以干净地失败）与 `Unknown`（**不是**"重试我"：调用方必须先按 token 对账，因为盲目重试正是一次提交变成两个各占一块 GPU 的作业的方式）。`Unknown` 之所以自带 token，正是为此——让调用方自己去状态里捞，就是这一步被跳过的方式。 |
