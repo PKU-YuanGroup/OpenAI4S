@@ -85,6 +85,7 @@ from openai4s.server import (
     artifact_refs,
     compute_tasks,
     contract,
+    file_routes,
     kernel_routes,
     local_auth,
     retrieval_source,
@@ -8408,6 +8409,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     from openai4s.server.team_auth import TeamAuthService as _TeamAuthService
 
     _team_auth = _TeamAuthService(store) if cfg.team_mode else None
+    from openai4s.server.file_area import FileArea as _FileArea
+
+    # The team file area (M1-8). Dormant with no roots; independent of
+    # team_mode so a single-user install can also mount data directories.
+    _file_area = _FileArea(list(cfg.data_roots))
     #: Reachable without a login in team mode. The login page and the login
     #: POST are the recovery path; /auth/status and /health answer with mode
     #: strings only; /static assets are the login page's css/js (the app
@@ -8681,6 +8687,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             return payload
 
         def _prepare_request_body(self, path: str, method: str) -> None:
+            if path == _API_ROOT + "/files/upload" and method == "POST":
+                # Streamed by the file route itself (M1-8): a 512 MiB upload
+                # must not transit daemon memory, so the pre-read is skipped
+                # and the handler consumes rfile in chunks. The connection is
+                # closed afterwards by _close_on_unread_request_body's
+                # not-ready rule, which is correct for a one-shot upload.
+                return
             is_session_import = (
                 path in (_API_ROOT + "/sessions/import", _API_ROOT + "/sessions/verify")
                 and method == "POST"
@@ -9270,6 +9283,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # guard can object. Deterministic in both modes — the contract
             # capture drives them with team mode off.
             if team_routes.handle(self, method, sub, _team_auth, store):
+                return
+            if file_routes.handle(self, method, sub, q, _file_area, _team_auth):
                 return
             # Ownership scope (team mode): every frame-/artifact-addressed
             # route below answers 404 unless the caller may see its session.

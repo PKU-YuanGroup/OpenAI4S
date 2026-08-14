@@ -67,7 +67,13 @@ class _TeamDaemon:
     the per-connection filtering.
     """
 
-    def __init__(self, data_dir: Path, *, team_mode: bool = True) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        *,
+        team_mode: bool = True,
+        data_roots: list[Path] | None = None,
+    ) -> None:
         self.data_dir = data_dir
         self.port = _free_port()
         self.cfg = Config(
@@ -79,6 +85,8 @@ class _TeamDaemon:
         )
         if team_mode:
             self.cfg.team_mode = True
+        if data_roots is not None:
+            self.cfg.data_roots = list(data_roots)
         self.cfg.ensure_dirs()
         self.store = get_store(self.cfg.db_path)
         self.hub = gateway_mod.WSHub()

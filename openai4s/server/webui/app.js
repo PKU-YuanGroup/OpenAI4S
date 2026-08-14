@@ -10154,3 +10154,147 @@ document.addEventListener("click", function (e) {
   clearTimeout(btn._t);
   btn._t = setTimeout(function () { btn.classList.remove("copied"); if (lbl) lbl.textContent = lbl.getAttribute("data-o") || t("msgAction.copy"); }, 1400);
 });
+
+/* ---- Team mode (docs/team-server-plan.md M1-9) -------------------------
+ * Self-contained: with team mode off and no data roots, every element
+ * stays hidden and nothing below changes the single-user UI. */
+(function teamBootstrap() {
+  "use strict";
+  function el(id) { return document.getElementById(id); }
+
+  // Identity: redirect to /login when the session died; show the user chip
+  // and a sign-out action when team mode is on.
+  fetch(API + "/auth/me")
+    .then(function (r) {
+      if (r.status === 401) { location.replace("/login"); return null; }
+      return r.ok ? r.json() : null;
+    })
+    .then(function (me) {
+      if (!me || me.team_mode !== true || !me.user) return;
+      var chip = el("team-user");
+      if (chip) {
+        chip.textContent = me.user.username + (me.user.role === "admin" ? " (admin)" : "");
+        chip.classList.remove("hidden");
+        chip.onclick = function () {
+          if (!confirm("Sign out?")) return;
+          fetch(API + "/auth/logout", { method: "POST" })
+            .then(function () { location.replace("/login"); })
+            .catch(function () { location.replace("/login"); });
+        };
+      }
+    })
+    .catch(function () {});
+
+  // The team file area: probe once; the buttons appear only when roots exist.
+  var tfState = { path: "" };
+  function probe() {
+    fetch(API + "/files")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.roots || !d.roots.length) return;
+        ["team-files-btn", "team-files-dash"].forEach(function (id) {
+          var b = el(id);
+          if (b) { b.classList.remove("hidden"); b.onclick = function () { openPanel(); }; }
+        });
+      })
+      .catch(function () {});
+  }
+  function openPanel() {
+    el("team-files-modal").classList.remove("hidden");
+    load(tfState.path);
+  }
+  function fmtSize(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GB";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+    return n + " B";
+  }
+  function load(path) {
+    tfState.path = path || "";
+    var url = API + "/files" + (tfState.path ? "?path=" + encodeURIComponent(tfState.path) : "");
+    fetch(url)
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+      .then(function (res) { render(res); })
+      .catch(function () {});
+  }
+  function render(res) {
+    var crumbs = el("team-files-crumbs");
+    var list = el("team-files-list");
+    if (!crumbs || !list) return;
+    crumbs.textContent = "";
+    list.textContent = "";
+    if (!res.ok) {
+      list.textContent = (res.body && res.body.error) || "unavailable";
+      return;
+    }
+    var home = document.createElement("a");
+    home.href = "#"; home.textContent = "roots";
+    home.onclick = function (e) { e.preventDefault(); load(""); };
+    crumbs.appendChild(home);
+    if (tfState.path) {
+      crumbs.appendChild(document.createTextNode("  ›  " + tfState.path));
+    }
+    var upBtn = el("team-files-upload");
+    if (upBtn) upBtn.style.display = tfState.path ? "" : "none";
+    if (res.body.roots) {
+      res.body.roots.forEach(function (root) {
+        var row = document.createElement("div");
+        row.className = "team-files-row";
+        var a = document.createElement("a");
+        a.href = "#"; a.textContent = "📁 " + root.path;
+        a.onclick = function (e) { e.preventDefault(); load(root.path); };
+        row.appendChild(a);
+        list.appendChild(row);
+      });
+      return;
+    }
+    (res.body.entries || []).forEach(function (entry) {
+      var row = document.createElement("div");
+      row.className = "team-files-row";
+      var full = res.body.path + "/" + entry.name;
+      if (entry.dir) {
+        var a = document.createElement("a");
+        a.href = "#"; a.textContent = "📁 " + entry.name;
+        a.onclick = function (e) { e.preventDefault(); load(full); };
+        row.appendChild(a);
+      } else {
+        var link = document.createElement("a");
+        link.href = API + "/files/download?path=" + encodeURIComponent(full);
+        link.textContent = "📄 " + entry.name;
+        row.appendChild(link);
+        var size = document.createElement("span");
+        size.className = "team-files-size";
+        size.textContent = fmtSize(entry.size);
+        row.appendChild(size);
+      }
+      list.appendChild(row);
+    });
+    if (!(res.body.entries || []).length) {
+      var empty = document.createElement("div");
+      empty.className = "team-files-row";
+      empty.textContent = "(empty)";
+      list.appendChild(empty);
+    }
+  }
+  var closeBtn = el("team-files-close");
+  if (closeBtn) closeBtn.onclick = function () { el("team-files-modal").classList.add("hidden"); };
+  var uploadBtn = el("team-files-upload");
+  var uploadInput = el("team-files-input");
+  if (uploadBtn && uploadInput) {
+    uploadBtn.onclick = function () { if (tfState.path) uploadInput.click(); };
+    uploadInput.onchange = function () {
+      var file = uploadInput.files && uploadInput.files[0];
+      uploadInput.value = "";
+      if (!file || !tfState.path) return;
+      var url = API + "/files/upload?dir=" + encodeURIComponent(tfState.path) +
+        "&name=" + encodeURIComponent(file.name) + "&overwrite=1";
+      fetch(url, { method: "POST", body: file })
+        .then(function (r) {
+          if (!r.ok) return r.json().then(function (b) { alert((b && b.error) || ("upload failed (" + r.status + ")")); });
+          load(tfState.path);
+        })
+        .catch(function () { alert("upload failed"); });
+    };
+  }
+  probe();
+})();
