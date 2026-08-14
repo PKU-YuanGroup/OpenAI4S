@@ -4,13 +4,16 @@
 
 One PNG per contributor, cropped to a circle with transparent corners, linked
 from the contributor wall in the root READMEs. `scripts/update_contributors.py`
-writes them from the GitHub contributors API. Nothing in the OpenAI4S runtime
-reads this directory.
+writes them from the GitHub contributors API and a maintained list of publicly
+recognized non-commit contributors. Nothing in the OpenAI4S runtime reads this
+directory.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
+| `ClarenceYC.png` | Render-ready avatar for contributor `ClarenceYC`. |
+| `EQSTLab.png` | Render-ready avatar for contributor `EQSTLab`. |
 | `Grace-xyx.png` | Render-ready avatar for contributor `Grace-xyx`. |
 | `HowardLi1984.png` | Render-ready avatar for contributor `HowardLi1984`. |
 | `Linmj-Judy.png` | Render-ready avatar for contributor `Linmj-Judy`. |
@@ -19,6 +22,7 @@ reads this directory.
 | `YuyangSunshine.png` | Render-ready avatar for contributor `YuyangSunshine`. |
 | `jiangzx25.png` | Render-ready avatar for contributor `jiangzx25`. |
 | `riiiiiiin.png` | Render-ready avatar for contributor `riiiiiiin`. |
+| `stau-7001.png` | Render-ready avatar for contributor `stau-7001`. |
 | `wangyu-sd.png` | Render-ready avatar for contributor `wangyu-sd`. |
 | `yusowa0716.png` | Render-ready avatar for contributor `yusowa0716`. |
 

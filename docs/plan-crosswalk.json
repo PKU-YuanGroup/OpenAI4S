@@ -205,7 +205,7 @@
       "tests": "tests/test_producer_output_budgets.py,tests/test_workspace_streaming_budgets.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4facd0b849c43e0ec8fc4eda8564a8b426f69a9b54d12567ba87240de1afb4ff"
+      "evidence_digest": "4d67d601decf8a90b19ff636f98e114c6b0dd1c7726ec35ea79ec9fbea3d1850"
     },
     {
       "source": "R2",
@@ -384,7 +384,7 @@
       "tests": "tests/test_producer_output_budgets.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "da32b79b84674baad7fcc31350a146a3dc42d16c8e66c30a29af4be0f9af9413"
+      "evidence_digest": "72e38aaebd4179dd5eaec1ad22ca142eb6937083b1b279dd7b9ffa609c80efac"
     },
     {
       "source": "R4",

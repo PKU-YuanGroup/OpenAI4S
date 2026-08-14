@@ -24,7 +24,7 @@ Tool，`openai4s/` 下也没有任何模块会导入它们。
 | `release_import_smoke.py` | 用隔离环境的解释器、在 checkout 之外导入已安装的零依赖 wheel；一旦发现导入的其实是源码树就判失败。随后检查普通 import 测试照不到的地方：打包进去的 R worker、compute 模板与 Web UI、四份环境规格、Skill 目录、`python -m openai4s --help` 能否跑通，以及核心是否仍然没有非 extra 依赖。 |
 | `setup_envs.sh` | `python -m openai4s setup` 的一层薄 `sh` 包装，用来创建四个 conda 环境。参数原样透传，所以 `--only python`、`--dry-run` 经它照样可用。 |
 | `source_secret_scan.py` | 扫描发布源码树里形似凭据的内容，失败即拒绝。它只打印检测器名、路径和行号，绝不回显匹配到的值。零依赖：候选文件由 git 挑出，git 不可用时（例如解包后的源码归档）退回到确定性的文件系统遍历。 |
-| `update_contributors.py` | 重建 Community Contributors 墙。用仓库自己的 token 从 GitHub API 拉取贡献者，把每个头像裁成圆形 PNG 写入 `.github/contributors/`，再改写两份根 README 中 `CONTRIBUTORS` 标记之间的区块。需要 Pillow。 |
+| `update_contributors.py` | 重建 Community Contributors 墙。用仓库自己的 token 从 GitHub API 拉取 commit 贡献者，追加一份维护中的、已公开署名的非 commit 贡献者名单，把每个头像裁成圆形 PNG 写入 `.github/contributors/`，再改写两份根 README 中 `CONTRIBUTORS` 标记之间的区块。需要 Pillow。 |
 | `verify_macos_bundle.py` | 只用标准库检查构建好的 `.app` 或 `.dmg`——这是 wheel 检查看不到的那份契约。它以只读方式挂载镜像，然后在下列情况下失败关闭：内嵌解释器没能随 bundle 重定位、预装运行时缺了任何一个 `CORE_PACKAGES` 导入、`Info.plist` 与 `openai4s.__version__` 对不上、缺少 Web UI / R worker / compute 模板 / Skill 目录、`python -m openai4s --help` 无法离线运行、代码签名校验不过，或者镜像里混进了 dotenv 及任何形似凭据的内容。 |
 | `verify_linux_bundle.py` | 只用标准库检查构建好的 `.tar.gz` 或已解包的目录。以下情况一律失败关闭：归档形状不对或启动器丢了可执行位、三处版本声明对不上、科学栈缺包、字节码是时间戳失效制、图标梯级的实际像素尺寸与目录名不符、`.desktop` 模板没人替换，或归档里混进了凭据material。在架构匹配的 Linux 主机上它还会多做一层——真正运行内嵌解释器——并在报告里写明这次达到了哪一层深度，而不是让「跳过的检查」看起来像「通过的检查」。 |
 | `verify_windows_zip.py` | 只用标准库检查构建好的 `.zip` 或暂存目录，盯的是 Windows 包特有的那几种坏法：WSL bootstrap 混进了 CRLF（这会在用户机器上以 `bad interpreter` 死掉，而不是在这里）、payload 与校验和 sidecar 对不上、macOS 资源分支垃圾文件，以及最要命的一种——启动器长出了一条原生 Windows 执行路径，而 `platform_support.py` 本来就会拒绝它。 |
