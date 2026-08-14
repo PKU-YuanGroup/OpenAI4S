@@ -666,11 +666,11 @@ repeat {
     if (!.oai4s_responded) {
       if (identical(outcome, "interrupted")) {
         .oai4s_respond(.oai4s_regex_id(line), "", "", "Interrupted", TRUE,
-                       NULL, NULL, 0, 0, 0L)
+                       NULL, NULL, 0, 0, 0L, sink_capture = TRUE)
       } else {
         .oai4s_respond(.oai4s_regex_id(line), "", "",
                        paste0("openai4s r_worker ", outcome), FALSE,
-                       NULL, NULL, 0, 0, 0L)
+                       NULL, NULL, 0, 0, 0L, sink_capture = TRUE)
       }
     }
   }

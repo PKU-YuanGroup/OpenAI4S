@@ -796,6 +796,89 @@ def test_an_interrupted_cell_reports_what_the_host_had_drained(tmp_path):
         kernel.shutdown()
 
 
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+@pytest.mark.parametrize(
+    ("raise_condition", "expected_error", "interrupted"),
+    [
+        (
+            "signalCondition(structure(list(message = 'forced'), "
+            "class = c('interrupt', 'condition')))",
+            "Interrupted",
+            True,
+        ),
+        (
+            "stop('forced')",
+            "openai4s r_worker internal error: forced",
+            False,
+        ),
+    ],
+    ids=("interrupted", "internal-error"),
+)
+def test_r_top_level_fallback_preserves_host_capture(
+    tmp_path, raise_condition, expected_error, interrupted
+):
+    """Both outer fallbacks return output already drained by the host.
+
+    A timed SIGINT can land inside ``.oai4s_run`` and exercise its normal
+    response. Replace the dispatcher for one frame instead: it writes known
+    bytes to the real host FIFOs, restores itself, then raises outside the
+    cell handler so the top-level interrupt/error fallback must respond.
+    """
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        setup = f"""
+.oai4s_saved_handle_line <- .oai4s_handle_line
+.oai4s_handle_line <- function(line) {{
+  assign('.oai4s_handle_line', .oai4s_saved_handle_line, envir = globalenv())
+  frame <- jsonlite::fromJSON(line, simplifyVector = TRUE)
+  out_con <- fifo(as.character(frame$sink_out), open = 'wb', blocking = TRUE)
+  err_con <- fifo(as.character(frame$sink_err), open = 'wb', blocking = TRUE)
+  writeBin(charToRaw('fallback stdout\\n'), out_con)
+  writeBin(charToRaw('fallback stderr\\n'), err_con)
+  flush(out_con); flush(err_con)
+  close(out_con); close(err_con)
+  {raise_condition}
+}}
+"""
+        primed = kernel.execute(setup)
+        assert primed["error"] is None, primed
+
+        result = kernel.execute("ignored")
+
+        # The zero worker counters distinguish the outer fallback from the
+        # measured response at the end of .oai4s_run.
+        usage = result["usage"]
+        assert usage["wall_s"] == 0
+        assert usage["cpu_s"] == 0
+        assert usage["peak_rss_kb"] == 0
+        assert result["interrupted"] is interrupted
+        assert result["error"] == expected_error
+        assert result["sink_capture"] is True
+        assert result["stdout"] == "fallback stdout\n"
+        assert result["stderr"] == "fallback stderr\n"
+        assert usage == {
+            "wall_s": 0.0,
+            "cpu_s": 0.0,
+            "peak_rss_kb": 0,
+            "stdout_seen_bytes": 16,
+            "stdout_retained_bytes": 16,
+            "stdout_dropped_bytes": 0,
+            "stdout_truncated": False,
+            "stderr_seen_bytes": 16,
+            "stderr_retained_bytes": 16,
+            "stderr_dropped_bytes": 0,
+            "stderr_truncated": False,
+        }
+
+        after = kernel.execute("cat('still here\\n')")
+        assert after["stdout"] == "still here\n"
+        assert after["usage"]["stdout_truncated"] is False
+    finally:
+        kernel.shutdown()
+
+
 # --- the kernel's own stderr pipe ------------------------------------------
 
 
