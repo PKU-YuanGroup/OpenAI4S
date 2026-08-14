@@ -2661,5 +2661,9 @@ def test_action_timeline_ledger_row_reports_state_it_cannot_fabricate() -> None:
 
     # Any render that does not re-append the region must destroy the view.
     assert "else {" in renderer and "destroyActionTimelineView();" in renderer
-    # The reserved slot is measured after its own reservation is cleared.
-    assert 'target.style.minHeight = "";\n  const previousHeight' in history
+    # The history slot is measured with its previous reservation still applied.
+    # Clearing it first reads 0 on an already-reserved slot, collapsing the band
+    # during a prepend and moving the compensated row -- browser_smoke's
+    # "history prepend N moved the visible anchor" case.
+    assert "const previousHeight = target.getBoundingClientRect().height" in history
+    assert 'target.replaceChildren(); target.style.minHeight = ""' in history

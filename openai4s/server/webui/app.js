@@ -4676,11 +4676,14 @@ function syncActionTimelineHistoryState(host = null) {
   const root = $("#dock-timeline");
   const target = host || (root && root.querySelector(".timeline-history-state"));
   if (!target) return;
-  // Clear any reservation before measuring, or the slot measures itself and
-  // re-reserves forever — the band would never collapse.
-  target.style.minHeight = "";
-  const previousHeight = target.children.length ? target.getBoundingClientRect().height : 0;
-  const timeline = S.actionTimeline || {}; target.replaceChildren();
+  // Measure with the previous reservation still applied. Clearing it first
+  // reads 0 on an already-reserved slot, which collapses the band during the
+  // same frame as a prepend and moves the compensated row -- the exact jump
+  // the reservation below exists to prevent. It does not leak: renderActionTimeline
+  // builds a fresh .timeline-history-state node, so the reservation cannot
+  // outlive the next full render.
+  const previousHeight = target.getBoundingClientRect().height;
+  const timeline = S.actionTimeline || {}; target.replaceChildren(); target.style.minHeight = "";
   if (timeline.has_more_before) {
     const controls = el("div", "workbench-controls timeline-history-controls");
     const loading = actionTimelineHistoryIsLoading(timeline);
