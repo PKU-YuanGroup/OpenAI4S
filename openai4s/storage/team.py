@@ -388,20 +388,53 @@ class TeamRepository:
             )
             self._connection.commit()
 
-    def session_visible_to(self, session_id: str, user: dict | None) -> bool:
-        """May this user read/operate this session (M1 semantics)?
+    def set_session_visibility(
+        self, session_id: str, visibility: str, *, user_id: str
+    ) -> bool:
+        """Owner-only toggle between 'project' and 'private' (M2-2, D4)."""
+        if visibility not in ("project", "private"):
+            raise ValueError("visibility must be 'project' or 'private'")
+        with self._lock:
+            cur = self._connection.execute(
+                "UPDATE session_owners SET visibility=? WHERE session_id=?"
+                " AND user_id=?",
+                (visibility, session_id, user_id),
+            )
+            self._connection.commit()
+        return cur.rowcount > 0
 
-        Admins see everything (INV-13 carves them out; the per-view audit for
-        private sessions arrives with visibility in M2). A session with no
-        ownership row — pre-team history, demo seeds, CLI runs — is admin-only
-        rather than everyone's: fail closed, not open.
+    def session_visible_to(self, session_id: str, user: dict | None) -> bool:
+        """May this user read/operate this session (D4 semantics)?
+
+        Admins see everything (INV-13 carves them out; the per-view audit
+        for private sessions is the gateway's job). A session with no
+        ownership row — pre-team history, demo seeds, CLI runs — is
+        admin-only rather than everyone's: fail closed, not open. Beyond
+        the owner, a 'project'-visibility session is open to the project's
+        *members* (not guests — replay is their only surface, authorized
+        separately); a 'private' one is the owner's alone. A session whose
+        ownership row names no project is private by construction (D4:
+        无项目 → private).
         """
         if user is None:
             return False
         if user.get("role") == "admin" or user.get("kind") == "service":
             return True
         owner = self.session_owner(session_id)
-        return owner is not None and owner["user_id"] == user.get("id")
+        if owner is None:
+            return False
+        if owner["user_id"] == user.get("id"):
+            return True
+        if owner["visibility"] != "project" or not owner["project_id"]:
+            return False
+        if user.get("role") == "guest":
+            return False
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT role FROM project_members WHERE project_id=? AND" " user_id=?",
+                (owner["project_id"], user.get("id")),
+            ).fetchone()
+        return row is not None and str(row[0]) == "member"
 
     # --- audit (INV-12) --------------------------------------------------
 

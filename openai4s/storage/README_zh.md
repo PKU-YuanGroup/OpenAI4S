@@ -40,6 +40,7 @@ SQLite 事务能让明确划定的一组 row 保持原子，但它没法一口�
 | [`skills.py`](skills.py) | content-addressed 的 Skill 包：不可变的 blob、文件与 manifest；只在乐观并发下才移动的安装指针；以及只追加的启用/停用历史。包的校验与物化归 [`skills_loader/versions.py`](../skills_loader/versions.py) 管，不在这里。 |
 | [`shares.py`](shares.py) | Web 分享用的 `shares` 表：每个分享一行持久记录，保存生命周期状态（`publishing`/`ready`/`failed`/`revoked`）、当前快照 id、bundle 哈希与可选有效期。一个部分唯一索引保证每个会话至多一个活跃分享；文件系统发布与 lease GC 在 `server/share_service.py`。 |
 | [`snapshots.py`](snapshots.py) | 两半。`WorkspaceCAS` 是纯标准库实现的工作区内容寻址存储，带 restore 预览、冲突检测，以及回收 tree 和无人共享的 blob；该保留哪些 tree 是别人告诉它的。`SessionSnapshotRepository` 保存 session 的 branch 与 checkpoint 信封、fork 和操作日志，也正是它查询 checkpoint 行、算出哪些 tree 仍被保留。两半都不会读写研究者自己的 Git 仓库。 |
+| [`governance.py`](governance.py) | 团队模式治理（M2）：`project_members`、`invites`、`usage_ledger`、`quotas`。邀请只存 sha256 摘要，兑换是一条把存活谓词写进 WHERE 的 UPDATE——两个并发兑换不可能都赢。用量账本只追加、在 SQL 里聚合；配额裁决就在它读的账本旁边计算，按 day/week/month 滑动窗口,以抛出的 `QuotaExceeded`（码 `QUOTA_EXCEEDED`）返回而不是让调用方自己读行。四张表全部在 `host.query` 拒绝列表上。 |
 | [`team.py`](team.py) | 团队模式身份（`OPENAI4S_TEAM_MODE`）：`users`、`auth_sessions`、`team_audit_log` 三张表。口令用 PBKDF2-HMAC-SHA256 加每用户独立盐，迭代数记录在行上，未来提高成本时旧账号在下次登录时懒重哈希而不是集体失效；登录 cookie 只存 token 的 sha256；禁用用户或重置口令会吊销其全部在线会话。三张表都在 `host.query` 拒绝列表里——agent 的 SQL 永远看不到凭据材料。 |
 
 ## 持久化模型

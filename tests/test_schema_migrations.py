@@ -121,6 +121,8 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Session ownership for team-mode visibility filtering (M1-6).
         # Existing sessions get no row, which reads as admin-only.
         "session_owners",
+        # Team governance: membership, invites, usage ledger, quotas (M2).
+        "team_governance",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

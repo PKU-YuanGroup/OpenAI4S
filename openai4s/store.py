@@ -82,6 +82,10 @@ from openai4s.storage.datapro_index import (
 )
 from openai4s.storage.delegation import DelegationProjectionRepository
 from openai4s.storage.frames import FrameRepository
+from openai4s.storage.governance import (
+    GovernanceRepository,
+    create_governance_schema,
+)
 from openai4s.storage.kernels import KernelGenerationRepository
 from openai4s.storage.memories import MemoryRepository
 from openai4s.storage.metadata import (
@@ -671,6 +675,12 @@ QUERY_DENYLIST = frozenset(
         "auth_sessions",
         "team_audit_log",
         "session_owners",
+        # Team-mode governance (M2): invites hold credential digests, and
+        # membership/metering/limits are the operator's data, not the agent's.
+        "project_members",
+        "invites",
+        "usage_ledger",
+        "quotas",
         "host_call_log",
         "permission_rules",
         "permission_requests",
@@ -975,6 +985,11 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._governance = GovernanceRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._shares = SharesRepository(
             self._conn,
             self._lock,
@@ -1195,6 +1210,7 @@ class Store:
                     ),
                     18: ("team_users", self._apply_team_users),
                     19: ("session_owners", self._apply_session_owners),
+                    20: ("team_governance", self._apply_team_governance),
                 },
             )
             if report["migrated"]:
@@ -1224,6 +1240,14 @@ class Store:
         """
 
         create_session_owners_schema(conn)
+
+    def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
+        """Version 20: membership, invites, usage ledger, quotas (M2).
+
+        Additive; every table is dormant until team-mode governance uses it.
+        """
+
+        create_governance_schema(conn)
 
     def _apply_datapro_content_index_repair(self, conn: sqlite3.Connection) -> None:
         """Version 17: repair an early v16 database stamped without its tables.
@@ -1889,6 +1913,11 @@ class Store:
     def team(self) -> TeamRepository:
         """Team-mode identity: users, login sessions, audit log (M1-2)."""
         return self._team
+
+    @property
+    def governance(self) -> GovernanceRepository:
+        """Team-mode governance: members, invites, usage, quotas (M2)."""
+        return self._governance
 
     @property
     def secrets(self):
