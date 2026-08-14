@@ -340,11 +340,35 @@ class ShareConfig:
         return f"https://{share_id}.{domain}/"
 
 
+def _data_roots() -> list[Path]:
+    """Parse OPENAI4S_DATA_ROOTS (colon-separated allowlist of directories for
+    the team file area). Empty/unset -> [] = the file routes stay disabled and
+    single-user behavior is untouched (INV-1)."""
+    raw = os.environ.get("OPENAI4S_DATA_ROOTS", "").strip()
+    if not raw:
+        return []
+    roots: list[Path] = []
+    for part in raw.split(":"):
+        part = part.strip()
+        if part:
+            roots.append(Path(part).expanduser())
+    return roots
+
+
 @dataclass
 class Config:
     data_dir: Path = field(default_factory=_default_data_dir)
     host: str = os.environ.get("OPENAI4S_HOST", "127.0.0.1")
     port: int = int(os.environ.get("OPENAI4S_PORT", "8760"))
+    # Team Server mode (docs/team-server-plan.md): ON forces web login and
+    # ownership filtering; OFF (default) keeps single-user behavior unchanged
+    # (INV-1). Read at instance time so tests/UI toggles see a fresh value.
+    team_mode: bool = field(
+        default_factory=lambda: _env_flag("OPENAI4S_TEAM_MODE", False)
+    )
+    # Allowlisted roots for the team file area (OPENAI4S_DATA_ROOTS, colon-
+    # separated). Empty = feature dormant.
+    data_roots: list[Path] = field(default_factory=_data_roots)
     llm: LLMConfig = field(default_factory=LLMConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     share: ShareConfig = field(default_factory=ShareConfig)
