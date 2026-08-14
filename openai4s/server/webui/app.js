@@ -10298,3 +10298,96 @@ document.addEventListener("click", function (e) {
   }
   probe();
 })();
+
+/* ---- Team governance (M2-7): guest redirect + minimal admin panel ------ */
+(function teamGovernance() {
+  "use strict";
+  function el(id) { return document.getElementById(id); }
+
+  fetch(API + "/auth/me")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (me) {
+      if (!me || me.team_mode !== true || !me.user) return;
+      if (me.user.role === "guest") {
+        // A guest's whole surface is the replay viewer (D3).
+        if (location.pathname === "/") location.replace("/replay");
+        return;
+      }
+      if (me.user.role === "admin" || me.user.kind === "service") {
+        var btn = el("team-admin");
+        if (btn) { btn.classList.remove("hidden"); btn.onclick = openAdmin; }
+      }
+    })
+    .catch(function () {});
+
+  function openAdmin() {
+    el("team-admin-modal").classList.remove("hidden");
+    loadAdmin();
+  }
+  var closeBtn = el("team-admin-close");
+  if (closeBtn) closeBtn.onclick = function () { el("team-admin-modal").classList.add("hidden"); };
+  var refreshBtn = el("team-admin-refresh");
+  if (refreshBtn) refreshBtn.onclick = function () { loadAdmin(); };
+
+  function section(parent, title) {
+    var h = document.createElement("h3");
+    h.className = "team-admin-h";
+    h.textContent = title;
+    parent.appendChild(h);
+    var box = document.createElement("div");
+    box.className = "team-admin-sec";
+    parent.appendChild(box);
+    return box;
+  }
+  function table(box, headers, rows) {
+    var t = document.createElement("table");
+    t.className = "team-admin-table";
+    var tr = document.createElement("tr");
+    headers.forEach(function (h) {
+      var th = document.createElement("th"); th.textContent = h; tr.appendChild(th);
+    });
+    t.appendChild(tr);
+    rows.forEach(function (cells) {
+      var r = document.createElement("tr");
+      cells.forEach(function (c) {
+        var td = document.createElement("td"); td.textContent = c == null ? "" : String(c); r.appendChild(td);
+      });
+      t.appendChild(r);
+    });
+    box.appendChild(t);
+    if (!rows.length) {
+      var d = document.createElement("div"); d.className = "team-admin-empty"; d.textContent = "(none)"; box.appendChild(d);
+    }
+  }
+  function jget(path) {
+    return fetch(API + path).then(function (r) { return r.ok ? r.json() : null; });
+  }
+
+  function loadAdmin() {
+    var body = el("team-admin-body");
+    body.textContent = "loading…";
+    Promise.all([
+      jget("/team/users"), jget("/team/usage"), jget("/team/audit?limit=50"),
+      jget("/team/invites"), jget("/team/quotas"),
+    ]).then(function (res) {
+      var users = (res[0] || {}).users || [];
+      var usage = (res[1] || {}).usage || [];
+      var audit = (res[2] || {}).audit || [];
+      var invites = (res[3] || {}).invites || [];
+      var quotas = (res[4] || {}).quotas || [];
+      body.textContent = "";
+      var idName = {};
+      users.forEach(function (u) { idName[u.id] = u.username; });
+      table(section(body, "Users"), ["user", "role", "state", "id"],
+        users.map(function (u) { return [u.username, u.role, u.disabled ? "disabled" : "active", u.id]; }));
+      table(section(body, "Usage"), ["user", "project", "kind", "total", "events"],
+        usage.map(function (r) { return [idName[r.user_id] || r.user_id, r.project_id, r.kind, Math.round(r.total * 100) / 100, r.events]; }));
+      table(section(body, "Quotas"), ["scope", "scope id", "kind", "limit", "window"],
+        quotas.map(function (r) { return [r.scope, r.scope_id, r.kind, r.limit_amount, r.window]; }));
+      table(section(body, "Invites"), ["prefix", "project", "by", "state"],
+        invites.map(function (r) { return [r.token_prefix, r.project_id, r.created_by, r.live ? "live" : (r.used_at ? "used/revoked" : "expired")]; }));
+      table(section(body, "Audit (latest 50)"), ["when", "actor", "action", "target"],
+        audit.map(function (r) { return [new Date(r.ts).toLocaleString(), r.actor, r.action, r.target || r.user_id || ""]; }));
+    }).catch(function () { el("team-admin-body").textContent = "failed to load"; });
+  }
+})();

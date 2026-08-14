@@ -86,6 +86,7 @@ from openai4s.server import (
     compute_tasks,
     contract,
     file_routes,
+    governance_routes,
     kernel_routes,
     local_auth,
     retrieval_source,
@@ -165,6 +166,7 @@ from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
 from openai4s.storage.connectors import public_connector
+from openai4s.storage.governance import QuotaExceeded
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
 from openai4s.storage.memories import GLOBAL_SCOPE as MEMORY_GLOBAL_SCOPE
 from openai4s.storage.memories import MemoryLimitError
@@ -448,6 +450,13 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: route — inlining it published `/artifacts/([^/]+)(?:/.*)?` as an endpoint.
 _TEAM_SCOPE_FRAME = re.compile(r"/frames/([^/]+)(?:/.*)?")
 _TEAM_SCOPE_ARTIFACT = re.compile(r"/artifacts/([^/]+)(?:/.*)?")
+
+#: The guest gate's copy of the replay matcher (M2-3/D3). The *route* itself
+#: is dispatched with the inline scannable form in `_api` (which is what the
+#: contract inventory discovers); this compiled twin exists because the guest
+#: gate consults the same pattern and a gate is not a route. Keep the two
+#: spellings identical.
+_REPLAY_ROUTE = re.compile(r"/sessions/([^/]+)/replay")
 
 #: The only paths a `?token=` may be traded for a cookie on -- an allowlist,
 #: not a subtraction. The rule used to be "anything that is not `/api/v1/` and
@@ -2778,6 +2787,27 @@ class SessionRunner:
         observe the frame before its ownership row exists.
         """
 
+        if owner_user_id:
+            # Session-creation quota (M2-6). By frozen decision, a *broken*
+            # quota check admits the request and leaves an audit row —
+            # availability over bookkeeping.
+            try:
+                self.store.governance.check_quota(
+                    user_id=owner_user_id,
+                    project_id=project_id,
+                    kind="sessions_created",
+                )
+            except QuotaExceeded as e:
+                raise GatewayError(429, str(e), "QUOTA_EXCEEDED") from e
+            except Exception as e:  # noqa: BLE001
+                try:
+                    self.store.team.audit(
+                        actor=owner_user_id,
+                        action="quota_check_failed",
+                        detail=str(e)[:200],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         with self._lock:
             if project_id in self._deleting_projects:
                 raise GatewayError(409, "project deletion is in progress")
@@ -2793,6 +2823,16 @@ class SessionRunner:
                 self.store.team.set_session_owner(
                     fid, owner_user_id, project_id=project_id
                 )
+                try:
+                    self.store.governance.record_usage(
+                        user_id=owner_user_id,
+                        kind="sessions_created",
+                        amount=1,
+                        project_id=project_id,
+                        ref=fid,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             return fid
 
     def delete_project(self, project_id: str) -> dict[str, Any]:
@@ -3297,6 +3337,25 @@ class SessionRunner:
             reason="publishing share snapshot",
         ):
             return fn(st.cancel)
+
+    def session_replay_view(self, root_frame_id: str) -> bytes:
+        """The sanitized read-only view.json bytes for a session (M2-3).
+
+        Reuses the web-share projection builder verbatim — the replay
+        surface IS the audited read-only surface, which is what makes it
+        the only data shape a guest may touch (D3) — but writes nothing:
+        no shares row, no snapshot directory, no tunnel, and no relay
+        configuration required.
+        """
+        branch = self.store.active_session_branch(root_frame_id)
+        projection = self._share_run_in_ticket(
+            root_frame_id,
+            branch,
+            lambda cancel: self.shares.builder.build(
+                root_frame_id, branch, cancel_event=cancel
+            ),
+        )
+        return self.shares.builder.serialize_view(projection)
 
     def ensure_share_tunnel(self):
         """Lazily create/start the tunnel when sharing is enabled + configured."""
@@ -6543,6 +6602,35 @@ class SessionRunner:
                 if tool_catalog is not None
                 else with_finalize_response(control_tool_specs())
             )
+
+        def _llm_quota_gate() -> None:
+            """Team-mode LLM quota (M2-6), consulted before every provider
+            request. Frozen decision: a broken check admits and audits."""
+            try:
+                owner = self.store.team.session_owner(st.root_frame_id)
+            except Exception:  # noqa: BLE001
+                owner = None
+            if owner is None:
+                return
+            try:
+                for kind in ("llm_input_tokens", "llm_output_tokens"):
+                    self.store.governance.check_quota(
+                        user_id=owner["user_id"],
+                        project_id=owner["project_id"],
+                        kind=kind,
+                    )
+            except QuotaExceeded:
+                raise
+            except Exception as e:  # noqa: BLE001
+                try:
+                    self.store.team.audit(
+                        actor=owner["user_id"],
+                        action="quota_check_failed",
+                        detail=str(e)[:200],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
         engine = AgentEngine(
             ChatModel(
                 llm_cfg,
@@ -6552,6 +6640,7 @@ class SessionRunner:
                 # Same signal the engine gets below, so Stop also interrupts a
                 # retry backoff rather than only the gap between turns.
                 cancellation=EventCancellation(st.cancel),
+                quota_gate=_llm_quota_gate,
             ),
             WebActionExecutor(
                 dispatcher=lambda: st.dispatcher,
@@ -6799,6 +6888,25 @@ class SessionRunner:
         cell_id = self.store.log_cell(**record)
         root_frame_id = record.get("root_frame_id")
         if root_frame_id and record.get("origin") in {"agent", "user"}:
+            # Team-mode metering (M2-5): the kernel's getrusage delta for a
+            # live cell, attributed to the session owner. Origin-filtered
+            # here, so a session-package import replay is never billed. With
+            # no ownership row this reads and never writes (INV-1).
+            try:
+                usage = (record.get("result") or {}).get("usage") or {}
+                cpu_s = usage.get("cpu_s")
+                if cpu_s:
+                    owner = self.store.team.session_owner(str(root_frame_id))
+                    if owner is not None:
+                        self.store.governance.record_usage(
+                            user_id=owner["user_id"],
+                            kind="kernel_cpu_s",
+                            amount=float(cpu_s),
+                            project_id=owner["project_id"],
+                            ref=str(root_frame_id),
+                        )
+            except Exception:  # noqa: BLE001 — metering must not break a cell
+                pass
             state = self._existing_state(str(root_frame_id))
             self._capture_cursor_checkpoint_best_effort(
                 str(root_frame_id),
@@ -8431,6 +8539,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             "/login",
             _API_ROOT + "/auth/status",
             _API_ROOT + "/auth/login",
+            # An invite holder has no account yet; the invite token is the
+            # credential, checked inside the route (M2-4).
+            _API_ROOT + "/auth/redeem-invite",
         }
     )
 
@@ -8563,6 +8674,29 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     str(root), owner, project_id=imported.get("project_id")
                 )
 
+        def _team_audit_admin_private_read(self, root: str) -> None:
+            """D4/INV-12: an admin viewing a private session they do not own
+            leaves an audit row — every view, not the first."""
+            identity = getattr(self, "_team_identity", None)
+            if identity is None:
+                return
+            try:
+                owner = store.team.session_owner(root)
+                if (
+                    owner is not None
+                    and owner["visibility"] == "private"
+                    and owner["user_id"] != identity.user_id
+                ):
+                    store.team.audit(
+                        actor=identity.username,
+                        action="admin_read_private",
+                        user_id=owner["user_id"],
+                        project_id=owner["project_id"],
+                        target=root,
+                    )
+            except Exception:  # noqa: BLE001 — auditing must not break the read
+                pass
+
         def _team_scope_guard(self, method: str, sub: str) -> None:
             """Refuse frame- and artifact-addressed routes whose session this
             caller may not see (M1-6, INV-13). 404, not 403: which sessions
@@ -8570,10 +8704,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
             Session resolution goes through the *root* frame — a child frame
             id must not answer differently from its root. An artifact is as
-            visible as the session that produced it.
+            visible as the session that produced it. Admin reads pass, but a
+            private session leaves an audit row per view (D4).
             """
             identity = getattr(self, "_team_identity", None)
-            if _team_auth is None or identity is None or identity.is_admin:
+            if _team_auth is None or identity is None:
+                return
+            if identity.is_admin:
+                if method == "GET":
+                    m = _TEAM_SCOPE_FRAME.fullmatch(sub)
+                    if m:
+                        frame = store.get_frame(m.group(1))
+                        if frame is not None:
+                            self._team_audit_admin_private_read(
+                                str(frame.get("root_frame_id") or m.group(1))
+                            )
                 return
             user = self._team_identity_dict()
             m = _TEAM_SCOPE_FRAME.fullmatch(sub)
@@ -9059,6 +9204,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         WEBUI_DIR / "login.html", "text/html; charset=utf-8"
                     )
                     return
+                if method == "GET" and path == "/replay":
+                    # The read-only replay viewer (M2-3): a guest's whole UI,
+                    # and a member's quick look. Behind the login guard.
+                    self._serve_file(
+                        WEBUI_DIR / "replay.html", "text/html; charset=utf-8"
+                    )
+                    return
                 # static / SPA shell
                 if method == "GET" and self._serve_static(path):
                     return
@@ -9291,7 +9443,70 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # capture drives them with team mode off.
             if team_routes.handle(self, method, sub, _team_auth, store):
                 return
+            # Guest gate (D3): a guest's whole API surface is auth + replay.
+            # Sits after the auth routes (logout must work) and before
+            # everything else, so no later route needs its own guest check.
+            _identity = getattr(self, "_team_identity", None)
+            if (
+                _team_auth is not None
+                and _identity is not None
+                and _identity.kind == "user"
+                and _identity.role == "guest"
+                and not (method == "GET" and _REPLAY_ROUTE.fullmatch(sub))
+            ):
+                self._json(
+                    {"error": "guests are replay-only", "code": "guest_readonly"},
+                    403,
+                )
+                return
+            # Read-only session replay (M2-3): the web-share sanitized view,
+            # served in place — no shares row, no snapshot, no relay. The
+            # {id} segment cannot collide with /sessions/import|verify —
+            # those carry no /replay suffix.
+            m = re.fullmatch(r"/sessions/([^/]+)/replay", sub)
+            if m and method == "GET":
+                rid = m.group(1)
+                frame = store.get_frame(rid)
+                if frame is None or (frame.get("root_frame_id") or rid) != rid:
+                    raise GatewayError(404, "session not found")
+                if _team_auth is not None:
+                    user = self._team_identity_dict()
+                    if not store.team.session_replayable_by(rid, user):
+                        raise GatewayError(404, "session not found")
+                    self._team_audit_admin_private_read(rid)
+                try:
+                    payload = runner.session_replay_view(rid)
+                except Exception as e:  # noqa: BLE001
+                    raise GatewayError(500, f"replay build failed: {e}") from e
+                self._send(200, payload, "application/json; charset=utf-8")
+                return
+            if governance_routes.handle(self, method, sub, q, _team_auth, store):
+                return
             if file_routes.handle(self, method, sub, q, _file_area, _team_auth):
+                return
+            # Session visibility toggle (M2-2, D4): owner-only.
+            m = re.fullmatch(r"/frames/([^/]+)/visibility", sub)
+            if m and method == "POST":
+                if _team_auth is None:
+                    self._json(
+                        {"error": "team mode is disabled", "code": "team_off"}, 403
+                    )
+                    return
+                identity = getattr(self, "_team_identity", None)
+                visibility = str(self._body().get("visibility") or "")
+                if visibility not in ("project", "private"):
+                    self._json(
+                        {"error": "visibility must be 'project' or 'private'"}, 400
+                    )
+                    return
+                changed = identity is not None and store.team.set_session_visibility(
+                    m.group(1), visibility, user_id=identity.user_id
+                )
+                if not changed:
+                    # not the owner, or no ownership row: same 404 as the
+                    # scope guard — existence stays protected
+                    raise GatewayError(404, "session not found")
+                self._json({"ok": True, "visibility": visibility})
                 return
             # Ownership scope (team mode): every frame-/artifact-addressed
             # route below answers 404 unless the caller may see its session.
@@ -12719,6 +12934,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 }
                             )
                             continue
+                        if rid and _team_auth is not None:
+                            # A live subscription is a view too (D4): an
+                            # admin watching a private session leaves the
+                            # same audit row as an HTTP read.
+                            self._team_audit_admin_private_read(str(rid))
                         if rid:
                             # Subscription and replay share the hub's enqueue
                             # order with live broadcasts, so a new Cell event

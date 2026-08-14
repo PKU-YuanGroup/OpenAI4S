@@ -21,6 +21,8 @@
 | [`favicon.js`](favicon.js) | 浏览器支持时用 WebCodecs 逐帧播放 GIF favicon，标签页隐藏时暂停，不支持时回退到静态 GIF。 |
 | [`login.html`](login.html) | 团队模式登录页（`OPENAI4S_TEAM_MODE`）。只用内联样式——脚本必须外链，因为 CSP 只哈希 `index.html` 的内联脚本。两种模式下都在 `/login` 提供；守卫把未登录的浏览器 303 到这里。 |
 | [`login.js`](login.js) | 登录页脚本：POST `/api/v1/auth/login`，把失败原因一句话展示出来；已登录或团队模式关闭时直接跳回首页。 |
+| [`replay.html`](replay.html) | 只读回放查看页（M2-3）——guest 的全部界面，也是成员的快速一瞥。在登录守卫之后的 `/replay` 提供；只用内联样式，脚本外链以过 CSP。 |
+| [`replay.js`](replay.js) | 拉取 `GET /api/v1/sessions/{id}/replay`（现场构建的脱敏 web-share view.json），把消息与科学 cell 渲染成朴素的转录稿。 |
 | [`favicon_anim_64.gif`](favicon_anim_64.gif) | 打包的 favicon 源文件：动画解码的帧来自它，静态回退图标也是它。 |
 | [`index.html`](index.html) | Dashboard、对话 Workspace、composer、右侧 dock、dialog 与设置的可访问 DOM 骨架。它在首屏绘制前应用主题，并引用静态脚本与样式。 |
 | [`scientific_renderers.js`](scientific_renderers.js) | 零依赖的 sequence/MSA、genome、Molfile/SMILES、LaTeX 解析与辅助函数，外加渲染器描述符校验。它们只产出普通数据、绝不产出 HTML，DOM 由 `app.js` 依据这些记录构建；一层薄薄的 UMD 包装让 Node 契约测试能直接导入同一个文件。通用的 table/image/PDF/HTML/text 展示仍留在 `app.js` 中。 |

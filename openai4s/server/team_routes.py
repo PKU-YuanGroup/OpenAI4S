@@ -29,8 +29,11 @@ from .team_auth import TEAM_COOKIE, RateLimited, public_user
 _LOGIN = contract.RouteSpec("auth.login", "POST", r"/auth/login", mutates=True)
 _LOGOUT = contract.RouteSpec("auth.logout", "POST", r"/auth/logout", mutates=True)
 _ME = contract.RouteSpec("auth.me", "GET", r"/auth/me", mutates=False)
+_REDEEM = contract.RouteSpec(
+    "auth.redeem_invite", "POST", r"/auth/redeem-invite", mutates=True
+)
 
-ROUTES = contract.validate_routes((_LOGIN, _LOGOUT, _ME))
+ROUTES = contract.validate_routes((_LOGIN, _LOGOUT, _ME, _REDEEM))
 
 _PATH_PREFIX = "/auth/"
 
@@ -91,6 +94,45 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
             return True
         team_auth.logout(_cookie_token(self))
         _json_with_cookie(self, {"ok": True}, team_auth.clear_cookie_header())
+        return True
+    if _REDEEM.match(method, sub):
+        if team_auth is None:
+            self._json({"error": "team mode is disabled", "code": "team_off"}, 403)
+            return True
+        body = self._body()
+        token = str(body.get("token") or "")
+        username = str(body.get("username") or "").strip()
+        password = str(body.get("password") or "")
+        # Redemption consumes the invite only after the account details
+        # validate — a typo'd username must not burn a single-use token.
+        if not username or not password:
+            self._json({"error": "username and password are required"}, 400)
+            return True
+        if store.team.get_user_by_username(username) is not None:
+            self._json({"error": f"username {username!r} already exists"}, 409)
+            return True
+        invite = store.governance.redeem_invite(token)
+        if invite is None:
+            # unknown, expired, revoked, and already-used are one sentence
+            self._json({"error": "invalid invite", "code": "invalid_invite"}, 403)
+            return True
+        user = store.team.create_user(
+            username=username, password=password, role="guest"
+        )
+        store.governance.set_member(invite["project_id"], user["id"], role="guest")
+        store.team.audit(
+            actor=username,
+            action="invite_redeem",
+            user_id=user["id"],
+            project_id=invite["project_id"],
+        )
+        session_token = store.team.create_auth_session(user["id"])
+        _json_with_cookie(
+            self,
+            {"user": public_user(user), "project_id": invite["project_id"]},
+            team_auth.cookie_header(session_token),
+            201,
+        )
         return True
     if _ME.match(method, sub):
         if team_auth is None:

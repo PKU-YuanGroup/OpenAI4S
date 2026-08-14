@@ -1540,3 +1540,11 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
 .team-files-row a{color:var(--text-100);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .team-files-row a:hover{text-decoration:underline}
 .team-files-size{color:var(--text-300);font-size:12px;margin-left:12px;flex:none}
+
+/* ---- Team admin panel (M2-7) ---- */
+.team-admin-body{padding:6px 18px 18px}
+.team-admin-h{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-300);margin:18px 0 6px}
+.team-admin-table{border-collapse:collapse;width:100%;font-size:13px}
+.team-admin-table th{font-weight:600;text-align:left;border-bottom:.5px solid var(--border);padding:5px 8px}
+.team-admin-table td{border-bottom:.5px solid var(--border);padding:5px 8px;font-family:var(--mono);font-size:12px}
+.team-admin-empty{color:var(--text-300);font-size:12px;padding:4px 8px}

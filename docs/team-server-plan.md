@@ -315,3 +315,8 @@ STALE_EPOCH  STALE_SPEC_REVISION  DUPLICATE_SUBMISSION  KERNEL_STATE_LOST
 - 2026-08-14 · M1-8 guest 与文件区 · D3 只说"仅只读回放" · guest 对 /files 三条路由一律 403(读也不给):文件区不属于回放面,回放路由在 M2-3 落地。
 - 2026-08-14 · M1-7 已建立连接的吊销 · 计划未定义 · 禁用用户/登出后,其已打开的 WS 连接的既有订阅在连接存续期内不被回收(订阅时一次性授权);新订阅与新 HTTP 请求立即失效。M2 治理面可加周期性重校验。
 - 2026-08-14 · 守卫正则与契约扫描 · 契约扫描器把内联 `re.fullmatch(r"...", sub)` 识别为路由 · 团队范围守卫的两个匹配器改为模块级预编译常量,避免把守卫模式发布成端点(`/artifacts/([^/]+)(?:/.*)?` 曾被误捕)。
+- 2026-08-14 · M2-2 "每次查看写审计"粒度 · 计划未定义粒度 · 审计单位 = 每个命中 private 会话的 admin GET 请求 + 每次 WS view_session 订阅;同一页面打开会产生多行(messages/timeline 各一)——宁多勿漏。
+- 2026-08-14 · M2-4 guest 入口 · 计划只说 invites 表与"guest 仅回放路由可用" · 落地为 `POST /api/v1/auth/redeem-invite {token,username,password}`:兑换即建 guest 账号 + project_members(role=guest) + 登录 cookie;用户名冲突在消费 token 之前拒绝(单次 token 不被打字错误烧掉);guest 的 API 面收敛为 auth/* + `GET /sessions/{id}/replay`,页面面为 /login、/replay。
+- 2026-08-14 · M2-5 LLM 计量盲区 · "挂接:LLM 归一化回复的 usage 字段" · 台账挂在 RuntimeActionLedger(覆盖主 turn 与 delegation 子代理);titles/compaction/host.llm/安全三门四条旁路 LLM 调用不经 ledger,其 usage 暂不入账(占比小、无 frame 上下文可归因);留待后续下传 context。
+- 2026-08-14 · M2-6 配额执行点覆盖 · "执行点:LLM 调用前 + 会话创建前" · LLM 门挂在 Web ChatModel(每次 provider 请求前查 user+project 两个 scope);delegation 子代理的 ChatModel 由 agent/loop 构造、暂无门——子代理超额消耗仍被记账,主 turn 的下一次调用即被拒,窗口有界;会话创建门在 SessionRunner.create_session,会话导入路径(session_package)不经此门(导入不"创建"计费会话,但 _team_claim_imported 已记归属)。
+- 2026-08-14 · M2-3 回放实现 · "内部复用 webshare 快照渲染" · 直接调用 ShareProjectionBuilder.build + serialize_view 现场生成(FIFO ticket 内),不落 shares 行、不占"唯一活跃 share"名额、不需 relay 配置;脱敏语义原样保留(guest 只能触达已脱敏投影);查看器为独立 /replay 静态页(share viewer 资产的路径与 credentials:"omit" 不适配登录态)。

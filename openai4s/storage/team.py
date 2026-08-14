@@ -436,6 +436,28 @@ class TeamRepository:
             ).fetchone()
         return row is not None and str(row[0]) == "member"
 
+    def session_replayable_by(self, session_id: str, user: dict | None) -> bool:
+        """May this user open the read-only replay (M2-3/D3)?
+
+        Everyone who can see a session can replay it. A *guest* — who can
+        see nothing through :meth:`session_visible_to` — may additionally
+        replay a 'project'-visibility session of a project they were
+        invited into. Private stays private.
+        """
+        if self.session_visible_to(session_id, user):
+            return True
+        if not user or user.get("role") != "guest":
+            return False
+        owner = self.session_owner(session_id)
+        if owner is None or owner["visibility"] != "project" or not owner["project_id"]:
+            return False
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM project_members WHERE project_id=? AND user_id=?",
+                (owner["project_id"], user.get("id")),
+            ).fetchone()
+        return row is not None
+
     # --- audit (INV-12) --------------------------------------------------
 
     def audit(

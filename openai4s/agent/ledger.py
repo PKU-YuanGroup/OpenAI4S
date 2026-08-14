@@ -349,6 +349,7 @@ class RuntimeActionLedger:
         reply = self._reply
         message, wire_state = _sanitize_reply(reply, self.tool_resolver)
         usage, cost_usd = self._reply_accounting(reply)
+        self._record_team_usage(usage)
         self._action = action
         if isinstance(action, FinalizeAction):
             call = action.call
@@ -456,6 +457,44 @@ class RuntimeActionLedger:
                 ),
             )
         self.current_group_id = group["group_id"]
+
+    def _record_team_usage(self, usage: dict[str, int] | None) -> None:
+        """Best-effort team-mode metering (M2-5, decision D10 账本).
+
+        Attribution walks ``root_frame_id -> session root -> session owner``;
+        with no ownership row (single-user installs, unowned sessions) this
+        is two SELECTs and no write, so the off state stays inert (INV-1).
+        Accounting must never fail an action — same contract as
+        ``_reply_accounting``.
+        """
+        if not usage:
+            return
+        try:
+            governance = getattr(self.store, "governance", None)
+            team = getattr(self.store, "team", None)
+            if governance is None or team is None:
+                return
+            scope = self.store.resolve_frame_scope(self.root_frame_id)
+            root = scope["root_frame_id"]
+            owner = team.session_owner(root)
+            if owner is None:
+                return
+            project = owner["project_id"] or scope.get("project_id")
+            for kind, key in (
+                ("llm_input_tokens", "input_tokens"),
+                ("llm_output_tokens", "output_tokens"),
+            ):
+                amount = usage.get(key) or 0
+                if amount:
+                    governance.record_usage(
+                        user_id=owner["user_id"],
+                        kind=kind,
+                        amount=float(amount),
+                        project_id=project,
+                        ref=root,
+                    )
+        except Exception:  # noqa: BLE001 — metering must not break the turn
+            pass
 
     def _reply_accounting(
         self, reply: ModelReply
