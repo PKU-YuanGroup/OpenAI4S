@@ -3,7 +3,9 @@
 
 Fetches the repository's contributors straight from the GitHub API (the same
 source, and same commit-count order, as the sidebar / contributors graph) and
-rewrites the block between the ``CONTRIBUTORS`` markers in each README.
+appends publicly recognized contributions that are not represented in the
+commit graph. It then rewrites the block between the ``CONTRIBUTORS`` markers
+in each README.
 
 Unlike a third-party image service (e.g. contrib.rocks, which calls the GitHub
 API anonymously, gets rate-limited for this repo, and rendered only a single
@@ -43,6 +45,9 @@ DISPLAY = 64  # rendered avatar size in px, close to the original wall
 # unlinked grey avatar in the sidebar) and the /contributors API omits it, so
 # it is naturally excluded here too.
 EXCLUDE = {"github-actions[bot]", "dependabot[bot]", "actions-user"}
+# Publicly accepted contributions that are not represented in the commit graph.
+# Keep this list limited to GitHub logins whose recognition is already public.
+RECOGNIZED_CONTRIBUTORS = ("EQSTLab",)
 _UA = {"User-Agent": "openai4s-contributors-script"}
 
 
@@ -95,6 +100,24 @@ def fetch_contributors(token: str | None) -> list[dict]:
     return kept
 
 
+def include_recognized_contributors(people: list[dict]) -> list[dict]:
+    """Append public non-commit contributors without duplicating API users."""
+
+    merged = list(people)
+    seen = {
+        str(person.get("login", "")).casefold()
+        for person in merged
+        if person.get("login")
+    }
+    for login in RECOGNIZED_CONTRIBUTORS:
+        normalized = login.casefold()
+        if normalized in seen:
+            continue
+        merged.append({"login": login, "type": "User", "contributions": 0})
+        seen.add(normalized)
+    return merged
+
+
 def _circular_png(raw: bytes) -> bytes:
     from PIL import Image, ImageDraw, ImageOps
 
@@ -113,25 +136,29 @@ def _circular_png(raw: bytes) -> bytes:
 
 def write_avatars(people: list[dict], token: str | None) -> set[str]:
     os.makedirs(AVATAR_DIR, exist_ok=True)
-    ok: set[str] = set()
+    have_png: set[str] = set()
     for c in people:
         login = c["login"]
         url = c.get("avatar_url") or f"https://github.com/{login}.png"
         url += ("&" if "?" in url else "?") + "s=256"
+        path = os.path.join(AVATAR_DIR, f"{login}.png")
         try:
             png = _circular_png(_get(url, token))
         except Exception as exc:  # noqa: BLE001
             print(f"  avatar failed for {login}: {exc}", file=sys.stderr)
+            if os.path.isfile(path):
+                have_png.add(login)
             continue
-        with open(os.path.join(AVATAR_DIR, f"{login}.png"), "wb") as f:
+        with open(path, "wb") as f:
             f.write(png)
-        ok.add(login)
-    # Drop anything (old SVGs, departed contributors) that is not a current png.
-    keep = {f"{login}.png" for login in ok}
+        have_png.add(login)
+    # Drop old identities and legacy SVGs, but keep a current contributor's
+    # committed PNG when a transient refresh fails.
+    current = {f"{person['login']}.png" for person in people}
     for name in os.listdir(AVATAR_DIR):
-        if name not in keep and (name.endswith(".png") or name.endswith(".svg")):
+        if name not in current and (name.endswith(".png") or name.endswith(".svg")):
             os.remove(os.path.join(AVATAR_DIR, name))
-    return ok
+    return have_png
 
 
 def render(people: list[dict], have_png: set[str]) -> str:
@@ -177,6 +204,7 @@ def main() -> int:
     if not people:
         print("no contributors fetched (rate limit or auth?)", file=sys.stderr)
         return 1
+    people = include_recognized_contributors(people)
     have_png = write_avatars(people, token)
     block = render(people, have_png)
     changed = [p for p in READMES if os.path.exists(p) and update_readme(p, block)]
