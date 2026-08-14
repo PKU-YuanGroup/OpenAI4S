@@ -4957,6 +4957,19 @@
         "type": "object"
       }
     },
+    "DELETE /team/invites/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /team/projects/([^/]+)/members [error]": {
       "schema": {
         "properties": {
@@ -12695,7 +12708,38 @@
     },
     "GET /projects/([^/]+) [ok]": {
       "schema": {
-        "properties": {},
+        "properties": {
+          "context": {
+            "type": "string"
+          },
+          "conversation_count": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_example": {
+            "type": "boolean"
+          },
+          "last_active_at": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
         "required": [],
         "type": "object"
       }
@@ -12735,6 +12779,61 @@
     },
     "GET /projects/([^/]+)/artifacts [ok]": {
       "schema": {
+        "items": {
+          "properties": {
+            "artifact_id": {
+              "type": "string"
+            },
+            "checksum": {
+              "type": "string"
+            },
+            "content_type": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "filename": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "is_user_upload": {
+              "type": "boolean"
+            },
+            "priority": {
+              "type": "integer"
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "root_frame_id": {
+              "type": "string"
+            },
+            "size_bytes": {
+              "type": "integer"
+            },
+            "version_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "artifact_id",
+            "checksum",
+            "content_type",
+            "created_at",
+            "filename",
+            "id",
+            "is_user_upload",
+            "priority",
+            "project_id",
+            "root_frame_id",
+            "size_bytes",
+            "version_id"
+          ],
+          "type": "object"
+        },
         "type": "array"
       }
     },

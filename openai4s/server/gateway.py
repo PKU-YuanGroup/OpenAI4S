@@ -450,6 +450,10 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: route — inlining it published `/artifacts/([^/]+)(?:/.*)?` as an endpoint.
 _TEAM_SCOPE_FRAME = re.compile(r"/frames/([^/]+)(?:/.*)?")
 _TEAM_SCOPE_ARTIFACT = re.compile(r"/artifacts/([^/]+)(?:/.*)?")
+#: Same rule, same reason (M2 project participation guard): written inline it
+#: was scanned as a route and published `/projects/([^/]+)(?:/.*)?` as an
+#: endpoint. A guard that matches every project path is not an endpoint.
+_TEAM_SCOPE_PROJECT = re.compile(r"/projects/([^/]+)(?:/.*)?")
 
 #: The guest gate's copy of the replay matcher (M2-3/D3). The *route* itself
 #: is dispatched with the inline scannable form in `_api` (which is what the
@@ -8796,7 +8800,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             identity = getattr(self, "_team_identity", None)
             if _team_auth is None or identity is None or identity.is_admin:
                 return
-            m = re.fullmatch(r"/projects/([^/]+)(?:/.*)?", sub)
+            m = _TEAM_SCOPE_PROJECT.fullmatch(sub)
             if not m:
                 return
             pid = unquote(m.group(1))
