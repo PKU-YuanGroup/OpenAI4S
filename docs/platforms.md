@@ -25,6 +25,7 @@ because that package does not run OpenAI4S on Windows.
 | `OpenAI4S-<v>-linux-x86_64.tar.gz` | [`scripts/build_linux_bundle.sh`](../scripts/build_linux_bundle.sh) | `verify_linux_bundle.py` | The same payload as a relocatable directory, plus a `.desktop` template and a per-user `install.sh`. Unpack anywhere and run `./OpenAI4S`. |
 | `OpenAI4S-<v>-windows-x86_64.zip` | [`scripts/build_windows_zip.sh`](../scripts/build_windows_zip.sh) | `verify_windows_zip.py` | A Windows launcher wrapped around **that exact Linux tarball**. It requires WSL2 + working bubblewrap 0.8.0+, installs offline, and opens the authenticated URL returned by the WSL CLI. Not a native Windows build; see below and the [Windows/WSL2 guide](windows-wsl.md). |
 | `openai4s-<v>-py3-none-any.whl` | `uv build` | `verify_release_artifacts.py` | The zero-dependency wheel, for any supported platform with its own Python. |
+| *(none yet — build it yourself)* | [`Dockerfile`](../Dockerfile) | [`scripts/container_smoke.sh`](../scripts/container_smoke.sh) | A Linux container image of the daemon and workbench. No registry publishes it, so this row names no download: `docker build -t openai4s:local .` from a checkout. Multi-arch is free here in a way it is not for the bundles — the wheel is `py3-none-any` and the science stack has manylinux `aarch64` wheels — but nothing has built an arm64 image either, so that is untested rather than promised. See [docker.md](docker.md). |
 
 Only `x86_64` slices are published, the same way the `.dmg` is Apple Silicon
 only. Both build scripts take `ARCH=aarch64` and produce a correct arm64 bundle,
@@ -176,3 +177,13 @@ someone has to run, not one that runs itself.
 machine-readable degraded status — rather than silently. `enforce` fails closed
 before a worker starts. The macOS nightly smoke runs under `enforce`, which is
 why a missing Seatbelt is a CI failure rather than a shrug.
+
+The container image is the ordinary case of that degradation rather than an
+exception to it. An unprivileged container cannot give bubblewrap the user,
+mount and network namespaces it wants — the same confinement that keeps
+`harness.smoke.linux_sandbox` off GitHub-hosted runners — so `auto` warns once
+and the container becomes the boundary. What that boundary does *not* replace
+is specific: an unenforced sandbox drops the secret-read masks over
+`<data_dir>/openai4s.db` and `<data_dir>/access-token` at the same time as the
+network namespace, and a cell's working directory is two levels below that
+token. [docker.md](docker.md) states the trade in full.

@@ -194,6 +194,17 @@ Download `OpenAI4S-<version>-windows-x86_64.zip`, unzip it, and double-click `Op
 
 **Native Windows is not supported, and the program refuses to start a kernel there** rather than warning and proceeding — it spawns POSIX subprocesses, the R channel rides file descriptors 3 and 4 through a shell redirection, and the sandbox has no Windows backend. WSL2 reports as Linux, so this package runs the same build every other platform runs. If you do not have WSL2 yet, the launcher stops and tells you the exact command (`wsl --install`, from an Administrator PowerShell). Details: **[Supported platforms](docs/platforms.md)**.
 
+### 🐳 Docker and Kubernetes
+
+```bash
+docker compose up -d --build          # http://127.0.0.1:8760/
+docker compose exec openai4s openai4s url   # the URL, token included
+```
+
+The image is built from this tree — Debian-slim CPython, the wheel, and the `science` extra — and runs as an unprivileged user with one volume at `/data`. Supply the model key as `OPENAI4S_SECRET_LLM_LLM_API_KEY` (a `Secret` in the cluster); the image reads credentials from the environment and writes nothing credential-shaped to the volume. For a cluster, `kubectl apply -f deploy/kubernetes.yaml` gives a single-replica Deployment, a `ReadWriteOnce` claim and a ClusterIP Service, with probes on `/health`.
+
+No image is published yet: build it from the checkout. Two things are worth knowing before you expose it. Binding `0.0.0.0` inside the container makes the access token mandatory and switches the DNS-rebind `Host` allowlist off, so the token becomes the only control in front of endpoints that execute code — which is why the compose file publishes to loopback and the Service is a `ClusterIP`. And an unprivileged container cannot give bubblewrap the namespaces it needs, so the kernel sandbox degrades visibly and the container becomes the boundary; that is a coarser one, and **[the container guide](docs/docker.md)** says exactly what it stops covering.
+
 ---
 
 ## 📚 Documentation
@@ -212,6 +223,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 | [**Web sharing**](docs/webshare.md) | read-only session shares, the trust model, and running your own relay |
 | [**Jupyter adapter**](docs/jupyter.md) | optional standalone Python/R KernelSpecs, install commands, and compatibility limits |
 | [**Configuration**](docs/configuration.md) | model providers, env vars, conda envs, CLI |
+| [**Docker / Kubernetes**](docs/docker.md) | the image, `compose.yaml`, the cluster manifests, and what a wildcard bind actually changes |
 | [**Supported platforms**](docs/platforms.md) | the per-OS support tiers and why native Windows refuses to start a kernel |
 | [**Windows / WSL2**](docs/windows-wsl.md) | Ubuntu 24.04 installation, sandbox checks, lifecycle commands, mainland mirrors, and localhost proxy behavior |
 | [**Security**](docs/security.md) | defense-in-depth safety layers & remote-access notes |

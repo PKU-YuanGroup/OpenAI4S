@@ -98,6 +98,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_cli_stop_slow_daemon.py`](test_cli_stop_slow_daemon.py) | 针对一个退出耗时超过宽限期的 daemon 执行 `openai4s stop`。旧代码把轮询结果直接丢弃：无条件清掉 pidfile 并打印 "daemon stopped"，把一个仍占着端口的活 daemon 变成孤儿，`status` 却说 "not running"。测试驱动真实的忽略 SIGTERM 的子进程：超时后 pidfile 保留、退出码非零，`--force` 升级为 SIGKILL；bind 失败的 `serve` 打印一条清晰错误，而不是在成功横幅之后崩出 traceback。 |
 | [`test_compute_nvidia.py`](test_compute_nvidia.py) | NVIDIA BYOC provider，每一次 `docker` 调用都被假的子进程层截住，所以不需要 Docker、GPU 或网络。安全的那一半是两阶段 secret 清洗：provider 的顶层代码在被 import 时，不能读到形似凭据、或带已知前缀的环境变量。 |
 | [`test_config.py`](test_config.py) | 分层配置，而且基本围着同一类 bug 转：从模板里抄来的占位 API key 绝不能被当成真 key，无论它是从环境变量来的还是显式传进来的，也不能挡住真正的按 provider 配置的 key。 |
+| [`test_container_deployment.py`](test_container_deployment.py) | `Dockerfile`、`compose.yaml` 与 Kubernetes 清单，被钉在赋予这些值意义的代码上：探针路径钉在网关自己的免鉴权集合上，端口钉在 `Config` 的默认值上，注入的 API key 变量则通过 `LLMConfig` 真正解析一遍而不是照名字信任它。配置自己不会失败——变量改名或路由挪位只会在以后、在别人身上停止工作。有两项是因为「一次看似合理的修改就会把它反过来」而被断言的：单副本（存储是 SQLite）与只发布到 loopback 的端口。它还覆盖了跨容器重启的单例问题：只看 pid 存活分不出陈旧 pidfile 与被复用的 pid，于是一个被杀掉的容器从此起不来。 |
 | [`test_connector_repository.py`](test_connector_repository.py) | MCP connector 的那些行：JSON 规范化、排序、启用与停用，以及把它们喂给 Host MCP 服务的 `Store` 门面。 |
 | [`test_context_policy_web.py`](test_context_policy_web.py) | 两个测试。超大的上下文输出会变成一个去过重的 Artifact 版本，而不是又一份拷贝；compaction 的 payload 会被链回会话历史，而不是被丢掉。 |
 | [`test_data_background_tools.py`](test_data_background_tools.py) | data 与 background 这两类 Tool。有两条策略是被断言出来的，而不是假定的：`query` 严格只读，没有任何能把它放宽的审批路径；提交后台任务要过闸门，中断它则始终可用。 |

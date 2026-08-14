@@ -8351,9 +8351,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     # and did not appear. It showed up in a terminal, which is exactly why it
     # survived: the configuration that hides it is the one nobody develops in.
     if _auth_token:
+        # Rendered, not echoed. A wildcard bind names interfaces rather than an
+        # address, so `http://0.0.0.0:8760/` is a URL nothing dials -- and a
+        # container has no other way to be reachable, which makes the one line
+        # an operator needs the one line that was wrong for them.
+        _reachable = "localhost" if cfg.host in ("0.0.0.0", "::", "") else cfg.host
         print(
             f"[openai4s] access token required.\n"
-            f"  open: http://{cfg.host}:{cfg.port}/?token={_auth_token}",
+            f"  open: http://{_reachable}:{cfg.port}/?token={_auth_token}",
             file=sys.stderr,
             flush=True,
         )

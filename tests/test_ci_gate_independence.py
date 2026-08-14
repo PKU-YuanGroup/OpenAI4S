@@ -48,6 +48,7 @@ GATES = {
     "harness": ("harness.cli run --tier pr", ()),
     "response-schemas": ("scripts/capture_response_schemas.py --check", ()),
     "response-contract": ("scripts/capture_response_contract.py --check", ()),
+    "container-image": ("scripts/container_smoke.sh", ()),
 }
 
 

@@ -34,6 +34,7 @@ def _statefile_payload(cfg) -> str:
     return json.dumps(
         {
             "pid": os.getpid(),
+            "pid_start": _process_start_token(os.getpid()),
             "host": cfg.host,
             "port": cfg.port,
             "started_at": int(time.time()),
@@ -56,7 +57,7 @@ def _acquire_singleton(cfg) -> bool:
             fd = os.open(cfg.pidfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:
             existing = _read_pid(cfg)
-            if existing and _pid_alive(existing):
+            if existing and _daemon_alive(cfg, existing):
                 return False
             if not reclaim:
                 return False  # a concurrent booter won the reclaim
@@ -66,12 +67,28 @@ def _acquire_singleton(cfg) -> bool:
                 pass
             continue
         try:
+            # The statefile first, then the pid — the reverse of the obvious
+            # order, and load-bearing since the statefile started carrying the
+            # identity `_daemon_alive` compares against.
+            #
+            # Written second, there was a window holding a readable *new* pid
+            # beside the *previous* generation's record. When the two happen to
+            # name the same pid — negligible on a desktop, the ordinary case in
+            # a container where the daemon lands on the same low pid every boot
+            # — a reader in that window compares this process against its
+            # predecessor's start token, concludes stale, and acts on it: a
+            # second `serve` reclaims a live pidfile, and `stop` reports "not
+            # running" and then deletes the live daemon's state.
+            #
+            # This way round there is no such state. The pidfile is empty until
+            # the record describing it is already on disk, and an empty pidfile
+            # is a case every reader already handles as "no daemon".
+            cfg.statefile.write_text(_statefile_payload(cfg), "utf-8")
             with os.fdopen(fd, "w") as handle:
                 handle.write(str(os.getpid()))
         except OSError:
             _clear_state(cfg, only_if_owned_by=os.getpid())
             raise
-        cfg.statefile.write_text(_statefile_payload(cfg), "utf-8")
         return True
     return False
 
@@ -112,6 +129,110 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _process_start_token(pid: int) -> str | None:
+    """An identity for *this* incarnation of ``pid``, or None where unknowable.
+
+    ``os.kill(pid, 0)`` answers "some process has this pid", which is not the
+    question the singleton is asking — "is the daemon we recorded still
+    running". The two come apart wherever pids are reused quickly, and a
+    container is the worst case rather than a corner one: every restart starts
+    a fresh pid namespace at 1, so a pidfile persisted on a volume names a low
+    pid that the *new* container has almost certainly handed to something else
+    — often to the init that just launched this very daemon. `serve` then
+    reports "daemon already running (pid 1)" and exits 1, every time, on the
+    volume whose whole purpose was to make restarts safe.
+
+    Linux exposes the distinguishing fact: field 22 of ``/proc/<pid>/stat`` is
+    the process's start time in clock ticks since boot. Two processes may share
+    a pid, but a process that started at a different moment is a different
+    process. Elsewhere — macOS has no procfs — there is nothing cheap and
+    correct to read, so this returns None and the caller keeps the older,
+    weaker answer instead of guessing.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    # comm (field 2) is the one field that may contain spaces and parentheses,
+    # and it is always parenthesised — so split after its *last* ')' rather
+    # than on whitespace, which a process named "(x) 1 2 3" would otherwise
+    # shift by four fields.
+    close = raw.rfind(b")")
+    if close == -1:
+        return None
+    fields = raw[close + 2 :].split()
+    # Field 22 overall. Fields 1 and 2 are behind us, so it is index 19 here.
+    if len(fields) < 20:
+        return None
+    return fields[19].decode("ascii", "replace")
+
+
+def _recorded_identity(cfg) -> tuple[int | None, str | None]:
+    """The (pid, start token) the running daemon wrote, as far as it is known."""
+    path = getattr(cfg, "statefile", None)
+    if path is None:
+        return (None, None)
+    try:
+        payload = json.loads(Path(path).read_text("utf-8"))
+    except (OSError, ValueError):
+        return (None, None)
+    if not isinstance(payload, dict):
+        return (None, None)
+    pid = payload.get("pid")
+    start = payload.get("pid_start")
+    return (
+        pid if isinstance(pid, int) else None,
+        start if isinstance(start, str) and start else None,
+    )
+
+
+def _daemon_alive(cfg, pid: int) -> bool:
+    """Is the daemon that wrote the pidfile still the process holding ``pid``?
+
+    Liveness first, because it is the cheap half and the only half available
+    off Linux. When the statefile corroborates the pidfile — same pid, and a
+    start token to compare — a mismatched token means the pid was reused and
+    the pidfile is stale.
+
+    A statefile naming a *different* pid is deliberately treated as no
+    information rather than as evidence of staleness. It is written just after
+    the pidfile is claimed, so during that window it still describes the
+    previous generation; reading it as proof would let a second booter declare
+    the live winner stale and reclaim its pidfile — reopening the double-boot
+    race ``O_EXCL`` exists to close.
+    """
+    if not _pid_alive(pid):
+        return False
+    recorded_pid, recorded_start = _recorded_identity(cfg)
+    if recorded_pid != pid or recorded_start is None:
+        return True
+    current = _process_start_token(pid)
+    if current is None:
+        return True
+    return current == recorded_start
+
+
+def _reachable_host(host: str) -> str:
+    """A bind address, rendered as somewhere a client can actually connect.
+
+    A wildcard bind is a statement about which interfaces to listen on, not an
+    address: nothing dials `http://0.0.0.0:8760/`. Every caller of `_url` is
+    either handing the string to a person to open or opening it itself, and
+    both were being given a URL that is wrong on macOS and merely peculiar on
+    Linux. Containers made it the common case rather than the exotic one —
+    `OPENAI4S_HOST=0.0.0.0` is the only way a published port reaches the
+    daemon — so the startup banner a container operator reads, and the
+    `openai4s url` they run to recover their token, both printed an address
+    they then had to know to translate.
+
+    Loopback is the honest rendering: it is reachable from inside the
+    namespace that is listening, and it is what the operator's own port
+    publishing or `kubectl port-forward` puts on the other end.
+    """
+    return "localhost" if host in ("0.0.0.0", "::", "") else host
+
+
 def _url(cfg, *, with_token: bool = True) -> str:
     """The URL a person can actually open.
 
@@ -125,7 +246,7 @@ def _url(cfg, *, with_token: bool = True) -> str:
     `with_token=False` is for anywhere the string is not being handed to a
     person to open — a credential does not belong in a log line or a title.
     """
-    base = f"http://{cfg.host}:{cfg.port}/"
+    base = f"http://{_reachable_host(cfg.host)}:{cfg.port}/"
     if not with_token:
         return base
     try:
@@ -365,7 +486,7 @@ def cmd_serve(args) -> int:
         # exactly the identity the readiness wait checks. A quick liveness
         # peek keeps the common "already running" answer immediate.
         existing = _read_pid(cfg)
-        if existing and _pid_alive(existing):
+        if existing and _daemon_alive(cfg, existing):
             print(f"daemon already running (pid {existing}) at {_url(cfg)}")
             return 1
         return _cmd_serve_detached(args, cfg)
@@ -376,7 +497,7 @@ def cmd_serve(args) -> int:
     # build-failure path below clears only the state this process owns.
     if not _acquire_singleton(cfg):
         existing = _read_pid(cfg)
-        if existing and _pid_alive(existing):
+        if existing and _daemon_alive(cfg, existing):
             print(f"daemon already running (pid {existing}) at {_url(cfg)}")
         else:
             print(
@@ -520,7 +641,7 @@ def cmd_diagnostics(args) -> int:
 def cmd_status(args) -> int:
     cfg = get_config()
     pid = _read_pid(cfg)
-    if not pid or not _pid_alive(pid):
+    if not pid or not _daemon_alive(cfg, pid):
         print("daemon: not running")
         return 1
     # confirm via /health
@@ -567,7 +688,7 @@ def _wait_pid_exit(
 def cmd_stop(args) -> int:
     cfg = get_config()
     pid = _read_pid(cfg)
-    if not pid or not _pid_alive(pid):
+    if not pid or not _daemon_alive(cfg, pid):
         print("daemon: not running")
         _clear_state(cfg)
         return 1
@@ -1237,7 +1358,7 @@ def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
 
 def _require_daemon(cfg) -> bool:
     pid = _read_pid(cfg)
-    if not pid or not _pid_alive(pid):
+    if not pid or not _daemon_alive(cfg, pid):
         print(
             "error: daemon is not running — start it with `openai4s serve`",
             file=sys.stderr,
