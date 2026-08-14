@@ -218,6 +218,18 @@
         404
       ]
     },
+    "/auth/redeem-invite": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/auth/status": {
       "content_types": [
         "application/json"
@@ -1266,6 +1278,18 @@
         404
       ]
     },
+    "/frames/([^/]+)/visibility": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/frames/[^/]+/(?:revert/preview|branches/revert-preview)": {
       "content_types": [
         "application/json"
@@ -1732,6 +1756,17 @@
         200
       ]
     },
+    "/sessions/([^/]+)/replay": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/sessions/import": {
       "content_types": [
         "application/json"
@@ -1925,6 +1960,116 @@
       "statuses": [
         200,
         404
+      ]
+    },
+    "/team/audit": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/invites": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/invites/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/projects/([^/]+)/members": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/projects/([^/]+)/members/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/quotas": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/usage": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/users": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/users/([^/]+)/disable": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/users/([^/]+)/reset-password": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
       ]
     },
     "/telemetry/consent": {
