@@ -1278,7 +1278,6 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .timeline-ledger-scroll{max-height:clamp(280px,62vh,720px);min-width:0;overflow:auto;overscroll-behavior-x:contain;overflow-anchor:none;border:var(--hair);border-radius:12px;background:var(--card);box-shadow:var(--shadow-soft)}
 .timeline-ledger-scroll:focus-visible{outline:2px solid var(--accent-fill);outline-offset:2px}
 .timeline-ledger{display:block;width:100%;min-width:410px;border-collapse:separate;border-spacing:0;color:var(--text-200)}
-.timeline-col-ordinal{width:62px}.timeline-col-kind{width:44px}.timeline-col-duration{width:68px}.timeline-col-tokens{width:62px}
 .timeline-ledger thead{position:sticky;top:0;z-index:3;display:block;background:var(--bg-100)}
 .timeline-ledger thead tr,.timeline-ledger-row{display:grid;grid-template-columns:62px 44px minmax(0,1fr) 68px 62px;width:100%}
 .timeline-ledger th{box-sizing:border-box;min-width:0;overflow:hidden;padding:7px 8px;border-bottom:var(--hair);background:var(--bg-100);color:var(--text-200);font-size:10px;font-weight:700;letter-spacing:.045em;text-align:left;text-overflow:ellipsis;text-transform:uppercase;white-space:nowrap}
@@ -1297,6 +1296,8 @@ textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px soli
 .timeline-ledger-row td.timeline-ledger-kind{justify-content:center}
 .timeline-ledger-row td.timeline-ledger-duration,.timeline-ledger-row td.timeline-ledger-tokens{justify-content:flex-end;text-align:right;color:var(--text-200)}
 .timeline-ledger-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-000);font-weight:550}
+.timeline-ledger-row td.timeline-ledger-title .timeline-row-button{flex:1 1 auto;min-width:0}
+.timeline-ledger-status{flex:0 0 auto;max-width:42%;margin-right:6px;overflow:hidden;font-weight:650;text-overflow:ellipsis;white-space:nowrap}
 .timeline-row-button{display:block;width:100%;overflow:hidden;border:0;padding:0;background:transparent;color:inherit;font:inherit;text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
 .timeline-row-button:focus-visible{border-radius:3px;outline:2px solid var(--accent-fill);outline-offset:2px}
 .timeline-ledger-kind{text-align:center}.timeline-kind-icon{display:inline-flex;align-items:center;justify-content:center;color:var(--text-400)}

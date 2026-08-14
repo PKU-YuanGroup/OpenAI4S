@@ -73,7 +73,13 @@ class ActionTimelineService:
         # Initial reads show the most recent research state. Cursor reads move
         # forward from their explicit ordinal and therefore keep the first page.
         groups = groups[:limit] if after_ordinal is not None else groups[-limit:]
-        attempts = self.store.list_execution_attempts(root_frame_id=root_frame_id)
+        # Scope the attempts to the same branch as the groups. Omitting it made
+        # list_attempts default branch_id to root_frame_id -- the main branch --
+        # so every group on a fork projected an empty attempts list, and the UI
+        # showed a blank timing chart with no durations.
+        attempts = self.store.list_execution_attempts(
+            root_frame_id=root_frame_id, branch_id=branch_id
+        )
         attempts_by_group: dict[str, list[dict]] = defaultdict(list)
         for attempt in attempts:
             attempts_by_group[str(attempt.get("group_id") or "")].append(attempt)

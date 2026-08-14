@@ -287,3 +287,44 @@ def test_timeline_caps_initial_history_to_latest_and_pages_forward(tmp_path):
     assert older["has_earlier"] is False
     assert older["has_more"] is False
     store.close()
+
+
+def test_timeline_scopes_attempts_to_the_requested_branch(tmp_path):
+    """A fork's own attempts must reach the projection.
+
+    ``list_attempts`` defaults ``branch_id`` to ``root_frame_id`` when it is
+    omitted, so querying attempts unscoped returned only the main branch's
+    rows. Every group on a fork then projected ``attempts: []``, which the web
+    UI renders as a blank timing chart with no durations.
+    """
+
+    store = Store(tmp_path / "openai4s.db")
+    main = store.append_action_group(
+        root_frame_id="root", turn_id="t0", kind="code", ordinal=0
+    )
+    store.allocate_execution_attempt(
+        group_id=main["group_id"], producing_cell_id="cell-main"
+    )
+    fork = store.append_action_group(
+        root_frame_id="root",
+        branch_id="branch-b",
+        turn_id="t1",
+        kind="code",
+        ordinal=0,
+    )
+    store.allocate_execution_attempt(
+        group_id=fork["group_id"], producing_cell_id="cell-fork"
+    )
+
+    service = ActionTimelineService(store)
+
+    on_main = service.get("root")["groups"]
+    assert [attempt["producing_cell_id"] for attempt in on_main[0]["attempts"]] == [
+        "cell-main"
+    ]
+
+    on_fork = service.get("root", branch_id="branch-b")["groups"]
+    assert [attempt["producing_cell_id"] for attempt in on_fork[0]["attempts"]] == [
+        "cell-fork"
+    ]
+    store.close()

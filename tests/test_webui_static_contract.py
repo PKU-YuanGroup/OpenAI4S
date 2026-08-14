@@ -1019,7 +1019,13 @@ def test_action_timeline_overview_is_truthful_interactive_and_constant_dom() -> 
     assert "timeline.has_more_before" in controls
     assert "includesLoadedStart" in controls
     assert "overview.dataStart == null || includesLoadedStart" in controls
-    assert "overview.restoreFocusAfterPrefix = true" in view_creator
+    # The latch arms only when the load actually took the history lock.
+    # Arming it unconditionally survived every early return in
+    # loadEarlierActionTimeline, and the next repaint then stole focus.
+    assert (
+        "overview.restoreFocusAfterPrefix = !!S._timelineHistoryLoading" in view_creator
+    )
+    assert "overview.restoreFocusAfterPrefix = true" not in view_creator
     assert "loadEarlierActionTimeline()" in view_creator
     assert 'data-action", "load-omitted-timeline"' in creator
     assert (
@@ -2605,3 +2611,55 @@ def test_a_legacy_202_without_ids_still_leaves_the_turn_running() -> None:
     assert state["before"] == {"running": True, "resume": 1}
     assert state["stale"] is False, "an idless terminal could never close the turn"
     assert state["running"] is False
+
+
+def test_action_timeline_ledger_row_reports_state_it_cannot_fabricate() -> None:
+    """The row must not present unknown state as a known value.
+
+    Three of these were regressions against the card the ledger replaced:
+    status and the attempt error were reduced to an icon colour, an absent
+    usage row printed a fabricated ``0``, and a time brush resolved through the
+    paint model so an action with no execution attempt vanished from the list.
+    """
+
+    row = _extract_js_function(APP_JS, "actionTimelineLedgerRow")
+    overlap = _extract_js_function(APP_JS, "actionTimelineSelectionOverlaps")
+    filtered = _extract_js_function(APP_JS, "filteredActionTimelineGroups")
+    epoch = _extract_js_function(APP_JS, "timelineEpochMs")
+    duration = _extract_js_function(APP_JS, "timelineDurationMs")
+    search_doc = _extract_js_function(APP_JS, "actionTimelineSearchDocument")
+    creator = _extract_js_function(APP_JS, "createActionTimelineView")
+    renderer = _extract_js_function(APP_JS, "renderActionTimeline")
+    history = _extract_js_function(APP_JS, "syncActionTimelineHistoryState")
+
+    # Unknown token usage stays unknown; a real 0 and an absent row differ.
+    assert 'group.usage ? String(timelineTokenTotal(group.usage)) : "—"' in row
+    # Status and the attempt error reach text, not just a colour class.
+    assert "timeline-ledger-status" in row and "statusNoteworthy" in row
+    assert "latest.error" in row or "rowError" in row
+    assert ".timeline-ledger-status" in STYLE_CSS
+
+    # A time filter asks when an action happened, not whether it was painted.
+    assert "group.created_at" in overlap and "if (!item) return false" not in overlap
+    assert "selection, group)" in filtered
+
+    # One timestamp parser, shared, and never one Date cannot represent.
+    assert "Date.parse" in epoch and "TIMELINE_MAX_EPOCH_MS" in epoch
+    assert "const parse = timelineEpochMs" in duration
+
+    # Search covers the Kind label the placeholder advertises.
+    assert "timelineKind(group" in search_doc
+    assert 't("timeline.kind." + kind)' in search_doc
+    assert "cached.lang === LANG" in _extract_js_function(
+        APP_JS, "syncActionTimelineSearchIndex"
+    )
+
+    # The CSS strips implicit table roles, so they are declared explicitly.
+    for role in ('"role", "table"', '"role", "rowgroup"', '"role", "columnheader"'):
+        assert role in creator
+    assert '"role", "row"' in row and '"role", "cell"' in row
+
+    # Any render that does not re-append the region must destroy the view.
+    assert "else {" in renderer and "destroyActionTimelineView();" in renderer
+    # The reserved slot is measured after its own reservation is cleared.
+    assert 'target.style.minHeight = "";\n  const previousHeight' in history

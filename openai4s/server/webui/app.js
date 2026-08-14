@@ -3071,10 +3071,12 @@ function timelineKind(group) {
 }
 function timelineDurationMs(attempt) {
   if (!attempt) return "";
-  // ActionTimelineService exposes INTEGER epoch milliseconds. Keep a string
-  // fallback for imported legacy projections, but never reinterpret a small
-  // numeric timestamp as seconds.
-  const parse = value => { if (value == null || value === "") return null; const number = +value; if (Number.isFinite(number)) return number; const date = Date.parse(value); return Number.isFinite(date) ? date : null; };
+  // ActionTimelineService exposes INTEGER epoch milliseconds, and a small
+  // numeric timestamp is never reinterpreted as seconds. Parsing goes through
+  // timelineEpochMs so the ledger, the overview and the turn stats agree about
+  // which timestamps exist — a field one of them can read and another cannot
+  // produced a duration with no bar and a completed turn labelled "≥".
+  const parse = timelineEpochMs;
   const start = parse(attempt.started_at != null ? attempt.started_at : attempt.allocated_at);
   const end = parse(attempt.finished_at != null ? attempt.finished_at : (attempt.capture_at != null ? attempt.capture_at : attempt.response_at));
   if (start == null || end == null || end < start) return "";
@@ -3167,10 +3169,18 @@ function timelineTokenTotal(usage) {
   const source = usage || {}, input = +source.input_tokens || 0, output = +source.output_tokens || 0, total = +source.total_tokens || 0;
   return total > 0 ? total : input + output;
 }
+// Every consumer of an attempt timestamp must agree on what is parseable, or a
+// projection renders a duration the chart cannot plot and the turn stats read
+// as still running. This is the single parser: it accepts what
+// timelineDurationMs accepts, including the ISO string fallback kept for
+// imported legacy projections, and refuses anything Date cannot represent
+// (|t| > 8.64e15) so toISOString can never throw out of a render.
+const TIMELINE_MAX_EPOCH_MS = 8.64e15;
 function timelineEpochMs(value) {
   if (value == null || value === "") return null;
   const number = Number(value);
-  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+  const ms = Number.isFinite(number) ? Math.round(number) : Date.parse(value);
+  return Number.isFinite(ms) && ms >= 0 && ms <= TIMELINE_MAX_EPOCH_MS ? ms : null;
 }
 function actionTimelineSpan(group, rank, laneCount) {
   const attempt = latestActionTimelineAttempt(group);
@@ -3408,17 +3418,29 @@ function timelineOverviewXToDomainTime(start, end, x) {
   const ratio = Math.max(0, Math.min(1, x / ACTION_TIMELINE_OVERVIEW_WIDTH));
   return start + ratio * (end - start);
 }
-function actionTimelineSelectionOverlaps(item, selection) {
+// A time filter is a question about when an action happened, not about whether
+// the chart could paint it. Permission decisions, native tool calls, delegates
+// and finalize groups carry no execution attempt, so they have no span — they
+// are still real actions with a real timestamp, and dropping them would hide
+// the control plane from the surface whose whole job is to show it.
+function actionTimelineSelectionOverlaps(item, selection, group = null) {
   if (!selection) return true;
-  if (!item) return false;
   const left = Math.min(selection.start, selection.end), right = Math.max(selection.start, selection.end);
-  return item.start <= right && item.end >= left;
+  if (item) return item.start <= right && item.end >= left;
+  const createdAt = timelineEpochMs(group && group.created_at);
+  return createdAt != null && createdAt >= left && createdAt <= right;
 }
 function normalizeActionTimelineSearch(value) {
   return String(value || "").trim().toLocaleLowerCase();
 }
 function actionTimelineSearchDocument(group) {
-  const fields = [group && group.title, group && group.kind];
+  // The placeholder promises the Kind column, so index the label the row
+  // actually shows. group.kind is the raw server token ("code"); the displayed
+  // kind is derived from it plus language and event types ("python" ->
+  // "Python Cell"), so indexing the raw value alone left the visible text
+  // unsearchable. Keep the raw token too — it is what the ledger stores.
+  const kind = timelineKind(group || {});
+  const fields = [group && group.title, group && group.kind, kind, t("timeline.kind." + kind)];
   ((group && group.events) || []).forEach(event => {
     (event.resource_keys || []).forEach(value => fields.push(value));
     (event.artifacts || []).forEach(value => fields.push(value));
@@ -3429,7 +3451,9 @@ function syncActionTimelineSearchIndex(view, groups) {
   const previous = view.searchIndex || new Map(), next = new Map();
   groups.forEach(group => {
     const cached = previous.get(group.group_id);
-    next.set(group.group_id, cached && cached.group === group ? cached : { group, text: actionTimelineSearchDocument(group) });
+    // The document carries a localized kind label, so it is language-scoped.
+    next.set(group.group_id, cached && cached.group === group && cached.lang === LANG
+      ? cached : { group, lang: LANG, text: actionTimelineSearchDocument(group) });
   });
   view.searchIndex = next;
 }
@@ -3444,7 +3468,7 @@ function searchActionTimelineGroups(view, groups) {
 function filteredActionTimelineGroups(view, groups) {
   const selection = view && view.overview && view.overview.selection;
   if (!selection) return groups;
-  return groups.filter(group => actionTimelineSelectionOverlaps(view.overview.model.byId.get(group.group_id), selection));
+  return groups.filter(group => actionTimelineSelectionOverlaps(view.overview.model.byId.get(group.group_id), selection, group));
 }
 function actionTimelineTurnStats(groups) {
   let totalMs = 0, hasDuration = false, hasRunning = false;
@@ -3486,15 +3510,27 @@ function actionTimelineLedgerEntries(view, groups) {
 function actionTimelineEntryKey(entry) {
   return !entry ? "" : (entry.type === "turn" ? "turn:" + entry.turnId : "group:" + entry.group.group_id);
 }
+// `display:none` destroys the scrolling box, so a hidden ledger reports
+// scrollTop 0 and offsetHeight 0. Snapshotting it live would anchor every
+// off-tab restore to the first entry with a fabricated -30px offset, so read
+// through the cached values whenever the pane has no layout box.
+function actionTimelineLiveScrollTop(view) {
+  return view.scroll.clientHeight > 0 ? view.scroll.scrollTop : view.scrollTop;
+}
+function actionTimelineHeaderHeight(view) {
+  const measured = view.thead.offsetHeight;
+  if (measured > 0) { view.headerHeight = measured; return measured; }
+  return view.headerHeight || 30;
+}
 function actionTimelineFilterScrollSnapshot(view) {
-  const headerHeight = view.thead.offsetHeight || 30;
-  const entries = view.entries || [], index = Math.max(0, Math.min(entries.length - 1, Math.floor(Math.max(0, view.scroll.scrollTop - headerHeight) / ACTION_TIMELINE_ROW_HEIGHT)));
+  const headerHeight = actionTimelineHeaderHeight(view), scrollTop = actionTimelineLiveScrollTop(view);
+  const entries = view.entries || [], index = Math.max(0, Math.min(entries.length - 1, Math.floor(Math.max(0, scrollTop - headerHeight) / ACTION_TIMELINE_ROW_HEIGHT)));
   const entry = entries[index];
   return {
     entryKey: actionTimelineEntryKey(entry),
     groupId: entry && entry.type === "group" ? entry.group.group_id : null,
     turnId: entry && (entry.turnId || (entry.group && entry.group.turn_id)),
-    offset: view.scroll.scrollTop - (headerHeight + index * ACTION_TIMELINE_ROW_HEIGHT),
+    offset: scrollTop - (headerHeight + index * ACTION_TIMELINE_ROW_HEIGHT),
     followTail: view.followTail
   };
 }
@@ -3547,7 +3583,7 @@ function syncActionTimelineOverviewControls(view) {
 function clearActionTimelineOverviewSelection(view, options = {}) {
   const overview = view && view.overview; if (!overview || (!overview.selection && !overview.draftSelection)) return false;
   const restoreControlFocus = document.activeElement === overview.clearButton;
-  overview.selection = null; overview.draftSelection = null; overview.preFilterScroll = null;
+  overview.selection = null; overview.draftSelection = null;
   const restore = options.restore !== false && !view.searchNeedle ? view.preFilterScroll : null;
   if (!view.searchNeedle) view.preFilterScroll = null;
   view.autoLoadArmed = false; clearActionTimelineOverviewHover(view);
@@ -3571,7 +3607,6 @@ function selectActionTimelineGroup(groupId, branchScope, fromOverview = false) {
   let filterChanged = false, filterRestore = null;
   if (fromOverview && view.overview.selection && !view.groups.some(group => group.group_id === groupId)) {
     filterChanged = clearActionTimelineOverviewSelection(view, { update: false, restore: false });
-    view.overview.preFilterScroll = null;
   }
   if (fromOverview && targetGroup.turn_id && view.collapsedTurns.has(targetGroup.turn_id) && !view.searchNeedle) {
     filterRestore = actionTimelineFilterScrollSnapshot(view); view.collapsedTurns.delete(targetGroup.turn_id); filterChanged = true;
@@ -3817,7 +3852,7 @@ function createActionTimelineOverview() {
   axis.appendChild(axisStart); axis.appendChild(nav); axis.appendChild(axisEnd); shell.appendChild(axis);
   return { shell, head, label, help, keyboardHelp, selectionStatus, clearButton, plot, svg, prefixButton, tooltip, axis, axisStart, axisEnd, nav, zoomInButton, zoomOutButton, panEarlierButton, panLaterButton, queuePath, ttftPath, decodePath, pointPath, markerPath, selectionRect, selectedPath, hoverPath,
     legendQueue, legendTtft, legendDecode, model: actionTimelineOverviewModel([]), dataStart: null, dataEnd: null,
-    viewStart: null, viewEnd: null, initialized: false, selection: null, draftSelection: null, preFilterScroll: null, gesture: null,
+    viewStart: null, viewEnd: null, initialized: false, selection: null, draftSelection: null, gesture: null,
     hoverTimer: 0, hoverLeaveTimer: 0, tooltipHovered: false, hoverCandidateId: null, hoverGroupId: null, hoverPoint: null, keyboardGroupId: null, restoreFocusAfterPrefix: false, raf: 0 };
 }
 function actionTimelineTurnToggle(turnId, stats, expanded, view) {
@@ -3834,25 +3869,49 @@ function actionTimelineLedgerRow(group, reusableRow, turnBoundary, selected, bra
   const statusClass = status.replace(/[^a-z0-9_-]/g, "-") || "completed";
   const row = reusableRow || el("tr", "timeline-ledger-row");
   row.className = "timeline-ledger-row kind-" + kind + " status-" + statusClass + (turnBoundary ? " turn-boundary" : "") + (selected ? " selected" : "") + (firstRow ? " timeline-first-row" : "") + (options.searchMatch ? " search-match" : "");
+  row.setAttribute("role", "row");
   row.dataset.groupId = group.group_id; row.dataset.turnId = group.turn_id || ""; row.dataset.actionKind = kind;
+  row.dataset.status = statusClass;
   const ordinal = timelineOrdinal(group.ordinal), ordinalText = ordinal == null ? "—" : String(ordinal);
   row.replaceChildren();
-  const ordinalCell = el("td", "timeline-ledger-ordinal");
+  const cell = className => { const node = el("td", className); node.setAttribute("role", "cell"); return node; };
+  const ordinalCell = cell("timeline-ledger-ordinal");
   if (options.turnStart) {
     if (options.foldable && options.stats) ordinalCell.appendChild(actionTimelineTurnToggle(options.turnId, options.stats, true, S._timelineView));
     else ordinalCell.appendChild(el("span", "timeline-turn-marker", t("timeline.turnBoundary")));
   }
   ordinalCell.appendChild(el("span", "timeline-ordinal-value", "#" + ordinalText)); row.appendChild(ordinalCell);
-  const kindCell = el("td", "timeline-ledger-kind"); const kindIcon = el("span", "timeline-kind-icon");
+  const kindCell = cell("timeline-ledger-kind"); const kindIcon = el("span", "timeline-kind-icon");
   kindIcon.title = t("timeline.kind." + kind); kindIcon.setAttribute("aria-hidden", "true"); kindIcon.appendChild(iconEl(timelineKindIcon(kind), 15)); kindCell.appendChild(kindIcon);
   kindCell.appendChild(el("span", "timeline-kind-label", t("timeline.kind." + kind))); row.appendChild(kindCell);
-  const title = group.title || t("timeline.kind." + kind), titleCell = el("td", "timeline-ledger-title");
-  const titleButton = el("button", "timeline-row-button", title); titleButton.type = "button"; titleButton.title = title;
-  titleButton.setAttribute("aria-label", t("timeline.row.open", ordinalText, title)); titleButton.setAttribute("aria-expanded", selected ? "true" : "false");
+  const title = group.title || t("timeline.kind." + kind), titleCell = cell("timeline-ledger-title");
+  // Status was color on a 15px glyph and nothing else, so cancelled, pending,
+  // running and recorded rows were pixel-identical to completed and no
+  // accessible name carried the state. Anything that is not a plain completion
+  // gets text, in the row and in its accessible name.
+  const statusText = publicText(status || "completed", 32);
+  const statusNoteworthy = statusClass !== "completed" && statusClass !== "recorded";
+  if (statusNoteworthy) titleCell.appendChild(el("span", "timeline-ledger-status timeline-status " + statusClass, statusText));
+  const titleButton = el("button", "timeline-row-button", title); titleButton.type = "button";
+  const latest = latestActionTimelineAttempt(group), rowError = latest && latest.error;
+  titleButton.title = rowError ? title + " — " + rowError : title;
+  titleButton.setAttribute("aria-label", statusNoteworthy
+    ? t("timeline.row.open", ordinalText, title) + " · " + statusText + (rowError ? " · " + rowError : "")
+    : t("timeline.row.open", ordinalText, title));
+  titleButton.setAttribute("aria-expanded", selected ? "true" : "false");
   if (selected) titleButton.setAttribute("aria-controls", "timeline-action-inspector");
   titleCell.appendChild(titleButton); row.appendChild(titleCell);
-  const details = actionTimelineDetails(group); row.appendChild(el("td", "timeline-ledger-duration", details.duration || "—"));
-  const tokens = el("td", "timeline-ledger-tokens", String(timelineTokenTotal(group.usage))); tokens.title = details.tokens; row.appendChild(tokens);
+  // Only the two scalars are needed here; actionTimelineDetails also walks
+  // every event and de-dupes resources/artifacts with Array.includes, and the
+  // row discarded all of it.
+  const durationCell = cell("timeline-ledger-duration"); durationCell.textContent = timelineDuration(latest) || "—"; row.appendChild(durationCell);
+  // An absent usage row means unknown, not zero. The server returns null for
+  // every group that carried no model reply, and a fabricated 0 is
+  // indistinguishable from a real one.
+  const tokens = cell("timeline-ledger-tokens");
+  tokens.textContent = group.usage ? String(timelineTokenTotal(group.usage)) : "—";
+  if (group.usage) tokens.title = t("timeline.tokensValue", (group.usage || {}).input_tokens || 0, (group.usage || {}).output_tokens || 0);
+  row.appendChild(tokens);
   const groupId = group.group_id;
   row.onclick = () => selectActionTimelineGroup(groupId, branchScope, false);
   row._timelineGroup = group; row._timelineTurnBoundary = turnBoundary; row._timelineSelected = selected;
@@ -3864,12 +3923,14 @@ function actionTimelineLedgerRow(group, reusableRow, turnBoundary, selected, bra
 function actionTimelineTurnSummaryRow(entry, reusableRow, branchScope, firstRow = false) {
   const row = reusableRow || el("tr", "timeline-ledger-row timeline-turn-summary");
   row.className = "timeline-ledger-row timeline-turn-summary" + (entry.turnBoundary ? " turn-boundary" : "") + (firstRow ? " timeline-first-row" : "");
-  delete row.dataset.groupId; delete row.dataset.actionKind; row.dataset.turnId = entry.turnId;
+  row.setAttribute("role", "row");
+  delete row.dataset.groupId; delete row.dataset.actionKind; delete row.dataset.status; row.dataset.turnId = entry.turnId;
   row.replaceChildren();
-  const ordinalCell = el("td", "timeline-ledger-ordinal"); ordinalCell.appendChild(actionTimelineTurnToggle(entry.turnId, entry.stats, false, S._timelineView)); row.appendChild(ordinalCell);
-  const kindCell = el("td", "timeline-ledger-kind"); const chevron = el("span", "timeline-turn-summary-icon", "↳"); chevron.setAttribute("aria-hidden", "true"); kindCell.appendChild(chevron); row.appendChild(kindCell);
-  row.appendChild(el("td", "timeline-ledger-title", t("timeline.turn.summary", entry.stats.count)));
-  row.appendChild(el("td", "timeline-ledger-duration", entry.stats.duration)); row.appendChild(el("td", "timeline-ledger-tokens", "—"));
+  const cell = (className, text) => { const node = el("td", className, text); node.setAttribute("role", "cell"); return node; };
+  const ordinalCell = cell("timeline-ledger-ordinal"); ordinalCell.appendChild(actionTimelineTurnToggle(entry.turnId, entry.stats, false, S._timelineView)); row.appendChild(ordinalCell);
+  const kindCell = cell("timeline-ledger-kind"); const chevron = el("span", "timeline-turn-summary-icon", "↳"); chevron.setAttribute("aria-hidden", "true"); kindCell.appendChild(chevron); row.appendChild(kindCell);
+  row.appendChild(cell("timeline-ledger-title", t("timeline.turn.summary", entry.stats.count)));
+  row.appendChild(cell("timeline-ledger-duration", entry.stats.duration)); row.appendChild(cell("timeline-ledger-tokens", "—"));
   row.onclick = () => toggleActionTimelineTurn(S._timelineView, entry.turnId);
   row._timelineTurnId = entry.turnId; row._timelineTurnBoundary = entry.turnBoundary; row._timelineTurnSignature = entry.stats.count + ":" + entry.stats.duration;
   row._timelineBranchScope = branchScope; row._timelineLanguage = LANG; row._timelineFirstRow = firstRow;
@@ -3882,7 +3943,7 @@ function focusActionTimelineEntry(view, index) {
   if (!view || !view.entries.length) return;
   const targetIndex = Math.max(0, Math.min(view.entries.length - 1, index)), entry = view.entries[targetIndex];
   const viewportTop = targetIndex * ACTION_TIMELINE_ROW_HEIGHT;
-  const headerHeight = view.thead.offsetHeight || 30;
+  const headerHeight = actionTimelineHeaderHeight(view);
   const viewportBottom = viewportTop + ACTION_TIMELINE_ROW_HEIGHT + headerHeight;
   if (viewportTop < view.scroll.scrollTop) view.scroll.scrollTop = viewportTop;
   else if (viewportBottom > view.scroll.scrollTop + view.scroll.clientHeight) view.scroll.scrollTop = viewportBottom - view.scroll.clientHeight;
@@ -4017,14 +4078,23 @@ function createActionTimelineView(rootFrameId, branchId) {
   const ledgerHelp = el("div", "timeline-ledger-keyboard-help", t("timeline.ledger.keyboard")); ledgerHelp.id = "timeline-ledger-keyboard-help"; region.appendChild(ledgerHelp);
   const scroll = el("div", "timeline-ledger-scroll");
   scroll.tabIndex = 0; scroll.setAttribute("role", "region"); scroll.setAttribute("aria-label", t("timeline.title")); scroll.setAttribute("aria-describedby", ledgerHelp.id);
-  const table = el("table", "timeline-ledger"); table.setAttribute("aria-colcount", "5");
+  // The stylesheet gives every table element an explicit display (block/grid/
+  // flex) so the rows can be absolutely positioned, and that strips the
+  // implicit table/rowgroup/row/cell roles. aria-colcount, aria-rowcount and
+  // aria-rowindex are only honoured inside a table role context, so without
+  // these the virtualized "row 412 of 8000" announcement is silently dropped.
+  const table = el("table", "timeline-ledger"); table.setAttribute("role", "table"); table.setAttribute("aria-colcount", "5");
   const thead = el("thead"), header = el("tr");
+  thead.setAttribute("role", "rowgroup"); header.setAttribute("role", "row"); header.setAttribute("aria-rowindex", "1");
   const headerColumns = [["timeline.column.ordinal", "timeline-ledger-ordinal"], ["timeline.column.kind", "timeline-ledger-kind"], ["timeline.column.action", "timeline-ledger-title"], ["timeline.duration", "timeline-ledger-duration"], ["timeline.tokens", "timeline-ledger-tokens"]];
-  headerColumns.forEach(([key, className]) => { const th = el("th", className, t(key)); th.scope = "col"; th.dataset.i18nKey = key; header.appendChild(th); });
+  headerColumns.forEach(([key, className], column) => {
+    const th = el("th", className, t(key)); th.scope = "col"; th.dataset.i18nKey = key;
+    th.setAttribute("role", "columnheader"); th.setAttribute("aria-colindex", String(column + 1)); header.appendChild(th);
+  });
   thead.appendChild(header); table.appendChild(thead);
-  const tbody = el("tbody", "timeline-ledger-body"); table.appendChild(tbody); scroll.appendChild(table); region.appendChild(scroll);
+  const tbody = el("tbody", "timeline-ledger-body"); tbody.setAttribute("role", "rowgroup"); table.appendChild(tbody); scroll.appendChild(table); region.appendChild(scroll);
   const view = { rootFrameId, branchId, region, search, overview, inspectorHost, filterEmpty, ledgerHelp, scroll, table, thead, tbody, allGroups: [], groups: [], entries: [],
-    initialized: false, followTail: true, scrollTop: 0, scrollLeft: 0, start: 0, end: 0,
+    initialized: false, followTail: true, scrollTop: 0, scrollLeft: 0, headerHeight: 0, start: 0, end: 0,
     autoLoadArmed: true, autoLoadCursor: null, raf: 0, resizeObserver: null, language: LANG,
     searchQuery: "", searchNeedle: "", searchIndex: new Map(), collapsedTurns: new Set(), preFilterScroll: null,
     pendingPrependRestore: null, restoreFocusTurnId: null };
@@ -4067,11 +4137,18 @@ function createActionTimelineView(rootFrameId, branchId) {
   overview.panEarlierButton.onclick = event => { event.stopPropagation(); const span = overview.viewEnd - overview.viewStart; actionTimelineOverviewPanBy(view, -span * .1); };
   overview.panLaterButton.onclick = event => { event.stopPropagation(); const span = overview.viewEnd - overview.viewStart; actionTimelineOverviewPanBy(view, span * .1); };
   overview.prefixButton.addEventListener("pointerdown", event => event.stopPropagation());
-  overview.prefixButton.onclick = event => { event.stopPropagation(); overview.restoreFocusAfterPrefix = true; loadEarlierActionTimeline(); };
+  // Arm the focus-restore latch only if the load actually took the lock.
+  // loadEarlierActionTimeline sets it synchronously before its first await, so
+  // this reads the real outcome; setting the latch unconditionally left it
+  // armed across every early return, and the next repaint then stole focus.
+  overview.prefixButton.onclick = event => {
+    event.stopPropagation(); loadEarlierActionTimeline();
+    overview.restoreFocusAfterPrefix = !!S._timelineHistoryLoading;
+  };
   scroll.addEventListener("scroll", () => actionTimelineViewportScrolled(view), { passive: true });
   scroll.addEventListener("keydown", event => {
     if (event.target !== scroll || !view.entries.length || !["Enter", "ArrowDown", "Home"].includes(event.key)) return;
-    const headerHeight = view.thead.offsetHeight || 30;
+    const headerHeight = actionTimelineHeaderHeight(view);
     const firstVisible = Math.max(0, Math.min(view.entries.length - 1,
       Math.floor(Math.max(0, view.scroll.scrollTop - headerHeight) / ACTION_TIMELINE_ROW_HEIGHT)));
     event.preventDefault(); focusActionTimelineEntry(view, event.key === "Home" ? 0 : firstVisible);
@@ -4110,7 +4187,7 @@ function reconcileActionTimelineWindow(view, force = false) {
   if (!view || view !== S._timelineView) return;
   const entries = view.entries, scroll = view.scroll;
   const viewportHeight = scroll.clientHeight || ACTION_TIMELINE_ROW_HEIGHT * 12;
-  const headerHeight = view.thead.offsetHeight || 30;
+  const headerHeight = actionTimelineHeaderHeight(view);
   const viewportStart = Math.max(0, scroll.scrollTop - headerHeight);
   const viewportEnd = Math.max(0, scroll.scrollTop + viewportHeight - headerHeight);
   const start = Math.max(0, Math.floor(viewportStart / ACTION_TIMELINE_ROW_HEIGHT) - ACTION_TIMELINE_OVERSCAN);
@@ -4204,8 +4281,9 @@ function updateActionTimelineLedger(options = {}) {
   if (force) {
     view.thead.querySelectorAll("th[data-i18n-key]").forEach(th => { th.textContent = t(th.dataset.i18nKey); });
     view.ledgerHelp.textContent = t("timeline.ledger.keyboard");
-    if (!filterEmpty) view.filterEmpty.textContent = t("timeline.overview.emptySelection"); view.overview.clearButton.textContent = t("timeline.overview.clear");
-    view.overview.clearButton.setAttribute("aria-label", t("timeline.overview.clear"));
+    // The clear button's own label is already re-localized unconditionally in
+    // drawActionTimelineOverview, which ran above.
+    if (!filterEmpty) view.filterEmpty.textContent = t("timeline.overview.emptySelection");
   }
   syncActionTimelineInspector(view, force);
   const snapshot = options.prependSnapshot, pendingPrependRestore = view.pendingPrependRestore; view.pendingPrependRestore = null;
@@ -4220,7 +4298,7 @@ function updateActionTimelineLedger(options = {}) {
       let index = entries.findIndex(entry => actionTimelineEntryKey(entry) === restore.entryKey);
       if (index < 0 && restore.groupId) index = actionTimelineEntryIndexForGroup(view, restore.groupId);
       if (index < 0 && restore.turnId) index = entries.findIndex(entry => entry.turnId === restore.turnId);
-      const headerHeight = view.thead.offsetHeight || 30;
+      const headerHeight = actionTimelineHeaderHeight(view);
       view.scroll.scrollTop = index >= 0 ? Math.max(0, headerHeight + index * ACTION_TIMELINE_ROW_HEIGHT + restore.offset) : 0;
     } else view.scroll.scrollTop = 0;
     view.followTail = !!(restore && restore.followTail); view.initialized = true;
@@ -4233,7 +4311,10 @@ function updateActionTimelineLedger(options = {}) {
     view.scroll.scrollTop = view.scrollTop;
   }
   view.scroll.scrollLeft = view.scrollLeft;
-  view.scrollTop = view.scroll.scrollTop; view.scrollLeft = view.scroll.scrollLeft;
+  // Only trust a live reading. A hidden pane has no scrolling box and reports
+  // 0, which would overwrite the cache that is the sole record of where the
+  // reader was.
+  if (view.scroll.clientHeight > 0) { view.scrollTop = view.scroll.scrollTop; view.scrollLeft = view.scroll.scrollLeft; }
   reconcileActionTimelineWindow(view, force); syncActionTimelineHistoryState();
   if (!view.initialized && entries.length) scheduleActionTimelineWindow(view);
 }
@@ -4595,8 +4676,11 @@ function syncActionTimelineHistoryState(host = null) {
   const root = $("#dock-timeline");
   const target = host || (root && root.querySelector(".timeline-history-state"));
   if (!target) return;
-  const previousHeight = target.getBoundingClientRect().height;
-  const timeline = S.actionTimeline || {}; target.replaceChildren(); target.style.minHeight = "";
+  // Clear any reservation before measuring, or the slot measures itself and
+  // re-reserves forever — the band would never collapse.
+  target.style.minHeight = "";
+  const previousHeight = target.children.length ? target.getBoundingClientRect().height : 0;
+  const timeline = S.actionTimeline || {}; target.replaceChildren();
   if (timeline.has_more_before) {
     const controls = el("div", "workbench-controls timeline-history-controls");
     const loading = actionTimelineHistoryIsLoading(timeline);
@@ -4629,7 +4713,11 @@ function renderActionTimeline() {
     else previousView.restoreFocusTurnId = activeRow.dataset.turnId || null;
   }
   if (actionTimelineViewMatches(previousView, rootFrameScope, branchScope)) {
-    previousView.scrollTop = previousView.scroll.scrollTop; previousView.scrollLeft = previousView.scroll.scrollLeft;
+    // Returning to the tab re-creates the scrolling box at offset 0, so the
+    // live reading is 0 and only the cache still knows where the reader was.
+    if (previousView.scroll.clientHeight > 0) {
+      previousView.scrollTop = previousView.scroll.scrollTop; previousView.scrollLeft = previousView.scroll.scrollLeft;
+    }
   } else {
     destroyActionTimelineView(previousView); S._timelineRestoreFocusGroupId = null;
   }
@@ -4645,10 +4733,18 @@ function renderActionTimeline() {
   const historyState = el("div", "timeline-history-state hidden"); actions.appendChild(historyState); syncActionTimelineHistoryState(historyState);
   const hasRecovery = !!(S.recoveryActions || (S.recoveryState && (S.recoveryState.status || (S.recoveryState.log || []).length)));
   if (hasRecovery) actions.appendChild(recoveryTimelineCard(S.recoveryState, S.recoveryActions));
-  if (!groups.length && !timeline.has_more_before && !S.workbenchErrors.timelineHistory && !hasRecovery) {
-    actions.appendChild(el("div", "workbench-empty timeline-empty", S._workbenchLoading ? t("timeline.loading") : t("timeline.empty")));
+  if (groups.length) actions.appendChild(actionTimelineLedger(groups, branchScope, rootFrameScope));
+  else {
+    // root.replaceChildren() above detached the region, so any path that does
+    // not re-append it must destroy the view. Destroying only on the fully
+    // empty path stranded a detached tree that still held a document-level
+    // keydown listener and a live ResizeObserver, and that
+    // syncActionTimelineHistoryState kept writing into.
     destroyActionTimelineView();
-  } else if (groups.length) actions.appendChild(actionTimelineLedger(groups, branchScope, rootFrameScope));
+    if (!timeline.has_more_before && !S.workbenchErrors.timelineHistory && !hasRecovery) {
+      actions.appendChild(el("div", "workbench-empty timeline-empty", S._workbenchLoading ? t("timeline.loading") : t("timeline.empty")));
+    }
+  }
   layout.appendChild(actions); root.appendChild(layout);
   if (groups.length) updateActionTimelineLedger({ direction: "render" });
   else S._timelineRestoreFocusGroupId = null;
