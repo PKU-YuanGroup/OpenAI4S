@@ -114,6 +114,7 @@ from openai4s.storage.settings import SettingsRepository
 from openai4s.storage.shares import SharesRepository
 from openai4s.storage.skills import SkillVersionRepository
 from openai4s.storage.snapshots import SessionSnapshotRepository
+from openai4s.storage.team import TeamRepository, create_team_schema
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS frames (
@@ -660,6 +661,12 @@ QUERY_DENYLIST = frozenset(
         "settings",
         "connectors",
         "memories",
+        # Team-mode identity (INV-9 hygiene): password hashes, login-token
+        # hashes, and the governance audit trail are never agent-readable.
+        "users",
+        "auth_sessions",
+        "team_audit_log",
+        "session_owners",
         "host_call_log",
         "permission_rules",
         "permission_requests",
@@ -959,6 +966,11 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._team = TeamRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._shares = SharesRepository(
             self._conn,
             self._lock,
@@ -1177,6 +1189,7 @@ class Store:
                         "datapro_content_index_repair",
                         self._apply_datapro_content_index_repair,
                     ),
+                    18: ("team_users", self._apply_team_users),
                 },
             )
             if report["migrated"]:
@@ -1186,6 +1199,17 @@ class Store:
         """Version 16: lossless local indexing for DataPro responses."""
 
         create_datapro_index_schema(conn)
+
+    def _apply_team_users(self, conn: sqlite3.Connection) -> None:
+        """Version 18: team-mode identity (users / auth_sessions / audit log).
+
+        Additive only — no existing table changes shape, so a single-user
+        install upgrades without behavioral change (INV-1). The DDL lives in
+        storage/team.py and runs inside this numbered step, never at
+        repository init (the v16/v17 lesson).
+        """
+
+        create_team_schema(conn)
 
     def _apply_datapro_content_index_repair(self, conn: sqlite3.Connection) -> None:
         """Version 17: repair an early v16 database stamped without its tables.
@@ -1847,6 +1871,11 @@ class Store:
             self._conn.execute("PRAGMA foreign_keys = ON")
 
     # --- secrets ---------------------------------------------------------
+    @property
+    def team(self) -> TeamRepository:
+        """Team-mode identity: users, login sessions, audit log (M1-2)."""
+        return self._team
+
     @property
     def secrets(self):
         """The SecretBroker for this database, resolved once on first use.
