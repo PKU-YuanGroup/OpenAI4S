@@ -155,39 +155,44 @@ def test_the_data_dir_the_image_declares_is_the_path_the_volume_mounts():
     assert [str(volume).split(":")[1] for volume in volumes] == [data_dir]
 
 
-def test_the_injected_api_key_variable_is_one_that_actually_reaches_the_client(
-    monkeypatch,
-):
+def test_the_injected_api_key_resolves_through_a_real_store(tmp_path, monkeypatch):
     """A key that resolves to nothing is indistinguishable from no key at all.
 
-    The obvious choice here is wrong, and wrong silently. The secret broker's
-    environment-injection backend documents itself as the answer for "a
-    Kubernetes Secret", but `OPENAI4S_SECRET_LLM_LLM_API_KEY` is consulted only
-    once a settings row already holds a `secret://` reference — and the only
-    writer of that row refuses to run under that backend. On a fresh volume the
-    Secret is mounted, the pod is healthy, and the model reports itself
-    unconfigured. So the manifests inject the plain configuration variable, and
-    this test resolves it through `LLMConfig` rather than trusting the name.
-    """
-    from openai4s.config import LLMConfig
+    This exact variable used to be dead on a fresh volume: the broker's
+    environment-injection backend was consulted only once a settings row held a
+    `secret://` reference, and the only writer of that row refuses to run under
+    that backend. The Secret was mounted, the pod was healthy, and the model
+    reported itself unconfigured, with nothing raised anywhere.
 
-    injected = "OPENAI4S_LLM_API_KEY"
-    # A per-provider variable outranks the generic one, and the suite's own
-    # conftest sets one for the fake provider it pins. Name the provider
-    # explicitly — the field default is read at module import, so setting the
-    # variable now would be too late — and clear its three key names, so this
-    # measures the variable the manifests actually inject.
-    for shadowing in ("OPENAI4S_ARK_API_KEY", "ARK_API_KEY", "DOUBAO_API_KEY"):
-        monkeypatch.delenv(shadowing, raising=False)
+    So the name is not asserted, it is *resolved* — against a real Store on an
+    empty data directory, which is the state the bug lived in. The variable
+    name itself comes from the broker's own deriver rather than being spelled
+    out, since it is computed from a scope and a setting, not chosen.
+    """
+    from openai4s.security.secret_broker import EnvInjectionBackend
+    from openai4s.store import get_store
+
+    # The scope and setting the gateway writes when a key is saved from the UI
+    # (`store.set_secret_setting("llm_api_key", ..., scope="llm")`).
+    injected = EnvInjectionBackend.var_name("llm", "llm_api_key")
+
+    monkeypatch.setenv("OPENAI4S_SECRET_STORE", "env")
+    monkeypatch.setenv(EnvInjectionBackend.ENABLE, "1")
     # Deliberately not key-shaped. `sk-…` would match the `openai-api-key`
     # detector in scripts/source_secret_scan.py, and that scan has no allowlist
     # by design — its detectors are named rather than entropy-based precisely so
     # that no file needs an exemption. A fixture only has to be distinguishable,
     # not realistic.
     monkeypatch.setenv(injected, "supplied-by-the-orchestrator")
-    assert LLMConfig(provider="ark").api_key == "supplied-by-the-orchestrator", (
-        f"{injected} no longer reaches the model client; the deployment assets "
-        "inject a variable that resolves to nothing"
+
+    store = get_store(tmp_path / "resolve-probe.db")
+    try:
+        resolved = store.get_secret_setting("llm_api_key")
+    finally:
+        store.close()
+    assert resolved == "supplied-by-the-orchestrator", (
+        f"{injected} does not reach the daemon on a data dir with no settings "
+        "row — the deployment assets inject a variable that resolves to nothing"
     )
 
     key = _container_env()[injected]
@@ -195,8 +200,27 @@ def test_the_injected_api_key_variable_is_one_that_actually_reaches_the_client(
     # The manifest has to apply before the Secret exists, or the first
     # `kubectl apply` of a fresh install cannot start a pod at all.
     assert key["valueFrom"]["secretKeyRef"]["optional"] is True
-
     assert injected in _compose()["services"]["openai4s"]["environment"]
+
+
+def test_the_manifest_and_the_image_agree_on_the_secret_backend():
+    """Stated twice on purpose, so it must not drift.
+
+    The image selects the backend and the Deployment restates it, because an
+    operator reads the manifest as the whole posture and may run a different
+    image. Restating is only safe while the two agree.
+    """
+    from openai4s.security.secret_broker import EnvInjectionBackend
+
+    image = _dockerfile_env()
+    pod = _container_env()
+    for name in ("OPENAI4S_SECRET_STORE", EnvInjectionBackend.ENABLE):
+        assert image[name] == pod[name]["value"], name
+    # `env`, not `auto`: a headless container has no keychain and no session
+    # bus, so `auto` fails closed — which is right about credentials and wrong
+    # about noise, since it also means a SecretStoreUnavailable traceback ahead
+    # of the startup banner on every boot for a migration with nothing to move.
+    assert image["OPENAI4S_SECRET_STORE"] == "env"
 
 
 def test_every_openai4s_variable_the_assets_set_is_one_the_code_reads():

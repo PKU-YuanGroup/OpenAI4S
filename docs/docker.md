@@ -103,54 +103,69 @@ Only the daemon's own knobs are listed; the full set is in
 | `OPENAI4S_DATA_DIR` | `/data` | Everything worth keeping. Mount a volume here |
 | `OPENAI4S_HOST` | `0.0.0.0` | Read once at import; set it in the image or pod spec, never from Python |
 | `OPENAI4S_PORT` | `8760` | |
-| `OPENAI4S_LLM_API_KEY` | unset | The credential. `OPENAI4S_<PROVIDER>_API_KEY` wins over it |
+| `OPENAI4S_SECRET_LLM_LLM_API_KEY` | unset | The credential. Supply it; see below |
+| `OPENAI4S_LLM_API_KEY` | unset | The credential, config-layer alternative. `OPENAI4S_<PROVIDER>_API_KEY` wins over it |
 | `OPENAI4S_LLM_PROVIDER` / `_MODEL` | unset | Ordinary settings — set here or in the UI |
-| `OPENAI4S_SECRET_STORE` | unset (`auto`) | See below |
+| `OPENAI4S_SECRET_STORE` | `env` | Credentials from the environment, written to disk nowhere |
+| `OPENAI4S_SECRET_ENV` | `1` | Marks that backend available before any credential exists |
 | `OPENAI4S_KERNEL_SANDBOX` | `auto` | See below |
 | `OPENAI4S_NO_OPEN` | `1` | Nothing here can open a browser |
 | `OPENAI4S_SKIP_DOTENV` | `1` | `.env` discovery starts from site-packages and cannot reach a file you mount |
 
 ### Credentials: supply them, do not save them
 
-Pass the API key as `OPENAI4S_LLM_API_KEY`. In Kubernetes that is a `Secret`
-projected into the pod; nothing credential-shaped is written to the volume.
+The image selects the broker's **environment-injection** backend
+(`OPENAI4S_SECRET_STORE=env`, `OPENAI4S_SECRET_ENV=1`). Credentials arrive as
+environment variables, the daemon reads them, and nothing credential-shaped is
+ever written to the volume — which is stronger than the keychain a container
+cannot have, not a fallback from it. In Kubernetes that is a `Secret` projected
+into the pod.
 
-`OPENAI4S_SECRET_STORE` is left at `auto`, which in a headless container means
-*refuse to handle credentials* — there is no keychain and no session bus, and
-storing a key unprotected is meant to be a decision rather than a default. The
-only thing this costs you is that **Customize → Models cannot save an API
-key**; supply it by environment instead. If you would rather manage keys in the
-UI, set `OPENAI4S_SECRET_STORE=plaintext` and understand the trade: they then
-sit in the clear inside `openai4s.db` on your volume, where a file mode is the
-only thing protecting them, and a backup or an image layer copies them out.
+The variable name is derived, not chosen: `OPENAI4S_SECRET_<SCOPE>_<NAME>`,
+upper-cased with every non-alphanumeric run collapsed to `_`. So:
 
-> **Do not use `OPENAI4S_SECRET_ENV` / `OPENAI4S_SECRET_LLM_LLM_API_KEY` for
-> this.** The broker's environment-injection backend describes itself as the
-> answer for a Kubernetes Secret, but it is consulted only for a settings row
-> that already holds a `secret://` reference — and the only code that writes
-> that row refuses to run under that backend. On a fresh volume the injected
-> variable resolves to nothing, with no error: the pod is healthy, the Secret
-> is mounted, and the model reports itself unconfigured.
+| Credential | Variable |
+|---|---|
+| model API key | `OPENAI4S_SECRET_LLM_LLM_API_KEY` |
+| Tavily search key | `OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY` |
 
-**The first thing in `docker logs` is a traceback, and the daemon is fine.**
-Because no secret store is configured, boot prints:
+The backend is **read-only by design**: if the environment owns the secret, the
+app must not overwrite it behind the operator's back. **Customize → Models
+therefore cannot save an API key** — it refuses, naming the exact variable to
+set. That is the intended boundary, not a limitation to work around. Clearing a
+key from the UI does not unset an injected one either; the settings route
+reports the `has_api_key` it re-reads afterwards rather than claiming the clear
+took.
+
+Two alternatives, both supported:
+
+- **The plain configuration variables still work** — `OPENAI4S_LLM_API_KEY`, or
+  `OPENAI4S_<PROVIDER>_API_KEY` which outranks it. They resolve at the config
+  layer, below the broker, and are the shorter path for a one-off `docker run`.
+- **`OPENAI4S_SECRET_STORE=plaintext`** if you would rather manage keys in the
+  UI. Understand the trade: they then sit in the clear inside `openai4s.db` on
+  your volume, where a file mode is the only thing protecting them, and a
+  backup or an image layer copies them out.
+
+> Injected credentials resolving **with no settings row at all** is recent. Until
+> then `resolve_setting` stopped at the empty row and never consulted the
+> backend, so on a fresh volume the variable was dead — the Secret mounted, the
+> pod healthy, the model reporting itself unconfigured, and nothing raised to
+> say why. If you are running an older build, use `OPENAI4S_LLM_API_KEY`.
+
+**If you override the store back to `auto`, expect a traceback on every boot.**
+`auto` fails closed on a host with no keychain and no session bus, which is
+right about credentials and wrong about noise: the once-per-boot credential
+migration constructs a broker it does not need — there is nothing to migrate —
+and boot prints
 
 ```
-Traceback (most recent call last):
-  File ".../gateway.py", line …, in build_app_server
-    _report = migrate_settings_secrets(_store, _store.secrets)
-  …
 openai4s.security.secret_broker.SecretStoreUnavailable: refusing to handle
 credentials without a secure store (no secure secret store on this host).
 ```
 
-That is the once-per-boot credential migration asking for a store it does not
-need — there is nothing to migrate — and finding none. It is caught, the daemon
-continues, and the access-token banner follows it. Nothing is wrong and no
-credential is at risk; it is noise, and it is guaranteed on any headless Linux
-host without libsecret rather than being specific to containers. Setting
-`OPENAI4S_SECRET_STORE=plaintext` silences it by making a decision you probably
-do not want to make for that reason alone.
+ahead of the access-token banner. It is caught and the daemon serves normally.
+Choosing a backend the container actually has is what removes it.
 
 ### Kernel isolation, honestly
 
@@ -378,48 +393,60 @@ cookie 也随之失效。
 | `OPENAI4S_DATA_DIR` | `/data` | 所有值得保留的东西。把卷挂在这里 |
 | `OPENAI4S_HOST` | `0.0.0.0` | 在模块导入时读取一次；请在镜像或 Pod spec 里设，别在 Python 里改 |
 | `OPENAI4S_PORT` | `8760` | |
-| `OPENAI4S_LLM_API_KEY` | 未设置 | 凭据。`OPENAI4S_<PROVIDER>_API_KEY` 优先级更高 |
+| `OPENAI4S_SECRET_LLM_LLM_API_KEY` | 未设置 | 凭据。由你提供，见下 |
+| `OPENAI4S_LLM_API_KEY` | 未设置 | 凭据的配置层备选写法。`OPENAI4S_<PROVIDER>_API_KEY` 优先级更高 |
 | `OPENAI4S_LLM_PROVIDER` / `_MODEL` | 未设置 | 普通设置项——在这里设或在 UI 里设都行 |
-| `OPENAI4S_SECRET_STORE` | 未设置（`auto`） | 见下 |
+| `OPENAI4S_SECRET_STORE` | `env` | 凭据来自环境，不写入磁盘任何位置 |
+| `OPENAI4S_SECRET_ENV` | `1` | 在任何凭据存在之前就把该后端标记为可用 |
 | `OPENAI4S_KERNEL_SANDBOX` | `auto` | 见下 |
 | `OPENAI4S_NO_OPEN` | `1` | 这里没有任何东西能打开浏览器 |
 | `OPENAI4S_SKIP_DOTENV` | `1` | `.env` 查找是从 site-packages 往上走的，够不到你挂进来的文件 |
 
 ### 凭据：供给它，而不是保存它
 
-把 API key 作为 `OPENAI4S_LLM_API_KEY` 传入。在 Kubernetes 里就是一个投射进 Pod
-的 `Secret`；不会有任何凭据形状的东西被写到卷上。
+镜像选定的是 broker 的**环境注入**后端（`OPENAI4S_SECRET_STORE=env`、
+`OPENAI4S_SECRET_ENV=1`）。凭据以环境变量的形式送进来，daemon 读它，不会有任何
+凭据形状的东西被写到卷上——这比容器根本不可能有的 keychain 更强，而不是它的降级
+方案。在 Kubernetes 里，它就是一个投射进 Pod 的 `Secret`。
 
-`OPENAI4S_SECRET_STORE` 保持在 `auto`，而在无头容器里这意味着*拒绝处理凭据*——
-既没有 keychain 也没有 session bus，而"把 key 不加保护地存起来"本就应该是一个决定
-而不是一个默认值。这唯一的代价是 **Customize → Models 无法保存 API key**，改用环境
-变量供给即可。如果你更想在 UI 里管理 key，就设 `OPENAI4S_SECRET_STORE=plaintext`，
-并理解这笔交易：它们会明文躺在卷上的 `openai4s.db` 里，唯一的保护是文件权限位，
-一次备份或一层镜像就能把它们带走。
+变量名是推导出来的，不是自己起的：`OPENAI4S_SECRET_<SCOPE>_<NAME>`，全大写，且把
+每一段非字母数字折叠成一个 `_`。于是：
 
-> **不要为此使用 `OPENAI4S_SECRET_ENV` / `OPENAI4S_SECRET_LLM_LLM_API_KEY`。**
-> broker 的环境注入后端自称是"Kubernetes Secret"的答案，但它只在 settings 行里
-> 已经存着一个 `secret://` 引用时才会被查询——而唯一会写那一行的代码，在该后端下
-> 是直接拒绝执行的。于是在一个全新的卷上，注入的变量解析结果为空，且不报任何错：
-> Pod 是健康的，Secret 也挂上了，模型却报告自己没配置。
+| 凭据 | 变量 |
+|---|---|
+| 模型 API key | `OPENAI4S_SECRET_LLM_LLM_API_KEY` |
+| Tavily 搜索 key | `OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY` |
 
-**`docker logs` 里的第一样东西是一段 traceback，而 daemon 是好的。** 因为没有配置
-密钥存储，启动时会打印：
+这个后端**按设计是只读的**：既然环境拥有这个密钥，应用就不该背着运维把它覆盖掉。
+因此 **Customize → Models 无法保存 API key**——它会拒绝，并告诉你该设哪个变量。
+这是有意划下的边界，不是需要绕开的限制。从 UI 清除一个注入的 key 同样不会真的取消
+它；设置路由回报的是它写完之后重新读到的 `has_api_key`，而不是宣称清除生效了。
+
+另有两条同样受支持的路：
+
+- **普通配置变量仍然有效**——`OPENAI4S_LLM_API_KEY`，或优先级更高的
+  `OPENAI4S_<PROVIDER>_API_KEY`。它们在 broker 下面的配置层解析，是一次性
+  `docker run` 更省事的写法。
+- **`OPENAI4S_SECRET_STORE=plaintext`**，如果你更想在 UI 里管理 key。要理解这笔
+  交易：它们会明文躺在卷上的 `openai4s.db` 里，唯一的保护是文件权限位，一次备份或
+  一层镜像就能把它们带走。
+
+> 「注入的凭据能在**完全没有 settings 行**的情况下解析出来」是最近才有的。在那之前
+> `resolve_setting` 停在空行上、根本不去问后端，于是在全新的卷上这个变量是死的——
+> Secret 挂上了、Pod 是健康的、模型却报告自己没配置，而且没有任何东西报错说明原因。
+> 如果你跑的是更早的构建，请改用 `OPENAI4S_LLM_API_KEY`。
+
+**如果你把存储改回 `auto`，那每次启动都会看到一段 traceback。** 在既没有 keychain
+也没有 session bus 的主机上，`auto` 会 fail closed——这对凭据是对的，对噪音是错的：
+每次启动都会跑一遍的凭据迁移会构造一个它并不需要的 broker（根本没有什么可迁移的），
+于是启动时会在访问令牌横幅之前打印
 
 ```
-Traceback (most recent call last):
-  File ".../gateway.py", line …, in build_app_server
-    _report = migrate_settings_secrets(_store, _store.secrets)
-  …
 openai4s.security.secret_broker.SecretStoreUnavailable: refusing to handle
 credentials without a secure store (no secure secret store on this host).
 ```
 
-那是每次启动都会跑一遍的凭据迁移，在向一个它其实用不上的存储要东西——根本没有什么
-可迁移的——然后发现一个都没有。异常被捕获了，daemon 继续启动，访问令牌横幅紧随其后。
-没有任何东西出错，也没有任何凭据处于风险中；它只是噪音，而且在任何没有 libsecret 的
-无头 Linux 主机上都必然出现，并非容器特有。设 `OPENAI4S_SECRET_STORE=plaintext`
-能让它闭嘴，但那是替你做了一个多半不该仅仅为此而做的决定。
+异常被捕获，daemon 照常服务。真正让它消失的办法，是选一个容器确实拥有的后端。
 
 ### 关于内核隔离，实话实说
 

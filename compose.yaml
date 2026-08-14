@@ -46,27 +46,29 @@ services:
       # loads itself — the daemon's own `.env` walker cannot see it, because it
       # starts from the *installed* package inside the image.
       #
-      # This is the plain configuration variable, deliberately, and not the
-      # secret broker's `OPENAI4S_SECRET_LLM_LLM_API_KEY`. The broker's
-      # environment-injection backend reads its variable only for a settings
-      # row that already holds a `secret://` reference, and the only thing that
-      # writes that row refuses to run under that backend — so on a fresh
-      # volume the injected name resolves to nothing at all, silently. The
-      # variable below is the one the model client actually falls back to.
-      OPENAI4S_LLM_API_KEY: "${OPENAI4S_LLM_API_KEY:-}"
-      # Per-provider variants win over the generic one above, which is how you
-      # keep several configured at once:
-      # OPENAI4S_ARK_API_KEY: "${OPENAI4S_ARK_API_KEY:-}"
-      # Web search, same shape:
-      # OPENAI4S_TAVILY_API_KEY: "${OPENAI4S_TAVILY_API_KEY:-}"
+      # The broker's environment-injection backend, which the image already
+      # selects. The name is not freeform: it is derived as
+      # OPENAI4S_SECRET_<SCOPE>_<NAME> for scope "llm" and setting
+      # "llm_api_key". The backend is read-only by design, so the UI cannot
+      # overwrite what you put here — it refuses with the exact variable name
+      # instead. Nothing credential-shaped reaches the volume.
       #
-      # Nothing here selects a secret store, so it stays at `auto` — which in a
-      # headless container means "no keychain, no session bus, therefore refuse
-      # to handle credentials at all". That is the intended posture and it costs
-      # you exactly one thing: Customize -> Models cannot *save* an API key, so
-      # supply it above. To manage keys from the UI instead, set
-      # OPENAI4S_SECRET_STORE=plaintext and accept that they then sit in the
-      # clear inside openai4s.db on the volume. A file mode is not encryption.
+      # The two names differ on purpose: the value is taken from whatever
+      # `OPENAI4S_LLM_API_KEY` you already have — the one `.env.example` sets
+      # up and `openai4s run` uses — so an existing `.env` works unchanged
+      # while the daemon inside the container sees the broker's name.
+      OPENAI4S_SECRET_LLM_LLM_API_KEY: "${OPENAI4S_LLM_API_KEY:-}"
+      # Web search, same shape (scope "search", setting "tavily_api_key"):
+      # OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY: "${OPENAI4S_TAVILY_API_KEY:-}"
+      #
+      # The plain configuration variables still work and are the shorter path
+      # for a one-off run; a per-provider one outranks the generic one:
+      # OPENAI4S_LLM_API_KEY: "${OPENAI4S_LLM_API_KEY:-}"
+      # OPENAI4S_ARK_API_KEY: "${OPENAI4S_ARK_API_KEY:-}"
+      #
+      # To manage keys from the UI instead, set OPENAI4S_SECRET_STORE=plaintext
+      # and accept that they then sit in the clear inside openai4s.db on the
+      # volume. A file mode is not encryption.
 
       # --- model -------------------------------------------------------------
       # Provider and model are ordinary settings, not secrets — set them here or

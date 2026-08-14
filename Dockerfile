@@ -14,11 +14,15 @@
 #     the Host-header allowlist, which a wildcard bind necessarily turns off —
 #     is the control standing between a caller and endpoints that execute code.
 #
-#   * It does NOT choose a secret store. `OPENAI4S_SECRET_STORE=auto` fails
-#     closed in a headless container (no keychain, no session bus), which is
-#     the honest outcome: storing a credential unprotected must be something an
-#     operator asks for. compose.yaml and the Kubernetes manifests make that
-#     choice visibly, in a file you edit. See docs/docker.md.
+#   * It selects the environment-injection secret backend. Credentials arrive
+#     as `OPENAI4S_SECRET_<SCOPE>_<NAME>` and nothing credential-shaped is ever
+#     written to the volume, which is stronger than the keychain a container
+#     cannot have rather than a fallback from it. `auto` would fail closed here
+#     — correctly, since storing a key unprotected must be a decision — but
+#     failing closed also means a `SecretStoreUnavailable` traceback ahead of
+#     the startup banner on every boot, for a migration with nothing to
+#     migrate. Choosing the backend that a server actually has removes the
+#     noise without weakening anything. See docs/docker.md.
 
 ARG PYTHON_VERSION=3.12
 
@@ -100,6 +104,18 @@ ENV OPENAI4S_DATA_DIR=/data \
 #   environment variables.
 ENV OPENAI4S_NO_OPEN=1 \
     OPENAI4S_SKIP_DOTENV=1
+
+# Credentials from the environment, written to disk nowhere. `..._SECRET_ENV`
+# marks the backend available before any credential exists, which a fresh
+# server needs — otherwise the daemon would have nothing to resolve and would
+# fail closed on the first credential it was asked to handle. Supply the model
+# key as OPENAI4S_SECRET_LLM_LLM_API_KEY; the plain OPENAI4S_LLM_API_KEY is
+# still read by the config layer and remains the shorter path for a one-off
+# `docker run`. Override with OPENAI4S_SECRET_STORE=plaintext if you would
+# rather manage keys from the UI and accept them sitting in the clear in
+# openai4s.db on the volume.
+ENV OPENAI4S_SECRET_STORE=env \
+    OPENAI4S_SECRET_ENV=1
 
 # PYTHONUNBUFFERED — stdout is block-buffered when it is not a TTY, which is
 #   every container. Without this the startup lines sit in a buffer and

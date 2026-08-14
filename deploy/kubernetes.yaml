@@ -118,35 +118,35 @@ spec:
               value: "8760"
             - name: OPENAI4S_DATA_DIR
               value: /data
-            # The credential, from a Secret, written to the volume nowhere.
-            #
-            # Deliberately the plain configuration variable and NOT the secret
-            # broker's `OPENAI4S_SECRET_LLM_LLM_API_KEY`. The broker's
-            # environment-injection backend — the one whose whole documented
-            # purpose is "a Kubernetes Secret" — reads its variable only when a
-            # settings row already holds a `secret://` reference, and the only
-            # code that writes that row refuses to run under that backend. On a
-            # fresh volume the injected name therefore resolves to nothing, with
-            # no error anywhere: the pod runs, the Secret is mounted, and the
-            # model reports itself unconfigured. This variable is the one the
-            # model client actually falls back to.
-            #
-            # `optional: true` so the manifest applies before the Secret exists;
-            # the daemon boots without a key and says so in the UI.
-            - name: OPENAI4S_LLM_API_KEY
+            # The environment-injection secret backend — the one whose
+            # docstring names a Kubernetes Secret as its purpose. Credentials
+            # arrive as environment variables and nothing credential-shaped is
+            # ever written to the volume, which is stronger than a keychain
+            # rather than a fallback from one. Stated here as well as in the
+            # image so this file reads as the whole posture; a test pins the
+            # two against each other. `OPENAI4S_SECRET_STORE=plaintext` buys
+            # UI-managed keys at the price of holding them unencrypted in
+            # openai4s.db on this volume.
+            - name: OPENAI4S_SECRET_STORE
+              value: env
+            # Marks the backend available before any credential exists, which
+            # a fresh install needs: without it the daemon would have nothing
+            # to resolve and would fail closed the first time it was asked to
+            # handle a credential.
+            - name: OPENAI4S_SECRET_ENV
+              value: "1"
+            # The credential itself. The name is derived, not chosen:
+            # OPENAI4S_SECRET_<SCOPE>_<NAME> for scope "llm" and setting
+            # "llm_api_key". Read-only by design, so the UI cannot overwrite
+            # what you put in the Secret — it refuses with this exact variable
+            # name instead. `optional: true` so the manifest applies before the
+            # Secret exists; the daemon boots without a key and says so.
+            - name: OPENAI4S_SECRET_LLM_LLM_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: openai4s-llm
                   key: api-key
                   optional: true
-            # Nothing selects a secret store, so it stays `auto`: no keychain
-            # and no session bus in a pod means it refuses to *handle*
-            # credentials rather than quietly storing one in the clear. The
-            # cost is that Customize -> Models cannot save a key, which is why
-            # the Secret above exists. `OPENAI4S_SECRET_STORE=plaintext` buys
-            # UI-managed keys at the price of holding them unencrypted in
-            # openai4s.db on this volume.
-            #
             # Thread caps, because BLAS and OpenMP size their pools from the
             # node's core count rather than this pod's quota — on a large node
             # one cell otherwise starts dozens of threads inside these limits
