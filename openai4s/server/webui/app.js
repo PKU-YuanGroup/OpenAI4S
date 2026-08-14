@@ -121,10 +121,11 @@ const S = { projects: [], sessions: [], project: null, currentId: null, ws: null
   // The workbench surfaces are projections only. They deliberately keep no
   // provider wire payloads or raw tool arguments in browser state.
   actionTimeline: null, executionQueue: null, executionIdentity: null, recoveryState: null,
+  actionTimelineSelectedGroupId: null, actionTimelineSelectedBranchId: null,
   recoveryActions: null, branchState: null, branchUndo: null, contextState: null, securityState: null, computeTasks: null,
   delegationState: null,
-  workbenchErrors: {}, _workbenchReq: 0, _timelineHistoryReq: 0, _timelineHistoryLoading: null,
-  _recoveryActionLoading: null, _branchActionLoading: null,
+  workbenchErrors: {}, _workbenchReq: 0, _timelineHistoryReq: 0, _timelineHistoryLoading: null, _timelineView: null,
+  _recoveryActionLoading: null, _branchActionLoading: null, _timelineRestoreFocusGroupId: null,
   variableInspector: { language: "python", results: {}, loading: null, error: "", request: 0 } };
 const ac = { open: false, items: [], idx: 0, trigger: "", start: 0 };
 const TOOL_LABELS = { run_python: "toolLabel.runPython", run_bash: "toolLabel.runBash", search_skills: "toolLabel.searchSkills", read_skill: "toolLabel.readSkill", write_file: "toolLabel.writeFile", read_file: "toolLabel.readFile", list_files: "toolLabel.listFiles", delegate: "toolLabel.delegate" };
@@ -784,13 +785,12 @@ Object.assign(I18N.zh, {
   "runtime.trust": "信任",
   "runtime.quarantineHint": "这是未受信任的导入会话，当前仅供查看。请在恢复面板明确确认“全新重启”后再继续。",
   "timeline.title": "Action Timeline",
-  "timeline.subtitle": "来自持久 Action Ledger 的安全投影；不显示原始参数、wire state 或 token。",
+  "timeline.subtitle": "来自持久 Action Ledger 的安全投影；不显示原始参数或 wire state。",
   "timeline.refresh": "刷新",
   "timeline.loading": "正在读取行动记录…",
   "timeline.loadEarlier": "加载更早记录",
   "timeline.loadingEarlier": "正在加载更早记录…",
   "timeline.loadEarlierFailed": "无法加载更早记录：{0}",
-  "timeline.historyLimit": "已显示最近 {0} 条记录；为保持页面流畅，不能继续向前加载。",
   "timeline.empty": "还没有可显示的行动。Notebook 仅保留科研 cell，完整控制流程会出现在这里。",
   "timeline.owner": "Owner",
   "timeline.permission": "权限",
@@ -802,6 +802,46 @@ Object.assign(I18N.zh, {
   "timeline.tokens": "Tokens",
   "timeline.tokensValue": "{0} 输入 · {1} 输出",
   "timeline.cost": "成本",
+  "timeline.column.ordinal": "#",
+  "timeline.column.kind": "类型",
+  "timeline.column.action": "行动",
+  "timeline.turnBoundary": "Turn",
+  "timeline.inspector": "行动详情",
+  "timeline.inspector.close": "关闭详情",
+  "timeline.row.open": "查看行动 #{0} 的详情：{1}",
+  "timeline.search.label": "搜索已加载记录",
+  "timeline.search.placeholder": "搜索标题、类型、资源和产物",
+  "timeline.search.scope": "仅搜索当前已加载的 {0} 条记录；未加载的更早记录不在结果中。搜索时会暂时展开 Turn，清空后恢复折叠。",
+  "timeline.search.loaded": "已加载 {0} 条记录",
+  "timeline.search.matches": "{0} 条匹配（已加载 {1} 条）",
+  "timeline.search.matchesInSelection": "当前选区显示 {0} 条（搜索命中 {1} / 已加载 {2} 条）",
+  "timeline.search.clear": "清除搜索",
+  "timeline.search.empty": "当前已加载范围内没有匹配记录",
+  "timeline.search.emptySelection": "当前时间选区内没有搜索命中；已加载范围内共有 {0} 条命中。",
+  "timeline.turn.collapse": "收起 Turn {0}，{1} 条当前可见记录，总耗时 {2}",
+  "timeline.turn.expand": "展开 Turn {0}，{1} 条当前可见记录，总耗时 {2}",
+  "timeline.turn.summary": "Turn · {0} 条当前可见记录",
+  "timeline.ledger.keyboard": "键盘：在账本区域按 Enter、向下键或 Home 进入记录；用方向键、Page Up、Page Down、Home 和 End 浏览。",
+  "timeline.overview": "时间线概览",
+  "timeline.overview.help": "悬停查看精确时刻；拖选过滤；滚轮缩放；右键拖拽平移。",
+  "timeline.overview.keyboard": "键盘：上下键浏览行动，Enter 打开，Shift+Enter 按该行动的已知活动区间筛选。",
+  "timeline.overview.queue": "排队",
+  "timeline.overview.ttft": "首响应",
+  "timeline.overview.decode": "解码",
+  "timeline.overview.allocated": "分配",
+  "timeline.overview.started": "开始",
+  "timeline.overview.response": "首响应",
+  "timeline.overview.finished": "结束",
+  "timeline.overview.running": "运行中 · 仅显示真实起点",
+  "timeline.overview.omitted": "加载被省略的更早记录",
+  "timeline.overview.omittedLoading": "正在加载被省略的更早记录",
+  "timeline.overview.clear": "清除时间选区",
+  "timeline.overview.zoomIn": "放大时间域",
+  "timeline.overview.zoomOut": "缩小时间域",
+  "timeline.overview.panEarlier": "向较早时间平移",
+  "timeline.overview.panLater": "向较晚时间平移",
+  "timeline.overview.selection": "已选 {0} — {1}",
+  "timeline.overview.emptySelection": "选区内没有行动",
   "timeline.kind.native_tool": "Native Tool",
   "timeline.kind.python": "Python Cell",
   "timeline.kind.r": "R Cell",
@@ -1774,13 +1814,12 @@ Object.assign(I18N.en, {
   "runtime.trust": "Trust",
   "runtime.quarantineHint": "This imported Session is untrusted and view-only. Explicitly confirm Restart fresh in Recovery before continuing.",
   "timeline.title": "Action Timeline",
-  "timeline.subtitle": "Safe projection of the durable Action Ledger; raw arguments, wire state and tokens are never shown.",
+  "timeline.subtitle": "Safe projection of the durable Action Ledger; raw arguments and wire state are never shown.",
   "timeline.refresh": "Refresh",
   "timeline.loading": "Loading actions…",
   "timeline.loadEarlier": "Load earlier actions",
   "timeline.loadingEarlier": "Loading earlier actions…",
   "timeline.loadEarlierFailed": "Could not load earlier actions: {0}",
-  "timeline.historyLimit": "Showing the most recent {0} actions; earlier loading is capped to keep this view responsive.",
   "timeline.empty": "No actions to show yet. Notebook keeps scientific cells; the full control flow appears here.",
   "timeline.owner": "Owner",
   "timeline.permission": "Permission",
@@ -1792,6 +1831,46 @@ Object.assign(I18N.en, {
   "timeline.tokens": "Tokens",
   "timeline.tokensValue": "{0} in · {1} out",
   "timeline.cost": "Cost",
+  "timeline.column.ordinal": "#",
+  "timeline.column.kind": "Kind",
+  "timeline.column.action": "Action",
+  "timeline.turnBoundary": "Turn",
+  "timeline.inspector": "Action details",
+  "timeline.inspector.close": "Close details",
+  "timeline.row.open": "Open details for action #{0}: {1}",
+  "timeline.search.label": "Search loaded actions",
+  "timeline.search.placeholder": "Search title, kind, resources, and artifacts",
+  "timeline.search.scope": "Search covers only currently loaded actions (loaded: {0}); unloaded earlier history is not included. Searching temporarily reveals collapsed Turns; clearing restores them.",
+  "timeline.search.loaded": "Loaded actions: {0}",
+  "timeline.search.matches": "Loaded-window matches: {0} · loaded actions: {1}",
+  "timeline.search.matchesInSelection": "Matches in this time selection: {0} · loaded-window matches: {1} · loaded actions: {2}",
+  "timeline.search.clear": "Clear search",
+  "timeline.search.empty": "No matches in the currently loaded actions",
+  "timeline.search.emptySelection": "No search matches in this time selection · loaded-window matches: {0}",
+  "timeline.turn.collapse": "Collapse Turn {0} · visible actions: {1} · total duration: {2}",
+  "timeline.turn.expand": "Expand Turn {0} · visible actions: {1} · total duration: {2}",
+  "timeline.turn.summary": "Turn · visible actions: {0}",
+  "timeline.ledger.keyboard": "Keyboard: press Enter, Down, or Home on the ledger to enter it; use arrows, Page Up, Page Down, Home, and End to browse.",
+  "timeline.overview": "Timeline overview",
+  "timeline.overview.help": "Hover for exact timing; drag to filter; wheel to zoom; right-drag to pan.",
+  "timeline.overview.keyboard": "Keyboard: use Up and Down to inspect actions, Enter to open one, or Shift+Enter to filter by its known active interval.",
+  "timeline.overview.queue": "Queue",
+  "timeline.overview.ttft": "First response",
+  "timeline.overview.decode": "Decode",
+  "timeline.overview.allocated": "Allocated",
+  "timeline.overview.started": "Started",
+  "timeline.overview.response": "First response",
+  "timeline.overview.finished": "Finished",
+  "timeline.overview.running": "Running · real start only",
+  "timeline.overview.omitted": "Load omitted earlier actions",
+  "timeline.overview.omittedLoading": "Loading omitted earlier actions",
+  "timeline.overview.clear": "Clear time selection",
+  "timeline.overview.zoomIn": "Zoom in on time",
+  "timeline.overview.zoomOut": "Zoom out on time",
+  "timeline.overview.panEarlier": "Pan to earlier time",
+  "timeline.overview.panLater": "Pan to later time",
+  "timeline.overview.selection": "Selected {0} — {1}",
+  "timeline.overview.emptySelection": "No actions in this range",
   "timeline.kind.native_tool": "Native Tool",
   "timeline.kind.python": "Python Cell",
   "timeline.kind.r": "R Cell",
@@ -2324,8 +2403,8 @@ function publicText(value, limit = 180) {
     .replace(/([?&](?:key|token|api_key)=)[^&#\s]+/gi, "$1[redacted]");
   return out.length > limit ? out.slice(0, Math.max(0, limit - 1)) + "…" : out;
 }
-function publicList(value, limit = 24) {
-  return (Array.isArray(value) ? value : []).slice(0, limit).map(item => publicText(item, 160)).filter(Boolean);
+function publicList(value, limit = 24, textLimit = 160) {
+  return (Array.isArray(value) ? value : []).slice(0, limit).map(item => publicText(item, textLimit)).filter(Boolean);
 }
 function publicArtifacts(result) {
   const found = [];
@@ -2340,7 +2419,13 @@ function publicArtifacts(result) {
   walk(result, 0); return found;
 }
 const ACTION_TIMELINE_PAGE_SIZE = 500;
-const ACTION_TIMELINE_MAX_GROUPS = 2000;
+const ACTION_TIMELINE_ROW_HEIGHT = 46;
+const ACTION_TIMELINE_OVERSCAN = 8;
+const ACTION_TIMELINE_TOP_THRESHOLD = ACTION_TIMELINE_ROW_HEIGHT * 2;
+const ACTION_TIMELINE_BOTTOM_THRESHOLD = 2;
+const ACTION_TIMELINE_OVERVIEW_WIDTH = 1000;
+const ACTION_TIMELINE_OVERVIEW_HEIGHT = 112;
+const ACTION_TIMELINE_OVERVIEW_HOVER_DELAY = 500;
 function timelineOrdinal(value) {
   return value !== null && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
 }
@@ -2364,14 +2449,20 @@ function sanitizeActionTimeline(payload) {
     session: group.session && typeof group.session === "object" ? {
       root_frame_id: publicText(group.session.root_frame_id, 96), name: publicText(group.session.name, 160)
     } : null,
-    events: ((group.events || []).slice(0, 100)).map(event => ({
+    // The server projection has already removed arguments, wire state and raw
+    // results. Keep every projected event and its complete bounded public
+    // resource/artifact lists so loaded-window search cannot miss a safe item
+    // merely because it appeared late in the group.
+    events: (group.events || []).map(event => ({
       event_id: publicText(event.event_id, 96), sequence: event.sequence, type: publicText(event.type, 64),
       action_id: publicText(event.action_id, 96), name: publicText(event.name, 120),
-      side_effect_class: publicText(event.side_effect_class, 64), resource_keys: publicList(event.resource_keys),
-      artifacts: publicList(event.artifacts).concat(publicArtifacts(event.result)).slice(0, 16),
+      side_effect_class: publicText(event.side_effect_class, 64), resource_keys: publicList(event.resource_keys, 64, 160),
+      artifacts: publicList(event.artifacts, 32, 200).concat(publicArtifacts(event.result)).slice(0, 32),
       outcome: publicText(event.outcome, 32), is_error: !!event.is_error, created_at: event.created_at
     })),
-    attempts: ((group.attempts || []).slice(0, 50)).map(attempt => ({
+    // Inspector state is about the latest execution. Retain the bounded tail
+    // so a long retry history cannot strand the UI on attempt 50 forever.
+    attempts: ((group.attempts || []).slice(-50)).map(attempt => ({
       attempt_id: publicText(attempt.attempt_id, 96), producing_cell_id: publicText(attempt.producing_cell_id, 96),
       attempt_ordinal: attempt.attempt_ordinal, generation_id: publicText(attempt.generation_id, 96),
       allocated_at: attempt.allocated_at, started_at: attempt.started_at, response_at: attempt.response_at,
@@ -2379,7 +2470,7 @@ function sanitizeActionTimeline(payload) {
       terminal_state: publicText(attempt.terminal_state, 48), error: publicText(attempt.error, 240),
       replayed_from_cell_id: publicText(attempt.replayed_from_cell_id, 96)
     }))
-  }));
+  })).filter(group => !!group.group_id);
   const firstOrdinal = timelineOrdinal(source && source.first_ordinal);
   const lastOrdinal = timelineOrdinal(source && source.last_ordinal);
   const hasMoreBefore = !!(source && (source.has_more_before || source.has_earlier));
@@ -2396,7 +2487,6 @@ function sanitizeActionTimeline(payload) {
     has_earlier: hasMoreBefore, has_more: hasMoreAfter,
     first_ordinal: firstOrdinal != null ? firstOrdinal : (groups[0] && groups[0].ordinal),
     last_ordinal: lastOrdinal != null ? lastOrdinal : (groups[groups.length - 1] && groups[groups.length - 1].ordinal),
-    history_limit_reached: !!(source && source.history_limit_reached),
     running: !!(source && source.running)
   };
 }
@@ -2405,24 +2495,20 @@ function mergeActionTimelines(current, incoming, direction = "latest") {
   if (!incoming) return current;
   if ((current.root_frame_id && incoming.root_frame_id && current.root_frame_id !== incoming.root_frame_id) ||
       (current.branch_id && incoming.branch_id && current.branch_id !== incoming.branch_id)) return incoming;
-  const key = group => group.group_id ? `id:${group.group_id}` : ["group", group.branch_id, group.ordinal, group.turn_id, group.kind, group.created_at, group.title].join("\u001f");
   const deduped = new Map();
   const ordered = direction === "before" ? (incoming.groups || []).concat(current.groups || []) :
     (current.groups || []).concat(incoming.groups || []);
-  ordered.forEach(group => deduped.set(key(group), group));
-  const all = Array.from(deduped.values()).sort((a, b) => {
+  ordered.forEach(group => { if (group && group.group_id) deduped.set(group.group_id, group); });
+  const groups = Array.from(deduped.values()).sort((a, b) => {
     const left = timelineOrdinal(a.ordinal), right = timelineOrdinal(b.ordinal);
     if (left != null && right != null && left !== right) return left - right;
     return (+a.created_at || 0) - (+b.created_at || 0);
   });
-  const groups = all.slice(-ACTION_TIMELINE_MAX_GROUPS); // always retain the latest research state
-  const hitLimit = !!current.history_limit_reached || all.length > groups.length ||
-    (direction === "before" && groups.length >= ACTION_TIMELINE_MAX_GROUPS && incoming.has_more_before);
   const currentFirst = timelineOrdinal(current.first_ordinal), incomingFirst = timelineOrdinal(incoming.first_ordinal);
   const beforeSource = direction === "before" ? incoming :
     (currentFirst != null && (incomingFirst == null || currentFirst <= incomingFirst) ? current : incoming);
   const afterSource = direction === "before" ? current : incoming;
-  const hasMoreBefore = !hitLimit && !!beforeSource.has_more_before;
+  const hasMoreBefore = !!beforeSource.has_more_before;
   const hasMoreAfter = !!afterSource.has_more_after;
   return {
     ...afterSource,
@@ -2430,12 +2516,11 @@ function mergeActionTimelines(current, incoming, direction = "latest") {
     branch_id: incoming.branch_id || current.branch_id,
     groups, count: groups.length,
     total_count: Math.max(+current.total_count || 0, +incoming.total_count || 0, groups.length),
-    truncated: hitLimit || hasMoreBefore || hasMoreAfter,
+    truncated: hasMoreBefore || hasMoreAfter,
     has_more_before: hasMoreBefore, has_more_after: hasMoreAfter,
     has_earlier: hasMoreBefore, has_more: hasMoreAfter,
     first_ordinal: groups.length ? groups[0].ordinal : null,
     last_ordinal: groups.length ? groups[groups.length - 1].ordinal : null,
-    history_limit_reached: hitLimit,
     running: direction === "before" ? !!current.running : !!incoming.running
   };
 }
@@ -2829,25 +2914,54 @@ async function optionalApi(paths) {
   for (const path of paths) { try { return await api(path); } catch {} }
   return null;
 }
+function actionTimelineBranchScope(timeline = S.actionTimeline, groups = null) {
+  const items = groups || ((timeline && timeline.groups) || []);
+  return publicText((timeline && timeline.branch_id) || (items[0] && items[0].branch_id) || S.currentId, 96);
+}
+function actionTimelineRootScope(timeline = S.actionTimeline) {
+  return publicText((timeline && timeline.root_frame_id) || S.currentId, 96);
+}
+function actionTimelineHistoryIsLoading(timeline = S.actionTimeline) {
+  const loading = S._timelineHistoryLoading;
+  return !!loading && loading.frameId === S.currentId && loading.branchId === actionTimelineBranchScope(timeline);
+}
 async function loadEarlierActionTimeline() {
   const id = S.currentId, timeline = S.actionTimeline;
-  if (!id || !timeline || !timeline.has_more_before || S._timelineHistoryLoading === id) return;
+  const branchId = actionTimelineBranchScope(timeline);
+  if (!id || !timeline || !branchId || !timeline.has_more_before || S._timelineHistoryLoading) return;
   const first = timelineOrdinal(timeline.first_ordinal);
   if (first == null || first < 0) return;
   const request = S._timelineHistoryReq = (S._timelineHistoryReq || 0) + 1;
-  S._timelineHistoryLoading = id;
+  const loading = { frameId: id, branchId, firstOrdinal: first };
+  S._timelineHistoryLoading = loading;
   delete S.workbenchErrors.timelineHistory;
-  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "timeline") syncActionTimelineHistoryState();
   try {
-    const page = await api(`/frames/${encodeURIComponent(id)}/action-timeline?before_ordinal=${first}&limit=${ACTION_TIMELINE_PAGE_SIZE}`);
-    if (request !== S._timelineHistoryReq || id !== S.currentId) return;
-    S.actionTimeline = mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(page), "before");
+    const page = await api(`/frames/${encodeURIComponent(id)}/action-timeline?before_ordinal=${first}&limit=${ACTION_TIMELINE_PAGE_SIZE}&branch_id=${encodeURIComponent(branchId)}`);
+    const current = S.actionTimeline, incoming = sanitizeActionTimeline(page);
+    if (request !== S._timelineHistoryReq || id !== S.currentId ||
+        actionTimelineBranchScope(current) !== branchId || (incoming.branch_id && incoming.branch_id !== branchId)) return;
+    // Take the anchor immediately before the synchronous merge. A WS append
+    // that arrived while this request was in flight is therefore already part
+    // of oldScrollHeight and cannot be mistaken for prepended history.
+    const view = S._timelineView;
+    const matchingView = view && view.scroll && view.rootFrameId === actionTimelineRootScope(current) && view.branchId === branchId;
+    const prependSnapshot = S.activeTab === "timeline" && matchingView
+      ? { node: view.scroll, scrollHeight: view.scroll.scrollHeight, scrollTop: view.scroll.scrollTop,
+        followTail: actionTimelineBottomDistance(view) <= ACTION_TIMELINE_BOTTOM_THRESHOLD }
+      : null;
+    const pendingPrependRestore = S.activeTab !== "timeline" && matchingView ? actionTimelineFilterScrollSnapshot(view) : null;
+    S.actionTimeline = mergeActionTimelines(current, incoming, "before");
+    if (S.activeTab === "timeline") updateActionTimelineLedger({ direction: "before", prependSnapshot });
+    else if (pendingPrependRestore) view.pendingPrependRestore = pendingPrependRestore;
   } catch (error) {
-    if (request === S._timelineHistoryReq && id === S.currentId) S.workbenchErrors.timelineHistory = publicText(error && error.message, 240);
+    if (request === S._timelineHistoryReq && id === S.currentId && actionTimelineBranchScope() === branchId) {
+      S.workbenchErrors.timelineHistory = publicText(error && error.message, 240);
+    }
   } finally {
-    if (request === S._timelineHistoryReq && id === S.currentId) {
+    if (request === S._timelineHistoryReq && id === S.currentId && S._timelineHistoryLoading === loading) {
       S._timelineHistoryLoading = null;
-      if (S.activeTab === "timeline") renderActionTimeline();
+      if (S.activeTab === "timeline") syncActionTimelineHistoryState();
     }
   }
 }
@@ -2936,10 +3050,13 @@ function runtimeSummaryNode(compact = false) {
   if (runtime.viewOnly && runtime.trustState === "quarantined") item("runtime.trust", t("runtime.trust.quarantined"));
   return root;
 }
+function latestActionTimelineAttempt(group) {
+  return ((group && group.attempts) || []).slice(-1)[0] || null;
+}
 function timelineKind(group) {
   const kind = String(group && group.kind || "").toLowerCase();
   const eventKinds = (group.events || []).map(event => String(event.type || "").toLowerCase()).join(" ");
-  const latestAttempt = (group.attempts || []).slice(-1)[0], linkedCell = latestAttempt && nbFindCell(latestAttempt.producing_cell_id);
+  const latestAttempt = latestActionTimelineAttempt(group), linkedCell = latestAttempt && nbFindCell(latestAttempt.producing_cell_id);
   const language = String(group.language || (linkedCell && linkedCell.language) || "").toLowerCase();
   if (/final/.test(kind + " " + eventKinds)) return "finalize";
   if (/permission|approval/.test(kind + " " + eventKinds)) return "permission";
@@ -2952,12 +3069,22 @@ function timelineKind(group) {
   if (/tool/.test(kind + " " + eventKinds)) return "native_tool";
   return "action";
 }
-function timelineDuration(attempt) {
+function timelineDurationMs(attempt) {
   if (!attempt) return "";
-  const parse = value => { if (value == null) return null; const number = +value; if (Number.isFinite(number)) return number > 1e12 ? number : number * 1000; const date = Date.parse(value); return Number.isFinite(date) ? date : null; };
-  const start = parse(attempt.started_at || attempt.allocated_at), end = parse(attempt.finished_at || attempt.capture_at || attempt.response_at);
+  // ActionTimelineService exposes INTEGER epoch milliseconds. Keep a string
+  // fallback for imported legacy projections, but never reinterpret a small
+  // numeric timestamp as seconds.
+  const parse = value => { if (value == null || value === "") return null; const number = +value; if (Number.isFinite(number)) return number; const date = Date.parse(value); return Number.isFinite(date) ? date : null; };
+  const start = parse(attempt.started_at != null ? attempt.started_at : attempt.allocated_at);
+  const end = parse(attempt.finished_at != null ? attempt.finished_at : (attempt.capture_at != null ? attempt.capture_at : attempt.response_at));
   if (start == null || end == null || end < start) return "";
-  const ms = end - start; return ms < 1000 ? Math.round(ms) + " ms" : (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + " s";
+  return end - start;
+}
+function timelineDurationValue(ms) {
+  return ms === "" || !Number.isFinite(+ms) || +ms < 0 ? "" : (+ms < 1000 ? Math.round(+ms) + " ms" : (+ms / 1000).toFixed(+ms < 10000 ? 1 : 0) + " s");
+}
+function timelineDuration(attempt) {
+  return timelineDurationValue(timelineDurationMs(attempt));
 }
 function timelineCost(value) {
   if (value == null || !Number.isFinite(+value) || +value < 0) return "";
@@ -2970,30 +3097,1145 @@ function timelineMeta(label, value) {
   const values = Array.isArray(value) ? value : [value]; const body = el("span", "timeline-meta-value");
   values.slice(0, 24).forEach(item => body.appendChild(el("span", "timeline-pill", publicText(item, 160)))); row.appendChild(body); return row;
 }
+function timelineKindIcon(kind) {
+  if (kind === "delegate") return "users";
+  if (kind === "permission") return "lock";
+  if (kind === "recovery") return "refresh";
+  if (kind === "finalize") return "check";
+  if (kind === "native_tool" || kind === "dynamic_tool") return "sliders";
+  return "terminal";
+}
+function actionTimelineDetails(group) {
+  const latest = latestActionTimelineAttempt(group);
+  const resources = [], artifacts = [];
+  (group.events || []).forEach(event => {
+    (event.resource_keys || []).forEach(value => { if (!resources.includes(value)) resources.push(value); });
+    (event.artifacts || []).forEach(value => { if (!artifacts.includes(value)) artifacts.push(value); });
+  });
+  return {
+    latest, resources, artifacts, owner: group.owner || "",
+    permission: group.permission || (group.events || []).map(event => event.side_effect_class).filter(Boolean),
+    replay: group.replay_policy || (latest && latest.replayed_from_cell_id ? "replayed" : "original"),
+    duration: timelineDuration(latest),
+    tokens: t("timeline.tokensValue", (group.usage || {}).input_tokens || 0, (group.usage || {}).output_tokens || 0),
+    cost: timelineCost(group.cost)
+  };
+}
+function appendActionTimelineDetails(container, group) {
+  const details = actionTimelineDetails(group);
+  [
+    timelineMeta(t("timeline.owner"), details.owner),
+    timelineMeta(t("timeline.permission"), details.permission),
+    timelineMeta(t("timeline.resources"), details.resources),
+    timelineMeta(t("timeline.artifacts"), details.artifacts),
+    timelineMeta(t("timeline.generation"), details.latest && details.latest.generation_id),
+    timelineMeta(t("timeline.replay"), details.replay),
+    timelineMeta(t("timeline.duration"), details.duration),
+    timelineMeta(t("timeline.tokens"), details.tokens),
+    timelineMeta(t("timeline.cost"), details.cost)
+  ].filter(Boolean).forEach(node => container.appendChild(node));
+  if (details.latest && details.latest.error) container.appendChild(el("div", "timeline-error", details.latest.error));
+  return details;
+}
 function actionTimelineCard(group) {
   const kind = timelineKind(group), status = String(group.status || "completed").toLowerCase();
   const card = el("article", "timeline-card kind-" + kind + " status-" + status); card.setAttribute("data-action-kind", kind);
   const head = el("div", "timeline-card-head");
-  const kindLabel = el("span", "timeline-kind"); kindLabel.appendChild(iconEl(kind === "delegate" ? "users" : (kind === "permission" ? "lock" : (kind === "recovery" ? "refresh" : (kind === "finalize" ? "check" : (kind === "native_tool" || kind === "dynamic_tool" ? "sliders" : "terminal")))), 14)); kindLabel.appendChild(el("span", null, t("timeline.kind." + kind))); head.appendChild(kindLabel);
+  const kindLabel = el("span", "timeline-kind"); kindLabel.appendChild(iconEl(timelineKindIcon(kind), 14)); kindLabel.appendChild(el("span", null, t("timeline.kind." + kind))); head.appendChild(kindLabel);
   head.appendChild(el("span", "timeline-status " + status, publicText(status || "completed", 32))); card.appendChild(head);
   card.appendChild(el("div", "timeline-card-title", group.title || t("timeline.kind." + kind)));
-  const latest = (group.attempts || []).slice(-1)[0] || null;
-  const resources = []; const artifacts = [];
-  (group.events || []).forEach(event => { (event.resource_keys || []).forEach(value => { if (!resources.includes(value)) resources.push(value); }); (event.artifacts || []).forEach(value => { if (!artifacts.includes(value)) artifacts.push(value); }); });
-  const owner = group.owner || "";
-  [
-    timelineMeta(t("timeline.owner"), owner),
-    timelineMeta(t("timeline.permission"), group.permission || (group.events || []).map(event => event.side_effect_class).filter(Boolean)),
-    timelineMeta(t("timeline.resources"), resources),
-    timelineMeta(t("timeline.artifacts"), artifacts),
-    timelineMeta(t("timeline.generation"), latest && latest.generation_id),
-    timelineMeta(t("timeline.replay"), group.replay_policy || (latest && latest.replayed_from_cell_id ? "replayed" : "original")),
-    timelineMeta(t("timeline.duration"), timelineDuration(latest)),
-    timelineMeta(t("timeline.tokens"), t("timeline.tokensValue", (group.usage || {}).input_tokens || 0, (group.usage || {}).output_tokens || 0)),
-    timelineMeta(t("timeline.cost"), timelineCost(group.cost))
-  ].filter(Boolean).forEach(node => card.appendChild(node));
-  if (latest && latest.error) card.appendChild(el("div", "timeline-error", latest.error));
+  appendActionTimelineDetails(card, group);
   return card;
+}
+function actionTimelineInspector(group) {
+  const kind = timelineKind(group), status = String(group.status || "completed").toLowerCase();
+  const panel = el("section", "timeline-inspector kind-" + kind + " status-" + status);
+  panel.id = "timeline-action-inspector"; panel.dataset.groupId = group.group_id; panel.setAttribute("role", "region"); panel.setAttribute("aria-labelledby", "timeline-inspector-label");
+  const inspectorHead = el("div", "timeline-inspector-head");
+  const inspectorLabel = el("div", "timeline-inspector-label", t("timeline.inspector")); inspectorLabel.id = "timeline-inspector-label"; inspectorHead.appendChild(inspectorLabel);
+  const close = ghostIconBtn("x", t("timeline.inspector.close")); close.setAttribute("aria-label", t("timeline.inspector.close"));
+  close.onclick = event => { event.stopPropagation(); S._timelineRestoreFocusGroupId = group.group_id; S.actionTimelineSelectedGroupId = null; S.actionTimelineSelectedBranchId = null; updateActionTimelineLedger(); };
+  inspectorHead.appendChild(close); panel.appendChild(inspectorHead);
+  const cardHead = el("div", "timeline-card-head");
+  const kindLabel = el("span", "timeline-kind"); kindLabel.appendChild(iconEl(timelineKindIcon(kind), 14)); kindLabel.appendChild(el("span", null, t("timeline.kind." + kind))); cardHead.appendChild(kindLabel);
+  cardHead.appendChild(el("span", "timeline-status " + status, publicText(status || "completed", 32))); panel.appendChild(cardHead);
+  panel.appendChild(el("div", "timeline-card-title", group.title || t("timeline.kind." + kind)));
+  appendActionTimelineDetails(panel, group); appendActionTimelineTimingDetails(panel, group); panel._timelineGroup = group; panel._timelineLanguage = LANG;
+  return panel;
+}
+function timelineTokenTotal(usage) {
+  const source = usage || {}, input = +source.input_tokens || 0, output = +source.output_tokens || 0, total = +source.total_tokens || 0;
+  return total > 0 ? total : input + output;
+}
+function timelineEpochMs(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+function actionTimelineSpan(group, rank, laneCount) {
+  const attempt = latestActionTimelineAttempt(group);
+  if (!attempt || !group || !group.group_id) return null;
+  const times = {
+    allocated: timelineEpochMs(attempt.allocated_at),
+    started: timelineEpochMs(attempt.started_at),
+    response: timelineEpochMs(attempt.response_at),
+    capture: timelineEpochMs(attempt.capture_at),
+    finished: timelineEpochMs(attempt.finished_at)
+  };
+  if (times.allocated == null) return null;
+  const segments = [];
+  const addSegment = (phase, start, end) => {
+    if (start != null && end != null && end >= start) segments.push({ phase, start, end });
+  };
+  const running = times.finished == null;
+  if (!running && times.finished >= times.allocated) {
+    addSegment("queue", times.allocated, times.started);
+    addSegment("ttft", times.started, times.response);
+    addSegment("decode", times.response, times.finished);
+  }
+  if (!running && times.finished < times.allocated) return null;
+  // An unfinished attempt is drawn only as its allocated-at marker, but its
+  // filter interval may extend through milestones we actually observed.  This
+  // never guesses a finish time or extends the record to "now".
+  const latestKnown = [times.allocated, times.started, times.response, times.capture]
+    .filter(value => value != null && value >= times.allocated)
+    .reduce((latest, value) => Math.max(latest, value), times.allocated);
+  return {
+    groupId: group.group_id, group, attempt, rank, laneCount, times, segments,
+    start: times.allocated, end: running ? latestKnown : times.finished,
+    markerAt: running ? times.allocated : null,
+    pointAt: !running && !segments.some(segment => segment.end > segment.start) ? times.allocated : null,
+    running
+  };
+}
+function actionTimelineOverviewModel(groups, domainGroups = groups) {
+  const drawableItems = groups.map(group => actionTimelineSpan(group, 0, 1)).filter(Boolean);
+  const items = [], byId = new Map(), laneCount = Math.max(1, drawableItems.length);
+  let dataStart = null, dataEnd = null;
+  drawableItems.forEach((item, rank) => {
+    item.rank = rank; item.laneCount = laneCount;
+    items.push(item); byId.set(item.groupId, item);
+  });
+  // Searching changes which bars are painted, not the honest time domain of
+  // the loaded window.  Keeping the full loaded domain also leaves the
+  // omitted-prefix control anchored to the real earliest loaded timestamp.
+  domainGroups.forEach(group => {
+    const attempt = latestActionTimelineAttempt(group); if (!attempt) return;
+    [attempt.allocated_at, attempt.started_at, attempt.response_at, attempt.capture_at, attempt.finished_at].forEach(raw => {
+      const value = timelineEpochMs(raw);
+      if (value == null) return;
+      dataStart = dataStart == null ? value : Math.min(dataStart, value);
+      dataEnd = dataEnd == null ? value : Math.max(dataEnd, value);
+    });
+  });
+  return { items, byId, laneCount, dataStart, dataEnd };
+}
+function timelineOverviewTimeToX(overview, value) {
+  const start = overview.viewStart, end = overview.viewEnd;
+  if (start == null || end == null || value == null) return null;
+  if (end === start) return ACTION_TIMELINE_OVERVIEW_WIDTH / 2;
+  return (value - start) / (end - start) * ACTION_TIMELINE_OVERVIEW_WIDTH;
+}
+function timelineOverviewPathRect(x1, x2, y1, y2) {
+  if (![x1, x2, y1, y2].every(Number.isFinite) || x2 <= x1 || y2 <= y1) return "";
+  const n = value => Number(value.toFixed(3));
+  return `M${n(x1)},${n(y1)}H${n(x2)}V${n(y2)}H${n(x1)}Z`;
+}
+function timelineOverviewItemPaths(overview, item) {
+  const laneHeight = ACTION_TIMELINE_OVERVIEW_HEIGHT / item.laneCount;
+  const padding = Math.min(.22, laneHeight * .12), y1 = item.rank * laneHeight + padding, y2 = (item.rank + 1) * laneHeight - padding;
+  const paths = { queue: "", ttft: "", decode: "", marker: "", point: "", highlight: "" };
+  item.segments.forEach(segment => {
+    const rawX1 = timelineOverviewTimeToX(overview, segment.start), rawX2 = timelineOverviewTimeToX(overview, segment.end);
+    if (rawX1 == null || rawX2 == null || rawX2 < 0 || rawX1 > ACTION_TIMELINE_OVERVIEW_WIDTH) return;
+    const rect = timelineOverviewPathRect(Math.max(0, rawX1), Math.min(ACTION_TIMELINE_OVERVIEW_WIDTH, rawX2), y1, y2);
+    paths[segment.phase] += rect; paths.highlight += rect;
+  });
+  const markerAt = item.markerAt != null ? item.markerAt : item.pointAt;
+  if (markerAt != null) {
+    const x = timelineOverviewTimeToX(overview, markerAt), center = (y1 + y2) / 2;
+    if (x != null && x >= 0 && x <= ACTION_TIMELINE_OVERVIEW_WIDTH) {
+      const n = value => Number(value.toFixed(3));
+      const marker = `M${n(x)},${n(Math.max(0, center - .9))}V${n(Math.min(ACTION_TIMELINE_OVERVIEW_HEIGHT, center + .9))}`;
+      paths[item.running ? "marker" : "point"] += marker; paths.highlight += marker;
+    }
+  }
+  return paths;
+}
+function actionTimelineOverviewVisualExtent(item) {
+  if (!item) return null;
+  const values = [];
+  item.segments.forEach(segment => { values.push(segment.start, segment.end); });
+  if (item.markerAt != null) values.push(item.markerAt);
+  if (item.pointAt != null) values.push(item.pointAt);
+  const finite = values.filter(Number.isFinite);
+  return finite.length ? { start: Math.min(...finite), end: Math.max(...finite) } : null;
+}
+function timelineOverviewExactTime(value) {
+  const ms = timelineEpochMs(value);
+  return ms == null ? "—" : new Date(ms).toISOString();
+}
+function timelineOverviewExactDuration(start, end) {
+  const left = timelineEpochMs(start), right = timelineEpochMs(end);
+  return left == null || right == null || right < left ? "—" : String(right - left) + " ms";
+}
+function appendActionTimelineTimingDetails(container, group) {
+  const attempt = latestActionTimelineAttempt(group); if (!attempt || timelineEpochMs(attempt.allocated_at) == null) return;
+  [
+    timelineMeta(t("timeline.overview.allocated"), timelineOverviewExactTime(attempt.allocated_at)),
+    timelineMeta(t("timeline.overview.started"), timelineOverviewExactTime(attempt.started_at)),
+    timelineMeta(t("timeline.overview.response"), timelineOverviewExactTime(attempt.response_at)),
+    timelineMeta(t("timeline.overview.finished"), timelineOverviewExactTime(attempt.finished_at)),
+    timelineMeta(t("timeline.overview.queue"), timelineOverviewExactDuration(attempt.allocated_at, attempt.started_at)),
+    timelineMeta(t("timeline.overview.ttft"), timelineOverviewExactDuration(attempt.started_at, attempt.response_at)),
+    timelineMeta(t("timeline.overview.decode"), timelineOverviewExactDuration(attempt.response_at, attempt.finished_at))
+  ].filter(Boolean).forEach(node => container.appendChild(node));
+}
+function clearActionTimelineOverviewHover(view) {
+  const overview = view && view.overview; if (!overview) return;
+  if (overview.hoverTimer) clearTimeout(overview.hoverTimer);
+  if (overview.hoverLeaveTimer) clearTimeout(overview.hoverLeaveTimer);
+  overview.hoverTimer = 0; overview.hoverLeaveTimer = 0; overview.tooltipHovered = false; overview.hoverCandidateId = null; overview.hoverGroupId = null;
+  overview.tooltip.replaceChildren(); overview.tooltip.classList.add("hidden"); overview.tooltip.setAttribute("aria-hidden", "true");
+  overview.hoverPath.setAttribute("d", "");
+}
+function cancelActionTimelineOverviewHoverClear(view) {
+  const overview = view && view.overview; if (!overview || !overview.hoverLeaveTimer) return;
+  clearTimeout(overview.hoverLeaveTimer); overview.hoverLeaveTimer = 0;
+}
+function scheduleActionTimelineOverviewHoverClear(view) {
+  const overview = view && view.overview; if (!overview) return;
+  cancelActionTimelineOverviewHoverClear(view);
+  overview.hoverLeaveTimer = setTimeout(() => {
+    overview.hoverLeaveTimer = 0;
+    if (!overview.tooltipHovered) clearActionTimelineOverviewHover(view);
+  }, 150);
+}
+function positionActionTimelineOverviewTooltip(overview, clientX, clientY) {
+  const rect = overview.shell.getBoundingClientRect();
+  const width = overview.tooltip.offsetWidth || 220, height = overview.tooltip.offsetHeight || 120;
+  const pointerX = clientX - rect.left, pointerY = clientY - rect.top;
+  const left = Math.max(8, Math.min(Math.max(8, rect.width - width - 8), pointerX - width / 2));
+  let top = pointerY + 8;
+  if (top + height > rect.height - 8) top = Math.max(8, pointerY - height - 8);
+  overview.tooltip.style.left = left + "px"; overview.tooltip.style.top = top + "px";
+}
+function showActionTimelineOverviewTooltip(view, groupId, clientX, clientY) {
+  const overview = view && view.overview, item = overview && overview.model && overview.model.byId.get(groupId);
+  if (!overview || !item || overview.hoverCandidateId !== groupId) return;
+  const ordinal = timelineOrdinal(item.group.ordinal), title = item.group.title || t("timeline.kind." + timelineKind(item.group));
+  const head = el("div", "timeline-overview-tooltip-title", (ordinal == null ? "" : "#" + ordinal + " · ") + title);
+  const body = el("div", "timeline-overview-tooltip-grid");
+  const row = (label, value) => { body.appendChild(el("span", "timeline-overview-tooltip-key", label)); body.appendChild(el("code", null, value)); };
+  row(t("timeline.overview.allocated"), timelineOverviewExactTime(item.times.allocated));
+  row(t("timeline.overview.started"), timelineOverviewExactTime(item.times.started));
+  row(t("timeline.overview.response"), timelineOverviewExactTime(item.times.response));
+  row(t("timeline.overview.finished"), timelineOverviewExactTime(item.times.finished));
+  row(t("timeline.overview.queue"), timelineOverviewExactDuration(item.times.allocated, item.times.started));
+  row(t("timeline.overview.ttft"), timelineOverviewExactDuration(item.times.started, item.times.response));
+  row(t("timeline.overview.decode"), timelineOverviewExactDuration(item.times.response, item.times.finished));
+  if (item.running) body.appendChild(el("span", "timeline-overview-running", t("timeline.overview.running")));
+  overview.tooltip.replaceChildren(head, body); overview.tooltip.classList.remove("hidden"); overview.tooltip.setAttribute("aria-hidden", "false");
+  overview.hoverGroupId = groupId; positionActionTimelineOverviewTooltip(overview, clientX, clientY);
+  overview.hoverPath.setAttribute("d", timelineOverviewItemPaths(overview, item).highlight);
+}
+function actionTimelineOverviewHit(view, event) {
+  const overview = view && view.overview, model = overview && overview.model;
+  if (!overview || !model || !model.items.length) return null;
+  const rect = overview.svg.getBoundingClientRect(); if (!rect.width || !rect.height) return null;
+  const x = Math.max(0, Math.min(ACTION_TIMELINE_OVERVIEW_WIDTH, (event.clientX - rect.left) / rect.width * ACTION_TIMELINE_OVERVIEW_WIDTH));
+  const y = Math.max(0, Math.min(ACTION_TIMELINE_OVERVIEW_HEIGHT - .0001, (event.clientY - rect.top) / rect.height * ACTION_TIMELINE_OVERVIEW_HEIGHT));
+  const rank = Math.floor(y / ACTION_TIMELINE_OVERVIEW_HEIGHT * model.laneCount);
+  const radius = Math.min(256, Math.max(2, Math.ceil(5 / rect.height * model.laneCount)));
+  const tolerance = 6 / rect.width * ACTION_TIMELINE_OVERVIEW_WIDTH;
+  let best = null, bestDistance = Infinity;
+  for (let candidateRank = Math.max(0, rank - radius); candidateRank <= Math.min(model.laneCount - 1, rank + radius); candidateRank += 1) {
+    // A search compresses the SVG lanes to matching records.  Resolve the
+    // lane from that painted model, never from the unfiltered loaded array.
+    const item = model.items[candidateRank];
+    if (!item) continue;
+    const markerAt = item.markerAt != null ? item.markerAt : item.pointAt;
+    const markerX = markerAt == null ? null : timelineOverviewTimeToX(overview, markerAt);
+    const onMarker = markerX != null && Math.abs(markerX - x) <= tolerance;
+    const onSegment = item.segments.some(segment => {
+      const x1 = timelineOverviewTimeToX(overview, segment.start), x2 = timelineOverviewTimeToX(overview, segment.end);
+      return x1 != null && x2 != null && x >= Math.min(x1, x2) - tolerance && x <= Math.max(x1, x2) + tolerance;
+    });
+    const distance = Math.abs(candidateRank - rank);
+    if ((onMarker || onSegment) && distance < bestDistance) { best = item; bestDistance = distance; }
+  }
+  return best;
+}
+function actionTimelineOverviewPointerMove(view, event) {
+  const overview = view && view.overview; if (!overview) return;
+  cancelActionTimelineOverviewHoverClear(view);
+  if (overview.gesture) { moveActionTimelineOverviewGesture(view, event); return; }
+  const hit = actionTimelineOverviewHit(view, event), groupId = hit && hit.groupId;
+  // Once visible, keep the tooltip at its original anchor so a magnification
+  // user can actually catch it. Moving across compressed lanes on the way to
+  // the tooltip gets a short grace period; stopping elsewhere dismisses it.
+  if (overview.hoverGroupId) {
+    if (groupId === overview.hoverGroupId) return;
+    scheduleActionTimelineOverviewHoverClear(view); return;
+  }
+  if (!groupId) { clearActionTimelineOverviewHover(view); return; }
+  if (overview.hoverCandidateId === groupId) {
+    overview.hoverPoint = { clientX: event.clientX, clientY: event.clientY };
+    return;
+  }
+  clearActionTimelineOverviewHover(view); overview.hoverCandidateId = groupId;
+  overview.hoverPoint = { clientX: event.clientX, clientY: event.clientY };
+  overview.hoverTimer = setTimeout(() => {
+    overview.hoverTimer = 0;
+    const point = overview.hoverPoint || { clientX: event.clientX, clientY: event.clientY };
+    showActionTimelineOverviewTooltip(view, groupId, point.clientX, point.clientY);
+  }, ACTION_TIMELINE_OVERVIEW_HOVER_DELAY);
+}
+function timelineOverviewEventX(overview, event) {
+  const rect = overview.svg.getBoundingClientRect();
+  if (!rect.width) return 0;
+  return Math.max(0, Math.min(ACTION_TIMELINE_OVERVIEW_WIDTH, (event.clientX - rect.left) / rect.width * ACTION_TIMELINE_OVERVIEW_WIDTH));
+}
+function timelineOverviewXToTime(overview, x) {
+  if (overview.viewStart == null || overview.viewEnd == null) return null;
+  if (overview.viewStart === overview.viewEnd) return overview.viewStart;
+  const ratio = Math.max(0, Math.min(1, x / ACTION_TIMELINE_OVERVIEW_WIDTH));
+  return overview.viewStart + ratio * (overview.viewEnd - overview.viewStart);
+}
+function timelineOverviewXToDomainTime(start, end, x) {
+  if (start == null || end == null) return null;
+  if (start === end) return start;
+  const ratio = Math.max(0, Math.min(1, x / ACTION_TIMELINE_OVERVIEW_WIDTH));
+  return start + ratio * (end - start);
+}
+function actionTimelineSelectionOverlaps(item, selection) {
+  if (!selection) return true;
+  if (!item) return false;
+  const left = Math.min(selection.start, selection.end), right = Math.max(selection.start, selection.end);
+  return item.start <= right && item.end >= left;
+}
+function normalizeActionTimelineSearch(value) {
+  return String(value || "").trim().toLocaleLowerCase();
+}
+function actionTimelineSearchDocument(group) {
+  const fields = [group && group.title, group && group.kind];
+  ((group && group.events) || []).forEach(event => {
+    (event.resource_keys || []).forEach(value => fields.push(value));
+    (event.artifacts || []).forEach(value => fields.push(value));
+  });
+  return fields.filter(value => value != null && value !== "").map(value => String(value).toLocaleLowerCase()).join("\u0000");
+}
+function syncActionTimelineSearchIndex(view, groups) {
+  const previous = view.searchIndex || new Map(), next = new Map();
+  groups.forEach(group => {
+    const cached = previous.get(group.group_id);
+    next.set(group.group_id, cached && cached.group === group ? cached : { group, text: actionTimelineSearchDocument(group) });
+  });
+  view.searchIndex = next;
+}
+function searchActionTimelineGroups(view, groups) {
+  syncActionTimelineSearchIndex(view, groups);
+  if (!view.searchNeedle) return groups;
+  return groups.filter(group => {
+    const indexed = view.searchIndex.get(group.group_id);
+    return !!indexed && indexed.text.includes(view.searchNeedle);
+  });
+}
+function filteredActionTimelineGroups(view, groups) {
+  const selection = view && view.overview && view.overview.selection;
+  if (!selection) return groups;
+  return groups.filter(group => actionTimelineSelectionOverlaps(view.overview.model.byId.get(group.group_id), selection));
+}
+function actionTimelineTurnStats(groups) {
+  let totalMs = 0, hasDuration = false, hasRunning = false;
+  groups.forEach(group => {
+    const attempt = latestActionTimelineAttempt(group), duration = timelineDurationMs(attempt);
+    if (duration !== "") { totalMs += duration; hasDuration = true; }
+    if (attempt && timelineEpochMs(attempt.finished_at) == null) hasRunning = true;
+  });
+  const duration = hasDuration ? (hasRunning ? "≥ " : "") + timelineDurationValue(totalMs) : "—";
+  return { count: groups.length, totalMs: hasDuration ? totalMs : null, hasRunning, duration };
+}
+function actionTimelineLedgerEntries(view, groups) {
+  const turns = new Map();
+  groups.forEach(group => {
+    const turnId = publicText(group.turn_id, 96); if (!turnId) return;
+    if (!turns.has(turnId)) turns.set(turnId, []);
+    turns.get(turnId).push(group);
+  });
+  const stats = new Map(); turns.forEach((turnGroups, turnId) => stats.set(turnId, actionTimelineTurnStats(turnGroups)));
+  const entries = [], emittedCollapsed = new Set(), searchActive = !!view.searchNeedle;
+  groups.forEach((group, index) => {
+    const turnId = publicText(group.turn_id, 96);
+    const previousTurnId = index > 0 ? publicText(groups[index - 1].turn_id, 96) : "";
+    const turnStart = index === 0 || previousTurnId !== turnId;
+    const turnBoundary = index > 0 && previousTurnId !== turnId;
+    // Search temporarily reveals every matching action so its announced match
+    // count equals the ledger rows.  The Set is retained and takes effect
+    // again as soon as the query is cleared.
+    if (!searchActive && turnId && view.collapsedTurns.has(turnId)) {
+      if (emittedCollapsed.has(turnId)) return;
+      emittedCollapsed.add(turnId);
+      entries.push({ type: "turn", turnId, groups: turns.get(turnId), stats: stats.get(turnId), turnBoundary });
+      return;
+    }
+    entries.push({ type: "group", group, turnId, turnStart, turnBoundary, stats: turnId ? stats.get(turnId) : null, foldable: !!turnId && !searchActive });
+  });
+  return entries;
+}
+function actionTimelineEntryKey(entry) {
+  return !entry ? "" : (entry.type === "turn" ? "turn:" + entry.turnId : "group:" + entry.group.group_id);
+}
+function actionTimelineFilterScrollSnapshot(view) {
+  const headerHeight = view.thead.offsetHeight || 30;
+  const entries = view.entries || [], index = Math.max(0, Math.min(entries.length - 1, Math.floor(Math.max(0, view.scroll.scrollTop - headerHeight) / ACTION_TIMELINE_ROW_HEIGHT)));
+  const entry = entries[index];
+  return {
+    entryKey: actionTimelineEntryKey(entry),
+    groupId: entry && entry.type === "group" ? entry.group.group_id : null,
+    turnId: entry && (entry.turnId || (entry.group && entry.group.turn_id)),
+    offset: view.scroll.scrollTop - (headerHeight + index * ACTION_TIMELINE_ROW_HEIGHT),
+    followTail: view.followTail
+  };
+}
+function syncActionTimelineOverviewDecorations(view) {
+  const overview = view.overview, activeSelection = overview.draftSelection || overview.selection;
+  const selected = overview.model.byId.get(S.actionTimelineSelectedGroupId);
+  overview.selectedPath.setAttribute("d", selected ? timelineOverviewItemPaths(overview, selected).highlight : "");
+  if (activeSelection && overview.viewStart != null && overview.viewEnd != null) {
+    const x1 = timelineOverviewTimeToX(overview, Math.min(activeSelection.start, activeSelection.end));
+    const x2 = timelineOverviewTimeToX(overview, Math.max(activeSelection.start, activeSelection.end));
+    const left = Math.max(0, Math.min(ACTION_TIMELINE_OVERVIEW_WIDTH, x1));
+    const right = Math.max(0, Math.min(ACTION_TIMELINE_OVERVIEW_WIDTH, x2));
+    overview.selectionRect.setAttribute("x", String(Math.min(left, right)));
+    overview.selectionRect.setAttribute("width", String(Math.abs(right - left)));
+    overview.selectionRect.classList.remove("hidden");
+  } else {
+    overview.selectionRect.classList.add("hidden"); overview.selectionRect.setAttribute("width", "0");
+  }
+  if (overview.selection) {
+    overview.selectionStatus.textContent = t("timeline.overview.selection", timelineOverviewExactTime(overview.selection.start), timelineOverviewExactTime(overview.selection.end));
+    overview.clearButton.classList.remove("hidden"); overview.clearButton.disabled = false;
+  } else {
+    overview.selectionStatus.textContent = ""; overview.clearButton.classList.add("hidden"); overview.clearButton.disabled = true;
+  }
+}
+function syncActionTimelineOverviewControls(view) {
+  const overview = view && view.overview, timeline = S.actionTimeline || {};
+  if (!overview) return;
+  const span = overview.viewStart != null && overview.viewEnd != null ? Math.max(0, overview.viewEnd - overview.viewStart) : 0;
+  const tolerance = span / ACTION_TIMELINE_OVERVIEW_WIDTH;
+  const includesLoadedStart = overview.dataStart != null && overview.viewStart != null && overview.viewEnd != null &&
+    overview.viewStart <= overview.dataStart + tolerance && overview.viewEnd >= overview.dataStart - tolerance;
+  // A page made entirely of non-attempt groups has no honest time coordinate.
+  // Keep the omission visible at the left edge without inventing a duration.
+  const visible = !!timeline.has_more_before && (overview.dataStart == null || includesLoadedStart);
+  const loading = actionTimelineHistoryIsLoading(timeline);
+  const restoreFocus = !visible && document.activeElement === overview.prefixButton;
+  const restoreAfterLoad = !!overview.restoreFocusAfterPrefix && !loading;
+  overview.prefixButton.classList.toggle("hidden", !visible); overview.prefixButton.disabled = !visible || loading;
+  overview.prefixButton.setAttribute("aria-busy", loading ? "true" : "false");
+  overview.prefixButton.setAttribute("aria-label", t(loading ? "timeline.overview.omittedLoading" : "timeline.overview.omitted"));
+  const x = overview.dataStart == null ? 0 : timelineOverviewTimeToX(overview, overview.dataStart);
+  overview.prefixButton.style.left = Math.max(0, Math.min(100, (x == null ? 0 : x / ACTION_TIMELINE_OVERVIEW_WIDTH * 100))) + "%";
+  if (restoreFocus || restoreAfterLoad) {
+    overview.restoreFocusAfterPrefix = false;
+    const target = visible ? overview.prefixButton : overview.shell;
+    try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+  }
+}
+function clearActionTimelineOverviewSelection(view, options = {}) {
+  const overview = view && view.overview; if (!overview || (!overview.selection && !overview.draftSelection)) return false;
+  const restoreControlFocus = document.activeElement === overview.clearButton;
+  overview.selection = null; overview.draftSelection = null; overview.preFilterScroll = null;
+  const restore = options.restore !== false && !view.searchNeedle ? view.preFilterScroll : null;
+  if (!view.searchNeedle) view.preFilterScroll = null;
+  view.autoLoadArmed = false; clearActionTimelineOverviewHover(view);
+  if (options.update !== false) updateActionTimelineLedger({ direction: "filter", filterChanged: true, filterRestore: restore });
+  else syncActionTimelineOverviewDecorations(view);
+  if (restoreControlFocus) { try { overview.shell.focus({ preventScroll: true }); } catch { overview.shell.focus(); } }
+  return true;
+}
+function commitActionTimelineOverviewSelection(view, start, end) {
+  const overview = view && view.overview;
+  if (!overview || start == null || end == null) return;
+  if (!overview.selection && !view.searchNeedle) view.preFilterScroll = actionTimelineFilterScrollSnapshot(view);
+  overview.selection = { start: Math.floor(Math.min(start, end)), end: Math.ceil(Math.max(start, end)) };
+  overview.draftSelection = null; view.autoLoadArmed = false; clearActionTimelineOverviewHover(view);
+  updateActionTimelineLedger({ direction: "filter", filterChanged: true });
+}
+function selectActionTimelineGroup(groupId, branchScope, fromOverview = false) {
+  const view = S._timelineView;
+  const targetGroup = view && view.allGroups.find(group => group.group_id === groupId);
+  if (!view || !groupId || !targetGroup) return;
+  let filterChanged = false, filterRestore = null;
+  if (fromOverview && view.overview.selection && !view.groups.some(group => group.group_id === groupId)) {
+    filterChanged = clearActionTimelineOverviewSelection(view, { update: false, restore: false });
+    view.overview.preFilterScroll = null;
+  }
+  if (fromOverview && targetGroup.turn_id && view.collapsedTurns.has(targetGroup.turn_id) && !view.searchNeedle) {
+    filterRestore = actionTimelineFilterScrollSnapshot(view); view.collapsedTurns.delete(targetGroup.turn_id); filterChanged = true;
+  }
+  S._timelineRestoreFocusGroupId = groupId; S.actionTimelineSelectedGroupId = groupId; S.actionTimelineSelectedBranchId = branchScope;
+  updateActionTimelineLedger({ direction: "selection", filterChanged, filterRestore });
+  if (fromOverview) {
+    const current = S._timelineView, index = current && current.groups.findIndex(group => group.group_id === groupId);
+    if (current && index >= 0) focusActionTimelineGroup(current, index);
+  } else {
+    const current = S._timelineView; revealActionTimelineOverviewGroup(current, groupId);
+    const close = current && current.inspectorHost.querySelector(".timeline-inspector button");
+    if (close) { try { close.focus({ preventScroll: true }); } catch { close.focus(); } }
+  }
+}
+function revealActionTimelineOverviewGroup(view, groupId) {
+  const overview = view && view.overview, item = overview && overview.model.byId.get(groupId);
+  if (!item || overview.viewStart == null || overview.viewEnd == null || overview.dataStart == null || overview.dataEnd == null) return;
+  const extent = actionTimelineOverviewVisualExtent(item); if (!extent) return;
+  const itemStart = extent.start, itemEnd = extent.end;
+  if (itemEnd >= overview.viewStart && itemStart <= overview.viewEnd) return;
+  const domainSpan = overview.dataEnd - overview.dataStart, currentSpan = overview.viewEnd - overview.viewStart;
+  if (domainSpan <= 0 || currentSpan <= 0) return;
+  const span = Math.min(domainSpan, Math.max(currentSpan, itemEnd - itemStart));
+  const center = itemStart + (itemEnd - itemStart) / 2;
+  const start = Math.max(overview.dataStart, Math.min(center - span / 2, overview.dataEnd - span));
+  overview.viewStart = start; overview.viewEnd = start + span; renderActionTimelineOverviewPaths(view);
+}
+function beginActionTimelineOverviewGesture(view, event) {
+  const overview = view && view.overview;
+  const button = event.button === 2 || (event.button === 0 && event.ctrlKey) ? 2 : event.button;
+  if (!overview || ![0, 2].includes(button) || overview.viewStart == null || overview.viewEnd == null) return;
+  clearActionTimelineOverviewHover(view);
+  const x = timelineOverviewEventX(overview, event), time = timelineOverviewXToTime(overview, x);
+  const hit = button === 0 ? actionTimelineOverviewHit(view, event) : null;
+  overview.gesture = { pointerId: event.pointerId, button, startClientX: event.clientX, startX: x, startTime: time, lastTime: time,
+    startViewStart: overview.viewStart, startViewEnd: overview.viewEnd, dragging: false, hitGroupId: hit && hit.groupId };
+  try { overview.svg.setPointerCapture(event.pointerId); } catch {}
+  event.preventDefault();
+}
+function moveActionTimelineOverviewGesture(view, event) {
+  const overview = view && view.overview, gesture = overview && overview.gesture;
+  if (!gesture || gesture.pointerId !== event.pointerId) return;
+  const x = timelineOverviewEventX(overview, event);
+  const time = timelineOverviewXToDomainTime(gesture.startViewStart, gesture.startViewEnd, x);
+  if (!gesture.dragging && Math.abs(event.clientX - gesture.startClientX) >= 4) gesture.dragging = true;
+  gesture.lastTime = time;
+  if (gesture.dragging && gesture.button === 0) {
+    overview.draftSelection = { start: Math.floor(Math.min(gesture.startTime, time)), end: Math.ceil(Math.max(gesture.startTime, time)) };
+    syncActionTimelineOverviewDecorations(view);
+  } else if (gesture.dragging && gesture.button === 2) {
+    const rect = overview.svg.getBoundingClientRect(), span = gesture.startViewEnd - gesture.startViewStart, domainSpan = overview.dataEnd - overview.dataStart;
+    if (rect.width && span > 0 && span < domainSpan) {
+      const shifted = gesture.startViewStart - (event.clientX - gesture.startClientX) / rect.width * span;
+      overview.viewStart = Math.max(overview.dataStart, Math.min(shifted, overview.dataEnd - span)); overview.viewEnd = overview.viewStart + span;
+      scheduleActionTimelineOverviewPaths(view);
+    }
+  }
+  event.preventDefault();
+}
+function finishActionTimelineOverviewGesture(view, event) {
+  const overview = view && view.overview, gesture = overview && overview.gesture;
+  if (!gesture || gesture.pointerId !== event.pointerId) return;
+  overview.gesture = null;
+  try { overview.svg.releasePointerCapture(event.pointerId); } catch {}
+  if (gesture.button === 0 && gesture.dragging) commitActionTimelineOverviewSelection(view, gesture.startTime, gesture.lastTime);
+  else if (gesture.button === 0 && gesture.hitGroupId) selectActionTimelineGroup(gesture.hitGroupId, view.branchId, true);
+  else if (gesture.button === 2 && !gesture.dragging) clearActionTimelineOverviewSelection(view);
+  else { overview.draftSelection = null; syncActionTimelineOverviewDecorations(view); }
+  event.preventDefault();
+}
+function cancelActionTimelineOverviewGesture(view, event) {
+  const overview = view && view.overview, gesture = overview && overview.gesture;
+  if (!gesture || (event && gesture.pointerId !== event.pointerId)) return;
+  overview.gesture = null; overview.draftSelection = null; syncActionTimelineOverviewDecorations(view);
+}
+function renderActionTimelineOverviewPaths(view) {
+  const overview = view.overview, model = overview.model;
+  if (!overview || !model) return;
+  const aggregate = { queue: "", ttft: "", decode: "", marker: "", point: "" };
+  model.items.forEach(item => {
+    const paths = timelineOverviewItemPaths(overview, item);
+    Object.keys(aggregate).forEach(key => { aggregate[key] += paths[key]; });
+  });
+  overview.queuePath.setAttribute("d", aggregate.queue); overview.ttftPath.setAttribute("d", aggregate.ttft);
+  overview.decodePath.setAttribute("d", aggregate.decode); overview.markerPath.setAttribute("d", aggregate.marker);
+  overview.pointPath.setAttribute("d", aggregate.point); syncActionTimelineOverviewDecorations(view);
+  if (overview.hoverGroupId && !model.byId.has(overview.hoverGroupId)) clearActionTimelineOverviewHover(view);
+  else if (overview.hoverGroupId) {
+    const point = overview.hoverPoint;
+    if (point) showActionTimelineOverviewTooltip(view, overview.hoverGroupId, point.clientX, point.clientY);
+    else overview.hoverPath.setAttribute("d", timelineOverviewItemPaths(overview, model.byId.get(overview.hoverGroupId)).highlight);
+  }
+  const axisTime = value => value == null ? "—" : new Date(Math.round(value)).toISOString();
+  const startText = axisTime(overview.viewStart), endText = axisTime(overview.viewEnd);
+  overview.axisStart.textContent = startText === "—" ? startText : startText.slice(11, 23); overview.axisStart.title = startText;
+  overview.axisEnd.textContent = endText === "—" ? endText : endText.slice(11, 23); overview.axisEnd.title = endText;
+  overview.shell.dataset.viewStart = overview.viewStart == null ? "" : String(Math.round(overview.viewStart));
+  overview.shell.dataset.viewEnd = overview.viewEnd == null ? "" : String(Math.round(overview.viewEnd));
+  syncActionTimelineOverviewControls(view);
+}
+function scheduleActionTimelineOverviewPaths(view) {
+  const overview = view && view.overview;
+  if (!overview || view !== S._timelineView || overview.raf) return;
+  overview.raf = requestAnimationFrame(() => {
+    overview.raf = 0;
+    if (view === S._timelineView && overview.shell.isConnected) renderActionTimelineOverviewPaths(view);
+  });
+}
+function actionTimelineOverviewZoomAt(view, factor, anchorRatio) {
+  const overview = view && view.overview;
+  if (!overview || overview.dataStart == null || overview.dataEnd == null || overview.viewStart == null || overview.viewEnd == null) return false;
+  const domainSpan = overview.dataEnd - overview.dataStart, currentSpan = overview.viewEnd - overview.viewStart;
+  if (domainSpan <= 0 || currentSpan <= 0 || !Number.isFinite(factor) || factor <= 0) return false;
+  const minSpan = Math.max(1, domainSpan / 1000), nextSpan = Math.max(minSpan, Math.min(domainSpan, currentSpan * factor));
+  if (Math.abs(nextSpan - currentSpan) < .001) return false;
+  const ratio = Math.max(0, Math.min(1, anchorRatio)), anchor = overview.viewStart + currentSpan * ratio;
+  let start = anchor - nextSpan * ratio;
+  start = Math.max(overview.dataStart, Math.min(start, overview.dataEnd - nextSpan));
+  overview.viewStart = start; overview.viewEnd = start + nextSpan; clearActionTimelineOverviewHover(view); scheduleActionTimelineOverviewPaths(view);
+  return true;
+}
+function actionTimelineOverviewPanBy(view, delta) {
+  const overview = view && view.overview;
+  if (!overview || overview.dataStart == null || overview.dataEnd == null || overview.viewStart == null || overview.viewEnd == null) return false;
+  const span = overview.viewEnd - overview.viewStart, domainSpan = overview.dataEnd - overview.dataStart;
+  if (span <= 0 || span >= domainSpan || !Number.isFinite(delta)) return false;
+  const start = Math.max(overview.dataStart, Math.min(overview.viewStart + delta, overview.dataEnd - span));
+  if (Math.abs(start - overview.viewStart) < .001) return false;
+  overview.viewStart = start; overview.viewEnd = start + span; clearActionTimelineOverviewHover(view); scheduleActionTimelineOverviewPaths(view);
+  return true;
+}
+function actionTimelineOverviewWheel(view, event) {
+  const overview = view && view.overview; if (!overview || !event.deltaY) return;
+  const rect = overview.svg.getBoundingClientRect(); if (!rect.width) return;
+  const unit = event.deltaMode === 1 ? 16 : (event.deltaMode === 2 ? rect.height : 1);
+  const factor = Math.exp(event.deltaY * unit * .0015), ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+  if (actionTimelineOverviewZoomAt(view, factor, ratio)) event.preventDefault();
+}
+function showActionTimelineOverviewKeyboardItem(view, groupId) {
+  const overview = view && view.overview, item = overview && overview.model.byId.get(groupId);
+  if (!item) return false;
+  revealActionTimelineOverviewGroup(view, groupId); clearActionTimelineOverviewHover(view);
+  overview.keyboardGroupId = groupId; overview.hoverCandidateId = groupId;
+  const rect = overview.svg.getBoundingClientRect();
+  const extent = actionTimelineOverviewVisualExtent(item);
+  const anchorTime = extent ? extent.start + (extent.end - extent.start) / 2 : item.start;
+  const rawX = timelineOverviewTimeToX(overview, anchorTime);
+  const point = {
+    clientX: rect.left + Math.max(0, Math.min(ACTION_TIMELINE_OVERVIEW_WIDTH, rawX == null ? 0 : rawX)) / ACTION_TIMELINE_OVERVIEW_WIDTH * rect.width,
+    clientY: rect.top + (item.rank + .5) / item.laneCount * rect.height
+  };
+  overview.hoverPoint = point; showActionTimelineOverviewTooltip(view, groupId, point.clientX, point.clientY);
+  return true;
+}
+function actionTimelineOverviewKeydown(view, event) {
+  const overview = view && view.overview; if (!overview) return;
+  if (event.target !== overview.shell && event.target.closest && event.target.closest("button")) return;
+  if (event.key === "Escape") {
+    if (overview.selection) clearActionTimelineOverviewSelection(view); else clearActionTimelineOverviewHover(view);
+    event.preventDefault(); return;
+  }
+  const items = overview.model.items;
+  if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) && items.length) {
+    const current = Math.max(0, items.findIndex(item => item.groupId === overview.keyboardGroupId));
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 :
+      Math.max(0, Math.min(items.length - 1, current + (event.key === "ArrowUp" ? -1 : 1)));
+    event.preventDefault(); showActionTimelineOverviewKeyboardItem(view, items[next].groupId); return;
+  }
+  if (event.key === "Enter" && overview.keyboardGroupId) {
+    const item = overview.model.byId.get(overview.keyboardGroupId); if (!item) return;
+    event.preventDefault();
+    if (event.shiftKey) commitActionTimelineOverviewSelection(view, item.start, item.end);
+    else {
+      selectActionTimelineGroup(item.groupId, view.branchId, true);
+      const close = view.inspectorHost.querySelector(".timeline-inspector button");
+      if (close) { try { close.focus({ preventScroll: true }); } catch { close.focus(); } }
+    }
+    return;
+  }
+  if (event.key === "+" || event.key === "=") { if (actionTimelineOverviewZoomAt(view, .75, .5)) event.preventDefault(); return; }
+  if (event.key === "-") { if (actionTimelineOverviewZoomAt(view, 4 / 3, .5)) event.preventDefault(); return; }
+  const span = overview.viewEnd != null && overview.viewStart != null ? overview.viewEnd - overview.viewStart : 0;
+  if (event.key === "ArrowLeft" && actionTimelineOverviewPanBy(view, -span * .1)) event.preventDefault();
+  else if (event.key === "ArrowRight" && actionTimelineOverviewPanBy(view, span * .1)) event.preventDefault();
+}
+function drawActionTimelineOverview(view, groups, force = false, domainGroups = groups) {
+  const overview = view.overview, model = actionTimelineOverviewModel(groups, domainGroups);
+  const previousStart = overview.dataStart, previousEnd = overview.dataEnd;
+  const wasFull = !overview.initialized || (overview.viewStart === previousStart && overview.viewEnd === previousEnd);
+  overview.model = model; overview.dataStart = model.dataStart; overview.dataEnd = model.dataEnd;
+  if (!overview.gesture && (!overview.initialized || wasFull)) {
+    overview.viewStart = model.dataStart; overview.viewEnd = model.dataEnd; overview.initialized = model.dataStart != null;
+  } else if (!overview.gesture && model.dataStart != null && model.dataEnd != null) {
+    const span = Math.max(0, overview.viewEnd - overview.viewStart);
+    overview.viewStart = Math.max(model.dataStart, Math.min(overview.viewStart, model.dataEnd - span));
+    overview.viewEnd = Math.min(model.dataEnd, overview.viewStart + span);
+  }
+  renderActionTimelineOverviewPaths(view);
+  overview.shell.dataset.itemCount = String(model.items.length);
+  overview.label.textContent = t("timeline.overview"); overview.svg.setAttribute("aria-label", t("timeline.overview")); overview.help.textContent = t("timeline.overview.help"); overview.keyboardHelp.textContent = t("timeline.overview.keyboard");
+  overview.clearButton.textContent = t("timeline.overview.clear"); overview.clearButton.setAttribute("aria-label", t("timeline.overview.clear"));
+  [[overview.zoomInButton, "timeline.overview.zoomIn"], [overview.zoomOutButton, "timeline.overview.zoomOut"], [overview.panEarlierButton, "timeline.overview.panEarlier"], [overview.panLaterButton, "timeline.overview.panLater"]].forEach(([button, key]) => { button.title = t(key); button.setAttribute("aria-label", t(key)); });
+  overview.legendQueue.lastChild.textContent = t("timeline.overview.queue"); overview.legendTtft.lastChild.textContent = t("timeline.overview.ttft"); overview.legendDecode.lastChild.textContent = t("timeline.overview.decode");
+  overview.shell.classList.toggle("timeline-overview-empty", !model.items.length);
+  if ((overview.hoverGroupId && !model.byId.has(overview.hoverGroupId)) ||
+      (overview.hoverCandidateId && !model.byId.has(overview.hoverCandidateId))) clearActionTimelineOverviewHover(view);
+  if (overview.keyboardGroupId && !model.byId.has(overview.keyboardGroupId)) overview.keyboardGroupId = null;
+  if (force) clearActionTimelineOverviewHover(view);
+}
+function createActionTimelineOverview() {
+  const shell = el("section", "timeline-overview"); shell.tabIndex = 0; shell.setAttribute("aria-labelledby", "timeline-overview-label"); shell.setAttribute("aria-describedby", "timeline-overview-help timeline-overview-keyboard-help timeline-overview-tooltip");
+  const head = el("div", "timeline-overview-head"), label = el("div", "timeline-overview-label", t("timeline.overview")); label.id = "timeline-overview-label"; head.appendChild(label);
+  const legend = el("div", "timeline-overview-legend");
+  const legendItem = (className, text) => { const item = el("span", "timeline-overview-legend-item " + className); item.appendChild(el("i")); item.appendChild(el("span", null, text)); legend.appendChild(item); return item; };
+  const legendQueue = legendItem("queue", t("timeline.overview.queue"));
+  const legendTtft = legendItem("ttft", t("timeline.overview.ttft"));
+  const legendDecode = legendItem("decode", t("timeline.overview.decode")); head.appendChild(legend);
+  const clearButton = el("button", "timeline-overview-clear hidden", t("timeline.overview.clear")); clearButton.type = "button"; clearButton.disabled = true; clearButton.setAttribute("aria-label", t("timeline.overview.clear")); head.appendChild(clearButton); shell.appendChild(head);
+  const help = el("div", "timeline-overview-help", t("timeline.overview.help")); help.id = "timeline-overview-help"; shell.appendChild(help);
+  const keyboardHelp = el("div", "timeline-overview-keyboard-help", t("timeline.overview.keyboard")); keyboardHelp.id = "timeline-overview-keyboard-help"; shell.appendChild(keyboardHelp);
+  const selectionStatus = el("div", "timeline-overview-selection-status"); selectionStatus.setAttribute("aria-live", "polite"); shell.appendChild(selectionStatus);
+  const plot = el("div", "timeline-overview-plot");
+  const svg = svgElement("svg", { viewBox: `0 0 ${ACTION_TIMELINE_OVERVIEW_WIDTH} ${ACTION_TIMELINE_OVERVIEW_HEIGHT}`, preserveAspectRatio: "none", role: "img", "aria-label": t("timeline.overview") });
+  svg.appendChild(svgElement("rect", { class: "timeline-overview-background", x: 0, y: 0, width: ACTION_TIMELINE_OVERVIEW_WIDTH, height: ACTION_TIMELINE_OVERVIEW_HEIGHT }));
+  const queuePath = svgElement("path", { class: "timeline-overview-phase queue" });
+  const ttftPath = svgElement("path", { class: "timeline-overview-phase ttft" });
+  const decodePath = svgElement("path", { class: "timeline-overview-phase decode" });
+  const pointPath = svgElement("path", { class: "timeline-overview-point" });
+  const markerPath = svgElement("path", { class: "timeline-overview-running" });
+  const selectionRect = svgElement("rect", { class: "timeline-overview-selection hidden", x: 0, y: 0, width: 0, height: ACTION_TIMELINE_OVERVIEW_HEIGHT });
+  const selectedPath = svgElement("path", { class: "timeline-overview-highlight selected" });
+  const hoverPath = svgElement("path", { class: "timeline-overview-highlight hover" });
+  [queuePath, ttftPath, decodePath, pointPath, markerPath, selectionRect, selectedPath, hoverPath].forEach(node => svg.appendChild(node));
+  plot.appendChild(svg);
+  const prefixButton = el("button", "timeline-overview-prefix hidden", "…"); prefixButton.type = "button"; prefixButton.setAttribute("data-action", "load-omitted-timeline"); prefixButton.setAttribute("aria-label", t("timeline.overview.omitted")); prefixButton.setAttribute("aria-busy", "false"); plot.appendChild(prefixButton);
+  shell.appendChild(plot);
+  const tooltip = el("div", "timeline-overview-tooltip hidden"); tooltip.id = "timeline-overview-tooltip"; tooltip.setAttribute("role", "tooltip"); tooltip.setAttribute("aria-live", "polite"); tooltip.setAttribute("aria-hidden", "true"); shell.appendChild(tooltip);
+  const axis = el("div", "timeline-overview-axis"), axisStart = el("time"), axisEnd = el("time"), nav = el("div", "timeline-overview-nav");
+  const navButton = (text, key) => { const button = el("button", "timeline-overview-nav-button", text); button.type = "button"; button.title = t(key); button.setAttribute("aria-label", t(key)); nav.appendChild(button); return button; };
+  const panEarlierButton = navButton("←", "timeline.overview.panEarlier"), zoomOutButton = navButton("−", "timeline.overview.zoomOut");
+  const zoomInButton = navButton("+", "timeline.overview.zoomIn"), panLaterButton = navButton("→", "timeline.overview.panLater");
+  axis.appendChild(axisStart); axis.appendChild(nav); axis.appendChild(axisEnd); shell.appendChild(axis);
+  return { shell, head, label, help, keyboardHelp, selectionStatus, clearButton, plot, svg, prefixButton, tooltip, axis, axisStart, axisEnd, nav, zoomInButton, zoomOutButton, panEarlierButton, panLaterButton, queuePath, ttftPath, decodePath, pointPath, markerPath, selectionRect, selectedPath, hoverPath,
+    legendQueue, legendTtft, legendDecode, model: actionTimelineOverviewModel([]), dataStart: null, dataEnd: null,
+    viewStart: null, viewEnd: null, initialized: false, selection: null, draftSelection: null, preFilterScroll: null, gesture: null,
+    hoverTimer: 0, hoverLeaveTimer: 0, tooltipHovered: false, hoverCandidateId: null, hoverGroupId: null, hoverPoint: null, keyboardGroupId: null, restoreFocusAfterPrefix: false, raf: 0 };
+}
+function actionTimelineTurnToggle(turnId, stats, expanded, view) {
+  const label = t(expanded ? "timeline.turn.collapse" : "timeline.turn.expand", shortRuntime(turnId), stats.count, stats.duration);
+  const button = el("button", "timeline-turn-toggle"); button.type = "button"; button.dataset.turnId = turnId;
+  button.setAttribute("aria-expanded", expanded ? "true" : "false"); button.setAttribute("aria-label", label); button.title = label;
+  const chevron = el("span", "timeline-turn-chevron", expanded ? "▾" : "▸"); chevron.setAttribute("aria-hidden", "true"); button.appendChild(chevron);
+  button.appendChild(el("span", "timeline-turn-marker", t("timeline.turnBoundary")));
+  button.onclick = event => { event.stopPropagation(); toggleActionTimelineTurn(view, turnId); };
+  return button;
+}
+function actionTimelineLedgerRow(group, reusableRow, turnBoundary, selected, branchScope, firstRow = false, options = {}) {
+  const kind = timelineKind(group), status = String(group.status || "completed").toLowerCase();
+  const statusClass = status.replace(/[^a-z0-9_-]/g, "-") || "completed";
+  const row = reusableRow || el("tr", "timeline-ledger-row");
+  row.className = "timeline-ledger-row kind-" + kind + " status-" + statusClass + (turnBoundary ? " turn-boundary" : "") + (selected ? " selected" : "") + (firstRow ? " timeline-first-row" : "") + (options.searchMatch ? " search-match" : "");
+  row.dataset.groupId = group.group_id; row.dataset.turnId = group.turn_id || ""; row.dataset.actionKind = kind;
+  const ordinal = timelineOrdinal(group.ordinal), ordinalText = ordinal == null ? "—" : String(ordinal);
+  row.replaceChildren();
+  const ordinalCell = el("td", "timeline-ledger-ordinal");
+  if (options.turnStart) {
+    if (options.foldable && options.stats) ordinalCell.appendChild(actionTimelineTurnToggle(options.turnId, options.stats, true, S._timelineView));
+    else ordinalCell.appendChild(el("span", "timeline-turn-marker", t("timeline.turnBoundary")));
+  }
+  ordinalCell.appendChild(el("span", "timeline-ordinal-value", "#" + ordinalText)); row.appendChild(ordinalCell);
+  const kindCell = el("td", "timeline-ledger-kind"); const kindIcon = el("span", "timeline-kind-icon");
+  kindIcon.title = t("timeline.kind." + kind); kindIcon.setAttribute("aria-hidden", "true"); kindIcon.appendChild(iconEl(timelineKindIcon(kind), 15)); kindCell.appendChild(kindIcon);
+  kindCell.appendChild(el("span", "timeline-kind-label", t("timeline.kind." + kind))); row.appendChild(kindCell);
+  const title = group.title || t("timeline.kind." + kind), titleCell = el("td", "timeline-ledger-title");
+  const titleButton = el("button", "timeline-row-button", title); titleButton.type = "button"; titleButton.title = title;
+  titleButton.setAttribute("aria-label", t("timeline.row.open", ordinalText, title)); titleButton.setAttribute("aria-expanded", selected ? "true" : "false");
+  if (selected) titleButton.setAttribute("aria-controls", "timeline-action-inspector");
+  titleCell.appendChild(titleButton); row.appendChild(titleCell);
+  const details = actionTimelineDetails(group); row.appendChild(el("td", "timeline-ledger-duration", details.duration || "—"));
+  const tokens = el("td", "timeline-ledger-tokens", String(timelineTokenTotal(group.usage))); tokens.title = details.tokens; row.appendChild(tokens);
+  const groupId = group.group_id;
+  row.onclick = () => selectActionTimelineGroup(groupId, branchScope, false);
+  row._timelineGroup = group; row._timelineTurnBoundary = turnBoundary; row._timelineSelected = selected;
+  row._timelineBranchScope = branchScope; row._timelineLanguage = LANG; row._timelineFirstRow = firstRow;
+  row._timelineTurnStart = !!options.turnStart; row._timelineTurnSignature = options.stats ? options.stats.count + ":" + options.stats.duration : "";
+  row._timelineFoldable = !!options.foldable; row._timelineSearchMatch = !!options.searchMatch;
+  return row;
+}
+function actionTimelineTurnSummaryRow(entry, reusableRow, branchScope, firstRow = false) {
+  const row = reusableRow || el("tr", "timeline-ledger-row timeline-turn-summary");
+  row.className = "timeline-ledger-row timeline-turn-summary" + (entry.turnBoundary ? " turn-boundary" : "") + (firstRow ? " timeline-first-row" : "");
+  delete row.dataset.groupId; delete row.dataset.actionKind; row.dataset.turnId = entry.turnId;
+  row.replaceChildren();
+  const ordinalCell = el("td", "timeline-ledger-ordinal"); ordinalCell.appendChild(actionTimelineTurnToggle(entry.turnId, entry.stats, false, S._timelineView)); row.appendChild(ordinalCell);
+  const kindCell = el("td", "timeline-ledger-kind"); const chevron = el("span", "timeline-turn-summary-icon", "↳"); chevron.setAttribute("aria-hidden", "true"); kindCell.appendChild(chevron); row.appendChild(kindCell);
+  row.appendChild(el("td", "timeline-ledger-title", t("timeline.turn.summary", entry.stats.count)));
+  row.appendChild(el("td", "timeline-ledger-duration", entry.stats.duration)); row.appendChild(el("td", "timeline-ledger-tokens", "—"));
+  row.onclick = () => toggleActionTimelineTurn(S._timelineView, entry.turnId);
+  row._timelineTurnId = entry.turnId; row._timelineTurnBoundary = entry.turnBoundary; row._timelineTurnSignature = entry.stats.count + ":" + entry.stats.duration;
+  row._timelineBranchScope = branchScope; row._timelineLanguage = LANG; row._timelineFirstRow = firstRow;
+  return row;
+}
+function actionTimelineEntryIndexForGroup(view, groupId) {
+  return (view.entries || []).findIndex(entry => entry.type === "group" ? entry.group.group_id === groupId : entry.groups.some(group => group.group_id === groupId));
+}
+function focusActionTimelineEntry(view, index) {
+  if (!view || !view.entries.length) return;
+  const targetIndex = Math.max(0, Math.min(view.entries.length - 1, index)), entry = view.entries[targetIndex];
+  const viewportTop = targetIndex * ACTION_TIMELINE_ROW_HEIGHT;
+  const headerHeight = view.thead.offsetHeight || 30;
+  const viewportBottom = viewportTop + ACTION_TIMELINE_ROW_HEIGHT + headerHeight;
+  if (viewportTop < view.scroll.scrollTop) view.scroll.scrollTop = viewportTop;
+  else if (viewportBottom > view.scroll.scrollTop + view.scroll.clientHeight) view.scroll.scrollTop = viewportBottom - view.scroll.clientHeight;
+  view.scrollTop = view.scroll.scrollTop;
+  if (entry.type === "group") S._timelineRestoreFocusGroupId = entry.group.group_id;
+  else view.restoreFocusTurnId = entry.turnId;
+  reconcileActionTimelineWindow(view);
+}
+function focusActionTimelineGroup(view, index) {
+  if (!view || !view.groups.length) return;
+  const group = view.groups[Math.max(0, Math.min(view.groups.length - 1, index))];
+  const entryIndex = group && actionTimelineEntryIndexForGroup(view, group.group_id);
+  if (entryIndex >= 0) focusActionTimelineEntry(view, entryIndex);
+}
+function actionTimelineLedgerKeydown(view, event) {
+  const row = event.target && event.target.closest ? event.target.closest(".timeline-ledger-row") : null;
+  if (!row || !view || view !== S._timelineView) return;
+  const index = view.entries.findIndex(entry => entry.type === "group" ? entry.group.group_id === row.dataset.groupId : entry.turnId === row.dataset.turnId);
+  if (index < 0) return;
+  const page = Math.max(1, Math.floor(view.scroll.clientHeight / ACTION_TIMELINE_ROW_HEIGHT) - 1);
+  const targets = { ArrowUp: index - 1, ArrowDown: index + 1, PageUp: index - page, PageDown: index + page, Home: 0, End: view.entries.length - 1 };
+  if (!(event.key in targets)) return;
+  event.preventDefault(); focusActionTimelineEntry(view, targets[event.key]);
+}
+function sortedActionTimelineGroups(timeline = S.actionTimeline) {
+  return ((timeline && timeline.groups) || []).filter(group => !!group.group_id).slice().sort((left, right) => {
+    const leftOrdinal = timelineOrdinal(left.ordinal), rightOrdinal = timelineOrdinal(right.ordinal);
+    if (leftOrdinal != null && rightOrdinal != null && leftOrdinal !== rightOrdinal) return leftOrdinal - rightOrdinal;
+    if (leftOrdinal != null && rightOrdinal == null) return -1;
+    if (leftOrdinal == null && rightOrdinal != null) return 1;
+    const created = (+left.created_at || 0) - (+right.created_at || 0);
+    return created || String(left.group_id).localeCompare(String(right.group_id));
+  });
+}
+function destroyActionTimelineView(view = S._timelineView) {
+  if (!view) return;
+  if (view.raf) cancelAnimationFrame(view.raf);
+  if (view.overview && view.overview.raf) cancelAnimationFrame(view.overview.raf);
+  if (view.overview && view.overview.dismissKeydown) document.removeEventListener("keydown", view.overview.dismissKeydown);
+  clearActionTimelineOverviewHover(view);
+  if (view.resizeObserver) view.resizeObserver.disconnect();
+  if (S._timelineView === view) S._timelineView = null;
+}
+function actionTimelineViewMatches(view, rootFrameId, branchId) {
+  return !!view && view.rootFrameId === rootFrameId && view.branchId === branchId;
+}
+function actionTimelineBottomDistance(view) {
+  return Math.max(0, view.scroll.scrollHeight - view.scroll.clientHeight - view.scroll.scrollTop);
+}
+function scheduleActionTimelineWindow(view) {
+  if (!view || view !== S._timelineView || view.raf) return;
+  view.raf = requestAnimationFrame(() => {
+    view.raf = 0;
+    if (view === S._timelineView && view.region.isConnected) reconcileActionTimelineWindow(view);
+  });
+}
+function actionTimelineViewportScrolled(view) {
+  if (!view || view !== S._timelineView) return;
+  view.scrollTop = view.scroll.scrollTop; view.scrollLeft = view.scroll.scrollLeft;
+  view.followTail = actionTimelineBottomDistance(view) <= ACTION_TIMELINE_BOTTOM_THRESHOLD;
+  if (view.scroll.scrollTop > ACTION_TIMELINE_TOP_THRESHOLD) {
+    view.autoLoadArmed = true; view.autoLoadCursor = null;
+  }
+  scheduleActionTimelineWindow(view);
+  const timeline = S.actionTimeline || {}, first = timelineOrdinal(timeline.first_ordinal);
+  if (!view.overview.selection && !view.searchNeedle && view.scroll.scrollTop <= ACTION_TIMELINE_TOP_THRESHOLD && timeline.has_more_before &&
+      !S._timelineHistoryLoading && view.autoLoadArmed && first != null && view.autoLoadCursor !== first) {
+    view.autoLoadArmed = false; view.autoLoadCursor = first; loadEarlierActionTimeline();
+  }
+}
+function createActionTimelineToolbar() {
+  const shell = el("form", "timeline-toolbar"); shell.setAttribute("role", "search"); shell.onsubmit = event => event.preventDefault();
+  const field = el("div", "timeline-search-field");
+  const label = el("label", "timeline-search-label", t("timeline.search.label")); label.htmlFor = "timeline-action-search"; field.appendChild(label);
+  const controls = el("div", "timeline-search-controls");
+  const input = el("input", "timeline-search-input"); input.id = "timeline-action-search"; input.type = "search"; input.maxLength = 256;
+  input.autocomplete = "off"; input.spellcheck = false; input.placeholder = t("timeline.search.placeholder");
+  input.setAttribute("aria-describedby", "timeline-search-scope timeline-search-status"); controls.appendChild(input);
+  const clearButton = el("button", "timeline-search-clear hidden", t("timeline.search.clear")); clearButton.type = "button"; clearButton.disabled = true;
+  clearButton.setAttribute("aria-label", t("timeline.search.clear")); controls.appendChild(clearButton); field.appendChild(controls); shell.appendChild(field);
+  const meta = el("div", "timeline-search-meta");
+  const status = el("span", "timeline-search-status", t("timeline.search.loaded", 0)); status.id = "timeline-search-status";
+  status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true"); meta.appendChild(status);
+  const scope = el("span", "timeline-search-scope", t("timeline.search.scope", 0)); scope.id = "timeline-search-scope"; meta.appendChild(scope);
+  shell.appendChild(meta); return { shell, label, input, clearButton, status, scope };
+}
+function syncActionTimelineSearchToolbar(view, loadedCount, matchCount, searchMatchCount = matchCount, force = false) {
+  const search = view.search, active = !!view.searchNeedle;
+  if (search.input.value !== view.searchQuery) search.input.value = view.searchQuery;
+  search.shell.dataset.matchCount = String(matchCount); search.shell.dataset.searchMatchCount = String(searchMatchCount); search.shell.dataset.loadedCount = String(loadedCount);
+  search.status.textContent = active && view.overview.selection
+    ? t("timeline.search.matchesInSelection", matchCount, searchMatchCount, loadedCount)
+    : t(active ? "timeline.search.matches" : "timeline.search.loaded", active ? matchCount : loadedCount, loadedCount);
+  search.scope.textContent = t("timeline.search.scope", loadedCount);
+  search.clearButton.classList.toggle("hidden", !active); search.clearButton.disabled = !active;
+  if (force) {
+    search.label.textContent = t("timeline.search.label"); search.input.placeholder = t("timeline.search.placeholder");
+    search.clearButton.textContent = t("timeline.search.clear"); search.clearButton.setAttribute("aria-label", t("timeline.search.clear"));
+  }
+}
+function changeActionTimelineSearch(view, rawQuery) {
+  if (!view || view !== S._timelineView) return;
+  const query = String(rawQuery || "").slice(0, 256), needle = normalizeActionTimelineSearch(query);
+  if (query === view.searchQuery && needle === view.searchNeedle) return;
+  const wasFiltered = !!view.searchNeedle || !!view.overview.selection;
+  if (!wasFiltered && needle) view.preFilterScroll = actionTimelineFilterScrollSnapshot(view);
+  view.searchQuery = query; view.searchNeedle = needle; view.autoLoadArmed = false;
+  let restore = null;
+  if (!needle && !view.overview.selection) { restore = view.preFilterScroll; view.preFilterScroll = null; }
+  clearActionTimelineOverviewHover(view);
+  updateActionTimelineLedger({ direction: "search", filterChanged: true, filterRestore: restore });
+}
+function toggleActionTimelineTurn(view, turnId) {
+  if (!view || view !== S._timelineView || !turnId || view.searchNeedle) return;
+  const snapshot = actionTimelineFilterScrollSnapshot(view), collapsing = !view.collapsedTurns.has(turnId);
+  if (collapsing) view.collapsedTurns.add(turnId); else view.collapsedTurns.delete(turnId);
+  if (collapsing) {
+    const selected = view.groups.find(group => group.group_id === S.actionTimelineSelectedGroupId);
+    if (selected && selected.turn_id === turnId) { S.actionTimelineSelectedGroupId = null; S.actionTimelineSelectedBranchId = null; }
+  }
+  view.restoreFocusTurnId = turnId; view.autoLoadArmed = false;
+  updateActionTimelineLedger({ direction: "fold", filterChanged: true, filterRestore: snapshot });
+}
+function createActionTimelineView(rootFrameId, branchId) {
+  const region = el("div", "timeline-ledger-region");
+  region.dataset.rootFrameId = rootFrameId; region.dataset.branchId = branchId;
+  region.style.setProperty("--timeline-row-height", ACTION_TIMELINE_ROW_HEIGHT + "px");
+  const search = createActionTimelineToolbar(); region.appendChild(search.shell);
+  const overview = createActionTimelineOverview(); region.appendChild(overview.shell);
+  const inspectorHost = el("div", "timeline-inspector-host hidden"); region.appendChild(inspectorHost);
+  const filterEmpty = el("div", "workbench-empty timeline-filter-empty hidden", t("timeline.overview.emptySelection")); region.appendChild(filterEmpty);
+  const ledgerHelp = el("div", "timeline-ledger-keyboard-help", t("timeline.ledger.keyboard")); ledgerHelp.id = "timeline-ledger-keyboard-help"; region.appendChild(ledgerHelp);
+  const scroll = el("div", "timeline-ledger-scroll");
+  scroll.tabIndex = 0; scroll.setAttribute("role", "region"); scroll.setAttribute("aria-label", t("timeline.title")); scroll.setAttribute("aria-describedby", ledgerHelp.id);
+  const table = el("table", "timeline-ledger"); table.setAttribute("aria-colcount", "5");
+  const thead = el("thead"), header = el("tr");
+  const headerColumns = [["timeline.column.ordinal", "timeline-ledger-ordinal"], ["timeline.column.kind", "timeline-ledger-kind"], ["timeline.column.action", "timeline-ledger-title"], ["timeline.duration", "timeline-ledger-duration"], ["timeline.tokens", "timeline-ledger-tokens"]];
+  headerColumns.forEach(([key, className]) => { const th = el("th", className, t(key)); th.scope = "col"; th.dataset.i18nKey = key; header.appendChild(th); });
+  thead.appendChild(header); table.appendChild(thead);
+  const tbody = el("tbody", "timeline-ledger-body"); table.appendChild(tbody); scroll.appendChild(table); region.appendChild(scroll);
+  const view = { rootFrameId, branchId, region, search, overview, inspectorHost, filterEmpty, ledgerHelp, scroll, table, thead, tbody, allGroups: [], groups: [], entries: [],
+    initialized: false, followTail: true, scrollTop: 0, scrollLeft: 0, start: 0, end: 0,
+    autoLoadArmed: true, autoLoadCursor: null, raf: 0, resizeObserver: null, language: LANG,
+    searchQuery: "", searchNeedle: "", searchIndex: new Map(), collapsedTurns: new Set(), preFilterScroll: null,
+    pendingPrependRestore: null, restoreFocusTurnId: null };
+  search.input.oninput = () => changeActionTimelineSearch(view, search.input.value);
+  search.input.onkeydown = event => { if (event.key === "Escape" && view.searchNeedle) { event.preventDefault(); changeActionTimelineSearch(view, ""); } };
+  search.clearButton.onclick = event => { event.preventDefault(); search.input.focus(); changeActionTimelineSearch(view, ""); };
+  overview.svg.addEventListener("pointermove", event => actionTimelineOverviewPointerMove(view, event));
+  overview.svg.addEventListener("pointerdown", event => beginActionTimelineOverviewGesture(view, event));
+  overview.svg.addEventListener("pointerup", event => finishActionTimelineOverviewGesture(view, event));
+  overview.svg.addEventListener("pointercancel", event => cancelActionTimelineOverviewGesture(view, event));
+  overview.svg.addEventListener("lostpointercapture", event => cancelActionTimelineOverviewGesture(view, event));
+  overview.svg.addEventListener("pointerleave", event => {
+    if (overview.gesture) return;
+    if (event.relatedTarget === overview.tooltip || overview.tooltip.contains(event.relatedTarget)) return;
+    scheduleActionTimelineOverviewHoverClear(view);
+  });
+  overview.tooltip.addEventListener("pointerenter", () => { overview.tooltipHovered = true; cancelActionTimelineOverviewHoverClear(view); });
+  overview.tooltip.addEventListener("pointerleave", event => {
+    overview.tooltipHovered = false;
+    if (event.relatedTarget === overview.svg || overview.svg.contains(event.relatedTarget)) return;
+    scheduleActionTimelineOverviewHoverClear(view);
+  });
+  overview.svg.addEventListener("wheel", event => actionTimelineOverviewWheel(view, event), { passive: false });
+  overview.svg.addEventListener("contextmenu", event => event.preventDefault());
+  overview.shell.addEventListener("keydown", event => actionTimelineOverviewKeydown(view, event));
+  overview.shell.addEventListener("focus", () => {
+    const groupId = overview.keyboardGroupId || (overview.model.byId.has(S.actionTimelineSelectedGroupId) ? S.actionTimelineSelectedGroupId : (overview.model.items[0] || {}).groupId);
+    if (groupId) showActionTimelineOverviewKeyboardItem(view, groupId);
+  });
+  overview.shell.addEventListener("focusout", event => { if (!overview.shell.contains(event.relatedTarget)) clearActionTimelineOverviewHover(view); });
+  overview.dismissKeydown = event => {
+    if (event.key === "Escape" && view === S._timelineView && (overview.hoverTimer || overview.hoverGroupId)) {
+      clearActionTimelineOverviewHover(view); event.preventDefault();
+    }
+  };
+  document.addEventListener("keydown", overview.dismissKeydown);
+  overview.clearButton.onclick = event => { event.stopPropagation(); clearActionTimelineOverviewSelection(view); };
+  overview.zoomInButton.onclick = event => { event.stopPropagation(); actionTimelineOverviewZoomAt(view, .75, .5); };
+  overview.zoomOutButton.onclick = event => { event.stopPropagation(); actionTimelineOverviewZoomAt(view, 4 / 3, .5); };
+  overview.panEarlierButton.onclick = event => { event.stopPropagation(); const span = overview.viewEnd - overview.viewStart; actionTimelineOverviewPanBy(view, -span * .1); };
+  overview.panLaterButton.onclick = event => { event.stopPropagation(); const span = overview.viewEnd - overview.viewStart; actionTimelineOverviewPanBy(view, span * .1); };
+  overview.prefixButton.addEventListener("pointerdown", event => event.stopPropagation());
+  overview.prefixButton.onclick = event => { event.stopPropagation(); overview.restoreFocusAfterPrefix = true; loadEarlierActionTimeline(); };
+  scroll.addEventListener("scroll", () => actionTimelineViewportScrolled(view), { passive: true });
+  scroll.addEventListener("keydown", event => {
+    if (event.target !== scroll || !view.entries.length || !["Enter", "ArrowDown", "Home"].includes(event.key)) return;
+    const headerHeight = view.thead.offsetHeight || 30;
+    const firstVisible = Math.max(0, Math.min(view.entries.length - 1,
+      Math.floor(Math.max(0, view.scroll.scrollTop - headerHeight) / ACTION_TIMELINE_ROW_HEIGHT)));
+    event.preventDefault(); focusActionTimelineEntry(view, event.key === "Home" ? 0 : firstVisible);
+  });
+  table.addEventListener("keydown", event => actionTimelineLedgerKeydown(view, event));
+  if (typeof ResizeObserver !== "undefined") {
+    view.resizeObserver = new ResizeObserver(() => scheduleActionTimelineWindow(view));
+    view.resizeObserver.observe(scroll);
+  }
+  S._timelineView = view; return view;
+}
+function actionTimelineLedger(groups, branchScope, rootFrameScope) {
+  let view = S._timelineView;
+  if (!actionTimelineViewMatches(view, rootFrameScope, branchScope)) {
+    destroyActionTimelineView(view); view = createActionTimelineView(rootFrameScope, branchScope);
+  }
+  return view.region;
+}
+function syncActionTimelineInspector(view, force = false) {
+  const selected = view.groups.find(group => group.group_id === S.actionTimelineSelectedGroupId) || null;
+  const current = view.inspectorHost.firstElementChild;
+  if (!selected) {
+    view.inspectorHost.replaceChildren(); view.inspectorHost.classList.add("hidden"); return;
+  }
+  view.inspectorHost.classList.remove("hidden");
+  if (force || !current || current._timelineGroup !== selected || current._timelineLanguage !== LANG) {
+    const restoreCloseFocus = !!(current && current.contains(document.activeElement));
+    const next = actionTimelineInspector(selected); view.inspectorHost.replaceChildren(next);
+    if (restoreCloseFocus) {
+      const close = next.querySelector("button");
+      if (close) { try { close.focus({ preventScroll: true }); } catch { close.focus(); } }
+    }
+  }
+}
+function reconcileActionTimelineWindow(view, force = false) {
+  if (!view || view !== S._timelineView) return;
+  const entries = view.entries, scroll = view.scroll;
+  const viewportHeight = scroll.clientHeight || ACTION_TIMELINE_ROW_HEIGHT * 12;
+  const headerHeight = view.thead.offsetHeight || 30;
+  const viewportStart = Math.max(0, scroll.scrollTop - headerHeight);
+  const viewportEnd = Math.max(0, scroll.scrollTop + viewportHeight - headerHeight);
+  const start = Math.max(0, Math.floor(viewportStart / ACTION_TIMELINE_ROW_HEIGHT) - ACTION_TIMELINE_OVERSCAN);
+  const end = Math.min(entries.length, Math.ceil(viewportEnd / ACTION_TIMELINE_ROW_HEIGHT) + ACTION_TIMELINE_OVERSCAN);
+  const activeRow = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".timeline-ledger-row") : null;
+  const activeGroupId = activeRow && activeRow.dataset.groupId, activeTurnId = activeRow && !activeGroupId && activeRow.dataset.turnId;
+  const requestedFocusGroupId = S._timelineRestoreFocusGroupId; S._timelineRestoreFocusGroupId = null;
+  const requestedFocusTurnId = view.restoreFocusTurnId; view.restoreFocusTurnId = null;
+  const reusableRows = new Map(), reusableTurns = new Map();
+  view.tbody.querySelectorAll(".timeline-ledger-row[data-group-id]").forEach(row => { if (row.dataset.groupId) reusableRows.set(row.dataset.groupId, row); });
+  view.tbody.querySelectorAll(".timeline-turn-summary[data-turn-id]").forEach(row => { if (row.dataset.turnId) reusableTurns.set(row.dataset.turnId, row); });
+  const fragment = document.createDocumentFragment();
+  entries.slice(start, end).forEach((entry, offset) => {
+    const index = start + offset, firstRow = index === 0;
+    let row;
+    if (entry.type === "turn") {
+      row = reusableTurns.get(entry.turnId);
+      const signature = entry.stats.count + ":" + entry.stats.duration;
+      if (force || !row || row._timelineTurnBoundary !== entry.turnBoundary || row._timelineTurnSignature !== signature ||
+          row._timelineBranchScope !== view.branchId || row._timelineLanguage !== LANG || row._timelineFirstRow !== firstRow) {
+        row = actionTimelineTurnSummaryRow(entry, row, view.branchId, firstRow);
+      }
+    } else {
+      const group = entry.group, selected = group.group_id === S.actionTimelineSelectedGroupId;
+      row = reusableRows.get(group.group_id);
+      const signature = entry.stats ? entry.stats.count + ":" + entry.stats.duration : "";
+      if (force || !row || row._timelineGroup !== group || row._timelineTurnBoundary !== entry.turnBoundary ||
+          row._timelineSelected !== selected || row._timelineBranchScope !== view.branchId || row._timelineLanguage !== LANG ||
+          row._timelineFirstRow !== firstRow || row._timelineTurnStart !== entry.turnStart || row._timelineTurnSignature !== signature ||
+          row._timelineFoldable !== entry.foldable || row._timelineSearchMatch !== !!view.searchNeedle) {
+        row = actionTimelineLedgerRow(group, row, entry.turnBoundary, selected, view.branchId, firstRow, {
+          turnStart: entry.turnStart, turnId: entry.turnId, stats: entry.stats, foldable: entry.foldable, searchMatch: !!view.searchNeedle
+        });
+      }
+    }
+    row.style.transform = `translateY(${index * ACTION_TIMELINE_ROW_HEIGHT}px)`;
+    row.setAttribute("aria-rowindex", String(index + 2)); fragment.appendChild(row);
+  });
+  view.tbody.replaceChildren(fragment); view.start = start; view.end = end;
+  const focusGroupId = requestedFocusGroupId || activeGroupId, focusTurnId = requestedFocusTurnId || activeTurnId;
+  if (focusGroupId) {
+    const focusRow = Array.from(view.tbody.querySelectorAll(".timeline-ledger-row[data-group-id]")).find(row => row.dataset.groupId === focusGroupId);
+    const group = view.groups.find(item => item.group_id === focusGroupId);
+    const summaryRow = !focusRow && group ? Array.from(view.tbody.querySelectorAll(".timeline-turn-summary[data-turn-id]")).find(row => row.dataset.turnId === group.turn_id) : null;
+    const focusTarget = focusRow ? focusRow.querySelector(".timeline-row-button") : summaryRow && summaryRow.querySelector(".timeline-turn-toggle");
+    if (focusTarget && document.activeElement !== focusTarget) {
+      try { focusTarget.focus({ preventScroll: true }); } catch { focusTarget.focus(); }
+    }
+  } else if (focusTurnId) {
+    const turnRow = Array.from(view.tbody.querySelectorAll(".timeline-ledger-row[data-turn-id]")).find(row => row.dataset.turnId === focusTurnId);
+    const focusTarget = turnRow && (turnRow.querySelector(".timeline-turn-toggle") || turnRow.querySelector(".timeline-row-button"));
+    if (focusTarget && document.activeElement !== focusTarget) {
+      try { focusTarget.focus({ preventScroll: true }); } catch { focusTarget.focus(); }
+    }
+  }
+}
+function updateActionTimelineLedger(options = {}) {
+  if (S.activeTab !== "timeline") return;
+  const timeline = S.actionTimeline || {}, allGroups = sortedActionTimelineGroups(timeline);
+  const rootFrameScope = actionTimelineRootScope(timeline), branchScope = actionTimelineBranchScope(timeline, allGroups);
+  const view = S._timelineView;
+  if (!allGroups.length || !actionTimelineViewMatches(view, rootFrameScope, branchScope) || !view.region.isConnected) {
+    renderActionTimeline(); return;
+  }
+  const previousVisibleGroups = view.groups;
+  const force = view.language !== LANG;
+  view.allGroups = allGroups; view.language = LANG;
+  const searchGroups = searchActionTimelineGroups(view, allGroups);
+  drawActionTimelineOverview(view, searchGroups, force, allGroups);
+  const groups = filteredActionTimelineGroups(view, searchGroups), entries = actionTimelineLedgerEntries(view, groups);
+  const selectedHasActionRow = entries.some(entry => entry.type === "group" && entry.group.group_id === S.actionTimelineSelectedGroupId);
+  if (S.actionTimelineSelectedBranchId !== branchScope || !groups.some(group => group.group_id === S.actionTimelineSelectedGroupId) || !selectedHasActionRow) {
+    S.actionTimelineSelectedGroupId = null; S.actionTimelineSelectedBranchId = null;
+  }
+  const previousVisibleIds = new Set(previousVisibleGroups.map(group => group.group_id));
+  // A running group can enter a loaded-window search when a streamed event
+  // adds a matching resource or artifact, even though allGroups did not grow.
+  // Treat that as a visible append for tail following without mistaking a
+  // removal/non-match for newly visible data.
+  const tailAdded = !options.filterChanged && groups.some(group => !previousVisibleIds.has(group.group_id));
+  view.groups = groups; view.entries = entries; syncActionTimelineOverviewDecorations(view);
+  syncActionTimelineSearchToolbar(view, allGroups.length, groups.length, searchGroups.length, force); view.search.shell.dataset.visibleCount = String(groups.length);
+  view.table.setAttribute("aria-rowcount", String(entries.length + 1)); view.table.setAttribute("aria-label", t("timeline.title"));
+  view.scroll.setAttribute("aria-label", t("timeline.title")); view.tbody.style.height = (entries.length * ACTION_TIMELINE_ROW_HEIGHT) + "px";
+  const filterEmpty = (view.overview.selection || view.searchNeedle) && !groups.length;
+  view.filterEmpty.classList.toggle("hidden", !filterEmpty);
+  if (filterEmpty) view.filterEmpty.textContent = t(view.searchNeedle
+    ? (view.overview.selection && searchGroups.length ? "timeline.search.emptySelection" : "timeline.search.empty")
+    : "timeline.overview.emptySelection", searchGroups.length);
+  view.overview.selectionStatus.dataset.matchCount = String(groups.length);
+  if (force) {
+    view.thead.querySelectorAll("th[data-i18n-key]").forEach(th => { th.textContent = t(th.dataset.i18nKey); });
+    view.ledgerHelp.textContent = t("timeline.ledger.keyboard");
+    if (!filterEmpty) view.filterEmpty.textContent = t("timeline.overview.emptySelection"); view.overview.clearButton.textContent = t("timeline.overview.clear");
+    view.overview.clearButton.setAttribute("aria-label", t("timeline.overview.clear"));
+  }
+  syncActionTimelineInspector(view, force);
+  const snapshot = options.prependSnapshot, pendingPrependRestore = view.pendingPrependRestore; view.pendingPrependRestore = null;
+  if (snapshot && snapshot.node === view.scroll) {
+    const delta = view.scroll.scrollHeight - snapshot.scrollHeight;
+    view.scroll.scrollTop = snapshot.scrollTop + delta;
+    view.followTail = !!snapshot.followTail && actionTimelineBottomDistance(view) <= ACTION_TIMELINE_BOTTOM_THRESHOLD;
+  } else if (options.filterChanged || pendingPrependRestore) {
+    const restore = options.filterRestore || pendingPrependRestore;
+    if (restore && restore.followTail) view.scroll.scrollTop = Math.max(0, view.scroll.scrollHeight - view.scroll.clientHeight);
+    else if (restore && (restore.entryKey || restore.groupId || restore.turnId)) {
+      let index = entries.findIndex(entry => actionTimelineEntryKey(entry) === restore.entryKey);
+      if (index < 0 && restore.groupId) index = actionTimelineEntryIndexForGroup(view, restore.groupId);
+      if (index < 0 && restore.turnId) index = entries.findIndex(entry => entry.turnId === restore.turnId);
+      const headerHeight = view.thead.offsetHeight || 30;
+      view.scroll.scrollTop = index >= 0 ? Math.max(0, headerHeight + index * ACTION_TIMELINE_ROW_HEIGHT + restore.offset) : 0;
+    } else view.scroll.scrollTop = 0;
+    view.followTail = !!(restore && restore.followTail); view.initialized = true;
+  } else if (!view.initialized && entries.length && view.scroll.clientHeight > 0) {
+    view.scroll.scrollTop = Math.max(0, view.scroll.scrollHeight - view.scroll.clientHeight);
+    view.initialized = true; view.followTail = true;
+  } else if (view.initialized && view.followTail && tailAdded) {
+    view.scroll.scrollTop = Math.max(0, view.scroll.scrollHeight - view.scroll.clientHeight);
+  } else if (view.initialized) {
+    view.scroll.scrollTop = view.scrollTop;
+  }
+  view.scroll.scrollLeft = view.scrollLeft;
+  view.scrollTop = view.scroll.scrollTop; view.scrollLeft = view.scroll.scrollLeft;
+  reconcileActionTimelineWindow(view, force); syncActionTimelineHistoryState();
+  if (!view.initialized && entries.length) scheduleActionTimelineWindow(view);
 }
 function recoveryIsCurrentBranch(actions) {
   if (!actions || !S.currentId) return false;
@@ -3348,28 +4590,75 @@ function renderDelegationPanel() {
   });
   return panel;
 }
+function syncActionTimelineHistoryState(host = null) {
+  if (S._timelineView) syncActionTimelineOverviewControls(S._timelineView);
+  const root = $("#dock-timeline");
+  const target = host || (root && root.querySelector(".timeline-history-state"));
+  if (!target) return;
+  const previousHeight = target.getBoundingClientRect().height;
+  const timeline = S.actionTimeline || {}; target.replaceChildren(); target.style.minHeight = "";
+  if (timeline.has_more_before) {
+    const controls = el("div", "workbench-controls timeline-history-controls");
+    const loading = actionTimelineHistoryIsLoading(timeline);
+    const earlier = el("button", "outline-btn small", t(loading ? "timeline.loadingEarlier" : "timeline.loadEarlier"));
+    earlier.disabled = loading; earlier.setAttribute("data-action", "load-earlier-timeline");
+    earlier.setAttribute("aria-busy", loading ? "true" : "false"); earlier.onclick = () => loadEarlierActionTimeline();
+    controls.appendChild(earlier); target.appendChild(controls);
+  }
+  if (S.workbenchErrors.timelineHistory) target.appendChild(el("div", "timeline-error", t("timeline.loadEarlierFailed", S.workbenchErrors.timelineHistory)));
+  // When the final prepend proves there is no earlier page, removing the
+  // fallback control would move the whole scroll viewport during the same
+  // frame. Reserve its measured slot until the next full render so the
+  // compensated row remains at the same screen coordinate.
+  const preserveEmptyHeight = !target.children.length && previousHeight > 0 && !!S._timelineView;
+  if (preserveEmptyHeight) target.style.minHeight = previousHeight + "px";
+  target.classList.toggle("hidden", !target.children.length && !preserveEmptyHeight);
+}
 function renderActionTimeline() {
-  const root = $("#dock-timeline"); if (!root) return; root.innerHTML = "";
+  const root = $("#dock-timeline"); if (!root) return;
+  const timeline = S.actionTimeline || {};
+  const groups = sortedActionTimelineGroups(timeline);
+  const rootFrameScope = actionTimelineRootScope(timeline), branchScope = actionTimelineBranchScope(timeline, groups);
+  const previousView = S._timelineView;
+  const activeRow = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".timeline-ledger-row") : null;
+  const restoreInspectorFocus = !!(previousView && previousView.inspectorHost.contains(document.activeElement));
+  const restoreSearchFocus = !!(previousView && previousView.search && previousView.search.shell.contains(document.activeElement));
+  const searchSelection = restoreSearchFocus ? [previousView.search.input.selectionStart, previousView.search.input.selectionEnd] : null;
+  if (activeRow && actionTimelineViewMatches(previousView, rootFrameScope, branchScope)) {
+    if (activeRow.dataset.groupId) S._timelineRestoreFocusGroupId = activeRow.dataset.groupId;
+    else previousView.restoreFocusTurnId = activeRow.dataset.turnId || null;
+  }
+  if (actionTimelineViewMatches(previousView, rootFrameScope, branchScope)) {
+    previousView.scrollTop = previousView.scroll.scrollTop; previousView.scrollLeft = previousView.scroll.scrollLeft;
+  } else {
+    destroyActionTimelineView(previousView); S._timelineRestoreFocusGroupId = null;
+  }
+  if (S.actionTimelineSelectedBranchId !== branchScope || !groups.some(group => group.group_id === S.actionTimelineSelectedGroupId)) {
+    S.actionTimelineSelectedGroupId = null; S.actionTimelineSelectedBranchId = null;
+  }
+  root.replaceChildren(); root.dataset.timelineBranch = branchScope;
   const top = el("div", "timeline-top"); const heading = el("div"); heading.appendChild(el("div", "timeline-title", t("timeline.title"))); heading.appendChild(el("div", "timeline-subtitle", t("timeline.subtitle"))); top.appendChild(heading);
   const refresh = ghostIconBtn("refresh", t("timeline.refresh")); refresh.onclick = () => loadWorkbenchState(S.currentId, true); top.appendChild(refresh); root.appendChild(top);
   root.appendChild(runtimeSummaryNode(false));
   const layout = el("div", "workbench-layout"), side = el("div", "workbench-side"), actions = el("section", "timeline-actions");
   side.appendChild(renderBranchPanel()); side.appendChild(renderDelegationPanel()); side.appendChild(renderComputeTasksPanel()); side.appendChild(renderContextPanel()); side.appendChild(renderSecurityPanel()); layout.appendChild(side);
-  const timeline = S.actionTimeline || {}, groups = timeline.groups || [];
-  if (timeline.has_more_before) {
-    const controls = el("div", "workbench-controls timeline-history-controls");
-    const loading = S._timelineHistoryLoading === S.currentId;
-    const earlier = el("button", "outline-btn small", t(loading ? "timeline.loadingEarlier" : "timeline.loadEarlier"));
-    earlier.disabled = loading; earlier.setAttribute("data-action", "load-earlier-timeline");
-    earlier.setAttribute("aria-busy", loading ? "true" : "false"); earlier.onclick = loadEarlierActionTimeline;
-    controls.appendChild(earlier); actions.appendChild(controls);
-  }
-  if (S.workbenchErrors.timelineHistory) actions.appendChild(el("div", "timeline-error", t("timeline.loadEarlierFailed", S.workbenchErrors.timelineHistory)));
-  if (timeline.history_limit_reached) actions.appendChild(el("div", "workbench-empty", t("timeline.historyLimit", ACTION_TIMELINE_MAX_GROUPS)));
-  if (S.recoveryActions || (S.recoveryState && (S.recoveryState.status || (S.recoveryState.log || []).length))) actions.appendChild(recoveryTimelineCard(S.recoveryState, S.recoveryActions));
-  if (!groups.length && !actions.children.length) actions.appendChild(el("div", "workbench-empty timeline-empty", S._workbenchLoading ? t("timeline.loading") : t("timeline.empty")));
-  else groups.slice().sort((a, b) => (+a.ordinal || 0) - (+b.ordinal || 0)).forEach(group => actions.appendChild(actionTimelineCard(group)));
+  const historyState = el("div", "timeline-history-state hidden"); actions.appendChild(historyState); syncActionTimelineHistoryState(historyState);
+  const hasRecovery = !!(S.recoveryActions || (S.recoveryState && (S.recoveryState.status || (S.recoveryState.log || []).length)));
+  if (hasRecovery) actions.appendChild(recoveryTimelineCard(S.recoveryState, S.recoveryActions));
+  if (!groups.length && !timeline.has_more_before && !S.workbenchErrors.timelineHistory && !hasRecovery) {
+    actions.appendChild(el("div", "workbench-empty timeline-empty", S._workbenchLoading ? t("timeline.loading") : t("timeline.empty")));
+    destroyActionTimelineView();
+  } else if (groups.length) actions.appendChild(actionTimelineLedger(groups, branchScope, rootFrameScope));
   layout.appendChild(actions); root.appendChild(layout);
+  if (groups.length) updateActionTimelineLedger({ direction: "render" });
+  else S._timelineRestoreFocusGroupId = null;
+  if (restoreInspectorFocus && S._timelineView) {
+    const close = S._timelineView.inspectorHost.querySelector("button");
+    if (close) { try { close.focus({ preventScroll: true }); } catch { close.focus(); } }
+  } else if (restoreSearchFocus && S._timelineView) {
+    const input = S._timelineView.search.input; try { input.focus({ preventScroll: true }); } catch { input.focus(); }
+    if (searchSelection && searchSelection[0] != null) try { input.setSelectionRange(searchSelection[0], searchSelection[1]); } catch {}
+  }
 }
 
 /* ---------- WebSocket ---------- */
@@ -3441,7 +4730,15 @@ function onEvent(m) {
   else if (m.type === "notebook_cell_start") { if (mine(fid)) nbCellStart(m); }
   else if (m.type === "notebook_cell_chunk") { if (mine(fid)) nbCellChunk(m); }
   else if (m.type === "notebook_cell_finished") { if (mine(fid)) { nbCellFinished(m); scheduleWorkbenchRefresh(); } }
-  else if (m.type === "action_timeline" || m.type === "action-timeline") { if (mine(fid)) { S.actionTimeline = mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(m), "latest"); if (S.activeTab === "timeline") renderActionTimeline(); } }
+  else if (m.type === "action_timeline" || m.type === "action-timeline") { if (mine(fid)) {
+    const incoming = sanitizeActionTimeline(m), currentBranch = actionTimelineBranchScope(S.actionTimeline);
+    // Branch activation keeps the root frame id, so a delayed delta from the
+    // previous branch must not replace the newly active branch projection.
+    if (!S.actionTimeline || !incoming.branch_id || !currentBranch || incoming.branch_id === currentBranch) {
+      S.actionTimeline = mergeActionTimelines(S.actionTimeline, incoming, "latest");
+      if (S.activeTab === "timeline") updateActionTimelineLedger({ direction: "latest" });
+    }
+  } }
   else if (m.type === "execution_queue") { if (mine(fid)) { rememberExecutionQueue(m); if (S.activeTab === "timeline") renderActionTimeline(); if (S.activeTab === "notebook") renderNotebook(); } }
   else if (m.type === "execution_state" || m.type === "execution_owner") { if (mine(fid)) {
     // State/owner events are deltas. Paint the safe owner immediately, then
@@ -5062,10 +6359,11 @@ async function openConversation(fid, pid) {
   clearTimeout(S._resumeTimer);  // stop any resume-watchdog from the previously open session
   const gen = S._openGen = (S._openGen || 0) + 1;  // guard async continuations against fast session-switching
   S.cells = []; S.kernels = []; S.liveCells = []; S._liveCell = null; S.dockArtifact = null; S.kernelFilter = null;
-  S.actionTimeline = null; S.executionQueue = null; S.executionIdentity = null; S.recoveryState = null; S.recoveryActions = null; S.delegationState = null;
+  destroyActionTimelineView(); S.actionTimeline = null; S.actionTimelineSelectedGroupId = null; S.actionTimelineSelectedBranchId = null;
+  S.executionQueue = null; S.executionIdentity = null; S.recoveryState = null; S.recoveryActions = null; S.delegationState = null;
   S.branchState = null; S.branchUndo = null; S.contextState = null; S.securityState = null;
   S.workbenchErrors = {}; S._timelineHistoryReq = (S._timelineHistoryReq || 0) + 1; S._timelineHistoryLoading = null;
-  S._recoveryActionLoading = null; S._branchActionLoading = null;
+  S._recoveryActionLoading = null; S._branchActionLoading = null; S._timelineRestoreFocusGroupId = null;
   S.variableInspector = { language: "python", results: {}, loading: null, error: "", request: 0 };
   clearTimeout(S._workbenchTimer); S._workbenchReq = (S._workbenchReq || 0) + 1; S._workbenchLoading = null;
   S._tbl = {}; invalidateKernelCache();  // drop the prior session's table + kernel-state caches
