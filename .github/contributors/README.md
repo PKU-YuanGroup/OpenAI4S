@@ -11,6 +11,7 @@ reads this directory.
 
 | File | Purpose |
 | --- | --- |
+| `ClarenceYC.png` | Render-ready avatar for contributor `ClarenceYC`. |
 | `Grace-xyx.png` | Render-ready avatar for contributor `Grace-xyx`. |
 | `HowardLi1984.png` | Render-ready avatar for contributor `HowardLi1984`. |
 | `Linmj-Judy.png` | Render-ready avatar for contributor `Linmj-Judy`. |
@@ -19,6 +20,7 @@ reads this directory.
 | `YuyangSunshine.png` | Render-ready avatar for contributor `YuyangSunshine`. |
 | `jiangzx25.png` | Render-ready avatar for contributor `jiangzx25`. |
 | `riiiiiiin.png` | Render-ready avatar for contributor `riiiiiiin`. |
+| `stau-7001.png` | Render-ready avatar for contributor `stau-7001`. |
 | `wangyu-sd.png` | Render-ready avatar for contributor `wangyu-sd`. |
 | `yusowa0716.png` | Render-ready avatar for contributor `yusowa0716`. |
 
