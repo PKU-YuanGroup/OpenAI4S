@@ -571,6 +571,18 @@ class SecretBroker:
         with self._lock:
             self._backend.delete(scope, name)
 
+    @property
+    def read_only(self) -> bool:
+        """Whether the operator, not the app, owns what this backend holds.
+
+        A caller needs this to know what an *absent* row means. Behind a
+        writable backend an empty row is the app's own answer — the value was
+        never set, or was cleared through the UI. Behind a read-only one the
+        row was never the answer at all: the app cannot write there, so the
+        environment is the only thing that could have supplied a value.
+        """
+        return bool(self._backend.read_only)
+
     def describe(self, ref: str) -> dict:
         """Metadata for an API response. Never the value."""
         scope, name = split_ref(ref)

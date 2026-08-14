@@ -530,6 +530,13 @@ class SessionPackageService:
                 # redact a harmless opaque string while leaving the real key —
                 # if it appeared anywhere in the export — untouched. Redaction
                 # needs the value it is redacting.
+                #
+                # An operator-injected credential has no row at all, so it is
+                # never reached here; it is covered by the environment scan
+                # above, which holds because a broker variable is named
+                # OPENAI4S_SECRET_<SCOPE>_<KEY> and every settings credential's
+                # key ends in `_api_key`. A future one that does not would need
+                # this branch to run without a row rather than a wider regex.
                 resolved = self.store.get_secret_setting(setting)
                 if resolved and len(resolved) >= 8:
                     values.add(resolved)

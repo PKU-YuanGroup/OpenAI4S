@@ -289,6 +289,23 @@ not a fallback from it. It is read-only on purpose: if the environment owns the
 secret, the app must not overwrite it behind the operator's back, so a write
 attempt fails with the exact variable name to set.
 
+An injected credential resolves **with no settings row at all**, which is the
+only state a fresh server can be in: nothing can put the reference row there,
+because `put` refuses by design and migration has no plaintext to move. A
+resolver that stopped at an empty row made the variable dead on any data
+directory that had never had a key saved through a writable backend — and
+nothing raised, so the symptom was only that the UI reported the model as
+unconfigured. `resolve_setting` therefore asks a **read-only** backend for
+`<scope>/<key>` when the row is absent, the scope coming from the same
+`SETTINGS_SECRETS` table migration uses. Read-only specifically: behind a
+writable backend an empty row is the app's own answer, and since clearing a key
+swallows a failed delete, going to the backend anyway would let a revoked
+credential come back to life.
+
+The corollary is that clearing an injected key from the UI does not unset it —
+the environment owns that value, and the settings route reports the
+`has_api_key` it re-reads afterwards rather than claiming the clear took.
+
 Backends are driven through the system CLIs, because the core is stdlib-only and
 cannot depend on `keyring`: `security` on macOS, `secret-tool` (Secret Service)
 on Linux desktops. The value is fed on **stdin, never argv** — `security`'s own
